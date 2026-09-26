@@ -188,7 +188,7 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 | 同上を `onInit` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | `playSound` / `stopSound` / `setBusVolume` / `busVolume` / `isPlaying` は同じ例外を投げる。`setSoundVolume` / `setSoundPitch` / `setSoundPaused` は build を見る前に `false` を返す(ロード中は ON の build でも `false`) |
 | 同上を `onDestroy` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | 9 本とも例外にならず、空で答える: 無効な `SoundHandle` / `false` / `0.0` / `soundState` は `nullopt`(✅PG-2b。[`soundState` の包み](../../src/core/userpublic/gamecontext.cpp#L661))。拒否は記録に残る: scene のロード/破棄トランザクションの中ではロード結果の `effect_errors` に `build_feature_disabled@1`(`phase` は `destroy`)、トランザクションの無い `onDestroy`(プレイ中の object 削除、ゲーム DLL の解放、`deactivateAll`)では engine log に `build_feature_disabled@1 in a destruction callback: …`。トランザクションの中の `setSoundVolume` / `setSoundPitch` / `setSoundPaused` は、ON の build と同じく build を見る前に `false` を返すので何も記録されない |
 | `ctx.physics()` の 5 本を `onDestroy` の中で呼ぶ | `PELICAN_WITH_PHYSICS=OFF`、または provider が 0 本 | 例外にならず、空で答える: `raycastAll` / `overlapAll` / `shapeCastAll` は空の配列、`raycastClosest` / `shapeCastClosest` は `nullopt`(✅PG-2b)。これは「何にも当たらなかった」と同じ答えで、見分けられるのは記録だけです。記録は audio と同じ場所(トランザクションの中なら `effect_errors`、無ければ engine log)に、`build_feature_disabled@1` か `physics.provider_unavailable@1` で残る |
-| `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=OFF` | `BuildFeatureCallDisabledError`。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_PHYSICS"`。rpc の `raycast` は JSON-RPC の error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b。[受け口](../../src/core/communication/rpcserver.cpp#L1124)) |
+| `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=OFF` | `BuildFeatureCallDisabledError`。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_PHYSICS"`。rpc の `raycast` は JSON-RPC の error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b。[受け口](../../src/core/communication/rpcserver.cpp#L1125)) |
 | `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=ON` で provider が 0 本(`PELICAN_WITH_BUILTIN_PHYSICS` と `PELICAN_WITH_JOLT_PHYSICS` が両方 OFF) | ゲーム DLL がそのクエリの provider を登録していなければ [`phys::ProviderUnavailableError`](../../src/core/phys/physquery.hpp#L102) を投げる。`code()` = `physics.provider_unavailable@1`。空の結果(「何にも当たらなかった」)は返さない。rpc の `raycast` も同じ場合は JSON-RPC の error(code `-32000`、message はこの例外の `what()`)を返す |
 | `ctx.animation().setParameter` / `forceState` | `PELICAN_WITH_ANIMATION=OFF` | 例外ではなく `Animation::Status::not_found`。シーンのロード/破棄トランザクションの中では、ON の build と同じく `phase_order_error` |
 
@@ -730,7 +730,7 @@ if (auto hit = ctx.physics().shapeCastClosest(player, {0, -4, 0})) {
 - **プロバイダの選択はビルド時**です: `PELICAN_WITH_BUILTIN_PHYSICS`(既定 ON)/ `PELICAN_WITH_JOLT_PHYSICS`(既定 OFF。両方 ON なら Jolt が勝つ)。project.json や実行時の切替はありません。クエリ契約(順序・タイブレーク)はプロバイダによらずエンジン側が所有するため、通常は意識不要です。ゲーム DLL から capability 単位で provider をオーバーレイする上級拡張点(`physics/abi_v2.hpp` — raycast だけ独自実装し残りはフォールバック、等)もあります。
 - transform 追従は現行では毎フレーム再収集(BVH = bounding volume hierarchy、形状を包む箱を木に組んで判定候補を絞る加速構造。それを持たないという意味 — 計測してから見直す方針)。capsule の軸はローカル Y、box は OBB(回転対応)です。
 - `debug_draw` feature を rendering config で参照していると collider のワイヤフレームが描画されます([第6章](06_rendering.md))。
-- rpc の query は `raycast`([受け口](../../src/core/communication/rpcserver.cpp#L1124)。`origin` / `direction` / `max_distance` を受けて最近傍 1 件を返す)だけです。provider が 0 本のビルドと `PELICAN_WITH_PHYSICS=OFF` のビルド(✅PG-2b)では、この `raycast` も「当たらなかった」ではなく JSON-RPC の error を返します(§8.4「機能を外した build」)。
+- rpc の query は `raycast`([受け口](../../src/core/communication/rpcserver.cpp#L1125)。`origin` / `direction` / `max_distance` を受けて最近傍 1 件を返す)だけです。provider が 0 本のビルドと `PELICAN_WITH_PHYSICS=OFF` のビルド(✅PG-2b)では、この `raycast` も「当たらなかった」ではなく JSON-RPC の error を返します(§8.4「機能を外した build」)。
 - 📐未実装: rpc の overlap / shapeCast、メッシュコライダ/BVH、剛体シミュレーション。
 
 ### 8.7.1 side-scroller controller(WP109)
@@ -839,7 +839,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 - **Studio の埋め込み player は Studio の環境を継承します**(QProcess)。Studio を `PELICAN_AUDIO_BACKEND=null` で起動すれば、埋め込み player は音を出しません。Studio の scenario driver(`tools/studio_drive.py`)は、呼び出し側が値を決めていない(未設定か空)ときに `null` を渡します([該当箇所](../../tools/studio_drive.py#L1024)、`d616e35a`)。
 - **`PELICAN_WITH_AUDIO=OFF` の build** では `--audio-backend null` だけを受け付けます。`offline` / `device` は `This binary was built with PELICAN_WITH_AUDIO=OFF: --audio-backend <値> is unavailable` で起動を止めます(未知の値は、その前に `audio.backend_unknown@1`)。**環境変数は読みません**(継承した値で OFF の player が止まらないように)。
 
-どれになったかは rpc の **`get_status` の `audio`** で読めます([`audioStatusJson()`](../../src/core/communication/rpcserver.cpp#L185))。
+どれになったかは rpc の **`get_status` の `audio`** で読めます([`audioStatusJson()`](../../src/core/communication/rpcserver.cpp#L186))。
 
 ```json
 "audio": {"available": true, "backend": "device"}
@@ -852,7 +852,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 ### グラフで鳴らす — `audio.playback`(✅AU-1)
 
-`audio.playback` は 1 ノードで 1 つの voice です。catalog の入力と parameter は次のとおりです([登録](../../src/project/graphmodule.cpp#L380))。
+`audio.playback` は 1 ノードで 1 つの voice です。catalog の入力と parameter は次のとおりです([登録](../../src/project/graphmodule.cpp#L587))。
 
 | 種類 | 名前 | 意味 |
 |---|---|---|
@@ -878,7 +878,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 - `events` も `position` も無いノードは、**owner の最初のフレームで鳴り始め**、そのフレームから `time` 入力の時計で経過時間(写像の elapsed)を数えます([開始](../../src/core/userpublic/valuegraph.cpp#L875))。分解版の「`events` が無ければ owner の最初のフレーム」と同じ規則です。
 - `events` が無いときの `time` は、どの時計から来てもかまいません(`time` でも `scene_time` でも、時計の無い定数でも拒否されない)。
 - `time` は必須のままです。`events` を繋ぐなら `time` は `scene_time` だけから、の検査(`audio.clock_mismatch@1`、下の「状態と拒否」)も変わりません。
-- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L1346)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。
+- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L2105)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。
 
 下の例は `events` で鳴らす形です。
 

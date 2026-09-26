@@ -183,7 +183,7 @@
 
 **bloom(ブルーム)** — 明るい部分をにじませて眩しさを表現する後処理。P-2a-1b(`6e04c7c8`)から同梱 feature `engine://features/bloom.json`(13 pass + 9 RT を `post_ldr` の後に挿入。shader は `bloom_highpass` / `bloom_blur_h` / `bloom_blur_v` / `bloom_upsample` / `bloom_composite`)。しきい値・膝・強度は feature の parameter(`threshold` / `knee` / `intensity`、P-2a-1c)ですが、**供給のされ方が 2 通りある**点に注意してください: `threshold` と `knee` は shader の define(`PELICAN_FEATURE_BLOOM_*`)として焼かれ、**`intensity` だけは `binding: "buffer"`**(P-2a-2、`bloom.json:26`)—— feature 自身が持つ `bloom.intensity` バッファ(`size: 4` / `host_source: runtime_f32`)を通る**実行時の値**で、`set_parameters` でも共通グラフの `render.scalar` sink でも毎フレーム書き換えられます。初出: [第6章 §6.4](06_rendering.md#64-シェーダ基盤shader-freedom-kit-wp101519--m2bwp70)。([bloom_highpass.frag](../../src/core/resources/bloom_highpass.frag))
 
-**materialize(マテリアライズ)** — エンジン同梱の feature(`engine://features/*.json`)を**プロジェクト側の派生としてファイルに保存し、以後そちらを参照する**操作。以後は自分のものなので自由に編集できます([第1章](01_overview.md) 設計決定 11)。`parameters` の宣言は**残したまま**、確定した値が `bound_parameters` として書かれます —— **宣言は消えません**。`$name` の置換とスカラーの define は合成のたびに再生成されるので、古い値の define が残ることもありません([featurecompose.cpp:2850](../../src/project/featurecompose.cpp#L2880) のコメントが理由の正本)。値の優先順位は **instance の上書き > `bound_parameters` > 宣言の既定値**([featurecompose.cpp:1393](../../src/project/featurecompose.cpp#L1410))。同じ feature を 2 度 materialize することはできません(`is already materialized`)。初出: [第6章 §6.5](06_rendering.md#65-feature--パージ可能な-gpu-機能wp2831548788104226)。
+**materialize(マテリアライズ)** — エンジン同梱の feature(`engine://features/*.json`)を**プロジェクト側の派生としてファイルに保存し、以後そちらを参照する**操作。以後は自分のものなので自由に編集できます([第1章](01_overview.md) 設計決定 11)。`parameters` の宣言は**残したまま**、確定した値が `bound_parameters` として書かれます —— **宣言は消えません**。`$name` の置換とスカラーの define は合成のたびに再生成されるので、古い値の define が残ることもありません([featurecompose.cpp:2850](../../src/project/featurecompose.cpp#L2973) のコメントが理由の正本)。値の優先順位は **instance の上書き > `bound_parameters` > 宣言の既定値**([featurecompose.cpp:1393](../../src/project/featurecompose.cpp#L1429))。同じ feature を 2 度 materialize することはできません(`is already materialized`)。初出: [第6章 §6.5](06_rendering.md#65-feature--パージ可能な-gpu-機能wp2831548788104226)。
 
 **TAA(temporal anti-aliasing)** — 毎フレーム少しずらして描いた結果を、前フレームの履歴と混ぜてジャギーを消す手法。pelican2 では `taa.json` feature が resolve + composite の 2 パスと jitter provider を持ちます。履歴・速度・jitter はユーザー空間側の道具立てで、エンジンは機構だけを持ちます。初出: [第6章 標準 TAA](06_rendering.md#標準-taawp113)。
 
@@ -232,7 +232,25 @@
 
 **root motion** — クリップに焼かれた「根(root)の移動」を、姿勢としてではなく**個体の移動**として使うこと。`pose.clip_sample{root_motion: "extract", root_node}` で有効になり、移動量は owner の `localtransform` に加算され、staged pose 側の根はクリップ先頭の位置に固定(pin)されます。移動量は**巻き戻す前の時刻(unwrapped time)の差**で取るので、`speed < 0` でも 1 フレームに 1 周以上進んでも同じ 1 つの式です。`set_time`(シーク)は移動ではないと扱われ、その 1 フレームの移動量は 0 になります。**回転量の抽出は v0 の射程外**。末尾キーを先頭キーと同じにした「継ぎ目無し」クリップは正味の移動が 0 = 動きません。初出: [第4章 §4.2](04_scene_ecs.md#localtransform)・[第8章 §8.13](08_gameplay.md)。
 
-**catalog(2 系統)** — 「今このビルドで何が使えるか」の一覧。**(1) グラフのカタログ** = 登録済み module / 型 / op / sink の語彙(`pelican_cli graph-catalog` と RPC `get_graph_catalog`。`PELICAN_WITH_ANIMATION` の ON / OFF で 5 module 29 op / 4 module 23 op と変わります。数は `PELICAN_WITH_AUDIO=ON` の build。GP-3 で常に登録される `pelican.ui` の 2 op が加わりました)。**(2) feature のカタログ** = 使える render feature の一覧(RPC `list_render_features`。エンジン同梱と install 済み package が載り、`source` でどちらか分かります)。**(2) にプロジェクト内の素の `project://` feature は載りません**。初出: [第10章](10_tools.md)・[第3章 §3.11](03_project_format.md#311-package--本体ツリーの外から持ち込むx-1)。
+**catalog(2 系統)** — 「今このビルドで何が使えるか」の一覧。**(1) グラフのカタログ** = 登録済み module / 型 / op / sink の語彙(`pelican_cli graph-catalog` と RPC `get_graph_catalog`。`PELICAN_WITH_ANIMATION` の ON / OFF で 5 module 36 op / 4 module 30 op と変わります。数は `PELICAN_WITH_AUDIO=ON` の build。GP-3 で常に登録される `pelican.ui` の 2 op、LP 系で `pelican.render` の 7 op が加わりました。構造の node の `graph.instance` / `graph.loop` は載りません)。**(2) feature のカタログ** = 使える render feature の一覧(RPC `list_render_features`。エンジン同梱と install 済み package が載り、`source` でどちらか分かります)。**(2) にプロジェクト内の素の `project://` feature は載りません**。初出: [第10章](10_tools.md)・[第3章 §3.11](03_project_format.md#311-package--本体ツリーの外から持ち込むx-1)。
+
+**ループ(`graph.loop`)** — 共通グラフの**構造の node** で、body(definition)を集合の要素ごとに使う唯一のループ。`over`(集合)→ `where`(絞る)→ `order`(並べる)→ `limit`(先頭 N 個)→ 分岐(`branches`)の順に決まります。catalog に載らず、root の `nodes` にだけ置けます。保存されるのは parameters と body だけで、展開した pass(`<loop>/<element>/<node>`)は派生物です。初出: [第6章 §6.18](06_rendering.md)、設計は [../design_graph_loops.md](../design_graph_loops.md)。
+
+**分岐(branch)** — ループの要素ごとに、どの body を使うかの条件と body の組。`branches` の上から順に `when` を見て最初に合ったものを使い、**最後の分岐は `when` 無しの else** でなければなりません。`"body": null` は「この要素では何もしない」。どの要素も選ばなかった分岐は `get_frame_plan` の `unmatched_branches` に出ます。初出: [第6章 §6.18](06_rendering.md)。
+
+**carry** — ループの前の回の出力を次の回の入力へ渡す指定(`carry: [{from, to}]`)。最初の回はループの入力 edge の値を受けます。bloom の下り段のような「前の段の結果を縮めていく」連鎖に使い、expand の段だけで使えます。初出: [第6章 §6.18](06_rendering.md)。
+
+**段(tier)—— expand / draw_loop** — ループが実行される場所。**expand** は組み直しのときに body を回の数だけ複写して、ふつうの pass・task・target として frame graph に渡す段(`over` が `range` か `view_axis`)。**draw_loop** は 1 つの material pass の中で、material ごとに描き方を選ぶ段(`over` が `draw_items`、body は `draw.*` だけ)。v0 では段が黙って変わらず、合わなければ `graph.loop_tier_unsupported@1` で断ります。初出: [第6章 §6.18](06_rendering.md)。
+
+**draw step(描き方の 1 手)** — draw_loop の body で、1 つの material をどう描くかを 1 手ずつ並べる node(`draw.material` = そのまま / `draw.variant` = 名前付き variant で / `draw.override` = render state と define を替えた pipeline で)。`after` の edge で列になり、同じ range を 2 回以上描けます。override は新しい material を登録せず、世代が持つ別の表の pipeline で描きます。初出: [第6章 §6.18](06_rendering.md)。
+
+**view の軸(view axis)/ `view_select`** — provider が作る view family の view が持つ、名前付きの整数の座標(`$shadow/directional` の `light` / `cascade`、`$capture/cube` の `face` など)。pass や task に `view_select: {<軸>: <値>}` を書くと、軸の値が一致する view だけで走ります。組み直し時に長さが決まる軸(`cascade`・`face`)はループの `over: {view_axis}` にも使えます。初出: [第6章 §6.18](06_rendering.md)。
+
+**`render.target_ref`** — rendering 節・preset・feature が宣言した render target を、グラフから名前で指す node。target を作らず(所有しない)、つないだ port はその target の名前をそのまま使います。名前が合成後にあるかは組み直しのときに検査します(`graph.target_ref_unknown@1`)。初出: [第6章 §6.18](06_rendering.md)。
+
+**`pass_replacements`** — feature の instance に書く `{"<feature の pass / task 名>": "<graph の node かループの id>"}`。書いた pass は feature から外れ、graph の node(ループなら展開した回の列)がその位置に入り、順序と `surface_resources` の名前も写ります。分解版で一体版の pass を置き換えるための仕組みです。初出: [第6章 §6.18](06_rendering.md)。
+
+**分解版(decomposed graph)** — 標準 feature の処理を、グラフの node とループで書き直したもの(「標準機能には一体版と分解版の両方を持たせる」という原則の後者)。engine は `engine://graphs/bloom_loop.json` などを**雛形**として出荷し(文書の `decomposes` が、どの feature を外すか・置き換えるかを言う)、project がそれを自分の graph へ写して使います。rendering 節の material pass は `decompose_material_pass` で分解版に書き換えられます。初出: [第6章 §6.18](06_rendering.md)、[第13章](13_editor.md)。
 
 ---
 

@@ -104,7 +104,7 @@
 
 | 事項 | 中身 |
 |---|---|
-| 形 | `{scene: <シーン ID の文字列>, object: <正の整数>}` の **2 キーちょうど**。欠けても増えても `graph owner requires scene and positive authoring object id`([graphcomposition.cpp:97](../../src/project/graphcomposition.cpp#L421)) |
+| 形 | `{scene: <シーン ID の文字列>, object: <正の整数>}` の **2 キーちょうど**。欠けても増えても `graph owner requires scene and positive authoring object id`([graphcomposition.cpp:97](../../src/project/graphcomposition.cpp#L756)) |
 | `object` の正体 | **authoring object id**。保存時に各 object の `authoring_object_id` として記録され、削除・並べ替え・保存・再読込を跨いでも同じ対象を指します。ID のない旧文書は従来どおり文書全体の宣言順で採番され、最初の保存で永続化されます。ID は `scene_tree` で確認してください([authoringscenedocument.cpp](../../src/core/loader/authoringscenedocument.cpp)) |
 | 解決 | ロード後の束縛表を線形に走査し、その id を持つ生きたオブジェクトを探します([SceneLoader::graphOwnerObject()](../../src/core/loader/scenegraphruntime.cpp#L40)) |
 | 見つからないとき | **エラーではなく inactive**。その instance の scope は評価されず、`LOG_WARNING` が出ます(`graph instance owner does not match any object in this scene: <scope>, <scope>, …`)。**1 行にまとまります** —— そのとき初めて報告する scope を `", "` で連ねて 1 回だけ出し、同じ scope は二度言いません([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L66))。「言った」という記憶は**シーンのロードで消えます**([scene.cpp:730](../../src/core/loader/scene.cpp#L744))ので、次のシーンでは同じ scope がまた 1 回報告されます。姿勢では「rest pose のまま動かない」に見えます |
@@ -390,7 +390,7 @@ retire 中の `onDestroy` は「自分の最終状態」を読めます。entity
 
 ### commit したのに作用が失敗したとき
 
-flush で音やディスク書き込みが失敗しても、**シーンは新しいまま**です。この結果は [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として返り、rpc の `load_scene` は例外ではなく `{"name": ..., "committed": true, "effect_errors": [...]}` を返します([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1744))。`effect_errors` の各要素は `{api, error_code, error_fields, phase}` で、`api` は `playSound` / `saveData` などの公開 API 名、`phase` は `activate` / `destroy` / `flush` のどれかです。
+flush で音やディスク書き込みが失敗しても、**シーンは新しいまま**です。この結果は [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として返り、rpc の `load_scene` は例外ではなく `{"name": ..., "committed": true, "effect_errors": [...]}` を返します([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1745))。`effect_errors` の各要素は `{api, error_code, error_fields, phase}` で、`api` は `playSound` / `saveData` などの公開 API 名、`phase` は `activate` / `destroy` / `flush` のどれかです。
 
 - 「シーンは切り替わらなかった」= commit 前の失敗は従来どおり**例外**です。両者を混同しないでください。
 - staging できる作用は 256 件までです。257 件目からは**控えに積まれず、実行もされません**(`playSound` は無効なハンドルを返します)。捨てた件数だけが `effect_outbox_full@1{dropped: N}` という 1 件のエラーにまとめて記録されます([reserveEntry](../../src/core/loader/effecttransaction.cpp#L119))。

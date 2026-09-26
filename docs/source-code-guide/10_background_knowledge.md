@@ -445,7 +445,7 @@ TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE`
 
 GPU に投入したコマンドバッファは、対応する fence が signal されるまで「まだ実行中かもしれない」ものです。そのコマンドバッファが参照している資源(バッファ・イメージ・acceleration structure・SBT・descriptor set)は、その間は破棄も上書きもできません。CPU が先へ進むために同じ資源を N セット用意して添字で回すのが in-flight frame で、この N はスワップチェーンのイメージ枚数とは**別の数**です。破棄を「fence 完了後」まで遅らせる仕組み(遅延解放キュー)と、フレームが掴んだ資源を型を消して握っておく仕組み(lease)を組むのが定型になります。
 
-**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L4916) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
+**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L4930) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
 
 ## 10.2 glTF / 3D アセット形式の仕様
 
@@ -621,7 +621,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「途中で失敗したら、それまでの副作用を取り消す」を例外安全に書く定型です。ローカルなガード型のデストラクタに巻き戻し処理を書き、正常系の最後で「もう巻き戻さない」印(commit / dismiss と呼ばれることが多い)を立ててガードを無効化します。こうすると、途中のどの `throw` からでも巻き戻しが走り、成功経路でだけ走りません(`std::scope_exit` / `scope_fail` は C++ 標準ライブラリ拡張の同種の道具です)。ガードに「そもそも何もしていない」状態を表す番兵(世代番号が 0、ハンドルが無効など)を持たせて、staging 前に抜けたときに巻き戻しを飛ばす形もよく使われます。
 
-**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3074) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3101) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)(`catch (...)` で確保済みの範囲を返す)
+**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3075) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3102) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)(`catch (...)` で確保済みの範囲を返す)
 
 ### double-checked locking と acquire / release
 
@@ -849,7 +849,7 @@ POSIX と違い、Windows ではファイルを開くときに「他のプロセ
 
 `std::filesystem::canonical(p)` は実在するパスしか正規化できず、存在しなければ例外(または `error_code`)になります。対して `weakly_canonical(p)` は「存在する先頭部分だけを解決し、残りは字句的に正規化する」ので、これから作るファイルのパスにも使えます。Windows 固有の落とし穴が**ルート名**で、`path::has_root_name()` は `C:` や `\\server` の有無を返します。`C:\dir`(ルート名 + ルートディレクトリ)は絶対パスですが、`C:dir` は「ドライブ C の**カレントディレクトリ**からの相対」であり、しかも `current_path()` がドライブごとに存在するため、プロセスのカレントだけでは決まりません。この曖昧な形は受け付けずに拒否するのが安全です。
 
-**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L988) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L980) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L932) / [resolveDeclaration()](../../src/core/asset/model.cpp#L248)
+**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L989) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L981) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L933) / [resolveDeclaration()](../../src/core/asset/model.cpp#L248)
 
 ## 10.5 アルゴリズムとデータ処理の定番
 
@@ -991,7 +991,7 @@ SPIR-V モジュールは 32bit ワードの列です。先頭 5 ワードがヘ
 
 nlohmann::json は数値を「符号なし整数 / 符号付き整数 / 浮動小数」の 3 つに区別して保持し、`is_number_unsigned()` / `is_number_integer()` / `is_number_float()` で見分けられます(`is_number_integer()` は符号なしにも true を返すので、負値を拒否したいときは順序に注意が要ります)。`nlohmann::ordered_json` は `std::map` ではなく挿入順を保つ連想コンテナを使う別名で、出力の安定性が要るとき(差分を取る、ダイジェストを取る)に選びます。もう 1 つの落とし穴が `std::optional` の出力で、**値が無いときにキーへ代入しないとキー自体が消えます**。「キーはあるが null」を出したいなら明示的に `nullptr` を代入する必要があり、この 2 つは受け手にとって別物です。
 
-**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L69)(`is_number_unsigned()` を先に見て、次に `is_number_integer()` — この順でないと符号なしが符号付き枝へ落ちる) / [validateStructSigned()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L201)(同じ 2 段の順序) / [editorComponentQueryJson()](../../src/core/communication/editorcommandservice.cpp#L1587)(値が無ければ `OrderedJson(nullptr)` を明示的に置く)
+**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L69)(`is_number_unsigned()` を先に見て、次に `is_number_integer()` — この順でないと符号なしが符号付き枝へ落ちる) / [validateStructSigned()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L201)(同じ 2 段の順序) / [editorComponentQueryJson()](../../src/core/communication/editorcommandservice.cpp#L1603)(値が無ければ `OrderedJson(nullptr)` を明示的に置く)
 
 ### IEEE 754 の倍精度と JSON の「安全な整数」2^53−1
 
@@ -1005,7 +1005,7 @@ JSON の数値には型の区別が無く、多くの実装(JavaScript の `JSON
 
 JSON-RPC 2.0 の request は `{"jsonrpc": "2.0", "method": ..., "params": ..., "id": ...}` で、`params` は配列かオブジェクトのみ(スカラーは不可)、`id` を持たないものは **notification** と呼ばれ応答を返してはいけません。response は `result` と `error` の**どちらか一方だけ**を持たなければならず、両方あるものも両方無いものも不正です。この仕様自体には転送方式が定められていないため、行区切り(1 行 1 メッセージ)や `Content-Length` ヘッダ(LSP 方式)といった framing は実装側の取り決めになります。行区切りを採る場合、Windows で生まれたテキストは行末に `\r` が残るので、JSON へ渡す前に落とす必要があります(`\r` は JSON の空白文字なので実害が出ないこともありますが、id の照合や digest には効きます)。予約エラーコードは前掲の項を参照してください。
 
-**使用場所**: [RpcServer::run()](../../src/core/communication/rpcserver.cpp#L1110)(`getline` の後に末尾 `\r` を落として 1 行 1 応答) / [RpcServer::handleLine()](../../src/core/communication/rpcserver.cpp#L1045) / [parseJsonRpcRequest()](../../src/project/jsonrpc.cpp#L148)
+**使用場所**: [RpcServer::run()](../../src/core/communication/rpcserver.cpp#L1111)(`getline` の後に末尾 `\r` を落として 1 行 1 応答) / [RpcServer::handleLine()](../../src/core/communication/rpcserver.cpp#L1046) / [parseJsonRpcRequest()](../../src/project/jsonrpc.cpp#L148)
 
 ## 10.6 座標・数値の約束事
 
@@ -1114,7 +1114,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 `glm::quat` のコンストラクタは **`{w, x, y, z}` の順**で成分を取ります(メンバ変数としての `.x .y .z .w` の並びとは別の話です)。一方 glTF の `rotation`、多くのワイヤ形式、そして人が書く JSON は `[x, y, z, w]` の順で格納します。したがって配列から読むときは必ず並べ替えが要り、忘れると「軸と角度が入れ替わった」ような、しかし一見それらしく見える回転になります。型は同じなのでコンパイラは何も言いません。
 
-**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1489) / [requireQuatField()](../../src/core/communication/rpcserver.cpp#L317)(配列の 0,1,2,3 を x,y,z,w に読んでから `glm::quat{w, x, y, z}` を組む)
+**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1489) / [requireQuatField()](../../src/core/communication/rpcserver.cpp#L318)(配列の 0,1,2,3 を x,y,z,w に読んでから `glm::quat{w, x, y, z}` を組む)
 
 ### TRS の合成順序と world → local の逆算
 
@@ -1188,7 +1188,7 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 **使用場所**: [`SemanticTypeId`](../../src/project/logicalrendertype.hpp#L24) / [`SemanticTypeSchema`](../../src/project/logicalrendertype.hpp#L108) / [`LogicalType`](../../src/project/logicalrendertype.hpp#L128)(構成子 + semantic + 引数)/ [`LogicalTypeRegistry::canonicalize()`](../../src/project/logicalrendertype.hpp#L146) / 不透明型の実例は [`pelican.pose@1` の説明](../../src/project/posegraphmodule.hpp#L11)
 
-**このコードベースでの注意**: 登録されている semantic は 11 種です。値・音・イベントの 3 つ(`pelican.value.scalar@1` / `pelican.audio.voice@1` / `pelican.event.playback_control@1`)に加えて、`pelican.render` module が 6 つ(`storage_buffer@1` / `attribute@1` / `color_signal@1` / `depth@1` / `legacy_opaque_image@1` / `legacy_opaque_resource@1`、[`logicalrendertype.cpp`](../../src/project/logicalrendertype.cpp#L583) を [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L407) が登録し、[`renderPorts()`](../../src/project/graphmodule.cpp#L56) 経由でポートに現れます)、pose module が 2 つ(`pelican.pose@1` / `pelican.rig@1`、[`posegraphmodule.cpp`](../../src/project/posegraphmodule.cpp#L74))です。`opaque` を持つのは姿勢とリグの 2 つで、ただし `pelican.rig@1` はポートには現れません(ノードの parameter として名前で指定します)。Studio 側は**型名にソケットの形を割り当てる表**を JSON で持っており、新しい型は C++ を書かずに [`graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json) へ名前を足すだけで絵が付きます。
+**このコードベースでの注意**: 登録されている semantic は 11 種です。値・音・イベントの 3 つ(`pelican.value.scalar@1` / `pelican.audio.voice@1` / `pelican.event.playback_control@1`)に加えて、`pelican.render` module が 6 つ(`storage_buffer@1` / `attribute@1` / `color_signal@1` / `depth@1` / `legacy_opaque_image@1` / `legacy_opaque_resource@1`、[`logicalrendertype.cpp`](../../src/project/logicalrendertype.cpp#L583) を [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L638) が登録し、[`renderPorts()`](../../src/project/graphmodule.cpp#L212) 経由でポートに現れます)、pose module が 2 つ(`pelican.pose@1` / `pelican.rig@1`、[`posegraphmodule.cpp`](../../src/project/posegraphmodule.cpp#L74))です。`opaque` を持つのは姿勢とリグの 2 つで、ただし `pelican.rig@1` はポートには現れません(ノードの parameter として名前で指定します)。Studio 側は**型名にソケットの形を割り当てる表**を JSON で持っており、新しい型は C++ を書かずに [`graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json) へ名前を足すだけで絵が付きます。
 
 ### 評価の分類(direct / replay / baked / recorded)と変更の費用(value / recompile / rebuild)
 
@@ -1198,9 +1198,9 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 **小さな例**: UI のスライダを 1 フレームに 60 回動かすとします。`value` のパラメータなら毎回そのまま適用してよく、`rebuild` のパラメータなら操作が終わるまで適用を遅らせるのが正解です。分類が無いと、どちらも同じ扱いになり、前者は不必要に重く、後者は 1 秒間に 60 回の再構築になります。
 
-**使用場所**: [`GraphOperationEvaluation`](../../src/project/graphcomposition.hpp#L189) / [`GraphParameterChange`](../../src/project/graphcomposition.hpp#L193) / 状態無しで `replay` を評価しようとしたときの拒否 [`graph.evaluation_requires_state@1` の送出](../../src/core/userpublic/valuegraph.cpp#L50)
+**使用場所**: [`GraphOperationEvaluation`](../../src/project/graphcomposition.hpp#L211) / [`GraphParameterChange`](../../src/project/graphcomposition.hpp#L215) / 状態無しで `replay` を評価しようとしたときの拒否 [`graph.evaluation_requires_state@1` の送出](../../src/core/userpublic/valuegraph.cpp#L50)
 
-**このコードベースでの注意**: 分類はノードごとに**強い方へ引き上げられます**(§9.24「per-node の評価分類は `max()` でしか動かない」)。また費用側の既定は op ごとの 1 値ですが、パラメータ単位の表(`parameter_changes`)も持てます([宣言](../../src/project/graphcomposition.hpp#L201))。
+**このコードベースでの注意**: 分類はノードごとに**強い方へ引き上げられます**(§9.24「per-node の評価分類は `max()` でしか動かない」)。また費用側の既定は op ごとの 1 値ですが、パラメータ単位の表(`parameter_changes`)も持てます([宣言](../../src/project/graphcomposition.hpp#L223))。
 
 ### 排他 create を「決定」の primitive にする(O_EXCL / hard link)
 

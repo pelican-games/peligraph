@@ -44,10 +44,10 @@ engine が開く文書の `(schema, version)` は、**その engine に移行の
 |---|---|---|---|
 | `pelican.project` | 1 | `src/project/projectformat.cpp` | `project.json`。`engine_min_version` と `requires` を持つ。MG-1 で記録だけの `saved_by_engine` を足した(version は 1 のまま。MG-1 より前の player もこの key 入りで開けることを実物で確認) |
 | `pelican.scene` | 2 | `src/project/sceneformat.cpp` | MG-2b で 1 の読み手を撤去し、2 以外は `pelican.scene.version_unsupported@1`(v1 は prefab キーを受けないことだけが違う版)。出荷 7 本と雛形・devcli の glTF / rules importer・import manifest の `pelican.scene` 出力は 2。SnapshotV1(scene v1 を運ぶ export / import)も撤去 |
-| `pelican.graph` | 1 | `src/project/graphcomposition.cpp` | 共通グラフ。`definitions` / `nodes` / `outputs` と `graph.instance` / `graph.input`。rendering config の root もこれだけ(§1.6) |
+| `pelican.graph` | 1 | `src/project/graphcomposition.cpp` | 共通グラフ。`definitions` / `nodes` / `outputs` と構造の node `graph.instance` / `graph.input` / `graph.loop`(LP-1a。catalog には載らない)。rendering config の root もこれだけ(§1.6) |
 | `pelican.value_graph` | 1 | `src/core/userpublic/valuegraph.cpp` | **内部 IR + test 面**。外部契約ではない(§2 行 1) |
 | `pelican.anim_graph` | 1 | `src/core/userpublic/animation/animgraph.cpp` | animation component が指す state machine 文書 |
-| `pelican.render_feature` | 1 | `src/project/featurecompose.cpp` | |
+| `pelican.render_feature` | 1 | `src/project/featurecompose.cpp` | rendering 節の `features[]` の instance は object 形で `pass_replacements`(LP-0d)を持てる |
 | `pelican.render_feature_parameters` | 1 | `src/project/featurecompose.cpp` | |
 | `pelican.render_feature_overlay` | 1 | `src/project/renderfeatureoverlay.cpp` | 起動時の一時合成。文書に書き戻さない(§2 行 11) |
 | `pelican.render_component` | 1 | `src/project/rendercomponent.hpp` | export / import される部品 |
@@ -75,6 +75,13 @@ engine が開く文書の `(schema, version)` は、**その engine に移行の
 | `pelican.project_catalog_smoke` | 1 | `test/run_project_catalog_smoke.cmake` | project ごとの smoke 閾値 |
 | `pelican.project_migration_backup` | 1 | `src/project/projectmigration.cpp` | `project migrate` の apply が退避先 `.pelican/migration/<時刻>/migration.json` に書く記録(MG-1)。`.` で始まるディレクトリの下なので、移行の検出は見ない |
 
+**v0 の間に足した field(どれも足すだけなので版は上げていない。[design_graph_loops §8](design_graph_loops.md))**:
+pass と compute task の JSON の `view_select`(LP-Va)、fullscreen / raster pass の `shader.defines`(VI-1)、
+feature の instance の `pass_replacements`(LP-0d)、graph の render node と `graph.loop` の `insert` / `canonical_anchor`(LP-0b)と
+`insert.declared`(LP-3b)、graph の render port の `history`(LP-0a)と `binding: "input"` / `input_index`(LP-1d)、
+`render.material_pass` の `resolution_domain` / `inherit_bindings_from`(LP-Vb)。書き方は [manual 6 章 §6.18](manual/06_rendering.md)。
+engine 付属の `engine://graphs/*.json`(分解版の雛形。`decomposes` を持つ `pelican.graph` 1)は engine が読まない雛形で、project が写して使う。
+
 入力の収録 `pelican.input_seq`(GP-4 から v2 で書き、v2 と v1 を読む。`src/core/os/inputsequence.cpp`)は表に載せない。`--record-input` / `start_input_record` が呼び手の指定した場所に書く JSONL で、project が持つ文書ではないため、移行の約束の対象にせず手順も登録していない(版の読み分けは parser が持つ。[manual 7 章 §7.3](manual/07_input_ui.md))。
 
 ### 1.2 RPC method 名
@@ -91,9 +98,9 @@ MG-1 で足した 2 本(`src/core/communication/projectmigrationrpc.cpp` の登�
 
 `ack_modal_transform`, `cancel_modal_transform`, `capture`, `capture_gpu`, `get_frame_plan`, `get_gpu_timing`, `get_modal_transform`, `get_status`, `inject_event`, `inject_input`, `load_gltf`, `load_scene`, `pick_object`, `query_gizmo_drag_basis`, `query_gizmo_handle`, `raycast`, `reload_game_logic`, `reload_shaders`, `render_frame`, `set_camera`, `set_gizmo`, `set_input_profile`, `set_seed`, `set_time`, `start_input_record`, `start_input_replay`, `step_frame`, `stop_input_record`, `stop_input_replay`, `update_transforms`
 
-エディタ拡張 60 本(`src/core/communication/editorrpchandlers.cpp` の登録。詳細は [docs/manual/13_editor.md](manual/13_editor.md)):
+エディタ拡張 65 本(`src/core/communication/editorrpchandlers.cpp` の登録。LP-3b / RD-1 の 3 本と、以前から一覧に漏れていた `edit_render_targets` / `set_material_route_default` を 2026-09-27 に足した。詳細は [docs/manual/13_editor.md](manual/13_editor.md)):
 
-`abort_preview`, `add_authored_pass`, `add_compute_task`, `can_edit`, `can_preview`, `commit_preview`, `edit`, `edit_compute_task`, `edit_frame_node_order`, `edit_graph_document`, `edit_graph_instances`, `edit_preset_pass`, `edit_procedural_asset`, `edit_ray_callable_records`, `edit_region_replacement`, `edit_render_features`, `edit_scene_acceleration_structures`, `eval_preview`, `export_render_feature`, `export_scene_snapshot`, `fork_render_pipeline`, `get_component_add_candidates`, `get_components`, `get_compute_task_authoring`, `get_edit_result`, `get_frame_node_order`, `get_graph_catalog`, `get_graph_instances`, `get_graph_node_values`, `get_graph_values`, `get_preview_result`, `get_procedural_assets`, `get_ray_callable_records`, `get_ray_occurrences`, `get_render_authoring_context`, `get_render_features`, `get_scene_acceleration_structures`, `get_scene_revision`, `import_render_feature`, `import_scene_snapshot`, `install_package`, `list_assets`, `list_render_features`, `open_editor_session`, `open_preview`, `query_journal`, `redo`, `remove_authored_pass`, `remove_compute_task`, `render_preview`, `resolve_ray_occurrence`, `resume_editor_session`, `save_scene`, `scene_tree`, `set_prefab_parameter`, `undo`, `uninstall_package`, `unpack_prefab`, `unset_prefab_parameter`, `update_preview`
+`abort_preview`, `add_authored_pass`, `add_compute_task`, `can_edit`, `can_preview`, `commit_preview`, `decompose_material_pass`, `edit`, `edit_compute_task`, `edit_frame_node_order`, `edit_graph_document`, `edit_graph_instances`, `edit_preset_pass`, `edit_procedural_asset`, `edit_ray_callable_records`, `edit_region_replacement`, `edit_render_features`, `edit_render_targets`, `edit_scene_acceleration_structures`, `eval_preview`, `export_render_feature`, `export_scene_snapshot`, `fork_render_pipeline`, `get_component_add_candidates`, `get_components`, `get_compute_task_authoring`, `get_edit_result`, `get_frame_node_order`, `get_graph_catalog`, `get_graph_instances`, `get_graph_node_values`, `get_graph_values`, `get_preview_result`, `get_procedural_assets`, `get_ray_callable_records`, `get_ray_occurrences`, `get_render_authoring_context`, `get_render_documents`, `get_render_features`, `get_scene_acceleration_structures`, `get_scene_revision`, `import_render_feature`, `import_scene_snapshot`, `install_package`, `list_assets`, `list_render_features`, `open_editor_session`, `open_preview`, `query_journal`, `redo`, `remove_authored_pass`, `remove_compute_task`, `render_preview`, `resolve_ray_occurrence`, `restore_render_documents`, `resume_editor_session`, `save_scene`, `scene_tree`, `set_material_route_default`, `set_prefab_parameter`, `undo`, `uninstall_package`, `unpack_prefab`, `unset_prefab_parameter`, `update_preview`
 
 ### 1.3 共通グラフ: module / op / 型 / sink
 
@@ -104,20 +111,20 @@ catalog が変われば表も同じ変更で直す。op を書いた文書(`peli
 登録 module は最大 5 本(`pelican.value` / `pelican.audio` / `pelican.render` / `pelican.pose` / `pelican.ui`)で、いずれも module version 1。
 `pelican.value` と `pelican.render` と `pelican.ui`(GP-3、UI には build OFF の構成が無い)は常に登録され、`pelican.audio` は `PELICAN_WITH_AUDIO=ON`、`pelican.pose` は `PELICAN_WITH_ANIMATION=ON` の build でだけ登録される
 (`pelican.audio` の条件付き登録は PG-1 `533d8d6c` から。登録の `#if` は `src/project/graphmodule.cpp`)。
-下の表は **`PELICAN_WITH_ANIMATION=ON` かつ `PELICAN_WITH_AUDIO=ON` build の `pelican_cli graph-catalog` の出力**を展開したもの(5 module / op 29 本)。
+下の表は **`PELICAN_WITH_ANIMATION=ON` かつ `PELICAN_WITH_AUDIO=ON` build の `pelican_cli graph-catalog` の出力**を展開したもの(5 module / op 36 本。LP-0a / LP-0e / LP-3a で `pelican.render` に 7 本を足した)。
 `change` は parameter を変えたときの既定の扱い(`value` = 値だけ / `rebuild` = 作り直し)で、
 parameter ごとに既定と違う扱い(catalog の `change.parameters`)があればかっこで添える(AU-1 `feca9dce` の時点で持つのは `audio.playback` だけ)。
 `ports: parameter_dependent` の op は port 一覧を宣言せず node 自身の `inputs` / `outputs` から決まる。
 `?` の付いた入力は任意。
 
 **`PELICAN_WITH_ANIMATION=OFF` build では `pelican.pose` module が無い**。
-catalog は 4 module / 23 op になり、下表の `pose.*` 6 本(`pose.blend` / `pose.clip_sample` /
+catalog は 4 module / 30 op になり、下表の `pose.*` 6 本(`pose.blend` / `pose.clip_sample` /
 `pose.retarget` / `pose.skeletal` / `pose.state_machine` / `pose.transform`)だけが消える。
 この関係は `test/run_devcli_graph_catalog.cmake` が「この表の op 集合 == ON の catalog、⊇ OFF の catalog」として検査する
 (表の範囲は下の 2 つのコメント行で区切る。行を足すときは ON の catalog に載る op だけ)。
 
 **`PELICAN_WITH_AUDIO=OFF` build では `pelican.audio` module が無い**。下表の `audio.*` 3 本(`audio.pitch` / `audio.playback` / `audio.volume`)が消え、
-catalog は 4 module / 26 op(animation も OFF なら 3 module / 20 op)になる。`audio.*` を書いた文書は `graph.operation_unregistered@1`。
+catalog は 4 module / 33 op(animation も OFF なら 3 module / 27 op)になる。`audio.*` を書いた文書は `graph.operation_unregistered@1`。
 `event.playback` とその出力型 `pelican.event.playback_control@1` は `pelican.value` に属するので残る(PG-1 で型を `pelican.value` へ移した)。
 同じ test は `WITH_AUDIO` と `WITH_ANIMATION` の両方を受け取り、module 数(3 + audio + animation。GP-3 までは 2 が基数で、`pelican.ui` が常に加わって 3 になった)と、この表のうち
 build から外した unit の op(`audio.*` / `pose.*`)だけが欠けてよいことを確かめる(`de84fddb`。AUDIO=OFF は catalog から
@@ -129,9 +136,9 @@ build から外した unit の op(`audio.*` / `pose.*`)だけが欠けてよい�
 | `audio.pitch` | pelican.audio | values | direct | value | sink | declared | `value`, `voice`? | — |
 | `audio.playback` | pelican.audio | values | replay | value(`asset` / `bus` / `wrap` は rebuild) | — | declared | `delay`?, `events`?, `position`?, `source_begin`?, `source_end`?, `speed`?, `time` | `voice`: pelican.audio.voice@1 |
 | `audio.volume` | pelican.audio | values | direct | value | sink | declared | `value`, `voice`? | — |
-| `draw.material` | pelican.render | rendering | direct | rebuild | — | declared | — | — |
-| `draw.override` | pelican.render | rendering | direct | rebuild | — | declared | — | — |
-| `draw.variant` | pelican.render | rendering | direct | rebuild | — | declared | — | — |
+| `draw.material` | pelican.render | rendering | direct | rebuild | — | declared | `after`? | `draws`: pelican.render.draw_stream@1 |
+| `draw.override` | pelican.render | rendering | direct | rebuild | — | declared | `after`? | `draws`: pelican.render.draw_stream@1 |
+| `draw.variant` | pelican.render | rendering | direct | rebuild | — | declared | `after`? | `draws`: pelican.render.draw_stream@1 |
 | `event.playback` | pelican.value | values | direct | value | — | declared | — | `events`: pelican.event.playback_control@1 |
 | `pose.blend` | pelican.pose | animation | direct | value | — | declared | `a`, `b`, `weight` | `pose`: pelican.pose@1 |
 | `pose.clip_sample` | pelican.pose | animation | direct | rebuild | — | declared | `time` | `pose`: pelican.pose@1 |
@@ -164,11 +171,11 @@ build から外した unit の op(`audio.*` / `pose.*`)だけが欠けてよい�
 | `value.trigger_clock` | pelican.value | values | replay | value | — | declared | `paused`?, `reset`?, `time`, `trigger` | `value`: pelican.value.scalar@1 |
 <!-- graph-op-table:end -->
 
-catalog に module の型として載る型(semantic)は ON build で 11: `pelican.value` の `pelican.value.scalar@1` / `pelican.event.playback_control@1`、
-`pelican.audio` の `pelican.audio.voice@1`、`pelican.render` の `pelican.render.*` 6 種(`storage_buffer` / `attribute` /
-`color_signal` / `depth` / `legacy_opaque_image` / `legacy_opaque_resource`)、
+catalog に module の型として載る型(semantic)は ON build で 12: `pelican.value` の `pelican.value.scalar@1` / `pelican.event.playback_control@1`、
+`pelican.audio` の `pelican.audio.voice@1`、`pelican.render` の `pelican.render.*` 7 種(`storage_buffer` / `attribute` /
+`color_signal` / `depth` / `legacy_opaque_image` / `legacy_opaque_resource` / LP-3a の `draw_stream`)、
 `pelican.pose` の `pelican.pose@1` / `pelican.rig@1`。`pelican.ui` は型を持ち込まない(sink 2 本の入力 `value` は `pelican.value` の `pelican.value.scalar@1`)。AUDIO=OFF では `pelican.audio.voice@1` が、ANIMATION=OFF では pose の 2 つが catalog から消える
-(`pelican.audio.voice@1` は内部の組み込み型表 `makeBuiltinLogicalTypeRegistry()` には OFF でも残る)。値・姿勢・音の port を流れるのは render 6 種と rig を除く 4 つ(scalar / playback_control / voice / pose)で、
+(`pelican.audio.voice@1` は内部の組み込み型表 `makeBuiltinLogicalTypeRegistry()` には OFF でも残る)。値・姿勢・音の port を流れるのは render 7 種と rig を除く 4 つ(scalar / playback_control / voice / pose)で、
 `render.*` の op は解決時に `pelican.render.*` を自分の port に載せる(上表の parameter_dependent)。
 `pelican.rig@1` は登録だけで、どの port にも現れない(node の `parameters.rig` が指す同一性)。
 `pelican.pose@1` は **handle と layout 世代**が流れるのであって bytes ではない。
@@ -425,6 +432,26 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | 配布確認の repo 化(`run_distribution_check.py`) | `053b1e0b` |
 | Studio の fatal テストを project ごとの log に合わせる | `777b4824` |
 | `RenderCommand` の padding を無くす | `47cbf3cf` |
+| LP-0a `render.target_ref` と合成の後の解決の段 | `64da2de8` |
+| LP-Va view の軸と `view_select` | `c8e47325` |
+| LP-0b graph の pass の置き場所(`insert` / `canonical_anchor`) | `637f1fd9` |
+| LP-Va2 `get_frame_plan` の `view_axes`、`edit_preset_pass` の `view_select` | `0d816570` |
+| LP-0c definition の編集 op | `85208610` |
+| LP-1a `graph.loop` の芯 | `63f296de` |
+| LP-2 material pass の描き方の列(draw_loop の engine) | `50f4ea8f` |
+| LP-1b ループの式・carry・回ごとの入力・`p[]` | `6f0f6360` |
+| LP-0d `pass_replacements` と変種で外れる feature への依存 | `efda0ad8` |
+| LP-3a `render.material_pass`・`draw.*`・draw_loop | `e8482fc3` |
+| LP-0e `render.shadow_depth` / `render.snapshot_copy` | `361145d9` |
+| LP-3b `decompose_material_pass` と draw_loop の要素の paging | `69badca7` |
+| LP-1c bloom / planar の分解版の出荷 | `04016274` |
+| LP-1d graph の port の番号付きの入力 | `6b114a3c` |
+| LP-1e 置き場所の無い graph の pass とループの既定の位置 | `b429f31c` |
+| LP-Vb `view_axis` のループ、cube capture と影の cascade の分解版 | `66544252` |
+| RD-1 render 文書の丸ごとの読み取りと CAS の書き戻し | `3a0f55b1` |
+| draw-loop の表の登録簿の静的破棄の順序 | `cf40ec93` |
+| TI-1 test の CRT assert を stderr と終了へ | `3483aba1` |
+| RD-1b `restore_render_documents` の作成と削除 | `6c77d4f8` |
 
 ## 6. v0.1.0 tag の手順
 

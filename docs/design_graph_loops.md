@@ -1,6 +1,6 @@
 # 共通グラフのループ —— 1 種類のループ node と、2 つの実行段(v3、2026-09-26)
 
-状態: **v3**。
+状態: **v3・実装済み**(2026-09-27)。engine 側は LP-0a〜0e・LP-1a〜1e・LP-Va / LP-Va2 / LP-Vb・LP-2・LP-3a / LP-3b・RD-1 / RD-1b が develop に着地(§11 の表の「着地」列)。Studio 側(LP-4)は GUI session が分けて進めている。各 WP の実装で確かめたことは本文の該当節に「(LP-xx)」として足してある。使い方は [manual 6 章 §6.18](manual/06_rendering.md)、RPC は [manual 13 章](manual/13_editor.md) の「ループと分解の RPC」。
 
 検証の経緯:
 
@@ -652,7 +652,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 - engine の preset と feature は、fork していなければ `project_preset_required` で断る。
 - 逆の操作は v0 では持たない(Studio の undo と git が担う)。
 - **実装(LP-3b)**: 返り値は ticket に `decomposed: {pass, family, insert, loop, definition, target_refs, added_target_refs, preset_reference?}` を足した形。分解できない pass は `material_pass_not_decomposable {pass, reason}`(reason: `not_found` / `graph_pass` / `feature_pass` / `not_material` / `contract_unsupported` / `field_unsupported` / `attachment_unsupported`)。置き場所は直後の pass の `before`(無ければ直前の `after`)に **`insert.declared: true`** を付ける: pass を feature の合成より**前**に、宣言の列へ置く(feature が名指しする pass、たとえば rt_shadow_mask の `after:deferred_geometry` や `pass_overrides` の対象を分解しても、feature の合成が通るため)。`declared` の置き場で anchor が無ければ `graph.insert_anchor_unknown@1`(feature の pass は anchor にできない)。
-- **undo(RD-1 で閉じた)**: `get_render_documents {references?}` → `{documents: [{reference, kind, digest, content}]}` と、`restore_render_documents {documents: [{reference, base_digest, content}]}`(全文書の digest が一致したときだけ 1 つの transaction で書く。preflight と組み直しを通す。書けるのは今の構成の root・fork 済み preset・参照中の project の feature 文書だけで、それ以外は `render_document_not_writable {method, reference, reason}`)。render の編集の commit 結果には `documents: {reference: digest}` が付く。**残る穴**: ファイルを作る・消す編集(add / remove_authored_pass、fork、materialize、import)は戻せない(置き換えだけの契約)。
+- **undo(RD-1 で閉じた)**: `get_render_documents {references?}` → `{documents: [{reference, kind, digest, content}]}` と、`restore_render_documents {documents: [{reference, base_digest, content}]}`(全文書の digest が一致したときだけ 1 つの transaction で書く。preflight と組み直しを通す。書けるのは今の構成の root・fork 済み preset・参照中の project の feature 文書だけで、それ以外は `render_document_not_writable {method, reference, reason}`)。render の編集の commit 結果には `documents: {reference: digest}` が付く。**残る穴**: ファイルを作る・消す編集(add / remove_authored_pass、fork、materialize、import)は戻せない(置き換えだけの契約)。→ **RD-1b(`6c77d4f8`)で閉じた**: `content: null` は削除、`base_digest: null` は「今は無い」(作り直すときの CAS)、両方 null は形の誤り。書ける範囲に今の root と戻す先の root(とそれぞれの preset)が名指す project の文書を足し、作る・置き換える・消すを 1 つの transaction で行う。予約の場所(`.pelican/`・`code/`・`assets/`・`scenes/`・`input/`・`ui/`・`packages/`・build の出力・`project.json` が指すディレクトリ)に作る・消すのは `render_document_not_writable {reason: reserved_location, location}`、root の削除は `reason: root_document`。`get_render_documents` は無い文書を `render_document_missing {method, reference}` で返し、`external_modification` の digest の `null` は「無い」。作る編集の commit 結果の `documents` は作った文書を digest、消した文書を null で載せるので、Studio は undo で作った文書を `content: null` で消し、消された文書を `base_digest: null` で作り直す。
 - `get_frame_plan {loop_elements: {node, offset?, limit?}}` で draw_loop の要素を paging する(既定 256、範囲 1〜4096、各要素に `total` / `offset` / `limit`)。
 
 **Studio(GUI session)**
@@ -727,23 +727,27 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 
 ## 11. WP の分け方
 
-| WP | 内容 | 前提 |
-|---|---|---|
-| LP-0a | `render.target_ref` と、展開の解決の段(合成の後の段を作る) | — |
-| LP-0b | graph の pass の挿入位置 | LP-0a |
-| LP-0c | definition の編集 op と、参照の検査の拡張 | — |
-| LP-0d | feature の pass の置き換え(`pass_replacements`)と、変種で外れる feature への依存 | LP-0a |
-| LP-0e | `render.shadow_depth`・`render.snapshot_copy` | LP-0a |
-| LP-1a | `graph.loop` の芯:形の展開(構造の検査)、解決の段での展開、`range`、名前と出所、`after` の付け替え、外部資源の直列化、ループ id の依存、展開名の参照の拒否、上限、報告 RPC(expand 分) | LP-0a、LP-0b、LP-0c |
-| LP-1b | 式(`$expr` / `$format`、許可リスト、組み直し時の定数)、`carry`・回ごとの入力・`p[]` | LP-1a |
-| LP-1c | bloom / planar の分解版の出荷と、一致の検査 | LP-1b、LP-0d |
-| LP-Va | view の軸と `view_select`(provider の座標、運ぶ場所、scope の合流、scheduler、target plan の無い経路)。rendering 節の JSON で test する(ループ無し) | — |
-| LP-Vb | `over: view_axis`、cube capture と影の cascade の分解版の出荷と一致の検査 | LP-Va、LP-1b、LP-0d、LP-0e、LP-3a |
-| LP-2 | draw_loop の engine:pipeline の差し替え、描き方の列、前回の記録、世代の持ち物、surface の reload | — |
-| LP-3a | `render.material_pass` の変換(全 field、pass 名を保つ、draws を空けたときの既定)、`draw.*` の op、draw_loop の分類、受け皿の検査、一体版との一致の検査 | LP-0a、LP-0b、LP-1a、LP-2 |
-| LP-3b | `decompose_material_pass` と、報告 RPC(draw_loop 分、paging) | LP-3a |
-| LP-4 | Studio(GUI session) | LP-1b、LP-3b、LP-Va |
-| WEB-1 追記 | web が新しい op と field を名前付きで断る | LP-1a の着地時点から |
+| WP | 内容 | 前提 | 着地 |
+|---|---|---|---|
+| LP-0a | `render.target_ref` と、展開の解決の段(合成の後の段を作る) | — | `64da2de8` |
+| LP-0b | graph の pass の挿入位置 | LP-0a | `637f1fd9` |
+| LP-0c | definition の編集 op と、参照の検査の拡張 | — | `85208610` |
+| LP-0d | feature の pass の置き換え(`pass_replacements`)と、変種で外れる feature への依存 | LP-0a | `efda0ad8` |
+| LP-0e | `render.shadow_depth`・`render.snapshot_copy` | LP-0a | `361145d9` |
+| LP-1a | `graph.loop` の芯:形の展開(構造の検査)、解決の段での展開、`range`、名前と出所、`after` の付け替え、外部資源の直列化、ループ id の依存、展開名の参照の拒否、上限、報告 RPC(expand 分) | LP-0a、LP-0b、LP-0c | `63f296de` |
+| LP-1b | 式(`$expr` / `$format`、許可リスト、組み直し時の定数)、`carry`・回ごとの入力・`p[]` | LP-1a | `6f0f6360` |
+| LP-1c | bloom / planar の分解版の出荷と、一致の検査 | LP-1b、LP-0d | `04016274` |
+| LP-Va | view の軸と `view_select`(provider の座標、運ぶ場所、scope の合流、scheduler、target plan の無い経路)。rendering 節の JSON で test する(ループ無し) | — | `c8e47325`(報告の RPC は LP-Va2 `0d816570`) |
+| LP-Vb | `over: view_axis`、cube capture と影の cascade の分解版の出荷と一致の検査 | LP-Va、LP-1b、LP-0d、LP-0e、LP-3a | `66544252` |
+| LP-2 | draw_loop の engine:pipeline の差し替え、描き方の列、前回の記録、世代の持ち物、surface の reload | — | `50f4ea8f`(静的破棄の順序の修正 `cf40ec93`) |
+| LP-3a | `render.material_pass` の変換(全 field、pass 名を保つ、draws を空けたときの既定)、`draw.*` の op、draw_loop の分類、受け皿の検査、一体版との一致の検査 | LP-0a、LP-0b、LP-1a、LP-2 | `e8482fc3` |
+| LP-3b | `decompose_material_pass` と、報告 RPC(draw_loop 分、paging) | LP-3a | `69badca7` |
+| LP-4 | Studio(GUI session) | LP-1b、LP-3b、LP-Va | LP-4a `1d4a81b3`・LP-4b `cdaeb8ee`・LP-4c `34c87287`・LP-4e `08b767f2`(GUI session。LP-4d のループゾーンの表示は 2026-09-27 の時点で develop に無い) |
+| WEB-1 追記 | web が新しい op と field を名前付きで断る | LP-1a の着地時点から | 未(別 repo) |
+| LP-1d | graph の読みの image port を pass の番号付きの入力にする(`binding: "input"` + `input_index`。§5.3) | LP-1c | `6b114a3c` |
+| LP-1e | 置き場所の無い graph の pass とループの既定の位置、`pass_set` の既定の family(§6) | LP-1a | `b429f31c` |
+| RD-1 | render 文書の丸ごとの読み取りと、CAS の下での書き戻し(§9 の undo) | LP-3b | `3a0f55b1` |
+| RD-1b | RD-1 の作成と削除(§9 の undo) | RD-1 | `6c77d4f8` |
 
 **docs**:各 WP で次を更新する。
 

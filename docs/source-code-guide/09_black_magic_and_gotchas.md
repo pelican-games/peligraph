@@ -375,7 +375,7 @@ ID 割当を engine-wide schema として管理する必要がある点は変わ
 cannot unregister component '<name>': dependent ECS system '<sys>' remains
 ```
 
-この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L2313))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
+この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L2314))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
 
 ### custom Component の現状
 
@@ -493,7 +493,7 @@ behavior は scene load executor(第 3 章 §3.5 の 3。WP380a)の participant 
 現在の [`LightContainer`](../../src/core/light/lightcontainer.hpp#L29) には **時間を引数に取る更新関数がありません**。ライト値を書き換える口は、scene load([`prepareLoad()`](../../src/core/light/lightcontainer.hpp#L46) → [`publishPrepared()`](../../src/core/light/lightcontainer.hpp#L48) の §9.17 型。`load()` はこの 2 段に警告出力を挟んだ入口です)と、名前指定の setter 4 本([`setDirectionalLightDirection()`](../../src/core/light/lightcontainer.hpp#L79) ほか。名前が引けなければ **`false` を返すだけ** で例外にはなりません)の 2 系統だけです。`update()` の overload 群は shadow 行列と sky ambient を受け取って現在値を GPU バッファへ書き出すもので、値そのものは動かしません。
 
 - 代替は公開 API 4 本([`RenderContext::setDirectionalLightDirection()` ほか](../../src/core/userpublic/gamecontext.hpp#L140))で、ライトの時間変化は **ユーザー空間の責務** になりました。実例は [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L31) の `updateLightAnimation()` です。
-- setter の結果は `Renderer` の per-frame [`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L492)(呼び出しは [ここ](../../src/core/vkcore/renderer.cpp#L1551))で GPU バッファへ反映されます。
+- setter の結果は `Renderer` の per-frame [`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L493)(呼び出しは [ここ](../../src/core/vkcore/renderer.cpp#L1552))で GPU バッファへ反映されます。
 - 「アップグレード後にライトが動かなくなった」は仕様です。scene 名に依存した暗黙アニメーションを期待しているコードを探してください。
 
 代わりに **上限超過の警告** が入りました。[`collectLightCapWarnings()`](../../src/core/light/lightcontainer.hpp#L27) が `MAX_DIRECTIONAL_LIGHTS` / `MAX_POINT_LIGHTS` / `MAX_SPOT_LIGHTS` を超えた分について次を出します([`lightcontainer.cpp` 内](../../src/core/light/lightcontainer.cpp#L55))。
@@ -576,8 +576,8 @@ reflection は descriptor layout と pipeline layout を source/SPIR-V から自
 
 hot reload は shader compile と pipeline rebuild を transactional にします。しかし descriptor layout を変更する edit は、shader body だけの edit より危険です。
 
-- shader reload の runtime 公開は **`RuntimeReloadBoundary::render_start`** の 1 点に集約されています。[`consumeShaderReloadPublication()`](../../src/core/vkcore/renderer.cpp#L2769) が `ReloadService::applyRuntimeBoundary(render_start)` を呼び、**その summary の `committed` が 0 でないときだけ** [`rebindFullscreenInputs()`](../../src/core/vkcore/renderer.cpp#L2734) が走ります。呼び出しは view の記録へ入る前([`renderer.cpp` の frame 前段](../../src/core/vkcore/renderer.cpp#L5738))で、shader 側の participant がこの boundary を宣言している箇所は [`reloadservice.cpp` の shader participant 登録](../../src/core/watch/reloadservice.cpp#L679) です。
-- `rebindFullscreenInputs()` が貼り直すのは 3 系統です — 公開済み generation 内の fullscreen / generic raster pass の input resource、material の screen input、compute task の render target。したがって **reload 専用の処理ではありません**。logical target の extent が変わった直後にも同じ関数が呼ばれます([`renderer.cpp` の extent 変更後](../../src/core/vkcore/renderer.cpp#L2845))。逆に言うと、この 3 系統の外側で descriptor を自前 cache している pass は、reload でも resize でも取り残されます。
+- shader reload の runtime 公開は **`RuntimeReloadBoundary::render_start`** の 1 点に集約されています。[`consumeShaderReloadPublication()`](../../src/core/vkcore/renderer.cpp#L2770) が `ReloadService::applyRuntimeBoundary(render_start)` を呼び、**その summary の `committed` が 0 でないときだけ** [`rebindFullscreenInputs()`](../../src/core/vkcore/renderer.cpp#L2735) が走ります。呼び出しは view の記録へ入る前([`renderer.cpp` の frame 前段](../../src/core/vkcore/renderer.cpp#L5752))で、shader 側の participant がこの boundary を宣言している箇所は [`reloadservice.cpp` の shader participant 登録](../../src/core/watch/reloadservice.cpp#L679) です。
+- `rebindFullscreenInputs()` が貼り直すのは 3 系統です — 公開済み generation 内の fullscreen / generic raster pass の input resource、material の screen input、compute task の render target。したがって **reload 専用の処理ではありません**。logical target の extent が変わった直後にも同じ関数が呼ばれます([`renderer.cpp` の extent 変更後](../../src/core/vkcore/renderer.cpp#L2846))。逆に言うと、この 3 系統の外側で descriptor を自前 cache している pass は、reload でも resize でも取り残されます。
 - compute descriptor set は [`registerComputeTask()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1297) 時に一度作り、hot reload path では作り直していません。
 - material は [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L377) により surface/material 連動 reload に対応しました。UI/debug の descriptor ownership は各 container に分散したままです。
 
@@ -593,7 +593,7 @@ pipeline、image view、buffer などは、CPU では旧 object に見えても 
 2. [`leaseForNextSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L63) がその batch を握る [`GpuSubmissionLease`](../../src/core/vkcore/frametarget.hpp#L53)(実体は `shared_ptr<const void>`)を返す。
 3. [`confirmSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L78) が次の submission 用に新しい batch へ切り替える。
 
-**破棄が走るのは lease の最後の参照が消えた瞬間**です。frame target は [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/frametarget.hpp#L223) に in-flight slot ごとに lease を持ち、その slot の completion fence を待ってから [`complete(slot)`](../../src/core/vkcore/offscreenframetarget.cpp#L178) で手放します。`Renderer` 側の 3 点は [`deletion_queue.leaseForNextSubmission()`](../../src/core/vkcore/renderer.cpp#L5555) → [`target.submitLogicalFrame(submission_lease)`](../../src/core/vkcore/renderer.cpp#L6221) → [submission 確定の呼び出し](../../src/core/vkcore/renderer.cpp#L5517) です(それぞれ `LogicalFrameRecorder` の `collectPassPlan()` / `submitFrame()` / `sealRetirementBatch()` に属し、出力の公開は別 step の [`publishFrame()`](../../src/core/vkcore/renderer.cpp#L6225) です)。
+**破棄が走るのは lease の最後の参照が消えた瞬間**です。frame target は [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/frametarget.hpp#L223) に in-flight slot ごとに lease を持ち、その slot の completion fence を待ってから [`complete(slot)`](../../src/core/vkcore/offscreenframetarget.cpp#L178) で手放します。`Renderer` 側の 3 点は [`deletion_queue.leaseForNextSubmission()`](../../src/core/vkcore/renderer.cpp#L5569) → [`target.submitLogicalFrame(submission_lease)`](../../src/core/vkcore/renderer.cpp#L6235) → [submission 確定の呼び出し](../../src/core/vkcore/renderer.cpp#L5531) です(それぞれ `LogicalFrameRecorder` の `collectPassPlan()` / `submitFrame()` / `sealRetirementBatch()` に属し、出力の公開は別 step の [`publishFrame()`](../../src/core/vkcore/renderer.cpp#L6239) です)。
 
 つまり「何 frame 後に消えるか」を数えるコードは deletion queue からは消えました([`DeletionQueueCore`](../../src/core/vkcore/deletionqueue.hpp#L17) は `in_flight_frames_num` を一度も参照しません)。ただし定数そのものは健在で、[`in_flight_frames_num`](../../src/core/vkcore/rendertarget.hpp#L16) は frame target の command buffer 配列や [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/offscreenframetarget.hpp#L17)、[`FrameResources::configureViewCount()`](../../src/core/renderer/frameresources.cpp#L110) の descriptor slot 数、swapchain / OpenXR / ImGui の image count など `src/` 全体で 27 か所に残っています — lease slot 専用の定数ではありません。hot reload の [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L1363) が代表的な defer 元です。
 
@@ -661,7 +661,7 @@ teardown の最終段は phase で分岐します。
 | `.surface` / material format | **runtime 接続済み**(WP116/117/122)。`.surface` は surfacecompiler で pipeline に、`.material.json` は lowering を経て `MaterialContainer` へ | [`surfacecompiler.hpp`](../../src/core/shader/surfacecompiler.hpp) / [`materiallowering.hpp`](../../src/project/materiallowering.hpp) |
 | Studio project editor | D2、WP264 の viewport / Outliner 選択同期、WP266 の schema-driven property Inspector、WP275 の gizmo 操作まで実装済み。project は同じ child へ `--rpc --project` で渡り、identity は名前でなく `(scene_id, declaration_index)`。property edit / gizmo / live preview / undo / redo / save は公開 RPC を使い、terminal result まで成功扱いしない。picking / gizmo feature 無効は理由を警告し、自動有効化しない | [`SelectionModel`](../../src/devstudio/model/selection.hpp) / [`GizmoModel`](../../src/devstudio/model/gizmomodel.hpp) / [`InspectorModel`](../../src/devstudio/model/inspectormodel.hpp) / [`InspectorWidget`](../../src/devstudio/view/inspectorwidget.hpp) / [`EmbeddedViewport`](../../src/devstudio/viewport/embeddedviewport.hpp#L29) |
 | swapchain capture | surface が TRANSFER_SRC を持てば windowed でも readback 実装済み。不可時のみ `capture unavailable_windowed` 例外 | [`swapchainframetarget.cpp`](../../src/core/vkcore/swapchainframetarget.cpp#L436) |
-| frame graph levels | 計算/JSON 出力のみ。runtime は直列 node loop | [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L1582) |
+| frame graph levels | 計算/JSON 出力のみ。runtime は直列 node loop | [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L1583) |
 | custom Component public registration | ID macro はあるが安定 public boot hook なし。ただし登録解除 API と重複拒否は入った。解除と engine owner 登録は WP379a で host 専用へ | [`component/registerer.hpp`](../../src/core/userpublic/details/component/registerer.hpp#L78) / [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) |
 | behavior attachment | ✅実装済み(WP155 / 162 / 167) | [`behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L213) |
 | 物理 trigger event | ✅実装済み(WP179) | [`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L698) |
@@ -698,7 +698,7 @@ optional build feature には stub 実装もあります。たとえば SeqPlaye
 | `edit` が `stale_revision` | `get_scene_revision` の `EditorWatchToken` | preview lease が `preview_epoch` を進めていないか |
 | windowed で RPC 応答が来ない | フレームが進んでいるか | queue busy 応答(`-32000` / `reason:"busy"`)が来ていないか |
 | RPC event payload が空 | event に `ref(JsonArchiveLoader&)` があるか | default-only JSON loader branch |
-| frame graph の順が違う | [`currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L3994) | reads/writes、after/before、declaration index |
+| frame graph の順が違う | [`currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L3995) | reads/writes、after/before、declaration index |
 | XR だけ表示が壊れる | `#xr` variant の feature 除外(`xr_excluded_features`) | `graph_variant_transition_trace`、XR feature policy |
 | TAA の ghosting・再投影が乱れる | temporal reset のトリガ(set_time / camera 不連続 / resize / view 数 / variant 切替) | `resetTemporalHistory()`、previous object/skin/morph buffer |
 | game DLL reload 後に状態が消える/残る | `RegistrationOwner` と DLL 内 static の寿命 | engine 側 System の function-local static(こちらは残る) |
@@ -750,7 +750,7 @@ optional build feature には stub 実装もあります。たとえば SeqPlaye
 
 ### logical frame の不変条件
 
-`renderLogicalFrame()` は次を破ると例外にします([`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1582)): 全 view が同じ in-flight frame index を共有すること、全 view の extent が等しいこと、target の color format がコンパイル済み graph と一致すること。FrameUBO slot は `in_flight × view_count + view` の式で選ばれます(WP128 レポート: [`docs/design_reviews/2026-07-17_wp128_report.md`](../design_reviews/2026-07-17_wp128_report.md))。
+`renderLogicalFrame()` は次を破ると例外にします([`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1583)): 全 view が同じ in-flight frame index を共有すること、全 view の extent が等しいこと、target の color format がコンパイル済み graph と一致すること。FrameUBO slot は `in_flight × view_count + view` の式で選ばれます(WP128 レポート: [`docs/design_reviews/2026-07-17_wp128_report.md`](../design_reviews/2026-07-17_wp128_report.md))。
 
 ### XR mirror は「drop 可能な optional sink」
 
@@ -889,7 +889,7 @@ behavior コールバック実行中 / DLL リロード中の追加ゲートは 
 ## 9.19 preview / `render_preview` の隔離
 
 - `render_preview` は **`Renderer::renderLogicalFrame()` を通りません**([`PreviewGraphProgram`](../../src/core/renderingpass/previewgraph.hpp#L20) 直前のコメント)。したがって temporal history、FrameResources slot、layout tracker などのライブ状態を汚しません。
-- 汚していないことの証明が [`previewStateInventory()`](../../src/core/vkcore/previewexecutor.hpp#L59)(「並び順も診断契約の一部」)と [`Renderer::previewIsolationStateJson()`](../../src/core/vkcore/renderer.cpp#L3854) です。
+- 汚していないことの証明が [`previewStateInventory()`](../../src/core/vkcore/previewexecutor.hpp#L59)(「並び順も診断契約の一部」)と [`Renderer::previewIsolationStateJson()`](../../src/core/vkcore/renderer.cpp#L3855) です。
 - 上限は 2048px / 16 MiB([`previewexecutor.hpp` 内](../../src/core/vkcore/previewexecutor.hpp#L54))。超過は `PreviewCaptureTooLarge` です。
 - `PreviewCaptureRequest::graph_generation` が `PreviewGraphProgram::generation` と食い違えば `std::invalid_argument("preview graph generation mismatch")` で拒否されます(stale preview の防止)。
 - **現在の出力は CPU 模式ラスタです**([第6章 §6.19](06_rendering_vulkan_shader.md))。material も shader も評価しないので、`render_preview` の画像を最終描画の代用と見なさないでください。
@@ -916,7 +916,7 @@ TEST_CASE("...") {
 
 | skip していたテスト | 握り潰されていた engine の例外 |
 |---|---|
-| [`rpc_color_contract_test.cpp` 内](../../test/rpc_color_contract_test.cpp#L896) | [`MaterialContainer::validateRuntimeGenerationCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1606) の `render-pipeline candidate has no compatible pass for live material 0 (route 'deferred_geometry', shader contract 'gbuffer_v1')` |
+| [`rpc_color_contract_test.cpp` 内](../../test/rpc_color_contract_test.cpp#L896) | [`MaterialContainer::validateRuntimeGenerationCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1656) の `render-pipeline candidate has no compatible pass for live material 0 (route 'deferred_geometry', shader contract 'gbuffer_v1')` |
 | [`materialvaluesreload_test.cpp` 内](../../test/materialvaluesreload_test.cpp#L369) | [`validateMaterialTextureReflection()`](../../src/core/material/materialcontainer.cpp#L485) の `material texture 'albedo_detail' is absent from shader reflection at binding 7` |
 | [`materialvaluesreload_test.cpp` 内](../../test/materialvaluesreload_test.cpp#L491) | 同上 |
 | [`HR1-M watcher gate and 1000 reloads keep resources bounded`](../../test/materialvaluesreload_test.cpp#L766) | 同上 |
@@ -939,7 +939,7 @@ TEST_CASE("...") {
 > SKIP(...)                     → TestSkipException                    → 素通り → skip
 > ```
 >
-> **手がかり**: 「capability が無い」と「実行して失敗した」を分ける方法は2つです。(1) **明示的な能力問い合わせ** — [XR segmented draw の multiview capability 検査](../../test/golden_harness.cpp#L12343) / [`.dynamic_rendering_local_read`](../../test/headless_render_test.cpp#L4957) を見て skip し、本体は囲まない。(2) **device 初期化エラーを厳密に絞って再送出** — [`requireVulkanDevice()`](../../test/vulkan_test_support.hpp) は `No suitable Vulkan physical device found` のときだけ skip し、それ以外は `throw;` します。後始末の catch も同じ判定を使い、非該当なら再送出します。**(1) が本来の形**で、(2) は既存テストを最小限の変更で救う形です。
+> **手がかり**: 「capability が無い」と「実行して失敗した」を分ける方法は2つです。(1) **明示的な能力問い合わせ** — [XR segmented draw の multiview capability 検査](../../test/golden_harness.cpp#L12781) / [`.dynamic_rendering_local_read`](../../test/headless_render_test.cpp#L4957) を見て skip し、本体は囲まない。(2) **device 初期化エラーを厳密に絞って再送出** — [`requireVulkanDevice()`](../../test/vulkan_test_support.hpp) は `No suitable Vulkan physical device found` のときだけ skip し、それ以外は `throw;` します。後始末の catch も同じ判定を使い、非該当なら再送出します。**(1) が本来の形**で、(2) は既存テストを最小限の変更で救う形です。
 >
 > **不変条件**: skip は「実行できない理由」を**問い合わせて**決める。`std::exception` を捕まえて skip にしない。どうしても囲むなら、囲む範囲を bring-up だけに限り、bring-up を抜けたら再送出する。
 
@@ -1233,43 +1233,43 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ### 9.23.4 renderer / frame
 
-#### [`plan` と `target_plan` の照合](../../src/core/vkcore/renderer.cpp#L1761) — 2 つのプランが並ぶ理由
+#### [`plan` と `target_plan` の照合](../../src/core/vkcore/renderer.cpp#L1762) — 2 つのプランが並ぶ理由
 
 **分からなくなること**: 論理プランと物理プランのどちらが「正」なのか、`fused_rendering_scope` はいつ true になるのか。
 
-**答え**: `plan` はバックエンド非依存の論理 FramePlan で**常に存在し**、実行ノードの name/kind 一致検証に使います。`target_plan` は物理スコープ / 解像度計画を持つ**任意項目**で、null で**かつ** authored schedule も渡されていないときだけ [fallback schedule](../../src/core/vkcore/renderer.cpp#L1593) をその場で組み立てます(どちらか一方でもあれば渡された schedule で走ります)。[`fused_rendering_scope`](../../src/core/vkcore/renderer.cpp#L1815) は「native scope executor が無い」かつ「render パスで compiled pass が fused 指定」のときのみ true = プロバイダ所有スコープとエンジン所有の dynamic-rendering 融合スコープを**排他**にする条件です。プランの層構造そのものは[第6章「物理プランは『置換可能な完全パッケージ』」](06_rendering_vulkan_shader.md)が本体です。
+**答え**: `plan` はバックエンド非依存の論理 FramePlan で**常に存在し**、実行ノードの name/kind 一致検証に使います。`target_plan` は物理スコープ / 解像度計画を持つ**任意項目**で、null で**かつ** authored schedule も渡されていないときだけ [fallback schedule](../../src/core/vkcore/renderer.cpp#L1594) をその場で組み立てます(どちらか一方でもあれば渡された schedule で走ります)。[`fused_rendering_scope`](../../src/core/vkcore/renderer.cpp#L1816) は「native scope executor が無い」かつ「render パスで compiled pass が fused 指定」のときのみ true = プロバイダ所有スコープとエンジン所有の dynamic-rendering 融合スコープを**排他**にする条件です。プランの層構造そのものは[第6章「物理プランは『置換可能な完全パッケージ』」](06_rendering_vulkan_shader.md)が本体です。
 
-#### ["The provider owns all ordering"](../../src/core/vkcore/renderer.cpp#L2029) — 責任分界
+#### ["The provider owns all ordering"](../../src/core/vkcore/renderer.cpp#L2030) — 責任分界
 
 **分からなくなること**: エンジンが barrier を出す区間と出さない区間の境目。
 
-**答え**: native scope は 1 つのコールバックが物理スコープ全体を記録するので、source ノードが同一 native scope 内なら executor は barrier を出しません。エンジンが張るのは**スコープ境界をまたぐ依存だけ**です。前提として[スコープ区間の連続性検証](../../src/core/vkcore/renderer.cpp#L1832)が scope_node_index / scope_node_count / execution_index を全部照合し、プロバイダに渡す区間が「スケジュール上で連続した、ちょうどそのノード集合」であることを保証しています。
+**答え**: native scope は 1 つのコールバックが物理スコープ全体を記録するので、source ノードが同一 native scope 内なら executor は barrier を出しません。エンジンが張るのは**スコープ境界をまたぐ依存だけ**です。前提として[スコープ区間の連続性検証](../../src/core/vkcore/renderer.cpp#L1833)が scope_node_index / scope_node_count / execution_index を全部照合し、プロバイダに渡す区間が「スケジュール上で連続した、ちょうどそのノード集合」であることを保証しています。
 
-#### [fused scope の内部依存](../../src/core/vkcore/renderer.cpp#L2095) — なぜ dynamic rendering で実行できないか
+#### [fused scope の内部依存](../../src/core/vkcore/renderer.cpp#L2096) — なぜ dynamic rendering で実行できないか
 
 **分からなくなること**: 同じスコープに入れたはずのノード間依存が、なぜエラーになるのか。
 
-**答え**: fused scope は 1 つの dynamic rendering インスタンス内で全ノードを記録するため、内部依存を解く image layout 遷移バリアを**レンダリング中に発行できません**。例外は `passReadsBarrierAsLocalAttachment` / `isPhysicalScopeAttachment` が真のケース(同一スコープの attachment を local read で読む)で、これは dynamic rendering local read が保証するので barrier 不要です。判定は [fused scope 側の検証](../../src/core/vkcore/renderer.cpp#L1901)にあります。
+**答え**: fused scope は 1 つの dynamic rendering インスタンス内で全ノードを記録するため、内部依存を解く image layout 遷移バリアを**レンダリング中に発行できません**。例外は `passReadsBarrierAsLocalAttachment` / `isPhysicalScopeAttachment` が真のケース(同一スコープの attachment を local read で読む)で、これは dynamic rendering local read が保証するので barrier 不要です。判定は [fused scope 側の検証](../../src/core/vkcore/renderer.cpp#L1902)にあります。
 
-#### [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L1582) — main family と他 family で schedule 構築が違う
+#### [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L1583) — main family と他 family で schedule 構築が違う
 
 **分からなくなること**: なぜ main family 以外では `view_index != 0` を捨てるのか。
 
 **答え**: main family だけが view ごとに記録されます(sequential 実行・`logical_view_count` を受け取る)。他 family は view 非依存で single_view / view 数 1 として組まれるので、`view_index != 0` を入れると**同じノードを view 数だけ二重記録**します。スケジュールの並び自体は[第6章「スケジュールは scope-execution-major」](06_rendering_vulkan_shader.md)が本体です。
 
-#### [`transaction->generation == 0`](../../src/core/vkcore/renderer.cpp#L3649) — 番兵としての 0
+#### [`transaction->generation == 0`](../../src/core/vkcore/renderer.cpp#L3650) — 番兵としての 0
 
 **分からなくなること**: 世代 0 が「世代が 0 番」なのか「世代が無い」なのか。
 
-**答え**: [`after_publish` フック](../../src/core/vkcore/renderer.cpp#L3625)が未実行、つまりランタイム世代がまだ publish されていない状態を表す**番兵**です。その場合は [`stagedGeneration()`](../../src/core/vkcore/renderer.cpp#L3648) を代用世代として採用し、staged と一致するときだけ staged 扱い(commit ではなく保留)にします。同じ番兵は [`StagedRuntimeRollbackGuard`](../../src/core/vkcore/renderer.cpp#L3101) 側でも「staged 無し = ロールバック不要」として使われます。
+**答え**: [`after_publish` フック](../../src/core/vkcore/renderer.cpp#L3626)が未実行、つまりランタイム世代がまだ publish されていない状態を表す**番兵**です。その場合は [`stagedGeneration()`](../../src/core/vkcore/renderer.cpp#L3649) を代用世代として採用し、staged と一致するときだけ staged 扱い(commit ではなく保留)にします。同じ番兵は [`StagedRuntimeRollbackGuard`](../../src/core/vkcore/renderer.cpp#L3102) 側でも「staged 無し = ロールバック不要」として使われます。
 
-#### [`beginLogicalFrameTarget()`](../../src/core/vkcore/renderer.cpp#L5956) — 出力待ちで飛ばした frame は staged な世代を巻き戻さない
+#### [`beginLogicalFrameTarget()`](../../src/core/vkcore/renderer.cpp#L5970) — 出力待ちで飛ばした frame は staged な世代を巻き戻さない
 
 **分からなくなること**: frame が途中で終わったとき、staged な ray tracing の世代を巻き戻すのか残すのか。
 
 **答え**: 記録 object は staged な世代を巻き戻す guard を持ち、frame が途中で失敗すれば巻き戻します。ただし窓の出力にまだ image が無くて frame を飛ばす場合(`OutputTemporarilyUnavailable`)は、GPU の作業も確定もしていないので **guard を外して残します**。ray tracing の起動世代は最初に提出した frame で初めて公開されるので、ここで巻き戻すと公開済みの世代が 1 つも無くなり、次の frame が `Renderer logical frame requires a compiled render pipeline` で落ちます。Studio に埋め込んだ player は shader cache が効くと窓の出力より先に最初の frame が来るので、この経路を実際に通ります(`7cb39996`)。出力の条件が変わった場合(`OutputRelowerRequired`)は今まで通り巻き戻して作り直します。公開前の世代は非公開のままで、`get_frame_plan` はその間「plan が登録されていない」と答えます(WP384 の契約)。
 
-3 つの行き先(公開 / 次の frame へ持ち越し / 巻き戻し)は [`StagedRuntimeRollbackGuard`](../../src/core/vkcore/renderer.cpp#L3101) の上のコメントにまとめてあり、呼び手は `published()` と `keepForNextFrame()` で行き先を名指しします。どちらでもない終わり方は destructor が巻き戻します。この経路はふつう実窓でしか通らないので、GPU テスト「a frame skipped for want of an output image keeps the staged ray-tracing startup generation」は [`RenderTargetTestAccess`](../../test/rendertarget_testaccess.hpp#L14) で次の N frame を「出力に image が無い」にして、2 frame 飛ばしても staged の世代が残り、次の frame が同じ世代を公開することを確かめます。`keepForNextFrame()` を外すと赤になります。
+3 つの行き先(公開 / 次の frame へ持ち越し / 巻き戻し)は [`StagedRuntimeRollbackGuard`](../../src/core/vkcore/renderer.cpp#L3102) の上のコメントにまとめてあり、呼び手は `published()` と `keepForNextFrame()` で行き先を名指しします。どちらでもない終わり方は destructor が巻き戻します。この経路はふつう実窓でしか通らないので、GPU テスト「a frame skipped for want of an output image keeps the staged ray-tracing startup generation」は [`RenderTargetTestAccess`](../../test/rendertarget_testaccess.hpp#L14) で次の N frame を「出力に image が無い」にして、2 frame 飛ばしても staged の世代が残り、次の frame が同じ世代を公開することを確かめます。`keepForNextFrame()` を外すと赤になります。
 
 #### [`buildLogicalFrameViewFamilySchedule()`](../../src/core/renderingpass/viewexecutionscheduler.hpp#L120) — multiview と sequential の差
 
@@ -1315,25 +1315,25 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [timing の first / last](../../src/core/vkcore/renderer.cpp#L1637) | GPU timing のクエリスロット | 2 つ持つ理由 | 1 つのノードが複数 schedule position に現れうる(view ごと繰り返し)ため、スロットは初出時に 1 つだけ割り当て、first を区間開始・last を計測終了に使って**繰り返し全体を 1 区間として囲む** |
-| [`resolveFrameResolutionExtents()`](../../src/core/vkcore/renderer.cpp#L808) | render_extent と output_extent | 2 つある理由 | `render_source_resource` と `output_source_resource` を別々に解決し、内部レンダー解像度と最終出力解像度が異なるアップスケール構成を表す。両者はコンパイル済み plan と一致検証される |
-| [jitter の 2 値](../../src/core/vkcore/renderer.cpp#L870) | `view_projection_jittered` と `jitter_ndc` | なぜ両方要るのか | 前者はラスタライズ時にサブピクセルオフセットを掛ける行列、後者はシェーダが速度ベクトルや TAA リプロジェクションでそのオフセットを打ち消すための生の量。→ [第6章「ジッタは w 倍で足す」](06_rendering_vulkan_shader.md) |
-| [`windowOutputFactsChanged()`](../../src/core/vkcore/renderer.cpp#L2792) | fingerprint と compile_facts | 二重比較の理由 | `compile_fingerprint` は安価な一致判定用ハッシュで先に比較し、加えて実体も比較して**ハッシュ衝突と fingerprint 未包含フィールドの差分**を取りこぼさない二段確認 |
-| [companion 3 点セット](../../src/core/vkcore/renderer.cpp#L3218) | companion_participants / claims / apply_with_companions | 3 つの役割 | companion が「一緒に取り込む他参加者(shader / material)」を宣言し、claims が所有リクエストを判定し、apply_with_companions が 1 回で処理する。グラフ・シェーダ・マテリアル値の変更が**同一トランザクション**として一括成否になることを保証(→ §9.23.12) |
-| [`view_index == 0` の `triggerUpdate`](../../src/core/vkcore/renderer.cpp#L6019) | GPU 状態の凍結点 | なぜ 1 回だけか | コメント "Object, skin, morph, and material-override GPU state is frozen after target acquisition and before the first view records" のとおり、**同一論理フレームの全 view が同じインスタンス / 描画キュー状態を見る**ことを保証するため |
-| [`LogicalFrameAbortGuard`](../../src/core/vkcore/renderer.cpp#L3074) | 2 つの RAII ガード | 何が違うのか | 前者は例外離脱時に必ず `abortLogicalFrame()`。後者は `generation != 0` のときだけ runtime を保持し、`complete()` されずに壊れたら rollback する |
-| [record / end の分離](../../src/core/vkcore/renderer.cpp#L2183) | `latest_scene_color/depth` の追跡 | 役割分離の理由 | **未執筆**(根拠がコードにない) |
-| [sprite anchor の layer 計算](../../src/core/vkcore/renderer.cpp#L2317) / [snapshot copy の layer](../../src/core/vkcore/renderer.cpp#L2462) | sequential layer の選択 | いつ view_index が層になるか | sequential 実行で、かつ対象の `array_layers` が view 数以上(snapshot copy 側は source が layered)のときだけ `scheduled.view_index` を層として使い、それ以外は 0。ただし swapchain 出力の color だけは `view_index` をそのまま層として引く。逆順スキャンの理由は[第6章「sprite anchor の逆順スキャン」](06_rendering_vulkan_shader.md) |
-| [`per_view_sort` から `draw_sort_view_index` へ](../../src/core/vkcore/renderer.cpp#L2679) | multiview / sequential の選択 | 対応関係 | → 上記「phase × sort_view_index の直積」と対 |
-| [jitter provider / pattern / phases](../../src/core/vkcore/renderer.cpp#L2947) | ジッタ設定の解決 | 3 つの関係 | → [第6章「ジッタは w 倍で足す」「epoch ペアが reset 信号」](06_rendering_vulkan_shader.md) |
-| [`watched_sources`](../../src/core/vkcore/renderer.cpp#L3188) | 監視対象の集合 | 複数参照を入れる根拠 | **未執筆**(§9.23.12 の claim モデルと対で書く必要がある) |
-| [`shader_oetf_unorm_fallback`](../../src/core/vkcore/renderer.cpp#L1163) | 出力変換のトレース | 分岐と paired_storage_edges | **未執筆**(§9.23.14 の format スコアリングと対) |
-| [`native_scope_has_work`](../../src/core/vkcore/renderer.cpp#L1312) | 空スコープの判定 | 判定基準 | **未執筆**(根拠がコードにない) |
-| [staged 世代の遷移](../../src/core/vkcore/renderer.cpp#L138) と [`after_publish`](../../src/core/vkcore/renderer.cpp#L3625) | finalized / ready / runtime_published | 対称性 | 上記「`transaction->generation == 0`」と同じ世代機構。個々の遷移表は**未執筆** |
-| [`graph_variant_policy`](../../src/core/vkcore/renderer.cpp#L5152) | variant と view family の方針 | RenderGraphVariant との対応 | **未執筆**(根拠がコードにない) |
-| [`configureExternalDepthSubmission()`](../../src/core/vkcore/renderer.cpp#L5939) | XR への depth 提出 | true でも export が null になりうる | **未執筆**(§9.23.14 の OpenXR depth submission と対) |
-| [family / view ごとの jitter と reset epoch](../../src/core/vkcore/renderer.cpp#L3909) | トレース出力 | なぜ family/view ごとに追うのか | **未執筆**(根拠がコードにない) |
-| [RT 無しの空 diagnostics](../../src/core/vkcore/renderer.cpp#L4205) | `ray_query_acceleration_structures` | 空になる条件 | **未執筆**(根拠がコードにない) |
+| [timing の first / last](../../src/core/vkcore/renderer.cpp#L1638) | GPU timing のクエリスロット | 2 つ持つ理由 | 1 つのノードが複数 schedule position に現れうる(view ごと繰り返し)ため、スロットは初出時に 1 つだけ割り当て、first を区間開始・last を計測終了に使って**繰り返し全体を 1 区間として囲む** |
+| [`resolveFrameResolutionExtents()`](../../src/core/vkcore/renderer.cpp#L809) | render_extent と output_extent | 2 つある理由 | `render_source_resource` と `output_source_resource` を別々に解決し、内部レンダー解像度と最終出力解像度が異なるアップスケール構成を表す。両者はコンパイル済み plan と一致検証される |
+| [jitter の 2 値](../../src/core/vkcore/renderer.cpp#L871) | `view_projection_jittered` と `jitter_ndc` | なぜ両方要るのか | 前者はラスタライズ時にサブピクセルオフセットを掛ける行列、後者はシェーダが速度ベクトルや TAA リプロジェクションでそのオフセットを打ち消すための生の量。→ [第6章「ジッタは w 倍で足す」](06_rendering_vulkan_shader.md) |
+| [`windowOutputFactsChanged()`](../../src/core/vkcore/renderer.cpp#L2793) | fingerprint と compile_facts | 二重比較の理由 | `compile_fingerprint` は安価な一致判定用ハッシュで先に比較し、加えて実体も比較して**ハッシュ衝突と fingerprint 未包含フィールドの差分**を取りこぼさない二段確認 |
+| [companion 3 点セット](../../src/core/vkcore/renderer.cpp#L3219) | companion_participants / claims / apply_with_companions | 3 つの役割 | companion が「一緒に取り込む他参加者(shader / material)」を宣言し、claims が所有リクエストを判定し、apply_with_companions が 1 回で処理する。グラフ・シェーダ・マテリアル値の変更が**同一トランザクション**として一括成否になることを保証(→ §9.23.12) |
+| [`view_index == 0` の `triggerUpdate`](../../src/core/vkcore/renderer.cpp#L6033) | GPU 状態の凍結点 | なぜ 1 回だけか | コメント "Object, skin, morph, and material-override GPU state is frozen after target acquisition and before the first view records" のとおり、**同一論理フレームの全 view が同じインスタンス / 描画キュー状態を見る**ことを保証するため |
+| [`LogicalFrameAbortGuard`](../../src/core/vkcore/renderer.cpp#L3075) | 2 つの RAII ガード | 何が違うのか | 前者は例外離脱時に必ず `abortLogicalFrame()`。後者は `generation != 0` のときだけ runtime を保持し、`complete()` されずに壊れたら rollback する |
+| [record / end の分離](../../src/core/vkcore/renderer.cpp#L2184) | `latest_scene_color/depth` の追跡 | 役割分離の理由 | **未執筆**(根拠がコードにない) |
+| [sprite anchor の layer 計算](../../src/core/vkcore/renderer.cpp#L2318) / [snapshot copy の layer](../../src/core/vkcore/renderer.cpp#L2463) | sequential layer の選択 | いつ view_index が層になるか | sequential 実行で、かつ対象の `array_layers` が view 数以上(snapshot copy 側は source が layered)のときだけ `scheduled.view_index` を層として使い、それ以外は 0。ただし swapchain 出力の color だけは `view_index` をそのまま層として引く。逆順スキャンの理由は[第6章「sprite anchor の逆順スキャン」](06_rendering_vulkan_shader.md) |
+| [`per_view_sort` から `draw_sort_view_index` へ](../../src/core/vkcore/renderer.cpp#L2680) | multiview / sequential の選択 | 対応関係 | → 上記「phase × sort_view_index の直積」と対 |
+| [jitter provider / pattern / phases](../../src/core/vkcore/renderer.cpp#L2948) | ジッタ設定の解決 | 3 つの関係 | → [第6章「ジッタは w 倍で足す」「epoch ペアが reset 信号」](06_rendering_vulkan_shader.md) |
+| [`watched_sources`](../../src/core/vkcore/renderer.cpp#L3189) | 監視対象の集合 | 複数参照を入れる根拠 | **未執筆**(§9.23.12 の claim モデルと対で書く必要がある) |
+| [`shader_oetf_unorm_fallback`](../../src/core/vkcore/renderer.cpp#L1164) | 出力変換のトレース | 分岐と paired_storage_edges | **未執筆**(§9.23.14 の format スコアリングと対) |
+| [`native_scope_has_work`](../../src/core/vkcore/renderer.cpp#L1313) | 空スコープの判定 | 判定基準 | **未執筆**(根拠がコードにない) |
+| [staged 世代の遷移](../../src/core/vkcore/renderer.cpp#L139) と [`after_publish`](../../src/core/vkcore/renderer.cpp#L3626) | finalized / ready / runtime_published | 対称性 | 上記「`transaction->generation == 0`」と同じ世代機構。個々の遷移表は**未執筆** |
+| [`graph_variant_policy`](../../src/core/vkcore/renderer.cpp#L5166) | variant と view family の方針 | RenderGraphVariant との対応 | **未執筆**(根拠がコードにない) |
+| [`configureExternalDepthSubmission()`](../../src/core/vkcore/renderer.cpp#L5953) | XR への depth 提出 | true でも export が null になりうる | **未執筆**(§9.23.14 の OpenXR depth submission と対) |
+| [family / view ごとの jitter と reset epoch](../../src/core/vkcore/renderer.cpp#L3910) | トレース出力 | なぜ family/view ごとに追うのか | **未執筆**(根拠がコードにない) |
+| [RT 無しの空 diagnostics](../../src/core/vkcore/renderer.cpp#L4219) | `ray_query_acceleration_structures` | 空になる条件 | **未執筆**(根拠がコードにない) |
 | [`sequential_count < count` の拒否](../../src/core/renderer/frameresources.cpp#L116) | スロット数の下限 | 何を保証するか | in-flight frame ごとに sequential_count 個のスロットを確保するので、**main family の全 view が自分専用の frame/resolution UBO スロットを持つ**(view 同士の UBO 別名衝突の防止) |
 | [`updateSceneDescriptors()`](../../src/core/renderer/frameresources.cpp#L312) | 全 set の無条件更新 | 差分検知しない理由 | 呼び出し側に同値比較ガードがあり、buffer identity が変わったときと `configureViewCount` の再構築時にしか来ないので、関数内で差分を取る意味がなく、全スロット書き直しの方が漏れがない |
 | [multiview のスロット分離](../../src/core/renderer/frameresources.hpp#L117) | seq / multiview の別配列 | last_data が vector になる理由 | **未執筆**(上記スロット確保と対で書く必要がある) |
@@ -1488,11 +1488,11 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ### 9.23.7 material
 
-#### [`descriptor_abi_changed`](../../src/core/material/materialgenerationplanner.cpp#L1461) — 全 descriptor 破棄と revision
+#### [`descriptor_abi_changed`](../../src/core/material/materialgenerationplanner.cpp#L1511) — 全 descriptor 破棄と revision
 
 **分からなくなること**: なぜ `waitIdle()` してから捨てるのか、revision は誰が読むのか。
 
-**答え**: `pass_inputs` / `resource_interface` が変わると既存の descriptor set はレイアウト・束縛内容と ABI 不一致になります。[commit 側](../../src/core/material/materialgenerationplanner.cpp#L1461)ではまず **`waitIdle()` して in-flight フレームが古い set を参照し終えるのを待ち**、その後 clear して `++descriptor_revision` します。revision は消費側キャッシュの世代無効化用です。同じ理由の待機が [live な `MaterialBuffer` への in-place 書き込み](../../src/core/material/materialcontainer.cpp#L1484)にもあります(こちらはバッファの差し替えではなく、コメントどおり「in-flight フレームが共有する live SSBO の読み手を守る」ための `waitIdle()`)。
+**答え**: `pass_inputs` / `resource_interface` が変わると既存の descriptor set はレイアウト・束縛内容と ABI 不一致になります。[commit 側](../../src/core/material/materialgenerationplanner.cpp#L1511)ではまず **`waitIdle()` して in-flight フレームが古い set を参照し終えるのを待ち**、その後 clear して `++descriptor_revision` します。revision は消費側キャッシュの世代無効化用です。同じ理由の待機が [live な `MaterialBuffer` への in-place 書き込み](../../src/core/material/materialcontainer.cpp#L1484)にもあります(こちらはバッファの差し替えではなく、コメントどおり「in-flight フレームが共有する live SSBO の読み手を守る」ための `waitIdle()`)。
 
 #### [variant 次元と parity 次元](../../src/core/material/materialdescriptorbuilder.cpp#L441) — 2 軸が直交する
 
@@ -1510,7 +1510,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 |---|---|---|---|
 | [`ray_generation` / `ray_lease` の対](../../src/core/material/materialcontainer.cpp#L804) | 世代とリース | 2 つで何を保証するか | `ray_generation` は登録ごとに単調増加する数値 ID(枯渇時は例外)で同一 material id の再登録を区別し、`ray_lease`(型は `shared_ptr<const void>`、実体は `make_shared<const uint64_t>(ray_generation)`)は**その登録実体がまだ生きていることをポインタ同一性で証明**する。不一致なら [`pelican.ray_material_snapshot_stale@1`](../../src/core/material/materialcontainer.cpp#L1682) |
 | [`input_attachment_index` と same_pixel](../../src/core/material/materialcontainer.cpp#L2107) | LogicalReadFootprint の same_pixel | なぜ同一ピクセルだけか | dynamic rendering local read の条件そのもの(→ §9.23.4 / [第6章](06_rendering_vulkan_shader.md))。詳細は**未執筆** |
-| [pass variant 間の ABI 一致検証](../../src/core/material/materialgenerationplanner.cpp#L885) | 同じ shader input の検証 | 何を比べているか | **未執筆**(根拠がコードにない) |
+| [pass variant 間の ABI 一致検証](../../src/core/material/materialgenerationplanner.cpp#L935) | 同じ shader input の検証 | 何を比べているか | **未執筆**(根拠がコードにない) |
 
 ### 9.23.8 vertex / model
 
@@ -1518,7 +1518,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: バッファを太らせただけなのに、なぜ世代を進めるのか。
 
-**答え**: **バッファを作り直すとデバイスアドレスが変わり、旧アドレス上に構築された BLAS が無効になる**からです。値は [`geometryAddressGeneration()`](../../src/core/model/vertbufcontainer.hpp#L118) として [renderer 側へ渡され](../../src/core/vkcore/renderer.cpp#L5270)、ray-query のジオメトリ / BLAS キャッシュ無効化キーになります。頂点側とインデックス側で[2 か所](../../src/core/model/vertbufcontainer.cpp#L376)進みます。
+**答え**: **バッファを作り直すとデバイスアドレスが変わり、旧アドレス上に構築された BLAS が無効になる**からです。値は [`geometryAddressGeneration()`](../../src/core/model/vertbufcontainer.hpp#L118) として [renderer 側へ渡され](../../src/core/vkcore/renderer.cpp#L5284)、ray-query のジオメトリ / BLAS キャッシュ無効化キーになります。頂点側とインデックス側で[2 か所](../../src/core/model/vertbufcontainer.cpp#L376)進みます。
 
 #### [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36) — 固定容量 8 + overflow_count
 
@@ -1627,7 +1627,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: コメントどおり**「欠けている入力が受け側プロジェクトに属するか」**です。PrefabNotFound / PrefabBindingNotBindable / PrefabBindingInactive / PrefabProviderStale / PrefabDependencyMismatch は受信側の registry・provider・closure が揃っていないことを示すので `PrefabDependencyMismatch`、それ以外の prefab 意味検証失敗は payload 側の違反なので `SnapshotInvalid` に留めます。detail が [`/prefab_closure`](../../src/core/communication/editorcommandservice.cpp#L993) になるのも「欠けている入力が closure だから」です。
 
-#### [`trackPreviewTransition()`](../../src/core/communication/editorcommandservice.cpp#L1528) — PreviewWatch の erase 条件
+#### [`trackPreviewTransition()`](../../src/core/communication/editorcommandservice.cpp#L1544) — PreviewWatch の erase 条件
 
 **分からなくなること**: watch がいつ消えるのか(成功時なのか失敗時なのか)。
 
@@ -1637,7 +1637,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: 同じ component なのに、返る JSON の形が違う理由。
 
-**答え**: generated component は prefab 解決の産物で**authoring 側に対応する編集可能ソースが無い**ため、`resolved_json` + `editable=false` + schema missing を返します。behavior が editable になる条件は[直後の分岐](../../src/core/communication/editorcommandservice.cpp#L700)で、非 generated かつ behavior 登録が存在し、pending でなく、`behavior_canonical_params` が取れていること(このとき codec は `behavior_params`、schema は registration の params_schema)。出力の組み立ては [`editorComponentQueryJson()`](../../src/core/communication/editorcommandservice.cpp#L1587)。
+**答え**: generated component は prefab 解決の産物で**authoring 側に対応する編集可能ソースが無い**ため、`resolved_json` + `editable=false` + schema missing を返します。behavior が editable になる条件は[直後の分岐](../../src/core/communication/editorcommandservice.cpp#L700)で、非 generated かつ behavior 登録が存在し、pending でなく、`behavior_canonical_params` が取れていること(このとき codec は `behavior_params`、schema は registration の params_schema)。出力の組み立ては [`editorComponentQueryJson()`](../../src/core/communication/editorcommandservice.cpp#L1603)。
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
@@ -1648,7 +1648,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`ResolvedSceneResolver::resolve()` の 5 引数](../../src/core/communication/editorcommandservice.cpp#L978) | defaults / registry / provider を別に渡す | 分ける理由 | **未執筆**(§9.23.2 の resolver 入力 fingerprint と対) |
 | [runtime state と authored state の融合](../../src/core/communication/editorcommandservice.cpp#L650) | 2 つの状態の突き合わせ | size mismatch が `logic_error` な理由 | **未執筆**(runtime と authored の component 数は一致するのが不変式、という以上の根拠がコードにない) |
 | [`closureMismatchDetail()`](../../src/core/communication/editorcommandservice.cpp#L368) | 最初のズレで停止 | なぜ全部見ないか | **未執筆**(エラー detail の決定性を狙ったものと読めるが、根拠となる記述がない) |
-| [`render-config-edit-` プレフィックスの判定](../../src/core/communication/editorcommandservice.cpp#L1455) | ticket ルーティング | render config編集の共通ticketを既存結果照会へ送る | featureと名前付きASの編集が共用 |
+| [`render-config-edit-` プレフィックスの判定](../../src/core/communication/editorcommandservice.cpp#L1471) | ticket ルーティング | render config編集の共通ticketを既存結果照会へ送る | featureと名前付きASの編集が共用 |
 | [revision token が `edit_` の preview_epoch を吸収する行](../../src/core/communication/editorcommandservice.cpp#L769) | `edit_` の未確定分 | なぜ吸収するのか | **未執筆**(根拠がコードにない) |
 | [error detail のパス手組み(`root + "/scenes/" + index`)](../../src/core/communication/editorcommandservice.cpp#L287) | index 入り JSON pointer 風 | 手で組む理由 | **未執筆**(根拠がコードにない) |
 | [`findScene()` の直後](../../src/core/communication/editorcommandservice.cpp#L944) | scene 存在検査 | `selectScene()` も呼ぶのか | **呼びません**。ここは `findScene(current_scene) == nullptr` で `SceneNotFound` を投げるだけの存在検査で、選択の副作用はありません |
@@ -1657,19 +1657,19 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ### 9.23.11 RPC
 
-#### [`gameLogicParticipantRpcStatus()` による participant 照会](../../src/core/communication/rpcserver.cpp#L1168) — 参加者名の正
+#### [`gameLogicParticipantRpcStatus()` による participant 照会](../../src/core/communication/rpcserver.cpp#L1169) — 参加者名の正
 
 **分からなくなること**: 参加者名の文字列が何なのか(`"game_logic_reload"` に見える資料がある)。
 
-**答え**: 定数は [`watch::gameLogicReloadParticipantName = "pelican.game_logic"`](../../src/core/watch/reloadservice.hpp#L47) です。ReloadService が未登録なら [`registerParticipant` で自己登録](../../src/core/watch/reloadservice.cpp#L741)し(frame_start 境界の RuntimeReloadParticipant)、RPC は [`statusJson()["runtime"][participant]`](../../src/core/communication/rpcserver.cpp#L1223) で照会、`applyRuntimeNow(participant)` で明示適用します。
+**答え**: 定数は [`watch::gameLogicReloadParticipantName = "pelican.game_logic"`](../../src/core/watch/reloadservice.hpp#L47) です。ReloadService が未登録なら [`registerParticipant` で自己登録](../../src/core/watch/reloadservice.cpp#L741)し(frame_start 境界の RuntimeReloadParticipant)、RPC は [`statusJson()["runtime"][participant]`](../../src/core/communication/rpcserver.cpp#L1224) で照会、`applyRuntimeNow(participant)` で明示適用します。
 
-#### [`SceneLoadResult` の受け取り](../../src/core/communication/rpcserver.cpp#L1747) — 状態機械
+#### [`SceneLoadResult` の受け取り](../../src/core/communication/rpcserver.cpp#L1748) — 状態機械
 
 **分からなくなること**: 「失敗したのに committed:true」が起きる理由。
 
 **答え**: 型は [`variant<SceneLoadCommitted, PreCommitFailure, CommittedWithEffectFailure>`](../../src/core/loader/sceneload.hpp#L188) です。`load()` 自体は 3 状態を**戻り値で**返し、RPC の入口が通す [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L500) が `PreCommitFailure` だけを**例外に変換して再送出**します(従来の throwing 契約)。この経路ではシーンは差し替わりません。`CommittedWithEffectFailure` は「公開自体は成功したが個別 effect が失敗した」状態で、`load_scene` は `committed:true` のまま `effect_errors` を添えて返します(→ §9.23.1 の destroy フェーズ)。
 
-#### [`parseGizmoSelection()`](../../src/core/communication/rpcserver.cpp#L520) — 2 つの identity を受ける理由
+#### [`parseGizmoSelection()`](../../src/core/communication/rpcserver.cpp#L521) — 2 つの identity を受ける理由
 
 **分からなくなること**: なぜギズモの選択だけ 2 形式あるのか。
 
@@ -1677,16 +1677,16 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [リロード中の一律拒否](../../src/core/communication/rpcserver.cpp#L1375) | `isGameLogicReloadInProgress()` | なぜ全メソッドか | DLL のシンボル・system 登録・behavior 実体が**差し替え途中**で、この状態でハンドラを走らせると無効化されたコードやハンドルを触るため。拒否は transport の中ではなく、[`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1365) が [`RpcServer::setRequestGate()`](../../src/core/communication/rpcserver.cpp#L1037) で差し込む述語になり、`RpcServer` は [parse 後・dispatch 前に gate を 1 回引く](../../src/core/communication/rpcserver.cpp#L1052)だけです |
-| [before_apply / after_apply フックの登録](../../src/core/communication/rpcserver.cpp#L1383) | リロードの前後フック | 2 つで何を挟むか | `before_apply` でプレビューリースを強制中断して未確定編集をコミット済み状態に戻し、`after_apply` で `pending_transforms.clear()` により**旧 DLL 世代のエンティティを指す未フラッシュ transform を破棄**する |
-| [`"resolution_error"` の再帰探索](../../src/core/communication/editorrpchandlers.cpp#L50) | 結果 JSON の走査 | 何を見ているか | どこかに `"resolution_error"` キーがあるかだけを見る。**含まれる場合はキー順序が意味を持つ**ため `nlohmann::json` への変換(順序喪失)を避け、`ordered_json` のまま手組みで dump する分岐に入る。走査は `RpcServer` から editor 側へ移り、`embedsResolutionError` は [`setOrderedHandler()` に渡す順序ポリシー](../../src/core/communication/editorrpchandlers.cpp#L85)として登録されます。transport は [ポリシーが真を返した応答だけ](../../src/core/communication/rpcserver.cpp#L1069)を ordered dump に回し、キー名は知りません |
-| [`isR7Identifier()`](../../src/core/communication/rpcserver.cpp#L266) | "R7" の由来 | R7 とは何か | **外部ツール契約の要求番号 R7**(`docs/external_tools_requirements.md`)「オブジェクト / ジョイント名は `[a-zA-Z0-9_]` のみ」の実装。`docs/design_scene_format.md` と `docs/manual/04_scene_ecs.md` も同じ R7 を参照 |
-| [`RpcServer::run()` の CRLF 除去](../../src/core/communication/rpcserver.cpp#L1110) | framing 契約 | なぜ `\r` を落とすか | 「1 行 = 1 JSON-RPC メッセージ、区切りは `\n`」で、CRLF 出力の相手から来た行末 `\r` を落とすことで Windows クライアントでも同じ契約が成立する。応答は常に `'\n'` 終端 + flush |
-| [逆引き](../../src/core/communication/rpcserver.cpp#L417) / [名前からの変換](../../src/core/communication/rpcserver.cpp#L749) | model_instance → object_id → authoring_object_id | 橋渡しの規則 | 上記 2 つの identity の橋渡し。詳細は**未執筆** |
+| [リロード中の一律拒否](../../src/core/communication/rpcserver.cpp#L1376) | `isGameLogicReloadInProgress()` | なぜ全メソッドか | DLL のシンボル・system 登録・behavior 実体が**差し替え途中**で、この状態でハンドラを走らせると無効化されたコードやハンドルを触るため。拒否は transport の中ではなく、[`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1366) が [`RpcServer::setRequestGate()`](../../src/core/communication/rpcserver.cpp#L1038) で差し込む述語になり、`RpcServer` は [parse 後・dispatch 前に gate を 1 回引く](../../src/core/communication/rpcserver.cpp#L1053)だけです |
+| [before_apply / after_apply フックの登録](../../src/core/communication/rpcserver.cpp#L1384) | リロードの前後フック | 2 つで何を挟むか | `before_apply` でプレビューリースを強制中断して未確定編集をコミット済み状態に戻し、`after_apply` で `pending_transforms.clear()` により**旧 DLL 世代のエンティティを指す未フラッシュ transform を破棄**する |
+| [`"resolution_error"` の再帰探索](../../src/core/communication/editorrpchandlers.cpp#L50) | 結果 JSON の走査 | 何を見ているか | どこかに `"resolution_error"` キーがあるかだけを見る。**含まれる場合はキー順序が意味を持つ**ため `nlohmann::json` への変換(順序喪失)を避け、`ordered_json` のまま手組みで dump する分岐に入る。走査は `RpcServer` から editor 側へ移り、`embedsResolutionError` は [`setOrderedHandler()` に渡す順序ポリシー](../../src/core/communication/editorrpchandlers.cpp#L85)として登録されます。transport は [ポリシーが真を返した応答だけ](../../src/core/communication/rpcserver.cpp#L1070)を ordered dump に回し、キー名は知りません |
+| [`isR7Identifier()`](../../src/core/communication/rpcserver.cpp#L267) | "R7" の由来 | R7 とは何か | **外部ツール契約の要求番号 R7**(`docs/external_tools_requirements.md`)「オブジェクト / ジョイント名は `[a-zA-Z0-9_]` のみ」の実装。`docs/design_scene_format.md` と `docs/manual/04_scene_ecs.md` も同じ R7 を参照 |
+| [`RpcServer::run()` の CRLF 除去](../../src/core/communication/rpcserver.cpp#L1111) | framing 契約 | なぜ `\r` を落とすか | 「1 行 = 1 JSON-RPC メッセージ、区切りは `\n`」で、CRLF 出力の相手から来た行末 `\r` を落とすことで Windows クライアントでも同じ契約が成立する。応答は常に `'\n'` 終端 + flush |
+| [逆引き](../../src/core/communication/rpcserver.cpp#L418) / [名前からの変換](../../src/core/communication/rpcserver.cpp#L750) | model_instance → object_id → authoring_object_id | 橋渡しの規則 | 上記 2 つの identity の橋渡し。詳細は**未執筆** |
 | [`ResolutionFailureException`](../../src/core/loader/resolutionresult.hpp#L176) | `failure()` の中身 | 何を表すか | **未執筆**(§9.23.2 の resolver 失敗形式と対) |
-| [`kbd:` プレフィックス](../../src/core/communication/rpcserver.cpp#L640) | binding 表示 | modal transform との関係 | **未執筆**(根拠がコードにない) |
-| [OpenXR inactive スキーマ](../../src/core/communication/rpcserver.cpp#L92) / [診断](../../src/core/communication/rpcserver.cpp#L1457) | 診断 JSON | スキーマの安定性契約 | **未執筆**(→ §9.23.18) |
-| [frame index と continuous time](../../src/core/communication/rpcserver.cpp#L925) / [replay 開始](../../src/core/communication/rpcserver.cpp#L1679) | どちらが真か、設定順序 | 真の時刻源 | **未執筆**(根拠がコードにない) |
+| [`kbd:` プレフィックス](../../src/core/communication/rpcserver.cpp#L641) | binding 表示 | modal transform との関係 | **未執筆**(根拠がコードにない) |
+| [OpenXR inactive スキーマ](../../src/core/communication/rpcserver.cpp#L93) / [診断](../../src/core/communication/rpcserver.cpp#L1458) | 診断 JSON | スキーマの安定性契約 | **未執筆**(→ §9.23.18) |
+| [frame index と continuous time](../../src/core/communication/rpcserver.cpp#L926) / [replay 開始](../../src/core/communication/rpcserver.cpp#L1680) | どちらが真か、設定順序 | 真の時刻源 | **未執筆**(根拠がコードにない) |
 
 ### 9.23.12 reload / watch
 
@@ -1893,7 +1893,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: この ID が指す粒度。
 
-**答え**: 1 回のジオメトリ suballocation(index / vertex レンジの組)を識別する単調 ID で、[払い出しは vertbufcontainer 側](../../src/core/model/vertbufcontainer.cpp#L445)、[`modeltemplate.hpp` のコメント](../../src/core/model/modeltemplate.hpp#L93)どおり **ray-query の BLAS キャッシュキー**として [renderer](../../src/core/vkcore/renderer.cpp#L5270) 付近で使われます(→ §9.23.5 / §9.23.8)。
+**答え**: 1 回のジオメトリ suballocation(index / vertex レンジの組)を識別する単調 ID で、[払い出しは vertbufcontainer 側](../../src/core/model/vertbufcontainer.cpp#L445)、[`modeltemplate.hpp` のコメント](../../src/core/model/modeltemplate.hpp#L93)どおり **ray-query の BLAS キャッシュキー**として [renderer](../../src/core/vkcore/renderer.cpp#L5284) 付近で使われます(→ §9.23.5 / §9.23.8)。
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
@@ -1929,13 +1929,13 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **実際は**: 編集は最後まで **byte 列のまま**行われます。[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288) は root のメンバを字句走査する [`locateObjectMembers()`](../../src/project/renderconfigdocument.cpp#L194) を 2 回使い、まず root で `rendering` の値スパンを見つけ、その位置から同じ走査を節の中へ入れ直します。要点は**入れ子にしても offset を相対化しないこと**で、ヘッダのコメントがそれを規範として書いています — 「同じ bytes の中に位置づけるので、offset は絶対のまま、文書 digest は file 全体を覆い続ける」([コメント](../../src/project/renderconfigdocument.cpp#L286))。この性質があるので、節を編集しても CAS の単位([`renderConfigSourceDigest()`](../../src/project/renderconfigdocument.cpp#L410))は文書全体のままで変わりません。書き手は [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L654) 1 本で、graph root 自身のキー(と editor の `layout`)は [`withRootValue()`](../../src/project/renderconfigdocument.cpp#L633) へ落ちます(MG-2b で legacy root は読み手ごと無くなりました)。
 
-読み手と書き手の非対称も意図です。[`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) は節が無ければ `RenderConfigSectionUnlocated` を投げ、[`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49) は空 object を返します。**読みは節が無くても失敗せず、編集だけが `render_config_section_unlocated` という名前で拒否されます**([拒否の実例](../../src/core/communication/renderconfigeditor.cpp#L1228))。
+読み手と書き手の非対称も意図です。[`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) は節が無ければ `RenderConfigSectionUnlocated` を投げ、[`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49) は空 object を返します。**読みは節が無くても失敗せず、編集だけが `render_config_section_unlocated` という名前で拒否されます**([拒否の実例](../../src/core/communication/renderconfigeditor.cpp#L1246))。
 
 **不変条件**: 節の中の offset を「節の先頭からの相対」に変えないこと(digest が節だけを覆う別物になり、CAS の意味が変わります)。読みの経路に `renderingSectionOf()` を使わないこと — 節を持たない graph root を読んだだけで例外になります。authored key の住所判定を各 caller が `if (graph)` で持たないこと。
 
 **読む場所**: [`renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L12) → [`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288) → [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L654)。
 
-> **N-6 の例外**: `edit_graph_document` の op 列が `set_layout` だけのとき、editor は候補文書を `apply_candidate` に通さず(`Ticket::source_only`)、文書を書くだけで commit を終えます。「すべての commit は候補経路を通る」の唯一の例外で、置き場所は engine の挙動に触れないためです([経路](../../src/core/communication/renderconfigeditor.cpp#L2371))。
+> **N-6 の例外**: `edit_graph_document` の op 列が `set_layout` だけのとき、editor は候補文書を `apply_candidate` に通さず(`Ticket::source_only`)、文書を書くだけで commit を終えます。「すべての commit は候補経路を通る」の唯一の例外で、置き場所は engine の挙動に触れないためです([経路](../../src/core/communication/renderconfigeditor.cpp#L2389))。
 
 ### 難所 — 排他 create の committed marker
 
@@ -1969,13 +1969,13 @@ marker は自分が属する manifest に digest で縛られます。[`transact
 
 **素朴に読むと**: 「この op の評価分類」はモジュールが登録時に宣言した 1 値で、node ごとには変わらない、と読めます。
 
-**実際は**: ports を authored parameters から作る factory は、**分類を引き上げることだけ**ができます。[`resolveOperation()`](../../src/project/graphmodule.cpp#L253) は factory の結果に対して `contract.evaluation = std::max(...)` を取り([該当行](../../src/project/graphmodule.cpp#L272))、`direct < replay < baked < recorded` の順で強い方を採ります。理由は AG-2 で現物が出ました — root motion を抽出する `pose.clip_sample` は前フレームの変位を保持するので `replay` で、抽出しない同じ op は `direct` です。`max` なので**カタログの宣言より弱くはなれず**、catalog と実際の node が食い違いません。[`domain`](../../src/project/graphmodule.cpp#L263) / [`parameter_change`](../../src/project/graphmodule.cpp#L273) / [`parameter_changes`](../../src/project/graphmodule.cpp#L274) の 3 つは、factory の値を捨てて登録側の値へ戻します。
+**実際は**: ports を authored parameters から作る factory は、**分類を引き上げることだけ**ができます。[`resolveOperation()`](../../src/project/graphmodule.cpp#L460) は factory の結果に対して `contract.evaluation = std::max(...)` を取り([該当行](../../src/project/graphmodule.cpp#L479))、`direct < replay < baked < recorded` の順で強い方を採ります。理由は AG-2 で現物が出ました — root motion を抽出する `pose.clip_sample` は前フレームの変位を保持するので `replay` で、抽出しない同じ op は `direct` です。`max` なので**カタログの宣言より弱くはなれず**、catalog と実際の node が食い違いません。[`domain`](../../src/project/graphmodule.cpp#L470) / [`parameter_change`](../../src/project/graphmodule.cpp#L480) / [`parameter_changes`](../../src/project/graphmodule.cpp#L481) の 3 つは、factory の値を捨てて登録側の値へ戻します。
 
 評価分類を実際に強制するのは値バックエンドで、状態を渡されずに replay 系の op を評価しようとすると [`graph.evaluation_requires_state@1` の送出](../../src/core/userpublic/valuegraph.cpp#L50) で拒否します。対象は `audio.playback` / `value.event_clock` / `value.trigger_clock` の 3 つ([拒否点](../../src/core/userpublic/valuegraph.cpp#L718))で、**op 名は authored 文書の綴り**で返ります(lowering がモジュール名前空間を落とすので、拒否を読む側がその事情を知らなくて済むように、という取り決めです)。
 
-**不変条件**: factory で `evaluation` を下げないこと。分類の順序(`direct < replay < baked < recorded`)を [`graphcomposition.hpp`](../../src/project/graphcomposition.hpp#L189) の enum 順と別に持たないこと。拒否に lowering 後の綴りを載せないこと。
+**不変条件**: factory で `evaluation` を下げないこと。分類の順序(`direct < replay < baked < recorded`)を [`graphcomposition.hpp`](../../src/project/graphcomposition.hpp#L211) の enum 順と別に持たないこと。拒否に lowering 後の綴りを載せないこと。
 
-**読む場所**: [`GraphOperationRegistration`](../../src/project/graphmodule.hpp#L25) → [`resolveOperation()`](../../src/project/graphmodule.cpp#L253) → [`statelessEvaluationRejected()`](../../src/core/userpublic/valuegraph.cpp#L49)。
+**読む場所**: [`GraphOperationRegistration`](../../src/project/graphmodule.hpp#L25) → [`resolveOperation()`](../../src/project/graphmodule.cpp#L460) → [`statelessEvaluationRejected()`](../../src/core/userpublic/valuegraph.cpp#L49)。
 
 ### 難所 — package の SDK は「転送ヘッダのディレクトリ」そのもの
 
@@ -2005,7 +2005,7 @@ marker は自分が属する manifest に digest で縛られます。[`transact
 
 **素朴に読むと**: 1 つの文書なのだから評価状態も 1 つで、animation 側と rendering 側が同じ状態を共有すればよい、と読めます。
 
-**実際は**: 同じ文書が 2 つの区画に分かれ、**同じフレームの中で 1 段ずれて**評価されます。[`GraphExecutionPartitions`](../../src/project/graphpartition.hpp#L7) の `animation` は values より 1 段早く走る、という順序の宣言です([宣言とコメント](../../src/project/graphpartition.hpp#L10))。ただしこれは runtime の受け渡しではありません。animation フェーズは values 区画を**自分の `EvaluationState` で自分で評価し直し**([`evaluateLowered()` の呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L368))、その出力から `$pose/<node>/<port>` という名前を拾います。この名前は区画分割のときに values 側の出力として作られる**宣言上の名前**で([分割側](../../src/project/graphpartition.cpp#L95))、綴りは両側が [`graphAnimationScalarOutput()`](../../src/project/graphpartition.cpp#L170) の 1 箇所を呼びます(instance 入力側は同じ理由で [`graphInstanceInputOutput()`](../../src/project/graphpartition.cpp#L174) の `$value/<入力>`)。**供給は一方向**で、逆流はありません。
+**実際は**: 同じ文書が 2 つの区画に分かれ、**同じフレームの中で 1 段ずれて**評価されます。[`GraphExecutionPartitions`](../../src/project/graphpartition.hpp#L7) の `animation` は values より 1 段早く走る、という順序の宣言です([宣言とコメント](../../src/project/graphpartition.hpp#L10))。ただしこれは runtime の受け渡しではありません。animation フェーズは values 区画を**自分の `EvaluationState` で自分で評価し直し**([`evaluateLowered()` の呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L368))、その出力から `$pose/<node>/<port>` という名前を拾います。この名前は区画分割のときに values 側の出力として作られる**宣言上の名前**で([分割側](../../src/project/graphpartition.cpp#L304))、綴りは両側が [`graphAnimationScalarOutput()`](../../src/project/graphpartition.cpp#L380) の 1 箇所を呼びます(instance 入力側は同じ理由で [`graphInstanceInputOutput()`](../../src/project/graphpartition.cpp#L384) の `$value/<入力>`)。**供給は一方向**で、逆流はありません。
 
 その帰結として、`SceneLoader` は 1 つの文書に対して評価状態を 2 つ持ちます — [`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L149) と [`poseGraphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L153)。共有すると、replay 系の op(`value.trigger_clock` など)が 1 フレームに 2 回進みます。2 つは必ず一緒に動きます: 世代が変わるときは[両方を移送](../../src/core/loader/scenegraphruntime.cpp#L337)し、owner が変わったスコープは[両方を reset](../../src/core/loader/scenegraphruntime.cpp#L99) します。片方だけ残すと、姿勢側の clock だけが巻き戻ります。
 
