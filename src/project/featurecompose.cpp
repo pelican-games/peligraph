@@ -1886,39 +1886,6 @@ void applyRenderTargetOverrides(nlohmann::json &config, const nlohmann::json &fe
     }
 }
 
-struct AnchorMatch {
-    nlohmann::json *passes = nullptr;
-    size_t index = 0;
-};
-
-std::vector<AnchorMatch> findAnchorMatches(nlohmann::json &config, const std::string &anchor_name) {
-    std::vector<AnchorMatch> matches;
-    auto &rendering_passes = ensureArray(config, "rendering_passes");
-    for (auto &pass_set : rendering_passes) {
-        auto &passes = pass_set.at("passes");
-        for (size_t i = 0; i < passes.size(); ++i) {
-            if (passes.at(i).is_object() &&
-                passes.at(i).value("type", std::string{}) == "canonical_anchor" &&
-                passes.at(i).value("anchor", std::string{}) == anchor_name) {
-                matches.push_back(AnchorMatch{&passes, i});
-            }
-        }
-    }
-    if (!matches.empty()) {
-        return matches;
-    }
-    // Non-canonical names remain valid only for migration/negative fixtures.
-    for (auto &pass_set : rendering_passes) {
-        auto &passes = pass_set.at("passes");
-        for (size_t i = 0; i < passes.size(); ++i) {
-            if (passes.at(i).is_object() && passes.at(i).value("name", std::string{}) == anchor_name) {
-                matches.push_back(AnchorMatch{&passes, i});
-            }
-        }
-    }
-    return matches;
-}
-
 void insertPassAtEnd(nlohmann::json &config, const nlohmann::json &pass) {
     auto &rendering_passes = ensureArray(config, "rendering_passes");
     if (rendering_passes.size() != 1) {
@@ -1960,6 +1927,68 @@ void appendStringListValue(nlohmann::json &json, const std::string &field_name,
     }
 }
 
+} // namespace
+
+std::vector<RenderPassAnchorMatch> findRenderPassAnchorMatches(nlohmann::json &config,
+                                                               const std::string &anchor_name) {
+    std::vector<RenderPassAnchorMatch> matches;
+    auto &rendering_passes = ensureArray(config, "rendering_passes");
+    for (auto &pass_set : rendering_passes) {
+        auto &passes = pass_set.at("passes");
+        for (size_t i = 0; i < passes.size(); ++i) {
+            if (passes.at(i).is_object() &&
+                passes.at(i).value("type", std::string{}) == "canonical_anchor" &&
+                passes.at(i).value("anchor", std::string{}) == anchor_name) {
+                matches.push_back({&passes, i, pass_set.value("name", std::string{})});
+            }
+        }
+    }
+    if (!matches.empty()) {
+        return matches;
+    }
+    // Non-canonical names remain valid only for migration/negative fixtures.
+    for (auto &pass_set : rendering_passes) {
+        auto &passes = pass_set.at("passes");
+        for (size_t i = 0; i < passes.size(); ++i) {
+            if (passes.at(i).is_object() && passes.at(i).value("name", std::string{}) == anchor_name) {
+                matches.push_back({&passes, i, pass_set.value("name", std::string{})});
+            }
+        }
+    }
+    return matches;
+}
+
+void insertRenderPassRunAtAnchor(nlohmann::json &passes, std::size_t anchor_index, bool after,
+                                 std::vector<nlohmann::json> run) {
+    if (run.empty()) {
+        return;
+    }
+    auto index = anchor_index + (after ? 1 : 0);
+    const bool canonical_anchor = passes.at(anchor_index).value("type", std::string{}) ==
+                                  "canonical_anchor";
+    if (after && canonical_anchor) {
+        while (index < passes.size() &&
+               passes.at(index).value("type", std::string{}) != "canonical_anchor" &&
+               passes.at(index).value("type", std::string{}) != "output_transform") {
+            ++index;
+        }
+    }
+    const auto dependency_name = passes.at(anchor_index).value("name", std::string{});
+    if (after) {
+        appendStringListValue(run.front(), "after", dependency_name);
+    } else {
+        appendStringListValue(run.back(), "before", dependency_name);
+    }
+    // The rest of the run needs no edge of its own: the canonical order that
+    // composition settles next makes each pass wait on the one declared before it.
+    for (std::size_t i = 0; i < run.size(); ++i) {
+        passes.insert(passes.begin() + static_cast<nlohmann::json::difference_type>(index + i),
+                      std::move(run.at(i)));
+    }
+}
+
+namespace {
+
 void insertPassByAnchor(nlohmann::json &config, const std::string &insert, const nlohmann::json &pass) {
     constexpr std::string_view before_prefix = "before:";
     constexpr std::string_view after_prefix = "after:";
@@ -1980,30 +2009,14 @@ void insertPassByAnchor(nlohmann::json &config, const std::string &insert, const
         throw std::runtime_error("render feature pass insert anchor must not be empty");
     }
 
-    auto matches = findAnchorMatches(config, anchor);
+    auto matches = findRenderPassAnchorMatches(config, anchor);
     if (matches.empty()) {
         throw std::runtime_error("render feature pass insert anchor was not found: " + anchor);
     }
     if (matches.size() > 1) {
         throw std::runtime_error("render feature pass insert anchor is ambiguous: " + anchor);
     }
-
-    auto &passes = *matches.front().passes;
-    auto index = matches.front().index + (after ? 1 : 0);
-    const bool canonical_anchor = passes.at(matches.front().index).value("type", std::string{}) ==
-                                  "canonical_anchor";
-    if (after && canonical_anchor) {
-        while (index < passes.size() &&
-               passes.at(index).value("type", std::string{}) != "canonical_anchor" &&
-               passes.at(index).value("type", std::string{}) != "output_transform") {
-            ++index;
-        }
-    }
-    auto anchored_pass = pass;
-    const auto dependency_name =
-        passes.at(matches.front().index).value("name", std::string{});
-    appendStringListValue(anchored_pass, after ? "after" : "before", dependency_name);
-    passes.insert(passes.begin() + static_cast<nlohmann::json::difference_type>(index), anchored_pass);
+    insertRenderPassRunAtAnchor(*matches.front().passes, matches.front().index, after, {pass});
 }
 
 void addFeaturePasses(nlohmann::json &config, const nlohmann::json &feature,
@@ -2931,7 +2944,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     // composed, and resolved after them (resolveGraphDocumentAfterComposition).
     auto lowered_graph = common_graph
         ? lowerRenderGraphDocumentForComposition(config, dependencies.inactive_graph_scopes)
-        : LoweredRenderGraphDocument{config, {}, {}};
+        : LoweredRenderGraphDocument{config, {}, {}, {}};
     auto native_config = std::move(lowered_graph.config);
     auto graph_buffers = nlohmann::json::array();
     auto graph_tasks = nlohmann::json::array();
@@ -3049,6 +3062,18 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
 
     auto target_names = collectRenderTargetNames(composed);
     auto pass_names = collectPassNames(composed);
+    // LP-0b: a graph pass placed at an anchor joins the passes only in the
+    // resolution stage, but its name is taken from the start, as an appended
+    // graph pass's is: a feature pass of the same name collides, and an
+    // integration's requires_passes sees it.
+    for (const auto &run : lowered_graph.placed_runs) {
+        for (const auto &pass : run.passes) {
+            const auto name = requireStringField(pass, "name", "pass");
+            if (!pass_names.insert(name).second) {
+                throw std::runtime_error("Pass name collides with canonical frame node: " + name);
+            }
+        }
+    }
     auto buffer_names = collectBufferNames(composed);
     auto task_names = collectComputeTaskNames(composed);
     nlohmann::json resolved_instances = nlohmann::json::array();
@@ -3374,6 +3399,16 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     // snapshots declare now exists; pass order is not settled yet.
     if (common_graph) {
         resolveGraphDocumentAfterComposition(composed, lowered_graph);
+        // Placed graph passes were not in the config the first provenance
+        // pass saw; they come from the same authoring as the appended ones.
+        for (const auto &run : lowered_graph.placed_runs) {
+            for (const auto &pass : run.passes) {
+                pass_provenance.push_back(RenderPassProvenance{
+                    .name = requireStringField(pass, "name", "pass"),
+                    .source = authored_source,
+                });
+            }
+        }
     }
     for (auto &pass_set : ensureArray(composed, "rendering_passes")) {
         enforceCanonicalOrder(pass_set.at("passes"));

@@ -1,4 +1,5 @@
 #include "rendergraphcomposition.hpp"
+#include "featurecompose.hpp"
 #include "graphpartition.hpp"
 
 #include <algorithm>
@@ -38,6 +39,18 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             std::any_of(found->second.begin(), found->second.end(),
                 [&](const auto &scope) { return inactive_scopes.contains(scope); });
     };
+    // LP-0b: every graphics pass in lowering (id) order with its lowered edges,
+    // and the passes that wait for an anchor.
+    struct PendingPlacement {
+        std::string node;
+        std::string family;
+        bool after;
+        std::string anchor;
+        Json pass;
+    };
+    std::vector<std::string> graph_pass_order;
+    std::map<std::string, std::pair<Json, Json>> graph_pass_edges;
+    std::vector<PendingPlacement> pending_placements;
     std::set<std::string> resolving;
     std::function<std::string(const Json &)> resourceName = [&](const Json &endpoint) {
         const auto id = endpoint.at("node").get<std::string>();
@@ -225,6 +238,27 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             parameters.erase("pass_set");
             if (!graph.node_scopes.at(id).empty())
                 config["target_planning"]["graphs"][family]["nodes"][id]["isolate"] = true;
+            graph_pass_order.push_back(id);
+            graph_pass_edges.emplace(id, std::pair{parameters.value("after", Json::array()),
+                                                   parameters.value("before", Json::array())});
+            // LP-0b: the anchor may be a preset's or a feature's pass, so the
+            // pass waits for the resolution stage instead of joining its family
+            // here. The contract has checked the shape.
+            if (parameters.contains("insert") || parameters.contains("canonical_anchor")) {
+                PendingPlacement pending{id, family, true, {}, {}};
+                if (parameters.contains("insert")) {
+                    const auto &insert = parameters.at("insert");
+                    pending.after = insert.contains("after");
+                    pending.anchor = insert.at(pending.after ? "after" : "before").get<std::string>();
+                } else {
+                    pending.anchor = parameters.at("canonical_anchor").get<std::string>();
+                }
+                parameters.erase("insert");
+                parameters.erase("canonical_anchor");
+                pending.pass = std::move(parameters);
+                pending_placements.push_back(std::move(pending));
+                continue;
+            }
             auto &families = config["rendering_passes"];
             if (families.is_null()) families = Json::array();
             auto found = std::find_if(families.begin(), families.end(), [&](const Json &candidate) {
@@ -237,8 +271,78 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             (*found)["passes"].push_back(std::move(parameters));
         } else config["compute_tasks"].push_back(std::move(parameters));
     }
+    if (!pending_placements.empty()) {
+        // The graph's own order: the expansion lists nodes by id, not by
+        // dependency, so rank the graphics passes by their edges (a stable
+        // topological order; ties keep the id order). A dependency through a
+        // pass that is not placed still counts.
+        std::map<std::string, std::set<std::string>> predecessors;
+        for (const auto &id : graph_pass_order) predecessors[id];
+        for (const auto &[id, edges] : graph_pass_edges) {
+            for (const auto &name : edges.first)
+                if (name.is_string() && graph_pass_edges.contains(name.get<std::string>()))
+                    predecessors[id].insert(name.get<std::string>());
+            for (const auto &name : edges.second)
+                if (name.is_string() && graph_pass_edges.contains(name.get<std::string>()))
+                    predecessors[name.get<std::string>()].insert(id);
+        }
+        std::map<std::string, std::size_t> rank;
+        while (rank.size() < graph_pass_order.size()) {
+            const auto ready = std::find_if(graph_pass_order.begin(), graph_pass_order.end(),
+                [&](const std::string &id) {
+                    return !rank.contains(id) && std::all_of(predecessors[id].begin(), predecessors[id].end(),
+                        [&](const std::string &before) { return rank.contains(before); });
+                });
+            // A cycle: keep the rest in id order; the frame planner refuses it.
+            const auto next = ready != graph_pass_order.end() ? ready
+                : std::find_if(graph_pass_order.begin(), graph_pass_order.end(),
+                      [&](const std::string &id) { return !rank.contains(id); });
+            rank.emplace(*next, rank.size());
+        }
+        std::stable_sort(pending_placements.begin(), pending_placements.end(),
+            [&](const PendingPlacement &lhs, const PendingPlacement &rhs) {
+                return rank.at(lhs.node) < rank.at(rhs.node);
+            });
+        for (auto &pending : pending_placements) {
+            const auto run = std::find_if(lowered.placed_runs.begin(), lowered.placed_runs.end(),
+                [&](const RenderGraphPassRun &candidate) {
+                    return candidate.family == pending.family && candidate.after == pending.after &&
+                        candidate.anchor == pending.anchor;
+                });
+            if (run == lowered.placed_runs.end())
+                lowered.placed_runs.push_back({pending.node, pending.family, pending.after, pending.anchor,
+                                               {std::move(pending.pass)}});
+            else run->passes.push_back(std::move(pending.pass));
+        }
+    }
     lowered.config = std::move(config);
     return lowered;
+}
+
+void placeRenderGraphPassRun(Json &composed, const RenderGraphPassRun &run) {
+    if (run.passes.empty()) return;
+    // The same lookup a feature's insert uses, kept to the run's family: a
+    // pass family is its own frame graph, and an edge across two means nothing.
+    const auto matches = findRenderPassAnchorMatches(composed, run.anchor);
+    std::vector<RenderPassAnchorMatch> own;
+    for (const auto &match : matches)
+        if (match.family == run.family) own.push_back(match);
+    if (own.empty())
+        throw GraphRegistryError(matches.empty() ? "graph.insert_anchor_unknown@1" : "graph.insert_family_mismatch@1",
+                                 {{"node", run.node}, {"anchor", run.anchor}});
+    if (own.size() > 1)
+        throw std::runtime_error("render graph pass insert anchor is ambiguous: " + run.anchor);
+    std::set<std::string> taken;
+    for (const auto &family : composed.at("rendering_passes"))
+        for (const auto &pass : family.at("passes")) taken.insert(pass.value("name", std::string{}));
+    if (const auto tasks = composed.find("compute_tasks"); tasks != composed.end() && tasks->is_array())
+        for (const auto &task : *tasks) taken.insert(task.value("name", std::string{}));
+    for (const auto &pass : run.passes) {
+        const auto name = pass.at("name").get<std::string>();
+        if (name == "output_transform" || name.rfind("__anchor_", 0) == 0 || !taken.insert(name).second)
+            throw std::runtime_error("Pass name collides with canonical frame node: " + name);
+    }
+    insertRenderPassRunAtAnchor(*own.front().passes, own.front().index, run.after, run.passes);
 }
 
 Json lowerRenderGraphDocument(const Json &document,
@@ -306,7 +410,20 @@ void resolveGraphDocumentAfterComposition(Json &composed, const LoweredRenderGra
             throw GraphRegistryError("graph.history_unavailable@1",
                 {{"node", read.node}, {"port", read.port}, {"target", read.target}});
     }
-    // LP-0b (insert anchors), LP-1a (graph.loop expansion) and LP-0d
-    // (pass_replacements, variant removals) continue here.
+    // LP-0b: place each run once its anchor exists. A run may be anchored at
+    // a pass another run places, so place what can be placed until nothing
+    // moves; the first run left is refused by name.
+    std::vector<const RenderGraphPassRun *> pending;
+    for (const auto &run : lowered.placed_runs) pending.push_back(&run);
+    while (!pending.empty()) {
+        const auto ready = std::find_if(pending.begin(), pending.end(), [&](const RenderGraphPassRun *run) {
+            return !findRenderPassAnchorMatches(composed, run->anchor).empty();
+        });
+        const auto next = ready != pending.end() ? ready : pending.begin();
+        placeRenderGraphPassRun(composed, **next);
+        pending.erase(next);
+    }
+    // LP-1a (graph.loop expansion) and LP-0d (pass_replacements, variant
+    // removals) continue here.
 }
 }

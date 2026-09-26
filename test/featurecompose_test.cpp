@@ -5056,4 +5056,253 @@ TEST_CASE("LP-0a a port reads a target's history and never writes it",
     }
 }
 
+namespace {
+// LP-0b: graph passes over the hybrid preset with bloom. `lit` refers to the
+// preset's lit_color; each pass in `chain` reads the previous image and writes
+// its own, so the passes depend on one another in the order given.
+nlohmann::json lp0bPass(const std::string &id, const std::string &source, const std::string &image,
+                        const nlohmann::json &placement) {
+    using Json = nlohmann::json;
+    const auto type = lp0aSceneColorType();
+    Json parameters{{"pass_set", "main_render"},
+                    {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
+                    {"ports", {{"source", {{"kind", "image"}, {"type", type}, {"access", "read"}}},
+                               {"color", {{"kind", "image"}, {"type", type}, {"access", "write"},
+                                          {"attachment", "color"}, {"location", 0}}}}}};
+    for (const auto &[key, value] : placement.items()) parameters[key] = value;
+    return Json{{"id", id}, {"op", "render.fullscreen"}, {"parameters", std::move(parameters)},
+                {"inputs", {{"source", {{"node", source}, {"port", source == "lit" ? "resource" : "color"}}},
+                            {"color", {{"node", image}, {"port", "resource"}}}}},
+                {"outputs", {"color"}}};
+}
+
+nlohmann::json lp0bImage(const std::string &id) {
+    return {{"id", id}, {"op", "render.image"},
+            {"parameters", {{"type", lp0aSceneColorType()}, {"format", "R16G16B16A16_SFLOAT"},
+                            {"extent_scale", 1.0}, {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}}},
+            {"outputs", {"resource"}}};
+}
+
+// `chain` lists pass ids in dependency order; each gets `placement`.
+nlohmann::json lp0bGraph(const std::vector<std::string> &chain, const nlohmann::json &placement) {
+    using Json = nlohmann::json;
+    Json nodes = Json::array({{{"id", "lit"}, {"op", "render.target_ref"},
+                               {"parameters", {{"name", "lit_color"}, {"type", lp0aSceneColorType()}}},
+                               {"outputs", {"resource"}}}});
+    std::string source = "lit";
+    for (const auto &id : chain) {
+        nodes.push_back(lp0bImage(id + "_image"));
+        nodes.push_back(lp0bPass(id, source, id + "_image", placement));
+        source = id;
+    }
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", Json::object()},
+                {"nodes", std::move(nodes)}, {"outputs", Json::object()},
+                {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+                               {"features", Json::array({"engine://features/bloom.json"})}}}};
+}
+
+// Every pass of the first family, canonical anchors included, in declaration order.
+std::vector<std::string> lp0bDeclared(const nlohmann::json &config) {
+    std::vector<std::string> names;
+    for (const auto &pass : config.at("rendering_passes").at(0).at("passes"))
+        names.push_back(pass.at("name").get<std::string>());
+    return names;
+}
+
+std::ptrdiff_t lp0bIndex(const std::vector<std::string> &names, std::string_view name) {
+    const auto found = std::find(names.begin(), names.end(), name);
+    REQUIRE(found != names.end());
+    return found - names.begin();
+}
+
+std::vector<std::string> lp0bPlanOrder(const RenderFeatureComposeResult &composed) {
+    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    const auto graph = std::find_if(graphs.begin(), graphs.end(),
+        [](const auto &candidate) { return candidate.name == "main_render"; });
+    REQUIRE(graph != graphs.end());
+    return framePlanOrder(planFrameGraph(*graph));
+}
+
+bool lp0bListed(const nlohmann::json &list, const std::string &name) {
+    return list.is_array() && std::find(list.begin(), list.end(), name) != list.end();
+}
+
+std::pair<std::string, nlohmann::json> lp0bEditRefusal(const nlohmann::json &document) {
+    try {
+        (void)partitionGraphDocument(document);
+    } catch (const GraphRegistryError &error) {
+        return {error.code(), error.detail()};
+    }
+    FAIL("the edit was not refused by name");
+    return {};
+}
+} // namespace
+
+TEST_CASE("LP-0b a graph pass lands right after or before the pass its insert names",
+          "[render-feature][graph-composition][lp0b]") {
+    using Json = nlohmann::json;
+    const auto placed = lp0aCompose(lp0bGraph({"blit"}, {{"insert", {{"after", "deferred_lighting"}}}}));
+    const auto declared = lp0bDeclared(placed.config);
+    CHECK(lp0bIndex(declared, "blit") == lp0bIndex(declared, "deferred_lighting") + 1);
+    const auto &blit = passByName(placed.config, "blit");
+    CHECK(lp0bListed(blit.at("after"), "deferred_lighting"));
+    CHECK_FALSE(blit.contains("insert"));
+    CHECK_FALSE(blit.contains("canonical_anchor"));
+    const auto order = lp0bPlanOrder(placed);
+    CHECK(lp0bIndex(order, "blit") == lp0bIndex(order, "deferred_lighting") + 1);
+    REQUIRE_NOTHROW(compileComposition(placed));
+
+    // Control: without insert the pass is appended to its family as before,
+    // and the frame plan runs it after the scene's other passes.
+    const auto appended = lp0aCompose(lp0bGraph({"blit"}, Json::object()));
+    const auto appended_declared = lp0bDeclared(appended.config);
+    CHECK(lp0bIndex(appended_declared, "blit") > lp0bIndex(appended_declared, "forward_transparent"));
+    const auto appended_order = lp0bPlanOrder(appended);
+    CHECK(lp0bIndex(appended_order, "blit") > lp0bIndex(appended_order, "forward_transparent"));
+    // The placed pass keeps the provenance an appended graph pass has.
+    const auto provenance = [](const RenderFeatureComposeResult &result) {
+        const auto found = std::find_if(result.pass_provenance.begin(), result.pass_provenance.end(),
+                                        [](const auto &entry) { return entry.name == "blit"; });
+        REQUIRE(found != result.pass_provenance.end());
+        return *found;
+    };
+    CHECK(provenance(placed) == provenance(appended));
+
+    SECTION("before") {
+        const auto before = lp0aCompose(lp0bGraph({"blit"}, {{"insert", {{"before", "forward_opaque"}}}}));
+        const auto names = lp0bDeclared(before.config);
+        CHECK(lp0bIndex(names, "blit") + 1 == lp0bIndex(names, "forward_opaque"));
+        CHECK(lp0bListed(passByName(before.config, "blit").at("before"), "forward_opaque"));
+    }
+    SECTION("a feature's pass") {
+        const auto feature = lp0aCompose(lp0bGraph({"blit"}, {{"insert", {{"after", "HighLuminanceExtraction"}}}}));
+        const auto names = lp0bDeclared(feature.config);
+        CHECK(lp0bIndex(names, "blit") == lp0bIndex(names, "HighLuminanceExtraction") + 1);
+    }
+}
+
+TEST_CASE("LP-0b canonical_anchor puts a graph pass in the anchor's bucket after the features' passes",
+          "[render-feature][graph-composition][lp0b]") {
+    const auto composed = lp0aCompose(lp0bGraph({"blit"}, {{"canonical_anchor", "post_ldr"}}));
+    const auto names = lp0bDeclared(composed.config);
+    const auto blit = lp0bIndex(names, "blit");
+    CHECK(blit > lp0bIndex(names, "__anchor_post_ldr"));
+    // The end of the bucket: after bloom, which the feature put after post_ldr.
+    CHECK(blit > lp0bIndex(names, "HighLuminanceExtraction"));
+    CHECK(blit + 1 == lp0bIndex(names, "__anchor_pelican_ui"));
+    const auto &pass = passByName(composed.config, "blit");
+    CHECK(lp0bListed(pass.at("after"), "__anchor_post_ldr"));
+    CHECK_FALSE(pass.contains("canonical_anchor"));
+    REQUIRE_NOTHROW(compileComposition(composed));
+}
+
+TEST_CASE("LP-0b graph passes at one anchor keep the graph's dependency order",
+          "[render-feature][graph-composition][lp0b]") {
+    const nlohmann::json placement{{"insert", {{"after", "deferred_lighting"}}}};
+    const auto expect_run = [&](const std::vector<std::string> &chain) {
+        INFO(chain.front());
+        const auto composed = lp0aCompose(lp0bGraph(chain, placement));
+        const auto names = lp0bDeclared(composed.config);
+        const auto anchor = lp0bIndex(names, "deferred_lighting");
+        for (std::size_t i = 0; i < chain.size(); ++i)
+            CHECK(lp0bIndex(names, chain[i]) == anchor + 1 + static_cast<std::ptrdiff_t>(i));
+        // The first waits on the anchor and each later pass on the one before it.
+        CHECK(lp0bListed(passByName(composed.config, chain[0]).at("after"), "deferred_lighting"));
+        for (std::size_t i = 1; i < chain.size(); ++i)
+            CHECK(lp0bListed(passByName(composed.config, chain[i]).at("after"), chain[i - 1]));
+        const auto order = lp0bPlanOrder(composed);
+        for (std::size_t i = 0; i < chain.size(); ++i)
+            CHECK(lp0bIndex(order, chain[i]) == lp0bIndex(order, "deferred_lighting") + 1 +
+                                                 static_cast<std::ptrdiff_t>(i));
+        REQUIRE_NOTHROW(compileComposition(composed));
+    };
+    SECTION("ids in dependency order are not reversed") {
+        expect_run({"a_pass", "b_pass", "c_pass"});
+    }
+    SECTION("ids against dependency order follow the dependencies") {
+        expect_run({"z_pass", "m_pass", "a_pass"});
+    }
+    SECTION("passes with no dependency between them are chained in id order") {
+        auto document = lp0bGraph({"p_one", "p_two"}, placement);
+        for (auto &node : document.at("nodes"))
+            if (node.at("id") == "p_two") node["inputs"]["source"] = {{"node", "lit"}, {"port", "resource"}};
+        const auto composed = lp0aCompose(document);
+        const auto names = lp0bDeclared(composed.config);
+        CHECK(lp0bIndex(names, "p_one") == lp0bIndex(names, "deferred_lighting") + 1);
+        CHECK(lp0bIndex(names, "p_two") == lp0bIndex(names, "p_one") + 1);
+        CHECK_FALSE(lp0bListed(passByName(composed.config, "p_two").at("after"), "deferred_lighting"));
+        CHECK(lp0bListed(passByName(composed.config, "p_two").at("after"), "p_one"));
+    }
+    SECTION("a run may name a pass another run places") {
+        auto document = lp0bGraph({"a_pass", "b_pass"}, placement);
+        for (auto &node : document.at("nodes"))
+            if (node.at("id") == "b_pass") node["parameters"]["insert"] = {{"after", "a_pass"}};
+        const auto composed = lp0aCompose(document);
+        const auto names = lp0bDeclared(composed.config);
+        CHECK(lp0bIndex(names, "a_pass") == lp0bIndex(names, "deferred_lighting") + 1);
+        CHECK(lp0bIndex(names, "b_pass") == lp0bIndex(names, "a_pass") + 1);
+    }
+}
+
+TEST_CASE("LP-0b placement refusals are named", "[render-feature][graph-composition][lp0b]") {
+    using Json = nlohmann::json;
+    SECTION("an insert naming no pass is refused after composition") {
+        const auto document = lp0bGraph({"blit"}, {{"insert", {{"after", "no_such_pass"}}}});
+        REQUIRE_NOTHROW(partitionGraphDocument(document));
+        const auto [code, fields] = lp0aRefusal(document);
+        CHECK(code == "graph.insert_anchor_unknown@1");
+        CHECK(fields == Json{{"node", "blit"}, {"anchor", "no_such_pass"}});
+    }
+    SECTION("an unknown canonical anchor is refused when edited") {
+        const auto [code, fields] = lp0bEditRefusal(lp0bGraph({"blit"}, {{"canonical_anchor", "nowhere"}}));
+        CHECK(code == "graph.insert_anchor_unknown@1");
+        CHECK(fields == Json{{"node", "blit"}, {"anchor", "nowhere"}});
+    }
+    SECTION("an anchor in another pass family is refused after composition") {
+        auto document = lp0bGraph({"blit"}, {{"insert", {{"after", "deferred_lighting"}}}});
+        document["nodes"][2]["parameters"]["pass_set"] = "overlay";
+        REQUIRE(document["nodes"][2]["id"] == "blit");
+        auto [code, fields] = lp0aRefusal(document);
+        CHECK(code == "graph.insert_family_mismatch@1");
+        CHECK(fields == Json{{"node", "blit"}, {"anchor", "deferred_lighting"}});
+        document["nodes"][2]["parameters"].erase("insert");
+        document["nodes"][2]["parameters"]["canonical_anchor"] = "post_ldr";
+        std::tie(code, fields) = lp0aRefusal(document);
+        CHECK(code == "graph.insert_family_mismatch@1");
+        CHECK(fields == Json{{"node", "blit"}, {"anchor", "post_ldr"}});
+    }
+    SECTION("a compute node takes no place among passes") {
+        const Json buffer_port{{"kind", "buffer"}, {"element", "float"}, {"access", "read_write"}};
+        for (const auto &placement : {Json{{"insert", {{"after", "deferred_lighting"}}}},
+                                      Json{{"canonical_anchor", "post_ldr"}}}) {
+            INFO(placement.dump());
+            auto document = lp0bGraph({}, Json::object());
+            document["nodes"].push_back({{"id", "data"}, {"op", "render.buffer"},
+                                         {"parameters", {{"element", "float"}, {"size", 16}}},
+                                         {"outputs", {"resource"}}});
+            Json parameters{{"shader", "engine://ray_deform"}, {"ports", {{"data", buffer_port}}}};
+            for (const auto &[key, value] : placement.items()) parameters[key] = value;
+            document["nodes"].push_back({{"id", "simulate"}, {"op", "render.compute"},
+                                         {"parameters", std::move(parameters)},
+                                         {"inputs", {{"data", {{"node", "data"}, {"port", "resource"}}}}},
+                                         {"outputs", {"data"}}});
+            const auto [code, fields] = lp0bEditRefusal(document);
+            CHECK(code == "graph.insert_on_compute@1");
+            CHECK(fields == Json{{"node", "simulate"}});
+        }
+    }
+    SECTION("the shape is checked when edited") {
+        for (const auto &placement : {Json{{"insert", {{"after", "deferred_lighting"}}}, {"canonical_anchor", "post_ldr"}},
+                                      Json{{"insert", "after:deferred_lighting"}},
+                                      Json{{"insert", {{"after", ""}}}},
+                                      Json{{"insert", {{"after", 3}}}},
+                                      Json{{"insert", {{"over", "deferred_lighting"}}}},
+                                      Json{{"insert", {{"after", "deferred_lighting"}, {"before", "forward_opaque"}}}},
+                                      Json{{"canonical_anchor", 1}}}) {
+            INFO(placement.dump());
+            CHECK_THROWS_AS(partitionGraphDocument(lp0bGraph({"blit"}, placement)), std::invalid_argument);
+        }
+    }
+}
+
 } // namespace Pelican

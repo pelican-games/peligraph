@@ -89,4 +89,27 @@ std::vector<std::string> renderFeatureRequiredCapabilities(
 // before any pass that happens to share the name.
 bool isCanonicalRenderPassAnchor(std::string_view name);
 
+// The pass an insert names, in the pass family that holds it. A canonical
+// anchor is found (in every family) before any pass that shares its name;
+// only when no canonical anchor matches is a pass of that name looked for.
+struct RenderPassAnchorMatch {
+    nlohmann::json *passes = nullptr; // the family's `passes` array
+    std::size_t index = 0;
+    std::string family;
+};
+std::vector<RenderPassAnchorMatch> findRenderPassAnchorMatches(
+    nlohmann::json &config, const std::string &anchor);
+
+// LP-0b: the one placement rule feature passes and graph passes share. Puts
+// `run` next to passes[anchor_index] as one contiguous run, in the given
+// order. After a canonical anchor the run goes to the end of that anchor's
+// bucket. The pass next to the anchor is ordered against it (`after` for the
+// first, `before` for the last); the canonical order composition settles
+// afterwards chains the rest in declaration order. A feature inserts one pass
+// at a time, so several feature passes after the same non-canonical pass end
+// up in reverse; a run keeps its order.
+void insertRenderPassRunAtAnchor(nlohmann::json &passes,
+                                 std::size_t anchor_index, bool after,
+                                 std::vector<nlohmann::json> run);
+
 } // namespace Pelican

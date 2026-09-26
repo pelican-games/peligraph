@@ -1,4 +1,5 @@
 #include "graphmodule.hpp"
+#include "featurecompose.hpp"
 #include "shaderresourceport.hpp"
 #if PELICAN_WITH_ANIMATION
 #include "posegraphmodule.hpp"
@@ -112,6 +113,29 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
                     throw GraphRegistryError("graph.history_write@1", {{"node", nodeId(node)}, {"port", port}});
             }
             if (access != "read") contract.outputs.emplace(port, type);
+        }
+        // LP-0b: where a graph pass lands among the preset's and the features'
+        // passes. Which pass an insert names is known only after composition.
+        const bool placed = parameters.contains("insert") || parameters.contains("canonical_anchor");
+        // A compute task is always declared after every pass; it has no place
+        // among them to take.
+        if (placed && op == "render.compute")
+            throw GraphRegistryError("graph.insert_on_compute@1", {{"node", nodeId(node)}});
+        if (parameters.contains("insert") && parameters.contains("canonical_anchor"))
+            throw std::invalid_argument("render insert and canonical_anchor exclude each other: " + nodeId(node));
+        if (const auto insert = parameters.find("insert"); insert != parameters.end()) {
+            const auto side = insert->is_object() && insert->size() == 1 ? insert->begin() : insert->end();
+            if (side == insert->end() || (side.key() != "after" && side.key() != "before") ||
+                !side->is_string() || side->get_ref<const std::string &>().empty())
+                throw std::invalid_argument("render insert must be {\"after\" | \"before\": \"<pass>\"}: " +
+                                            nodeId(node));
+        }
+        if (const auto anchor = parameters.find("canonical_anchor"); anchor != parameters.end()) {
+            if (!anchor->is_string())
+                throw std::invalid_argument("render canonical_anchor must be a string: " + nodeId(node));
+            if (!isCanonicalRenderPassAnchor(anchor->get<std::string>()))
+                throw GraphRegistryError("graph.insert_anchor_unknown@1",
+                                         {{"node", nodeId(node)}, {"anchor", anchor->get<std::string>()}});
         }
     } else {
         throw GraphRegistryError("graph.operation_unregistered@1",
