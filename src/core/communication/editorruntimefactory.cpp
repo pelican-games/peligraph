@@ -31,6 +31,7 @@
 #include "../renderingpass/previewgraph.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
+#include "../renderer/viewfamilyproviderregistry.hpp"
 #include "../shader/raygrouplayout.hpp"
 #include "../userpublic/components/predefined.hpp"
 #include "../userpublic/details/event/registerer.hpp"
@@ -2102,6 +2103,9 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                             requireCurrentRenderFeatureRuntimeAvailability(
                                                 name, feature);
                                         },
+                                    // LP-Vb: sizes a graph.loop over view_axis.
+                                    .view_axis_length =
+                                        renderGraphViewAxisLengthResolver(),
                                 });
                             return ResolvedRenderConfigAuthoringContext{
                                 .config = std::move(composed.config),

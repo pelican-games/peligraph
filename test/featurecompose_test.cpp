@@ -14,6 +14,7 @@
 #include "../src/project/passshapepolicy.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/renderer/viewfamilyproviderregistry.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/frameexecutionadapter.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
@@ -5654,8 +5655,10 @@ TEST_CASE("LP-1a loop refusals are named", "[render-feature][graph-composition][
                {{"node", "inner"}, {"definition", "holder"}});
     }
     SECTION("what the expand stage cannot run") {
+        // LP-Vb expands view_axis (its runtime axes are refused when the
+        // graph is resolved); a set v0 does not know is refused here.
         auto view = lp1aRange(1);
-        view["over"] = {{"view_axis", {{"family", "$capture/cube"}, {"axis", "face"}}}};
+        view["over"] = {{"lights", Json::object()}};
         expect(loop_graph(view), "graph.loop_tier_unsupported@1", {{"node", "steps"}, {"reason", "set_unsupported"}});
         // LP-3a: draw_items runs draw.* bodies; a body that makes a
         // resource has no place in one material pass.
@@ -6319,6 +6322,14 @@ TEST_CASE("LP-1b a loop body's value nodes run once per element",
         const auto [code, fields] = lp1aEditRefusal(counted);
         CHECK(code == "graph.loop_expression_invalid@1");
         CHECK(fields == Json{{"node", "steps"}, {"pointer", "/nodes/1/parameters/over/range/count"}, {"reason", "not_static"}});
+    }
+    SECTION("LP-Vb: so is a view axis, whose length only the resolved graph knows") {
+        auto over_axis = document;
+        over_axis["nodes"][1]["parameters"]["over"] = {
+            {"view_axis", {{"family", "$shadow/directional"}, {"axis", "cascade"}}}};
+        const auto [code, fields] = lp1aEditRefusal(over_axis);
+        CHECK(code == "graph.loop_expression_invalid@1");
+        CHECK(fields == Json{{"node", "steps"}, {"pointer", "/nodes/1/parameters/over/view_axis"}, {"reason", "not_static"}});
     }
 }
 
@@ -7827,6 +7838,374 @@ TEST_CASE("LP-3b get_frame_plan pages a draw_loop's elements",
     CHECK_THROWS_AS(parseDrawLoopElementPage({{"loop_elements", {{"node", "x"}, {"offset", -1}}}}), std::invalid_argument);
     CHECK_THROWS_AS(parseDrawLoopElementPage({{"loop_elements", {{"limit", 2}}}}), std::invalid_argument);
     CHECK_THROWS_AS(parseDrawLoopElementPage({{"loop_elements", {{"node", "x"}, {"page", 1}}}}), std::invalid_argument);
+}
+
+namespace {
+// LP-Vb: a template the engine ships under engine://graphs/.
+nlohmann::json lpvbTemplate(std::string_view name) {
+    return nlohmann::json::parse(engineResourceOrThrow("graphs/" + std::string{name}));
+}
+
+// The hybrid preset with `features`, as a graph root with no node.
+nlohmann::json lpvbGraph(nlohmann::json features) {
+    using Json = nlohmann::json;
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", Json::object()},
+                {"nodes", Json::array()}, {"outputs", Json::object()},
+                {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+                               {"features", std::move(features)}}}};
+}
+
+// Composed as the engine composes: a view axis sized by the providers.
+RenderFeatureComposeResult lpvbCompose(const nlohmann::json &document) {
+    return composeRenderFeatureConfig(document, RenderFeatureComposeDependencies{
+                                                    .load_feature_json = loadEngineFeature,
+                                                    .runtime_shader_compiler_enabled = true,
+                                                    .view_axis_length = renderGraphViewAxisLengthResolver(),
+                                                });
+}
+
+std::pair<std::string, nlohmann::json> lpvbRefusal(const nlohmann::json &document) {
+    try {
+        (void)lpvbCompose(document);
+    } catch (const GraphRegistryError &error) {
+        return {error.code(), error.detail()};
+    }
+    FAIL("composition was not refused by name");
+    return {};
+}
+
+// The cube capture's body nodes, in the order the feature declares its passes.
+const std::array<std::string_view, 8> lpvbCubeNodes{"geometry",       "ssao",
+                                                    "ssao_blur",      "lighting",
+                                                    "forward_opaque", "snapshot_opaque_color",
+                                                    "snapshot_opaque_depth", "forward_transparent"};
+
+// The fields a copy shares with the feature pass it stands for.
+const std::array<std::string_view, 20> lpvbPassFields{
+    "type",          "output",          "input_sampling",  "material_contract",
+    "resolution_domain", "view_family", "shader",          "push_constants",   "clear_color",
+    "color_load_op", "depth_load_op",   "depth_store_op",  "uses_light_data",  "screen_inputs",
+    "surface_resources", "material_resources", "source",   "destination",      "snapshot",
+    "regions"};
+
+void lpvbRequireSameAsFeaturePass(const nlohmann::json &copy, const nlohmann::json &pass) {
+    using Json = nlohmann::json;
+    for (const auto field : lpvbPassFields) {
+        INFO(field);
+        CHECK(copy.value(std::string{field}, Json()) == pass.value(std::string{field}, Json()));
+    }
+    // A pass whose shader names its inputs (resource ports) reads them in
+    // any order; one that takes them by position reads them in the same.
+    const auto ports = pass.value("resource_ports", Json::object());
+    if (ports.empty()) {
+        CHECK(copy.value("input", Json()) == pass.value("input", Json()));
+    } else {
+        auto copied = copy.at("input").get<std::vector<std::string>>();
+        auto expected = pass.at("input").get<std::vector<std::string>>();
+        std::sort(copied.begin(), copied.end());
+        std::sort(expected.begin(), expected.end());
+        CHECK(copied == expected);
+    }
+    // A named resource port binds the same resource the same way (the graph
+    // spells out the kind the feature leaves implicit).
+    REQUIRE(copy.value("resource_ports", Json::object()).size() == ports.size());
+    for (const auto &[port, binding] : ports.items()) {
+        INFO(port);
+        const auto &copied = copy.at("resource_ports").at(port);
+        CHECK(copied.at("resource") == binding.at("resource"));
+        CHECK(copied.value("view", Json()) == binding.value("view", Json()));
+        CHECK(copied.value("access", Json()) == binding.value("access", Json()));
+    }
+}
+
+const nlohmann::json &lpvbContract(const nlohmann::json &contracts, std::string_view name) {
+    for (const auto &contract : contracts)
+        if (contract.at("contract").get<std::string>() == name) return contract;
+    throw std::runtime_error("no surface resource contract " + std::string{name});
+}
+} // namespace
+
+TEST_CASE("LP-Vb a loop over the cube's face axis takes the place of cube_capture's passes, face by face",
+          "[render-feature][graph-composition][lpvb][view-select][cube]") {
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    using Json = nlohmann::json;
+    const auto features = Json::array({"engine://features/cube_capture.json"});
+    const auto kept = lpvbCompose(lpvbGraph(features));
+    const auto document =
+        TestSupport::lp1cApplyDecomposition(lpvbGraph(features), lpvbTemplate("cube_capture_loop.json"));
+    const auto composed = lpvbCompose(document);
+    const auto &config = composed.config;
+
+    // The copies stand where the feature's first pass stood, face by face,
+    // each face's in the feature's order; none of the feature's is left.
+    const auto declared = lp0bDeclared(config);
+    const auto slot = lp0bIndex(lp0bDeclared(kept.config), "cube_capture_geometry");
+    for (std::size_t face = 0; face < 6; ++face) {
+        for (std::size_t index = 0; index < lpvbCubeNodes.size(); ++index) {
+            const auto node = std::string{lpvbCubeNodes[index]};
+            const auto name = "cube_capture_faces/" + std::to_string(face) + "/" + node;
+            INFO(name);
+            CHECK(lp0bIndex(declared, name) == slot + static_cast<std::ptrdiff_t>(face * 8 + index));
+            CHECK(std::find(declared.begin(), declared.end(), "cube_capture_" + node) == declared.end());
+            // The feature's pass, on one face.
+            const auto &copy = passByName(config, name);
+            CHECK(copy.at("view_select") == Json{{"face", face}});
+            lpvbRequireSameAsFeaturePass(copy, passByName(kept.config, "cube_capture_" + node));
+            if (copy.contains("snapshot_after"))
+                CHECK(copy.at("snapshot_after") == "cube_capture_faces/" + std::to_string(face) + "/forward_opaque");
+        }
+    }
+    // The deferred lighting shader takes its inputs by position: the copy
+    // reads them in the feature pass's order, with no named port.
+    CHECK(passByName(config, "cube_capture_faces/0/lighting").at("input") ==
+          Json::array({"cube_capture_albedo", "cube_capture_normal", "cube_capture_material",
+                       "cube_capture_worldpos", "cube_capture_emissive", "cube_capture_ao_blur"}));
+    CHECK(passByName(config, "cube_capture_faces/0/lighting").value("resource_ports", Json::object()).empty());
+    // Face f + 1 waits on face f: the order is face-major.
+    CHECK(lp0bListed(passByName(config, "cube_capture_faces/1/geometry").at("after"),
+                     "cube_capture_faces/0/forward_transparent"));
+
+    // get_frame_plan's loops[]: the six faces, and every copy's origin.
+    REQUIRE(composed.graph_loops.size() == 1);
+    CHECK(composed.graph_loops.front().node == "cube_capture_faces");
+    CHECK(composed.graph_loops.front().tier == "expand");
+    CHECK(composed.graph_loops.front().count == 6);
+    const auto plan = lp1aPlanJson(composed);
+    for (std::size_t face = 0; face < 6; ++face) {
+        const auto *node = lp1aPlanNode(plan, "cube_capture_faces/" + std::to_string(face) + "/ssao");
+        REQUIRE(node != nullptr);
+        CHECK(node->at("view_select") == Json{{"face", face}});
+        CHECK(node->at("loop_origin") == Json{{"loop", "cube_capture_faces"}, {"element", face}, {"node", "ssao"}});
+    }
+#else
+    SKIP("the $capture/cube provider is a standard render algorithm");
+#endif
+}
+
+TEST_CASE("LP-Vb the cube's decomposed passes receive the directional shadow as the feature's passes did",
+          "[render-feature][graph-composition][lpvb][cube][shadow]") {
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    using Json = nlohmann::json;
+    // docs/design_graph_loops.md 14.7: the copies join after the surface
+    // resources picked their consumers, in the place of consumers. The
+    // shadow comes second so its shadow_depth (inserted at the beginning)
+    // runs before the capture reads the map.
+    const auto features = Json::array({"engine://features/cube_capture.json", lp0dShadowFeature(nullptr)});
+    const auto kept = lpvbCompose(lpvbGraph(features));
+    const auto composed = lpvbCompose(
+        TestSupport::lp1cApplyDecomposition(lpvbGraph(features), lpvbTemplate("cube_capture_loop.json")));
+    const auto &kept_contract = lpvbContract(kept.surface_resource_contracts, "directional_shadow");
+    REQUIRE(lp0bListed(kept_contract.at("fullscreen_consumers"), "cube_capture_lighting"));
+    REQUIRE(lp0bListed(kept_contract.at("material_consumers"), "cube_capture_forward_opaque"));
+    REQUIRE(lp0bListed(kept_contract.at("material_consumers"), "cube_capture_forward_transparent"));
+
+    const auto &contract = lpvbContract(composed.surface_resource_contracts, "directional_shadow");
+    for (const auto *replaced : {"cube_capture_lighting", "cube_capture_forward_opaque",
+                                 "cube_capture_forward_transparent"}) {
+        CHECK_FALSE(lp0bListed(contract.at("fullscreen_consumers"), replaced));
+        CHECK_FALSE(lp0bListed(contract.at("material_consumers"), replaced));
+    }
+    for (std::size_t face = 0; face < 6; ++face) {
+        const auto prefix = "cube_capture_faces/" + std::to_string(face) + "/";
+        INFO(prefix);
+        CHECK(lp0bListed(contract.at("fullscreen_consumers"), prefix + "lighting"));
+        CHECK(lp0bListed(contract.at("material_consumers"), prefix + "forward_opaque"));
+        CHECK(lp0bListed(contract.at("material_consumers"), prefix + "forward_transparent"));
+        // Bound as the feature's were: the shadow map is the lighting's
+        // seventh input (PELICAN_DECLARE_INPUT_6), and the forward passes'
+        // directional_shadow.
+        for (const auto *node : {"lighting", "forward_opaque", "forward_transparent"})
+            lpvbRequireSameAsFeaturePass(passByName(composed.config, prefix + node),
+                                         passByName(kept.config, std::string{"cube_capture_"} + node));
+        CHECK(passByName(composed.config, prefix + "lighting").at("input").at(6) == "shadow_map");
+        CHECK(passByName(composed.config, prefix + "forward_opaque").at("surface_resources").at("directional_shadow") ==
+              "shadow_map");
+    }
+    const auto declared = lp0bDeclared(composed.config);
+    CHECK(lp0bIndex(declared, "shadow_depth") < lp0bIndex(declared, "cube_capture_faces/0/geometry"));
+    // The pipeline compiles: every consumer the contract lists binds it.
+    const auto compiled = compileComposition(composed);
+    const auto found = std::find_if(compiled.surface_resource_contracts.begin(),
+                                    compiled.surface_resource_contracts.end(),
+                                    [](const auto &entry) { return entry.contract.name == "directional_shadow"; });
+    REQUIRE(found != compiled.surface_resource_contracts.end());
+    CHECK(found->producer == "shadow_depth");
+#else
+    SKIP("the $capture/cube provider is a standard render algorithm");
+#endif
+}
+
+TEST_CASE("LP-Vb a loop over the cascade axis draws one cascade per copy in shadow_depth's place",
+          "[render-feature][graph-composition][lpvb][view-select][shadow]") {
+    using Json = nlohmann::json;
+    for (const std::int64_t cascades : {3, 2}) {
+        INFO(cascades << " cascades");
+        auto feature = lp0dShadowFeature(nullptr);
+        feature["parameters"]["cascade_count"] = cascades;
+        const auto kept = lpvbCompose(lpvbGraph(Json::array({feature})));
+        const auto composed = lpvbCompose(TestSupport::lp1cApplyDecomposition(
+            lpvbGraph(Json::array({feature})), lpvbTemplate("shadow_cascade_loop.json")));
+        const auto &config = composed.config;
+        const auto declared = lp0bDeclared(config);
+        const auto slot = lp0bIndex(lp0bDeclared(kept.config), "shadow_depth");
+        CHECK(std::find(declared.begin(), declared.end(), "shadow_depth") == declared.end());
+        // As many copies as the feature has cascades: the axis's length is the
+        // provider's, read off the composed feature instance.
+        CHECK(lp1aNamesUnder(config, "shadow_cascades/").size() == static_cast<std::size_t>(cascades));
+        for (std::int64_t cascade = 0; cascade < cascades; ++cascade) {
+            const auto name = "shadow_cascades/" + std::to_string(cascade) + "/depth";
+            INFO(name);
+            CHECK(lp0bIndex(declared, name) == slot + cascade);
+            const auto &copy = passByName(config, name);
+            CHECK(copy.at("view_select") == Json{{"cascade", cascade}});
+            lpvbRequireSameAsFeaturePass(copy, passByName(kept.config, "shadow_depth"));
+        }
+        CHECK(lpvbContract(composed.surface_resource_contracts, "directional_shadow").at("producer") ==
+              "shadow_cascades/" + std::to_string(cascades - 1) + "/depth");
+        REQUIRE(composed.graph_loops.size() == 1);
+        CHECK(composed.graph_loops.front().count == static_cast<std::size_t>(cascades));
+        (void)compileComposition(composed);
+    }
+}
+
+TEST_CASE("LP-Vb a view axis known only per frame, or not declared, is refused by name",
+          "[render-feature][graph-composition][lpvb][view-select]") {
+    using Json = nlohmann::json;
+    const auto shadowLoop = [](const Json &over) {
+        auto graph = lpvbTemplate("shadow_cascade_loop.json");
+        graph["nodes"][0]["parameters"]["over"] = over;
+        return TestSupport::lp1cApplyDecomposition(lpvbGraph(Json::array({lp0dShadowFeature(nullptr)})), graph);
+    };
+    SECTION("the light axis is as long as the frame's lights") {
+        const auto [code, fields] =
+            lpvbRefusal(shadowLoop({{"view_axis", {{"family", "$shadow/directional"}, {"axis", "light"}}}}));
+        CHECK(code == "graph.loop_tier_unsupported@1");
+        CHECK(fields == Json{{"node", "shadow_cascades"}, {"reason", "set_unsupported"}});
+    }
+    SECTION("an axis the family does not have") {
+        const auto [code, fields] =
+            lpvbRefusal(shadowLoop({{"view_axis", {{"family", "$shadow/directional"}, {"axis", "face"}}}}));
+        CHECK(code == "graph.view_select_axis_unknown@1");
+        CHECK(fields == Json{{"pass", "shadow_cascades"}, {"family", "$shadow/directional"}, {"axis", "face"}});
+    }
+    SECTION("a family no provider builds") {
+        const auto [code, fields] =
+            lpvbRefusal(shadowLoop({{"view_axis", {{"family", "$main"}, {"axis", "cascade"}}}}));
+        CHECK(code == "graph.view_select_axis_unknown@1");
+        CHECK(fields == Json{{"pass", "shadow_cascades"}, {"family", "$main"}, {"axis", "cascade"}});
+    }
+    SECTION("a view_axis that names no family or no axis") {
+        for (const auto &over : {Json{{"view_axis", {{"family", "$shadow/directional"}}}},
+                                 Json{{"view_axis", {{"axis", "cascade"}}}},
+                                 Json{{"view_axis", {{"family", "$shadow/directional"}, {"axis", ""}}}},
+                                 Json{{"view_axis", {{"family", "$shadow/directional"}, {"axis", "cascade"},
+                                                     {"count", 2}}}}}) {
+            INFO(over.dump());
+            CHECK_THROWS_AS(partitionGraphDocument(shadowLoop(over)), std::invalid_argument);
+        }
+    }
+    SECTION("a composition without the providers cannot size it") {
+        CHECK_THROWS_AS(lp0aCompose(shadowLoop({{"view_axis", {{"family", "$shadow/directional"},
+                                                               {"axis", "cascade"}}}})),
+                        std::runtime_error);
+    }
+    SECTION("the tier is expand") {
+        auto document = shadowLoop({{"view_axis", {{"family", "$shadow/directional"}, {"axis", "cascade"}}}});
+        document["nodes"][0]["parameters"]["tier"] = "draw_loop";
+        const auto [code, fields] = lp0bEditRefusal(document);
+        CHECK(code == "graph.loop_tier_mismatch@1");
+        CHECK(fields == Json{{"node", "shadow_cascades"}, {"tier", "draw_loop"}, {"actual", "expand"}});
+    }
+}
+
+TEST_CASE("LP-Vb region_tags reach the pass as its regions, and input_index orders a pass's inputs",
+          "[render-feature][graph-composition][lpvb]") {
+    using Json = nlohmann::json;
+    SECTION("render.material_pass, render.shadow_depth and render.snapshot_copy") {
+        auto nodes = lp0eCubeCopyNodes();
+        nodes[2]["parameters"]["region_tags"] = Json::array({"capture", "copy"});
+        const auto copy = lp0aCompose(lp0eCubeGraph(nodes, "opaque_color_copy"));
+        CHECK(passByName(copy.config, "opaque_color_copy").at("regions") == Json::array({"capture", "copy"}));
+        CHECK_FALSE(passByName(copy.config, "opaque_color_copy").contains("region_tags"));
+        // The frame graph reads them: the planner's node carries the tags.
+        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(copy.config);
+        const auto frame_graph = std::find_if(graphs.begin(), graphs.end(),
+                                              [](const auto &candidate) { return candidate.name == "main_render"; });
+        REQUIRE(frame_graph != graphs.end());
+        const auto frame_node =
+            std::find_if(frame_graph->nodes.begin(), frame_graph->nodes.end(),
+                         [](const auto &candidate) { return candidate.name == "opaque_color_copy"; });
+        REQUIRE(frame_node != frame_graph->nodes.end());
+        CHECK(frame_node->region_tags == std::vector<std::string>{"capture", "copy"});
+
+        const auto shadow = lp0aCompose(lp0dGraph(
+            Json::array({lp0dShadowRef(),
+                         lp0eShadowDepth("graph_shadow", {{"node", "shadow"}, {"port", "resource"}},
+                                         {{"region_tags", Json::array({"shadow"})}})}),
+            {{"shadow_depth", "graph_shadow"}}));
+        CHECK(passByName(shadow.config, "graph_shadow").at("regions") == Json::array({"shadow"}));
+
+        auto graph = lpvbTemplate("cube_capture_loop.json");
+        for (auto &node : graph["definitions"]["cube_capture_face"]["nodes"])
+            if (node.at("id") == "geometry") node["parameters"]["region_tags"] = Json::array({"capture"});
+        const auto document = TestSupport::lp1cApplyDecomposition(
+            lpvbGraph(Json::array({"engine://features/cube_capture.json"})), graph);
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+        const auto cube = lpvbCompose(document);
+        CHECK(passByName(cube.config, "cube_capture_faces/3/geometry").at("regions") == Json::array({"capture"}));
+#endif
+    }
+    // LP-1d's form: a port with binding "input" is the pass's numbered input
+    // input_index (the lighting shader's PELICAN_DECLARE_INPUT_<n>).
+    SECTION("binding input with input_index puts a read image at its position, ahead of the named ports") {
+        auto ports = Json{{"color", {{"kind", "image"}, {"type", lp0aSceneColorType()}, {"access", "write"},
+                                     {"attachment", "color"}, {"location", 0}}}};
+        const auto read = [](const Json &extra) {
+            Json port{{"kind", "image"}, {"type", lp0aSceneColorType()}, {"access", "read"}};
+            for (const auto &[key, value] : extra.items()) port[key] = value;
+            return port;
+        };
+        const auto graph = [&](const Json &port_set) {
+            Json nodes = Json::array({lp1aLit(), lp0bImage("a_image"), lp0bImage("b_image"), lp0bImage("out_image")});
+            nodes.push_back({{"id", "pass"}, {"op", "render.fullscreen"},
+                             {"parameters", {{"pass_set", "main_render"},
+                                             {"shader", {{"vertex", "engine://fullscreen"},
+                                                         {"fragment", "engine://fullscreen"}}},
+                                             {"ports", port_set}}},
+                             {"inputs", {{"z_first", {{"node", "b_image"}, {"port", "resource"}}},
+                                         {"a_second", {{"node", "a_image"}, {"port", "resource"}}},
+                                         {"named", {{"node", "lit"}, {"port", "resource"}}},
+                                         {"color", {{"node", "out_image"}, {"port", "resource"}}}}},
+                             {"outputs", {"color"}}});
+            return lp1aGraph(nodes);
+        };
+        const auto numbered = [&](std::int64_t index) {
+            return read({{"binding", "input"}, {"input_index", index}});
+        };
+        auto positional = ports;
+        positional["z_first"] = numbered(0);
+        positional["a_second"] = numbered(1);
+        positional["named"] = read(Json::object());
+        const auto composed = lp0aCompose(graph(positional));
+        const auto &pass = passByName(composed.config, "pass");
+        CHECK(pass.at("input") == Json::array({"b_image", "a_image", "lit_color"}));
+        CHECK(pass.at("resource_ports").size() == 1);
+        CHECK(pass.at("resource_ports").contains("named"));
+
+        // A gap is LP-1d's graph.input_index_invalid@1.
+        auto gap = positional;
+        gap["z_first"] = numbered(1);
+        gap["a_second"] = numbered(2);
+        CHECK_THROWS_AS(lp0aCompose(graph(gap)), GraphRegistryError);
+        for (const auto &bad : {Json{{"binding", "input"}, {"input_index", -1}},
+                                Json{{"binding", "input"}, {"input_index", 0}, {"view", "per_view"}},
+                                Json{{"input_index", 0}}}) {
+            INFO(bad.dump());
+            auto refused = positional;
+            refused["z_first"] = read(bad);
+            CHECK_THROWS_AS(lp0aCompose(graph(refused)), std::invalid_argument);
+        }
+    }
 }
 
 namespace {

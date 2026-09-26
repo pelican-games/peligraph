@@ -147,6 +147,14 @@ std::vector<RenderViewAxisDescription> renderViewFamilyAxes(
     const RenderViewFamilyProviderRegistry &providers =
         renderViewFamilyProviderRegistry());
 
+// LP-Vb: renderViewAxisLength as the project layer's composition asks for it
+// (RenderPipelineResolveDependencies::view_axis_length): a graph.loop over
+// view_axis is sized with it when the graph is resolved. The registry must
+// outlive the returned function.
+RenderGraphViewAxisLengthResolver renderGraphViewAxisLengthResolver(
+    const RenderViewFamilyProviderRegistry &providers =
+        renderViewFamilyProviderRegistry());
+
 struct FrameGraphDefinition;
 
 // Recompile-time check of every `view_select` in the graphs against the

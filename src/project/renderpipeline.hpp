@@ -282,6 +282,39 @@ void synchronizeRenderPipelineProvenance(
     RenderPipelineProvenanceSource default_source =
         RenderPipelineProvenanceSource::engine);
 
+struct CompiledRenderFeatureInstance;
+struct CompiledSurfaceResourceContract;
+
+// LP-Vb: the length of one axis of a view family (docs/design_graph_loops.md
+// 7.1), as a graph.loop over view_axis needs it when the graph is resolved.
+// The view family providers live in the engine core, which this layer does
+// not reach; the engine hands the lookup in (renderGraphViewAxisLengthResolver
+// in the core's viewfamilyproviderregistry.hpp).
+enum class RenderGraphViewAxisKind : std::uint8_t {
+    // No provider of the family declares the axis (an authored family has
+    // no axes at all).
+    unknown,
+    // The axis is known only per frame (a light count).
+    runtime,
+    // Fixed when the render graph is (re)compiled.
+    compile_time,
+};
+
+struct RenderGraphViewAxisLength {
+    RenderGraphViewAxisKind kind = RenderGraphViewAxisKind::unknown;
+    std::uint32_t length = 0;
+
+    bool operator==(const RenderGraphViewAxisLength &) const = default;
+};
+
+// family, axis, and what the composed pipeline says so far (the feature
+// instances with their bound parameters, the surface resource contracts):
+// what a provider's compile-time length reads.
+using RenderGraphViewAxisLengthResolver = std::function<RenderGraphViewAxisLength(
+    std::string_view family, std::string_view axis,
+    const std::vector<CompiledRenderFeatureInstance> &feature_instances,
+    const std::vector<CompiledSurfaceResourceContract> &surface_resource_contracts)>;
+
 // Every callback is a data transform or lookup. Callers snapshot mutable
 // environment values and expose lookup services explicitly instead of making
 // the resolver discover modules or containers. This keeps the resolver usable
@@ -302,6 +335,9 @@ struct RenderPipelineResolveDependencies {
     std::function<void(std::string_view, const nlohmann::json &)>
         validate_feature;
     std::set<std::string> inactive_graph_scopes;
+    // LP-Vb: a graph.loop over view_axis is sized with this; left empty, such
+    // a loop is refused when the graph is resolved.
+    RenderGraphViewAxisLengthResolver view_axis_length;
 };
 
 struct MaterialDrawLoopRules;
@@ -392,6 +428,21 @@ struct CompiledSurfaceResourceContract {
     bool operator==(
         const CompiledSurfaceResourceContract &) const = default;
 };
+
+// LP-Vb: what a view family's compile-time axis length reads, taken from the
+// composition's JSON while the graph is resolved (before the pipeline is
+// compiled): the feature instances as the pipeline compiles them, and of each
+// surface resource contract its name, resource, producer, provider and
+// consumers -- nothing more is checked; the pipeline's own compilation checks
+// the rest later.
+struct RenderViewAxisLengthInputs {
+    std::vector<CompiledRenderFeatureInstance> feature_instances;
+    std::vector<CompiledSurfaceResourceContract> surface_resource_contracts;
+};
+
+RenderViewAxisLengthInputs compileRenderViewAxisLengthInputs(
+    const nlohmann::json &feature_instances,
+    const nlohmann::json &surface_resource_contracts);
 
 enum class MaterialRoutingPolicy {
     hybrid_auto_v1,

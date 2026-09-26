@@ -60,7 +60,9 @@ constexpr auto registered_ids =
     "features/taa.json",
     "features/velocity.json",
     "graphs/bloom_loop.json",
+    "graphs/cube_capture_loop.json",
     "graphs/planar_mip_chain_loop.json",
+    "graphs/shadow_cascade_loop.json",
     "input/editor_transform_actions.json",
     "input/free_camera_actions.json",
     "input/overlays/editor_transform_blender.json",
@@ -238,7 +240,9 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("features/taa.json")
     PELICAN_ENGINE_RESOURCE("features/velocity.json")
     PELICAN_ENGINE_RESOURCE("graphs/bloom_loop.json")
+    PELICAN_ENGINE_RESOURCE("graphs/cube_capture_loop.json")
     PELICAN_ENGINE_RESOURCE("graphs/planar_mip_chain_loop.json")
+    PELICAN_ENGINE_RESOURCE("graphs/shadow_cascade_loop.json")
     PELICAN_ENGINE_RESOURCE("input/editor_transform_actions.json")
     PELICAN_ENGINE_RESOURCE("input/free_camera_actions.json")
     PELICAN_ENGINE_RESOURCE("input/overlays/editor_transform_blender.json")

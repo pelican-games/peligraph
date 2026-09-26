@@ -257,7 +257,20 @@ GraphLoopShape parseGraphLoopShape(const Json &node, const std::string &pointer)
                                             std::to_string(graphLoopRangeCountBound) + ": " + id);
         }
     } else if (set == "view_axis") {
+        // LP-Vb: one axis of a view family; its length is known when the
+        // graph is resolved (the family's provider).
         shape.set = GraphLoopSet::view_axis;
+        const auto name = [&](const char *key) {
+            const auto found = declaration.is_object() ? declaration.find(key) : declaration.end();
+            if (found == declaration.end() || !found->is_string() || found->get_ref<const std::string &>().empty())
+                return std::string{};
+            return found->get<std::string>();
+        };
+        shape.view_family = name("family");
+        shape.view_axis = name("axis");
+        if (!declaration.is_object() || declaration.size() != 2 || shape.view_family.empty() || shape.view_axis.empty())
+            throw std::invalid_argument(
+                "graph.loop view_axis takes exactly {\"family\": \"<view family>\", \"axis\": \"<axis>\"}: " + id);
     } else if (set == "draw_items") {
         // LP-3a: the draws of one material pass, one element per material.
         shape.set = GraphLoopSet::draw_items;
@@ -412,7 +425,10 @@ GraphLoopTier classifyGraphLoopTier(const GraphLoopShape &shape,
         actual = GraphLoopTier::draw_loop;
     } else {
         if (draw) throw unsupported("mixed_body");
-        if (shape.set != GraphLoopSet::range) throw unsupported("set_unsupported");
+        // LP-Vb: a view axis is expanded like a range; an axis known only per
+        // frame is refused when the graph is resolved and its length is asked.
+        if (shape.set != GraphLoopSet::range && shape.set != GraphLoopSet::view_axis)
+            throw unsupported("set_unsupported");
         if (shape.per_frame_count) throw unsupported("per_frame_value");
     }
     if (shape.tier && *shape.tier != actual)

@@ -2462,6 +2462,80 @@ void applySurfaceResourceContracts(
     }
 }
 
+// LP-Vb (docs/design_graph_loops.md 14.7): the graph's resolution stage adds
+// passes after applySurfaceResourceContracts picked the consumers -- the
+// copies of a graph.loop, which may take the place of feature passes that
+// were consumers (pass_replacements; the replaced names have left the
+// consumer lists there). Among `passes` only, pick the consumers of each of
+// the feature's declarations by the same selectors and bind them the same
+// way, adding them to the declaration composed earlier (matched by contract).
+void selectSurfaceResourceConsumersAmong(
+    nlohmann::json &config,
+    const nlohmann::json &feature,
+    nlohmann::json &compiled_declarations,
+    const std::set<std::string> &passes) {
+    if (!feature.contains("surface_resources") ||
+        !feature.at("surface_resources").is_array()) {
+        return;
+    }
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    for (const auto &declaration : feature.at("surface_resources")) {
+        if (!declaration.is_object()) continue;
+        const auto contract_name = declaration.value("contract", std::string{});
+        const auto compiled = std::find_if(
+            compiled_declarations.begin(), compiled_declarations.end(),
+            [&](const nlohmann::json &entry) {
+                return entry.is_object() &&
+                       entry.value("contract", std::string{}) == contract_name;
+            });
+        if (compiled == compiled_declarations.end()) continue;
+        const auto resource = compiled->value("resource", std::string{});
+        const auto contract =
+            makeBuiltinMaterialPassInputContract(types, contract_name);
+        std::vector<std::string> material_contracts;
+        if (declaration.contains("material_contracts"))
+            material_contracts = parseStringArray(
+                declaration, "material_contracts",
+                "render feature surface_resources");
+        const auto selectors =
+            declaration.value("fullscreen_consumers", nlohmann::json::array());
+        auto &material_consumers = (*compiled)["material_consumers"];
+        auto &fullscreen_consumers = (*compiled)["fullscreen_consumers"];
+        for (auto &pass_set : ensureArray(config, "rendering_passes")) {
+            for (auto &pass : pass_set.at("passes")) {
+                const auto pass_name = pass.value("name", std::string{});
+                if (!passes.contains(pass_name)) continue;
+                if (pass.value("type", std::string{}) == "material" &&
+                    std::find(material_contracts.begin(),
+                              material_contracts.end(),
+                              pass.value("material_contract", std::string{})) !=
+                        material_contracts.end()) {
+                    auto &resources = pass["surface_resources"];
+                    if (resources.is_null()) resources = nlohmann::json::object();
+                    if (!resources.is_object() || resources.contains(contract.name)) {
+                        throw std::runtime_error(
+                            "render feature surface_resources consumer cannot bind contract '" +
+                            contract.name + "': " + pass_name);
+                    }
+                    resources[contract.name] = resource;
+                    material_consumers.push_back(pass_name);
+                }
+                if (!selectors.is_array()) continue;
+                for (const auto &selector : selectors) {
+                    if (!fullscreenConsumerMatches(pass, selector) ||
+                        std::find(fullscreen_consumers.begin(),
+                                  fullscreen_consumers.end(),
+                                  pass_name) != fullscreen_consumers.end()) {
+                        continue;
+                    }
+                    appendFullscreenSurfaceResource(pass, resource, contract);
+                    fullscreen_consumers.push_back(pass_name);
+                }
+            }
+        }
+    }
+}
+
 void applyPassOverrides(nlohmann::json &config, const nlohmann::json &feature) {
     if (!feature.contains("pass_overrides")) {
         return;
@@ -3514,7 +3588,31 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                 provenance.name, provenance.provider_feature.substr(0, provenance.provider_feature.find('/')));
         }
         graph_features.surface_resource_contracts = &surface_resource_contracts;
+        // LP-Vb: a graph.loop over a view axis is as long as the axis, which
+        // the family's provider reads off what was composed (a directional
+        // shadow's cascade_count).
+        if (dependencies.view_axis_length)
+            graph_features.view_axis_length = [&](std::string_view family, std::string_view axis) {
+                const auto inputs =
+                    compileRenderViewAxisLengthInputs(resolved_instances, surface_resource_contracts);
+                return dependencies.view_axis_length(family, axis, inputs.feature_instances,
+                                                     inputs.surface_resource_contracts);
+            };
         auto loop_resolution = resolveGraphDocumentAfterComposition(composed, active_graph, graph_features);
+        // LP-Vb (docs/design_graph_loops.md 14.7): a loop's copies joined
+        // after the surface resources picked their consumers, possibly in the
+        // place of feature passes that were consumers (a shadow's receivers).
+        // They are picked the same way now, and then inherit bindings as the
+        // composed passes did.
+        if (!loop_resolution.passes.empty()) {
+            std::set<std::string> copies;
+            for (const auto &[name, origin] : loop_resolution.passes) copies.insert(name);
+            for (const auto *pending_list : {&pending_surface_resources, &pending_integration_surface_resources})
+                for (const auto &pending : *pending_list)
+                    selectSurfaceResourceConsumersAmong(composed, pending.feature, surface_resource_contracts,
+                                                        copies);
+            resolveInheritedPassBindings(composed);
+        }
         // LP-1a: a loop's copies of a render.image are declared here, after
         // the format classes and roles above were settled; they take theirs
         // the same way.

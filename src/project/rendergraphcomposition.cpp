@@ -94,6 +94,21 @@ std::vector<std::size_t> rankByOrderEdges(const std::vector<const Json *> &decla
     return order;
 }
 
+// LP-Vb: a graph render node takes its region tags as `region_tags` (the node
+// contracts' name); the pass and task JSON read them from `regions`
+// (parseOptionalRegionTags). Both may be written: they merge, in order, once.
+void moveRegionTags(Json &parameters) {
+    const auto tags = parameters.find("region_tags");
+    if (tags == parameters.end()) return;
+    if (!tags->is_array()) throw std::invalid_argument("render region_tags must be an array");
+    auto regions = parameters.value("regions", Json::array());
+    if (!regions.is_array()) throw std::invalid_argument("render regions must be an array");
+    for (const auto &tag : *tags)
+        if (std::find(regions.begin(), regions.end(), tag) == regions.end()) regions.push_back(tag);
+    parameters.erase("region_tags");
+    parameters["regions"] = std::move(regions);
+}
+
 // LP-0e: a render.shadow_depth / render.snapshot_copy node as the rendering
 // section's pass of that type, named by its id. `attach(port, after)` names
 // the resource on a socket's edge (adding to `after` what the pass waits for);
@@ -105,6 +120,7 @@ Json lowerRenderPassKindNode(const Json &node, Json parameters,
                              const std::function<std::string(const std::string &, Json &)> &attach,
                              const std::function<bool(const std::string &)> &graph_pass) {
     const auto op = node.at("op").get<std::string>();
+    moveRegionTags(parameters);
     auto after = parameters.value("after", Json::array());
     if (!after.is_array()) throw std::invalid_argument("render after must be an array");
     parameters["name"] = node.at("id");
@@ -373,6 +389,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             // LP-3a: the material pass JSON of the rendering section, with
             // its attachments taken from its sockets and its name from the id.
             auto pass = parameters;
+            moveRegionTags(pass);
             pass["name"] = id;
             pass["type"] = "material";
             auto after = pass.value("after", Json::array());
@@ -442,6 +459,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         }
         const bool graphics = node.at("op") != "render.compute";
         forbid(parameters, {"name", "reads", "writes", "resource_ports"});
+        moveRegionTags(parameters);
         if (graphics) forbid(parameters, {"type", "input", "output"});
         auto ports = parameters.at("ports");
         parameters.erase("ports");
@@ -964,7 +982,7 @@ RenderGraphLoopResolution resolveGraphDocumentAfterComposition(Json &composed, c
     // than at each check.
     RenderGraphLoopResolution resolution;
     try {
-        resolution = expandRenderGraphLoops(composed, lowered);
+        resolution = expandRenderGraphLoops(composed, lowered, features);
         resolveDrawLoops(composed, lowered, resolution);
     } catch (const GraphRegistryError &error) {
         const auto &detail = error.detail();
@@ -1388,6 +1406,30 @@ void insertBeforeDependent(Json &list, std::vector<Json> run, const std::functio
         list.insert(list.begin() + static_cast<Json::difference_type>(position + i), std::move(run[i]));
 }
 
+// Step 1: the length of the loop's set. A range's count (LP-1b: evaluated
+// with the composed config's constants). LP-Vb: a view axis's length, as the
+// family's provider gives it for what was composed; an axis the provider
+// knows only per frame cannot be expanded when the graph is recompiled.
+std::int64_t loopSetLength(const GraphLoopShape &shape, const GraphLoopConstants &constants,
+                           const RenderGraphFeatureContext &features) {
+    if (shape.set != GraphLoopSet::view_axis) return graphLoopCount(shape, constants);
+    if (!features.view_axis_length)
+        throw std::runtime_error("graph.loop " + shape.node + " runs over the view axis " + shape.view_family +
+                                 " " + shape.view_axis +
+                                 ", and this composition has no view family providers to size it");
+    const auto length = features.view_axis_length(shape.view_family, shape.view_axis);
+    switch (length.kind) {
+    case RenderGraphViewAxisKind::unknown:
+        throw GraphRegistryError("graph.view_select_axis_unknown@1",
+                                 {{"pass", shape.node}, {"family", shape.view_family}, {"axis", shape.view_axis}});
+    case RenderGraphViewAxisKind::runtime:
+        throw GraphRegistryError("graph.loop_tier_unsupported@1", {{"node", shape.node}, {"reason", "set_unsupported"}});
+    case RenderGraphViewAxisKind::compile_time:
+        break;
+    }
+    return static_cast<std::int64_t>(length.length);
+}
+
 // LP-1e: a loop's run of passes with no place of its own (no insert, no
 // canonical_anchor) and no graph pass to stand by joins the family's scene
 // passes, as an unplaced graph pass does (canonicalizePasses): before the
@@ -1428,7 +1470,8 @@ struct ConsumerCopy {
 };
 } // namespace
 
-RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRenderGraphDocument &lowered) {
+RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRenderGraphDocument &lowered,
+                                                 const RenderGraphFeatureContext &features) {
     RenderGraphLoopResolution resolution;
     if (lowered.loops.empty()) return resolution;
     const auto constants = composedConstants(composed);
@@ -1456,7 +1499,7 @@ RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRe
         plan_index.emplace(loop.shape.node, i);
         // LP-1b: a count written as an expression, with the composed
         // config's constants; LP-Vb: a view axis's length.
-        plan.elements = graphLoopElements(loop.shape, graphLoopCount(loop.shape, constants), constants);
+        plan.elements = graphLoopElements(loop.shape, loopSetLength(loop.shape, constants, features), constants);
         for (const auto &element : plan.elements) {
             const auto &body = loop.branches.at(element.branch);
             if (!body) continue;
@@ -2202,6 +2245,19 @@ void applyRenderFeaturePassReplacements(Json &composed, const LoweredRenderGraph
             return std::optional<std::vector<std::string>>{std::move(names)};
         });
         forgetPlanningNodes(composed, replaced);
+        // LP-Vb (design 14.7): a replaced pass that consumed a surface
+        // resource leaves the consumer lists; what took its place is picked
+        // by the composer like any pass the resolution stage added.
+        if (features.surface_resource_contracts != nullptr && features.surface_resource_contracts->is_array())
+            for (auto &contract : *features.surface_resource_contracts)
+                for (const auto *key : {"material_consumers", "fullscreen_consumers"})
+                    if (const auto list = contract.find(key); list != contract.end() && list->is_array())
+                        list->erase(std::remove_if(list->begin(), list->end(),
+                                                   [&](const Json &name) {
+                                                       return name.is_string() &&
+                                                              replaced.contains(name.get<std::string>());
+                                                   }),
+                                    list->end());
         // A surface resource the replaced pass produced is produced by the
         // node's last pass that writes it.
         if (features.surface_resource_contracts != nullptr && features.surface_resource_contracts->is_array())

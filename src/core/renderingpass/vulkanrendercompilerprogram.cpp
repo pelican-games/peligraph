@@ -578,6 +578,8 @@ compileDefaultLogicalVariant(
                 },
             .validate_feature = input.validate_feature,
             .inactive_graph_scopes = input.inactive_graph_scopes,
+            // LP-Vb: a graph.loop over view_axis is sized by the providers.
+            .view_axis_length = renderGraphViewAxisLengthResolver(),
         };
     if (request.artifact ==
         RenderCompilerProgramArtifact::

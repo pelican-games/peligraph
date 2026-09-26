@@ -204,6 +204,39 @@ RenderViewAxisLength renderViewAxisLength(
     return {};
 }
 
+RenderGraphViewAxisLengthResolver renderGraphViewAxisLengthResolver(
+    const RenderViewFamilyProviderRegistry &providers) {
+    return [&providers](
+               std::string_view family, std::string_view axis,
+               const std::vector<CompiledRenderFeatureInstance>
+                   &feature_instances,
+               const std::vector<CompiledSurfaceResourceContract>
+                   &surface_resource_contracts) {
+        const auto length = renderViewAxisLength(
+            family, axis,
+            RenderViewAxisLengthContext{
+                .feature_instances = feature_instances,
+                .surface_resource_contracts =
+                    surface_resource_contracts,
+            },
+            providers);
+        RenderGraphViewAxisLength result;
+        result.length = length.length;
+        switch (length.kind) {
+        case RenderViewAxisLengthKind::unknown:
+            result.kind = RenderGraphViewAxisKind::unknown;
+            break;
+        case RenderViewAxisLengthKind::runtime:
+            result.kind = RenderGraphViewAxisKind::runtime;
+            break;
+        case RenderViewAxisLengthKind::compile_time:
+            result.kind = RenderGraphViewAxisKind::compile_time;
+            break;
+        }
+        return result;
+    };
+}
+
 std::vector<RenderViewAxisDescription> renderViewFamilyAxes(
     std::string_view family_id,
     const RenderViewAxisLengthContext &context,

@@ -1283,6 +1283,7 @@ ResolvedRenderPipeline resolveRenderPipeline(
             },
             .validate_feature = dependencies.validate_feature,
             .inactive_graph_scopes = dependencies.inactive_graph_scopes,
+            .view_axis_length = dependencies.view_axis_length,
         });
 
     validatePassFieldOwnershipInConfig(
@@ -2031,6 +2032,39 @@ nlohmann::json serializeNumericValue(
 }
 
 } // namespace
+
+RenderViewAxisLengthInputs compileRenderViewAxisLengthInputs(
+    const nlohmann::json &feature_instances,
+    const nlohmann::json &surface_resource_contracts) {
+    RenderViewAxisLengthInputs inputs;
+    inputs.feature_instances = compileFeatureInstances(feature_instances);
+    if (!surface_resource_contracts.is_array()) {
+        throw std::runtime_error(
+            "resolved surface_resource_contracts must be an array");
+    }
+    for (const auto &declaration : surface_resource_contracts) {
+        if (!declaration.is_object()) continue;
+        CompiledSurfaceResourceContract compiled;
+        compiled.contract.name = declaration.value("contract", std::string{});
+        compiled.resource = declaration.value("resource", std::string{});
+        compiled.producer = declaration.value("producer", std::string{});
+        compiled.provider_feature =
+            declaration.value("provider_feature", std::string{});
+        compiled.provider_reference =
+            declaration.value("provider_ref", std::string{});
+        for (const auto *key : {"material_consumers", "fullscreen_consumers"}) {
+            const auto found = declaration.find(key);
+            if (found == declaration.end() || !found->is_array()) continue;
+            auto &names = std::string_view{key} == "material_consumers"
+                              ? compiled.material_consumers
+                              : compiled.fullscreen_consumers;
+            for (const auto &name : *found)
+                if (name.is_string()) names.push_back(name.get<std::string>());
+        }
+        inputs.surface_resource_contracts.push_back(std::move(compiled));
+    }
+    return inputs;
+}
 
 std::string renderPipelineProvenanceSourceName(
     RenderPipelineProvenanceSource source,

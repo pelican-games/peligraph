@@ -19,7 +19,8 @@ namespace Pelican {
 //
 //   {"id": "<loop>", "op": "graph.loop",
 //    "parameters": {
-//      "over":     {"range": {"count": <integer> | {"$expr": ...}}},
+//      "over":     {"range": {"count": <integer> | {"$expr": ...}}}
+//                | {"view_axis": {"family": "<view family>", "axis": "<axis>"}},
 //      "where":    <condition>,                       optional
 //      "order":    {"by": "element", "direction": "ascending" | "descending"},
 //      "limit":    <integer>,                         optional
@@ -99,9 +100,8 @@ struct GraphLoopBranch {
     std::optional<std::string> body;
 };
 
-// The set a loop runs over. `range` is expanded; `draw_items` (LP-3a) runs
-// inside one material pass; `view_axis` (LP-Vb) is recognised and refused by
-// name.
+// The set a loop runs over. `range` and `view_axis` (LP-Vb) are expanded;
+// `draw_items` (LP-3a) runs inside one material pass.
 enum class GraphLoopSet : std::uint8_t { range, view_axis, draw_items, unknown };
 enum class GraphLoopTier : std::uint8_t { expand, draw_loop };
 std::string graphLoopTierName(GraphLoopTier tier);
@@ -130,6 +130,12 @@ struct GraphLoopShape {
     // LP-1b: `over.range.count` written as an expression, evaluated at the
     // resolution stage (graphLoopCount) with the composed targets' constants.
     std::optional<nlohmann::json> range_count_expression;
+    // LP-Vb, `over: {"view_axis": {"family", "axis"}}`: the elements are the
+    // values 0..length-1 of one axis of a view family (docs/design_graph_loops.md
+    // 7.1). The length is the family provider's when the graph is resolved
+    // (expandRenderGraphLoops); an axis known only per frame is refused there.
+    std::string view_family;
+    std::string view_axis;
     // The count is wired to a value that changes per frame
     // (`"count": {"node", "port"}`): refused as per_frame_value.
     bool per_frame_count = false;
@@ -181,7 +187,8 @@ struct GraphLoopBodyTraits {
 // answers `expand` for `range` over render/value bodies and refuses the rest;
 // LP-3a answers `draw_loop` for `draw_items` over draw.* bodies (reasons
 // resource_in_draw_body, mixed_body, carry_in_draw_loop, limit_in_draw_loop);
-// LP-Vb adds view_axis.
+// LP-Vb answers `expand` for `view_axis` as for `range` (whether the axis is
+// known when the graph is recompiled is decided when it is resolved).
 GraphLoopTier classifyGraphLoopTier(const GraphLoopShape &shape,
                                     const std::vector<GraphLoopBodyTraits> &bodies);
 
@@ -205,7 +212,7 @@ std::int64_t graphLoopCount(const GraphLoopShape &shape, const GraphLoopConstant
 // branch (its `when` sees element, index and count). More than
 // graphLoopIterationLimit elements is graph.loop_expansion_limit@1 {node,
 // count, limit}. `count` is the set's length (graphLoopCount; LP-Vb an axis
-// length).
+// length, which only the resolution stage knows).
 std::vector<GraphLoopElement> graphLoopElements(const GraphLoopShape &shape, std::int64_t count,
                                                 const GraphLoopConstants &constants = {});
 

@@ -35,6 +35,12 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "LP-Vb the shipped cube capture loop matches the cube feature per face and receives the shadow",
+    "[golden][headless][lpvb][view-select][cube]") {
+    GoldenHarness::runCubeLoopEquivalence();
+}
+
+TEST_CASE(
     "LP-Va view_select that matches no view completes like an inactive node",
     "[golden][headless][lpva][view-select][barrier]") {
     GoldenHarness::runViewSelectZeroMatch();

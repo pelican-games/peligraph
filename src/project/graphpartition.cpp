@@ -108,6 +108,12 @@ void expandLoopValues(ExpandedGraphDocument &values, const ExpandedGraphDocument
     Json added = Json::array();
     for (const auto &[loop, nodes] : templates) {
         const auto &expansion = graph.loops.at(loop);
+        // LP-Vb: a view axis's length is the family provider's, known only
+        // when the render graph is resolved; the values are laid out before.
+        if (expansion.shape.set == GraphLoopSet::view_axis)
+            throw graphLoopExpressionInvalid(
+                loop, (Json::json_pointer{expansion.shape.pointer} / "parameters" / "over" / "view_axis").to_string(),
+                graphLoopExpressionNotStatic);
         auto &table = tables[loop];
         table.count = 0;
         const auto elements = graphLoopElements(expansion.shape, graphLoopCount(expansion.shape, {}), {});

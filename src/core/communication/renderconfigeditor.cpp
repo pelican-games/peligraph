@@ -18,6 +18,7 @@
 #include "../renderingpass/passshaderdefines.hpp"
 #include "../loader/engineresources.hpp"
 #include "../renderingpass/frameplanner.hpp"
+#include "../renderer/viewfamilyproviderregistry.hpp"
 #include "../renderingpass/passdefinitionjsonparser.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../renderingpass/rendertargetjsonparser.hpp"
@@ -1173,6 +1174,8 @@ OrderedJson RenderConfigEditorService::materializeRenderFeature(const std::strin
             .applied_integration = [&](std::string_view ref, const Json &fragment) {
                 if (ref == reference) include_overrides(fragment);
             },
+            // LP-Vb: a graph.loop over view_axis is sized by the providers.
+            .view_axis_length = renderGraphViewAxisLengthResolver(),
         });
         if (!materialized) return rejection("feature_not_found", "The selected feature was not composed");
         features[index] = destination;

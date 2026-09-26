@@ -706,6 +706,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `graph.view_select_primary_family@1` | 組み直し | `{pass, family}`(`$main` など二次でない family。LP-Va) |
 | `graph.view_select_runtime_axis@1` | 組み直し | `{pass, family, axis}` |
 | `graph.view_select_needs_target_plan@1` | 組み直し | `{pass}` |
+| `view_axis` の拒否(LP-Vb) | 組み直し / 編集 | 実行時の軸は `graph.loop_tier_unsupported@1 {node, reason: set_unsupported}`、無い軸は `graph.view_select_axis_unknown@1 {pass: <loop id>, family, axis}`、body に value node があれば `graph.loop_expression_invalid@1 {reason: not_static}` |
 | `render_feature.pass_replacement_unknown@1` | 組み直し | `{feature, pass}` |
 | `graph.node_missing@1`(置き換え先) | 組み直し | `{node, feature, pass}`(LP-0d) |
 
@@ -862,9 +863,9 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 5. **v0 の WP の本数と所要**
    - 15 本は、v0 の残りの作業として最大の塊になる。
    - 着地の順は §11 の前提の順。LP-Va と LP-2 は、ほかと並べて走らせられる。
-6. **置き場所を指定した graph の pass と surface_resources**(LP-0b で発見。**LP-3a で解決**: 配置を surface resources の選択の前へ移した。expand ループの展開で入る pass は今も選択の後)
+6. **置き場所を指定した graph の pass と surface_resources**(LP-0b で発見。**解決**: LP-3a で配置を選択の前へ、LP-Vb でループの展開後に回ごとの copy の中で選択をやり直す)
    - 置き場所を指定した graph の pass は、解決の段で `applySurfaceResourceContracts`(fullscreen_consumers と material の選択)の後に入るので、消費側として選ばれない。
    - LP-3a の `render.material_pass` を `insert` で置くと、影の map などが結ばれない。LP-3a で、配置を surface resources の前に移すか、配置の後に選択をやり直す。
-7. **置き換えた consumer の pass と surface_resources**(LP-3a と LP-0d の merge で判明)
+7. **置き換えた consumer の pass と surface_resources**(LP-3a と LP-0d の merge で判明。**LP-Vb で解決**: 置き換えた consumer の名前を `material_consumers` / `fullscreen_consumers` から外し、展開後に選択をやり直す)
    - `pass_replacements` の置き換えは loop の展開の後(surface resources の消費側の選択より後)に行う。そのため、feature の consumer の pass(影を受ける material pass など)を graph の pass で置き換えると、置き換え先は影などを受けない(producer の置き換えは問題ない)。`material_consumers` / `fullscreen_consumers` の名前も写していない(LP-0d)。LP-Vb(cube の material pass を置き換える)で、置き換えの後に消費側の選択をやり直すか、名前を写す。
    - `pass_replacements` の置き換え先に draw_loop の id は書けない(`render.material_pass` の id を書く)。

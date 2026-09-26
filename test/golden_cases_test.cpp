@@ -50,6 +50,11 @@ TEST_CASE("LP-0e a render.shadow_depth graph node in shadow_depth's place matche
     GoldenHarness::runGraphShadowDepthEquivalence();
 }
 
+TEST_CASE("LP-Vb the shipped cascade loop matches the shadow feature per layer",
+          "[golden][headless][lpvb][view-select][shadow]") {
+    GoldenHarness::runCascadeLoopShadowEquivalence();
+}
+
 TEST_CASE(
     "multiple directional lights cast matching forward and deferred shadows",
     "[golden][headless][shadow][wp242a]") {

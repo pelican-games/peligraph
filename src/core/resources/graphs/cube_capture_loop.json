@@ -1,0 +1,641 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "decomposes": {
+    "feature": "engine://features/cube_capture.json",
+    "pass_replacements": {
+      "cube_capture_geometry": "cube_capture_faces",
+      "cube_capture_ssao": "cube_capture_faces",
+      "cube_capture_ssao_blur": "cube_capture_faces",
+      "cube_capture_lighting": "cube_capture_faces",
+      "cube_capture_forward_opaque": "cube_capture_faces",
+      "cube_capture_snapshot_opaque_color": "cube_capture_faces",
+      "cube_capture_snapshot_opaque_depth": "cube_capture_faces",
+      "cube_capture_forward_transparent": "cube_capture_faces"
+    }
+  },
+  "definitions": {
+    "cube_capture_face": {
+      "nodes": [
+        {
+          "id": "albedo_target",
+          "op": "render.target_ref",
+          "parameters": {
+            "name": "cube_capture_albedo",
+            "type": {
+              "semantic": "pelican.render.legacy_opaque_image@1",
+              "arguments": {}
+            }
+          },
+          "outputs": [
+            "resource"
+          ]
+        },
+        {
+          "id": "normal_target",
+          "op": "render.target_ref",
+          "parameters": {
+            "name": "cube_capture_normal",
+            "type": {
+              "semantic": "pelican.render.legacy_opaque_image@1",
+              "arguments": {}
+            }
+          },
+          "outputs": [
+            "resource"
+          ]
+        },
+        {
+          "id": "material_target",
+          "op": "render.target_ref",
+          "parameters": {
+            "name": "cube_capture_material",
+            "type": {
+              "semantic": "pelican.render.legacy_opaque_image@1",
+              "arguments": {}
+            }
+          },
+          "outputs": [
+            "resource"
+          ]
+        },
+        {
+          "id": "worldpos_target",
+          "op": "render.target_ref",
+          "parameters": {
+            "name": "cube_capture_worldpos",
+            "type": {
+              "semantic": "pelican.render.legacy_opaque_image@1",
+              "arguments": {}
+            }
+          },
+          "outputs": [
+            "resource"
+          ]
+        },
+        {
+          "id": "emissive_target",
+          "op": "render.target_ref",
+          "parameters": {
+            "name": "cube_capture_emissive",
+            "type": {
+              "semantic": "pelican.render.legacy_opaque_image@1",
+              "arguments": {}
+            }
+          },
+          "outputs": [
+            "resource"
+          ]
+        },
+        {
+          "id": "depth_target",
+          "op": "render.target_ref",
+          "parameters": {
+            "name": "cube_capture_depth",
+            "type": {
+              "semantic": "pelican.render.depth@1",
+              "arguments": {
+                "representation": "device",
+                "space": "projection",
+                "topology": "two_d_array"
+              }
+            }
+          },
+          "outputs": [
+            "resource"
+          ]
+        },
+        {
+          "id": "ao_target",
+          "op": "render.target_ref",
+          "parameters": {
+            "name": "cube_capture_ao",
+            "type": {
+              "semantic": "pelican.render.legacy_opaque_image@1",
+              "arguments": {}
+            }
+          },
+          "outputs": [
+            "resource"
+          ]
+        },
+        {
+          "id": "ao_blur_target",
+          "op": "render.target_ref",
+          "parameters": {
+            "name": "cube_capture_ao_blur",
+            "type": {
+              "semantic": "pelican.render.legacy_opaque_image@1",
+              "arguments": {}
+            }
+          },
+          "outputs": [
+            "resource"
+          ]
+        },
+        {
+          "id": "color_target",
+          "op": "render.target_ref",
+          "parameters": {
+            "name": "cube_capture_color",
+            "type": {
+              "semantic": "pelican.render.legacy_opaque_image@1",
+              "arguments": {}
+            }
+          },
+          "outputs": [
+            "resource"
+          ]
+        },
+        {
+          "id": "opaque_color_target",
+          "op": "render.target_ref",
+          "parameters": {
+            "name": "cube_capture_opaque_color",
+            "type": {
+              "semantic": "pelican.render.legacy_opaque_image@1",
+              "arguments": {}
+            }
+          },
+          "outputs": [
+            "resource"
+          ]
+        },
+        {
+          "id": "opaque_depth_target",
+          "op": "render.target_ref",
+          "parameters": {
+            "name": "cube_capture_opaque_depth",
+            "type": {
+              "semantic": "pelican.render.depth@1",
+              "arguments": {
+                "representation": "device",
+                "space": "projection",
+                "topology": "two_d_array"
+              }
+            }
+          },
+          "outputs": [
+            "resource"
+          ]
+        },
+        {
+          "id": "geometry",
+          "op": "render.material_pass",
+          "parameters": {
+            "pass_set": "main_render",
+            "view_family": "$capture/cube",
+            "view_select": {
+              "face": {
+                "$expr": "element"
+              }
+            },
+            "material_contract": "deferred_geometry_v1",
+            "resolution_domain": "independent",
+            "depth_store_op": "store"
+          },
+          "inputs": {
+            "albedo": {
+              "node": "albedo_target",
+              "port": "resource"
+            },
+            "normal": {
+              "node": "normal_target",
+              "port": "resource"
+            },
+            "material": {
+              "node": "material_target",
+              "port": "resource"
+            },
+            "worldpos": {
+              "node": "worldpos_target",
+              "port": "resource"
+            },
+            "emissive": {
+              "node": "emissive_target",
+              "port": "resource"
+            },
+            "depth": {
+              "node": "depth_target",
+              "port": "resource"
+            }
+          },
+          "outputs": []
+        },
+        {
+          "id": "ssao",
+          "op": "render.fullscreen",
+          "parameters": {
+            "pass_set": "main_render",
+            "view_family": "$capture/cube",
+            "view_select": {
+              "face": {
+                "$expr": "element"
+              }
+            },
+            "after": [
+              "geometry"
+            ],
+            "resolution_domain": "independent",
+            "push_constants": "projection_view",
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://ssao"
+            },
+            "clear_color": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "ports": {
+              "world": {
+                "kind": "image",
+                "type": {
+                  "semantic": "pelican.render.legacy_opaque_image@1",
+                  "arguments": {}
+                },
+                "access": "read",
+                "view": "per_view"
+              },
+              "normal": {
+                "kind": "image",
+                "type": {
+                  "semantic": "pelican.render.legacy_opaque_image@1",
+                  "arguments": {}
+                },
+                "access": "read",
+                "view": "per_view"
+              },
+              "color": {
+                "kind": "image",
+                "type": {
+                  "semantic": "pelican.render.legacy_opaque_image@1",
+                  "arguments": {}
+                },
+                "access": "write",
+                "attachment": "color",
+                "location": 0
+              }
+            }
+          },
+          "inputs": {
+            "world": {
+              "node": "worldpos_target",
+              "port": "resource"
+            },
+            "normal": {
+              "node": "normal_target",
+              "port": "resource"
+            },
+            "color": {
+              "node": "ao_target",
+              "port": "resource"
+            }
+          },
+          "outputs": [
+            "color"
+          ]
+        },
+        {
+          "id": "ssao_blur",
+          "op": "render.fullscreen",
+          "parameters": {
+            "pass_set": "main_render",
+            "view_family": "$capture/cube",
+            "view_select": {
+              "face": {
+                "$expr": "element"
+              }
+            },
+            "after": [
+              "ssao"
+            ],
+            "resolution_domain": "independent",
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://ssao_blur"
+            },
+            "clear_color": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ],
+            "ports": {
+              "ssaoInput": {
+                "kind": "image",
+                "type": {
+                  "semantic": "pelican.render.legacy_opaque_image@1",
+                  "arguments": {}
+                },
+                "access": "read",
+                "view": "per_view"
+              },
+              "color": {
+                "kind": "image",
+                "type": {
+                  "semantic": "pelican.render.legacy_opaque_image@1",
+                  "arguments": {}
+                },
+                "access": "write",
+                "attachment": "color",
+                "location": 0
+              }
+            }
+          },
+          "inputs": {
+            "ssaoInput": {
+              "node": "ao_target",
+              "port": "resource"
+            },
+            "color": {
+              "node": "ao_blur_target",
+              "port": "resource"
+            }
+          },
+          "outputs": [
+            "color"
+          ]
+        },
+        {
+          "id": "lighting",
+          "op": "render.fullscreen",
+          "parameters": {
+            "pass_set": "main_render",
+            "view_family": "$capture/cube",
+            "view_select": {
+              "face": {
+                "$expr": "element"
+              }
+            },
+            "after": [
+              "ssao_blur"
+            ],
+            "inherit_bindings_from": "deferred_lighting",
+            "resolution_domain": "independent",
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://fullscreen"
+            },
+            "push_constants": "camera_position",
+            "uses_light_data": true,
+            "ports": {
+              "albedo": {
+                "kind": "image",
+                "type": {
+                  "semantic": "pelican.render.legacy_opaque_image@1",
+                  "arguments": {}
+                },
+                "access": "read",
+                "binding": "input",
+                "input_index": 0
+              },
+              "normal": {
+                "kind": "image",
+                "type": {
+                  "semantic": "pelican.render.legacy_opaque_image@1",
+                  "arguments": {}
+                },
+                "access": "read",
+                "binding": "input",
+                "input_index": 1
+              },
+              "material": {
+                "kind": "image",
+                "type": {
+                  "semantic": "pelican.render.legacy_opaque_image@1",
+                  "arguments": {}
+                },
+                "access": "read",
+                "binding": "input",
+                "input_index": 2
+              },
+              "worldpos": {
+                "kind": "image",
+                "type": {
+                  "semantic": "pelican.render.legacy_opaque_image@1",
+                  "arguments": {}
+                },
+                "access": "read",
+                "binding": "input",
+                "input_index": 3
+              },
+              "emissive": {
+                "kind": "image",
+                "type": {
+                  "semantic": "pelican.render.legacy_opaque_image@1",
+                  "arguments": {}
+                },
+                "access": "read",
+                "binding": "input",
+                "input_index": 4
+              },
+              "ao": {
+                "kind": "image",
+                "type": {
+                  "semantic": "pelican.render.legacy_opaque_image@1",
+                  "arguments": {}
+                },
+                "access": "read",
+                "binding": "input",
+                "input_index": 5
+              },
+              "color": {
+                "kind": "image",
+                "type": {
+                  "semantic": "pelican.render.legacy_opaque_image@1",
+                  "arguments": {}
+                },
+                "access": "write",
+                "attachment": "color",
+                "location": 0
+              }
+            }
+          },
+          "inputs": {
+            "albedo": {
+              "node": "albedo_target",
+              "port": "resource"
+            },
+            "normal": {
+              "node": "normal_target",
+              "port": "resource"
+            },
+            "material": {
+              "node": "material_target",
+              "port": "resource"
+            },
+            "worldpos": {
+              "node": "worldpos_target",
+              "port": "resource"
+            },
+            "emissive": {
+              "node": "emissive_target",
+              "port": "resource"
+            },
+            "ao": {
+              "node": "ao_blur_target",
+              "port": "resource"
+            },
+            "color": {
+              "node": "color_target",
+              "port": "resource"
+            }
+          },
+          "outputs": [
+            "color"
+          ]
+        },
+        {
+          "id": "forward_opaque",
+          "op": "render.material_pass",
+          "parameters": {
+            "pass_set": "main_render",
+            "view_family": "$capture/cube",
+            "view_select": {
+              "face": {
+                "$expr": "element"
+              }
+            },
+            "after": [
+              "lighting"
+            ],
+            "material_contract": "forward_opaque_v1",
+            "inherit_bindings_from": "forward_opaque",
+            "resolution_domain": "independent",
+            "color_load_op": "load",
+            "depth_load_op": "load",
+            "depth_store_op": "store"
+          },
+          "inputs": {
+            "color": {
+              "node": "color_target",
+              "port": "resource"
+            },
+            "depth": {
+              "node": "depth_target",
+              "port": "resource"
+            }
+          },
+          "outputs": []
+        },
+        {
+          "id": "snapshot_opaque_color",
+          "op": "render.snapshot_copy",
+          "parameters": {
+            "pass_set": "main_render",
+            "view_family": "$capture/cube",
+            "view_select": {
+              "face": {
+                "$expr": "element"
+              }
+            },
+            "snapshot_after": "forward_opaque"
+          },
+          "inputs": {
+            "source": {
+              "node": "color_target",
+              "port": "resource"
+            },
+            "destination": {
+              "node": "opaque_color_target",
+              "port": "resource"
+            }
+          },
+          "outputs": []
+        },
+        {
+          "id": "snapshot_opaque_depth",
+          "op": "render.snapshot_copy",
+          "parameters": {
+            "pass_set": "main_render",
+            "view_family": "$capture/cube",
+            "view_select": {
+              "face": {
+                "$expr": "element"
+              }
+            },
+            "after": [
+              "snapshot_opaque_color"
+            ],
+            "snapshot_after": "forward_opaque"
+          },
+          "inputs": {
+            "source": {
+              "node": "depth_target",
+              "port": "resource"
+            },
+            "destination": {
+              "node": "opaque_depth_target",
+              "port": "resource"
+            }
+          },
+          "outputs": []
+        },
+        {
+          "id": "forward_transparent",
+          "op": "render.material_pass",
+          "parameters": {
+            "pass_set": "main_render",
+            "view_family": "$capture/cube",
+            "view_select": {
+              "face": {
+                "$expr": "element"
+              }
+            },
+            "after": [
+              "snapshot_opaque_depth"
+            ],
+            "material_contract": "forward_transparent_v1",
+            "inherit_bindings_from": "forward_transparent",
+            "resolution_domain": "independent",
+            "screen_inputs": {
+              "opaque_color": "cube_capture_opaque_color",
+              "opaque_depth": "cube_capture_opaque_depth",
+              "scene_depth": "cube_capture_opaque_depth",
+              "linear_view_depth": "cube_capture_opaque_depth"
+            },
+            "color_load_op": "load",
+            "depth_load_op": "load",
+            "depth_store_op": "store"
+          },
+          "inputs": {
+            "color": {
+              "node": "color_target",
+              "port": "resource"
+            },
+            "depth": {
+              "node": "depth_target",
+              "port": "resource"
+            }
+          },
+          "outputs": []
+        }
+      ],
+      "outputs": {}
+    }
+  },
+  "nodes": [
+    {
+      "id": "cube_capture_faces",
+      "op": "graph.loop",
+      "parameters": {
+        "over": {
+          "view_axis": {
+            "family": "$capture/cube",
+            "axis": "face"
+          }
+        },
+        "branches": [
+          {
+            "body": "cube_capture_face"
+          }
+        ]
+      },
+      "inputs": {},
+      "outputs": []
+    }
+  ],
+  "outputs": {}
+}

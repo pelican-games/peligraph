@@ -40,6 +40,8 @@ void runSsaoXrSequentialGolden();
 void runSsaoXrMultiviewGolden();
 void runSsaoCubeGolden();
 void runCubeViewSelectEquivalence();
+void runCubeLoopEquivalence();
+void runCascadeLoopShadowEquivalence();
 void runViewSelectZeroMatch();
 void runSsaoPlanarGolden();
 void runSsaoBlurFlatOracle();

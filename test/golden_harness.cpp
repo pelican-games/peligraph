@@ -3590,7 +3590,17 @@ bool isViewSelectShadowGoldenMode(std::string_view mode) {
            mode == "shadow_view_select_l2_feature" ||
            mode == "shadow_view_select_l2_split" ||
            mode == "shadow_view_select_l1_graph" ||
-           mode == "shadow_view_select_l2_graph";
+           mode == "shadow_view_select_l2_graph" ||
+           mode == "shadow_view_select_l1_loop" ||
+           mode == "shadow_view_select_l2_loop";
+}
+
+// LP-Vb acceptance 2 ("_loop"): the feature's shadow_depth replaced by the
+// shipped engine://graphs/shadow_cascade_loop.json, a graph.loop over the
+// cascade axis whose body is one render.shadow_depth.
+bool viewSelectShadowLoop(std::string_view mode) {
+    return isViewSelectShadowGoldenMode(mode) &&
+           mode.ends_with("_loop");
 }
 
 // LP-0e acceptance 1 ("_graph"): the feature's shadow_depth replaced
@@ -3829,6 +3839,15 @@ void writeBLayerShadowProject(const std::filesystem::path &root,
                 }
             }
             REQUIRE(replaced);
+            writeTextFile(root / "passes" / "main.json", main.dump(2));
+        }
+        if (viewSelectShadowLoop(mode)) {
+            // LP-Vb: the shipped template, taken in as a project takes it in.
+            const auto main = Pelican::TestSupport::lp1cApplyDecomposition(
+                nlohmann::json::parse(
+                    readTextFile(root / "passes" / "main.json")),
+                nlohmann::json::parse(engineResourceOrThrow(
+                    "graphs/shadow_cascade_loop.json")));
             writeTextFile(root / "passes" / "main.json", main.dump(2));
         }
         return;
@@ -9038,7 +9057,29 @@ enum class Wp338SsaoScenario {
     // LP-Va: the cube_capture feature with its 8 passes hand-expanded into
     // 6 face groups (48 passes), each pass restricted by view_select.
     cube_view_select,
+    // LP-Vb: the cube_capture feature with its 8 passes replaced by the
+    // shipped engine://graphs/cube_capture_loop.json (a graph.loop over the
+    // face axis).
+    cube_loop,
+    // LP-Vb: the lit cube capture color (a directional light), without the
+    // shadow feature, with it, and with it and the shipped loop in place of
+    // the feature's passes (the loop's lighting receives the shadow map).
+    cube_light,
+    cube_shadow,
+    cube_loop_shadow,
 };
+
+// LP-Vb: the scenarios that capture the cube with the feature's passes
+// replaced by the shipped loop, and those lit by a directional light.
+bool wp338CubeLoop(Wp338SsaoScenario scenario) {
+    return scenario == Wp338SsaoScenario::cube_loop ||
+           scenario == Wp338SsaoScenario::cube_loop_shadow;
+}
+bool wp338CubeLit(Wp338SsaoScenario scenario) {
+    return scenario == Wp338SsaoScenario::cube_light ||
+           scenario == Wp338SsaoScenario::cube_shadow ||
+           scenario == Wp338SsaoScenario::cube_loop_shadow;
+}
 
 struct Wp338SsaoContract {
     std::string_view golden_name;
@@ -9094,6 +9135,30 @@ Wp338SsaoContract wp338SsaoContract(
         return {
             .golden_name = "cube_view_select",
             .target = "cube_capture_ao",
+            .layer_count = 6,
+        };
+    case Wp338SsaoScenario::cube_loop:
+        return {
+            .golden_name = "cube_loop",
+            .target = "cube_capture_ao",
+            .layer_count = 6,
+        };
+    case Wp338SsaoScenario::cube_light:
+        return {
+            .golden_name = "cube_light",
+            .target = "cube_capture_color",
+            .layer_count = 6,
+        };
+    case Wp338SsaoScenario::cube_shadow:
+        return {
+            .golden_name = "cube_shadow",
+            .target = "cube_capture_color",
+            .layer_count = 6,
+        };
+    case Wp338SsaoScenario::cube_loop_shadow:
+        return {
+            .golden_name = "cube_loop_shadow",
+            .target = "cube_capture_color",
             .layer_count = 6,
         };
     }
@@ -9177,7 +9242,8 @@ void writeWp338SsaoProject(
             config.erase("material_routing");
         }
     }
-    if (scenario == Wp338SsaoScenario::cube) {
+    if (scenario == Wp338SsaoScenario::cube || wp338CubeLoop(scenario) ||
+        wp338CubeLit(scenario)) {
         config["features"].push_back({
             {"ref", "engine://features/cube_capture.json"},
             {"parameters",
@@ -9187,6 +9253,15 @@ void writeWp338SsaoProject(
                  {"position_y", -0.1},
                  {"position_z", 2.0},
              }},
+        });
+    }
+    // LP-Vb: after cube_capture, so shadow_depth (inserted at the beginning)
+    // runs before the capture's lighting reads its map.
+    if (scenario == Wp338SsaoScenario::cube_shadow ||
+        scenario == Wp338SsaoScenario::cube_loop_shadow) {
+        config["features"].push_back({
+            {"ref", "engine://features/shadow_directional.json"},
+            {"parameters", {{"cascade_count", 2}, {"resolution", 256}}},
         });
     }
     if (scenario == Wp338SsaoScenario::cube_view_select) {
@@ -9313,9 +9388,17 @@ void writeWp338SsaoProject(
         }.dump(2));
     config["features"].push_back(
         "project://features/" + feature_file);
+    auto graph_root =
+        Pelican::TestSupport::renderGraphRootWithTaskFeature(config, root);
+    if (wp338CubeLoop(scenario)) {
+        // LP-Vb: the shipped template, taken in as a project takes it in.
+        graph_root = Pelican::TestSupport::lp1cApplyDecomposition(
+            std::move(graph_root),
+            nlohmann::json::parse(engineResourceOrThrow(
+                "graphs/cube_capture_loop.json")));
+    }
     writeTextFile(
-        root / "passes" / "main.json",
-        Pelican::TestSupport::renderGraphRootWithTaskFeature(config, root).dump(2));
+        root / "passes" / "main.json", graph_root.dump(2));
 }
 
 CommonPolygonVertData makeWp338SsaoQuad(
@@ -9478,6 +9561,18 @@ RenderTargetReadback captureWp338Ssao(
                     renderer, true);
             }
             placeWp338SsaoScene();
+            if (wp338CubeLit(scenario)) {
+                // LP-Vb: one slanted sun, so the blockers shadow the ground
+                // the capture's -Z face sees.
+                GET_MODULE(LightContainer).load({LightLoadEntry{
+                    .name = "Sun",
+                    .component = LightCodecData{
+                        .type = LightCodecType::Directional,
+                        .direction = {0.45f, -0.35f, -1.0f},
+                        .intensity = 4.0f,
+                        .color = {1.0f, 1.0f, 1.0f}},
+                }});
+            }
             time.advance();
 
             if (contract.multiview) {
@@ -9681,6 +9776,101 @@ void requireCubeViewSelectEquivalence() {
         INFO("face " << face);
         REQUIRE(feature_by_face[face].size() == 8);
         REQUIRE(expanded_by_face[face] == feature_by_face[face]);
+    }
+}
+
+// LP-Vb acceptances 1 and 3. The shipped cube capture loop
+// (engine://graphs/cube_capture_loop.json: a graph.loop over the face axis in
+// the place of the feature's 8 passes) must give face f the feature's SSAO
+// bytes and, for face f, the feature's pass sequence; the order across faces
+// is face-major by design. Lit by a directional light with the shadow
+// feature, its lighting copies -- which replaced the feature's shadow
+// consumer -- must give the feature's cube color, which the shadow changes.
+void requireCubeLoopEquivalence() {
+    nlohmann::json feature_trace;
+    nlohmann::json loop_trace;
+    const auto feature = captureWp338Ssao(
+        Wp338SsaoScenario::cube, &feature_trace);
+    const auto loop = captureWp338Ssao(
+        Wp338SsaoScenario::cube_loop, &loop_trace);
+    const auto layer_bytes =
+        static_cast<std::size_t>(wp338SsaoExtent) *
+        wp338SsaoExtent;
+    REQUIRE(feature.bytes.size() == layer_bytes * 6);
+    REQUIRE(loop.bytes.size() == feature.bytes.size());
+    // The feature run is still the pre-migration image.
+    REQUIRE(feature.bytes ==
+            readBinaryFile(wp338SsaoGoldenPath("cube")));
+    for (std::size_t face = 0; face < 6; ++face) {
+        INFO("face " << face);
+        REQUIRE(std::equal(
+            loop.bytes.begin() + face * layer_bytes,
+            loop.bytes.begin() + (face + 1) * layer_bytes,
+            feature.bytes.begin() + face * layer_bytes));
+    }
+
+    const auto capture_nodes =
+        [](const nlohmann::json &trace) {
+            std::vector<nlohmann::json> result;
+            for (const auto &node : trace.at("nodes")) {
+                if (node.value("view_family", std::string{}) ==
+                    "$capture/cube") {
+                    result.push_back(node);
+                }
+            }
+            return result;
+        };
+    const auto feature_nodes = capture_nodes(feature_trace);
+    const auto loop_nodes = capture_nodes(loop_trace);
+    REQUIRE(feature_nodes.size() == 48);
+    REQUIRE(loop_nodes.size() == 48);
+    std::array<std::vector<std::string>, 6> feature_by_face;
+    std::array<std::vector<std::string>, 6> loop_by_face;
+    for (const auto &node : feature_nodes) {
+        feature_by_face.at(node.at("view_index").get<std::size_t>())
+            .push_back(node.at("name").get<std::string>());
+    }
+    for (std::size_t index = 0; index < loop_nodes.size(); ++index) {
+        const auto &node = loop_nodes[index];
+        const auto face = node.at("view_index").get<std::size_t>();
+        const auto name = node.at("name").get<std::string>();
+        const auto prefix =
+            "cube_capture_faces/" + std::to_string(face) + "/";
+        INFO(name);
+        // Each copy runs once, on its own face (the loop's element), as a
+        // sequential invocation of the six-view family.
+        REQUIRE(name.starts_with(prefix));
+        REQUIRE(node.at("view_execution") == "sequential");
+        REQUIRE(node.at("logical_view_count") == 6);
+        // Face-major: the first 8 invocations are face 0, and so on.
+        REQUIRE(face == index / 8);
+        loop_by_face.at(face).push_back(
+            "cube_capture_" + name.substr(prefix.size()));
+    }
+    for (std::size_t face = 0; face < 6; ++face) {
+        INFO("face " << face);
+        REQUIRE(feature_by_face[face].size() == 8);
+        REQUIRE(loop_by_face[face] == feature_by_face[face]);
+    }
+
+    // The shadow reaches the loop's lighting as it reached the feature's.
+    const auto light = captureWp338Ssao(Wp338SsaoScenario::cube_light);
+    const auto shadow = captureWp338Ssao(Wp338SsaoScenario::cube_shadow);
+    const auto loop_shadow =
+        captureWp338Ssao(Wp338SsaoScenario::cube_loop_shadow);
+    REQUIRE(shadow.format == vk::Format::eR16G16B16A16Sfloat);
+    REQUIRE(shadow.bytes.size() == layer_bytes * 8 * 6);
+    REQUIRE(light.bytes.size() == shadow.bytes.size());
+    REQUIRE(loop_shadow.bytes.size() == shadow.bytes.size());
+    // The shadow darkens part of the capture: without it the color differs.
+    REQUIRE(light.bytes != shadow.bytes);
+    for (std::size_t face = 0; face < 6; ++face) {
+        INFO("face " << face);
+        const auto begin = face * layer_bytes * 8;
+        const auto end = (face + 1) * layer_bytes * 8;
+        REQUIRE(std::equal(loop_shadow.bytes.begin() + begin,
+                           loop_shadow.bytes.begin() + end,
+                           shadow.bytes.begin() + begin));
     }
 }
 
@@ -11213,6 +11403,16 @@ void GoldenHarness::runCubeViewSelectEquivalence() {
 #endif
 }
 
+void GoldenHarness::runCubeLoopEquivalence() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER &&     PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    requireCubeLoopEquivalence();
+#else
+    SKIP("LP-Vb cube loop equivalence requires the runtime shader compiler and standard render algorithms");
+#endif
+}
+
 void GoldenHarness::runViewSelectZeroMatch() {
     setupLogger();
     requireGoldenVulkanDevice();
@@ -11648,6 +11848,92 @@ void GoldenHarness::runGraphShadowDepthEquivalence() {
 #else
     SKIP("LP-0e graph shadow_depth equivalence requires "
          "the runtime shader compiler");
+#endif
+}
+
+// LP-Vb acceptance 2. The shipped cascade loop (one render.shadow_depth per
+// element of the cascade axis, in shadow_depth's place) must leave every
+// shadow layer, the per-layer culling and the final image unchanged, for one
+// and for two lights. With two lights the order is cascade-major (each copy
+// runs its cascade once per light); each layer is still written once.
+void GoldenHarness::runCascadeLoopShadowEquivalence() {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const auto golden_root =
+        sourceRoot() / "test/golden/shadow_b_layer_engine";
+    for (const auto lights : {1u, 2u}) {
+        const auto prefix =
+            "shadow_view_select_l" + std::to_string(lights);
+        INFO(lights << " light(s)");
+        const auto feature = renderCase(GoldenCase{
+            prefix + "_feature_runtime", prefix + "_feature",
+            golden_root, goldenWidth, goldenHeight});
+        const auto feature_observed = viewSelectShadowObservation();
+        const auto loop = renderCase(GoldenCase{
+            prefix + "_loop_runtime", prefix + "_loop",
+            golden_root, goldenWidth, goldenHeight});
+        const auto loop_observed = viewSelectShadowObservation();
+
+        const auto layers = 3u * lights;
+        REQUIRE(feature_observed.layer_depth.size() == layers);
+        REQUIRE(loop_observed.layer_depth.size() == layers);
+        for (std::uint32_t layer = 0; layer < layers; ++layer) {
+            INFO("layer " << layer);
+            REQUIRE(loop_observed.layer_depth[layer] ==
+                    feature_observed.layer_depth[layer]);
+            bool written = false;
+            for (std::size_t offset = 0;
+                 offset < loop_observed.layer_depth[layer].size();
+                 offset += sizeof(float)) {
+                float depth = 1.0f;
+                std::memcpy(&depth,
+                            loop_observed.layer_depth[layer].data() +
+                                offset,
+                            sizeof(depth));
+                written = written || depth < 0.9999f;
+            }
+            REQUIRE(written);
+        }
+        REQUIRE(loop_observed.visible_draws ==
+                feature_observed.visible_draws);
+        REQUIRE(loop.image.pixels == feature.image.pixels);
+
+        // The feature runs one shadow_depth over every view; the loop's copy
+        // for cascade c runs only on its cascade, once per light.
+        REQUIRE(feature_observed.invocations.size() == layers);
+        REQUIRE(loop_observed.invocations.size() == layers);
+        std::vector<std::uint32_t> seen;
+        for (std::size_t index = 0; index < layers; ++index) {
+            const auto &[name, view] = loop_observed.invocations[index];
+            const auto cascade = view % 3;
+            INFO(name << " view " << view);
+            REQUIRE(name == "shadow_cascades/" + std::to_string(cascade) + "/depth");
+            REQUIRE(cascade == index / lights);
+            REQUIRE(feature_observed.invocations[index].first == "shadow_depth");
+            REQUIRE(feature_observed.invocations[index].second == index);
+            seen.push_back(view);
+        }
+        std::sort(seen.begin(), seen.end());
+        for (std::uint32_t view = 0; view < layers; ++view) REQUIRE(seen[view] == view);
+        // The running generation's frame plan: the loop's three copies and
+        // its loops[] entry, no feature pass.
+        std::size_t copies = 0;
+        for (const auto &node : loop_observed.frame_plan.at("nodes")) {
+            REQUIRE(node.at("name") != "shadow_depth");
+            copies += node.at("name").get<std::string>().starts_with("shadow_cascades/");
+        }
+        REQUIRE(copies == 3);
+        bool reported = false;
+        for (const auto &entry : loop_observed.frame_plan.value("loops", nlohmann::json::array()))
+            if (entry.at("node") == "shadow_cascades") {
+                REQUIRE(entry.at("count") == 3);
+                reported = true;
+            }
+        REQUIRE(reported);
+    }
+#else
+    SKIP("LP-Vb cascade loop equivalence requires the runtime shader compiler");
 #endif
 }
 

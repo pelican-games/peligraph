@@ -1,0 +1,77 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "decomposes": {
+    "feature": "engine://features/shadow_directional.json",
+    "pass_replacements": {
+      "shadow_depth": "shadow_cascades"
+    }
+  },
+  "definitions": {
+    "shadow_cascade": {
+      "nodes": [
+        {
+          "id": "shadow_map_target",
+          "op": "render.target_ref",
+          "parameters": {
+            "name": "shadow_map",
+            "type": {
+              "semantic": "pelican.render.legacy_opaque_image@1",
+              "arguments": {}
+            }
+          },
+          "outputs": [
+            "resource"
+          ]
+        },
+        {
+          "id": "depth",
+          "op": "render.shadow_depth",
+          "parameters": {
+            "pass_set": "main_render",
+            "view_family": "$shadow/directional",
+            "view_select": {
+              "cascade": {
+                "$expr": "element"
+              }
+            },
+            "depth_store_op": "store",
+            "shader": {
+              "vertex": "engine://shadow_depth"
+            }
+          },
+          "inputs": {
+            "depth": {
+              "node": "shadow_map_target",
+              "port": "resource"
+            }
+          },
+          "outputs": []
+        }
+      ],
+      "outputs": {}
+    }
+  },
+  "nodes": [
+    {
+      "id": "shadow_cascades",
+      "op": "graph.loop",
+      "parameters": {
+        "over": {
+          "view_axis": {
+            "family": "$shadow/directional",
+            "axis": "cascade"
+          }
+        },
+        "branches": [
+          {
+            "body": "shadow_cascade"
+          }
+        ]
+      },
+      "inputs": {},
+      "outputs": []
+    }
+  ],
+  "outputs": {}
+}

@@ -710,6 +710,11 @@ bool isRenderMaterialPassParameter(std::string_view key) {
         // pass JSON reads them from (parseOptionalRegionTags), so a
         // decomposed pass keeps its tags.
         "view_family", "view_select", "region_tags", "regions",
+        // LP-Vb: the extent domain it renders in (a cube capture's passes
+        // are `independent` of the scene's), and the pass whose surface
+        // resources, material resources and screen inputs it takes when it
+        // names none of its own (resolveInheritedPassBindings).
+        "resolution_domain", "inherit_bindings_from",
         // Where it lands.
         "pass_set", "after", "before", "insert", "canonical_anchor"};
     return keys.contains(key);

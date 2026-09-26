@@ -112,6 +112,13 @@ b_embed(pelican_resources features/taa.json)
 # nodes into its own graph document; the engine never reads them itself.
 b_embed(pelican_resources graphs/bloom_loop.json)
 b_embed(pelican_resources graphs/planar_mip_chain_loop.json)
+# LP-Vb: the decomposed cube capture and directional shadow cascades, written
+# as graph.loop templates over a view axis (docs/design_graph_loops.md 7.3). A
+# project copies their definitions and nodes into its own graph document and
+# the feature instance takes `decomposes.pass_replacements`; the engine never
+# reads them itself.
+b_embed(pelican_resources graphs/cube_capture_loop.json)
+b_embed(pelican_resources graphs/shadow_cascade_loop.json)
 b_embed(pelican_resources input/editor_transform_actions.json)
 b_embed(pelican_resources input/free_camera_actions.json)
 b_embed(pelican_resources input/overlays/editor_transform_blender.json)

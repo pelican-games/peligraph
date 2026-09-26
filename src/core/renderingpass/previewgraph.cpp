@@ -4,6 +4,7 @@
 #include "renderingpassconfigloader.hpp"
 #include "renderstrategyregistry.hpp"
 #include "../../project/renderpipeline.hpp"
+#include "../renderer/viewfamilyproviderregistry.hpp"
 
 #include <optional>
 #include <stdexcept>
@@ -52,6 +53,8 @@ std::pair<CompiledRenderPipeline, nlohmann::json> resolveDataOnlyVariant(
                     return std::move(
                         generated.config);
                 },
+            // LP-Vb: a graph.loop over view_axis is sized by the providers.
+            .view_axis_length = renderGraphViewAxisLengthResolver(),
         });
     auto compiled_pipeline =
         compileRenderPipeline(resolved);

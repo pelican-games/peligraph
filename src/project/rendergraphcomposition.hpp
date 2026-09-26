@@ -2,10 +2,12 @@
 
 #include <nlohmann/json.hpp>
 #include <cstddef>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "graphloop.hpp"
@@ -199,6 +201,10 @@ struct RenderGraphFeatureContext {
     std::map<std::string, std::string> excluded_passes;
     std::map<std::string, std::string> excluded_resources;
     std::vector<RenderFeaturePassReplacement> excluded_replacements;
+    // LP-Vb: the length of a view family's axis, for a graph.loop over
+    // view_axis (the composer binds the engine's lookup to what it composed).
+    // Empty: such a loop cannot be sized and is refused.
+    std::function<RenderGraphViewAxisLength(std::string_view family, std::string_view axis)> view_axis_length;
 };
 
 // LP-1a: what the resolution stage expanded. The frame plan reports `loops`
@@ -258,8 +264,10 @@ nlohmann::json lowerRenderGraphDocument(const nlohmann::json &document,
 // LP-0d, after the expansion: every pass_replacements entry of
 // features.replacements is applied (applyRenderFeaturePassReplacements below).
 // A replacement lands after the surface resources picked their consumers: a
-// feature pass it replaces keeps no binding the selection gave it, and the
-// node that takes its place gets none (a producer is re-pointed).
+// replaced producer is re-pointed, a replaced consumer leaves the consumer
+// lists, and (LP-Vb, design 14.7) the composer picks the consumers among the
+// loops' copies right after this returns, as it picked them among the
+// composed passes (a node that is no loop was among those already).
 // A target added here without a format_class or role is given both by the
 // composer right after this returns, as every other target is.
 RenderGraphLoopResolution resolveGraphDocumentAfterComposition(nlohmann::json &composed,
@@ -354,7 +362,11 @@ void placeDeclaredRenderGraphPassRuns(nlohmann::json &config, LoweredRenderGraph
 // LP-1b: `p[]` at the element its edge's `element` names, evaluated per
 // receiving element (graph.loop_element_unknown@1 {node, port, element} --
 // the receiver and its input -- when no element with a body has that value).
-// LP-Vb plugs in at step 1 (a view axis's length).
+// LP-Vb, step 1 for a loop over view_axis: the count is the axis's length
+// (features.view_axis_length); an axis no provider of the family declares is
+// graph.view_select_axis_unknown@1 {pass: <loop>, family, axis}, an axis
+// known only per frame graph.loop_tier_unsupported@1 {node, reason:
+// set_unsupported}.
 RenderGraphLoopResolution expandRenderGraphLoops(nlohmann::json &composed,
-    const LoweredRenderGraphDocument &lowered);
+    const LoweredRenderGraphDocument &lowered, const RenderGraphFeatureContext &features = {});
 }

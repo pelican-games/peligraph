@@ -41,6 +41,8 @@ struct RenderFeatureComposeDependencies {
     std::function<void(std::string_view, const nlohmann::json &)>
         applied_integration;
     std::set<std::string> inactive_graph_scopes;
+    // LP-Vb: sizes a graph.loop over view_axis (RenderPipelineResolveDependencies).
+    RenderGraphViewAxisLengthResolver view_axis_length;
 };
 
 struct RenderFeatureComposeResult {
