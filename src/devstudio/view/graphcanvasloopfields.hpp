@@ -135,8 +135,11 @@ class GraphCanvasDrawFields final : public QWidget {
     GraphCanvasDrawFields(GraphCanvasModel &model, std::function<void()> submitted,
                           QWidget *parent = nullptr);
 
-    // The node to show, or null to hide the fields.
+    // The node to show, or null to hide the fields. LP-4d1: `scope` is where
+    // the node stands -- a draw step in a zone's body is edited in its
+    // definition while the canvas shows the root.
     void showNode(const GraphCanvasNode *node);
+    void showNode(const GraphCanvasNode *node, const std::string &scope);
 
     // "A=1\nB" -> {"A=1", "B"}: one define a line, blank lines dropped.
     static std::vector<std::string> parseDefines(const QString &text);
@@ -149,6 +152,7 @@ class GraphCanvasDrawFields final : public QWidget {
     std::function<void()> submitted_;
     std::string node_;
     std::string op_;
+    std::string scope_;
     QLabel *heading_ = nullptr;
     QComboBox *contract_ = nullptr;
     QComboBox *variant_ = nullptr;

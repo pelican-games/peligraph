@@ -1,0 +1,491 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "loop_zone_edit",
+  "description": "LP-4d1: a graph.loop drawn as a zone on the root canvas, and its body edited inside it. From a Blank project, Add loop puts a loop in the root over a new, empty body; the Graph tab draws it as a frame (graph_zone#loop). With the zone picked, Add fullscreen pass lands in the body -- scope loop_body -- and the pass is drawn inside the frame, named graph_node#loop_body/render_fullscreen. The zone is picked again by its heading (its middle is the body now); dragging the pass inside the frame writes the definition's placement and not the root's; with the count set to 2 in the Loop fields, the engine expands the loop twice, and the zone's heading and the Frame Plan's group say so. Dragging the frame writes the root's placement and leaves the body's as it was. Undo takes the frame's move back and then the body node's, each in its own document.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "File > New Project..., fired by name",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "zone_project"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the blank project's present is on the Frame Plan canvas",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the Graph tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the blank project's graph has no node yet",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 0
+    },
+    {
+      "label": "the canvas has read the new document and can edit it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add loop: a loop over a new, empty body Studio names",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addLoop"
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the loop stands in the root",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].op",
+      "value": "graph.loop"
+    },
+    {
+      "label": "its body is empty",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.loop_body.nodes.$len",
+      "value": 0
+    },
+    {
+      "label": "the loop is drawn as a zone: the inside of its frame",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#loop",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the zone's heading says what stage it runs at (nothing reported yet for an empty body)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone_label#loop/stage",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "pick the zone by its heading",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#loop"
+    },
+    {
+      "label": "the loop is picked: its fields are shown",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.count",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Add fullscreen pass, with the zone picked: into its body",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addFullscreenPass"
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the body holds the image and the pass",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.loop_body.nodes.$len",
+      "value": 2
+    },
+    {
+      "label": "and the root still holds only the loop",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 1
+    },
+    {
+      "label": "the pass is drawn inside the zone, named with its body",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#loop_body/render_fullscreen",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "no root node is named for it",
+      "expect": "list_count",
+      "pattern": "pelican.graphCanvasView::graph_node#render_fullscreen",
+      "value": 0
+    },
+    {
+      "label": "pick the zone again, by its heading: its middle holds the body's nodes now",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#loop"
+    },
+    {
+      "label": "the Loop fields are shown for it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.count",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "type a count of 2",
+      "cmd": "type",
+      "name": "pelican.graphCanvasLoop.count",
+      "text": "2"
+    },
+    {
+      "label": "Enter sends it",
+      "cmd": "key",
+      "name": "pelican.graphCanvasLoop.count",
+      "sequence": "Return"
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the document says 2",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.over.range.count",
+      "value": 2
+    },
+    {
+      "label": "the root has no placement yet",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "layout.$len",
+      "value": 0
+    },
+    {
+      "label": "move the pass inside the zone, by its heading",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_node_header#loop_body/render_fullscreen"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_zone#loop"
+      },
+      "steps": 6
+    },
+    {
+      "label": "the placement is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the body's definition holds the pass's place",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.definitions.loop_body.layout.nodes",
+      "op": "contains",
+      "value": "render_fullscreen",
+      "retry_ms": 10000
+    },
+    {
+      "label": "and the root still has no placement",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "layout.$len",
+      "value": 0
+    },
+    {
+      "label": "the body's placement, remembered",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.definitions.loop_body.layout",
+      "remember": "body_layout"
+    },
+    {
+      "label": "the engine expands the loop twice",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].count",
+      "value": 2,
+      "retry_ms": 60000
+    },
+    {
+      "label": "the zone's heading reads the report",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone_label#loop/stage",
+      "contains": "expand ×2",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "a picture of the Graph tab with the zone",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "loop_zone_edit_zone.png"
+    },
+    {
+      "label": "the Frame Plan tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "the Frame Plan is a snapshot: read it again after the Graph tab's edits",
+      "cmd": "click",
+      "name": "pelican.framePlanRefresh"
+    },
+    {
+      "label": "the loop's two copies are one group",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::group#__pelican_group__:loop:loop",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "named after the loop, with its count",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::group_label#__pelican_group__:loop:loop",
+      "contains": "loop loop ×2",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "back to the Graph tab",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the zone is still drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#loop",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "move the zone by its heading",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_node_header#loop"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_zone#loop"
+      },
+      "steps": 6
+    },
+    {
+      "label": "the placement is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the root holds the zone's place",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.layout.nodes",
+      "op": "contains",
+      "value": "loop",
+      "retry_ms": 10000
+    },
+    {
+      "label": "and not the body's nodes",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.layout.nodes",
+      "op": "excludes",
+      "value": "render_fullscreen"
+    },
+    {
+      "label": "the body came along without being written: its placement is what it was",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.definitions.loop_body.layout",
+      "value_of": "body_layout"
+    },
+    {
+      "label": "the pass is still inside the zone",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#loop_body/render_fullscreen",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "a picture of the moved zone",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "loop_zone_edit_moved.png"
+    },
+    {
+      "label": "Undo is available",
+      "cmd": "wait",
+      "name": "pelican.graphCanvas.undoButton",
+      "enabled": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Undo the zone's move",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.undo"
+    },
+    {
+      "label": "the undo is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the root has no placement again",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "layout.$len",
+      "value": 0,
+      "retry_ms": 10000
+    },
+    {
+      "label": "and the body's is untouched",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.definitions.loop_body.layout",
+      "value_of": "body_layout"
+    },
+    {
+      "label": "Undo is available again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvas.undoButton",
+      "enabled": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Undo the pass's move inside the zone",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.undo"
+    },
+    {
+      "label": "the undo is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the body has no placement again",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.definitions.loop_body",
+      "op": "excludes",
+      "value": "layout",
+      "retry_ms": 10000
+    },
+    {
+      "label": "the pass is drawn inside the zone still",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#loop_body/render_fullscreen",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "a picture after the two Undos",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "loop_zone_edit_undone.png"
+    }
+  ]
+}

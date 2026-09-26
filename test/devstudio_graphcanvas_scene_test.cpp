@@ -1,4 +1,5 @@
 #include "graphcanvaswidget.hpp"
+#include "graphcomposition.hpp"
 #include "graphmodule.hpp"
 #include "graphpartition.hpp"
 #include "studiotheme.hpp"
@@ -3492,4 +3493,471 @@ TEST_CASE("LP-4e the Graph tab selects the loop a decompose made once a document
     answerRpc(QStringLiteral("get_graph_instances"), moved);
     REQUIRE(widget.scene().selectedNode().has_value());
     CHECK(*widget.scene().selectedNode() == "forward_opaque_draws");
+}
+
+// --- LP-4d1: the loop zone.
+
+namespace {
+
+// A root with a constant `a`, a curve `curve` and a loop `steps` over two
+// branches: element 0 runs `first` (a boundary input `target`, a constant
+// `a` and a sum of the two -- the body's output `out`), the else runs `rest`
+// (the same boundary, a constant `c` and a curve `curve`). The root's `a` and
+// `curve` share their ids with body nodes on purpose.
+Json zoneDocument(bool else_only = false) {
+    const auto constant = [](const char *id, double value) {
+        return Json{{"id", id}, {"op", "value.constant"},
+                    {"parameters", {{"value", value}}}, {"outputs", Json::array({"value"})}};
+    };
+    const auto curve = [](const char *id, double time) {
+        return Json{{"id", id}, {"op", "value.curve"},
+                    {"parameters", {{"time", time}}}, {"outputs", Json::array({"value"})}};
+    };
+    const Json boundary{{"id", "target"}, {"op", "graph.input"}, {"default", 0.0}};
+    const Json first{
+        {"nodes", Json::array({boundary, constant("a", 1.0),
+                               {{"id", "sum"}, {"op", "value.add"},
+                                {"inputs", {{"a", {{"node", "target"}, {"port", "value"}}},
+                                            {"b", {{"node", "a"}, {"port", "value"}}}}},
+                                {"outputs", Json::array({"value"})}}})},
+        {"outputs", {{"out", {{"node", "sum"}, {"port", "value"}}}}}};
+    const Json rest{
+        {"nodes", Json::array({boundary, constant("c", 2.0), curve("curve", 0.5)})},
+        {"outputs", {{"out", {{"node", "c"}, {"port", "value"}}}}}};
+    const Json branches =
+        else_only ? Json::array({{{"body", "first"}}})
+                  : Json::array({{{"when", {{"element", 0}}}, {"body", "first"}}, {{"body", "rest"}}});
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
+                {"definitions", {{"first", first}, {"rest", rest}}},
+                {"nodes", Json::array({constant("a", 5.0), curve("curve", 0.25),
+                                       {{"id", "steps"}, {"op", "graph.loop"},
+                                        {"parameters", {{"over", {{"range", {{"count", 2}}}}},
+                                                        {"branches", branches}}},
+                                        {"inputs", {{"target", {{"node", "a"}, {"port", "value"}}}}},
+                                        {"outputs", Json::array({"out", "out[]"})}}})}};
+}
+
+// One model and one scene over a document the engine's own edit function
+// keeps: every committed op list is applied to it, and every commit moves the
+// digest, so Undo and Redo run against what the engine would hold.
+struct ZoneHarness {
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    Json document;
+    int generation = 0;
+
+    explicit ZoneHarness(Json initial = zoneDocument()) : document(std::move(initial)) {}
+
+    [[nodiscard]] std::string digest() const { return "zone-" + std::to_string(generation); }
+    [[nodiscard]] Json snapshot() const {
+        return {{"source_reference", "fixture"}, {"root_schema", "pelican.graph"},
+                {"source_digest", {{"hex", digest()}}},
+                {"nodes", document.at("nodes")},
+                {"definitions", document.at("definitions")},
+                {"layout", document.value("layout", Json::object())}};
+    }
+    // Answers the reads in the outbox; returns the edits it found there.
+    std::vector<PelicanStudio::InspectorRpcRequest> answerReads() {
+        std::vector<PelicanStudio::InspectorRpcRequest> edits;
+        for (const auto &request : model.takeRpcRequests()) {
+            if (request.method == "get_graph_instances")
+                model.receiveRpcResult(request.request_id, snapshot().dump());
+            else if (request.method == "get_graph_catalog")
+                model.receiveRpcResult(request.request_id, visualCatalog().dump());
+            else if (request.method == "edit_graph_document")
+                edits.push_back(request);
+        }
+        return edits;
+    }
+    void open() {
+        model.setConnected(true);
+        answerReads();
+        scene.setModel(&model);
+    }
+    // The one edit a gesture sent. With `apply`, the engine's own edit is
+    // run on the document; either way it commits, and the document is read
+    // again and drawn.
+    Json commit(bool apply = true) {
+        const auto edits = answerReads();
+        REQUIRE(edits.size() == 1);
+        const auto &submit = edits.front();
+        REQUIRE(submit.params.at("base_source_digest") == digest());
+        const Json ops = submit.params.at("ops");
+        Json edited = document;
+        if (apply) edited = Pelican::editGraphDocument(document, ops);
+        model.receiveRpcResult(submit.request_id,
+                               Json{{"status", "accepted"}, {"ticket", "zone-edit"}}.dump());
+        for (const auto &request : model.takeRpcRequests()) {
+            if (request.method != "get_edit_result") continue;
+            document = std::move(edited);
+            ++generation;
+            model.receiveRpcResult(request.request_id,
+                                   Json{{"status", "committed"}, {"committed", true},
+                                        {"source_digest", {{"hex", digest()}}}}
+                                       .dump());
+        }
+        answerReads();
+        scene.repopulate();
+        return ops;
+    }
+};
+
+QGraphicsItem *scopedNode(QGraphicsScene &scene, const QString &scope, const QString &name) {
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{PelicanStudio::GraphCanvasNodeItem} &&
+            item->data(PelicanStudio::GraphCanvasScopeRole).toString() == scope &&
+            item->data(PelicanStudio::NodeGraphNameRole).toString() == name)
+            return item;
+    return nullptr;
+}
+
+QGraphicsItem *scopedItem(QGraphicsScene &scene, const char *kind, const QString &scope,
+                          const QString &name, const QString &port = {},
+                          const QString &direction = {}) {
+    for (QGraphicsItem *item : scene.items()) {
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() != QLatin1String{kind} ||
+            item->data(PelicanStudio::GraphCanvasScopeRole).toString() != scope ||
+            item->data(PelicanStudio::NodeGraphNameRole).toString() != name)
+            continue;
+        if (!port.isNull() && item->data(PelicanStudio::GraphCanvasPortRole).toString() != port)
+            continue;
+        if (!direction.isNull() &&
+            item->data(PelicanStudio::GraphCanvasSocketDirectionRole).toString() != direction)
+            continue;
+        return item;
+    }
+    return nullptr;
+}
+
+QGraphicsItem *scopedEdge(QGraphicsScene &scene, const QString &scope, const QString &from,
+                          const QString &from_port, const QString &to, const QString &to_port) {
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{PelicanStudio::GraphCanvasEdgeItem} &&
+            item->data(PelicanStudio::GraphCanvasScopeRole).toString() == scope &&
+            item->data(PelicanStudio::NodeGraphFromNameRole).toString() == from &&
+            item->data(PelicanStudio::GraphCanvasFromPortRole).toString() == from_port &&
+            item->data(PelicanStudio::NodeGraphToNameRole).toString() == to &&
+            item->data(PelicanStudio::GraphCanvasToPortRole).toString() == to_port)
+            return item;
+    return nullptr;
+}
+
+// The tabs of a zone, by the text they show, in branch order.
+std::vector<std::pair<std::size_t, QString>> zoneTabs(QGraphicsScene &scene) {
+    std::vector<std::pair<std::size_t, QString>> tabs;
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{PelicanStudio::GraphCanvasZoneTabItem} &&
+            !item->data(PelicanStudio::GraphCanvasLabelRole).toString().isEmpty())
+            tabs.emplace_back(
+                static_cast<std::size_t>(item->data(PelicanStudio::GraphCanvasBranchRole).toULongLong()),
+                item->data(PelicanStudio::GraphCanvasLabelRole).toString());
+    std::ranges::sort(tabs);
+    return tabs;
+}
+
+QPointF centreOf(const QGraphicsItem *item) { return item->sceneBoundingRect().center(); }
+
+// A press on a node's heading, which picks it.
+QPointF headingOf(const QGraphicsItem *node) {
+    return node->mapToScene(QPointF{node->boundingRect().width() / 2.0, 4.0});
+}
+
+} // namespace
+
+TEST_CASE("LP-4d1 the root draws a loop as a zone around its body, in the body's own scope",
+          "[devstudio][graph-canvas][scene][lp4d1]") {
+    (void)application();
+    ZoneHarness h;
+    h.open();
+    auto &scene = h.scene;
+    REQUIRE(scene.zones() == std::map<std::string, std::string>{{"steps", "first"}});
+
+    // The root's nodes and the frame, which is the loop's node.
+    QGraphicsItem *frame = scopedNode(scene, QString{}, QStringLiteral("steps"));
+    REQUIRE(frame != nullptr);
+    REQUIRE(scopedNode(scene, QString{}, QStringLiteral("a")) != nullptr);
+    CHECK(scopedItem(scene, PelicanStudio::GraphCanvasZoneItem, QString{}, QStringLiteral("steps")) !=
+          nullptr);
+    // The body's two nodes, in the definition and inside the frame.
+    QGraphicsItem *body_a = scopedNode(scene, QStringLiteral("first"), QStringLiteral("a"));
+    QGraphicsItem *sum = scopedNode(scene, QStringLiteral("first"), QStringLiteral("sum"));
+    REQUIRE(body_a != nullptr);
+    REQUIRE(sum != nullptr);
+    CHECK(body_a->data(PelicanStudio::GraphCanvasZoneScopeRole).toString() == QStringLiteral("first"));
+    CHECK(frame->sceneBoundingRect().contains(body_a->sceneBoundingRect()));
+    CHECK(frame->sceneBoundingRect().contains(sum->sceneBoundingRect()));
+    // The boundary input is the frame's left edge, not a node: the loop's
+    // input outside, the graph.input's value inside.
+    CHECK(scopedNode(scene, QStringLiteral("first"), QStringLiteral("target")) == nullptr);
+    QGraphicsItem *inner = scopedItem(scene, PelicanStudio::GraphCanvasSocketItem, QStringLiteral("first"),
+                                      QStringLiteral("target"), QStringLiteral("value"),
+                                      QStringLiteral("output"));
+    QGraphicsItem *outer = scopedItem(scene, PelicanStudio::GraphCanvasSocketItem, QString{},
+                                      QStringLiteral("steps"), QStringLiteral("target"),
+                                      QStringLiteral("input"));
+    REQUIRE(inner != nullptr);
+    REQUIRE(outer != nullptr);
+    CHECK(std::abs(centreOf(inner).y() - centreOf(outer).y()) < 0.5);
+    CHECK(centreOf(inner).x() > centreOf(outer).x());
+    // The right edge: the body's output inside, the loop's p and p[] outside.
+    CHECK(scopedItem(scene, PelicanStudio::GraphCanvasZoneSocketItem, QString{}, QStringLiteral("steps"),
+                     QStringLiteral("out:out")) != nullptr);
+    CHECK(scopedItem(scene, PelicanStudio::GraphCanvasSocketItem, QString{}, QStringLiteral("steps"),
+                     QStringLiteral("out"), QStringLiteral("output")) != nullptr);
+    CHECK(scopedItem(scene, PelicanStudio::GraphCanvasSocketItem, QString{}, QStringLiteral("steps"),
+                     QStringLiteral("out[]"), QStringLiteral("output")) != nullptr);
+    // The body's edges are the definition's, the root's the root's.
+    CHECK(scopedEdge(scene, QStringLiteral("first"), QStringLiteral("target"), QStringLiteral("value"),
+                     QStringLiteral("sum"), QStringLiteral("a")) != nullptr);
+    CHECK(scopedEdge(scene, QStringLiteral("first"), QStringLiteral("a"), QStringLiteral("value"),
+                     QStringLiteral("sum"), QStringLiteral("b")) != nullptr);
+    CHECK(scopedEdge(scene, QString{}, QStringLiteral("a"), QStringLiteral("value"),
+                     QStringLiteral("steps"), QStringLiteral("target")) != nullptr);
+    // The heading: the stage, and a tab per branch (if / else).
+    auto *stage = dynamic_cast<QGraphicsSimpleTextItem *>(
+        scopedItem(scene, PelicanStudio::GraphCanvasZoneLabelItem, QString{}, QStringLiteral("steps"),
+                   QStringLiteral("stage")));
+    REQUIRE(stage != nullptr);
+    CHECK(stage->text() == QStringLiteral("loop"));
+    const auto tabs = zoneTabs(scene);
+    REQUIRE(tabs.size() == 2);
+    CHECK(tabs[0].second == QStringLiteral("if element = 0"));
+    CHECK(tabs[1].second == QStringLiteral("else"));
+
+    // A click meant for the loop (the automation surface aims at
+    // NodeGraphHotspotRole) lands on its heading, not on a body node.
+    const QVariant spot = frame->data(PelicanStudio::NodeGraphHotspotRole);
+    REQUIRE(spot.isValid());
+    const auto under = scene.items(frame->mapToScene(spot.toPointF()));
+    REQUIRE_FALSE(under.isEmpty());
+    CHECK(under.front()->data(PelicanStudio::GraphCanvasHeadingRole).toBool());
+    CHECK(under.front()->data(PelicanStudio::NodeGraphNameRole).toString() == QStringLiteral("steps"));
+    CHECK(under.front()->data(PelicanStudio::GraphCanvasScopeRole).toString().isEmpty());
+
+    // The body comes along with its frame.
+    const QPointF before = sum->scenePos();
+    frame->setPos(frame->pos() + QPointF{40.0, 30.0});
+    CHECK(sum->scenePos() == before + QPointF{40.0, 30.0});
+
+    // A tab shows that branch's body: session state, nothing is sent.
+    QGraphicsItem *else_tab = nullptr;
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{PelicanStudio::GraphCanvasZoneTabItem} &&
+            item->data(PelicanStudio::GraphCanvasBranchRole).toULongLong() == 1 &&
+            !item->data(PelicanStudio::GraphCanvasLabelRole).toString().isEmpty())
+            else_tab = item;
+    REQUIRE(else_tab != nullptr);
+    click(scene, centreOf(else_tab));
+    CHECK(scene.zones() == std::map<std::string, std::string>{{"steps", "rest"}});
+    CHECK(scopedNode(scene, QStringLiteral("rest"), QStringLiteral("c")) != nullptr);
+    CHECK(scopedNode(scene, QStringLiteral("rest"), QStringLiteral("curve")) != nullptr);
+    CHECK(scopedNode(scene, QStringLiteral("first"), QStringLiteral("sum")) == nullptr);
+    for (const auto &request : h.model.takeRpcRequests())
+        CHECK(request.params.value("ops", Json::array()).dump().find("\"rest\"") == std::string::npos);
+
+    // Folded, the zone is the loop's node again.
+    scene.setCollapsed(std::string{}, "steps", true);
+    CHECK(scene.zones().empty());
+    REQUIRE(scopedNode(scene, QString{}, QStringLiteral("steps")) != nullptr);
+    for (QGraphicsItem *item : scene.items())
+        CHECK(item->data(PelicanStudio::GraphCanvasZoneScopeRole).toString().isEmpty());
+
+    // A loop whose only branch is the else has no tabs.
+    ZoneHarness single{zoneDocument(true)};
+    single.open();
+    CHECK(single.scene.zones() == std::map<std::string, std::string>{{"steps", "first"}});
+    CHECK(zoneTabs(single.scene).empty());
+}
+
+TEST_CASE("LP-4d1 an edit inside a zone goes to the body's definition, and moving the zone to the root",
+          "[devstudio][graph-canvas][scene][lp4d1]") {
+    (void)application();
+    ZoneHarness h;
+    h.open();
+    auto &scene = h.scene;
+
+    // A body node moved: the definition's placement, in the body's own
+    // coordinates.
+    QGraphicsItem *sum = scopedNode(scene, QStringLiteral("first"), QStringLiteral("sum"));
+    REQUIRE(sum != nullptr);
+    const QPointF moved = sum->pos() + QPointF{30.0, 20.0};
+    sum->setPos(moved);
+    scene.flushLayout();
+    auto ops = h.commit();
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].at("op") == "set_layout");
+    CHECK(ops[0].at("scope") == "first");
+    CHECK(ops[0].at("layout").at("nodes").at("sum") == Json{{"x", moved.x()}, {"y", moved.y()}});
+    CHECK_FALSE(ops[0].at("layout").at("nodes").contains("steps"));
+
+    // The zone moved: the root's placement, and the body is not written.
+    QGraphicsItem *frame = scopedNode(scene, QString{}, QStringLiteral("steps"));
+    REQUIRE(frame != nullptr);
+    const QPointF frame_at = frame->pos() + QPointF{-50.0, 60.0};
+    frame->setPos(frame_at);
+    scene.flushLayout();
+    ops = h.commit();
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].at("op") == "set_layout");
+    CHECK(ops[0].at("scope") == "root");
+    CHECK(ops[0].at("layout").at("nodes").at("steps") == Json{{"x", frame_at.x()}, {"y", frame_at.y()}});
+    CHECK_FALSE(ops[0].at("layout").at("nodes").contains("sum"));
+
+    // A line inside the zone: from the boundary input to a body input.
+    QGraphicsItem *boundary = scopedItem(scene, PelicanStudio::GraphCanvasSocketItem,
+                                         QStringLiteral("first"), QStringLiteral("target"),
+                                         QStringLiteral("value"), QStringLiteral("output"));
+    QGraphicsItem *sum_b = scopedItem(scene, PelicanStudio::GraphCanvasSocketItem, QStringLiteral("first"),
+                                      QStringLiteral("sum"), QStringLiteral("b"), QStringLiteral("input"));
+    REQUIRE(boundary != nullptr);
+    REQUIRE(sum_b != nullptr);
+    drag(scene, centreOf(boundary), centreOf(sum_b));
+    ops = h.commit(false);
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0] == Json{{"op", "set_input"}, {"scope", "first"}, {"node", "sum"}, {"port", "b"},
+                         {"source", {{"node", "target"}, {"port", "value"}}}});
+
+    // Cut: the picked body edge, Delete.
+    scene.selectEdge(std::string{"first"},
+                     PelicanStudio::GraphCanvasEdge{"a", "value", "sum", "b"}, false);
+    pressKey(scene, Qt::Key_Delete);
+    ops = h.commit(false);
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0] == Json{{"op", "set_input"}, {"scope", "first"}, {"node", "sum"}, {"port", "b"},
+                         {"source", nullptr}});
+
+    // The label of a body node, in place.
+    REQUIRE(scene.beginLabelEdit("first", "sum"));
+    scene.setInlineEditText(QStringLiteral("Sum"));
+    REQUIRE(scene.commitInlineEdit());
+    ops = h.commit(false);
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0] == Json{{"op", "set_node_label"}, {"scope", "first"}, {"node", "sum"},
+                         {"label", "Sum"}});
+
+    // A body node removed.
+    scene.selectNode("first", "a");
+    pressKey(scene, Qt::Key_Delete);
+    ops = h.commit(false);
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0] == Json{{"op", "remove_node"}, {"scope", "first"}, {"node", "a"}});
+
+    // Adding, with the zone picked: into its body, from the body's palette --
+    // which offers neither a loop nor an instance.
+    scene.selectNode("", "steps");
+    CHECK(scene.addScope() == "first");
+    const auto palette = h.model.paletteOperationsIn("first");
+    CHECK(std::ranges::none_of(palette, [](const auto &entry) {
+        return entry.op == "graph.loop" || entry.op == "graph.instance";
+    }));
+    CHECK(std::ranges::any_of(palette, [](const auto &entry) { return entry.op == "value.add"; }));
+    REQUIRE(scene.addFromPalette("value.constant"));
+    ops = h.commit(false);
+    REQUIRE_FALSE(ops.empty());
+    CHECK(ops.back().at("op") == "add_node");
+    CHECK(ops.back().at("scope") == "first");
+    CHECK(ops.back().at("node").at("op") == "value.constant");
+    // Nothing picked: the root, as ever.
+    scene.selectNode("", "a");
+    CHECK(scene.addScope().empty());
+}
+
+TEST_CASE("LP-4d1 a root node and a body node with one id are picked, edited and removed apart",
+          "[devstudio][graph-canvas][scene][lp4d1]") {
+    (void)application();
+    ZoneHarness h;
+    h.open();
+    auto &scene = h.scene;
+
+    // `a` in the body, by a press on its heading.
+    QGraphicsItem *body_a = scopedNode(scene, QStringLiteral("first"), QStringLiteral("a"));
+    QGraphicsItem *root_a = scopedNode(scene, QString{}, QStringLiteral("a"));
+    REQUIRE(body_a != nullptr);
+    REQUIRE(root_a != nullptr);
+    click(scene, headingOf(body_a));
+    REQUIRE(scene.selectedNode().has_value());
+    CHECK(*scene.selectedNode() == "a");
+    CHECK(scene.selectedScope() == "first");
+    pressKey(scene, Qt::Key_Delete);
+    auto ops = h.commit(false);
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0] == Json{{"op", "remove_node"}, {"scope", "first"}, {"node", "a"}});
+
+    // `a` in the root, the same way.
+    root_a = scopedNode(scene, QString{}, QStringLiteral("a"));
+    REQUIRE(root_a != nullptr);
+    click(scene, headingOf(root_a));
+    CHECK(scene.selectedScope().empty());
+    pressKey(scene, Qt::Key_Delete);
+    ops = h.commit(false);
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0] == Json{{"op", "remove_node"}, {"scope", "root"}, {"node", "a"}});
+
+    // `curve` in both: each pill edits its own node's value.
+    REQUIRE(scene.showLoopBranch("steps", 1));
+    const auto editPill = [&](const QString &scope, const QString &text) {
+        QGraphicsItem *pill = scopedItem(scene, PelicanStudio::GraphCanvasValuePillItem, scope,
+                                         QStringLiteral("curve"), QStringLiteral("time"));
+        REQUIRE(pill != nullptr);
+        click(scene, centreOf(pill));
+        REQUIRE(scene.editingInline());
+        scene.setInlineEditText(text);
+        REQUIRE(scene.commitInlineEdit());
+        return h.commit(false);
+    };
+    ops = editPill(QStringLiteral("rest"), QStringLiteral("0.75"));
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0] == Json{{"op", "set_node_parameters"}, {"scope", "rest"}, {"node", "curve"},
+                         {"parameters", {{"time", 0.75}}}});
+    CHECK(scene.selectedScope() == "rest");
+    ops = editPill(QString{}, QStringLiteral("0.125"));
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0] == Json{{"op", "set_node_parameters"}, {"scope", "root"}, {"node", "curve"},
+                         {"parameters", {{"time", 0.125}}}});
+    CHECK(scene.selectedScope().empty());
+}
+
+TEST_CASE("LP-4d1 Undo and Redo take a zone's edits and its move back, byte for byte",
+          "[devstudio][graph-canvas][scene][lp4d1]") {
+    (void)application();
+    ZoneHarness h;
+    h.open();
+    auto &scene = h.scene;
+    const auto before = h.document.dump();
+
+    // Inside the zone: a node moved, then a label; then the zone moved.
+    QGraphicsItem *sum = scopedNode(scene, QStringLiteral("first"), QStringLiteral("sum"));
+    REQUIRE(sum != nullptr);
+    sum->setPos(sum->pos() + QPointF{25.0, 45.0});
+    scene.flushLayout();
+    CHECK(h.commit().at(0).at("scope") == "first");
+    REQUIRE(scene.beginLabelEdit("first", "sum"));
+    scene.setInlineEditText(QStringLiteral("Sum"));
+    REQUIRE(scene.commitInlineEdit());
+    h.commit();
+    QGraphicsItem *frame = scopedNode(scene, QString{}, QStringLiteral("steps"));
+    REQUIRE(frame != nullptr);
+    frame->setPos(frame->pos() + QPointF{70.0, -20.0});
+    scene.flushLayout();
+    CHECK(h.commit().at(0).at("scope") == "root");
+    const auto after = h.document.dump();
+    REQUIRE(after != before);
+    REQUIRE_FALSE(scene.layoutPending());
+
+    for (int step = 0; step < 3; ++step) {
+        REQUIRE(h.model.canUndo());
+        scene.undoEdit();
+        h.commit();
+    }
+    CHECK(h.document.dump() == before);
+    for (int step = 0; step < 3; ++step) {
+        REQUIRE(h.model.canRedo());
+        scene.redoEdit();
+        h.commit();
+    }
+    CHECK(h.document.dump() == after);
 }

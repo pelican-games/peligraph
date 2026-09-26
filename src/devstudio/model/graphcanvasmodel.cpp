@@ -1058,6 +1058,36 @@ bool GraphCanvasModel::selectLoopBranch(std::size_t branch) {
     return true;
 }
 
+std::string GraphCanvasModel::loopZoneBody(std::string_view loop) const {
+    const auto *node = findNode({}, loop);
+    if (node == nullptr || !isLoop(*node)) return {};
+    return loopEntryBody(*node);
+}
+
+bool GraphCanvasModel::showLoopBranch(std::string_view loop, std::size_t branch) {
+    const auto *node = findNode({}, loop);
+    if (node == nullptr || !isLoop(*node)) return false;
+    const auto bodies = loopBranchBodies(*node);
+    if (branch >= bodies.size() || bodies[branch].empty() ||
+        !definitions_.contains(bodies[branch]))
+        return false;
+    loop_branch_[std::string{loop}] = branch;
+    return true;
+}
+
+std::vector<GraphCanvasBodyOutput> GraphCanvasModel::bodyOutputs(std::string_view definition) const {
+    std::vector<GraphCanvasBodyOutput> result;
+    const auto found = definitions_.find(std::string{definition});
+    if (found == definitions_.end() || !found->is_object()) return result;
+    const auto outputs = found->find("outputs");
+    if (outputs == found->end() || !outputs->is_object()) return result;
+    for (const auto &[name, endpoint] : outputs->items())
+        result.push_back(GraphCanvasBodyOutput{
+            name, endpoint.is_object() ? text(endpoint, "node") : std::string{},
+            endpoint.is_object() ? text(endpoint, "port") : std::string{}});
+    return result;
+}
+
 std::size_t GraphCanvasModel::definitionUseCount(std::string_view definition) const {
     std::size_t uses = 0;
     for (const auto &node : nodes_) {
@@ -1142,6 +1172,9 @@ const Json *GraphCanvasModel::nodeOutputs(std::string_view scope,
     // LP-4c: a loop's body is no instance's; the watched instance's values
     // are about another body, whatever node ids the two share.
     if (!scope.empty() && !entered_loop_.empty()) return nullptr;
+    // LP-4d1: nor is a body drawn in a zone of the root: the reply in hand is
+    // about the scope on screen, whatever node ids the two share.
+    if (scope != currentScope()) return nullptr;
     // The reply answers one question. If the scope on screen would ask a
     // different one, the answer in hand is not about these nodes.
     const auto expected = scope.empty() ? std::string{} : values_instance_;
@@ -1571,8 +1604,8 @@ std::vector<std::string> GraphCanvasModel::valueInstances() const {
     return instances;
 }
 
-std::string GraphCanvasModel::sceneTimeNode() const {
-    const auto *nodes = scopeNodes(currentScope());
+std::string GraphCanvasModel::sceneTimeNode(std::string_view scope) const {
+    const auto *nodes = scopeNodes(scope);
     if (nodes == nullptr) return {};
     for (const auto &node : *nodes) {
         if (!node.is_object() || text(node, "op") != "value.input") continue;
@@ -1584,10 +1617,13 @@ std::string GraphCanvasModel::sceneTimeNode() const {
 }
 
 std::string GraphCanvasModel::scopeToken() const {
-    const auto &scope = currentScope();
+    return scopeToken(currentScope());
+}
+
+std::string GraphCanvasModel::scopeToken(std::string_view scope) {
     // The engine spells the root document "root"; the canvas spells it with the
     // empty id so a definition named "root" is still a scope of its own.
-    return scope.empty() ? std::string{"root"} : scope;
+    return scope.empty() ? std::string{"root"} : std::string{scope};
 }
 
 bool GraphCanvasModel::submitOps(Json ops) {
@@ -1812,7 +1848,11 @@ bool GraphCanvasModel::redo() {
 }
 
 Json GraphCanvasModel::nodeParameters(std::string_view id) const {
-    const auto *node = findNode(currentScope(), id);
+    return nodeParameters(currentScope(), id);
+}
+
+Json GraphCanvasModel::nodeParameters(std::string_view scope, std::string_view id) const {
+    const auto *node = findNode(scope, id);
     if (node == nullptr) return Json::object();
     const auto found = node->find("parameters");
     if (found == node->end() || !found->is_object()) return Json::object();
@@ -1821,8 +1861,14 @@ Json GraphCanvasModel::nodeParameters(std::string_view id) const {
 
 bool GraphCanvasModel::canConnect(std::string_view from_node, std::string_view from_port,
                                   std::string_view to_node, std::string_view to_port) const {
+    return canConnect(currentScope(), from_node, from_port, to_node, to_port);
+}
+
+bool GraphCanvasModel::canConnect(std::string_view scope, std::string_view from_node,
+                                  std::string_view from_port, std::string_view to_node,
+                                  std::string_view to_port) const {
     if (from_node.empty() || to_node.empty() || from_node == to_node) return false;
-    const auto drawn = nodes(currentScope());
+    const auto drawn = nodes(scope);
     const auto producer = std::ranges::find(drawn, std::string{from_node}, &GraphCanvasNode::id);
     const auto consumer = std::ranges::find(drawn, std::string{to_node}, &GraphCanvasNode::id);
     if (producer == drawn.end() || consumer == drawn.end()) return false;
@@ -1840,37 +1886,57 @@ bool GraphCanvasModel::canConnect(std::string_view from_node, std::string_view f
 bool GraphCanvasModel::connectInput(const std::string &node, const std::string &port,
                                     const std::string &source_node,
                                     const std::string &source_port) {
+    return connectInput(currentScope(), node, port, source_node, source_port);
+}
+
+bool GraphCanvasModel::connectInput(std::string_view scope, const std::string &node,
+                                    const std::string &port, const std::string &source_node,
+                                    const std::string &source_port) {
     if (!canEdit()) return false;
-    if (!canConnect(source_node, source_port, node, port)) return false;
+    if (!canConnect(scope, source_node, source_port, node, port)) return false;
     return submitOps(Json::array({Json{
-        {"op", "set_input"}, {"scope", scopeToken()}, {"node", node}, {"port", port},
+        {"op", "set_input"}, {"scope", scopeToken(scope)}, {"node", node}, {"port", port},
         {"source", Json{{"node", source_node}, {"port", source_port}}}}}));
 }
 
 bool GraphCanvasModel::disconnectInput(const std::string &node, const std::string &port) {
-    if (!canEdit() || findNode(currentScope(), node) == nullptr) return false;
+    return disconnectInput(currentScope(), node, port);
+}
+
+bool GraphCanvasModel::disconnectInput(std::string_view scope, const std::string &node,
+                                       const std::string &port) {
+    if (!canEdit() || findNode(scope, node) == nullptr) return false;
     return submitOps(Json::array({Json{
-        {"op", "set_input"}, {"scope", scopeToken()}, {"node", node}, {"port", port},
+        {"op", "set_input"}, {"scope", scopeToken(scope)}, {"node", node}, {"port", port},
         {"source", nullptr}}}));
 }
 
 bool GraphCanvasModel::setNodeParameter(const std::string &node, const std::string &key,
                                         const Json &value) {
-    if (!canEdit() || findNode(currentScope(), node) == nullptr) return false;
+    return setNodeParameter(currentScope(), node, key, value);
+}
+
+bool GraphCanvasModel::setNodeParameter(std::string_view scope, const std::string &node,
+                                        const std::string &key, const Json &value) {
+    if (!canEdit() || findNode(scope, node) == nullptr) return false;
     if (key.empty()) return false;
     // set_node_parameters replaces the object, so the whole of it is read back
     // and sent again with this one key changed.
-    auto parameters = nodeParameters(node);
+    auto parameters = nodeParameters(scope, node);
     parameters[key] = value;
     return submitOps(Json::array({Json{
-        {"op", "set_node_parameters"}, {"scope", scopeToken()}, {"node", node},
+        {"op", "set_node_parameters"}, {"scope", scopeToken(scope)}, {"node", node},
         {"parameters", std::move(parameters)}}}));
 }
 
 bool GraphCanvasModel::removeNode(const std::string &node) {
-    if (!canEdit() || findNode(currentScope(), node) == nullptr) return false;
+    return removeNode(currentScope(), node);
+}
+
+bool GraphCanvasModel::removeNode(std::string_view scope, const std::string &node) {
+    if (!canEdit() || findNode(scope, node) == nullptr) return false;
     return submitOps(Json::array({Json{
-        {"op", "remove_node"}, {"scope", scopeToken()}, {"node", node}}}));
+        {"op", "remove_node"}, {"scope", scopeToken(scope)}, {"node", node}}}));
 }
 
 nlohmann::json GraphCanvasModel::scopeLayout(std::string_view scope) const {
@@ -1890,9 +1956,14 @@ bool GraphCanvasModel::setLayout(const std::string &scope, const Json &layout) {
 }
 
 bool GraphCanvasModel::setNodeLabel(const std::string &node, const std::string &label) {
-    if (!canEdit() || findNode(currentScope(), node) == nullptr) return false;
+    return setNodeLabel(currentScope(), node, label);
+}
+
+bool GraphCanvasModel::setNodeLabel(std::string_view scope, const std::string &node,
+                                    const std::string &label) {
+    if (!canEdit() || findNode(scope, node) == nullptr) return false;
     return submitOps(Json::array({Json{
-        {"op", "set_node_label"}, {"scope", scopeToken()}, {"node", node},
+        {"op", "set_node_label"}, {"scope", scopeToken(scope)}, {"node", node},
         {"label", label}}}));
 }
 
@@ -1911,13 +1982,17 @@ Json GraphCanvasModel::definitionDefaults(std::string_view definition) const {
 }
 
 std::string GraphCanvasModel::suggestNodeId(std::string_view op) const {
+    return suggestNodeId(currentScope(), op);
+}
+
+std::string GraphCanvasModel::suggestNodeId(std::string_view scope, std::string_view op) const {
     std::string base{op};
     // The op name is the honest starting point, but a node id is an identifier
     // the document points at: the dots go.
     std::ranges::replace(base, '.', '_');
     if (base.empty()) base = "node";
     const auto taken = [&](const std::string &candidate) {
-        return findNode(currentScope(), candidate) != nullptr;
+        return findNode(scope, candidate) != nullptr;
     };
     if (!taken(base)) return base;
     for (int suffix = 2; suffix < 10000; ++suffix) {
@@ -1928,11 +2003,17 @@ std::string GraphCanvasModel::suggestNodeId(std::string_view op) const {
 }
 
 Json GraphCanvasModel::addNodeOps(const std::string &op, const std::string &definition) const {
+    return addNodeOpsIn(currentScope(), op, definition);
+}
+
+Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string &op,
+                                    const std::string &definition) const {
     Json ops = Json::array();
     if (op.empty()) return ops;
-    const auto scope = scopeToken();
-    const bool root = currentScope().empty();
-    const auto id = suggestNodeId(op);
+    const auto scope = scopeToken(in_scope);
+    const bool root = in_scope.empty();
+    if (!root && !definitions_.contains(std::string{in_scope})) return ops;
+    const auto id = suggestNodeId(in_scope, op);
     Json node{{"id", id}, {"op", op}};
     if (op == "graph.input") {
         if (root) return Json::array();
@@ -1944,7 +2025,7 @@ Json GraphCanvasModel::addNodeOps(const std::string &op, const std::string &defi
     }
     // LP-4c: a loop over an existing body. A new body is addLoopOps's second
     // argument, which the palette passes itself.
-    if (op == "graph.loop") return addLoopOps(definition);
+    if (op == "graph.loop") return root ? addLoopOps(definition) : Json::array();
     if (op == "graph.instance") {
         if (!root || definition.empty() || !definitions_.contains(definition))
             return Json::array();
@@ -2037,30 +2118,30 @@ Json GraphCanvasModel::addNodeOps(const std::string &op, const std::string &defi
         // LP-4e, decision 4. A draw step stands in a draw_loop body only. It
         // arrives at the head of the body's list -- drawn first, the step
         // that makes `draws` still last -- so the body keeps one list.
-        if (root || !drawBodyScope(currentScope()) || operation(op) == nullptr)
+        if (root || !drawBodyScope(in_scope) || operation(op) == nullptr)
             return Json::array();
         Json parameters = Json::object();
         // Something to draw differently, so the step is one the engine
         // takes: the proposed variant, or both faces.
-        if (op == "draw.variant") parameters["variant"] = suggestDrawVariant();
+        if (op == "draw.variant") parameters["variant"] = suggestDrawVariant(in_scope);
         if (op == "draw.override") parameters["render_state"] = Json{{"cull", "none"}};
         node["parameters"] = std::move(parameters);
         node["outputs"] = Json::array({"draws"});
         ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", node}});
         // The head: from the step `draws` names, back along `after`.
-        const auto &body = definitions_.at(currentScope());
+        const auto &body = definitions_.at(std::string{in_scope});
         const auto outputs = body.value("outputs", Json::object());
         const auto draws = outputs.is_object() ? outputs.find("draws") : outputs.end();
         std::string head = draws != outputs.end() && draws->is_object() ? text(*draws, "node") : "";
         std::set<std::string> seen;
         while (!head.empty() && seen.insert(head).second) {
-            const auto *step = findNode(currentScope(), head);
+            const auto *step = findNode(in_scope, head);
             if (step == nullptr) break;
             const auto after = step->value("inputs", Json::object()).value("after", Json{});
             if (!after.is_object() || text(after, "node").empty()) break;
             head = text(after, "node");
         }
-        const auto *head_node = head.empty() ? nullptr : findNode(currentScope(), head);
+        const auto *head_node = head.empty() ? nullptr : findNode(in_scope, head);
         if (head_node != nullptr && isDrawStep(text(*head_node, "op")))
             ops.push_back(Json{{"op", "set_input"}, {"scope", scope}, {"node", head},
                                {"port", "after"},
@@ -2089,9 +2170,9 @@ Json GraphCanvasModel::addNodeOps(const std::string &op, const std::string &defi
         // -- and so starts on its owner's first frame (AU-3). The clock and
         // the node go out as one edit, so one Undo takes both back.
         if (isAudioPlayback(op) && port == "time") {
-            auto clock = sceneTimeNode();
+            auto clock = sceneTimeNode(in_scope);
             if (clock.empty()) {
-                clock = suggestNodeId("scene_time");
+                clock = suggestNodeId(in_scope, "scene_time");
                 ops.push_back(Json{{"op", "add_node"}, {"scope", scope},
                     {"node", Json{{"id", clock}, {"op", "value.input"},
                                   {"parameters", Json{{"name", "scene_time"}}},
@@ -2130,8 +2211,13 @@ Json GraphCanvasModel::addNodeOps(const std::string &op, const std::string &defi
 }
 
 bool GraphCanvasModel::addNode(const std::string &op, const std::string &definition) {
+    return addNodeIn(currentScope(), op, definition);
+}
+
+bool GraphCanvasModel::addNodeIn(std::string_view scope, const std::string &op,
+                                 const std::string &definition) {
     if (!canEdit()) return false;
-    auto ops = addNodeOps(op, definition);
+    auto ops = addNodeOpsIn(scope, op, definition);
     if (ops.empty()) return false;
     return submitOps(std::move(ops));
 }
@@ -2657,6 +2743,11 @@ void GraphCanvasModel::markRefusal(const Json &error, const std::string &reason)
 
 std::vector<GraphCanvasCatalogEntry> GraphCanvasModel::paletteOperations(
     std::string_view text_filter, std::string_view domain) const {
+    return paletteOperationsIn(currentScope(), text_filter, domain);
+}
+
+std::vector<GraphCanvasCatalogEntry> GraphCanvasModel::paletteOperationsIn(
+    std::string_view scope, std::string_view text_filter, std::string_view domain) const {
     const auto lowered = [](std::string_view value) {
         std::string result{value};
         std::ranges::transform(result, result.begin(), [](unsigned char letter) {
@@ -2682,8 +2773,8 @@ std::vector<GraphCanvasCatalogEntry> GraphCanvasModel::paletteOperations(
         // pass in the root, which arrives with its attachments, and the draw
         // steps in a body a draw_loop runs.
         const bool seeded = op == kFullscreenTemplate ||
-                            (op == kMaterialPass && currentScope().empty()) ||
-                            (isDrawStep(op) && drawBodyScope(currentScope()));
+                            (op == kMaterialPass && scope.empty()) ||
+                            (isDrawStep(op) && drawBodyScope(scope));
         if (text(declaration, "ports") != "declared" && !seeded) continue;
         GraphCanvasCatalogEntry entry{op, text(declaration, "domain"),
                                       text(declaration, "evaluation"),
@@ -2694,7 +2785,7 @@ std::vector<GraphCanvasCatalogEntry> GraphCanvasModel::paletteOperations(
     // A boundary port belongs to a definition body; an instance stands in the
     // root document. Offering either on the wrong side would only earn a named
     // refusal from the engine.
-    if (currentScope().empty()) {
+    if (scope.empty()) {
         if (!definitions_.empty()) {
             GraphCanvasCatalogEntry entry{"graph.instance", "structure", "direct", false, true};
             if (matches(entry)) result.push_back(std::move(entry));
@@ -2711,8 +2802,12 @@ std::vector<GraphCanvasCatalogEntry> GraphCanvasModel::paletteOperations(
 }
 
 std::vector<std::string> GraphCanvasModel::paletteDomains() const {
+    return paletteDomainsIn(currentScope());
+}
+
+std::vector<std::string> GraphCanvasModel::paletteDomainsIn(std::string_view scope) const {
     std::set<std::string> domains;
-    for (const auto &entry : paletteOperations()) domains.insert(entry.domain);
+    for (const auto &entry : paletteOperationsIn(scope)) domains.insert(entry.domain);
     return {domains.begin(), domains.end()};
 }
 
@@ -2830,16 +2925,27 @@ std::vector<std::string> GraphCanvasModel::loopMaterials(std::string_view id) co
 }
 
 bool GraphCanvasModel::setDrawVariant(const std::string &node, const std::string &variant) {
-    const auto *found = findNode(currentScope(), node);
+    return setDrawVariant(currentScope(), node, variant);
+}
+
+bool GraphCanvasModel::setDrawVariant(std::string_view scope, const std::string &node,
+                                      const std::string &variant) {
+    const auto *found = findNode(scope, node);
     if (found == nullptr || text(*found, "op") != "draw.variant" || variant.empty()) return false;
-    if (text(nodeParameters(node), "variant") == variant) return false;
-    return setNodeParameter(node, "variant", variant);
+    if (text(nodeParameters(scope, node), "variant") == variant) return false;
+    return setNodeParameter(scope, node, "variant", variant);
 }
 
 bool GraphCanvasModel::setDrawOverride(const std::string &node, const Json &render_state,
                                        const std::vector<std::string> &defines) {
+    return setDrawOverride(currentScope(), node, render_state, defines);
+}
+
+bool GraphCanvasModel::setDrawOverride(std::string_view scope, const std::string &node,
+                                       const Json &render_state,
+                                       const std::vector<std::string> &defines) {
     if (!canEdit()) return false;
-    const auto *found = findNode(currentScope(), node);
+    const auto *found = findNode(scope, node);
     if (found == nullptr || text(*found, "op") != "draw.override") return false;
     if (!render_state.is_object()) return false;
     // An override that replaces nothing is refused by the engine: the step
@@ -2847,14 +2953,14 @@ bool GraphCanvasModel::setDrawOverride(const std::string &node, const Json &rend
     if (render_state.empty() && defines.empty()) return false;
     if (std::ranges::any_of(defines, [](const std::string &define) { return define.empty(); }))
         return false;
-    auto parameters = nodeParameters(node);
+    auto parameters = nodeParameters(scope, node);
     if (render_state.empty()) parameters.erase("render_state");
     else parameters["render_state"] = render_state;
     if (defines.empty()) parameters.erase("defines");
     else parameters["defines"] = defines;
-    if (parameters == nodeParameters(node)) return false;
+    if (parameters == nodeParameters(scope, node)) return false;
     return submitOps(Json::array({Json{
-        {"op", "set_node_parameters"}, {"scope", scopeToken()}, {"node", node},
+        {"op", "set_node_parameters"}, {"scope", scopeToken(scope)}, {"node", node},
         {"parameters", std::move(parameters)}}}));
 }
 
@@ -2868,7 +2974,10 @@ bool GraphCanvasModel::setMaterialPassContract(const std::string &node, const st
 }
 
 std::string GraphCanvasModel::suggestDrawVariant() const {
-    const auto &scope = currentScope();
+    return suggestDrawVariant(currentScope());
+}
+
+std::string GraphCanvasModel::suggestDrawVariant(std::string_view scope) const {
     for (const auto &loop : nodes_) {
         if (!isDrawItemsLoop(loop)) continue;
         const auto bodies = loopBranchBodies(loop);

@@ -119,6 +119,14 @@ struct GraphCanvasEdge {
     std::string to_port;
 };
 
+// LP-4d1: one output of a definition body -- its name and the port inside
+// that makes it -- which a loop zone's right edge draws.
+struct GraphCanvasBodyOutput {
+    std::string name;
+    std::string node;
+    std::string port;
+};
+
 // A scope is either the root document or one definition body. The root scope
 // carries the empty id so a definition named "root" stays addressable.
 struct GraphCanvasScope {
@@ -551,13 +559,14 @@ class GraphCanvasModel {
                                    std::string_view id) const;
     // Q-11. The id of the scope's first value.input reading scene_time, or
     // empty. A placed audio.playback reads its time from it.
-    [[nodiscard]] std::string sceneTimeNode() const;
+    [[nodiscard]] std::string sceneTimeNode(std::string_view scope) const;
     // One gesture is one op list, one ticket and one CAS: two edits in the same
     // frame cannot both land.
     bool submitOps(nlohmann::json ops);
     // The scope token the engine understands: the root document is "root", a
     // definition body is its own name.
     [[nodiscard]] std::string scopeToken() const;
+    [[nodiscard]] static std::string scopeToken(std::string_view scope);
 
   public:
     void setConnected(bool connected);
@@ -795,6 +804,35 @@ class GraphCanvasModel {
     // and replayed over the RPC.
     nlohmann::json addNodeOps(const std::string &op, const std::string &definition = {}) const;
 
+    // LP-4d1: the same gestures, naming the scope they happen in rather than
+    // taking the one on screen. The root canvas draws a loop's body inside
+    // its zone, so a node there is edited in its definition while the canvas
+    // shows the root; every op these send carries `scope: <definition>`.
+    // The forms above are these with the current scope.
+    [[nodiscard]] nlohmann::json nodeParameters(std::string_view scope,
+                                                std::string_view id) const;
+    [[nodiscard]] bool canConnect(std::string_view scope, std::string_view from_node,
+                                  std::string_view from_port, std::string_view to_node,
+                                  std::string_view to_port) const;
+    bool connectInput(std::string_view scope, const std::string &node,
+                      const std::string &port, const std::string &source_node,
+                      const std::string &source_port);
+    bool disconnectInput(std::string_view scope, const std::string &node,
+                         const std::string &port);
+    bool setNodeParameter(std::string_view scope, const std::string &node,
+                          const std::string &key, const nlohmann::json &value);
+    bool removeNode(std::string_view scope, const std::string &node);
+    bool setNodeLabel(std::string_view scope, const std::string &node,
+                      const std::string &label);
+    bool addNodeIn(std::string_view scope, const std::string &op,
+                   const std::string &definition = {});
+    [[nodiscard]] nlohmann::json addNodeOpsIn(std::string_view scope, const std::string &op,
+                                              const std::string &definition = {}) const;
+    [[nodiscard]] std::vector<GraphCanvasCatalogEntry> paletteOperationsIn(
+        std::string_view scope, std::string_view text = {}, std::string_view domain = {}) const;
+    [[nodiscard]] std::vector<std::string> paletteDomainsIn(std::string_view scope) const;
+    [[nodiscard]] std::string suggestNodeId(std::string_view scope, std::string_view op) const;
+
     // What the palette offers here, filtered by a case-insensitive substring of
     // the operation name and, when non-empty, by domain.
     std::vector<GraphCanvasCatalogEntry> paletteOperations(
@@ -886,6 +924,13 @@ class GraphCanvasModel {
     // How many root nodes (instances and loop branches) name a definition:
     // more than one is the "shared" mark.
     [[nodiscard]] std::size_t definitionUseCount(std::string_view definition) const;
+    // LP-4d1: the body a root loop's zone shows -- the branch its tab chose,
+    // else the first branch that has one (the body a descent opens). Empty
+    // when no branch has a body. `showLoopBranch` is the tab: session state,
+    // never written to the document. False for a branch with no body.
+    [[nodiscard]] std::string loopZoneBody(std::string_view loop) const;
+    bool showLoopBranch(std::string_view loop, std::size_t branch);
+    [[nodiscard]] std::vector<GraphCanvasBodyOutput> bodyOutputs(std::string_view definition) const;
 
     // Decision 6. The other loops' `p[]` outputs a root loop's input can read
     // one element of, as (loop, port).
@@ -942,6 +987,13 @@ class GraphCanvasModel {
     // empty is not an override, and is refused.
     bool setDrawOverride(const std::string &node, const nlohmann::json &render_state,
                          const std::vector<std::string> &defines);
+    // LP-4d1: a draw step inside a draw_loop's zone, named by its body.
+    bool setDrawVariant(std::string_view scope, const std::string &node,
+                        const std::string &variant);
+    bool setDrawOverride(std::string_view scope, const std::string &node,
+                         const nlohmann::json &render_state,
+                         const std::vector<std::string> &defines);
+    [[nodiscard]] std::string suggestDrawVariant(std::string_view scope) const;
     bool setMaterialPassContract(const std::string &node, const std::string &contract);
     // The variant a new draw.variant is given: the material_variant of the
     // pass the scope's loop draws in, when it names one, else "variant".

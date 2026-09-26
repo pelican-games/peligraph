@@ -47,6 +47,11 @@ inline constexpr int NodeGraphToNameRole = Qt::UserRole + 3068;
 // moment a person drags either end, the bends are dropped: the layout no
 // longer speaks for an edge whose ends the user has placed by hand.
 inline constexpr int NodeGraphBendsRole = Qt::UserRole + 3059;
+// Where a press meant for this item lands, in the item's own coordinates, when
+// its middle is not that place: a loop's zone holds its body's nodes, so the
+// middle of the frame is often one of them rather than the loop (LP-4d1). The
+// automation surface's `click` on the item's name aims here.
+inline constexpr int NodeGraphHotspotRole = Qt::UserRole + 3058;
 
 inline constexpr qreal NodeGraphNodeWidth = 240.0;
 inline constexpr qreal NodeGraphNodeHeight = 64.0;

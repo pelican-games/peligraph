@@ -905,7 +905,7 @@ GraphCanvasDrawFields::GraphCanvasDrawFields(GraphCanvasModel &model, std::funct
     layout->addWidget(variant_row_);
     const auto commit_variant = [this] {
         if (node_.empty()) return;
-        after(model_.setDrawVariant(node_, variant_->currentText().trimmed().toStdString()));
+        after(model_.setDrawVariant(scope_, node_, variant_->currentText().trimmed().toStdString()));
     };
     connect(variant_, &QComboBox::activated, this, commit_variant);
     connect(variant_->lineEdit(), &QLineEdit::returnPressed, this, commit_variant);
@@ -947,17 +947,23 @@ void GraphCanvasDrawFields::after(bool submitted) {
 }
 
 void GraphCanvasDrawFields::showNode(const GraphCanvasNode *node) {
+    showNode(node, model_.currentScope());
+}
+
+void GraphCanvasDrawFields::showNode(const GraphCanvasNode *node, const std::string &scope) {
     const bool shown = node != nullptr && (node->op == "render.material_pass" ||
                                            node->op == "draw.variant" || node->op == "draw.override");
     if (!shown) {
         node_.clear();
         op_.clear();
+        scope_.clear();
         hide();
         return;
     }
-    const bool same = node_ == node->id && op_ == node->op;
+    const bool same = node_ == node->id && op_ == node->op && scope_ == scope;
     node_ = node->id;
     op_ = node->op;
+    scope_ = scope;
     const bool editable = model_.canEdit();
     const auto &parameters = node->parameters;
     const auto string = [&](const nlohmann::json &object, const char *key) {
@@ -982,7 +988,7 @@ void GraphCanvasDrawFields::showNode(const GraphCanvasNode *node) {
         if (!(same && variant_->lineEdit()->hasFocus())) {
             const QSignalBlocker block{variant_};
             variant_->clear();
-            const auto suggested = qtext(model_.suggestDrawVariant());
+            const auto suggested = qtext(model_.suggestDrawVariant(scope_));
             if (suggested != QLatin1String{"variant"}) variant_->addItem(suggested);
             const auto current = string(parameters, "variant");
             if (variant_->findText(current) < 0) variant_->addItem(current);
@@ -1045,7 +1051,7 @@ void GraphCanvasDrawFields::commitOverride() {
                              "draw.material draws the material as it is."));
         return;
     }
-    after(model_.setDrawOverride(node_, state, defines));
+    after(model_.setDrawOverride(scope_, node_, state, defines));
 }
 
 void GraphCanvasLoopFields::commitBranchWhen(std::size_t branch) {

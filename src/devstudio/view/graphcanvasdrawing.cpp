@@ -147,9 +147,11 @@ Node Builder::prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &
     entry.node = &node;
     for (const auto &output : node.outputs)
         entry.outputs.push_back(Row{
-            // LP-4c: a p[] is one value per element, and says so.
+            qtext(output.port),
+            // LP-4c: a p[] is one value per element, and says so. (LP-4d1:
+            // in the label -- the port is the name an edge from it names.)
             output.bundle ? QObject::tr("%1 (each)").arg(qtext(output.port)) : qtext(output.port),
-            qtext(output.port), qtext(output.type),
+            qtext(output.type),
             socketStyleFor(graphCanvasSocketFacts(model, output.type)),
             // No source word on an output: there is only one place an
             // output value can come from, and naming it every row would
@@ -217,16 +219,38 @@ NodeGraphLayout placeNodes(const std::vector<Node> &nodes,
     return layoutNodeGraph(layout_nodes, layout_edges, layout_options);
 }
 
+void Builder::setContainer(QGraphicsItem *container) { container_ = container; }
+
+void Builder::place(QGraphicsItem *item) {
+    if (container_ != nullptr) item->setParentItem(container_);
+    else scene_.addItem(item);
+}
+
+void Builder::tag(QGraphicsItem *item) const {
+    item->setData(GraphCanvasScopeRole, scope_text_);
+    // LP-4d1: an item of a zone's body says so, for its automation name.
+    if (container_ != nullptr) item->setData(GraphCanvasZoneScopeRole, scope_text_);
+}
+
 void Builder::addNode(const Node &entry, int column, const QPointF &position,
                        Moved moved) {
+    auto *item = addNodeItem(
+        entry, column,
+        roundedEntityPath(entry.width, entry.height, GraphCanvasNodeCornerRadius),
+        position, std::move(moved));
+    addNodeHeader(item, entry);
+    addNodeRows(item, entry);
+}
+
+MovableNodeItem *Builder::addNodeItem(const Node &entry, int column,
+                                      const QPainterPath &path,
+                                      const QPointF &position, Moved moved) {
     const GraphCanvasNode &node = *entry.node;
     const QString node_name = qtext(node.id);
     const QString heading = qtext(node.heading());
     const bool folded = entry.folded;
-    auto *item = new MovableNodeItem(
-        roundedEntityPath(entry.width, entry.height, GraphCanvasNodeCornerRadius),
-        std::move(moved));
-    scene_.addItem(item);
+    auto *item = new MovableNodeItem(path, std::move(moved));
+    place(item);
     item->setPos(position);
     item->setZValue(2.0);
     // The body is neutral; the heading band carries the domain colour, so
@@ -242,7 +266,7 @@ void Builder::addNode(const Node &entry, int column, const QPointF &position,
     item->setFlag(QGraphicsItem::ItemIsSelectable, true);
     item->setFlag(QGraphicsItem::ItemSendsGeometryChanges, true);
     item->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasNodeItem));
-    item->setData(GraphCanvasScopeRole, scope_text_);
+    tag(item);
     item->setData(NodeGraphNameRole, node_name);
     item->setData(GraphCanvasLabelRole, heading);
     item->setData(GraphCanvasOpRole, qtext(node.op));
@@ -264,8 +288,7 @@ void Builder::addNode(const Node &entry, int column, const QPointF &position,
     item->setData(GraphCanvasInputPortsRole, input_ports);
     item->setData(GraphCanvasDeclaredPortsRole, declared_ports);
     item->setData(GraphCanvasOutputPortsRole, output_ports);
-    addNodeHeader(item, entry);
-    addNodeRows(item, entry);
+    return item;
 }
 
 void Builder::addNodeHeader(QGraphicsPathItem *item, const Node &entry) {
@@ -276,10 +299,11 @@ void Builder::addNodeHeader(QGraphicsPathItem *item, const Node &entry) {
     // another node shows its operation.
     const QString type_name = qtext(node.badge.empty() ? node.op : node.badge);
     const qreal width = entry.width;
-    const bool folded = entry.folded;
+    // LP-4d1: a folded zone's triangle points the way a folded node's does.
+    const bool folded = entry.folded || entry.zone_folded;
     const auto tag = [&](QGraphicsItem *child, const char *kind) {
         child->setData(NodeGraphItemKindRole, QString::fromLatin1(kind));
-        child->setData(GraphCanvasScopeRole, scope_text_);
+        this->tag(child);
         child->setData(NodeGraphNameRole, node_name);
     };
 
@@ -313,8 +337,9 @@ void Builder::addNodeHeader(QGraphicsPathItem *item, const Node &entry) {
     tag(collapse, GraphCanvasCollapseItem);
     collapse->setData(GraphCanvasHeadingRole, true);
     collapse->setData(GraphCanvasCollapsedRole, folded);
-    collapse->setToolTip(folded ? QObject::tr("Show the sockets")
-                               : QObject::tr("Fold the sockets away"));
+    collapse->setToolTip(entry.zone_folded ? QObject::tr("Open the loop's zone")
+                         : folded          ? QObject::tr("Show the sockets")
+                                           : QObject::tr("Fold the sockets away"));
 
     auto *title = new QGraphicsSimpleTextItem(heading, band);
     title->setFont(heading_font_);
@@ -349,7 +374,7 @@ void Builder::addNodeRows(QGraphicsPathItem *item, const Node &entry) {
     const QString heading = qtext(entry.node->heading());
     const auto tag = [&](QGraphicsItem *child, const char *kind) {
         child->setData(NodeGraphItemKindRole, QString::fromLatin1(kind));
-        child->setData(GraphCanvasScopeRole, scope_text_);
+        this->tag(child);
         child->setData(NodeGraphNameRole, node_name);
     };
 
@@ -487,25 +512,25 @@ void Builder::addNodeRows(QGraphicsPathItem *item, const Node &entry) {
 QGraphicsPathItem *Builder::addEdge(const GraphCanvasEdge &edge,
                                   const QVector<QPointF> &bends) {
     auto *line = new GraphEdgeItem;
-    scene_.addItem(line);
+    place(line);
     if (!bends.isEmpty()) setNodeGraphBends(*line, bends);
     line->setZValue(0.0);
     line->setPen(QPen{theme_.canvas.edge, 1.6});
     line->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasEdgeItem));
-    line->setData(GraphCanvasScopeRole, scope_text_);
+    tag(line);
     line->setData(NodeGraphFromNameRole, qtext(edge.from_node));
     line->setData(NodeGraphToNameRole, qtext(edge.to_node));
     line->setData(GraphCanvasFromPortRole, qtext(edge.from_port));
     line->setData(GraphCanvasToPortRole, qtext(edge.to_port));
 
     auto *arrow = new QGraphicsPolygonItem;
-    scene_.addItem(arrow);
+    place(arrow);
     arrow->setZValue(1.0);
     arrow->setBrush(theme_.canvas.edge);
     arrow->setPen(Qt::NoPen);
     arrow->setData(NodeGraphItemKindRole,
                    QString::fromLatin1(GraphCanvasEdgeArrowItem));
-    arrow->setData(GraphCanvasScopeRole, scope_text_);
+    tag(arrow);
     arrow->setData(NodeGraphFromNameRole, qtext(edge.from_node));
     arrow->setData(NodeGraphToNameRole, qtext(edge.to_node));
     // N-6: an edge is named by the input end it lands on, and a press on
@@ -527,7 +552,7 @@ void Builder::addReroute(const GraphCanvasEdgeKey &key, std::size_t index,
     circle.addEllipse(QPointF{0.0, 0.0}, GraphCanvasRerouteSize / 2.0,
                       GraphCanvasRerouteSize / 2.0);
     auto *dot = new MovableNodeItem(circle, std::move(moved));
-    scene_.addItem(dot);
+    place(dot);
     dot->setPos(position);
     dot->setZValue(2.6);
     dot->setBrush(theme_.canvas.pill_bg);
@@ -537,7 +562,7 @@ void Builder::addReroute(const GraphCanvasEdgeKey &key, std::size_t index,
     dot->setFlag(QGraphicsItem::ItemSendsGeometryChanges, true);
     dot->setData(NodeGraphItemKindRole,
                  QString::fromLatin1(GraphCanvasRerouteItem));
-    dot->setData(GraphCanvasScopeRole, scope_text_);
+    tag(dot);
     dot->setData(NodeGraphNameRole, qtext(key.node));
     // The automation name is built from the node and the port, so the
     // index rides on the port half: `graph_reroute#left/gain/0`.
@@ -561,7 +586,7 @@ void Builder::addTie(const GraphCanvasTie &tie, std::size_t index, Moved moved) 
         roundedEntityPath(GraphCanvasTieWidth, height,
                           GraphCanvasTieWidth / 2.0),
         std::move(moved));
-    scene_.addItem(bar);
+    place(bar);
     bar->setPos(tie.position - QPointF{GraphCanvasTieWidth / 2.0,
                                    GraphCanvasTiePadding});
     bar->setZValue(2.5);
@@ -572,7 +597,7 @@ void Builder::addTie(const GraphCanvasTie &tie, std::size_t index, Moved moved) 
     bar->setFlag(QGraphicsItem::ItemSendsGeometryChanges, true);
     bar->setData(NodeGraphItemKindRole,
                  QString::fromLatin1(GraphCanvasTieItem));
-    bar->setData(GraphCanvasScopeRole, scope_text_);
+    tag(bar);
     bar->setData(NodeGraphNameRole,
                  QString::number(static_cast<qulonglong>(index)));
     bar->setData(GraphCanvasControlIndexRole,
@@ -582,6 +607,271 @@ void Builder::addTie(const GraphCanvasTie &tie, std::size_t index, Moved moved) 
     bar->setToolTip(QObject::tr(
         "%1 lines carried together (drag to move, double-click to reverse)")
                         .arg(tie.edges.size()));
+}
+
+void layoutZone(Zone &zone, const QFontMetricsF &heading_metrics,
+                const QFontMetricsF &row_metrics) {
+    const qreal header =
+        GraphCanvasHeaderHeight + (zone.tabs.empty() ? 0.0 : GraphCanvasZoneTabHeight);
+    const auto rows = static_cast<qreal>(std::max(zone.inputs.size(), zone.outputs.size()));
+    const qreal rows_height =
+        2.0 * GraphCanvasSectionPadding + rows * GraphCanvasSocketRowHeight;
+    const QRectF content = zone.content.isValid() ? zone.content : QRectF{};
+    zone.origin = QPointF{GraphCanvasZoneContentLeft, header + GraphCanvasZonePadding};
+    // The body can reach left of or above its origin (a node dragged there):
+    // the frame grows that way rather than moving what is inside it.
+    const qreal left = std::min<qreal>(0.0, content.left());
+    const qreal top = std::min<qreal>(0.0, content.top());
+    const GraphCanvasNode &node = *zone.node.node;
+    const qreal heading = 18.0 + heading_metrics.horizontalAdvance(qtext(node.heading())) + 24.0 +
+                          row_metrics.horizontalAdvance(zone.stage) + 18.0 +
+                          (zone.shared.isEmpty()
+                               ? 0.0
+                               : row_metrics.horizontalAdvance(zone.shared) + 18.0);
+    qreal tabs = 12.0;
+    for (const ZoneTab &tab : zone.tabs)
+        tabs += row_metrics.horizontalAdvance(tab.text) + 22.0;
+    const qreal right = std::max({zone.origin.x() + content.right() + GraphCanvasZoneContentLeft,
+                                  left + GraphCanvasZoneMinimumWidth, left + heading,
+                                  left + tabs});
+    const qreal bottom =
+        std::max({zone.origin.y() + content.bottom() + GraphCanvasZonePadding,
+                  top + header + rows_height,
+                  top + header + 2.0 * GraphCanvasZonePadding +
+                      GraphCanvasZoneMinimumContentHeight});
+    zone.frame = QRectF{QPointF{left, top}, QPointF{right, bottom}};
+    zone.node.width = zone.frame.width();
+    zone.node.height = zone.frame.height();
+}
+
+QGraphicsItem *Builder::addZone(const Zone &zone, int column, const QPointF &position,
+                                Moved moved) {
+    const GraphCanvasNode &node = *zone.node.node;
+    const QString loop = qtext(node.id);
+    const QRectF frame = zone.frame;
+    QPainterPath outline = roundedEntityPath(frame.width(), frame.height(),
+                                             GraphCanvasNodeCornerRadius);
+    outline.translate(frame.topLeft());
+    auto *item = addNodeItem(zone.node, column, outline, position, std::move(moved));
+    // Under the root's nodes: a frame is large, and a node dragged over it
+    // is still the thing in the hand.
+    item->setZValue(1.5);
+    const QColor tint = nodeColor(node);
+    QColor fill = tint;
+    fill.setAlphaF(0.14F);
+    item->setBrush(fill);
+    if (!node.refused) item->setPen(QPen{tint, 1.6});
+    // A click meant for the loop lands on its heading, not in its body.
+    item->setData(NodeGraphHotspotRole,
+                  QPointF{frame.center().x(), frame.top() + 6.0});
+    const qreal header =
+        GraphCanvasHeaderHeight + (zone.tabs.empty() ? 0.0 : GraphCanvasZoneTabHeight);
+
+    const auto tagged = [&](QGraphicsItem *child, const char *kind) {
+        child->setData(NodeGraphItemKindRole, QString::fromLatin1(kind));
+        tag(child);
+        child->setData(NodeGraphNameRole, loop);
+    };
+
+    // The inside of the frame, where the body is drawn: what `graph_zone`
+    // names, and what a press between the body's nodes lands on.
+    auto *area = new QGraphicsRectItem(
+        QRectF{frame.left(), frame.top() + header, frame.width(), frame.height() - header}, item);
+    area->setPen(Qt::NoPen);
+    area->setBrush(Qt::NoBrush);
+    tagged(area, GraphCanvasZoneItem);
+    area->setData(GraphCanvasDefinitionRole, zone.definition);
+
+    auto *band = new QGraphicsPathItem(
+        headerBandPath(frame.width(), GraphCanvasHeaderHeight, GraphCanvasNodeCornerRadius),
+        item);
+    band->setPos(frame.topLeft());
+    band->setBrush(tint);
+    band->setPen(Qt::NoPen);
+    tagged(band, GraphCanvasNodeHeaderItem);
+    band->setData(GraphCanvasHeadingRole, true);
+
+    // The same triangle a node folds with: here it folds the zone into the
+    // loop's node, the way LP-4c drew it.
+    QPainterPath arrow;
+    arrow.moveTo(-4.5, -2.0);
+    arrow.lineTo(4.5, -2.0);
+    arrow.lineTo(0.0, 3.5);
+    arrow.closeSubpath();
+    auto *collapse = new QGraphicsPathItem(arrow, band);
+    collapse->setPos(9.5, GraphCanvasHeaderHeight / 2.0);
+    collapse->setBrush(theme_.canvas.heading_text);
+    collapse->setPen(QPen{Qt::NoPen});
+    tagged(collapse, GraphCanvasCollapseItem);
+    collapse->setData(GraphCanvasHeadingRole, true);
+    collapse->setData(GraphCanvasCollapsedRole, false);
+    collapse->setToolTip(QObject::tr("Fold the zone into the loop's node"));
+
+    const QString heading = qtext(node.heading());
+    auto *title = new QGraphicsSimpleTextItem(heading, band);
+    title->setFont(heading_font_);
+    title->setBrush(theme_.canvas.heading_text);
+    title->setPos(18.0, (GraphCanvasHeaderHeight - heading_metrics_.height()) / 2.0);
+    tagged(title, GraphCanvasNodeLabelItem);
+    title->setData(GraphCanvasLabelRole, heading);
+    title->setData(GraphCanvasHeadingRole, true);
+    title->setToolTip(QObject::tr("Double-click to rename"));
+
+    // The stage (expand x3, draw_loop 2 materials, loop), where a node shows
+    // its operation.
+    auto *stage = new QGraphicsSimpleTextItem(zone.stage, band);
+    stage->setFont(detail_font_);
+    stage->setBrush(theme_.canvas.heading_text);
+    const qreal stage_x = frame.width() - 10.0 - row_metrics_.horizontalAdvance(zone.stage);
+    stage->setPos(stage_x, (GraphCanvasHeaderHeight - row_metrics_.height()) / 2.0);
+    tagged(stage, GraphCanvasZoneLabelItem);
+    stage->setData(GraphCanvasPortRole, QStringLiteral("stage"));
+    stage->setData(GraphCanvasOpRole, qtext(node.op));
+    stage->setData(GraphCanvasHeadingRole, true);
+    if (!zone.shared.isEmpty()) {
+        auto *shared = new QGraphicsSimpleTextItem(zone.shared, band);
+        shared->setFont(detail_font_);
+        shared->setBrush(QColor{QStringLiteral("#f5b041")});
+        shared->setPos(stage_x - 14.0 - row_metrics_.horizontalAdvance(zone.shared),
+                       (GraphCanvasHeaderHeight - row_metrics_.height()) / 2.0);
+        tagged(shared, GraphCanvasZoneLabelItem);
+        shared->setData(GraphCanvasPortRole, QStringLiteral("shared"));
+        shared->setData(GraphCanvasHeadingRole, true);
+        shared->setToolTip(QObject::tr(
+            "Other instances or loops run %1 too: an edit here changes them all.")
+                               .arg(zone.definition));
+    }
+
+    // The branches' tabs, under the heading: if / elif / else.
+    qreal tab_x = frame.left() + 12.0;
+    for (const ZoneTab &tab : zone.tabs) {
+        const qreal width = row_metrics_.horizontalAdvance(tab.text) + 18.0;
+        const qreal height = GraphCanvasZoneTabHeight - 5.0;
+        auto *chip = new QGraphicsPathItem(roundedEntityPath(width, height, 5.0), item);
+        chip->setPos(tab_x, frame.top() + GraphCanvasHeaderHeight + 2.0);
+        chip->setZValue(2.0);
+        chip->setBrush(tab.current ? tint : theme_.canvas.pill_bg);
+        chip->setPen(QPen{tab.current ? theme_.canvas.heading_text : theme_.canvas.node_border,
+                          tab.current ? 1.2 : 0.8});
+        if (!tab.runs) chip->setOpacity(0.5);
+        tagged(chip, GraphCanvasZoneTabItem);
+        chip->setData(GraphCanvasPortRole, QString::number(static_cast<qulonglong>(tab.branch)));
+        chip->setData(GraphCanvasBranchRole, static_cast<qulonglong>(tab.branch));
+        chip->setData(GraphCanvasLabelRole, tab.text);
+        chip->setToolTip(tab.runs ? QObject::tr("Show this branch's body")
+                                  : QObject::tr("This branch runs nothing"));
+        auto *text = new QGraphicsSimpleTextItem(tab.text, chip);
+        text->setFont(detail_font_);
+        text->setBrush(theme_.canvas.heading_text);
+        text->setPos(9.0, (height - row_metrics_.height()) / 2.0);
+        tagged(text, GraphCanvasZoneTabItem);
+        text->setData(GraphCanvasPortRole, QString::number(static_cast<qulonglong>(tab.branch)));
+        text->setData(GraphCanvasBranchRole, static_cast<qulonglong>(tab.branch));
+        tab_x += width + 4.0;
+    }
+
+    // The edges: the loop's own sockets outside, the body's inside, one row
+    // each, beside the name they share.
+    const auto socket = [&](const Row &drawn, const QPointF &centre, const QString &port,
+                            const char *direction) {
+        auto *dot = new QGraphicsPathItem(socketPath(drawn.style.shape, drawn.style.size), item);
+        dot->setPos(centre);
+        // Over the body: an edge inside the zone starts at a socket here, and
+        // a press on the socket must not pick the edge instead.
+        dot->setZValue(2.0);
+        dot->setBrush(drawn.style.fill);
+        dot->setPen(QPen{drawn.style.outline, 1.1});
+        dot->setToolTip(drawn.type.isEmpty()
+                            ? QObject::tr("%1 (type not declared)").arg(drawn.label)
+                            : QStringLiteral("%1 : %2").arg(drawn.label, drawn.type));
+        tagged(dot, GraphCanvasSocketItem);
+        dot->setData(GraphCanvasPortRole, port);
+        dot->setData(GraphCanvasPortTypeRole, drawn.type);
+        dot->setData(GraphCanvasSocketDirectionRole, QString::fromLatin1(direction));
+        dot->setData(GraphCanvasSocketShapeRole, static_cast<int>(drawn.style.shape));
+        return dot;
+    };
+    const auto label = [&](const QString &text, const QPointF &at, const QString &port) {
+        auto *name = new QGraphicsSimpleTextItem(text, item);
+        name->setFont(detail_font_);
+        name->setBrush(theme_.canvas.dim_text);
+        name->setPos(at.x(), at.y() - row_metrics_.height() / 2.0);
+        tagged(name, GraphCanvasNodeLabelItem);
+        name->setData(GraphCanvasPortRole, port);
+        return name;
+    };
+    const qreal rows_top = frame.top() + header + GraphCanvasSectionPadding;
+    for (std::size_t index = 0; index < zone.inputs.size(); ++index) {
+        const ZoneRow &row = zone.inputs[index];
+        const qreal y = rows_top + (static_cast<qreal>(index) + 0.5) * GraphCanvasSocketRowHeight;
+        if (!row.outer.isEmpty())
+            socket(row.outer_row, QPointF{frame.left(), y}, row.outer, "input");
+        label(row.label, QPointF{frame.left() + 12.0, y}, row.outer.isEmpty() ? row.inner : row.outer);
+        if (!row.inner.isEmpty()) {
+            // The body's boundary input: its graph.input's `value`, which is
+            // what the body's edges from it name.
+            auto *inner = new QGraphicsPathItem(socketPath(SocketShape::circle, GraphCanvasSocketSize),
+                                                item);
+            inner->setPos(frame.left() + GraphCanvasZoneColumn, y);
+            inner->setZValue(2.0);
+            inner->setBrush(theme_.canvas.pill_bg);
+            inner->setPen(QPen{tint, 1.4});
+            inner->setToolTip(QObject::tr("%1 inside %2 (drag to a body input)")
+                                  .arg(row.inner, zone.definition));
+            inner->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasSocketItem));
+            inner->setData(GraphCanvasScopeRole, zone.definition);
+            inner->setData(GraphCanvasZoneScopeRole, zone.definition);
+            inner->setData(NodeGraphNameRole, row.inner);
+            inner->setData(GraphCanvasPortRole, QStringLiteral("value"));
+            inner->setData(GraphCanvasSocketDirectionRole, QStringLiteral("output"));
+            inner->setData(GraphCanvasSocketShapeRole, static_cast<int>(SocketShape::circle));
+        }
+    }
+    for (std::size_t index = 0; index < zone.outputs.size(); ++index) {
+        const ZoneRow &row = zone.outputs[index];
+        const qreal y = rows_top + (static_cast<qreal>(index) + 0.5) * GraphCanvasSocketRowHeight;
+        if (!row.outer.isEmpty())
+            socket(row.outer_row, QPointF{frame.right(), y}, row.outer, "output");
+        label(row.label, QPointF{frame.right() - GraphCanvasZoneColumn + 12.0, y},
+              row.outer.isEmpty() ? row.inner : row.outer);
+        if (!row.inner.isEmpty()) {
+            auto *inner = new QGraphicsPathItem(socketPath(SocketShape::circle, GraphCanvasSocketSize),
+                                                item);
+            inner->setPos(frame.right() - GraphCanvasZoneColumn, y);
+            inner->setZValue(2.0);
+            inner->setBrush(theme_.canvas.pill_bg);
+            inner->setPen(QPen{tint, 1.4});
+            inner->setToolTip(QObject::tr("The body's output %1").arg(row.inner));
+            tagged(inner, GraphCanvasZoneSocketItem);
+            inner->setData(GraphCanvasPortRole, QStringLiteral("out:") + row.inner);
+            inner->setData(GraphCanvasSocketDirectionRole, QStringLiteral("input"));
+        }
+    }
+
+    // The body is drawn in here, in its own coordinates.
+    auto *content = new QGraphicsRectItem(QRectF{}, item);
+    content->setFlag(QGraphicsItem::ItemHasNoContents, true);
+    content->setPos(zone.origin);
+    content->setZValue(1.0);
+    return content;
+}
+
+QGraphicsPathItem *Builder::addZoneLink(const QString &loop, const QString &output,
+                                        const QString &from_node, const QString &from_port) {
+    auto *line = new QGraphicsPathItem;
+    place(line);
+    line->setZValue(0.0);
+    QPen pen{theme_.canvas.edge, 1.4};
+    pen.setStyle(Qt::DashLine);
+    line->setPen(pen);
+    line->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasZoneLinkItem));
+    tag(line);
+    line->setData(NodeGraphNameRole, loop);
+    line->setData(GraphCanvasPortRole, QStringLiteral("out:") + output);
+    line->setData(NodeGraphFromNameRole, from_node);
+    line->setData(GraphCanvasFromPortRole, from_port);
+    line->setToolTip(QObject::tr("%1.%2 is the body's output %3").arg(from_node, from_port, output));
+    return line;
 }
 
 void Builder::addBreadcrumb(const QStringList &trail, qreal top,

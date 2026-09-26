@@ -217,6 +217,31 @@ whose shader declares no input is not sent: the status line says
 `<pass>'s shader declares no inputs.` beside Use engine://passthrough and Open
 the shader. `sockets_fix_and_show` is the example.
 
+LP-4d1 draws each root `graph.loop` on the Graph tab as a zone: a frame with the
+body of the branch its tab shows drawn inside, edited in that definition. The
+frame is the loop's own `graph_node#<loop>` (a `click` on it lands on its
+heading, not in its body), and a thing drawn inside the zone carries the body's
+definition in front of its name -- a body node's id can be a root node's too.
+Neither a definition name nor an id holds a slash, so the first one is where
+they part. Opened with the loop's body (Open body), the canvas names the body's
+nodes as it always did, without the definition.
+
+| name | what it is |
+|------|------------|
+| `graph_zone#<loop>` | the inside of the frame, where the body is drawn |
+| `graph_zone_label#<loop>/stage` | the zone's stage: `expand ×N`, `draw_loop N materials` or `loop` before the report |
+| `graph_zone_label#<loop>/shared` | `shared (N users)` when another instance or loop runs the same definition |
+| `graph_zone_tab#<loop>/<branch>` | one branch's tab (`if …` / `elif …` / `else`); a click shows that branch's body. None when the else is the only branch |
+| `graph_socket#<loop>/<port>` | the loop's own sockets on the frame's edges: its inputs on the left, `p` and `p[]` on the right |
+| `graph_socket#<definition>/<input>/value` | the inside end of a boundary input on the left edge: the body's `graph.input` `<input>` (drag from it to a body input) |
+| `graph_zone_socket#<loop>/out:<output>` | the inside end of the body output `<output>` on the right edge (drawing only) |
+| `graph_zone_link#<definition>/<loop>/out:<output>` | the line from the port that makes that output to it (drawing only) |
+| `graph_node#<definition>/<id>` | a body node drawn in the zone; its heading, sockets, pills and edges follow the same rule (`graph_node_header#<definition>/<id>`, `graph_socket#<definition>/<id>/<port>`, ...) |
+
+With the zone (or a node inside it) picked, `pelican.graphCanvas.addFullscreenPass`
+and the palette add to its body; the canvas menu opened inside the frame does the
+same. `loop_zone_edit` is the example.
+
 The editor the canvas opens over a pill or a heading is a real widget carried by
 a drawn item, and is named the same way:
 `pelican.graphCanvasView::graph_inline_editor#left/gain`. `type`, `key` and

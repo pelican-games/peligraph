@@ -83,7 +83,16 @@ bool isNodeSurface(const QString &kind) {
            kind == QLatin1String{GraphCanvasCollapseItem} ||
            kind == QLatin1String{GraphCanvasSocketItem} ||
            kind == QLatin1String{GraphCanvasValuePillItem} ||
-           kind == QLatin1String{GraphCanvasValueBandItem};
+           kind == QLatin1String{GraphCanvasValueBandItem} ||
+           // LP-4d1: the inside of a zone, its marks and its body outputs'
+           // inside ends belong to the loop.
+           kind == QLatin1String{GraphCanvasZoneItem} ||
+           kind == QLatin1String{GraphCanvasZoneLabelItem} ||
+           kind == QLatin1String{GraphCanvasZoneSocketItem};
+}
+
+std::string itemScope(const QGraphicsItem &item) {
+    return item.data(GraphCanvasScopeRole).toString().toStdString();
 }
 
 using InlineEditFilter = InlineEditEventFilter;
@@ -134,7 +143,6 @@ void routeGraphCanvasEdge(QGraphicsScene &scene, QGraphicsPathItem &edge) {
     const QString to_name = edge.data(NodeGraphToNameRole).toString();
     QGraphicsItem *from = findNodeItem(scene, graphCanvasKinds(), scope, from_name);
     QGraphicsItem *to = findNodeItem(scene, graphCanvasKinds(), scope, to_name);
-    if (from == nullptr || to == nullptr) return;
 
     QGraphicsItem *from_socket =
         findSocketOrAnchor(scene, scope, from_name,
@@ -144,6 +152,10 @@ void routeGraphCanvasEdge(QGraphicsScene &scene, QGraphicsPathItem &edge) {
         findSocketOrAnchor(scene, scope, to_name,
                            edge.data(GraphCanvasToPortRole).toString(),
                            QStringLiteral("input"));
+    // LP-4d1: a body's boundary input is drawn as a socket on its zone's
+    // edge, not as a node; the socket is enough to draw the line from.
+    if ((from == nullptr && from_socket == nullptr) || (to == nullptr && to_socket == nullptr))
+        return;
 
     const QPointF start = from_socket != nullptr
                               ? from_socket->sceneBoundingRect().center()
@@ -153,16 +165,43 @@ void routeGraphCanvasEdge(QGraphicsScene &scene, QGraphicsPathItem &edge) {
                             ? to_socket->sceneBoundingRect().center()
                             : QPointF{to->sceneBoundingRect().left(),
                                       to->sceneBoundingRect().center().y()};
-    const QVector<QPointF> bends = nodeGraphBends(edge);
+    // The bends are in the scope's own coordinates, which a zone's body does
+    // not share with the scene; the line is computed in the scene and handed
+    // back to the item in its own.
+    QVector<QPointF> bends = nodeGraphBends(edge);
+    if (const QGraphicsItem *parent = edge.parentItem())
+        for (QPointF &bend : bends) bend = parent->mapToScene(bend);
     const CurveGeometry geometry =
         !bends.isEmpty() ? curveGeometryThrough(start, bends, tip)
-        : from_socket != nullptr && to_socket != nullptr
+        : (from_socket != nullptr && to_socket != nullptr) || from == nullptr || to == nullptr
             ? curveGeometryBetween(start, tip)
             : curveGeometry(from->sceneBoundingRect(), to->sceneBoundingRect());
-    edge.setPath(geometry.path);
+    edge.setPath(edge.mapFromScene(geometry.path));
     if (auto *arrow = dynamic_cast<QGraphicsPolygonItem *>(findEndpointArtifact(
             scene, graphCanvasKinds().arrow, scope, from_name, to_name)))
-        arrow->setPolygon(geometry.arrow);
+        arrow->setPolygon(arrow->mapFromScene(geometry.arrow));
+}
+
+// LP-4d1: a body output's line, from the port that makes it to the inside
+// end of that output on the zone's right edge.
+void routeZoneLink(QGraphicsScene &scene, QGraphicsPathItem &link) {
+    const QString scope = link.data(GraphCanvasScopeRole).toString();
+    QGraphicsItem *from = findSocketOrAnchor(scene, scope,
+                                             link.data(NodeGraphFromNameRole).toString(),
+                                             link.data(GraphCanvasFromPortRole).toString(),
+                                             QStringLiteral("output"));
+    QGraphicsItem *to = nullptr;
+    for (QGraphicsItem *item : scene.items())
+        if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasZoneSocketItem} &&
+            item->data(NodeGraphNameRole) == link.data(NodeGraphNameRole) &&
+            item->data(GraphCanvasPortRole) == link.data(GraphCanvasPortRole)) {
+            to = item;
+            break;
+        }
+    if (from == nullptr || to == nullptr) return;
+    const CurveGeometry geometry = curveGeometryBetween(from->sceneBoundingRect().center(),
+                                                        to->sceneBoundingRect().center());
+    link.setPath(link.mapFromScene(geometry.path));
 }
 
 void rerouteGraphCanvasEdges(QGraphicsScene &scene, const std::string &scope,
@@ -170,6 +209,12 @@ void rerouteGraphCanvasEdges(QGraphicsScene &scene, const std::string &scope,
     const QString expected_scope = qtext(scope);
     const QString expected_node = qtext(node);
     for (QGraphicsItem *item : scene.items()) {
+        if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasZoneLinkItem} &&
+            item->data(GraphCanvasScopeRole).toString() == expected_scope &&
+            item->data(NodeGraphFromNameRole).toString() == expected_node) {
+            if (auto *link = dynamic_cast<QGraphicsPathItem *>(item)) routeZoneLink(scene, *link);
+            continue;
+        }
         if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasEdgeItem} ||
             item->data(GraphCanvasScopeRole).toString() != expected_scope ||
             (item->data(NodeGraphFromNameRole).toString() != expected_node &&
@@ -348,11 +393,9 @@ void GraphCanvasScene::setModel(GraphCanvasModel *model) {
     selected_node_.reset();
     selected_edge_.reset();
     selected_edges_.clear();
+    selection_scope_.clear();
     clearControlSelection();
-    layout_ = GraphCanvasLayout{};
-    layout_scope_.clear();
-    layout_sent_ = nlohmann::json{};
-    layout_dirty_ = false;
+    placements_.clear();
     repopulate();
 }
 
@@ -374,18 +417,34 @@ void GraphCanvasScene::pruneSessionPositions() {
 
 bool GraphCanvasScene::collapsed(const std::string &id) const {
     if (model_ == nullptr) return false;
-    const auto found = session_collapsed_.find({model_->currentScope(), id});
+    return collapsed(model_->currentScope(), id);
+}
+
+bool GraphCanvasScene::collapsed(const std::string &scope, const std::string &id) const {
+    const auto found = session_collapsed_.find({scope, id});
     return found != session_collapsed_.end() && found->second;
 }
 
 void GraphCanvasScene::setCollapsed(const std::string &id, bool folded) {
     if (model_ == nullptr) return;
-    session_collapsed_[{model_->currentScope(), id}] = folded;
+    setCollapsed(model_->currentScope(), id, folded);
+}
+
+void GraphCanvasScene::setCollapsed(const std::string &scope, const std::string &id,
+                                    bool folded) {
+    if (model_ == nullptr) return;
+    session_collapsed_[{scope, id}] = folded;
     repopulate();
 }
 
 void GraphCanvasScene::toggleCollapsed(const std::string &id) {
     setCollapsed(id, !collapsed(id));
+}
+
+bool GraphCanvasScene::showLoopBranch(const std::string &loop, std::size_t branch) {
+    if (model_ == nullptr || !model_->showLoopBranch(loop, branch)) return false;
+    repopulate();
+    return true;
 }
 
 void GraphCanvasScene::autoLayout() {
@@ -396,9 +455,11 @@ void GraphCanvasScene::autoLayout() {
     });
     // Start from nothing: the placement is the whole answer, so a leftover
     // control point from the last one would be a bend nobody asked for.
-    layout_ = GraphCanvasLayout{};
-    layout_scope_ = scope;
-    layout_dirty_ = false;
+    {
+        auto &placed = placement(scope);
+        placed.layout = GraphCanvasLayout{};
+        placed.dirty = false;
+    }
     clearControlSelection();
     // One draw to get the placement, which is where `placement_*` comes from.
     repopulate();
@@ -450,8 +511,8 @@ void GraphCanvasScene::autoLayout() {
         }
         start = end;
     }
-    layout_ = std::move(placed);
-    noteLayoutChange();
+    placement(scope).layout = std::move(placed);
+    noteLayoutChange(scope);
     repopulate();
     // "Auto layout" is one deliberate act, not the tail of a drag: it is sent
     // at once rather than after the wait a drag needs.
@@ -468,105 +529,135 @@ void GraphCanvasScene::setMenuActions(QAction *auto_layout, QAction *fit_view,
 
 // --- N-6: the placement.
 
+GraphCanvasScene::ScopePlacement &GraphCanvasScene::placement(const std::string &scope) {
+    return placements_[scope];
+}
+
+const GraphCanvasLayout &GraphCanvasScene::layout() const noexcept {
+    static const std::string root;
+    return layout(model_ != nullptr ? model_->currentScope() : root);
+}
+
+const GraphCanvasLayout &GraphCanvasScene::layout(const std::string &scope) const noexcept {
+    static const GraphCanvasLayout empty;
+    const auto found = placements_.find(scope);
+    return found == placements_.end() ? empty : found->second.layout;
+}
+
+bool GraphCanvasScene::layoutPending() const noexcept {
+    return std::ranges::any_of(placements_,
+                               [](const auto &entry) { return entry.second.dirty; });
+}
+
+bool GraphCanvasScene::placementUnsent() const noexcept {
+    return std::ranges::any_of(placements_, [](const auto &entry) {
+        return entry.second.dirty && entry.second.sent.is_null();
+    });
+}
+
 void GraphCanvasScene::loadLayout(const std::string &scope) {
     if (model_ == nullptr) return;
-    // A gesture left in the air belongs to the scope it happened in. Send it
-    // before the canvas moves, and do not carry it across: a placement written
-    // against the wrong scope names nodes that scope does not hold.
-    if (layout_dirty_ && layout_scope_ != scope) {
-        flushLayout();
-        layout_dirty_ = false;
-        layout_sent_ = nlohmann::json{};
-    }
+    auto &placed = placement(scope);
     const auto document = model_->scopeLayout(scope);
-    if (layout_scope_ == scope && layout_dirty_) {
+    if (placed.dirty) {
         // The document is the one that is behind, not the canvas.
-        if (document != layout_sent_) return;
-        layout_dirty_ = false;
+        if (document != placed.sent) return;
+        placed.dirty = false;
     }
-    layout_scope_ = scope;
-    layout_ = graphCanvasLayoutFromJson(document);
+    placed.layout = graphCanvasLayoutFromJson(document);
+    placed.loaded = true;
     // Everything in the document's `layout` this canvas has no opinion about.
     // It travels back out on the next write; dropping it would make a node drag
     // here erase the Frame Plan's placement over there.
-    layout_foreign_ = nlohmann::json::object();
+    placed.foreign = nlohmann::json::object();
     if (document.is_object())
         for (const auto &[key, value] : document.items())
             if (key != "nodes" && key != "reroutes" && key != "ties")
-                layout_foreign_[key] = value;
+                placed.foreign[key] = value;
 }
 
 nlohmann::json GraphCanvasScene::layoutMember(const std::string &key) const {
-    const auto found = layout_foreign_.find(key);
-    return found == layout_foreign_.end() ? nlohmann::json::object() : *found;
+    if (model_ == nullptr) return nlohmann::json::object();
+    const auto found_scope = placements_.find(model_->currentScope());
+    if (found_scope == placements_.end()) return nlohmann::json::object();
+    const auto &foreign = found_scope->second.foreign;
+    const auto found = foreign.find(key);
+    return found == foreign.end() ? nlohmann::json::object() : *found;
 }
 
 void GraphCanvasScene::setLayoutMember(const std::string &key,
                                        nlohmann::json value) {
+    if (model_ == nullptr) return;
+    const std::string scope = model_->currentScope();
+    auto &foreign = placement(scope).foreign;
     const bool drop = value.is_null() ||
                       (value.is_object() && value.empty());
     if (drop) {
-        if (layout_foreign_.find(key) == layout_foreign_.end()) return;
-        layout_foreign_.erase(key);
+        if (foreign.find(key) == foreign.end()) return;
+        foreign.erase(key);
     } else {
-        const auto found = layout_foreign_.find(key);
-        if (found != layout_foreign_.end() && *found == value) return;
-        layout_foreign_[key] = std::move(value);
+        const auto found = foreign.find(key);
+        if (found != foreign.end() && *found == value) return;
+        foreign[key] = std::move(value);
     }
-    noteLayoutChange();
+    noteLayoutChange(scope);
 }
 
-void GraphCanvasScene::pruneLayout() {
+void GraphCanvasScene::pruneLayout(const std::string &scope) {
     if (model_ == nullptr) return;
-    const auto before = graphCanvasLayoutToJson(layout_);
+    auto &layout = placement(scope).layout;
+    const auto before = graphCanvasLayoutToJson(layout);
     std::set<std::string, std::less<>> present;
-    for (const auto &node : model_->nodes()) present.insert(node.id);
+    for (const auto &node : model_->nodes(scope)) present.insert(node.id);
     std::set<GraphCanvasEdgeKey> drawn;
-    for (const auto &edge : model_->edges())
+    for (const auto &edge : model_->edges(scope))
         drawn.insert(GraphCanvasEdgeKey{edge.to_node, edge.to_port});
-    std::erase_if(layout_.nodes, [&](const auto &entry) {
+    std::erase_if(layout.nodes, [&](const auto &entry) {
         return !present.contains(entry.first);
     });
-    std::erase_if(layout_.reroutes, [&](const GraphCanvasReroute &entry) {
+    std::erase_if(layout.reroutes, [&](const GraphCanvasReroute &entry) {
         return entry.points.empty() || !drawn.contains(entry.edge);
     });
-    for (GraphCanvasTie &tie : layout_.ties)
+    for (GraphCanvasTie &tie : layout.ties)
         std::erase_if(tie.edges, [&](const GraphCanvasEdgeKey &key) {
             return !drawn.contains(key);
         });
     // A bundle that lost all but one line is not a bundle any more; the line
     // that is left keeps its place as a control point of its own.
-    for (GraphCanvasTie &tie : layout_.ties) {
+    for (GraphCanvasTie &tie : layout.ties) {
         if (tie.edges.size() != 1) continue;
-        GraphCanvasReroute &entry = rerouteFor(tie.edges.front());
+        GraphCanvasReroute &entry = rerouteFor(scope, tie.edges.front());
         entry.points.push_back(tie.position);
         std::ranges::stable_sort(entry.points, {}, &QPointF::x);
         tie.edges.clear();
     }
-    std::erase_if(layout_.ties, [](const GraphCanvasTie &tie) {
+    std::erase_if(layout.ties, [](const GraphCanvasTie &tie) {
         return tie.edges.empty();
     });
     // A placement that named something the document no longer holds would be
     // refused the next time it is written, so the tidying is itself a change.
-    if (graphCanvasLayoutToJson(layout_) != before) noteLayoutChange();
+    if (graphCanvasLayoutToJson(layout) != before) noteLayoutChange(scope);
 }
 
-void GraphCanvasScene::noteLayoutChange() {
-    layout_dirty_ = true;
+void GraphCanvasScene::noteLayoutChange(const std::string &scope) {
+    auto &placed = placement(scope);
+    placed.dirty = true;
     // The canvas is now ahead of anything that has gone out. Forgetting what
     // was last sent is what keeps the next rebuild from deciding the document
     // has caught up and putting the older placement back over this change.
-    layout_sent_ = nlohmann::json{};
+    placed.sent = nlohmann::json{};
     if (layout_timer_ != nullptr)
         layout_timer_->start(GraphCanvasLayoutDebounceMs);
     if (placementChanged) placementChanged();
 }
 
-nlohmann::json GraphCanvasScene::placementPayload() const {
-    auto payload = graphCanvasLayoutToJson(layout_);
+nlohmann::json GraphCanvasScene::placementPayload(const std::string &scope) const {
+    const auto found = placements_.find(scope);
+    if (found == placements_.end()) return graphCanvasLayoutToJson(GraphCanvasLayout{});
+    auto payload = graphCanvasLayoutToJson(found->second.layout);
     // The other panel's members ride along: one `set_layout` replaces the whole
     // object, so leaving them out here is the same as deleting them.
-    for (const auto &[key, value] : layout_foreign_.items())
+    for (const auto &[key, value] : found->second.foreign.items())
         payload[key] = value;
     return payload;
 }
@@ -574,45 +665,96 @@ nlohmann::json GraphCanvasScene::placementPayload() const {
 bool GraphCanvasScene::followDocumentPlacement() {
     if (model_ == nullptr) return false;
     const std::string scope = model_->currentScope();
-    if (scope != layout_scope_) return false;
-    const auto document = model_->scopeLayout(scope);
-    if (layout_dirty_) {
-        // The canvas is ahead of the document, and what it draws is its own
-        // placement whichever way this read went -- the same rule loadLayout
-        // applies. When the document now says exactly what was sent, the
-        // canvas has caught up and has nothing left in the air.
-        if (document == layout_sent_) layout_dirty_ = false;
-        return true;
+    if (drawn_scopes_.empty() || drawn_scopes_.front() != scope) return false;
+    // A placement the canvas sent for a scope it no longer draws has caught
+    // up once the document says what was sent.
+    for (auto &[placed_scope, placed] : placements_)
+        if (placed.dirty && !placed.sent.is_null() &&
+            std::ranges::find(drawn_scopes_, placed_scope) == drawn_scopes_.end() &&
+            model_->scopeLayout(placed_scope) == placed.sent)
+            placed.dirty = false;
+    bool follows = true;
+    for (const std::string &drawn : drawn_scopes_) {
+        const auto found = placements_.find(drawn);
+        if (found == placements_.end()) return false;
+        auto &placed = found->second;
+        const auto document = model_->scopeLayout(drawn);
+        if (placed.dirty) {
+            // The canvas is ahead of the document, and what it draws is its
+            // own placement whichever way this read went -- the same rule
+            // loadLayout applies. When the document now says exactly what was
+            // sent, the canvas has caught up and has nothing left in the air.
+            if (document == placed.sent) placed.dirty = false;
+            continue;
+        }
+        // Nothing of this canvas's is in the air, so the document is the one
+        // to follow; it only needs no redraw when it already says what is
+        // drawn.
+        if (document != placementPayload(drawn)) follows = false;
     }
-    // Nothing of this canvas's is in the air, so the document is the one to
-    // follow; it only needs no redraw when it already says what is drawn.
-    return document == placementPayload();
+    return follows;
 }
 
 void GraphCanvasScene::flushLayout() {
-    if (!layout_dirty_ || model_ == nullptr) return;
-    auto payload = placementPayload();
-    // Busy with the last edit, or no digest to hold the document still yet.
-    // The change is kept rather than dropped: losing it would lose the drag.
-    if (!model_->canEdit() || !model_->setLayout(layout_scope_, payload)) {
-        if (layout_timer_ != nullptr)
+    if (model_ == nullptr) return;
+    // A scope the canvas has left goes first: it is the gesture that was
+    // finished before the canvas moved on.
+    std::vector<std::pair<const std::string, ScopePlacement> *> order;
+    for (auto &entry : placements_)
+        if (std::ranges::find(drawn_scopes_, entry.first) == drawn_scopes_.end())
+            order.push_back(&entry);
+    for (auto &entry : placements_)
+        if (std::ranges::find(drawn_scopes_, entry.first) != drawn_scopes_.end())
+            order.push_back(&entry);
+    for (auto *entry : order) {
+        const std::string &scope = entry->first;
+        ScopePlacement &placed = entry->second;
+        if (!placed.dirty) continue;
+        // A definition the document no longer has has nothing to be placed.
+        if (!scope.empty() &&
+            std::ranges::none_of(model_->scopes(), [&](const GraphCanvasScope &known) {
+                return known.id == scope;
+            })) {
+            placed.dirty = false;
+            continue;
+        }
+        auto payload = placementPayload(scope);
+        // Already on its way: nothing changed since it was sent.
+        if (!placed.sent.is_null() && placed.sent == payload) continue;
+        // Busy with the last edit, or no digest to hold the document still
+        // yet. The change is kept rather than dropped: losing it would lose
+        // the drag.
+        if (!model_->canEdit() || !model_->setLayout(scope, payload)) {
+            if (layout_timer_ != nullptr)
+                layout_timer_->start(GraphCanvasLayoutDebounceMs);
+            return;
+        }
+        placed.sent = std::move(payload);
+        // One edit at a time: a second scope's placement goes when this one
+        // has landed.
+        if (layout_timer_ != nullptr &&
+            std::ranges::any_of(placements_, [&](const auto &entry) {
+                return entry.second.dirty && entry.second.sent.is_null();
+            }))
             layout_timer_->start(GraphCanvasLayoutDebounceMs);
+        // Sending from inside a rebuild would post a request while the scene
+        // is half-built; the tab's own tick drains the outbox a moment later
+        // anyway.
+        if (!rebuilding_) afterEdit(true);
         return;
     }
-    layout_sent_ = std::move(payload);
-    // Sending from inside a rebuild would post a request while the scene is
-    // half-built; the tab's own tick drains the outbox a moment later anyway.
-    if (!rebuilding_) afterEdit(true);
 }
 
-QVector<QPointF> GraphCanvasScene::bendsFor(const GraphCanvasEdge &edge) const {
+QVector<QPointF> GraphCanvasScene::bendsFor(const std::string &scope,
+                                            const GraphCanvasEdge &edge) const {
     const GraphCanvasEdgeKey key{edge.to_node, edge.to_port};
+    const GraphCanvasLayout &placed = layout(scope);
     std::vector<QPointF> points;
-    for (const GraphCanvasReroute &reroute : layout_.reroutes) {
+    for (const GraphCanvasReroute &reroute : placed.reroutes) {
         if (!(reroute.edge == key)) continue;
         points.insert(points.end(), reroute.points.begin(), reroute.points.end());
     }
-    for (const GraphCanvasTie &tie : layout_.ties) {
+    for (const GraphCanvasTie &tie : placed.ties) {
         const auto slot = std::ranges::find(tie.edges, key);
         if (slot == tie.edges.end()) continue;
         const qreal y =
@@ -638,43 +780,48 @@ void GraphCanvasScene::applyEdgeBends() {
             item->data(GraphCanvasFromPortRole).toString().toStdString(),
             item->data(NodeGraphToNameRole).toString().toStdString(),
             item->data(GraphCanvasToPortRole).toString().toStdString()};
-        setNodeGraphBends(*line, bendsFor(edge));
+        setNodeGraphBends(*line, bendsFor(itemScope(*item), edge));
         routeGraphCanvasEdge(*this, *line);
     }
 }
 
-GraphCanvasReroute &GraphCanvasScene::rerouteFor(const GraphCanvasEdgeKey &edge) {
-    const auto found =
-        std::ranges::find(layout_.reroutes, edge, &GraphCanvasReroute::edge);
-    if (found != layout_.reroutes.end()) return *found;
-    layout_.reroutes.push_back(GraphCanvasReroute{edge, {}});
-    return layout_.reroutes.back();
+GraphCanvasReroute &GraphCanvasScene::rerouteFor(const std::string &scope,
+                                                 const GraphCanvasEdgeKey &edge) {
+    auto &reroutes = placement(scope).layout.reroutes;
+    const auto found = std::ranges::find(reroutes, edge, &GraphCanvasReroute::edge);
+    if (found != reroutes.end()) return *found;
+    reroutes.push_back(GraphCanvasReroute{edge, {}});
+    return reroutes.back();
 }
 
-void GraphCanvasScene::detachFromTies(const GraphCanvasEdgeKey &edge) {
-    for (GraphCanvasTie &tie : layout_.ties)
+void GraphCanvasScene::detachFromTies(const std::string &scope,
+                                      const GraphCanvasEdgeKey &edge) {
+    auto &ties = placement(scope).layout.ties;
+    for (GraphCanvasTie &tie : ties)
         std::erase(tie.edges, edge);
-    std::erase_if(layout_.ties, [](const GraphCanvasTie &tie) {
+    std::erase_if(ties, [](const GraphCanvasTie &tie) {
         return tie.edges.size() < 2;
     });
 }
 
-void GraphCanvasScene::moveReroute(const GraphCanvasEdgeKey &edge,
+void GraphCanvasScene::moveReroute(const std::string &scope, const GraphCanvasEdgeKey &edge,
                                    std::size_t index, const QPointF &at) {
-    const auto found =
-        std::ranges::find(layout_.reroutes, edge, &GraphCanvasReroute::edge);
-    if (found == layout_.reroutes.end() || index >= found->points.size()) return;
+    auto &reroutes = placement(scope).layout.reroutes;
+    const auto found = std::ranges::find(reroutes, edge, &GraphCanvasReroute::edge);
+    if (found == reroutes.end() || index >= found->points.size()) return;
     found->points[index] = at;
-    noteLayoutChange();
+    noteLayoutChange(scope);
     applyEdgeBends();
     scheduleSceneRectUpdate();
 }
 
-void GraphCanvasScene::moveTie(std::size_t index, const QPointF &at) {
-    if (index >= layout_.ties.size()) return;
-    layout_.ties[index].position =
+void GraphCanvasScene::moveTie(const std::string &scope, std::size_t index,
+                               const QPointF &at) {
+    auto &ties = placement(scope).layout.ties;
+    if (index >= ties.size()) return;
+    ties[index].position =
         at + QPointF{GraphCanvasTieWidth / 2.0, GraphCanvasTiePadding};
-    noteLayoutChange();
+    noteLayoutChange(scope);
     applyEdgeBends();
     scheduleSceneRectUpdate();
 }
@@ -684,8 +831,25 @@ void GraphCanvasScene::clearControlSelection() {
     selected_ties_.clear();
 }
 
+void GraphCanvasScene::enterSelectionScope(const std::string &scope) {
+    if (scope == selection_scope_) return;
+    selected_node_.reset();
+    selected_edge_.reset();
+    selected_edges_.clear();
+    clearControlSelection();
+    selection_scope_ = scope;
+}
+
 void GraphCanvasScene::selectReroute(const GraphCanvasEdgeKey &edge,
                                      std::size_t index, bool additive) {
+    selectReroute(model_ != nullptr ? model_->currentScope() : std::string{}, edge,
+                  index, additive);
+}
+
+void GraphCanvasScene::selectReroute(const std::string &scope, const GraphCanvasEdgeKey &edge,
+                                     std::size_t index, bool additive) {
+    if (scope != selection_scope_) additive = false;
+    enterSelectionScope(scope);
     selected_ties_.clear();
     if (!additive) {
         selected_reroutes_.clear();
@@ -706,6 +870,12 @@ void GraphCanvasScene::selectReroute(const GraphCanvasEdgeKey &edge,
 }
 
 void GraphCanvasScene::selectTie(std::size_t index, bool additive) {
+    selectTie(model_ != nullptr ? model_->currentScope() : std::string{}, index, additive);
+}
+
+void GraphCanvasScene::selectTie(const std::string &scope, std::size_t index, bool additive) {
+    if (scope != selection_scope_) additive = false;
+    enterSelectionScope(scope);
     selected_reroutes_.clear();
     if (!additive) {
         selected_ties_.clear();
@@ -726,29 +896,39 @@ void GraphCanvasScene::selectTie(std::size_t index, bool additive) {
 bool GraphCanvasScene::insertReroute(const GraphCanvasEdge &edge,
                                      const QPointF &at) {
     if (model_ == nullptr) return false;
+    return insertReroute(model_->currentScope(), edge, at);
+}
+
+bool GraphCanvasScene::insertReroute(const std::string &scope, const GraphCanvasEdge &edge,
+                                     const QPointF &at) {
+    if (model_ == nullptr) return false;
     const GraphCanvasEdgeKey key{edge.to_node, edge.to_port};
-    const auto drawn = model_->edges();
+    const auto drawn = model_->edges(scope);
     if (std::ranges::none_of(drawn, [&](const GraphCanvasEdge &candidate) {
             return candidate.to_node == key.node && candidate.to_port == key.port;
         }))
         return false;
-    GraphCanvasReroute &entry = rerouteFor(key);
-    entry.points.push_back(at);
+    GraphCanvasReroute &entry = rerouteFor(scope, key);
+    entry.points.push_back(toScopePoint(scope, at));
     // The order along the line is the order the drawing meets them, and on a
     // canvas that runs left to right that is the order of x.
     std::ranges::stable_sort(entry.points, {}, &QPointF::x);
-    noteLayoutChange();
+    noteLayoutChange(scope);
     repopulate();
     return true;
 }
 
 bool GraphCanvasScene::tieSelection() {
     if (model_ == nullptr) return false;
+    const std::string scope = selection_scope_;
+    const QString scope_text = qtext(scope);
     // Where each picked line runs now. A reroute says so exactly; an edge
-    // picked without one is taken at the middle of the curve it is drawn as.
-    const auto midpoint = [this](const GraphCanvasEdge &edge) {
+    // picked without one is taken at the middle of the curve it is drawn as
+    // -- in the item's own coordinates, which are the scope's.
+    const auto midpoint = [this, &scope_text](const GraphCanvasEdge &edge) {
         for (QGraphicsItem *item : items()) {
             if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasEdgeItem} ||
+                item->data(GraphCanvasScopeRole).toString() != scope_text ||
                 item->data(NodeGraphFromNameRole).toString() != qtext(edge.from_node) ||
                 item->data(GraphCanvasFromPortRole).toString() != qtext(edge.from_port) ||
                 item->data(NodeGraphToNameRole).toString() != qtext(edge.to_node) ||
@@ -765,6 +945,7 @@ bool GraphCanvasScene::tieSelection() {
         bool from_reroute = false;
         std::size_t index = 0;
     };
+    auto &layout = placement(scope).layout;
     std::vector<Pick> picks;
     const auto has = [&](const GraphCanvasEdgeKey &key) {
         return std::ranges::any_of(
@@ -773,8 +954,8 @@ bool GraphCanvasScene::tieSelection() {
     for (const auto &[key, index] : selected_reroutes_) {
         if (has(key)) continue;
         const auto found =
-            std::ranges::find(layout_.reroutes, key, &GraphCanvasReroute::edge);
-        if (found == layout_.reroutes.end() || index >= found->points.size()) continue;
+            std::ranges::find(layout.reroutes, key, &GraphCanvasReroute::edge);
+        if (found == layout.reroutes.end() || index >= found->points.size()) continue;
         picks.push_back(Pick{key, found->points[index], true, index});
     }
     for (const GraphCanvasEdge &edge : selected_edges_) {
@@ -802,12 +983,12 @@ bool GraphCanvasScene::tieSelection() {
     });
     for (const auto &[key, index] : taken) {
         const auto found =
-            std::ranges::find(layout_.reroutes, key, &GraphCanvasReroute::edge);
-        if (found == layout_.reroutes.end() || index >= found->points.size()) continue;
+            std::ranges::find(layout.reroutes, key, &GraphCanvasReroute::edge);
+        if (found == layout.reroutes.end() || index >= found->points.size()) continue;
         found->points.erase(found->points.begin() +
                             static_cast<std::ptrdiff_t>(index));
     }
-    std::erase_if(layout_.reroutes, [](const GraphCanvasReroute &entry) {
+    std::erase_if(layout.reroutes, [](const GraphCanvasReroute &entry) {
         return entry.points.empty();
     });
 
@@ -815,30 +996,31 @@ bool GraphCanvasScene::tieSelection() {
     tie.position = QPointF{x, picks.front().at.y()};
     for (const Pick &pick : picks) {
         // One line belongs to at most one bundle.
-        detachFromTies(pick.key);
+        detachFromTies(scope, pick.key);
         tie.edges.push_back(pick.key);
     }
-    layout_.ties.push_back(std::move(tie));
+    layout.ties.push_back(std::move(tie));
     clearControlSelection();
     selected_edges_.clear();
     selected_edge_.reset();
-    noteLayoutChange();
+    noteLayoutChange(scope);
     repopulate();
     return true;
 }
 
 bool GraphCanvasScene::untieSelection() {
     if (selected_ties_.empty()) return false;
+    const std::string scope = selection_scope_;
+    auto &ties = placement(scope).layout.ties;
     auto indices = selected_ties_;
     std::ranges::sort(indices, std::greater<>{});
     bool changed = false;
     for (const std::size_t index : indices) {
-        if (index >= layout_.ties.size()) continue;
-        const GraphCanvasTie tie = layout_.ties[index];
-        layout_.ties.erase(layout_.ties.begin() +
-                           static_cast<std::ptrdiff_t>(index));
+        if (index >= ties.size()) continue;
+        const GraphCanvasTie tie = ties[index];
+        ties.erase(ties.begin() + static_cast<std::ptrdiff_t>(index));
         for (std::size_t slot = 0; slot < tie.edges.size(); ++slot) {
-            GraphCanvasReroute &entry = rerouteFor(tie.edges[slot]);
+            GraphCanvasReroute &entry = rerouteFor(scope, tie.edges[slot]);
             entry.points.push_back(
                 QPointF{tie.position.x(),
                         tie.position.y() +
@@ -849,20 +1031,22 @@ bool GraphCanvasScene::untieSelection() {
     }
     if (!changed) return false;
     clearControlSelection();
-    noteLayoutChange();
+    noteLayoutChange(scope);
     repopulate();
     return true;
 }
 
 bool GraphCanvasScene::deleteControlSelection() {
+    const std::string scope = selection_scope_;
+    auto &layout = placement(scope).layout;
     bool changed = false;
     if (!selected_ties_.empty()) {
         auto indices = selected_ties_;
         std::ranges::sort(indices, std::greater<>{});
         for (const std::size_t index : indices) {
-            if (index >= layout_.ties.size()) continue;
-            layout_.ties.erase(layout_.ties.begin() +
-                               static_cast<std::ptrdiff_t>(index));
+            if (index >= layout.ties.size()) continue;
+            layout.ties.erase(layout.ties.begin() +
+                              static_cast<std::ptrdiff_t>(index));
             changed = true;
         }
     }
@@ -873,23 +1057,55 @@ bool GraphCanvasScene::deleteControlSelection() {
         });
         for (const auto &[key, index] : picks) {
             const auto found =
-                std::ranges::find(layout_.reroutes, key, &GraphCanvasReroute::edge);
-            if (found == layout_.reroutes.end() || index >= found->points.size())
+                std::ranges::find(layout.reroutes, key, &GraphCanvasReroute::edge);
+            if (found == layout.reroutes.end() || index >= found->points.size())
                 continue;
             found->points.erase(found->points.begin() +
                                 static_cast<std::ptrdiff_t>(index));
             changed = true;
         }
-        std::erase_if(layout_.reroutes, [](const GraphCanvasReroute &entry) {
+        std::erase_if(layout.reroutes, [](const GraphCanvasReroute &entry) {
             return entry.points.empty();
         });
     }
     if (!changed) return false;
     clearControlSelection();
-    noteLayoutChange();
+    noteLayoutChange(scope);
     repopulate();
     return true;
 }
+
+namespace {
+
+// LP-4d1: what a zone's tab says a branch tests.
+QString zoneCondition(const GraphCanvasLoopBranch &branch) {
+    const auto integers = GraphCanvasLoopFields::integersText(branch.values);
+    if (branch.when == "element") return QObject::tr("element = %1").arg(integers);
+    if (branch.when == "element_in") return QObject::tr("element in %1").arg(integers);
+    if (branch.when == "element_not_in") return QObject::tr("element not in %1").arg(integers);
+    if (branch.when == "draw") {
+        QStringList parts;
+        const auto &when = branch.draw_when;
+        if (when.material) parts.push_back(qtext(*when.material));
+        if (when.tags) {
+            QStringList tags;
+            for (const auto &tag : when.tags->include) tags.push_back(qtext(tag));
+            for (const auto &tag : when.tags->require_all) tags.push_back(qtext(tag));
+            for (const auto &tag : when.tags->exclude) tags.push_back(QStringLiteral("!") + qtext(tag));
+            parts.push_back(QObject::tr("tags %1").arg(tags.join(QStringLiteral(" "))));
+        }
+        if (when.contract) parts.push_back(qtext(*when.contract));
+        if (when.skinned) parts.push_back(*when.skinned ? QObject::tr("skinned")
+                                                        : QObject::tr("not skinned"));
+        if (when.has_variant)
+            parts.push_back(*when.has_variant ? QObject::tr("has variant")
+                                              : QObject::tr("no variant"));
+        return parts.join(QStringLiteral(" & "));
+    }
+    return QObject::tr("expression");
+}
+
+} // namespace
 
 void GraphCanvasScene::repopulate() {
     ++rebuild_generation_;
@@ -907,6 +1123,10 @@ void GraphCanvasScene::repopulate() {
     const auto previous_node = selected_node_;
     const auto previous_edge = selected_edge_;
     clear();
+    zone_content_.clear();
+    zone_content_rect_.clear();
+    zones_.clear();
+    drawn_scopes_.clear();
     selected_node_.reset();
     selected_edge_.reset();
     setProperty("pelicanGraphScope", QVariant{});
@@ -914,37 +1134,234 @@ void GraphCanvasScene::repopulate() {
     setProperty("pelicanGraphNodeCount", QVariant{});
     setProperty("pelicanGraphEdgeCount", QVariant{});
     setProperty("pelicanGraphNotice", QVariant{});
+    setProperty("pelicanGraphZoneCount", QVariant{});
     if (model_ == nullptr) {
         rebuilding_ = false;
         return;
     }
     pruneSessionPositions();
+    // A placement sent for a scope this draw may not hold has caught up once
+    // the document says what was sent.
+    for (auto &[placed_scope, placed] : placements_)
+        if (placed.dirty && !placed.sent.is_null() &&
+            model_->scopeLayout(placed_scope) == placed.sent)
+            placed.dirty = false;
 
     const std::string scope = model_->currentScope();
     // N-6: what the document says about where this scope was drawn. It is read
     // before the nodes so the placement can answer for them; the session table
     // under it only speaks for a node the document has never placed.
+    drawn_scopes_.push_back(scope);
     loadLayout(scope);
-    pruneLayout();
+    pruneLayout(scope);
     const QString scope_text = qtext(scope);
-    const auto nodes = model_->nodes();
-    const auto edges = model_->edges();
+    const auto nodes = model_->nodes(scope);
+    const auto edges = model_->edges(scope);
 
     const qreal top = model_->breadcrumb().size() > 1
                           ? NodeGraphBreadcrumbHeight + 18.0
                           : 0.0;
     GraphCanvasDrawing::Builder drawing{*this, scope_text};
-    // Placement needs the final size of each node, including its socket rows.
+
+    // LP-4d1: every root loop is drawn as a zone around the body its tab
+    // shows. The zones are planned before the root is placed, because a
+    // frame's size is its body's extent. A definition two loops run is drawn
+    // once, in the first loop's zone; a folded zone is the loop's node.
+    struct ZonePlan {
+        std::string body;
+        std::vector<GraphCanvasNode> nodes;
+        std::vector<std::string> boundary;
+        std::vector<GraphCanvasEdge> edges;
+        std::vector<GraphCanvasDrawing::Node> drawn;
+        std::map<std::string, QPointF> positions;
+        std::vector<GraphCanvasBodyOutput> outputs;
+        QRectF content;
+    };
+    std::map<std::string, ZonePlan> plans;
+    std::set<std::string> folded_zones;
+    if (scope.empty()) {
+        std::set<std::string> claimed;
+        for (const auto &node : nodes) {
+            if (!node.loop) continue;
+            const auto body = model_->loopZoneBody(node.id);
+            if (body.empty() || claimed.contains(body)) continue;
+            if (collapsed(scope, node.id)) {
+                folded_zones.insert(node.id);
+                continue;
+            }
+            claimed.insert(body);
+            ZonePlan &plan = plans[node.id];
+            plan.body = body;
+            drawn_scopes_.push_back(body);
+            loadLayout(body);
+            pruneLayout(body);
+            for (auto &inside : model_->nodes(body)) {
+                // A boundary input is the zone's left edge, not a node.
+                if (inside.op == "graph.input") plan.boundary.push_back(inside.id);
+                else plan.nodes.push_back(std::move(inside));
+            }
+            plan.edges = model_->edges(body);
+            plan.outputs = model_->bodyOutputs(body);
+            plan.drawn.reserve(plan.nodes.size());
+            for (const auto &inside : plan.nodes)
+                plan.drawn.push_back(drawing.prepareNode(*model_, inside, collapsed(body, inside.id)));
+            // Decision 6: a body node the document never placed is placed
+            // inside the frame, as the root places its own.
+            std::vector<GraphCanvasEdge> inner;
+            for (const auto &edge : plan.edges)
+                if (std::ranges::find(plan.boundary, edge.from_node) == plan.boundary.end())
+                    inner.push_back(edge);
+            const NodeGraphLayout automatic =
+                GraphCanvasDrawing::placeNodes(plan.drawn, inner, 0.0);
+            const GraphCanvasLayout &placed = this->layout(body);
+            for (const auto &entry : plan.drawn) {
+                const auto &id = entry.node->id;
+                QPointF at;
+                if (const auto found = placed.nodes.find(id); found != placed.nodes.end())
+                    at = found->second;
+                else if (const auto kept = session_node_positions_.find({body, id});
+                         kept != session_node_positions_.end())
+                    at = kept->second;
+                else if (const auto box = automatic.boxes.find(id); box != automatic.boxes.end())
+                    at = QPointF{box->second.x, box->second.y};
+                plan.positions[id] = at;
+                const QRectF box{at, QSizeF{entry.width, entry.height}};
+                plan.content = plan.content.isValid() ? plan.content.united(box) : box;
+            }
+        }
+    }
+
+    // A gesture left in the air belongs to the scope it happened in: a scope
+    // this draw no longer holds sends it now, before the canvas moves on.
+    if (std::ranges::any_of(placements_, [&](const auto &entry) {
+            return entry.second.dirty && entry.second.sent.is_null() &&
+                   std::ranges::find(drawn_scopes_, entry.first) == drawn_scopes_.end();
+        }))
+        flushLayout();
+
+    // Placement needs the final size of each node, including its socket rows
+    // -- and of each zone, including its body.
     std::vector<GraphCanvasDrawing::Node> drawn;
     drawn.reserve(nodes.size());
-    for (const auto &node : nodes)
-        drawn.push_back(drawing.prepareNode(*model_, node, collapsed(node.id)));
+    std::map<std::string, GraphCanvasDrawing::Zone> zones;
+    for (const auto &node : nodes) {
+        const bool zone_folded = folded_zones.contains(node.id);
+        auto entry = drawing.prepareNode(*model_, node,
+                                         !zone_folded && collapsed(scope, node.id));
+        entry.zone_folded = zone_folded;
+        if (const auto plan = plans.find(node.id); plan != plans.end()) {
+            const auto loop = model_->loop(node.id);
+            GraphCanvasDrawing::Zone zone;
+            zone.node = entry;
+            zone.definition = qtext(plan->second.body);
+            if (loop && loop->reported) {
+                zone.stage = loop->reported_tier == "draw_loop"
+                                 ? QObject::tr("draw_loop %1 materials")
+                                       .arg(static_cast<qulonglong>(
+                                           loop->reported_total > 0
+                                               ? loop->reported_total
+                                               : static_cast<std::size_t>(std::max<std::int64_t>(
+                                                     loop->reported_count, 0))))
+                                 : QStringLiteral("%1 ×%2")
+                                       .arg(qtext(loop->reported_tier))
+                                       .arg(loop->reported_count);
+            } else {
+                zone.stage = QObject::tr("loop");
+            }
+            const auto uses = model_->definitionUseCount(plan->second.body);
+            if (uses > 1)
+                zone.shared = QObject::tr("shared (%1 users)").arg(static_cast<qulonglong>(uses));
+            if (loop && loop->branches.size() > 1) {
+                const std::size_t shown = model_->loopBranch(node.id);
+                for (std::size_t index = 0; index < loop->branches.size(); ++index) {
+                    const auto &branch = loop->branches[index];
+                    const bool last = index + 1 == loop->branches.size();
+                    GraphCanvasDrawing::ZoneTab tab;
+                    tab.text = last ? QObject::tr("else")
+                                    : (index == 0 ? QObject::tr("if %1") : QObject::tr("elif %1"))
+                                          .arg(zoneCondition(branch));
+                    tab.branch = index;
+                    tab.runs = !branch.nothing && !branch.body.empty();
+                    tab.current = tab.runs && index == shown;
+                    zone.tabs.push_back(std::move(tab));
+                }
+            }
+            // The left edge: the loop's inputs and the body's boundary, by
+            // name; the right edge: the body's outputs and the p / p[] the
+            // loop declares from them.
+            const auto outer_input = [&](const std::string &port) {
+                return std::ranges::find(entry.inputs, qtext(port), &GraphCanvasDrawing::Row::port);
+            };
+            std::vector<std::string> input_names;
+            for (const auto &port : node.inputs) input_names.push_back(port.port);
+            for (const auto &id : plan->second.boundary)
+                if (std::ranges::find(input_names, id) == input_names.end()) input_names.push_back(id);
+            for (const auto &name : input_names) {
+                GraphCanvasDrawing::ZoneRow row;
+                row.label = qtext(name);
+                if (const auto outer = outer_input(name); outer != entry.inputs.end()) {
+                    row.outer = qtext(name);
+                    row.outer_row = *outer;
+                }
+                if (std::ranges::find(plan->second.boundary, name) != plan->second.boundary.end())
+                    row.inner = qtext(name);
+                zone.inputs.push_back(std::move(row));
+            }
+            const auto outer_output = [&](const std::string &port) {
+                return std::ranges::find(entry.outputs, qtext(port), &GraphCanvasDrawing::Row::port);
+            };
+            std::set<std::string> placed_outputs;
+            for (const auto &output : plan->second.outputs) {
+                GraphCanvasDrawing::ZoneRow row;
+                row.label = qtext(output.name);
+                row.inner = qtext(output.name);
+                if (const auto outer = outer_output(output.name); outer != entry.outputs.end()) {
+                    row.outer = qtext(output.name);
+                    row.outer_row = *outer;
+                    placed_outputs.insert(output.name);
+                }
+                zone.outputs.push_back(std::move(row));
+                const auto each = output.name + "[]";
+                if (const auto outer = outer_output(each); outer != entry.outputs.end()) {
+                    GraphCanvasDrawing::ZoneRow bundle;
+                    bundle.label = outer->label;
+                    bundle.outer = qtext(each);
+                    bundle.outer_row = *outer;
+                    placed_outputs.insert(each);
+                    zone.outputs.push_back(std::move(bundle));
+                }
+            }
+            for (const auto &output : node.outputs) {
+                if (placed_outputs.contains(output.port)) continue;
+                const auto outer = outer_output(output.port);
+                if (outer == entry.outputs.end()) continue;
+                GraphCanvasDrawing::ZoneRow row;
+                row.label = outer->label;
+                row.outer = qtext(output.port);
+                row.outer_row = *outer;
+                zone.outputs.push_back(std::move(row));
+            }
+            zone.content = plan->second.content;
+            GraphCanvasDrawing::layoutZone(zone, drawing.headingMetrics(), drawing.rowMetrics());
+            entry.width = zone.node.width;
+            entry.height = zone.node.height;
+            zones.emplace(node.id, std::move(zone));
+        }
+        drawn.push_back(std::move(entry));
+    }
     const NodeGraphLayout layout = GraphCanvasDrawing::placeNodes(drawn, edges, top);
+    // A zone's frame can reach left of or above the item's position (a body
+    // node dragged there); the placement is of the frame, so the item goes
+    // that much further in.
+    const auto frameOffset = [&](const std::string &id) {
+        const auto zone = zones.find(id);
+        return zone == zones.end() ? QPointF{} : zone->second.frame.topLeft();
+    };
     // What it chose, in the canvas's own terms. "Auto layout" turns this into
     // control points; nothing else reads it, and it is recomputed every draw.
     placement_boxes_.clear();
     for (const auto &[id, box] : layout.boxes)
-        placement_boxes_.emplace(id, QPointF{box.x, box.y});
+        placement_boxes_.emplace(id, QPointF{box.x, box.y} - frameOffset(id));
     placement_bends_.clear();
     for (std::size_t index = 0; index < edges.size(); ++index) {
         if (index >= layout.bends.size() || layout.bends[index].empty()) continue;
@@ -957,7 +1374,9 @@ void GraphCanvasScene::repopulate() {
             std::move(points));
     }
 
+    const GraphCanvasLayout &root_placement = this->layout(scope);
     std::set<std::string, std::less<>> drawn_nodes;
+    std::vector<std::pair<std::string, QGraphicsItem *>> zone_bodies;
     for (const auto &entry : drawn) {
         const GraphCanvasNode &node = *entry.node;
         const auto column_entry = layout.columns.find(node.id);
@@ -966,34 +1385,44 @@ void GraphCanvasScene::repopulate() {
         const auto box = layout.boxes.find(node.id);
         const QPointF laid_out =
             box == layout.boxes.end() ? QPointF{0.0, top}
-                                      : QPointF{box->second.x, box->second.y};
+                                      : QPointF{box->second.x, box->second.y} - frameOffset(node.id);
         const auto position_key = std::pair{scope, node.id};
         QPointF position = laid_out;
         // N-6: the document is where a place lives now. The session table is
         // the fallback for a node the document has never placed -- one just
         // added from the palette, before its first drag went out.
-        if (const auto placed = layout_.nodes.find(node.id);
-            placed != layout_.nodes.end()) {
+        if (const auto placed = root_placement.nodes.find(node.id);
+            placed != root_placement.nodes.end()) {
             position = placed->second;
         } else if (const auto retained = session_node_positions_.find(position_key);
                    retained != session_node_positions_.end()) {
             position = retained->second;
         }
 
-        drawing.addNode(entry, column, position,
-            [this, position_key, scope](const QPointF &moved) {
-                if (rebuilding_) return;
-                session_node_positions_[position_key] = moved;
-                // And the document, once the drag has settled. The control
-                // points do not move with it: they are absolute, which is the
-                // whole point of decision 1.
-                layout_.nodes[position_key.second] = moved;
-                noteLayoutChange();
-                rerouteGraphCanvasEdges(*this, scope, position_key.second);
-                // Growing the scene rect from inside itemChange re-enters this
-                // handler through Qt's view update. Defer it to the event loop.
-                scheduleSceneRectUpdate();
-            });
+        auto moved = [this, position_key, scope](const QPointF &at) {
+            if (rebuilding_) return;
+            session_node_positions_[position_key] = at;
+            // And the document, once the drag has settled. The control
+            // points do not move with it: they are absolute, which is the
+            // whole point of decision 1. (A zone's body is drawn inside its
+            // frame, so it comes along without being written.)
+            placement(scope).layout.nodes[position_key.second] = at;
+            noteLayoutChange(scope);
+            rerouteGraphCanvasEdges(*this, scope, position_key.second);
+            // Growing the scene rect from inside itemChange re-enters this
+            // handler through Qt's view update. Defer it to the event loop.
+            scheduleSceneRectUpdate();
+        };
+        if (const auto zone = zones.find(node.id); zone != zones.end()) {
+            QGraphicsItem *content = drawing.addZone(zone->second, column, position, std::move(moved));
+            const auto &body = plans.at(node.id).body;
+            zone_content_[body] = content;
+            zone_content_rect_[body] = plans.at(node.id).content;
+            zones_[node.id] = body;
+            zone_bodies.emplace_back(node.id, content);
+        } else {
+            drawing.addNode(entry, column, position, std::move(moved));
+        }
         drawn_nodes.insert(node.id);
     }
 
@@ -1003,8 +1432,8 @@ void GraphCanvasScene::repopulate() {
         // An edge that flies over a column follows the lane the layout kept
         // for it, so it passes between the nodes it flies over rather than
         // through them. An end that has been dragged loses the lane again.
-        QVector<QPointF> bends = bendsFor(edge);
-        if (bends.isEmpty() && layout_.empty() && index < layout.bends.size() &&
+        QVector<QPointF> bends = bendsFor(scope, edge);
+        if (bends.isEmpty() && root_placement.empty() && index < layout.bends.size() &&
             !layout.bends[index].empty() &&
             !session_node_positions_.contains({scope, edge.from_node}) &&
             !session_node_positions_.contains({scope, edge.to_node})) {
@@ -1020,69 +1449,137 @@ void GraphCanvasScene::repopulate() {
         routeGraphCanvasEdge(*this, *line);
     }
 
-    // N-6: the control points, over everything they may come to lie on. A
-    // bundle's place is the middle of the lines it carries, and the middle of
-    // a line is often over a node: drawn under one, the handle cannot be taken
-    // hold of, and the press that reaches for it drags the node instead. (The
-    // scenario found exactly that on the real window.) They are small -- a
-    // 9-pixel dot and a 10-pixel band -- so being on top costs the drawing
-    // almost nothing and is what makes them reachable.
-    const auto drawnEdge = [&](const GraphCanvasEdgeKey &key) {
-        return std::ranges::any_of(edges, [&](const GraphCanvasEdge &candidate) {
-            return candidate.to_node == key.node && candidate.to_port == key.port &&
-                   drawn_nodes.contains(candidate.from_node) &&
-                   drawn_nodes.contains(candidate.to_node);
-        });
-    };
-    for (const GraphCanvasReroute &reroute : layout_.reroutes) {
-        if (!drawnEdge(reroute.edge)) continue;
-        for (std::size_t index = 0; index < reroute.points.size(); ++index) {
-            const GraphCanvasEdgeKey key = reroute.edge;
-            drawing.addReroute(key, index, reroute.points[index],
-                [this, key, index](const QPointF &moved) {
-                    if (rebuilding_) return;
-                    moveReroute(key, index, moved);
-                });
+    // The control points of one scope, drawn by one builder. They go over
+    // everything they may come to lie on. A bundle's place is the middle of
+    // the lines it carries, and the middle of a line is often over a node:
+    // drawn under one, the handle cannot be taken hold of, and the press that
+    // reaches for it drags the node instead. (The scenario found exactly that
+    // on the real window.) They are small -- a 9-pixel dot and a 10-pixel
+    // band -- so being on top costs the drawing almost nothing and is what
+    // makes them reachable.
+    const auto drawControls = [this](GraphCanvasDrawing::Builder &builder,
+                                     const std::string &controls_scope,
+                                     const std::vector<GraphCanvasEdge> &scope_edges,
+                                     const std::set<std::string, std::less<>> &ends) {
+        const auto drawnEdge = [&](const GraphCanvasEdgeKey &key) {
+            return std::ranges::any_of(scope_edges, [&](const GraphCanvasEdge &candidate) {
+                return candidate.to_node == key.node && candidate.to_port == key.port &&
+                       ends.contains(candidate.from_node) && ends.contains(candidate.to_node);
+            });
+        };
+        const GraphCanvasLayout &placed = this->layout(controls_scope);
+        for (const GraphCanvasReroute &reroute : placed.reroutes) {
+            if (!drawnEdge(reroute.edge)) continue;
+            for (std::size_t index = 0; index < reroute.points.size(); ++index) {
+                const GraphCanvasEdgeKey key = reroute.edge;
+                builder.addReroute(key, index, reroute.points[index],
+                    [this, controls_scope, key, index](const QPointF &moved) {
+                        if (rebuilding_) return;
+                        moveReroute(controls_scope, key, index, moved);
+                    });
+            }
         }
-    }
-    for (std::size_t index = 0; index < layout_.ties.size(); ++index)
-        drawing.addTie(layout_.ties[index], index, [this, index](const QPointF &moved) {
-            if (rebuilding_) return;
-            moveTie(index, moved);
-        });
+        for (std::size_t index = 0; index < placed.ties.size(); ++index)
+            builder.addTie(placed.ties[index], index,
+                           [this, controls_scope, index](const QPointF &moved) {
+                               if (rebuilding_) return;
+                               moveTie(controls_scope, index, moved);
+                           });
+    };
+    drawControls(drawing, scope, edges, drawn_nodes);
 
-    // The selection survives the rebuild when what it named is still here.
-    if (previous_node &&
-        std::ranges::any_of(nodes, [&](const GraphCanvasNode &drawn) {
-            return drawn.id == *previous_node;
-        }))
+    // LP-4d1: each zone's body, in the frame's item and the definition's own
+    // coordinates, edited in the definition.
+    for (const auto &[loop, content] : zone_bodies) {
+        const ZonePlan &plan = plans.at(loop);
+        const std::string &body = plan.body;
+        GraphCanvasDrawing::Builder inside{*this, qtext(body)};
+        inside.setContainer(content);
+        std::set<std::string, std::less<>> ends;
+        for (const auto &entry : plan.drawn) {
+            const auto key = std::pair{body, entry.node->id};
+            inside.addNode(entry, 0, plan.positions.at(entry.node->id),
+                [this, key](const QPointF &moved) {
+                    if (rebuilding_) return;
+                    session_node_positions_[key] = moved;
+                    placement(key.first).layout.nodes[key.second] = moved;
+                    noteLayoutChange(key.first);
+                    rerouteGraphCanvasEdges(*this, key.first, key.second);
+                    // The frame is drawn around its body again once the
+                    // hand lets go.
+                    scheduleZoneRefit();
+                    scheduleSceneRectUpdate();
+                });
+            ends.insert(entry.node->id);
+        }
+        for (const auto &id : plan.boundary) ends.insert(id);
+        for (const auto &edge : plan.edges) {
+            if (!ends.contains(edge.from_node) || !ends.contains(edge.to_node)) continue;
+            auto *line = inside.addEdge(edge, bendsFor(body, edge));
+            routeGraphCanvasEdge(*this, *line);
+        }
+        for (const auto &output : plan.outputs) {
+            if (!ends.contains(output.node)) continue;
+            auto *link = inside.addZoneLink(qtext(loop), qtext(output.name), qtext(output.node),
+                                            qtext(output.port));
+            routeZoneLink(*this, *link);
+        }
+        drawControls(inside, body, plan.edges, ends);
+    }
+
+    // The selection survives the rebuild when what it named is still here, in
+    // the scope it was picked in.
+    const auto scope_drawn = std::ranges::find(drawn_scopes_, selection_scope_) != drawn_scopes_.end();
+    if (!scope_drawn) {
+        selected_edges_.clear();
+        clearControlSelection();
+        selection_scope_ = scope;
+    }
+    const auto scopeNodesDrawn = [&](const std::string &id) {
+        if (selection_scope_ == scope)
+            return std::ranges::any_of(nodes, [&](const GraphCanvasNode &node) { return node.id == id; });
+        for (const auto &[loop, plan] : plans) {
+            if (plan.body != selection_scope_) continue;
+            return std::ranges::any_of(plan.nodes, [&](const GraphCanvasNode &node) { return node.id == id; }) ||
+                   std::ranges::find(plan.boundary, id) != plan.boundary.end();
+        }
+        return false;
+    };
+    const auto selection_edges = [&]() -> std::vector<GraphCanvasEdge> {
+        if (selection_scope_ == scope) return edges;
+        for (const auto &[loop, plan] : plans)
+            if (plan.body == selection_scope_) return plan.edges;
+        return {};
+    }();
+    if (scope_drawn && previous_node && scopeNodesDrawn(*previous_node))
         selected_node_ = previous_node;
-    if (previous_edge &&
-        std::ranges::any_of(edges, [&](const GraphCanvasEdge &drawn) {
-            return drawn.from_node == previous_edge->from_node &&
-                   drawn.from_port == previous_edge->from_port &&
-                   drawn.to_node == previous_edge->to_node &&
-                   drawn.to_port == previous_edge->to_port;
+    if (scope_drawn && previous_edge &&
+        std::ranges::any_of(selection_edges, [&](const GraphCanvasEdge &edge) {
+            return edge.from_node == previous_edge->from_node &&
+                   edge.from_port == previous_edge->from_port &&
+                   edge.to_node == previous_edge->to_node &&
+                   edge.to_port == previous_edge->to_port;
         }))
         selected_edge_ = previous_edge;
     // N-6: the multi-pick a bundle is made from survives a rebuild the same
     // way -- what is still drawn stays picked, and what is gone lets go.
     std::erase_if(selected_edges_, [&](const GraphCanvasEdge &picked) {
-        return std::ranges::none_of(edges, [&](const GraphCanvasEdge &drawn) {
-            return drawn.from_node == picked.from_node &&
-                   drawn.from_port == picked.from_port &&
-                   drawn.to_node == picked.to_node &&
-                   drawn.to_port == picked.to_port;
+        return std::ranges::none_of(selection_edges, [&](const GraphCanvasEdge &edge) {
+            return edge.from_node == picked.from_node &&
+                   edge.from_port == picked.from_port &&
+                   edge.to_node == picked.to_node &&
+                   edge.to_port == picked.to_port;
         });
     });
+    const GraphCanvasLayout &selection_placement = this->layout(selection_scope_);
     std::erase_if(selected_reroutes_, [&](const auto &picked) {
-        const auto found = std::ranges::find(layout_.reroutes, picked.first,
+        const auto found = std::ranges::find(selection_placement.reroutes, picked.first,
                                              &GraphCanvasReroute::edge);
-        return found == layout_.reroutes.end() ||
+        return found == selection_placement.reroutes.end() ||
                picked.second >= found->points.size();
     });
     std::erase_if(selected_ties_, [&](const std::size_t index) {
-        return index >= layout_.ties.size();
+        return index >= selection_placement.ties.size();
     });
     setProperty("pelicanGraphSelectedNode",
                 selected_node_ ? qtext(*selected_node_) : QString{});
@@ -1103,6 +1600,7 @@ void GraphCanvasScene::repopulate() {
     setProperty("pelicanGraphBreadcrumb", trail.join(QStringLiteral("/")));
     setProperty("pelicanGraphNodeCount", static_cast<qulonglong>(nodes.size()));
     setProperty("pelicanGraphEdgeCount", static_cast<qulonglong>(edges.size()));
+    setProperty("pelicanGraphZoneCount", static_cast<qulonglong>(zones_.size()));
     setProperty("pelicanGraphNotice", qtext(model_->notice().message));
     // What the automatic placement achieved, so `layout_stats` can ask a live
     // window how tangled it is rather than a reader having to look at it.
@@ -1123,19 +1621,95 @@ void GraphCanvasScene::repopulate() {
     if (repopulated) repopulated();
 }
 
+void GraphCanvasScene::scheduleZoneRefit() {
+    if (zone_refit_queued_) return;
+    zone_refit_queued_ = true;
+    QTimer::singleShot(0, this, [this] {
+        zone_refit_queued_ = false;
+        // Not under the hand: redrawing deletes the item being dragged.
+        if (dragging()) {
+            zone_refit_queued_ = true;
+            QTimer::singleShot(60, this, [this] {
+                zone_refit_queued_ = false;
+                scheduleZoneRefit();
+            });
+            return;
+        }
+        // Only when a body now reaches past what its frame was drawn around.
+        bool changed = false;
+        for (const auto &[body, content] : zone_content_) {
+            QRectF extent;
+            for (QGraphicsItem *child : content->childItems()) {
+                if (nodeGraphItemKind(*child) != QLatin1String{GraphCanvasNodeItem}) continue;
+                const auto *node = dynamic_cast<const QGraphicsPathItem *>(child);
+                if (node == nullptr) continue;
+                // The drawn box, not the pen around it: the same extent the
+                // frame was drawn around.
+                const QRectF box = child->mapRectToParent(node->path().boundingRect());
+                extent = extent.isValid() ? extent.united(box) : box;
+            }
+            const auto drawn = zone_content_rect_.find(body);
+            const QRectF before = drawn == zone_content_rect_.end() ? QRectF{} : drawn->second;
+            if (std::abs(extent.left() - before.left()) > 0.5 ||
+                std::abs(extent.top() - before.top()) > 0.5 ||
+                std::abs(extent.right() - before.right()) > 0.5 ||
+                std::abs(extent.bottom() - before.bottom()) > 0.5)
+                changed = true;
+        }
+        if (changed) repopulate();
+    });
+}
+
+QPointF GraphCanvasScene::toScopePoint(const std::string &scope, const QPointF &at) const {
+    const auto content = zone_content_.find(scope);
+    if (content == zone_content_.end()) return at;
+    return content->second->mapFromScene(at);
+}
+
+std::string GraphCanvasScene::scopeAt(const QPointF &at) const {
+    const std::string current = model_ != nullptr ? model_->currentScope() : std::string{};
+    for (QGraphicsItem *item : items(at)) {
+        const QString kind = nodeGraphItemKind(*item);
+        if (kind.isEmpty()) continue;
+        const QString zone = item->data(GraphCanvasZoneScopeRole).toString();
+        if (!zone.isEmpty()) return zone.toStdString();
+        if (kind == QLatin1String{GraphCanvasZoneItem})
+            return item->data(GraphCanvasDefinitionRole).toString().toStdString();
+        return current;
+    }
+    return current;
+}
+
+std::string GraphCanvasScene::addScope() const {
+    if (menu_scope_) return *menu_scope_;
+    if (palette_scope_) return *palette_scope_;
+    const std::string current = model_ != nullptr ? model_->currentScope() : std::string{};
+    // Something picked inside a zone: its body.
+    if (selection_scope_ != current && zone_content_.contains(selection_scope_))
+        return selection_scope_;
+    // A picked zone: its body.
+    if (selected_node_ && selection_scope_ == current)
+        if (const auto zone = zones_.find(*selected_node_); zone != zones_.end())
+            return zone->second;
+    return current;
+}
+
 void GraphCanvasScene::applyEdgeEmphasis() {
     // Which edges touch the selected node is the one thing the canvas says
     // about a selection, so it is applied in one pass over every edge rather
-    // than remembered per item.
+    // than remembered per item. Only the edges of the scope the pick is in:
+    // a body node's id can be a root node's too.
     const QString selected =
         selected_node_ ? qtext(*selected_node_) : QString{};
+    const QString selected_scope = qtext(selection_scope_);
     for (QGraphicsItem *item : items()) {
         const QString kind = nodeGraphItemKind(*item);
         const bool edge = kind == QLatin1String{GraphCanvasEdgeItem};
         const bool arrow = kind == QLatin1String{GraphCanvasEdgeArrowItem};
         if (!edge && !arrow) continue;
+        const bool in_scope = item->data(GraphCanvasScopeRole).toString() == selected_scope;
         const bool touches =
-            !selected.isEmpty() &&
+            in_scope && !selected.isEmpty() &&
             (item->data(NodeGraphFromNameRole).toString() == selected ||
              item->data(NodeGraphToNameRole).toString() == selected);
         // The picked edge is the one Delete would cut, so it is louder than an
@@ -1143,6 +1717,7 @@ void GraphCanvasScene::applyEdgeEmphasis() {
         // Every picked edge is loud, not only the last one: a bundle is made
         // out of several, and the drawing has to say which ones they are.
         const bool picked =
+            in_scope &&
             std::ranges::any_of(selected_edges_, [&](const GraphCanvasEdge &drawn) {
                 return item->data(NodeGraphFromNameRole).toString() ==
                            qtext(drawn.from_node) &&
@@ -1194,6 +1769,11 @@ void GraphCanvasScene::applySceneRectNow() {
 }
 
 void GraphCanvasScene::selectNode(const std::string &id) {
+    selectNode(model_ != nullptr ? model_->currentScope() : std::string{}, id);
+}
+
+void GraphCanvasScene::selectNode(const std::string &scope, const std::string &id) {
+    enterSelectionScope(scope);
     selected_node_ = id;
     selected_edge_.reset();
     selected_edges_.clear();
@@ -1204,11 +1784,18 @@ void GraphCanvasScene::selectNode(const std::string &id) {
 }
 
 void GraphCanvasScene::selectEdge(const GraphCanvasEdge &edge, bool additive) {
+    selectEdge(model_ != nullptr ? model_->currentScope() : std::string{}, edge, additive);
+}
+
+void GraphCanvasScene::selectEdge(const std::string &scope, const GraphCanvasEdge &edge,
+                                  bool additive) {
     const auto same = [&](const GraphCanvasEdge &other) {
         return other.from_node == edge.from_node &&
                other.from_port == edge.from_port &&
                other.to_node == edge.to_node && other.to_port == edge.to_port;
     };
+    if (scope != selection_scope_) additive = false;
+    enterSelectionScope(scope);
     if (!additive) {
         selected_edges_.clear();
         clearControlSelection();
@@ -1253,6 +1840,7 @@ void GraphCanvasScene::beginConnection(const QGraphicsItem &socket) {
     if (port.isEmpty()) return;
     clearPendingConnection();
     PendingConnection pending;
+    pending.scope = itemScope(socket);
     pending.node = socket.data(NodeGraphNameRole).toString().toStdString();
     pending.port = port.toStdString();
     pending.from_output = direction == QLatin1String{"output"};
@@ -1285,6 +1873,10 @@ void GraphCanvasScene::finishConnection(const QPointF &position) {
     for (QGraphicsItem *item : items(position)) {
         if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasSocketItem}) continue;
         if (item->data(GraphCanvasSocketDirectionRole).toString() != wanted) continue;
+        // LP-4d1: an edge stays in one scope. A zone's body and the root
+        // around it are two documents' worth of nodes (LP-4d2 is where a
+        // line across the edge becomes a loop input).
+        if (itemScope(*item) != pending.scope) continue;
         const auto port = item->data(GraphCanvasPortRole).toString();
         if (port.isEmpty()) return; // A folded node names no single port.
         const auto node = item->data(NodeGraphNameRole).toString().toStdString();
@@ -1294,19 +1886,19 @@ void GraphCanvasScene::finishConnection(const QPointF &position) {
         const auto to_port = pending.from_output ? port.toStdString() : pending.port;
         // A drag that does not type-check does not land: the socket is simply
         // not one this edge can end on.
-        afterEdit(model_->connectInput(to_node, to_port, from_node, from_port));
+        afterEdit(model_->connectInput(pending.scope, to_node, to_port, from_node, from_port));
         return;
     }
     // Dropped on nothing. From an input socket that is standing on an edge,
     // that is how the edge is cut; from an output socket it means nothing.
     if (pending.from_output) return;
-    const auto drawn = model_->nodes();
+    const auto drawn = model_->nodes(pending.scope);
     const auto owner = std::ranges::find(drawn, pending.node, &GraphCanvasNode::id);
     if (owner == drawn.end()) return;
     const auto port = std::ranges::find(owner->inputs, pending.port,
                                         &GraphCanvasPort::port);
     if (port == owner->inputs.end() || !port->connected) return;
-    afterEdit(model_->disconnectInput(pending.node, pending.port));
+    afterEdit(model_->disconnectInput(pending.scope, pending.node, pending.port));
 }
 
 void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
@@ -1318,6 +1910,20 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
         for (QGraphicsItem *item : items(event->scenePos())) {
             const QString kind = nodeGraphItemKind(*item);
             if (kind == QLatin1String{GraphCanvasEditorItem}) break;
+            // LP-4d1: every pick is made in the scope the item belongs to --
+            // a zone's body is its definition, whatever the canvas shows.
+            const std::string scope = itemScope(*item);
+            if (kind == QLatin1String{GraphCanvasZoneTabItem}) {
+                event->accept();
+                const auto loop = item->data(NodeGraphNameRole).toString().toStdString();
+                const auto branch =
+                    static_cast<std::size_t>(item->data(GraphCanvasBranchRole).toULongLong());
+                // A redraw deletes the tab being pressed: from the event loop.
+                QMetaObject::invokeMethod(
+                    this, [this, loop, branch] { showLoopBranch(loop, branch); },
+                    Qt::QueuedConnection);
+                return;
+            }
             if (kind == QLatin1String{GraphCanvasCollapseItem}) {
                 event->accept();
                 // Folding rebuilds the scene, which deletes the item this
@@ -1325,21 +1931,22 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
                 // from the event loop, not from inside the dispatch.
                 const auto id = item->data(NodeGraphNameRole).toString().toStdString();
                 QMetaObject::invokeMethod(
-                    this, [this, id] { toggleCollapsed(id); },
+                    this, [this, scope, id] { setCollapsed(scope, id, !collapsed(scope, id)); },
                     Qt::QueuedConnection);
                 return;
             }
             if (kind == QLatin1String{GraphCanvasSocketItem}) {
                 event->accept();
-                selectNode(item->data(NodeGraphNameRole).toString().toStdString());
+                selectNode(scope, item->data(NodeGraphNameRole).toString().toStdString());
                 beginConnection(*item);
                 return;
             }
             if (kind == QLatin1String{GraphCanvasValuePillItem}) {
                 event->accept();
                 const auto node = item->data(NodeGraphNameRole).toString().toStdString();
-                selectNode(node);
-                beginValueEdit(node, item->data(GraphCanvasPortRole).toString().toStdString());
+                selectNode(scope, node);
+                beginValueEdit(scope, node,
+                               item->data(GraphCanvasPortRole).toString().toStdString());
                 return;
             }
             // A control point is picked *and* dragged by the same press, so
@@ -1348,6 +1955,7 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
             // and it is done in the same place.
             if (kind == QLatin1String{GraphCanvasRerouteItem}) {
                 selectReroute(
+                    scope,
                     GraphCanvasEdgeKey{
                         item->data(NodeGraphNameRole).toString().toStdString(),
                         item->data(GraphCanvasToPortRole).toString().toStdString()},
@@ -1358,7 +1966,7 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
                 break;
             }
             if (kind == QLatin1String{GraphCanvasTieItem}) {
-                selectTie(static_cast<std::size_t>(
+                selectTie(scope, static_cast<std::size_t>(
                               item->data(GraphCanvasControlIndexRole).toULongLong()),
                           (event->modifiers() & Qt::ControlModifier) != 0);
                 picked_control = true;
@@ -1367,7 +1975,7 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
             if (kind == QLatin1String{GraphCanvasEdgeItem} ||
                 kind == QLatin1String{GraphCanvasEdgeArrowItem}) {
                 event->accept();
-                selectEdge(GraphCanvasEdge{
+                selectEdge(scope, GraphCanvasEdge{
                     item->data(NodeGraphFromNameRole).toString().toStdString(),
                     item->data(GraphCanvasFromPortRole).toString().toStdString(),
                     item->data(NodeGraphToNameRole).toString().toStdString(),
@@ -1385,7 +1993,7 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
     if (generation != rebuild_generation_ || picked_control) return;
     for (QGraphicsItem *item : items(event->scenePos())) {
         if (!isNodeSurface(nodeGraphItemKind(*item))) continue;
-        selectNode(item->data(NodeGraphNameRole).toString().toStdString());
+        selectNode(itemScope(*item), item->data(NodeGraphNameRole).toString().toStdString());
         return;
     }
 }
@@ -1417,14 +2025,18 @@ void GraphCanvasScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
 
 void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     context_position_ = event->scenePos();
+    // LP-4d1: opened inside a zone, the menu adds to the zone's body.
+    const std::string scope = scopeAt(context_position_);
+    const bool root = scope.empty();
     QMenu menu;
     // Both handlers run from the event loop rather than from inside the menu's
     // own: the palette is a modal dialog, and opening one while the menu is
     // still dispatching nests two modal loops.
     if (addNodeRequested) {
         QAction *add = menu.addAction(QObject::tr("Add node..."));
-        QObject::connect(add, &QAction::triggered, this, [this] {
+        QObject::connect(add, &QAction::triggered, this, [this, scope] {
             const QPointF at = context_position_;
+            palette_scope_ = scope;
             QMetaObject::invokeMethod(
                 this,
                 [this, at] {
@@ -1435,10 +2047,13 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     }
     // LP-4c: the named additions, where they apply -- a loop in the root, a
     // fullscreen pass anywhere the catalog has one.
-    if (add_loop_action_ != nullptr && add_loop_action_->isEnabled())
+    if (add_loop_action_ != nullptr && add_loop_action_->isEnabled() && root)
         menu.addAction(add_loop_action_);
-    if (add_fullscreen_action_ != nullptr && add_fullscreen_action_->isEnabled())
+    if (add_fullscreen_action_ != nullptr && model_ != nullptr && model_->canEdit() &&
+        !model_->paletteOperationsIn(scope, "render.fullscreen").empty()) {
+        add_fullscreen_action_->setEnabled(true);
         menu.addAction(add_fullscreen_action_);
+    }
     // Decision 6: an input of a root loop can read one element of another
     // loop's p[].
     if (model_ != nullptr && perIterationRequested && model_->currentScope().empty()) {
@@ -1446,6 +2061,7 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
             if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasSocketItem} &&
                 nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeLabelItem})
                 continue;
+            if (!itemScope(*item).empty()) continue;
             const auto port = item->data(GraphCanvasPortRole).toString().toStdString();
             const auto node = item->data(NodeGraphNameRole).toString().toStdString();
             if (port.empty()) continue;
@@ -1498,7 +2114,9 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
         return;
     }
     event->accept();
+    menu_scope_ = scope;
     menu.exec(event->screenPos());
+    menu_scope_.reset();
 }
 
 // One editor at a time, over the thing it edits. It owns nothing the scene
@@ -1507,6 +2125,7 @@ struct GraphCanvasScene::InlineEditor {
     enum class Kind { label, value };
 
     Kind kind = Kind::label;
+    std::string scope;
     std::string node;
     std::string port;
     ValueEditorKind value_kind = ValueEditorKind::number;
@@ -1531,14 +2150,14 @@ std::optional<GraphCanvasScene::CarriedInlineEdit>
 GraphCanvasScene::carryInlineEdit() const {
     if (!editor_) return std::nullopt;
     return CarriedInlineEdit{editor_->kind == InlineEditor::Kind::label,
-                             editor_->node, editor_->port,
+                             editor_->scope, editor_->node, editor_->port,
                              editorText(editor_->widget)};
 }
 
 void GraphCanvasScene::restoreInlineEdit(const CarriedInlineEdit &carried) {
     const bool opened = carried.label
-                            ? beginLabelEdit(carried.node)
-                            : beginValueEdit(carried.node, carried.port);
+                            ? beginLabelEdit(carried.scope, carried.node)
+                            : beginValueEdit(carried.scope, carried.node, carried.port);
     if (!opened) return;
     setInlineEditText(carried.text);
     if (editor_ && editor_->widget != nullptr)
@@ -1560,9 +2179,11 @@ void GraphCanvasScene::closeEditor() {
 
 namespace {
 // The item the editor has to cover, found by kind and by what it names.
-QGraphicsItem *findHeadingLabel(QGraphicsScene &scene, const QString &node) {
+QGraphicsItem *findHeadingLabel(QGraphicsScene &scene, const QString &scope,
+                                const QString &node) {
     for (QGraphicsItem *item : scene.items()) {
         if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeLabelItem}) continue;
+        if (item->data(GraphCanvasScopeRole).toString() != scope) continue;
         if (item->data(NodeGraphNameRole).toString() != node) continue;
         if (!item->data(GraphCanvasHeadingRole).toBool()) continue;
         if (item->data(GraphCanvasLabelRole).toString().isEmpty()) continue;
@@ -1571,10 +2192,11 @@ QGraphicsItem *findHeadingLabel(QGraphicsScene &scene, const QString &node) {
     return nullptr;
 }
 
-QGraphicsItem *findPill(QGraphicsScene &scene, const QString &node,
+QGraphicsItem *findPill(QGraphicsScene &scene, const QString &scope, const QString &node,
                         const QString &port) {
     for (QGraphicsItem *item : scene.items()) {
         if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasValuePillItem}) continue;
+        if (item->data(GraphCanvasScopeRole).toString() != scope) continue;
         if (item->data(NodeGraphNameRole).toString() != node) continue;
         if (item->data(GraphCanvasPortRole).toString() != port) continue;
         if (item->data(GraphCanvasValueTextRole).toString().isEmpty()) continue;
@@ -1609,16 +2231,22 @@ void setEditorText(QWidget *widget, const QString &text) {
 } // namespace
 
 bool GraphCanvasScene::beginLabelEdit(const std::string &id) {
+    if (model_ == nullptr) return false;
+    return beginLabelEdit(model_->currentScope(), id);
+}
+
+bool GraphCanvasScene::beginLabelEdit(const std::string &scope, const std::string &id) {
     if (model_ == nullptr || !model_->canEdit()) return false;
-    const auto drawn = model_->nodes();
+    const auto drawn = model_->nodes(scope);
     const auto found = std::ranges::find(drawn, id, &GraphCanvasNode::id);
     if (found == drawn.end()) return false;
     closeEditor();
-    QGraphicsItem *anchor = findHeadingLabel(*this, qtext(id));
+    QGraphicsItem *anchor = findHeadingLabel(*this, qtext(scope), qtext(id));
     if (anchor == nullptr) return false;
 
     auto editor = std::make_unique<InlineEditor>();
     editor->kind = InlineEditor::Kind::label;
+    editor->scope = scope;
     editor->node = id;
     auto *line = new QLineEdit;
     // The current label, not the heading: an unlabelled node starts empty, so
@@ -1654,14 +2282,20 @@ bool GraphCanvasScene::beginLabelEdit(const std::string &id) {
 }
 
 bool GraphCanvasScene::beginValueEdit(const std::string &id, const std::string &port) {
+    if (model_ == nullptr) return false;
+    return beginValueEdit(model_->currentScope(), id, port);
+}
+
+bool GraphCanvasScene::beginValueEdit(const std::string &scope, const std::string &id,
+                                      const std::string &port) {
     if (model_ == nullptr || !model_->canEdit() || port.empty()) return false;
-    const auto drawn = model_->nodes();
+    const auto drawn = model_->nodes(scope);
     const auto found = std::ranges::find(drawn, id, &GraphCanvasNode::id);
     if (found == drawn.end()) return false;
     const auto entry = std::ranges::find(found->inputs, port, &GraphCanvasPort::port);
     if (entry == found->inputs.end() || entry->connected) return false;
     closeEditor();
-    QGraphicsItem *anchor = findPill(*this, qtext(id), qtext(port));
+    QGraphicsItem *anchor = findPill(*this, qtext(scope), qtext(id), qtext(port));
     if (anchor == nullptr) return false;
 
     // What is being edited is the stored value, even when the pill is showing
@@ -1673,6 +2307,7 @@ bool GraphCanvasScene::beginValueEdit(const std::string &id, const std::string &
                              : nlohmann::json(0.0);
     auto editor = std::make_unique<InlineEditor>();
     editor->kind = InlineEditor::Kind::value;
+    editor->scope = scope;
     editor->node = id;
     editor->port = port;
     editor->value_kind = editorKindFor(current);
@@ -1748,6 +2383,7 @@ void GraphCanvasScene::cancelInlineEdit() { closeEditor(); }
 bool GraphCanvasScene::commitInlineEdit() {
     if (!editor_ || model_ == nullptr) return false;
     const auto kind = editor_->kind;
+    const auto scope = editor_->scope;
     const auto node = editor_->node;
     const auto port = editor_->port;
     const auto value_kind = editor_->value_kind;
@@ -1761,7 +2397,7 @@ bool GraphCanvasScene::commitInlineEdit() {
     const auto text = editorText(editor_->widget);
     closeEditor();
     if (kind == InlineEditor::Kind::label) {
-        const bool submitted = model_->setNodeLabel(node, text.toStdString());
+        const bool submitted = model_->setNodeLabel(scope, node, text.toStdString());
         afterEdit(submitted);
         return submitted;
     }
@@ -1787,47 +2423,60 @@ bool GraphCanvasScene::commitInlineEdit() {
         break;
     }
     }
-    const bool submitted = model_->setNodeParameter(node, port, value);
+    const bool submitted = model_->setNodeParameter(scope, node, port, value);
     afterEdit(submitted);
     return submitted;
 }
 
-void GraphCanvasScene::placeNewNode(const std::string &id) {
+void GraphCanvasScene::placeNewNode(const std::string &scope, const std::string &id) {
     if (model_ == nullptr || id.empty()) return;
+    const std::string current = model_->currentScope();
     // Beside the selected node when there is one, otherwise where the canvas
     // was right-clicked. Either way it is session state, like every position.
-    QPointF position = context_position_;
-    if (selected_node_) {
-        if (const auto found = session_node_positions_.find(
-                {model_->currentScope(), *selected_node_});
+    QPointF position = toScopePoint(scope, context_position_);
+    const bool from_menu = menu_scope_.has_value() || palette_scope_.has_value();
+    if (selected_node_ && selection_scope_ == scope) {
+        if (const auto found = session_node_positions_.find({scope, *selected_node_});
             found != session_node_positions_.end()) {
             position = found->second +
                        QPointF{NodeGraphNodeWidth + NodeGraphHorizontalGap, 0.0};
         } else if (QGraphicsItem *item = findNodeItem(
-                       *this, graphCanvasKinds(), qtext(model_->currentScope()),
-                       qtext(*selected_node_))) {
+                       *this, graphCanvasKinds(), qtext(scope), qtext(*selected_node_))) {
             position = item->pos() +
                        QPointF{NodeGraphNodeWidth + NodeGraphHorizontalGap, 0.0};
         }
+    } else if (scope != current && !from_menu) {
+        // LP-4d1, decision 6: added to a zone's body from no particular
+        // place, it is placed inside the frame with the rest of the body.
+        return;
     }
-    session_node_positions_[{model_->currentScope(), id}] = position;
+    session_node_positions_[{scope, id}] = position;
 }
 
 bool GraphCanvasScene::addFromPalette(const std::string &op,
                                       const std::string &definition) {
+    return addFromPalette(addScope(), op, definition);
+}
+
+bool GraphCanvasScene::addFromPalette(const std::string &scope, const std::string &op,
+                                      const std::string &definition) {
     if (model_ == nullptr || !model_->canEdit()) return false;
     // The id the model is about to choose is the one the position is filed
     // under: asking twice would answer differently once the node exists.
-    const auto ops = model_->addNodeOps(op, definition);
+    const auto ops = model_->addNodeOpsIn(scope, op, definition);
     if (ops.empty()) return false;
     // The node the gesture is about is the last one added; LP-4c's list can
     // end with the loop that runs the scope being given a place.
     std::string added;
+    std::string added_scope = scope;
     for (const auto &entry : ops)
-        if (entry.value("op", std::string{}) == "add_node")
+        if (entry.value("op", std::string{}) == "add_node") {
             added = entry.at("node").value("id", std::string{});
-    if (!model_->addNode(op, definition)) return false;
-    placeNewNode(added);
+            const auto token = entry.value("scope", std::string{"root"});
+            added_scope = token == "root" ? std::string{} : token;
+        }
+    if (!model_->addNodeIn(scope, op, definition)) return false;
+    placeNewNode(added_scope, added);
     afterEdit(true);
     return true;
 }
@@ -1838,7 +2487,7 @@ bool GraphCanvasScene::addLoop(const std::string &body, const std::string &new_d
     if (ops.empty()) return false;
     const auto &added = ops.back();
     if (!model_->addLoop(body, new_definition)) return false;
-    placeNewNode(added.at("node").value("id", std::string{}));
+    placeNewNode({}, added.at("node").value("id", std::string{}));
     afterEdit(true);
     return true;
 }
@@ -1851,8 +2500,9 @@ void GraphCanvasScene::setAddActions(QAction *add_loop, QAction *add_fullscreen)
 bool GraphCanvasScene::deleteSelection() {
     if (model_ == nullptr) return false;
     if (selected_edge_)
-        return model_->disconnectInput(selected_edge_->to_node, selected_edge_->to_port);
-    if (selected_node_) return model_->removeNode(*selected_node_);
+        return model_->disconnectInput(selection_scope_, selected_edge_->to_node,
+                                       selected_edge_->to_port);
+    if (selected_node_) return model_->removeNode(selection_scope_, *selected_node_);
     return false;
 }
 
@@ -1919,12 +2569,14 @@ void GraphCanvasScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) {
                 const auto index =
                     static_cast<std::size_t>(
                         item->data(GraphCanvasControlIndexRole).toULongLong());
+                const std::string scope = itemScope(*item);
                 QMetaObject::invokeMethod(
                     this,
-                    [this, index] {
-                        if (index >= layout_.ties.size()) return;
-                        std::ranges::reverse(layout_.ties[index].edges);
-                        noteLayoutChange();
+                    [this, scope, index] {
+                        auto &ties = placement(scope).layout.ties;
+                        if (index >= ties.size()) return;
+                        std::ranges::reverse(ties[index].edges);
+                        noteLayoutChange(scope);
                         repopulate();
                     },
                     Qt::QueuedConnection);
@@ -1943,10 +2595,11 @@ void GraphCanvasScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) {
                     item->data(NodeGraphToNameRole).toString().toStdString(),
                     item->data(GraphCanvasToPortRole).toString().toStdString()};
                 const QPointF at = event->scenePos();
+                const std::string scope = itemScope(*item);
                 // Same reason as the breadcrumb: the item under the cursor
                 // cannot be deleted while Qt is still dispatching this event.
                 QMetaObject::invokeMethod(
-                    this, [this, edge, at] { insertReroute(edge, at); },
+                    this, [this, scope, edge, at] { insertReroute(scope, edge, at); },
                     Qt::QueuedConnection);
                 return;
             }
@@ -1958,13 +2611,15 @@ void GraphCanvasScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) {
             if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasEditorItem}) break;
             if (!item->data(GraphCanvasHeadingRole).toBool()) continue;
             event->accept();
-            beginLabelEdit(item->data(NodeGraphNameRole).toString().toStdString());
+            beginLabelEdit(itemScope(*item), item->data(NodeGraphNameRole).toString().toStdString());
             return;
         }
         for (QGraphicsItem *item : items(event->scenePos())) {
             if (!isNodeSurface(nodeGraphItemKind(*item))) continue;
             const auto id = item->data(NodeGraphNameRole).toString().toStdString();
-            if (!model_->canEnterInstance(id)) break;
+            // Only the scope on screen descends: a zone's body holds neither
+            // an instance nor a loop.
+            if (itemScope(*item) != model_->currentScope() || !model_->canEnterInstance(id)) break;
             event->accept();
             // Same reason as the breadcrumb: the items under the cursor cannot
             // be deleted while Qt is still dispatching this event.
@@ -2502,9 +3157,12 @@ struct GraphCanvasWidget::Impl {
         };
         scene->selectionChanged = [this] {
             // The Timeline follows the selection: the node a person is looking
-            // at is the node whose outputs they mean.
+            // at is the node whose outputs they mean. (LP-4d1: not a node of a
+            // zone's body -- no reading answers for one.)
             const auto &selected = scene->selectedNode();
-            model.setTimelineNode(selected ? *selected : std::string{});
+            model.setTimelineNode(selected && scene->selectedScope() == model.currentScope()
+                                      ? *selected
+                                      : std::string{});
             showDetails();
             synchronizeTimeline();
         };
@@ -2569,7 +3227,8 @@ struct GraphCanvasWidget::Impl {
         const auto rename = [this] {
             const auto &selected = scene->selectedNode();
             if (!selected) return;
-            if (model.setNodeLabel(*selected, label_edit->text().toStdString()))
+            if (model.setNodeLabel(scene->selectedScope(), *selected,
+                                   label_edit->text().toStdString()))
                 dispatch();
         };
         QObject::connect(apply_label, &QPushButton::clicked, &view, rename);
@@ -2649,6 +3308,7 @@ struct GraphCanvasWidget::Impl {
         for (QGraphicsItem *item : scene->items()) {
             if (item->data(NodeGraphItemKindRole).toString() !=
                     QLatin1String{GraphCanvasNodeItem} ||
+                !item->data(GraphCanvasScopeRole).toString().isEmpty() ||
                 item->data(NodeGraphNameRole).toString().toStdString() != id)
                 continue;
             canvas->centerOn(item);
@@ -2892,7 +3552,8 @@ struct GraphCanvasWidget::Impl {
     void commitUiNode(const QString &text) {
         const auto &selected = scene->selectedNode();
         if (!selected || text.isEmpty()) return;
-        const auto nodes = model.nodes();
+        const auto scope = scene->selectedScope();
+        const auto nodes = model.nodes(scope);
         const auto found = std::ranges::find(nodes, *selected, &GraphCanvasNode::id);
         if (found == nodes.end()) return;
         const auto key = std::string{GraphCanvasModel::uiNodeParameter(found->op)};
@@ -2900,7 +3561,7 @@ struct GraphCanvasWidget::Impl {
         const auto path = text.toStdString();
         const auto stored = found->parameters.find(key);
         if (stored != found->parameters.end() && *stored == path) return;
-        if (model.setNodeParameter(*selected, key, path)) dispatch();
+        if (model.setNodeParameter(scope, *selected, key, path)) dispatch();
     }
 
     // Q-10. The project's sounds, read again whenever they are about to be
@@ -2973,7 +3634,8 @@ struct GraphCanvasWidget::Impl {
     void commitAudio(const char *key, const QString &text) {
         const auto &selected = scene->selectedNode();
         if (!selected || text.isEmpty()) return;
-        const auto nodes = model.nodes();
+        const auto scope = scene->selectedScope();
+        const auto nodes = model.nodes(scope);
         const auto found = std::ranges::find(nodes, *selected, &GraphCanvasNode::id);
         if (found == nodes.end() || !GraphCanvasModel::isAudioPlayback(found->op)) return;
         const auto value = text.toStdString();
@@ -2989,12 +3651,20 @@ struct GraphCanvasWidget::Impl {
                                                     : nullptr;
             if (defaults != nullptr && defaults->front() == value) return;
         }
-        if (model.setNodeParameter(*selected, key, value)) dispatch();
+        if (model.setNodeParameter(scope, *selected, key, value)) dispatch();
     }
 
     // The "Add node..." palette: the catalog, narrowed by domain and by what
     // the user types, and an instance also needs the definition it stands on.
     void openPalette() {
+        // LP-4d1: the scope the addition goes into -- a zone's body when the
+        // menu was opened inside it, or when the zone is picked.
+        const std::string scope = scene->addScope();
+        // The menu's scope is this palette's only, however it closes.
+        struct PaletteScope {
+            GraphCanvasScene *scene;
+            ~PaletteScope() { scene->clearPaletteScope(); }
+        } palette_scope{scene};
         if (!model.canEdit()) return;
         // A new ui.* sink is seeded with a node the UI document has.
         reloadUiNodes();
@@ -3008,7 +3678,7 @@ struct GraphCanvasWidget::Impl {
         auto *domains = new QComboBox(&dialog);
         domains->setObjectName(QStringLiteral("pelican.graphCanvasPaletteDomain"));
         domains->addItem(QObject::tr("all domains"), QString{});
-        for (const auto &domain : model.paletteDomains())
+        for (const auto &domain : model.paletteDomainsIn(scope))
             domains->addItem(qtext(domain), qtext(domain));
         filters->addWidget(domains);
         auto *search = new QLineEdit(&dialog);
@@ -3052,8 +3722,8 @@ struct GraphCanvasWidget::Impl {
 
         const auto reload = [&] {
             list->clear();
-            for (const auto &entry : model.paletteOperations(
-                     search->text().toStdString(),
+            for (const auto &entry : model.paletteOperationsIn(
+                     scope, search->text().toStdString(),
                      domains->currentData().toString().toStdString())) {
                 auto *row = new QListWidgetItem(
                     entry.structural
@@ -3108,10 +3778,10 @@ struct GraphCanvasWidget::Impl {
         }
         // LP-4e: a material pass's second argument is its contract.
         if (op == "render.material_pass") {
-            scene->addFromPalette(op, contracts->currentData().toString().toStdString());
+            scene->addFromPalette(scope, op, contracts->currentData().toString().toStdString());
             return;
         }
-        scene->addFromPalette(op, definitions->currentData().toString().toStdString());
+        scene->addFromPalette(scope, op, definitions->currentData().toString().toStdString());
     }
 
     void showDetails() {
@@ -3128,7 +3798,10 @@ struct GraphCanvasWidget::Impl {
             draw_fields->showNode(nullptr);
             return;
         }
-        const auto nodes = model.nodes();
+        // LP-4d1: the node is looked for in the scope it was picked in -- a
+        // zone's body is its definition, whatever the canvas shows.
+        const auto scope = scene->selectedScope();
+        const auto nodes = model.nodes(scope);
         const auto found = std::ranges::find(nodes, *selected, &GraphCanvasNode::id);
         if (found == nodes.end()) {
             label_edit->clear();
@@ -3144,7 +3817,7 @@ struct GraphCanvasWidget::Impl {
         // LP-4c: a loop's parameters are its fields, not rows of JSON.
         loop_fields->showLoop(found->loop ? found->id : std::string{});
         // LP-4e: and so are a material pass's and a draw step's.
-        draw_fields->showNode(&*found);
+        draw_fields->showNode(&*found, scope);
         const auto row = [this](const QString &field, const QString &value) {
             auto *item = new QTreeWidgetItem(details);
             item->setText(0, field);
@@ -3263,7 +3936,8 @@ struct GraphCanvasWidget::Impl {
         redo_action->setEnabled(history_available && model.canRedo());
         add_loop_action->setEnabled(model.canEdit() && model.currentScope().empty());
         add_fullscreen_action->setEnabled(
-            model.canEdit() && !model.paletteOperations("render.fullscreen").empty());
+            model.canEdit() &&
+            !model.paletteOperationsIn(scene->addScope(), "render.fullscreen").empty());
         const bool content_changed = rendered_content != model.contentRevision();
         const bool report_changed = rendered_report != model.reportRevision();
         // A redraw deletes the in-place editor, so it waits for the editor to
@@ -3429,6 +4103,8 @@ bool GraphCanvasWidget::revealGraphNode(const QString &scope,
     for (QGraphicsItem *item : impl_->scene->items()) {
         if (item->data(NodeGraphItemKindRole).toString() !=
                 QLatin1String{GraphCanvasNodeItem} ||
+            item->data(GraphCanvasScopeRole).toString() !=
+                QString::fromStdString(impl_->model.currentScope()) ||
             item->data(NodeGraphNameRole).toString() != node)
             continue;
         impl_->canvas->centerOn(item);
@@ -3451,6 +4127,8 @@ bool GraphCanvasWidget::revealLoopOrigin(const QString &loop, qint64 element,
     for (QGraphicsItem *item : impl_->scene->items()) {
         if (item->data(NodeGraphItemKindRole).toString() !=
                 QLatin1String{GraphCanvasNodeItem} ||
+            item->data(GraphCanvasScopeRole).toString() !=
+                QString::fromStdString(impl_->model.currentScope()) ||
             item->data(NodeGraphNameRole).toString() != node)
             continue;
         impl_->canvas->centerOn(item);

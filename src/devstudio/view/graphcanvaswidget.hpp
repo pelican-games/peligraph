@@ -65,6 +65,15 @@ inline constexpr int GraphCanvasTieSlotRole = Qt::UserRole + 3141;
 // LP-4c: a node the last refused edit pointed at carries the sentence the
 // refusal read as (empty otherwise); it is drawn with a red rim.
 inline constexpr int GraphCanvasRefusalRole = Qt::UserRole + 3142;
+// LP-4d1: an item drawn inside a loop's zone on the root canvas -- a body
+// node, its sockets, pills, edges and control points -- carries its
+// definition here as well as in its scope. The automation surface puts it in
+// front of the item's name (`graph_node#<definition>/<id>`), because a body
+// node's id can be a root node's too; an item drawn in the scope on screen
+// carries nothing, and keeps the name it always had.
+inline constexpr int GraphCanvasZoneScopeRole = Qt::UserRole + 3143;
+// A zone's tab: the branch it shows (an index into the loop's branches).
+inline constexpr int GraphCanvasBranchRole = Qt::UserRole + 3144;
 inline constexpr int GraphCanvasScopeRole = NodeGraphGraphRole;
 
 inline constexpr auto GraphCanvasNodeItem = "graph_node";
@@ -92,6 +101,20 @@ inline constexpr auto GraphCanvasEditorItem = "graph_inline_editor";
 // moves does not carry them -- which is what makes a bend outlive a drag.
 inline constexpr auto GraphCanvasRerouteItem = "graph_reroute";
 inline constexpr auto GraphCanvasTieItem = "graph_tie";
+// LP-4d1, the loop zone. The frame itself is the loop's `graph_node` (so it
+// moves, is picked and is named as the loop always was); these are what it
+// holds. `graph_zone#<loop>` is the inside of the frame, where the body is
+// drawn; `graph_zone_tab#<loop>/<branch>` one branch's tab;
+// `graph_zone_socket#<loop>/out:<port>` the inside end of one body output on
+// the right edge (the outside ends are the loop's own sockets, and a body's
+// boundary input is its graph.input's `value` socket on the left edge);
+// `graph_zone_link` the line from the node that makes a body output to it;
+// `graph_zone_label#<loop>` the zone's stage and `shared` marks.
+inline constexpr auto GraphCanvasZoneItem = "graph_zone";
+inline constexpr auto GraphCanvasZoneTabItem = "graph_zone_tab";
+inline constexpr auto GraphCanvasZoneSocketItem = "graph_zone_socket";
+inline constexpr auto GraphCanvasZoneLinkItem = "graph_zone_link";
+inline constexpr auto GraphCanvasZoneLabelItem = "graph_zone_label";
 
 // The node is a heading band over two socket sections, so its height follows
 // its port count rather than a constant. The numbers are here so the scene
@@ -113,6 +136,17 @@ inline constexpr qreal GraphCanvasTieWidth = 10.0;
 inline constexpr qreal GraphCanvasTieReach = 9.0;
 inline constexpr qreal GraphCanvasTieSpacing = 16.0;
 inline constexpr qreal GraphCanvasTiePadding = 7.0;
+// LP-4d1, the zone's frame. The body is drawn in the frame's own coordinates
+// shifted by (GraphCanvasZoneContentLeft, the heading and its tabs, then
+// GraphCanvasZonePadding): a body node at the definition's `layout.nodes`
+// (x, y) is that far from the inside origin. The side columns carry the
+// boundary sockets, an outside and an inside one per row.
+inline constexpr qreal GraphCanvasZoneColumn = 96.0;
+inline constexpr qreal GraphCanvasZoneContentLeft = 136.0;
+inline constexpr qreal GraphCanvasZonePadding = 24.0;
+inline constexpr qreal GraphCanvasZoneTabHeight = 24.0;
+inline constexpr qreal GraphCanvasZoneMinimumWidth = 420.0;
+inline constexpr qreal GraphCanvasZoneMinimumContentHeight = 96.0;
 
 // N-6. One edge, named by the input end it lands on. That end is unique -- one
 // port of one node takes at most one edge -- and it is how the document's
@@ -180,6 +214,12 @@ class GraphCanvasScene final : public QGraphicsScene {
     // Draw the model's current scope. Positions the user moved, the nodes they
     // folded and the selection are kept for (scope, node id) and survive a
     // refresh that leaves the node in place.
+    //
+    // LP-4d1: in the root, each graph.loop is drawn as a zone -- a frame with
+    // the body of the branch its tab shows drawn inside, where it is edited
+    // in its own definition. One draw is then several scopes, and everything
+    // the scene keeps (positions, folds, placements, the selection) is filed
+    // under (scope, id). A folded zone is the loop's node, as LP-4c drew it.
     void repopulate();
 
     // The scene changed which scope is shown (a double-click descended into a
@@ -207,11 +247,19 @@ class GraphCanvasScene final : public QGraphicsScene {
     [[nodiscard]] const std::optional<std::string> &selectedNode() const noexcept {
         return selected_node_;
     }
+    // LP-4d1: the scope of what is picked -- the node, the edges and the
+    // control points all belong to one scope ("" is the root). Picking in
+    // another scope lets go of the rest.
+    [[nodiscard]] const std::string &selectedScope() const noexcept {
+        return selection_scope_;
+    }
     // The edge the user picked, so Delete knows which input to clear.
     [[nodiscard]] const std::optional<GraphCanvasEdge> &selectedEdge() const noexcept {
         return selected_edge_;
     }
+    // In the scope on screen.
     void selectNode(const std::string &id);
+    void selectNode(const std::string &scope, const std::string &id);
 
     // "Auto layout" (N-4, N-6): place this scope again, and keep the result.
     // The lane the placement kept for each edge that flies over a column comes
@@ -229,19 +277,17 @@ class GraphCanvasScene final : public QGraphicsScene {
 
     // --- N-6: the placement, and the gestures that change it.
 
-    // What the canvas is drawing the edges through right now.
-    [[nodiscard]] const GraphCanvasLayout &layout() const noexcept {
-        return layout_;
-    }
+    // What the canvas is drawing the edges through right now, in the scope on
+    // screen -- and, LP-4d1, in any scope it draws (a zone's body).
+    [[nodiscard]] const GraphCanvasLayout &layout() const noexcept;
+    [[nodiscard]] const GraphCanvasLayout &layout(const std::string &scope) const noexcept;
     // A placement change is waiting for the debounce to run out.
-    [[nodiscard]] bool layoutPending() const noexcept { return layout_dirty_; }
+    [[nodiscard]] bool layoutPending() const noexcept;
     // Q-5. A placement change nothing has sent yet: the canvas is ahead of
     // every request in the air. Whatever the last save said, this one has not
     // been saved, so the panel says "Saving" rather than the older "saved" --
     // which is also what lets a wait for "saved" wait for *this* change.
-    [[nodiscard]] bool placementUnsent() const noexcept {
-        return layout_dirty_ && layout_sent_.is_null();
-    }
+    [[nodiscard]] bool placementUnsent() const noexcept;
     // The canvas's placement changed (a drag, a control point, a bundle, the
     // Frame Plan's member). The owner refreshes the notice from it.
     std::function<void()> placementChanged;
@@ -272,6 +318,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     // One more control point on this edge, at this scene position. This is what
     // a double-click on an edge does.
     bool insertReroute(const GraphCanvasEdge &edge, const QPointF &at);
+    bool insertReroute(const std::string &scope, const GraphCanvasEdge &edge,
+                       const QPointF &at);
     // Bundle what is picked -- reroutes, edges, or both -- into one tie, in the
     // order they run now. Needs two distinct edges; anything less is not a
     // bundle, and is refused rather than silently making a tie of one.
@@ -294,12 +342,29 @@ class GraphCanvasScene final : public QGraphicsScene {
     void selectReroute(const GraphCanvasEdgeKey &edge, std::size_t index,
                        bool additive);
     void selectTie(std::size_t index, bool additive);
+    void selectEdge(const std::string &scope, const GraphCanvasEdge &edge, bool additive);
+    void selectReroute(const std::string &scope, const GraphCanvasEdgeKey &edge,
+                       std::size_t index, bool additive);
+    void selectTie(const std::string &scope, std::size_t index, bool additive);
 
     // Folding is session state, filed exactly like a moved position: the
-    // document says nothing about how a node is being looked at.
+    // document says nothing about how a node is being looked at. LP-4d1: a
+    // root loop folds from its zone into its node.
     [[nodiscard]] bool collapsed(const std::string &id) const;
     void setCollapsed(const std::string &id, bool collapsed);
     void toggleCollapsed(const std::string &id);
+    [[nodiscard]] bool collapsed(const std::string &scope, const std::string &id) const;
+    void setCollapsed(const std::string &scope, const std::string &id, bool collapsed);
+
+    // LP-4d1. The zones this draw holds: loop id -> the definition drawn in
+    // it. A definition two loops run is drawn in the first one's zone only;
+    // the other is drawn as its node.
+    [[nodiscard]] const std::map<std::string, std::string> &zones() const noexcept {
+        return zones_;
+    }
+    // A zone's tab: show that branch's body (session state). False for a
+    // branch that runs nothing.
+    bool showLoopBranch(const std::string &loop, std::size_t branch);
 
     // Delete: an edge clears the input it lands on, a node is removed.
     bool deleteSelection();
@@ -308,6 +373,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     // commit sends one edit_graph_document, cancel sends nothing.
     bool beginLabelEdit(const std::string &id);
     bool beginValueEdit(const std::string &id, const std::string &port);
+    bool beginLabelEdit(const std::string &scope, const std::string &id);
+    bool beginValueEdit(const std::string &scope, const std::string &id,
+                        const std::string &port);
     [[nodiscard]] bool editingInline() const noexcept { return editor_ != nullptr; }
     // Something on the canvas is being dragged: a node, a control point or a
     // bundle. A redraw deletes every item, so one that arrives mid-gesture
@@ -323,8 +391,18 @@ class GraphCanvasScene final : public QGraphicsScene {
     void cancelInlineEdit();
 
     // Add one operation from the palette, at the position the right-click
-    // named (or beside the selection when it came from elsewhere).
+    // named (or beside the selection when it came from elsewhere), in
+    // addScope().
     bool addFromPalette(const std::string &op, const std::string &definition = {});
+    bool addFromPalette(const std::string &scope, const std::string &op,
+                        const std::string &definition);
+    // LP-4d1: the scope an addition goes into. The canvas menu opened inside
+    // a zone names that zone's body; otherwise a picked zone (or a node inside
+    // one) does; otherwise the scope on screen.
+    [[nodiscard]] std::string addScope() const;
+    // The palette the canvas menu asked for is about the scope the menu was
+    // opened over; the owner lets go of it when the palette closes.
+    void clearPaletteScope() { palette_scope_.reset(); }
     // LP-4c: a loop over `body`, or over a new definition of that name.
     bool addLoop(const std::string &body, const std::string &new_definition);
     // LP-4c: descend into an instance's definition or a loop's body, as a
@@ -346,6 +424,7 @@ class GraphCanvasScene final : public QGraphicsScene {
     // One socket grabbed and not yet dropped. A drag that starts on an input
     // and ends nowhere is how an edge is cut.
     struct PendingConnection {
+        std::string scope;
         std::string node;
         std::string port;
         bool from_output = true;
@@ -358,9 +437,31 @@ class GraphCanvasScene final : public QGraphicsScene {
     // person typing into it -- and what they had typed comes with it.
     struct CarriedInlineEdit {
         bool label = false;
+        std::string scope;
         std::string node;
         std::string port;
         QString text;
+    };
+    // N-6: the document's placement for one scope, and the bookkeeping that
+    // keeps one gesture from becoming fifty edits. `sent` is the last payload
+    // that went out, so a refresh can tell "the document has caught up" from
+    // "the document is still behind the drag". LP-4d1 keeps one per scope the
+    // canvas draws: a zone's body is placed in its own definition.
+    struct ScopePlacement {
+        GraphCanvasLayout layout;
+        // Null until something has actually been sent: an empty object is a
+        // real placement (one that says "nothing is placed"), and a document
+        // that has never carried one must not read as "the canvas has caught
+        // up".
+        nlohmann::json sent;
+        // N-8: the members of the same `layout` object that belong to another
+        // panel. Read back from the document on every load and sent again on
+        // every write, so this canvas never has to understand them to
+        // preserve them.
+        nlohmann::json foreign = nlohmann::json::object();
+        bool dirty = false;
+        // Loaded from the document at least once.
+        bool loaded = false;
     };
 
     GraphCanvasModel *model_ = nullptr;
@@ -369,22 +470,21 @@ class GraphCanvasScene final : public QGraphicsScene {
     // share one position.
     std::map<std::pair<std::string, std::string>, QPointF> session_node_positions_;
     std::map<std::pair<std::string, std::string>, bool> session_collapsed_;
-    // N-6: the document's placement for the scope on screen, and the
-    // bookkeeping that keeps one gesture from becoming fifty edits.
-    // `layout_sent_` is the last payload that went out, so a refresh can tell
-    // "the document has caught up" from "the document is still behind the drag".
-    GraphCanvasLayout layout_;
-    std::string layout_scope_;
-    // Null until something has actually been sent: an empty object is a real
-    // placement (one that says "nothing is placed"), and a document that has
-    // never carried one must not read as "the canvas has caught up".
-    nlohmann::json layout_sent_;
-    // N-8: the members of the same `layout` object that belong to another
-    // panel. Read back from the document on every load and sent again on every
-    // write, so this canvas never has to understand them to preserve them.
-    nlohmann::json layout_foreign_ = nlohmann::json::object();
-    bool layout_dirty_ = false;
+    std::map<std::string, ScopePlacement> placements_;
     QTimer *layout_timer_ = nullptr;
+    // LP-4d1: the scopes the last draw drew (the one on screen first, then
+    // each zone's body), the zones (loop -> body), and the item each body is
+    // drawn inside -- its coordinates are the definition's own.
+    std::vector<std::string> drawn_scopes_;
+    std::map<std::string, std::string> zones_;
+    std::map<std::string, QGraphicsItem *> zone_content_;
+    std::map<std::string, QRectF> zone_content_rect_;
+    bool zone_refit_queued_ = false;
+    // Which scope the canvas menu was opened over, while it is open, and the
+    // one its "Add node..." asked the palette about.
+    std::optional<std::string> menu_scope_;
+    std::optional<std::string> palette_scope_;
+    std::string selection_scope_;
     // What the automatic placement chose on the last draw: the boxes, and the
     // lane every edge that flies over a column was given. "Auto layout" turns
     // this into reroutes and ties; nothing else reads it.
@@ -428,20 +528,24 @@ class GraphCanvasScene final : public QGraphicsScene {
     void scheduleSceneRectUpdate();
     void applySceneRectNow();
     void clearControlSelection();
+    // Picking something in `scope` lets go of what was picked elsewhere.
+    void enterSelectionScope(const std::string &scope);
     // N-6.
+    ScopePlacement &placement(const std::string &scope);
     void loadLayout(const std::string &scope);
-    void pruneLayout();
-    void noteLayoutChange();
-    // The whole `layout` object this canvas would write: its own members and
-    // the other panel's, which ride along.
-    [[nodiscard]] nlohmann::json placementPayload() const;
-    [[nodiscard]] QVector<QPointF> bendsFor(const GraphCanvasEdge &edge) const;
+    void pruneLayout(const std::string &scope);
+    void noteLayoutChange(const std::string &scope);
+    // The whole `layout` object this canvas would write for one scope: its own
+    // members and the other panel's, which ride along.
+    [[nodiscard]] nlohmann::json placementPayload(const std::string &scope) const;
+    [[nodiscard]] QVector<QPointF> bendsFor(const std::string &scope,
+                                            const GraphCanvasEdge &edge) const;
     void applyEdgeBends();
-    void moveReroute(const GraphCanvasEdgeKey &edge, std::size_t index,
-                     const QPointF &at);
-    void moveTie(std::size_t index, const QPointF &at);
-    GraphCanvasReroute &rerouteFor(const GraphCanvasEdgeKey &edge);
-    void detachFromTies(const GraphCanvasEdgeKey &edge);
+    void moveReroute(const std::string &scope, const GraphCanvasEdgeKey &edge,
+                     std::size_t index, const QPointF &at);
+    void moveTie(const std::string &scope, std::size_t index, const QPointF &at);
+    GraphCanvasReroute &rerouteFor(const std::string &scope, const GraphCanvasEdgeKey &edge);
+    void detachFromTies(const std::string &scope, const GraphCanvasEdgeKey &edge);
     bool deleteControlSelection();
     void beginConnection(const QGraphicsItem &socket);
     void finishConnection(const QPointF &position);
@@ -450,8 +554,17 @@ class GraphCanvasScene final : public QGraphicsScene {
     // The two halves of carrying an editor across a rebuild.
     [[nodiscard]] std::optional<CarriedInlineEdit> carryInlineEdit() const;
     void restoreInlineEdit(const CarriedInlineEdit &carried);
-    void placeNewNode(const std::string &id);
+    void placeNewNode(const std::string &scope, const std::string &id);
     void afterEdit(bool submitted);
+    // LP-4d1. A scene position in a scope's own coordinates: a zone's body is
+    // drawn inside an item, the scope on screen is not.
+    [[nodiscard]] QPointF toScopePoint(const std::string &scope, const QPointF &at) const;
+    // The scope under a scene position: a zone's body inside its frame, the
+    // scope on screen elsewhere.
+    [[nodiscard]] std::string scopeAt(const QPointF &at) const;
+    // A body node moved: the frame is drawn again around it once the hand
+    // lets go.
+    void scheduleZoneRefit();
 };
 
 // The Graph tab of the render tools dock.

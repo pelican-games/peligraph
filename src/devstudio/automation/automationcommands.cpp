@@ -237,6 +237,13 @@ QString sceneItemName(const QGraphicsView &view, const QGraphicsItem &item,
         identity = identity.isEmpty() ? port
                                       : identity + QStringLiteral("/") + port;
     }
+    // LP-4d1: a thing drawn inside a loop's zone belongs to the body's
+    // definition, and its id can be a root node's as well; the definition
+    // goes in front (`graph_node#<definition>/<id>`). Neither a definition
+    // name nor an id holds a slash, so the first one is where they part.
+    const QString zone = item.data(GraphCanvasZoneScopeRole).toString();
+    if (!zone.isEmpty() && !identity.isEmpty())
+        identity = zone + QStringLiteral("/") + identity;
     if (identity.isEmpty()) {
         const QString from = item.data(NodeGraphFromNameRole).toString();
         const QString to = item.data(NodeGraphToNameRole).toString();
@@ -511,6 +518,12 @@ QJsonArray rectJson(const QRect &rect) {
 QPoint hotspot(const Target &target) {
     if (target.row) return target.row->center();
     if (target.isSceneItem()) {
+        // LP-4d1: an item whose middle is something else (a zone's frame
+        // holds its body) names where a press meant for it lands.
+        const QVariant spot = target.item->data(NodeGraphHotspotRole);
+        if (spot.canConvert<QPointF>() && spot.isValid())
+            return target.view->mapFromScene(
+                target.item->mapToScene(spot.toPointF()));
         const QPointF centre = target.item->sceneBoundingRect().center();
         return target.view->mapFromScene(centre);
     }
