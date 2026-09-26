@@ -295,6 +295,14 @@ void validateCompiledLogicalRenderGraph(
         validateRenderViewFamilyId(
             node.view_family,
             "logical graph node '" + node.name + "'");
+        for (const auto &[axis, value] : node.view_select) {
+            (void)value;
+            if (axis.empty()) {
+                throw std::runtime_error(
+                    "logical graph node '" + node.name +
+                    "' view_select has an empty axis name");
+            }
+        }
         if (!nodes.emplace(node.name, &node).second) {
             throw std::runtime_error("duplicate logical graph node: " + node.name);
         }
@@ -732,6 +740,10 @@ nlohmann::ordered_json compiledLogicalRenderGraphToJson(
             mainRenderViewFamilyId) {
             encoded["view_family"] =
                 node.view_family;
+        }
+        if (!node.view_select.empty()) {
+            encoded["view_select"] =
+                node.view_select;
         }
         for (const auto &port : node.ports) {
             nlohmann::ordered_json encoded_port{

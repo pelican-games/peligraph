@@ -546,6 +546,18 @@ std::uint64_t computeFingerprint(
             fingerprint, node.bridge_ids);
         fingerprint.appendString(
             node.view_family);
+        // Appended only when present so every plan without a selection keeps
+        // its pre-LP-Va fingerprint.
+        if (!node.view_select.empty()) {
+            fingerprint.appendString("view_select");
+            fingerprint.appendUnsigned(
+                node.view_select.size());
+            for (const auto &[axis, value] :
+                 node.view_select) {
+                fingerprint.appendString(axis);
+                fingerprint.appendUnsigned(value);
+            }
+        }
     }
     fingerprint.appendUnsigned(
         plan.dependencies.size());
@@ -699,6 +711,9 @@ nlohmann::ordered_json frameExecutionPlanToJson(
             {"bridge_ids", node.bridge_ids},
             {"view_family", node.view_family},
         };
+        if (!node.view_select.empty()) {
+            encoded["view_select"] = node.view_select;
+        }
         for (const auto &use :
              node.resource_uses) {
             encoded["resource_uses"].push_back(

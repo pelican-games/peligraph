@@ -22,6 +22,11 @@ TEST_CASE("B-layer directional shadow is visible and copied features are equival
     GoldenHarness::runBLayerShadowEquivalence();
 }
 
+TEST_CASE("LP-Va cascade view_select split matches the shadow feature per layer",
+          "[golden][headless][lpva][view-select][shadow]") {
+    GoldenHarness::runViewSelectCascadeShadowEquivalence();
+}
+
 TEST_CASE(
     "multiple directional lights cast matching forward and deferred shadows",
     "[golden][headless][shadow][wp242a]") {

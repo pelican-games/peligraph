@@ -50,6 +50,7 @@ struct FrameGraphExecutionNode {
     std::vector<CompiledFrameGraphBarrier> incoming_barriers;
     std::string view_family{
         mainRenderViewFamilyId};
+    RenderViewSelect view_select;
 };
 
 struct CompiledMaterialRouteBinding {

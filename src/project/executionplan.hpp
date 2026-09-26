@@ -78,6 +78,8 @@ struct FrameExecutionNode {
     std::vector<ExecutionEffect> effects;
     std::vector<std::string> bridge_ids;
     std::string view_family;
+    // LP-Va: empty unless the node runs only on selected family views.
+    RenderViewSelect view_select;
 
     bool operator==(const FrameExecutionNode &) const = default;
 };

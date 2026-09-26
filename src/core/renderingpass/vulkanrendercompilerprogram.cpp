@@ -10,6 +10,7 @@
 #include "subgraphreplacementregistry.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../shader/raygrouplayout.hpp"
+#include "../renderer/viewfamilyproviderregistry.hpp"
 #include "../../project/renderconfigsection.hpp"
 
 #include <algorithm>
@@ -748,6 +749,12 @@ compileDefaultVulkanVariant(
     applyResolvedTaggedSubgraphSelections(
         graph_definitions,
         logical.subgraphs);
+    // LP-Va: every view_select names an axis the family's provider declares,
+    // with a value inside its compile-time length. Before compute tasks are
+    // namespaced so the refusal names the authored pass or task.
+    validateRenderViewSelects(
+        graph_definitions,
+        logical.compiled_pipeline);
     if (input.ray_tracing_project &&
         input.ray_tracing_project->layout.usesRayTables()) {
         std::vector<std::string> graph_names;

@@ -59,6 +59,7 @@
 #include "../src/core/vkcore/deletionqueue.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "renderer_testaccess.hpp"
+#include "../src/core/renderer/viewfamilyproviderregistry.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/vkcore/rendertiming.hpp"
 #include "../src/core/vkcore/util.hpp"
@@ -3568,6 +3569,39 @@ bool multiLightShadowDeferred(
            mode == "shadow_multi_deferred_on";
 }
 
+// LP-Va acceptance 2: the cascaded B-layer shadow scene (cascade_count 3)
+// with one or two directional lights, either through the engine feature
+// ("_feature") or through a project copy whose shadow_depth pass is split
+// into one pass per cascade with view_select ("_split").
+bool isViewSelectShadowGoldenMode(std::string_view mode) {
+    return mode == "shadow_view_select_l1_feature" ||
+           mode == "shadow_view_select_l1_split" ||
+           mode == "shadow_view_select_l2_feature" ||
+           mode == "shadow_view_select_l2_split";
+}
+
+bool viewSelectShadowSplit(std::string_view mode) {
+    return isViewSelectShadowGoldenMode(mode) &&
+           mode.ends_with("_split");
+}
+
+std::uint32_t viewSelectShadowLights(std::string_view mode) {
+    return mode.starts_with("shadow_view_select_l2") ? 2u : 1u;
+}
+
+// What the view_select shadow modes observe after the frame; filled by
+// renderBLayerShadowFrame and read by the equivalence test.
+struct ViewSelectShadowObservation {
+    std::vector<std::vector<std::uint8_t>> layer_depth;
+    std::vector<std::size_t> visible_draws;
+    // (pass name, view index) in execution order.
+    std::vector<std::pair<std::string, std::uint32_t>> invocations;
+};
+ViewSelectShadowObservation &viewSelectShadowObservation() {
+    static ViewSelectShadowObservation value;
+    return value;
+}
+
 bool isPunctualShadowGoldenMode(std::string_view mode) {
     return mode.starts_with("shadow_punctual_filter_") ||
            mode.starts_with("shadow_punctual_face") ||
@@ -3667,6 +3701,73 @@ void writePunctualShadowProject(const std::filesystem::path &root,
 
 void writeBLayerShadowProject(const std::filesystem::path &root,
                               std::string_view mode) {
+    if (isViewSelectShadowGoldenMode(mode)) {
+        writeBLayerShadowProject(root, "shadow_b_layer_cascaded");
+        if (viewSelectShadowLights(mode) == 2) {
+            auto scene = nlohmann::json::parse(
+                readTextFile(root / "scene.json"));
+            scene["scenes"]["default_scene"]["objects"].push_back({
+                {"name", "Fill"},
+                {"components",
+                 nlohmann::json::array({
+                     {
+                         {"name", "light"},
+                         {"type", "directional"},
+                         {"direction",
+                          nlohmann::json::array(
+                              {-0.55, -1.0, 0.45})},
+                         {"intensity", 5.0},
+                         {"color",
+                          nlohmann::json::array(
+                              {0.0, 0.0, 1.0})},
+                     },
+                 })},
+            });
+            writeTextFile(root / "scene.json", scene.dump(2));
+        }
+        if (viewSelectShadowSplit(mode)) {
+            // One shadow_depth pass per cascade. The last keeps the
+            // feature's pass name so surface_resources.producer still
+            // names a writer of shadow_map.
+            auto feature = nlohmann::json::parse(
+                engineResourceOrThrow(
+                    "features/shadow_directional.json"));
+            const auto base =
+                feature.at("passes").at(0).at("pass");
+            auto passes = nlohmann::json::array();
+            std::string previous;
+            for (std::uint32_t cascade = 0; cascade < 3; ++cascade) {
+                auto pass = base;
+                if (cascade + 1 < 3) {
+                    pass["name"] = "shadow_depth_cascade" +
+                                   std::to_string(cascade);
+                }
+                pass["view_select"] = {{"cascade", cascade}};
+                passes.push_back({
+                    {"insert", previous.empty()
+                                   ? std::string{"begin"}
+                                   : "after:" + previous},
+                    {"pass", pass},
+                });
+                previous = pass.at("name").get<std::string>();
+            }
+            feature["passes"] = std::move(passes);
+            writeTextFile(
+                root / "features" / "shadow_directional.json",
+                feature.dump(2));
+            auto main = readTextFile(root / "passes" / "main.json");
+            const std::string engine_ref =
+                "engine://features/shadow_directional.json";
+            const auto found = main.find(engine_ref);
+            REQUIRE(found != std::string::npos);
+            REQUIRE(main.find(engine_ref, found + 1) ==
+                    std::string::npos);
+            main.replace(found, engine_ref.size(),
+                         "project://features/shadow_directional.json");
+            writeTextFile(root / "passes" / "main.json", main);
+        }
+        return;
+    }
     writeShadowProject(root, false);
 
     const bool multi_light =
@@ -4994,7 +5095,8 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
         (!multi_light ||
          multiLightShadowEnabled(mode));
     const auto expected_provider =
-        mode == "shadow_b_layer_project"
+        mode == "shadow_b_layer_project" ||
+                viewSelectShadowSplit(mode)
             ? std::string{
                   "project://features/shadow_directional.json"}
             : std::string{
@@ -5726,6 +5828,44 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
             }
             INFO("cascade layer " << layer);
             REQUIRE(has_written_depth);
+        }
+    }
+    if (isViewSelectShadowGoldenMode(mode)) {
+        auto &observed = viewSelectShadowObservation();
+        observed = {};
+        const auto layers = 3 * viewSelectShadowLights(mode);
+        const auto shadow =
+            GET_MODULE(RenderTargetContainer)
+                .getRenderTargetIdByName("shadow_map");
+        REQUIRE(GET_MODULE(RenderTargetContainer)
+                    .getMetadata(shadow)
+                    .array_layers == layers);
+        const auto &instances =
+            GET_MODULE(PolygonInstanceContainer);
+        REQUIRE(PolygonInstanceTestAccess::
+                    directionalShadowDrawViewCount(instances) ==
+                layers);
+        for (std::uint32_t layer = 0; layer < layers; ++layer) {
+            observed.layer_depth.push_back(
+                readDepthTargetBytes(shadow, layer));
+            observed.visible_draws.push_back(
+                PolygonInstanceTestAccess::
+                    directionalShadowVisibleDrawCount(
+                        instances, layer));
+        }
+        for (const auto &node :
+             RendererTestAccess::lastExecutionTrace(
+                 GET_MODULE(Renderer))
+                 .at("nodes")) {
+            if (node.value("view_family", std::string{}) !=
+                directionalShadowRenderViewFamilyId) {
+                continue;
+            }
+            REQUIRE(node.at("view_execution") == "sequential");
+            REQUIRE(node.at("logical_view_count") == layers);
+            observed.invocations.emplace_back(
+                node.at("name").get<std::string>(),
+                node.at("view_index").get<std::uint32_t>());
         }
     }
     if (punctual && mode.ends_with("_on")) {
@@ -6544,6 +6684,7 @@ bool isBLayerShadowGoldenMode(
            mode == "shadow_b_layer_engine" ||
            mode == "shadow_b_layer_project" ||
            mode == "shadow_b_layer_cascaded" ||
+           isViewSelectShadowGoldenMode(mode) ||
            isPunctualShadowGoldenMode(mode) ||
            isMultiLightShadowGoldenMode(mode);
 }
@@ -8719,6 +8860,9 @@ enum class Wp338SsaoScenario {
     xr_multiview,
     cube,
     planar,
+    // LP-Va: the cube_capture feature with its 8 passes hand-expanded into
+    // 6 face groups (48 passes), each pass restricted by view_select.
+    cube_view_select,
 };
 
 struct Wp338SsaoContract {
@@ -8770,6 +8914,12 @@ Wp338SsaoContract wp338SsaoContract(
             .target = "planar_reflection_ao",
             .layer_count = 2,
             .xr_graph = true,
+        };
+    case Wp338SsaoScenario::cube_view_select:
+        return {
+            .golden_name = "cube_view_select",
+            .target = "cube_capture_ao",
+            .layer_count = 6,
         };
     }
     throw std::runtime_error("unknown WP338 SSAO scenario");
@@ -8855,6 +9005,53 @@ void writeWp338SsaoProject(
     if (scenario == Wp338SsaoScenario::cube) {
         config["features"].push_back({
             {"ref", "engine://features/cube_capture.json"},
+            {"parameters",
+             {
+                 {"resolution", wp338SsaoExtent},
+                 {"position_x", 0.15},
+                 {"position_y", -0.1},
+                 {"position_z", 2.0},
+             }},
+        });
+    }
+    if (scenario == Wp338SsaoScenario::cube_view_select) {
+        // The feature keeps its name, targets, and parameters so the
+        // standard `$capture/cube` provider still resolves the family; only
+        // its passes change. Each of the 8 passes is repeated per face with
+        // `view_select: {face}`, face-major, chained with `after:`.
+        auto feature = nlohmann::json::parse(
+            engineResourceOrThrow("features/cube_capture.json"));
+        auto expanded = nlohmann::json::array();
+        std::string previous;
+        for (std::uint32_t face = 0; face < 6; ++face) {
+            const auto suffix = "_f" + std::to_string(face);
+            for (const auto &entry : feature.at("passes")) {
+                auto pass = entry.at("pass");
+                pass["name"] =
+                    pass.at("name").get<std::string>() + suffix;
+                pass["view_select"] = {{"face", face}};
+                if (pass.contains("snapshot_after")) {
+                    pass["snapshot_after"] =
+                        pass.at("snapshot_after").get<std::string>() +
+                        suffix;
+                }
+                expanded.push_back({
+                    {"insert", previous.empty()
+                                   ? std::string{"begin"}
+                                   : "after:" + previous},
+                    {"pass", pass},
+                });
+                previous = pass.at("name").get<std::string>();
+            }
+        }
+        REQUIRE(expanded.size() == 48);
+        feature["passes"] = std::move(expanded);
+        writeTextFile(
+            root / "features" / "cube_capture_view_select.json",
+            feature.dump(2));
+        config["features"].push_back({
+            {"ref",
+             "project://features/cube_capture_view_select.json"},
             {"parameters",
              {
                  {"resolution", wp338SsaoExtent},
@@ -9065,7 +9262,8 @@ RenderViewFamily makeWp338StereoFamily() {
 }
 
 RenderTargetReadback captureWp338Ssao(
-    Wp338SsaoScenario scenario) {
+    Wp338SsaoScenario scenario,
+    nlohmann::json *execution_trace = nullptr) {
     const auto contract = wp338SsaoContract(scenario);
     const auto root = makeTempProjectDir(
         "wp338_ssao_" +
@@ -9100,6 +9298,10 @@ RenderTargetReadback captureWp338Ssao(
                 renderer.selectGraphVariant(
                     RenderGraphVariant::xr);
             }
+            if (execution_trace != nullptr) {
+                RendererTestAccess::setExecutionTracing(
+                    renderer, true);
+            }
             placeWp338SsaoScene();
             time.advance();
 
@@ -9121,6 +9323,10 @@ RenderTargetReadback captureWp338Ssao(
                 renderer.render();
             }
             vkcore.waitIdle();
+            if (execution_trace != nullptr) {
+                *execution_trace =
+                    RendererTestAccess::lastExecutionTrace(renderer);
+            }
             readback = RendererTestAccess::readRenderTarget(renderer,
                 contract.target,
                 ImageSubresourceRange{
@@ -9226,6 +9432,240 @@ void requireWp338SsaoGolden(
     }
     const auto expected = readBinaryFile(golden);
     REQUIRE(readback.bytes == expected);
+}
+
+// LP-Va acceptance 1. Face f of the hand-expanded cube (48 passes with
+// view_select) must produce the same SSAO bytes as the feature, and the
+// invocations recorded for face f must be the same pass sequence. The order
+// across faces differs by design: the feature is pass-major (each scope runs
+// six views), the expansion face-major.
+void requireCubeViewSelectEquivalence() {
+    nlohmann::json feature_trace;
+    nlohmann::json expanded_trace;
+    const auto feature = captureWp338Ssao(
+        Wp338SsaoScenario::cube, &feature_trace);
+    const auto expanded = captureWp338Ssao(
+        Wp338SsaoScenario::cube_view_select, &expanded_trace);
+    const auto layer_bytes =
+        static_cast<std::size_t>(wp338SsaoExtent) *
+        wp338SsaoExtent;
+    REQUIRE(feature.bytes.size() == layer_bytes * 6);
+    REQUIRE(expanded.bytes.size() == feature.bytes.size());
+    // The feature run is still the pre-migration image.
+    REQUIRE(feature.bytes ==
+            readBinaryFile(wp338SsaoGoldenPath("cube")));
+    for (std::size_t face = 0; face < 6; ++face) {
+        INFO("face " << face);
+        REQUIRE(std::equal(
+            expanded.bytes.begin() + face * layer_bytes,
+            expanded.bytes.begin() + (face + 1) * layer_bytes,
+            feature.bytes.begin() + face * layer_bytes));
+    }
+
+    const auto capture_nodes =
+        [](const nlohmann::json &trace) {
+            std::vector<nlohmann::json> result;
+            for (const auto &node : trace.at("nodes")) {
+                if (node.value("view_family", std::string{}) ==
+                    "$capture/cube") {
+                    result.push_back(node);
+                }
+            }
+            return result;
+        };
+    const auto feature_nodes = capture_nodes(feature_trace);
+    const auto expanded_nodes = capture_nodes(expanded_trace);
+    REQUIRE(feature_nodes.size() == 48);
+    REQUIRE(expanded_nodes.size() == 48);
+    std::array<std::vector<std::string>, 6> feature_by_face;
+    std::array<std::vector<std::string>, 6> expanded_by_face;
+    for (const auto &node : feature_nodes) {
+        REQUIRE(node.at("view_execution") == "sequential");
+        REQUIRE(node.at("logical_view_count") == 6);
+        feature_by_face.at(node.at("view_index").get<std::size_t>())
+            .push_back(node.at("name").get<std::string>());
+    }
+    for (std::size_t index = 0; index < expanded_nodes.size();
+         ++index) {
+        const auto &node = expanded_nodes[index];
+        const auto face = node.at("view_index").get<std::size_t>();
+        const auto name = node.at("name").get<std::string>();
+        const auto suffix = "_f" + std::to_string(face);
+        INFO(name);
+        // The selection is honored: each pass runs once, on its own face,
+        // as a sequential family invocation over all six layers.
+        REQUIRE(name.ends_with(suffix));
+        REQUIRE(node.at("view_execution") == "sequential");
+        REQUIRE(node.at("logical_view_count") == 6);
+        // Face-major: the first 8 invocations are face 0, and so on.
+        REQUIRE(face == index / 8);
+        expanded_by_face.at(face).push_back(
+            name.substr(0, name.size() - suffix.size()));
+    }
+    for (std::size_t face = 0; face < 6; ++face) {
+        INFO("face " << face);
+        REQUIRE(feature_by_face[face].size() == 8);
+        REQUIRE(expanded_by_face[face] == feature_by_face[face]);
+    }
+}
+
+// LP-Va acceptance 4. A family axis can declare a compile-time length that
+// the frame then does not fill (here a probe provider declares `slot` of
+// length 2 but builds one view), so a view_select can match no view of the
+// frame. That node must behave like an inactive one: nothing recorded, but
+// completed, so the barrier into the main pass that reads its target passes.
+// The engine providers cannot produce this today (every compile-time value is
+// inside the family), which is why the probe provider is registered here.
+constexpr std::string_view lpvaProbeFamilyId = "$lpva/probe";
+
+void registerLpvaProbeProvider() {
+    auto &registry = renderViewFamilyProviderRegistry();
+    if (registry.find(lpvaProbeFamilyId) != nullptr) return;
+    registry.registerProvider(RenderViewFamilyProviderDefinition{
+        .name = "test.lpva_probe",
+        .family_id = std::string{lpvaProbeFamilyId},
+        .axes = {{.name = "slot",
+                  .compile_time_length =
+                      [](const RenderViewAxisLengthContext &) {
+                          return 2u;
+                      }}},
+        .build =
+            [](const RenderViewFamilies &,
+               const RenderViewFamilyProviderContext &) {
+                auto projection = glm::perspective(
+                    glm::radians(60.0f), 1.0f, 0.1f, 10.0f);
+                projection[1][1] *= -1.0f;
+                return RenderViewFamily{
+                    .family_id = std::string{lpvaProbeFamilyId},
+                    .views = {RenderViewParameters{
+                        .view = glm::lookAt(
+                            glm::vec3{0.0f, 0.0f, 2.0f},
+                            glm::vec3{0.0f},
+                            glm::vec3{0.0f, 1.0f, 0.0f}),
+                        .projection = projection,
+                        .camera_position = {0.0f, 0.0f, 2.0f},
+                        .view_id = "$lpva/probe/0",
+                        .axes = {{"slot", 0}},
+                    }},
+                };
+            },
+    });
+}
+
+nlohmann::json captureLpvaProbeTrace(std::uint32_t slot) {
+    registerLpvaProbeProvider();
+    const auto root = makeTempProjectDir(
+        "lpva_zero_match_" + std::to_string(slot));
+    nlohmann::json trace;
+    try {
+        writeTextFile(root / "project.json",
+                      makeStemProjectJson().dump(2));
+        writeTextFile(root / "scene.json", R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(root / "assets.json", R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
+        writeTextFile(root / "ui" / "ui.json", R"json({"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}})json");
+        writeTextFile(root / "shaders" / "solid.vert",
+                      stemFullscreenVertexShader());
+        writeTextFile(root / "shaders" / "solid.frag",
+                      solidFullscreenFragmentShader());
+        writeTextFile(root / "shaders" / "copy_input.frag",
+                      copyInputFragmentShader());
+        const auto rendering = nlohmann::json{
+            {"render_targets",
+             nlohmann::json::array({{
+                 {"name", "probe_color"},
+                 {"extent_scale", 1.0},
+                 {"format", "R8G8B8A8_UNORM"},
+                 {"usage", nlohmann::json::array(
+                               {"COLOR_ATTACHMENT", "SAMPLED"})},
+             }})},
+            {"rendering_passes",
+             nlohmann::json::array({{
+                 {"name", "main"},
+                 {"passes",
+                  nlohmann::json::array({
+                      {
+                          {"name", "probe_selected"},
+                          {"type", "fullscreen"},
+                          {"view_family", lpvaProbeFamilyId},
+                          {"view_select", {{"slot", slot}}},
+                          {"output", {{"color", "probe_color"},
+                                      {"depth", nullptr}}},
+                          {"shader", {{"vertex", "shaders/solid"},
+                                      {"fragment", "shaders/solid"}}},
+                      },
+                      {
+                          {"name", "present"},
+                          {"type", "fullscreen"},
+                          {"input", nlohmann::json::array(
+                                        {"probe_color"})},
+                          {"output", {{"color", "swapchain"},
+                                      {"depth", nullptr}}},
+                          {"shader",
+                           {{"vertex", "shaders/solid"},
+                            {"fragment", "shaders/copy_input"}}},
+                      },
+                  })},
+             }})},
+        };
+        writeTextFile(root / "passes" / "main.json",
+                      Pelican::TestSupport::renderGraphRoot(rendering)
+                          .dump(2));
+        {
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(root, false);
+            GET_MODULE(ProjectSource).setProjectData(
+                readTextFile(root / "project.json"));
+            auto &launch = GET_MODULE(EngineLaunchConfig);
+            launch.headless = true;
+            launch.shader_hot_reload = false;
+            launch.headless_extent = vk::Extent2D{16, 16};
+            launch.headless_frames = 1;
+            auto &time = GET_MODULE(EngineTime);
+            time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+            auto &renderer = GET_MODULE(Renderer);
+            RendererTestAccess::setExecutionTracing(renderer, true);
+            time.advance();
+            renderer.render();
+            GET_MODULE(VulkanManageCore).waitIdle();
+            trace = RendererTestAccess::lastExecutionTrace(renderer);
+        }
+        std::filesystem::remove_all(root);
+    } catch (...) {
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    return trace;
+}
+
+void requireViewSelectZeroMatchCompletes() {
+    const auto find_node = [](const nlohmann::json &trace,
+                              std::string_view name) {
+        std::vector<nlohmann::json> result;
+        for (const auto &node : trace.at("nodes")) {
+            if (node.at("name").get<std::string>() == name) result.push_back(node);
+        }
+        return result;
+    };
+    // Control: slot 0 exists, so the pass records once on view 0.
+    const auto matched = captureLpvaProbeTrace(0);
+    const auto matched_probe = find_node(matched, "probe_selected");
+    REQUIRE(matched_probe.size() == 1);
+    CHECK(matched_probe.front().value("recorded", true));
+    CHECK_FALSE(matched_probe.front().contains("no_selected_view"));
+    CHECK(matched_probe.front().at("view_index") == 0);
+    CHECK(matched_probe.front().at("view_execution") == "sequential");
+    REQUIRE(find_node(matched, "present").size() == 1);
+
+    // slot 1 passes the recompile check (length 2) but matches no view of
+    // this frame. Rendering must not throw on present's incoming barrier.
+    const auto unmatched = captureLpvaProbeTrace(1);
+    const auto unmatched_probe = find_node(unmatched, "probe_selected");
+    REQUIRE(unmatched_probe.size() == 1);
+    CHECK(unmatched_probe.front().at("recorded") == false);
+    CHECK(unmatched_probe.front().at("no_selected_view") == true);
+    const auto present = find_node(unmatched, "present");
+    REQUIRE(present.size() == 1);
+    CHECK(present.front().value("recorded", true));
 }
 
 constexpr std::uint32_t wp339RenderExtent = 64;
@@ -10545,6 +10985,27 @@ void GoldenHarness::runSsaoCubeGolden() {
 #endif
 }
 
+void GoldenHarness::runCubeViewSelectEquivalence() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER && \
+    PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    requireCubeViewSelectEquivalence();
+#else
+    SKIP("LP-Va cube view_select equivalence requires the runtime shader compiler and standard render algorithms");
+#endif
+}
+
+void GoldenHarness::runViewSelectZeroMatch() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    requireViewSelectZeroMatchCompletes();
+#else
+    SKIP("LP-Va zero-match view_select requires the runtime shader compiler");
+#endif
+}
+
 void GoldenHarness::runSsaoPlanarGolden() {
     setupLogger();
     requireGoldenVulkanDevice();
@@ -10784,6 +11245,88 @@ void GoldenHarness::runBLayerShadowEquivalence() {
     REQUIRE(changed_bytes > 0);
 #else
     SKIP("B-layer directional-shadow golden requires "
+         "the runtime shader compiler");
+#endif
+}
+
+// LP-Va acceptance 2. Splitting shadow_depth into one view_select pass per
+// cascade must leave every shadow layer, the per-layer culling, and the final
+// image unchanged, for one and for two lights. With two lights the order
+// changes (cascade-major instead of light-major); each layer is still
+// written exactly once.
+void GoldenHarness::runViewSelectCascadeShadowEquivalence() {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const auto golden_root =
+        sourceRoot() / "test/golden/shadow_b_layer_engine";
+    for (const auto lights : {1u, 2u}) {
+        const auto prefix =
+            "shadow_view_select_l" + std::to_string(lights);
+        INFO(lights << " light(s)");
+        const auto feature = renderCase(GoldenCase{
+            prefix + "_feature_runtime", prefix + "_feature",
+            golden_root, goldenWidth, goldenHeight});
+        const auto feature_observed = viewSelectShadowObservation();
+        const auto split = renderCase(GoldenCase{
+            prefix + "_split_runtime", prefix + "_split",
+            golden_root, goldenWidth, goldenHeight});
+        const auto split_observed = viewSelectShadowObservation();
+
+        const auto layers = 3u * lights;
+        REQUIRE(feature_observed.layer_depth.size() == layers);
+        REQUIRE(split_observed.layer_depth.size() == layers);
+        for (std::uint32_t layer = 0; layer < layers; ++layer) {
+            INFO("layer " << layer);
+            REQUIRE(split_observed.layer_depth[layer] ==
+                    feature_observed.layer_depth[layer]);
+            bool written = false;
+            for (std::size_t offset = 0;
+                 offset < feature_observed.layer_depth[layer].size();
+                 offset += sizeof(float)) {
+                float depth = 1.0f;
+                std::memcpy(&depth,
+                            feature_observed.layer_depth[layer].data() +
+                                offset,
+                            sizeof(depth));
+                written = written || depth < 0.9999f;
+            }
+            REQUIRE(written);
+        }
+        REQUIRE(split_observed.visible_draws ==
+                feature_observed.visible_draws);
+        REQUIRE(split.image.pixels == feature.image.pixels);
+
+        // The feature runs one shadow_depth over every view; the split runs
+        // each cascade pass only on its own cascade, once per light.
+        REQUIRE(feature_observed.invocations.size() == layers);
+        REQUIRE(split_observed.invocations.size() == layers);
+        std::vector<std::uint32_t> seen;
+        for (std::size_t index = 0;
+             index < split_observed.invocations.size(); ++index) {
+            const auto &[name, view] =
+                split_observed.invocations[index];
+            const auto cascade = view % 3;
+            INFO(name << " view " << view);
+            REQUIRE(name == (cascade == 2
+                                 ? std::string{"shadow_depth"}
+                                 : "shadow_depth_cascade" +
+                                       std::to_string(cascade)));
+            // Cascade-major: all lights of cascade 0 first.
+            REQUIRE(cascade == index / lights);
+            REQUIRE(feature_observed.invocations[index].first ==
+                    "shadow_depth");
+            REQUIRE(feature_observed.invocations[index].second ==
+                    index);
+            seen.push_back(view);
+        }
+        std::sort(seen.begin(), seen.end());
+        for (std::uint32_t view = 0; view < layers; ++view) {
+            REQUIRE(seen[view] == view);
+        }
+    }
+#else
+    SKIP("LP-Va cascade view_select equivalence requires "
          "the runtime shader compiler");
 #endif
 }

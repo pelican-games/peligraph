@@ -979,4 +979,112 @@ TEST_CASE(
     REQUIRE_FALSE(history.views.contains("right"));
 }
 
+
+// LP-Va: provider views carry named axis coordinates in index order, and the
+// recompile stage can read each axis length (LP-Vb's view_axis count).
+TEST_CASE(
+    "view family providers declare axes and give each view its coordinates",
+    "[view-family][view-select][lpva]") {
+    const auto &providers = renderViewFamilyProviderRegistry();
+    CompiledSurfaceResourceContract shadow_contract;
+    shadow_contract.contract.name =
+        std::string{directionalShadowInputContractName};
+    shadow_contract.provider_feature = "shadow_directional";
+    const std::vector<CompiledSurfaceResourceContract> contracts{
+        shadow_contract};
+    const std::vector<CompiledRenderFeatureInstance> features{
+        CompiledRenderFeatureInstance{
+            .feature = "shadow_directional",
+            .reference = "engine://features/shadow_directional.json",
+            .parameters = {{"cascade_count", std::uint64_t{3}}},
+        }};
+    const RenderViewAxisLengthContext with_shadow{
+        .feature_instances = features,
+        .surface_resource_contracts = contracts,
+    };
+    const RenderViewAxisLengthContext empty{};
+
+    CHECK(renderViewAxisLength(
+              "$shadow/directional", "cascade", with_shadow,
+              providers) ==
+          RenderViewAxisLength{
+              RenderViewAxisLengthKind::compile_time, 3});
+    // Without the shadow contract the runtime provider uses one cascade.
+    CHECK(renderViewAxisLength(
+              "$shadow/directional", "cascade", empty,
+              providers) ==
+          RenderViewAxisLength{
+              RenderViewAxisLengthKind::compile_time, 1});
+    CHECK(renderViewAxisLength(
+              "$shadow/directional", "light", with_shadow,
+              providers)
+              .kind == RenderViewAxisLengthKind::runtime);
+    CHECK(renderViewAxisLength(
+              "$shadow/directional", "face", with_shadow,
+              providers)
+              .kind == RenderViewAxisLengthKind::unknown);
+    // $main and families without a provider have no axes.
+    CHECK(renderViewAxisLength(
+              "$main", "face", empty, providers)
+              .kind == RenderViewAxisLengthKind::unknown);
+    CHECK(renderViewAxisLength(
+              "$authored/custom", "face", empty, providers)
+              .kind == RenderViewAxisLengthKind::unknown);
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    CHECK(renderViewAxisLength(
+              "$capture/cube", "face", empty, providers) ==
+          RenderViewAxisLength{
+              RenderViewAxisLengthKind::compile_time, 6});
+    CHECK(renderViewAxisLength(
+              "$shadow/point", "face", empty, providers) ==
+          RenderViewAxisLength{
+              RenderViewAxisLengthKind::compile_time, 6});
+    CHECK(renderViewAxisLength(
+              "$shadow/point", "light", empty, providers)
+              .kind == RenderViewAxisLengthKind::runtime);
+    CHECK(renderViewAxisLength(
+              "$shadow/spot", "light", empty, providers)
+              .kind == RenderViewAxisLengthKind::runtime);
+    CHECK(renderViewAxisLength(
+              "$shadow/spot", "face", empty, providers)
+              .kind == RenderViewAxisLengthKind::unknown);
+    CHECK(renderViewAxisLength(
+              "$reflection/planar", "face", empty, providers)
+              .kind == RenderViewAxisLengthKind::unknown);
+
+    const auto cube = buildCubeCaptureViewFamily(
+        {.position = {0, 0, 0},
+         .near_distance = 0.1f,
+         .far_distance = 10.0f});
+    REQUIRE(cube.views.size() == 6);
+    for (std::uint32_t face = 0; face < 6; ++face) {
+        CHECK(cube.views[face].axes ==
+              RenderViewAxisCoordinates{{"face", face}});
+    }
+    const std::array points{
+        PointLight{.position = {2, 3, 4}},
+        PointLight{.position = {-3, 2, 1}}};
+    const auto point =
+        buildPointShadowViewFamily(points, 0.25f, 20.0f);
+    REQUIRE(point.views.size() == 12);
+    for (std::uint32_t index = 0; index < 12; ++index) {
+        CHECK(point.views[index].axes ==
+              RenderViewAxisCoordinates{
+                  {"light", index / 6}, {"face", index % 6}});
+    }
+    const std::array spots{
+        SpotLight{.position = {0, 3, 0},
+                  .direction = {0, -1, 0},
+                  .outerConeAngle = 30},
+        SpotLight{.position = {1, 3, 0},
+                  .direction = {0, -1, 0},
+                  .outerConeAngle = 30}};
+    const auto spot =
+        buildSpotShadowViewFamily(spots, 0.25f, 20.0f);
+    REQUIRE(spot.views.size() == 2);
+    CHECK(spot.views[1].axes ==
+          RenderViewAxisCoordinates{{"light", 1}});
+#endif
+}
+
 } // namespace Pelican

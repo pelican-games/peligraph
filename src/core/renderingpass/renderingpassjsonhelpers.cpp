@@ -426,6 +426,52 @@ std::string parseRenderViewFamilyId(
     return family_id;
 }
 
+RenderViewSelect parseRenderViewSelect(
+    const nlohmann::json &json,
+    const std::string &context) {
+    RenderViewSelect result;
+    const auto found = json.find("view_select");
+    if (found == json.end()) {
+        return result;
+    }
+    if (!found->is_object() || found->empty()) {
+        throw std::runtime_error(
+            context +
+            " view_select must be a non-empty object of axis names "
+            "to non-negative integers");
+    }
+    for (auto entry = found->begin(); entry != found->end();
+         ++entry) {
+        if (entry.key().empty()) {
+            throw std::runtime_error(
+                context +
+                " view_select has an empty axis name");
+        }
+        const auto &value = entry.value();
+        if (!value.is_number_integer() ||
+            (value.is_number_unsigned()
+                 ? value.get<std::uint64_t>() >
+                       std::numeric_limits<std::uint32_t>::max()
+                 : value.get<std::int64_t>() < 0 ||
+                       value.get<std::int64_t>() >
+                           static_cast<std::int64_t>(
+                               std::numeric_limits<
+                                   std::uint32_t>::max()))) {
+            throw std::runtime_error(
+                context + " view_select axis '" + entry.key() +
+                "' must be a non-negative 32-bit integer");
+        }
+        result.emplace(
+            entry.key(),
+            static_cast<std::uint32_t>(
+                value.is_number_unsigned()
+                    ? value.get<std::uint64_t>()
+                    : static_cast<std::uint64_t>(
+                          value.get<std::int64_t>())));
+    }
+    return result;
+}
+
 uint32_t parseUint32Field(const nlohmann::json &json, const std::string &field_name,
                           const std::string &context) {
     if (!json.contains(field_name) || !json.at(field_name).is_number_integer()) {

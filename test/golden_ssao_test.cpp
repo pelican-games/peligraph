@@ -29,6 +29,18 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "LP-Va hand-expanded cube with view_select matches the cube feature per face",
+    "[golden][headless][lpva][view-select][cube]") {
+    GoldenHarness::runCubeViewSelectEquivalence();
+}
+
+TEST_CASE(
+    "LP-Va view_select that matches no view completes like an inactive node",
+    "[golden][headless][lpva][view-select][barrier]") {
+    GoldenHarness::runViewSelectZeroMatch();
+}
+
+TEST_CASE(
     "WP338 planar SSAO output is byte-identical in both views",
     "[golden][headless][wp338][ssao][planar]") {
     GoldenHarness::runSsaoPlanarGolden();

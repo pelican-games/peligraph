@@ -92,6 +92,14 @@ void registerPunctualShadowViewProviders(RenderViewFamilyProviderRegistry &regis
         registry.registerProvider({
             .name = family.point ? "standard.point_shadow_v1" : "standard.spot_shadow_v1",
             .family_id = std::string{family.family},
+            // Point: index = light * 6 + face. Spot: index = light.
+            .axes = family.point
+                ? std::vector<RenderViewAxisDefinition>{
+                      {.name = std::string{renderViewAxisLight}},
+                      {.name = std::string{renderViewAxisFace},
+                       .compile_time_length = [](const RenderViewAxisLengthContext &) { return 6u; }}}
+                : std::vector<RenderViewAxisDefinition>{
+                      {.name = std::string{renderViewAxisLight}}},
             .build = [family](const RenderViewFamilies &, const RenderViewFamilyProviderContext &context) {
                 return buildFamily(context, family);
             },

@@ -262,6 +262,10 @@ struct VulkanPhysicalScopePlan {
     std::uint32_t view_count = 1;
     std::uint32_t execution_count = 1;
     std::uint32_t view_mask = 0;
+    // LP-Va: the family views every node of this scope is restricted to.
+    // A scope never mixes selections, so the scheduler expands a
+    // secondary-family scope only for the matching view indices.
+    RenderViewSelect view_select;
 
     bool operator==(
         const VulkanPhysicalScopePlan &) const = default;

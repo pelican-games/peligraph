@@ -679,6 +679,11 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
             pass_json,
             "Frame graph pass '" +
                 node.name + "'");
+    node.view_select =
+        parseRenderViewSelect(
+            pass_json,
+            "Frame graph pass '" +
+                node.name + "'");
     node.after = parseOptionalStringList(pass_json, "after", "Frame graph pass");
     node.before = parseOptionalStringList(pass_json, "before", "Frame graph pass");
     node.region_tags =
@@ -859,6 +864,11 @@ FrameGraphNodeDefinition parseComputeNodeFromJson(const nlohmann::json &task_jso
     node.declaration_index = declaration_index;
     node.view_family =
         parseRenderViewFamilyId(
+            task_json,
+            "Frame graph compute task '" +
+                node.name + "'");
+    node.view_select =
+        parseRenderViewSelect(
             task_json,
             "Frame graph compute task '" +
                 node.name + "'");
@@ -1193,6 +1203,7 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     node.declaration_index = declaration_index;
     node.view_family =
         pass.view_family;
+    node.view_select = pass.view_select;
     if (pass.isGenericRaster()) {
         node.semantic_dialect =
             "pelican.logical.raster@1";
@@ -1739,6 +1750,7 @@ FramePlan planFrameGraph(const FrameGraphDefinition &definition) {
             node_def.material_filter,
             node_def.material_variant,
             node_def.view_family,
+            node_def.view_select,
         });
     }
 
@@ -1864,6 +1876,12 @@ nlohmann::json framePlanToJson(
             mainRenderViewFamilyId) {
             node_json["view_family"] =
                 node.view_family;
+        }
+        // LP-Va: the view axes this node is restricted to (Studio shows
+        // them). Absent when the node runs every view of its family.
+        if (!node.view_select.empty()) {
+            node_json["view_select"] =
+                node.view_select;
         }
         nodes_json.push_back(std::move(node_json));
     }

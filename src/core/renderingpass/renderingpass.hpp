@@ -479,6 +479,9 @@ struct PassDefinition {
     std::vector<std::string> region_tags;
     std::string view_family{
         mainRenderViewFamilyId};
+    // LP-Va: run only on the views of view_family whose axis coordinates
+    // match. Empty runs every view.
+    RenderViewSelect view_select;
 
     PassInfo pass_info = MaterialPassInfo{};
     RenderPassType pass_type = RenderPassType::material;
@@ -791,6 +794,7 @@ struct ComputeTaskDefinition {
         ComputeTaskSchedule::per_frame;
     std::string view_family{
         mainRenderViewFamilyId};
+    RenderViewSelect view_select;
 };
 
 struct CompiledComputeTask {

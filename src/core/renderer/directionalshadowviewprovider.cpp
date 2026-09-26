@@ -205,6 +205,12 @@ RenderViewFamily buildDirectionalShadowFamily(
                 cascades.views[cascade].view_id =
                     directionalShadowViewId(
                         light, cascade);
+                cascades.views[cascade].axes = {
+                    {std::string{renderViewAxisLight},
+                     light},
+                    {std::string{renderViewAxisCascade},
+                     cascade},
+                };
                 result.views.push_back(
                     std::move(
                         cascades.views[cascade]));
@@ -227,6 +233,13 @@ RenderViewFamily buildDirectionalShadowFamily(
                 .view_id =
                     directionalShadowViewId(
                         light, 0),
+                .axes =
+                    {
+                        {std::string{renderViewAxisLight},
+                         light},
+                        {std::string{renderViewAxisCascade},
+                         0u},
+                    },
             });
     }
     return result;
@@ -340,6 +353,38 @@ void validateDirectionalShadowFamily(
     }
 }
 
+// The cascade count the runtime contract reads, taken from the same
+// surface-resource contract and feature parameter before any frame exists.
+std::uint32_t directionalShadowCompileTimeCascadeCount(
+    const RenderViewAxisLengthContext &context) {
+    const auto contract = std::find_if(
+        context.surface_resource_contracts.begin(),
+        context.surface_resource_contracts.end(),
+        [](const CompiledSurfaceResourceContract
+               &candidate) {
+            return candidate.contract.name ==
+                   directionalShadowInputContractName;
+        });
+    if (contract ==
+        context.surface_resource_contracts.end()) {
+        return 1;
+    }
+    const auto feature = std::find_if(
+        context.feature_instances.begin(),
+        context.feature_instances.end(),
+        [&](const CompiledRenderFeatureInstance
+                &candidate) {
+            return candidate.feature ==
+                   contract->provider_feature;
+        });
+    if (feature ==
+        context.feature_instances.end()) {
+        return 1;
+    }
+    return renderFeatureUnsignedParameter(
+        *feature, "cascade_count", 1);
+}
+
 } // namespace
 
 bool prepareDirectionalShadowRenderTarget(
@@ -376,6 +421,16 @@ void registerDirectionalShadowViewFamilyProvider(
             .family_id =
                 std::string{
                     directionalShadowRenderViewFamilyId},
+            // index = light * cascade_count + cascade.
+            .axes =
+                {
+                    {.name = std::string{
+                         renderViewAxisLight}},
+                    {.name = std::string{
+                         renderViewAxisCascade},
+                     .compile_time_length =
+                         directionalShadowCompileTimeCascadeCount},
+                },
             .build =
                 buildDirectionalShadowFamily,
             .validate =

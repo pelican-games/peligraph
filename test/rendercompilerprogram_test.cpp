@@ -1077,5 +1077,191 @@ TEST_CASE(
     }
 }
 
+
+// LP-Va: view_select travels from the rendering section through the
+// production compiler into the frame plan, the execution plan, and the
+// physical scope, and is checked by name at recompile time.
+nlohmann::json lpvaViewSelectConfig(nlohmann::json first_select,
+                                    std::string family = "$capture/cube") {
+    const auto face_pass = [&](std::string name, nlohmann::json select) {
+        return nlohmann::json{
+            {"name", std::move(name)},
+            {"type", "fullscreen"},
+            {"view_family", family},
+            {"view_select", std::move(select)},
+            {"output", {{"color", nlohmann::json::array({"cube_ao"})},
+                        {"depth", nullptr}}},
+            {"shader", {{"vertex", "engine://fullscreen"},
+                        {"fragment", "engine://fullscreen"}}},
+        };
+    };
+    return Pelican::TestSupport::renderGraphRoot(nlohmann::json{
+        {"render_targets",
+         nlohmann::json::array({
+             {{"name", "cube_ao"},
+              {"extent_scale", 1.0},
+              {"width", 16},
+              {"height", 16},
+              {"layers", 6},
+              {"format", "R8_UNORM"},
+              {"usage", nlohmann::json::array(
+                            {"COLOR_ATTACHMENT", "SAMPLED"})}},
+         })},
+        {"rendering_passes",
+         nlohmann::json::array({
+             {{"name", "main"},
+              {"passes",
+               nlohmann::json::array({
+                   face_pass("face_first", std::move(first_select)),
+                   face_pass("face_three", {{"face", 3}}),
+                   {{"name", "present"},
+                    {"type", "fullscreen"},
+                    {"output", {{"color", "swapchain"},
+                                {"depth", nullptr}}},
+                    {"shader", {{"vertex", "engine://fullscreen"},
+                                {"fragment", "engine://fullscreen"}}}},
+               })}},
+         })},
+    });
+}
+
+CodedRefusal lpvaCompileRefusal(const nlohmann::json &config) {
+    ProgramInputFixture fixture;
+    fixture.config = config;
+    fixture.backend_context = VulkanRenderCompilerBackendContext{
+        vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
+        VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}};
+    try {
+        (void)runRenderCompilerProgram(
+            defaultVulkanRenderCompilerProgram(), fixture.input());
+    } catch (const std::exception &error) {
+        INFO(error.what());
+        auto refusal = splitCodedRefusalMessage(error.what());
+        REQUIRE(refusal);
+        return *refusal;
+    }
+    FAIL("the compiler accepted an invalid view_select");
+    return {};
+}
+
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+TEST_CASE("LP-Va view_select reaches the frame plan and the physical scope",
+          "[rendercompiler][view-select][lpva]") {
+    ProgramInputFixture fixture;
+    fixture.config = lpvaViewSelectConfig({{"face", 2}});
+    fixture.backend_context = VulkanRenderCompilerBackendContext{
+        vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
+        VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}};
+    const auto output = runRenderCompilerProgram(
+        defaultVulkanRenderCompilerProgram(), fixture.input());
+    const auto &variant = output.variants.front();
+    const auto &plan = variant.frame_plans.at("main");
+    const auto node = std::find_if(
+        plan.nodes.begin(), plan.nodes.end(),
+        [](const auto &entry) { return entry.name == "face_first"; });
+    REQUIRE(node != plan.nodes.end());
+    CHECK(node->view_select == RenderViewSelect{{"face", 2}});
+    const auto plan_json = framePlanToJson(plan, nullptr);
+    bool reported = false;
+    for (const auto &entry : plan_json.at("nodes")) {
+        if (entry.at("name") == "face_first") {
+            CHECK(entry.at("view_select") == nlohmann::json{{"face", 2}});
+            reported = true;
+        }
+        if (entry.at("name") == "present") {
+            CHECK_FALSE(entry.contains("view_select"));
+        }
+    }
+    CHECK(reported);
+    const auto &execution = variant.execution_plans.at("main");
+    const auto executed = std::find_if(
+        execution.nodes.begin(), execution.nodes.end(),
+        [](const auto &entry) { return entry.name == "face_first"; });
+    REQUIRE(executed != execution.nodes.end());
+    CHECK(executed->view_select == RenderViewSelect{{"face", 2}});
+
+    const auto &physical =
+        requireVulkanRenderCompilerPhysicalPackage(
+            *variant.physical_package);
+    const auto &target_plan = *physical.target_plans.at("main");
+    std::size_t selected_scopes = 0;
+    for (const auto &scope : target_plan.scopes) {
+        const auto has = [&](std::string_view name) {
+            return std::find(scope.nodes.begin(), scope.nodes.end(),
+                             name) != scope.nodes.end();
+        };
+        // Different selections never share a scope.
+        CHECK_FALSE((has("face_first") && has("face_three")));
+        if (has("face_first")) {
+            CHECK(scope.view_select == RenderViewSelect{{"face", 2}});
+            ++selected_scopes;
+        }
+        if (has("face_three")) {
+            CHECK(scope.view_select == RenderViewSelect{{"face", 3}});
+            ++selected_scopes;
+        }
+        if (has("present")) CHECK(scope.view_select.empty());
+    }
+    CHECK(selected_scopes == 2);
+    const auto target_json = vulkanTargetPlanToJson(target_plan);
+    bool scope_reported = false;
+    for (const auto &scope : target_json.at("scopes")) {
+        if (scope.contains("view_select") &&
+            scope.at("view_select") == nlohmann::ordered_json{{"face", 2}}) {
+            scope_reported = true;
+        }
+    }
+    CHECK(scope_reported);
+}
+
+TEST_CASE("LP-Va view_select refusals are named at recompile time",
+          "[rendercompiler][view-select][lpva][diagnostic]") {
+    SECTION("an axis the family does not have") {
+        const auto refusal = lpvaCompileRefusal(
+            lpvaViewSelectConfig({{"cascade", 0}}));
+        CHECK(refusal.code == "graph.view_select_axis_unknown@1");
+        CHECK(refusal.fields ==
+              nlohmann::json{{"pass", "face_first"},
+                             {"family", "$capture/cube"},
+                             {"axis", "cascade"}});
+    }
+    SECTION("a value outside the compile-time length") {
+        const auto refusal = lpvaCompileRefusal(
+            lpvaViewSelectConfig({{"face", 6}}));
+        CHECK(refusal.code == "graph.view_select_axis_unknown@1");
+        CHECK(refusal.fields ==
+              nlohmann::json{{"pass", "face_first"},
+                             {"family", "$capture/cube"},
+                             {"axis", "face"},
+                             {"value", 6},
+                             {"length", 6}});
+    }
+    SECTION("a runtime axis") {
+        const auto refusal = lpvaCompileRefusal(
+            lpvaViewSelectConfig({{"light", 0}}, "$shadow/point"));
+        CHECK(refusal.code == "graph.view_select_runtime_axis@1");
+        CHECK(refusal.fields ==
+              nlohmann::json{{"pass", "face_first"},
+                             {"family", "$shadow/point"},
+                             {"axis", "light"}});
+    }
+    SECTION("a family without a provider has no axes") {
+        const auto refusal = lpvaCompileRefusal(
+            lpvaViewSelectConfig({{"face", 0}}, "$authored/probe"));
+        CHECK(refusal.code == "graph.view_select_axis_unknown@1");
+        CHECK(refusal.fields.at("family") == "$authored/probe");
+    }
+    SECTION("the primary family") {
+        const auto refusal = lpvaCompileRefusal(
+            lpvaViewSelectConfig({{"face", 0}}, "$main"));
+        CHECK(refusal.code == "graph.view_select_primary_family@1");
+        CHECK(refusal.fields ==
+              nlohmann::json{{"pass", "face_first"},
+                             {"family", "$main"}});
+    }
+}
+#endif
 } // namespace
 } // namespace Pelican

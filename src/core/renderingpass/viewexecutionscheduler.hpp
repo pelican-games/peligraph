@@ -1,6 +1,7 @@
 #pragma once
 
 #include "framegraphruntime.hpp"
+#include "../../project/viewselect.hpp"
 
 #include <array>
 #include <cstddef>
@@ -32,6 +33,10 @@ struct LogicalFrameNodeInvocation {
     std::uint32_t execution_count = 1;
     std::string view_family{
         mainRenderViewFamilyId};
+    // LP-Va: the scope selects family views with view_select and none of
+    // this frame's views match. The invocation records nothing; execution
+    // treats the node like an inactive one (completed, no scope begun).
+    bool no_selected_view = false;
 
     bool firstExecution() const noexcept {
         return execution_index == 0;
@@ -51,6 +56,10 @@ struct LogicalFrameNodeInvocation {
 struct LogicalFrameViewFamilyCardinality {
     std::string_view family_id;
     std::uint32_t view_count = 1;
+    // LP-Va: the axis coordinates of each view in execution order. Required
+    // (one entry per view) only when a scope of this family has a
+    // view_select; an authored family leaves the entries empty.
+    std::span<const RenderViewAxisCoordinates> view_axes{};
 };
 
 // Maps one logical view execution onto source and destination image-array
@@ -116,7 +125,13 @@ buildLogicalFrameViewFamilySchedule(
     std::map<std::string_view, std::uint32_t,
              std::less<>>
         view_count_by_family;
+    std::map<std::string_view,
+             std::span<const RenderViewAxisCoordinates>,
+             std::less<>>
+        view_axes_by_family;
     for (const auto &family : view_families) {
+        view_axes_by_family.emplace(
+            family.family_id, family.view_axes);
         validateRenderViewFamilyId(
             family.family_id,
             "logical-frame schedule family");
@@ -175,6 +190,10 @@ buildLogicalFrameViewFamilySchedule(
         VulkanScopeViewExecution execution =
             VulkanScopeViewExecution::single_view;
         std::uint32_t execution_count = 1;
+        // LP-Va: set for a scope with a view_select; holds the matching
+        // family view indices in execution order (possibly none).
+        std::optional<std::vector<std::uint32_t>>
+            selected_views;
     };
     std::vector<ScopeFamily> scope_families;
     scope_families.reserve(
@@ -208,6 +227,13 @@ buildLogicalFrameViewFamilySchedule(
                     scope.id);
             }
             scope_family_id = family;
+            if (nodes[found->second].view_select !=
+                scope.view_select) {
+                throw std::runtime_error(
+                    "physical target-plan scope view_select does not "
+                    "match node '" +
+                    name + "': " + scope.id);
+            }
         }
         const auto family =
             view_count_by_family.find(
@@ -274,12 +300,55 @@ buildLogicalFrameViewFamilySchedule(
                     scope_logical_view_count;
             }
         }
+        std::optional<std::vector<std::uint32_t>>
+            selected_views;
+        if (!scope.view_select.empty()) {
+            if (main_scope) {
+                throwViewSelectRefusal(
+                    viewSelectPrimaryFamilyCode,
+                    {{"pass", scope.nodes.front()},
+                     {"family", *scope_family_id}});
+            }
+            // The selection is resolved against this frame's views: a
+            // runtime axis such as `light` may match a different count
+            // every frame. Views stay addressed by their family index, so
+            // layers, frame UBO slots, and culled draws are unchanged.
+            // logical_view_count keeps the family size even for one match;
+            // single_view would make snapshot_copy use layer 0.
+            const auto axes =
+                view_axes_by_family.at(*scope_family_id);
+            static const RenderViewAxisCoordinates no_axes;
+            selected_views.emplace();
+            for (std::uint32_t view = 0;
+                 view < scope_logical_view_count;
+                 ++view) {
+                const auto &coordinates =
+                    view < axes.size() ? axes[view] : no_axes;
+                if (const auto missing = missingViewSelectAxis(
+                        coordinates, scope.view_select)) {
+                    throwViewSelectRefusal(
+                        viewSelectAxisUnknownCode,
+                        {{"pass", scope.nodes.front()},
+                         {"family", *scope_family_id},
+                         {"axis", *missing}});
+                }
+                if (renderViewMatchesSelect(
+                        coordinates, scope.view_select)) {
+                    selected_views->push_back(view);
+                }
+            }
+            execution =
+                VulkanScopeViewExecution::sequential;
+            execution_count = static_cast<std::uint32_t>(
+                selected_views->size());
+        }
         scope_families.push_back(
             ScopeFamily{
                 *scope_family_id,
                 scope_logical_view_count,
                 execution,
-                execution_count});
+                execution_count,
+                std::move(selected_views)});
         for (const auto &node : scope.nodes) {
             if (!scope_by_node.emplace(node, scope_index).second) {
                 throw std::runtime_error(
@@ -321,6 +390,35 @@ buildLogicalFrameViewFamilySchedule(
         }
         const auto execution_count =
             scope_family.execution_count;
+        if (scope_family.selected_views &&
+            scope_family.selected_views->empty()) {
+            for (std::size_t scope_node_index = 0;
+                 scope_node_index < scope_nodes.size();
+                 ++scope_node_index) {
+                result.push_back(
+                    LogicalFrameNodeInvocation{
+                        .node_index =
+                            scope_nodes[scope_node_index],
+                        .scope_index = scope_index,
+                        .scope_node_index =
+                            scope_node_index,
+                        .scope_node_count =
+                            scope_nodes.size(),
+                        .execution =
+                            scope_family.execution,
+                        .logical_view_count =
+                            scope_family.view_count,
+                        .view_index = 0,
+                        .execution_index = 0,
+                        .execution_count = 1,
+                        .view_family =
+                            std::string{
+                                scope_family.family_id},
+                        .no_selected_view = true,
+                    });
+            }
+            continue;
+        }
         for (std::uint32_t execution_index = 0;
              execution_index < execution_count;
              ++execution_index) {
@@ -343,7 +441,10 @@ buildLogicalFrameViewFamilySchedule(
                             scope_family
                                 .view_count,
                         .view_index =
-                            scope_family.execution ==
+                            scope_family.selected_views
+                                ? (*scope_family.selected_views)
+                                      [execution_index]
+                            : scope_family.execution ==
                                     VulkanScopeViewExecution::
                                         sequential
                                 ? execution_index

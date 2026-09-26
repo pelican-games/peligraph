@@ -381,6 +381,17 @@ void appendLogicalGraphFingerprintPayload(
             if (has_non_default_view_family) {
                 target.appendString(node.view_family);
             }
+            // LP-Va: only a selecting node adds to the fingerprint, so
+            // graphs without view_select keep their identity.
+            if (!node.view_select.empty()) {
+                target.appendString("view_select");
+                target.appendUnsigned(node.view_select.size());
+                for (const auto &[axis, value] :
+                     node.view_select) {
+                    target.appendString(axis);
+                    target.appendUnsigned(value);
+                }
+            }
         });
 
     // data_edges are derived entirely from the node uses above and add no
@@ -2131,6 +2142,9 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
             nodes.at(result.back().nodes.front())
                     ->view_family ==
                 node.view_family &&
+            // LP-Va: a merged scope would run every node on one view set.
+            result.back().view_select ==
+                node.view_select &&
             result.back().rasterization_samples ==
                 rasterization_samples &&
             !constraintBlocksFusion(constraints, node.name)) {
@@ -2230,6 +2244,7 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
                 .view_count = node_view.view_count,
                 .execution_count = node_view.execution_count,
                 .view_mask = node_view.view_mask,
+                .view_select = node.view_select,
             };
             sortAndUnique(scope.region_tags);
             result.push_back(std::move(scope));
@@ -4094,6 +4109,9 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
         if (plan.sample_count_plan) {
             scope_json["rasterization_samples"] =
                 scope.rasterization_samples;
+        }
+        if (!scope.view_select.empty()) {
+            scope_json["view_select"] = scope.view_select;
         }
         result["scopes"].push_back(std::move(scope_json));
     }

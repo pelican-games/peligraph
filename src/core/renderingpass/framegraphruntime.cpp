@@ -1,5 +1,6 @@
 #include "framegraphruntime.hpp"
 #include "frameexecutionadapter.hpp"
+#include "../../project/viewselect.hpp"
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -129,6 +130,18 @@ CompiledFrameGraphExecution compileExecution(
     execution.buffer_bindings =
         std::move(buffer_bindings);
     execution.nodes.reserve(execution.plan.nodes.size());
+    // LP-Va: without a physical target plan every secondary-family node runs
+    // once on view 0 (the renderer's fallback schedule). A selection there
+    // would silently overwrite layer 0, so it is refused by name.
+    if (execution.target_plan == nullptr) {
+        for (const auto &node : execution.plan.nodes) {
+            if (!node.view_select.empty()) {
+                throwViewSelectRefusal(
+                    viewSelectNeedsTargetPlanCode,
+                    {{"pass", node.name}});
+            }
+        }
+    }
 
     for (const auto &node : execution.plan.nodes) {
         if (node.kind == FramePlanNodeKind::render) {
@@ -146,9 +159,17 @@ CompiledFrameGraphExecution compileExecution(
                     "the compiled pass: " +
                     node.name);
             }
+            if (compiled_pass.passes[found->second]
+                    .definition.view_select !=
+                node.view_select) {
+                throw std::runtime_error(
+                    "Frame plan render node view_select does not match "
+                    "the compiled pass: " +
+                    node.name);
+            }
             execution.nodes.push_back(FrameGraphExecutionNode{
                 node.kind, node.name, found->second, {},
-                node.view_family});
+                node.view_family, node.view_select});
         } else if (node.kind == FramePlanNodeKind::compute) {
             auto found = task_indices.find(node.name);
             if (found == task_indices.end()) {
@@ -164,16 +185,24 @@ CompiledFrameGraphExecution compileExecution(
                     "the compiled task: " +
                     node.name);
             }
+            if (compiled_pass.compute_tasks[found->second]
+                    .definition.view_select !=
+                node.view_select) {
+                throw std::runtime_error(
+                    "Frame plan compute node view_select does not match "
+                    "the compiled task: " +
+                    node.name);
+            }
             execution.nodes.push_back(FrameGraphExecutionNode{
                 node.kind, node.name, found->second, {},
-                node.view_family});
+                node.view_family, node.view_select});
         } else if (node.kind == FramePlanNodeKind::acceleration_structure ||
                    node.kind == FramePlanNodeKind::anchor ||
                    node.kind == FramePlanNodeKind::snapshot_copy ||
                    node.kind == FramePlanNodeKind::output_transform) {
             execution.nodes.push_back(FrameGraphExecutionNode{
                 node.kind, node.name, 0, {},
-                node.view_family});
+                node.view_family, node.view_select});
         } else {
             throw std::runtime_error(
                 "Unsupported frame plan node kind: " + node.name);

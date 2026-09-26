@@ -2,11 +2,26 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 
 namespace Pelican {
+
+// LP-Va: a view of a provider-owned family carries named integer axis
+// coordinates (for example `$shadow/directional` views carry `light` and
+// `cascade`). A pass or compute task may name some of them in `view_select`;
+// the scheduler then runs it only on views whose coordinates match. Ordered
+// maps keep the JSON and the fingerprints deterministic.
+using RenderViewAxisCoordinates =
+    std::map<std::string, std::uint32_t, std::less<>>;
+using RenderViewSelect = RenderViewAxisCoordinates;
+
+inline constexpr std::string_view renderViewAxisLight = "light";
+inline constexpr std::string_view renderViewAxisCascade = "cascade";
+inline constexpr std::string_view renderViewAxisFace = "face";
 
 inline constexpr std::string_view mainRenderViewFamilyId =
     "$main";

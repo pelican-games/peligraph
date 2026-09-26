@@ -1384,6 +1384,11 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(
                 task_json,
                 "Compute task '" +
                     definition.name + "'");
+        definition.view_select =
+            parseRenderViewSelect(
+                task_json,
+                "Compute task '" +
+                    definition.name + "'");
         definition.resource_ports =
             parseShaderResourcePortDefinitions(
                 task_json, definition.reads,

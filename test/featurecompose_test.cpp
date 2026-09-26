@@ -4791,6 +4791,31 @@ TEST_CASE("common graphics ports retain shaders and order attachment consumers",
     }
 }
 
+// LP-Va: a graph render node carries view_family and view_select in its
+// parameters, and lowering copies them to the pass it becomes, so graph
+// authors (and LP-Vb) select views the same way the rendering section does.
+TEST_CASE("graph render nodes lower view_select onto their pass",
+          "[render-feature][graph-composition][view-select][lpva]") {
+    using Json = nlohmann::json;
+    const auto document = Json::parse(R"({"schema":"pelican.graph","version":1,
+      "definitions":{},
+      "nodes":[{"id":"probe","op":"render.compute","parameters":{
+                 "shader":"project://shaders/probe","dispatch":{"groups":[1,1,1]},
+                 "ports":{},"view_family":"$capture/cube",
+                 "view_select":{"face":2}},"outputs":[]}],
+      "outputs":{}})");
+    const auto config = lowerRenderGraphDocument(document);
+    const auto &task = computeTaskByName(config, "probe");
+    CHECK(task.at("view_family") == "$capture/cube");
+    CHECK(task.at("view_select") == Json{{"face", 2}});
+    const auto tasks = parseComputeTaskDefinitionsFromConfigJson(config);
+    REQUIRE(tasks.size() == 1);
+    CHECK(tasks.front().view_select == RenderViewSelect{{"face", 2}});
+    const auto graph = parseFrameGraphDefinitionFromJson(config);
+    REQUIRE(graph.nodes.size() == 1);
+    CHECK(graph.nodes.front().view_select == RenderViewSelect{{"face", 2}});
+}
+
 namespace {
 // LP-0a: a graph over the hybrid preset with bloom. `lit` refers to the
 // preset's lit_color, `copy` is an image the graph owns, and `blit` copies the

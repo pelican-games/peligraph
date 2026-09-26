@@ -621,6 +621,20 @@ void validatePlan(const Json &plan,
         requireUnsigned(scope, "view_count", context);
         requireUnsigned(scope, "execution_count", context);
         requireUnsigned(scope, "view_mask", context);
+        if (const auto select = scope.find("view_select");
+            select != scope.end()) {
+            if (!select->is_object() || select->empty()) {
+                fail("physical_plan_type_error",
+                     context + ".view_select must be a non-empty object");
+            }
+            for (auto axis = select->begin(); axis != select->end(); ++axis) {
+                if (axis.key().empty()) {
+                    fail("physical_plan_type_error",
+                         context + ".view_select has an empty axis name");
+                }
+                requireUnsigned(*select, axis.key(), context + ".view_select");
+            }
+        }
     }
     const std::set<std::string, std::less<>> scoped_node_names{
         scoped_nodes.begin(), scoped_nodes.end()};

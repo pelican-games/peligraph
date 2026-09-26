@@ -65,6 +65,10 @@ struct RenderViewParameters {
     // modifiers such as jitter do not alter this semantic plane.
     std::optional<RenderViewClipPlane>
         clip_plane;
+    // LP-Va: named integer coordinates of this view inside its family
+    // (`light`, `cascade`, `face`). Providers fill them; an authored family
+    // leaves them empty and therefore cannot be selected with view_select.
+    RenderViewAxisCoordinates axes;
 };
 
 // One provider-owned family. RenderViewFamilies supplies the set consumed by

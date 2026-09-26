@@ -102,6 +102,12 @@ RenderViewFamily buildCubeCaptureViewFamily(
                 .first_person_view = false,
                 .view_id =
                     std::string{face.id},
+                .axes =
+                    {
+                        {std::string{renderViewAxisFace},
+                         static_cast<std::uint32_t>(
+                             result.views.size())},
+                    },
             });
     }
     return result;

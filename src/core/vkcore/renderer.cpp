@@ -1402,6 +1402,10 @@ std::vector<std::string> pairedSrgbStorageEdges(
     return edges;
 }
 
+// completed_nodes values: 0 not yet run, 1 recorded or inactive, and this
+// one for a node whose view_select matched no view of the frame.
+constexpr std::uint8_t completedWithoutRecording = 2;
+
 void executeCompiledFrameGraphBarrier(
     const FrameRenderContext &render_ctx,
     const CompiledFrameGraphExecution &frame_graph,
@@ -1481,6 +1485,17 @@ void executeCompiledFrameGraphBarrier(
             "Compiled frame graph barrier references an unknown "
             "resource: " +
             barrier.resource);
+    }
+    // LP-Va: a source completed without recording (its view_select matched
+    // no view of the frame) wrote nothing. When nothing before it touched the
+    // image either, there is no access to order against.
+    if (completed_nodes[barrier.from_node_index] ==
+            completedWithoutRecording &&
+        layout_tracker.currentLayout(
+            target_id, false,
+            &modules.render_target_container) ==
+            vk::ImageLayout::eUndefined) {
+        return;
     }
     layout_tracker.memoryDependency(
         render_ctx.cmd_buf,
@@ -1585,6 +1600,13 @@ void executePlannedFrameGraph(
             const bool main_family =
                 node.view_family ==
                 mainRenderViewFamilyId;
+            // Also refused when the execution is compiled; this keeps a
+            // hand-built execution from overwriting layer 0 silently.
+            if (!node.view_select.empty()) {
+                throwViewSelectRefusal(
+                    viewSelectNeedsTargetPlanCode,
+                    {{"pass", node.name}});
+            }
             if (!main_family &&
                 request.view_index != 0) {
                 continue;
@@ -1704,6 +1726,32 @@ void executePlannedFrameGraph(
             throw std::runtime_error(
                 "logical-frame schedule view family does not match node '" +
                 execution_node.name + "'");
+        }
+        if (scheduled.no_selected_view) {
+            // LP-Va: a view_select that matches none of this frame's views
+            // (for example a light index past the current light count). The
+            // node is treated like an inactive one: nothing is recorded and
+            // no scope begins, but it counts as completed so a later barrier
+            // from it is satisfied. Checked before prepare_invocation, which
+            // would otherwise select a view state for a view that is not run.
+            if (request.modules.render_timing != nullptr) {
+                for (const auto range : {GpuTimingSubrange::barriers, GpuTimingSubrange::body}) {
+                    if (begins_recorded_node)
+                        request.modules.render_timing->writeNodeSubrangeStart(request.render_ctx.cmd_buf,
+                            static_cast<std::uint32_t>(timing_query_index), range);
+                    if (ends_recorded_node)
+                        request.modules.render_timing->writeNodeSubrangeEnd(request.render_ctx.cmd_buf,
+                            static_cast<std::uint32_t>(timing_query_index), range);
+                }
+            }
+            if (request.trace_out != nullptr)
+                request.trace_out->push_back({{"name", execution_node.name},
+                    {"kind", framePlanNodeKindName(execution_node.kind)}, {"order", node_index},
+                    {"recorded", false}, {"no_selected_view", true},
+                    {"view_family", scheduled.view_family},
+                    {"logical_view_count", scheduled.logical_view_count}});
+            completed_nodes[node_index] = completedWithoutRecording;
+            continue;
         }
         if (prepare_invocation) {
             prepare_invocation(scheduled);
@@ -5828,14 +5876,27 @@ void Renderer::LogicalFrameRecorder::planLogicalFrameSchedule() {
         family_cardinalities.reserve(
             resolved_view_families
                 .families.size());
+        // LP-Va: the views' axis coordinates, one vector per family, kept
+        // alive for the schedule build below.
+        std::vector<std::vector<RenderViewAxisCoordinates>>
+            family_view_axes;
+        family_view_axes.reserve(
+            resolved_view_families
+                .families.size());
         for (const auto &family :
              resolved_view_families
                  .families) {
+            auto &axes = family_view_axes.emplace_back();
+            axes.reserve(family.views.size());
+            for (const auto &view : family.views) {
+                axes.push_back(view.axes);
+            }
             family_cardinalities.push_back(
                 {
                     family.family_id,
                     static_cast<std::uint32_t>(
                         family.views.size()),
+                    axes,
                 });
         }
         logical_frame_schedule =

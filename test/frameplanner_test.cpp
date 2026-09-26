@@ -2,6 +2,7 @@
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/logicalframegraphadapter.hpp"
 #include "../src/core/loader/engineresources.hpp"
+#include "../src/project/renderpipeline.hpp"
 #include "../src/project/featurecompose.hpp"
 #include "../src/project/renderconfigsection.hpp"
 #include "../src/core/renderingpass/renderingpassconfigjsonparser.hpp"
@@ -2421,6 +2422,57 @@ TEST_CASE("WP181 frame graph runtime retains one immutable typed pipeline",
             MaterialPassContract::forward_transparent_v1);
     REQUIRE(execution->nodes.size() == 3);
     REQUIRE(execution->nodes.front().index == 0);
+}
+
+// LP-Va: without a physical target plan a secondary-family node runs once on
+// view 0, so a selection would silently overwrite layer 0. The execution is
+// refused by name when it is compiled.
+TEST_CASE("LP-Va view_select requires a physical target plan",
+          "[lpva][frameplanner][view-select]") {
+    FrameGraphDefinition definition;
+    definition.name = "no_target_plan";
+    CompiledRenderingPass rendering_pass;
+    rendering_pass.name = definition.name;
+
+    FrameGraphNodeDefinition node;
+    node.name = "face_one";
+    node.kind = FramePlanNodeKind::render;
+    node.view_family = "$capture/cube";
+    node.view_select = {{"face", 1}};
+    definition.nodes.push_back(node);
+    PassDefinition pass;
+    pass.name = node.name;
+    pass.view_family = node.view_family;
+    pass.view_select = node.view_select;
+    rendering_pass.passes.push_back(CompiledPass{
+        std::move(pass), PassId{31}});
+    const auto pipeline =
+        std::make_shared<const CompiledRenderPipeline>();
+
+    FrameGraphRuntimeContainer runtime;
+    const auto plan = planFrameGraph(definition);
+    REQUIRE(plan.nodes.front().view_select ==
+            RenderViewSelect{{"face", 1}});
+    try {
+        runtime.registerExecutionPlan(
+            RenderingPassId{41}, rendering_pass, plan, pipeline);
+        FAIL("a view_select without a target plan was accepted");
+    } catch (const std::runtime_error &error) {
+        const auto refusal =
+            splitCodedRefusalMessage(error.what());
+        REQUIRE(refusal);
+        CHECK(refusal->code ==
+              "graph.view_select_needs_target_plan@1");
+        CHECK(refusal->fields ==
+              nlohmann::json{{"pass", "face_one"}});
+    }
+
+    // The same node without a selection still compiles on that path.
+    definition.nodes.front().view_select.clear();
+    rendering_pass.passes.front().definition.view_select.clear();
+    REQUIRE_NOTHROW(runtime.registerExecutionPlan(
+        RenderingPassId{41}, rendering_pass,
+        planFrameGraph(definition), pipeline));
 }
 
 } // namespace Pelican

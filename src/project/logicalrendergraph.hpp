@@ -173,6 +173,10 @@ struct LogicalGraphNode {
     // decides whether this family is sequential, multiview, or shared.
     std::string view_family{
         mainRenderViewFamilyId};
+    // LP-Va: the family views this node runs on (axis -> coordinate). Empty
+    // runs every view. Two nodes with different selections never share a
+    // physical scope.
+    RenderViewSelect view_select;
 };
 
 struct LogicalCompileDecision {

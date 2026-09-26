@@ -2,6 +2,8 @@
 
 #include "directionalshadowviewprovider.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
+#include "../renderingpass/frameplanner.hpp"
+#include "../../project/viewselect.hpp"
 #if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
 #include "../render_algorithms/standardrenderalgorithms.hpp"
 #endif
@@ -31,6 +33,16 @@ void RenderViewFamilyProviderRegistry::
             "render view-family provider '" +
             provider.name +
             "' requires a build callback");
+    }
+    std::set<std::string, std::less<>> axis_names;
+    for (const auto &axis : provider.axes) {
+        if (axis.name.empty() ||
+            !axis_names.insert(axis.name).second) {
+            throw std::invalid_argument(
+                "render view-family provider '" +
+                provider.name +
+                "' declares an empty or duplicate axis");
+        }
     }
     if (find(provider.family_id) != nullptr) {
         throw std::invalid_argument(
@@ -134,6 +146,102 @@ RenderViewFamilies resolveRuntimeRenderViewFamilies(
             std::move(family));
     }
     return result;
+}
+
+RenderViewAxisLengthContext renderViewAxisLengthContext(
+    const CompiledRenderPipeline &pipeline) noexcept {
+    return {
+        .feature_instances =
+            pipeline.feature_instances,
+        .surface_resource_contracts =
+            pipeline.surface_resource_contracts,
+    };
+}
+
+RenderViewAxisLength renderViewAxisLength(
+    std::string_view family_id,
+    std::string_view axis,
+    const RenderViewAxisLengthContext &context,
+    const RenderViewFamilyProviderRegistry &providers) {
+    const auto *provider =
+        providers.find(family_id);
+    if (provider == nullptr) {
+        return {};
+    }
+    for (const auto &definition :
+         provider->axes) {
+        if (definition.name != axis) {
+            continue;
+        }
+        if (!definition.compile_time_length) {
+            return {
+                .kind =
+                    RenderViewAxisLengthKind::runtime,
+            };
+        }
+        return {
+            .kind =
+                RenderViewAxisLengthKind::compile_time,
+            .length =
+                definition.compile_time_length(
+                    context),
+        };
+    }
+    return {};
+}
+
+void validateRenderViewSelects(
+    std::span<const FrameGraphDefinition> graphs,
+    const CompiledRenderPipeline &pipeline,
+    const RenderViewFamilyProviderRegistry &providers) {
+    const auto context =
+        renderViewAxisLengthContext(pipeline);
+    for (const auto &graph : graphs) {
+        for (const auto &node : graph.nodes) {
+            if (node.view_select.empty()) {
+                continue;
+            }
+            if (node.view_family ==
+                mainRenderViewFamilyId) {
+                throwViewSelectRefusal(
+                    viewSelectPrimaryFamilyCode,
+                    {{"pass", node.name},
+                     {"family", node.view_family}});
+            }
+            for (const auto &[axis, value] :
+                 node.view_select) {
+                const auto length =
+                    renderViewAxisLength(
+                        node.view_family, axis,
+                        context, providers);
+                switch (length.kind) {
+                case RenderViewAxisLengthKind::unknown:
+                    throwViewSelectRefusal(
+                        viewSelectAxisUnknownCode,
+                        {{"pass", node.name},
+                         {"family", node.view_family},
+                         {"axis", axis}});
+                case RenderViewAxisLengthKind::runtime:
+                    throwViewSelectRefusal(
+                        viewSelectRuntimeAxisCode,
+                        {{"pass", node.name},
+                         {"family", node.view_family},
+                         {"axis", axis}});
+                case RenderViewAxisLengthKind::compile_time:
+                    if (value >= length.length) {
+                        throwViewSelectRefusal(
+                            viewSelectAxisUnknownCode,
+                            {{"pass", node.name},
+                             {"family", node.view_family},
+                             {"axis", axis},
+                             {"value", value},
+                             {"length", length.length}});
+                    }
+                    break;
+                }
+            }
+        }
+    }
 }
 
 void validateRuntimeRenderViewFamilyProviderContracts(

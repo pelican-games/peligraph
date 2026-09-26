@@ -319,6 +319,7 @@ FrameExecutionNode executionNode(
         .resource_uses =
             resourceUses(node, source),
         .view_family = node.view_family,
+        .view_select = node.view_select,
     };
     if (node.kind ==
         FramePlanNodeKind::output_transform) {
@@ -592,7 +593,9 @@ void validateFrameExecutionPlanCompatibility(
             execution.order != legacy.order ||
             execution.level != legacy.level ||
             execution.view_family !=
-                legacy.view_family) {
+                legacy.view_family ||
+            execution.view_select !=
+                legacy.view_select) {
             throw std::runtime_error(
                 "Frame execution node does not match FramePlan node at order " +
                 std::to_string(index) + ": " +

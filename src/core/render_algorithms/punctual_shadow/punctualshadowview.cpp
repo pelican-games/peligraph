@@ -16,6 +16,8 @@ RenderViewFamily buildPointShadowViewFamily(std::span<const PointLight> lights,
         auto cube = buildCubeCaptureViewFamily({lights[index].position, near_distance, far_distance});
         for (auto &view : cube.views) {
             view.view_id = result.family_id + "/" + std::to_string(index) + "/" + view.view_id;
+            // The cube builder already set `face`; the light is outermost.
+            view.axes[std::string{renderViewAxisLight}] = static_cast<std::uint32_t>(index);
             result.views.push_back(std::move(view));
         }
     }
@@ -47,6 +49,7 @@ RenderViewFamily buildSpotShadowViewFamily(std::span<const SpotLight> lights,
             .camera_position = light.position,
             .first_person_view = false,
             .view_id = result.family_id + "/" + std::to_string(index),
+            .axes = {{std::string{renderViewAxisLight}, static_cast<std::uint32_t>(index)}},
         });
     }
     return result;

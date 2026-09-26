@@ -19,6 +19,7 @@
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/viewexecutionscheduler.hpp"
+#include "../src/project/renderpipeline.hpp"
 #include "../src/core/renderer/fullscreenpassrenderer.hpp"
 #include "../src/core/userpublic/render/pass_implementation_abi_v1.hpp"
 #include <catch2/catch_test_macros.hpp>
@@ -5376,6 +5377,244 @@ TEST_CASE(
             nodes, non_template, families),
         Catch::Matchers::ContainsSubstring(
             "must be a single-view template"));
+}
+
+TEST_CASE(
+    "LP-Va view_select parses as axis names to non-negative integers",
+    "[renderingpass][view-select][parse][lpva]") {
+    const auto pass = nlohmann::json{
+        {"name", "face_two"},
+        {"view_family", "$capture/cube"},
+        {"view_select", {{"face", 2}}},
+    };
+    CHECK(parseRenderViewSelect(pass, "Pass 'face_two'") ==
+          RenderViewSelect{{"face", 2}});
+    CHECK(parseRenderViewSelect(
+              nlohmann::json{{"name", "all"}}, "Pass 'all'")
+              .empty());
+    for (const auto &bad : {
+             nlohmann::json::object(),
+             nlohmann::json::array({1}),
+             nlohmann::json{{"face", -1}},
+             nlohmann::json{{"face", 1.5}},
+             nlohmann::json{{"face", "2"}},
+             nlohmann::json{{"face", 4294967296ull}},
+             nlohmann::json{{"", 0}},
+         }) {
+        INFO(bad.dump());
+        auto invalid = pass;
+        invalid["view_select"] = bad;
+        CHECK_THROWS_WITH(
+            parseRenderViewSelect(invalid, "Pass 'face_two'"),
+            Catch::Matchers::StartsWith("Pass 'face_two' view_select"));
+    }
+}
+
+
+namespace {
+
+// LP-Va: a cube-shaped secondary family, six views carrying `face`.
+std::vector<RenderViewAxisCoordinates> lpvaFaceAxes() {
+    std::vector<RenderViewAxisCoordinates> axes;
+    for (std::uint32_t face = 0; face < 6; ++face) {
+        axes.push_back({{"face", face}});
+    }
+    return axes;
+}
+
+VulkanTargetPlan lpvaSelectedScopePlan(RenderViewSelect select) {
+    VulkanTargetPlan plan;
+    plan.view_execution_plan.view_count = 1;
+    plan.scopes = {
+        {
+            .id = "capture",
+            .nodes = {"Capture"},
+            .view_execution =
+                VulkanScopeViewExecution::single_view,
+            .view_count = 1,
+            .execution_count = 1,
+            .view_select = std::move(select),
+        },
+        {
+            .id = "present",
+            .nodes = {"Present"},
+            .view_execution =
+                VulkanScopeViewExecution::single_view,
+            .view_count = 1,
+            .execution_count = 1,
+        },
+    };
+    return plan;
+}
+
+std::vector<FrameGraphExecutionNode> lpvaSelectedNodes(
+    RenderViewSelect select) {
+    return {
+        {
+            .name = "Capture",
+            .view_family = "$capture/cube",
+            .view_select = std::move(select),
+        },
+        {.name = "Present"},
+    };
+}
+
+} // namespace
+
+TEST_CASE(
+    "LP-Va view_select expands a secondary scope only on matching views",
+    "[renderingpass][view-execution][schedule][view-select][lpva]") {
+    const auto axes = lpvaFaceAxes();
+    const std::array families{
+        LogicalFrameViewFamilyCardinality{
+            mainRenderViewFamilyId, 1},
+        LogicalFrameViewFamilyCardinality{
+            "$capture/cube", 6, axes},
+    };
+
+    SECTION("one matching face stays a sequential family invocation") {
+        const RenderViewSelect select{{"face", 4}};
+        const auto schedule =
+            buildLogicalFrameViewFamilySchedule(
+                lpvaSelectedNodes(select),
+                lpvaSelectedScopePlan(select),
+                families);
+        REQUIRE(schedule.size() == 2);
+        CHECK(schedule[0].node_index == 0);
+        CHECK(schedule[0].view_family == "$capture/cube");
+        // Not single_view: snapshot_copy would then copy layer 0.
+        CHECK(schedule[0].execution ==
+              VulkanScopeViewExecution::sequential);
+        // The family size, so the attachment keeps all six layers and the
+        // invocation renders into layer base + 4.
+        CHECK(schedule[0].logical_view_count == 6);
+        CHECK(schedule[0].view_index == 4);
+        CHECK(schedule[0].execution_count == 1);
+        CHECK(schedule[0].firstExecution());
+        CHECK(schedule[0].lastExecution());
+        CHECK_FALSE(schedule[0].no_selected_view);
+        CHECK(schedule[1].view_family == "$main");
+    }
+
+    SECTION("a partial selection keeps the family's index order") {
+        std::vector<RenderViewAxisCoordinates> lights;
+        for (std::uint32_t light = 0; light < 2; ++light) {
+            for (std::uint32_t cascade = 0; cascade < 3;
+                 ++cascade) {
+                lights.push_back(
+                    {{"light", light}, {"cascade", cascade}});
+            }
+        }
+        const std::array shadow_families{
+            LogicalFrameViewFamilyCardinality{
+                mainRenderViewFamilyId, 1},
+            LogicalFrameViewFamilyCardinality{
+                "$capture/cube", 6, lights},
+        };
+        const RenderViewSelect select{{"cascade", 1}};
+        const auto schedule =
+            buildLogicalFrameViewFamilySchedule(
+                lpvaSelectedNodes(select),
+                lpvaSelectedScopePlan(select),
+                shadow_families);
+        REQUIRE(schedule.size() == 3);
+        CHECK(schedule[0].view_index == 1);
+        CHECK(schedule[1].view_index == 4);
+        CHECK(schedule[0].execution_index == 0);
+        CHECK(schedule[1].execution_index == 1);
+        CHECK(schedule[1].execution_count == 2);
+        CHECK(schedule[1].logical_view_count == 6);
+    }
+
+    SECTION("no matching view yields a non-recording invocation") {
+        std::vector<RenderViewAxisCoordinates> one_light{
+            {{"light", 0}, {"cascade", 0}}};
+        const std::array one_light_families{
+            LogicalFrameViewFamilyCardinality{
+                mainRenderViewFamilyId, 1},
+            LogicalFrameViewFamilyCardinality{
+                "$capture/cube", 1, one_light},
+        };
+        const RenderViewSelect select{{"light", 1}};
+        const auto schedule =
+            buildLogicalFrameViewFamilySchedule(
+                lpvaSelectedNodes(select),
+                lpvaSelectedScopePlan(select),
+                one_light_families);
+        REQUIRE(schedule.size() == 2);
+        CHECK(schedule[0].node_index == 0);
+        CHECK(schedule[0].no_selected_view);
+        CHECK(schedule[0].logical_view_count == 1);
+        CHECK(schedule[0].beginsScopeExecution());
+        CHECK(schedule[0].endsScopeExecution());
+        CHECK_FALSE(schedule[1].no_selected_view);
+        // The per-view split keeps the placeholder with view 0, so the
+        // execution still marks the node completed.
+        const auto first_view =
+            selectLogicalFrameSequentialViewSchedule(
+                schedule, 0, 1);
+        REQUIRE(first_view.size() == 2);
+        CHECK(first_view[0].no_selected_view);
+    }
+
+    SECTION("an unknown axis on this frame's views is refused by name") {
+        const RenderViewSelect select{{"cascade", 0}};
+        try {
+            (void)buildLogicalFrameViewFamilySchedule(
+                lpvaSelectedNodes(select),
+                lpvaSelectedScopePlan(select), families);
+            FAIL("expected a refusal");
+        } catch (const std::runtime_error &error) {
+            const auto refusal =
+                splitCodedRefusalMessage(error.what());
+            REQUIRE(refusal);
+            CHECK(refusal->code ==
+                  "graph.view_select_axis_unknown@1");
+            CHECK(refusal->fields ==
+                  nlohmann::json{{"pass", "Capture"},
+                                 {"family", "$capture/cube"},
+                                 {"axis", "cascade"}});
+        }
+    }
+
+    SECTION("an authored family without axes is refused by name") {
+        const std::array authored{
+            LogicalFrameViewFamilyCardinality{
+                mainRenderViewFamilyId, 1},
+            LogicalFrameViewFamilyCardinality{
+                "$capture/cube", 6},
+        };
+        const RenderViewSelect select{{"face", 0}};
+        REQUIRE_THROWS_WITH(
+            buildLogicalFrameViewFamilySchedule(
+                lpvaSelectedNodes(select),
+                lpvaSelectedScopePlan(select), authored),
+            Catch::Matchers::StartsWith(
+                "graph.view_select_axis_unknown@1: "));
+    }
+
+    SECTION("a primary-family selection is refused by name") {
+        const RenderViewSelect select{{"face", 0}};
+        auto nodes = lpvaSelectedNodes(select);
+        nodes[0].view_family = "$main";
+        auto plan = lpvaSelectedScopePlan(select);
+        REQUIRE_THROWS_WITH(
+            buildLogicalFrameViewFamilySchedule(
+                nodes, plan, families),
+            Catch::Matchers::StartsWith(
+                "graph.view_select_primary_family@1: "));
+    }
+
+    SECTION("a scope whose selection differs from its node is rejected") {
+        auto plan =
+            lpvaSelectedScopePlan({{"face", 1}});
+        REQUIRE_THROWS_WITH(
+            buildLogicalFrameViewFamilySchedule(
+                lpvaSelectedNodes({{"face", 2}}), plan,
+                families),
+            Catch::Matchers::ContainsSubstring(
+                "view_select does not match"));
+    }
 }
 
 TEST_CASE(

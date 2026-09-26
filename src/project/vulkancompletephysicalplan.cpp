@@ -630,9 +630,33 @@ VulkanPhysicalResourcePlan resourceFromJson(
     };
 }
 
+RenderViewSelect optionalViewSelect(
+    const nlohmann::json &entry,
+    std::string_view context) {
+    RenderViewSelect result;
+    const auto found = entry.find("view_select");
+    if (found == entry.end()) return result;
+    require(
+        found->is_object() && !found->empty(),
+        std::string{context} +
+            " view_select must be a non-empty object");
+    for (auto axis = found->begin(); axis != found->end();
+         ++axis) {
+        require(
+            !axis.key().empty(),
+            std::string{context} +
+                " view_select has an empty axis name");
+        result.emplace(
+            axis.key(),
+            requireUnsigned<std::uint32_t>(
+                *found, axis.key(), context));
+    }
+    return result;
+}
+
 nlohmann::ordered_json scopeToJson(
     const VulkanPhysicalScopePlan &scope) {
-    return {
+    auto result = nlohmann::ordered_json{
         {"id", scope.id},
         {"kind", vulkanPhysicalScopeKindName(scope.kind)},
         {"nodes", scope.nodes},
@@ -649,6 +673,12 @@ nlohmann::ordered_json scopeToJson(
         {"execution_count", scope.execution_count},
         {"view_mask", scope.view_mask},
     };
+    // Written only when present: a package without a selection keeps its
+    // pre-LP-Va bytes and fingerprint.
+    if (!scope.view_select.empty()) {
+        result["view_select"] = scope.view_select;
+    }
+    return result;
 }
 
 VulkanPhysicalScopePlan scopeFromJson(
@@ -663,7 +693,7 @@ VulkanPhysicalScopePlan scopeFromJson(
          "single_rendering_instance", "local_reads",
          "region_tags", "rasterization_samples",
          "view_execution", "view_count",
-         "execution_count", "view_mask"},
+         "execution_count", "view_mask", "view_select"},
         context);
     return VulkanPhysicalScopePlan{
         .id = requireString(entry, "id", context),
@@ -696,6 +726,8 @@ VulkanPhysicalScopePlan scopeFromJson(
         .view_mask =
             requireUnsigned<std::uint32_t>(
                 entry, "view_mask", context),
+        .view_select =
+            optionalViewSelect(entry, context),
     };
 }
 
@@ -1688,6 +1720,14 @@ verifyVulkanCompletePhysicalPlanPackage(
                 "Vulkan complete physical scope references "
                 "unknown node '" +
                     node + "'");
+            // LP-Va: an authored scope must carry exactly the selection of
+            // every node it holds; the scheduler expands it from the scope.
+            require(
+                logical->second->view_select ==
+                    scope.view_select,
+                "Vulkan complete physical scope '" + scope.id +
+                    "' view_select does not match node '" + node +
+                    "'");
             VulkanPhysicalScopeKind expected_kind =
                 VulkanPhysicalScopeKind::marker;
             switch (logical->second->kind) {

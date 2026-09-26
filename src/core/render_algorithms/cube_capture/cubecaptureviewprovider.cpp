@@ -150,6 +150,16 @@ void registerStandardCubeCaptureViewProvider(
             .family_id =
                 std::string{
                     cubeCaptureRenderViewFamilyId},
+            // +X, -X, +Y, -Y, +Z, -Z.
+            .axes =
+                {
+                    {.name = std::string{
+                         renderViewAxisFace},
+                     .compile_time_length =
+                         [](const RenderViewAxisLengthContext &) {
+                             return 6u;
+                         }},
+                },
             .build = buildFamily,
             .validate = validateFamily,
         });

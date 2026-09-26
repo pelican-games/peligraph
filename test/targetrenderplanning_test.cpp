@@ -845,6 +845,51 @@ TEST_CASE(
             materialized_image);
 }
 
+// LP-Va: scope fusion is the only place two logical nodes share one physical
+// scope, and the scheduler runs a scope on a single view set. A tile target
+// fuses GBuffer and Lighting; a different view_select on Lighting must keep
+// them apart, and the selection must reach the scope, its JSON, and the
+// logical fingerprint.
+TEST_CASE("tile fusion keeps nodes with different view_select apart",
+          "[target-render-planning][tile][view-select][lpva]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto graph = hybridGraph(types, 3, false);
+    const auto baseline = compile(
+        types, graph, topology(true), bindingsFor(types, graph));
+    REQUIRE(oneScopeContains(baseline, "GBuffer", "Lighting"));
+
+    auto selected_graph = graph;
+    for (auto &node : selected_graph.nodes) {
+        if (node.name == "Lighting") {
+            node.view_select = {{"face", 1}};
+        }
+    }
+    const auto selected = compile(
+        types, selected_graph, topology(true),
+        bindingsFor(types, selected_graph));
+    CHECK_FALSE(oneScopeContains(selected, "GBuffer", "Lighting"));
+    CHECK(scopeForNode(selected, "Lighting").view_select ==
+          RenderViewSelect{{"face", 1}});
+    CHECK(scopeForNode(selected, "GBuffer").view_select.empty());
+    CHECK(selected.logical_graph_fingerprint !=
+          baseline.logical_graph_fingerprint);
+
+    const auto selected_json = vulkanTargetPlanToJson(selected);
+    const auto baseline_json = vulkanTargetPlanToJson(baseline);
+    bool reported = false;
+    for (const auto &scope : selected_json.at("scopes")) {
+        if (scope.contains("view_select")) {
+            CHECK(scope.at("view_select") ==
+                  nlohmann::ordered_json{{"face", 1}});
+            reported = true;
+        }
+    }
+    CHECK(reported);
+    for (const auto &scope : baseline_json.at("scopes")) {
+        CHECK_FALSE(scope.contains("view_select"));
+    }
+}
+
 TEST_CASE(
     "transient candidate elides write-only attachment storage without requiring local reads",
     "[target-render-planning][transient][attachment]") {

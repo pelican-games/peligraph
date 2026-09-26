@@ -166,6 +166,10 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
         parseRenderViewFamilyId(
             pass_json,
             "Pass '" + pass_def.name + "'");
+    pass_def.view_select =
+        parseRenderViewSelect(
+            pass_json,
+            "Pass '" + pass_def.name + "'");
     parsePassImplementationProvider(pass_def, pass_json);
 
     const std::vector<std::string> non_image_inputs{

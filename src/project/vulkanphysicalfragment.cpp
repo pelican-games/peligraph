@@ -705,6 +705,16 @@ void appendTargetLoweringGraphFingerprint(
             appendFingerprintStrings(
                 target,
                 node.required_physical_features);
+            if (!node.logical.view_select.empty()) {
+                target.appendString("view_select");
+                target.appendUnsigned(
+                    node.logical.view_select.size());
+                for (const auto &[axis, value] :
+                     node.logical.view_select) {
+                    target.appendString(axis);
+                    target.appendUnsigned(value);
+                }
+            }
         });
     appendFingerprintRange(
         fingerprint, graph.resources,
@@ -858,6 +868,14 @@ void appendPhysicalScopeFingerprint(
     fingerprint.appendUnsigned(scope.view_count);
     fingerprint.appendUnsigned(scope.execution_count);
     fingerprint.appendUnsigned(scope.view_mask);
+    if (!scope.view_select.empty()) {
+        fingerprint.appendString("view_select");
+        fingerprint.appendUnsigned(scope.view_select.size());
+        for (const auto &[axis, value] : scope.view_select) {
+            fingerprint.appendString(axis);
+            fingerprint.appendUnsigned(value);
+        }
+    }
 }
 
 void appendImageSubresourceFingerprint(
@@ -1498,6 +1516,7 @@ void validateCompatibleRenderingScopeFusion(
             candidate.execution_count !=
                 first.execution_count ||
             candidate.view_mask != first.view_mask ||
+            candidate.view_select != first.view_select ||
             !candidate.local_reads.empty()) {
             throw std::runtime_error(
                 "Vulkan physical dependency-safe scope fusion has "

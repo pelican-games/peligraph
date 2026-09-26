@@ -51,6 +51,12 @@ std::vector<std::string> parseOptionalRegionTags(
 std::string parseRenderViewFamilyId(
     const nlohmann::json &json,
     const std::string &context);
+// LP-Va: optional `view_select` object, axis name -> non-negative integer.
+// Absent -> empty. Whether the axis exists is checked at recompile time
+// against the family's provider (validateRenderViewSelects).
+RenderViewSelect parseRenderViewSelect(
+    const nlohmann::json &json,
+    const std::string &context);
 uint32_t parseUint32Field(const nlohmann::json &json, const std::string &field_name,
                           const std::string &context);
 std::array<double, 4>

@@ -546,6 +546,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
    - `view_select` のある二次 family の scope は、一致する view index の分だけ invocation を出す。
    - invocation は `execution = sequential` のまま、`logical_view_count` は family の view 数のままにする。1 件だけにするときも、single_view にしない。single_view にすると、snapshot_copy が layer 0 を写してしまう(`renderer.cpp:2411-2416`)。
    - 一致する view が 0 個のフレームは、非活性の node と同じ扱いにする(`completed_nodes` に入れ、barrier の検査を通す)。
+   - 読み飛ばした node が barrier の元で、それ以前に誰もその image を触っていない(layout が undefined)ときは、その memory dependency を省く(LP-Va。無いと layout の追跡が例外を出す)。
 4. **target plan の無い経路**
    - 二次 family の node が view 0 で 1 回だけ走る経路では、`view_select` のある pass を `graph.view_select_needs_target_plan@1` で断る。黙って layer 0 に上書きしないため。
 5. **検査**
@@ -672,7 +673,8 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `graph.history_unavailable@1` | 組み直し | `{node, port, target}`(history を持たない target の `@history` を読む。LP-0a) |
 | `graph.insert_on_compute@1` | 編集・読み込み | `{node}` |
 | `graph.insert_family_mismatch@1` | 組み直し | `{node, anchor}` |
-| `graph.view_select_axis_unknown@1` | 組み直し | `{pass, family, axis}` |
+| `graph.view_select_axis_unknown@1` | 組み直し(作者が差し替えた family はフレームの時点) | `{pass, family, axis}`、長さの外の値は `value`・`length` を足す(LP-Va) |
+| `graph.view_select_primary_family@1` | 組み直し | `{pass, family}`(`$main` など二次でない family。LP-Va) |
 | `graph.view_select_runtime_axis@1` | 組み直し | `{pass, family, axis}` |
 | `graph.view_select_needs_target_plan@1` | 組み直し | `{pass}` |
 | `render_feature.pass_replacement_unknown@1` | 組み直し | `{feature, pass}` |
@@ -727,7 +729,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 2. **view の等価**
    - cube capture の分解版で、face ごとの SSAO の cube の byte と、face ごとの invocation の部分列が一致する。
    - 影の cascade の分解版で、光源 1 と 2 の両方について、layer ごとの depth と culling の数と画素が一致する。
-   - 対照:scheduler の `view_select` の絞り込みを外す(layer の上書きで赤)。scope の合流の条件から `view_select` を外す(合流して選択が失われて赤)。
+   - 対照:scheduler の `view_select` の絞り込みを外す(invocation の観測で赤。各回が全 layer に同じ内容を書くので、画素だけでは赤にならない。LP-Va で実測)。scope の合流の条件から `view_select` を外す(desktop ではこれらの pass はもともと合流しないので、tile 構成の CPU の test で赤)。
    - 対照:target plan の無い経路で、`view_select` の pass が名前付きで断られる。
 3. **draw_loop の等価**
    - hybrid の golden の case で、一体版と分解版の queue の byte・draw の列・画素が一致する。

@@ -1,5 +1,6 @@
 #include "../shader/raygrouplayout.hpp"
 #include "renderconfigeditor.hpp"
+#include "../../project/viewselect.hpp"
 #include "../../project/packagemanifest.hpp"
 #include "../../project/rendercomponent.hpp"
 #include "../../project/rasterrayquery.hpp"
@@ -64,7 +65,9 @@ MaterialRouteDefault requestedMaterialRouteDefault(const Json &value,
 bool isCarriedRefusalCode(std::string_view code) {
     return code == materialRouteUnservedCode ||
            code == materialRouteDefaultUnavailableCode ||
-           code == renderConfigLegacyTransactionDirCode;
+           code == renderConfigLegacyTransactionDirCode ||
+           // LP-Va: recompile-time view_select refusals.
+           isViewSelectRefusalCode(code);
 }
 
 // LP-0a: a graph refusal that only composing the candidate can raise (a
