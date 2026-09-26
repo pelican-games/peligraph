@@ -26108,6 +26108,170 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
   - Frame Plan の Read more を押して続きを読む所は test していない(ボタンが出ることだけ)
   - `render.target_ref` の parameters が pill のまま
 
+### RU-1: render の編集に Undo / Redo(RD-1 の上)+ LP-1e への追従
+
+**中段(Studio のみ)。実装者: Claude(Opus)。develop 08b767f2(LP-4e まで)の上。engine の契約は RD-1(`docs/manual/13_editor.md` の「ループと分解の RPC —— engine の契約」の「render 文書を丸ごと読む・戻す」と「undo の手順」。ここには写さない)。**
+
+#### 前提
+- Studio の render の編集(Frame Plan の canvas の操作・Pass Editor・Task Editor・Render Features・route の既定・view_select・Decompose into loop など。`edit_preset_pass` / `edit_render_targets` / `edit_compute_task` / `add_authored_pass` / `decompose_material_pass` …)には Undo が 1 つも無い。scene の Undo(Inspector、engine の journal)と Graph tab の Undo(自前の op の逆)はある
+- RD-1: `get_render_documents` で文書を丸ごと読み、`restore_render_documents` で全 digest が一致したときだけ 1 transaction で戻す(preflight と組み直しを通す、ticket)。render の編集の commit 結果に `documents: {reference: digest}`(書き換わった文書だけ、消えたら null、no_change は `{}`)
+- ファイルを作る・消す編集(add / remove_authored_pass、fork、materialize、import)は RD-1 では戻せない(RD-1b で後から)
+- LP-1e(engine): 置き場所の無い graph の pass とループの展開列は、scene の pass の後・最初の anchor の前に入る。`pass_set` を省くと合成後の最初の family に入る
+
+#### 決定
+0. **LP-1e への追従**(小): Graph tab の Add fullscreen pass が書く `pass_set: "main_render"` を書かない。ループの body に最初の pass を置くときに付ける `canonical_anchor: post_main`(`defaultLoopAnchor`)の自動付与をやめる。Loop の欄の Place は残す。GPU シナリオ `graph_loop_expand` が anchor を前提にしていれば直す
+1. **render の履歴を 1 つ**(MainWindow が持ち、Frame Plan・Pass Editor・Task Editor・Render Features が共有): render の編集を送る直前に `get_render_documents` で写しを取り、commit したら `documents` の digest と一緒に積む。項目名は編集の種類と対象(`Edit pass present`、`Decompose deferred_geometry` など)。no_change は積まない
+2. **Undo**: 最後の項目の「前」の content を、commit 後の digest を `base_digest` にして `restore_render_documents`。送る前に今の content を読んで Redo 用に持つ。commit したら次の base は restore の commit の `documents`
+3. **Redo**: Undo の逆(持っておいた content を、Undo の commit 後の digest で restore)
+4. **戻せない編集**: add / remove_authored_pass、fork、materialize、import は履歴に**区切り**として積む。Undo がそこに来たら送らずに 1 行を出す。区切りより前は Undo できない
+5. **食い違い**: restore が `external_modification` で断られたら、項目と変わった文書を名指し「後の編集を先に戻すか refresh」を言う 1 行。履歴はそのまま。`render_pipeline_preflight_failed` はその文のまま
+6. **UI**: Frame Plan の toolbar に Undo / Redo(tooltip に次の項目名)、Edit メニューに `Undo Render Edit` / `Redo Render Edit`。Ctrl+Z / Ctrl+Y(Ctrl+Shift+Z)は、focus が Frame Plan・Pass Editor・Task Editor・Render Features にあるときこの履歴へ。Graph tab と Inspector は今どおり自分の Undo
+7. **Decompose の確認ダイアログ**の「今は元に戻せません」を「Undo で戻せます」に直す
+8. **Graph tab の履歴との関係**: 同じ root の文書を Graph tab の編集も書くが、互いの Undo は CAS で守られる(相手の後の編集があれば名前付きで断られる)ので統合しない。断られたときの 1 行が分かりやすいことだけを見る
+
+#### 受け入れ
+1. 履歴の test(fake の RPC): 編集 → get_render_documents → commit(documents)→ Undo が正しい base_digest と content で restore を送る → Redo が逆を送る。no_change は積まない。区切りで止まる。external_modification で 1 行が出て履歴が残る。対照: base_digest に「前」の digest を使う変異で赤
+2. focus ごとの Ctrl+Z の振り分けの test(Frame Plan は render、Graph tab は graph、Inspector は scene)
+3. 決定 0 の payload の test(`pass_set` と `canonical_anchor` を書かない)。対照: 書く変異で赤
+4. **GPU シナリオ `render_undo_roundtrip`**: Pass Editor の編集(画面で分かるもの)→ Undo → 元の画面と `get_render_authoring_context` の値 → Redo → 変わった画面。続けて Decompose into loop → Undo → Frame Plan に元の material pass、graph に loop が無い → Redo。最後に Add fullscreen pass(区切り)→ Undo が区切りで止まる 1 行
+5. 既存の GPU シナリオ `graph_loop_expand` が決定 0 の後も緑
+6. `-L studio_cpu -LE gpu` 緑
+7. 報告にテキスト入力の欄
+
+#### 着地(2026-09-27、fa413aeb)
+- **決定 0**: Add fullscreen pass の列は `pass_set` を書かず、ループの body に最初の pass を置いてもループに `canonical_anchor` を足さない([Add fullscreen pass の列](../src/devstudio/model/graphcanvasmodel.cpp#L1974))。`defaultLoopAnchor` は消した。Loop の欄の Place は残る
+- **決定 1**: 新しい `RenderEditHistory`([型](../src/devstudio/model/renderedithistory.hpp#L47))。Qt に依存しない(transport は「要求を 1 本送って id を返す」と「ticket の poll の予約」の 2 つだけ)
+  - `EmbeddedViewport` に、送る前と送った後に呼ばれる口 `RpcObserver` を足した([口](../src/devstudio/viewport/embeddedviewport.hpp#L56)、[呼ぶ所](../src/devstudio/viewport/embeddedviewport.cpp#L591))。どの panel の要求もここを通るので、panel は履歴を知らない。MainWindow がつなぐ([`createRenderHistory()`](../src/devstudio/view/mainwindow.cpp#L679))
+  - render の編集の直前に `get_render_documents`(参照なし)を送り([`beforeRequest()`](../src/devstudio/model/renderedithistory.cpp#L307))、編集の ticket を commit まで追う。着地時に追ったのは、文書を置き換える 12 method と区切りの 4 method(今は 16 個が 1 つの [一覧](../src/devstudio/model/renderedithistory.cpp#L24))
+  - 項目名は `labelFor()`([名前](../src/devstudio/model/renderedithistory.cpp#L225))。`Edit pass present`、`Decompose forward_opaque`、`Add pass <name>`、`Make feature editable` など
+  - commit が `no_change` か `documents` が空なら積まない。新しい項目を積むと Redo の側は空になる([`finishEdit()`](../src/devstudio/model/renderedithistory.cpp#L470))
+- **決定 2・3**: Undo は、項目が書いた文書を名指して今の content を読み(Redo 用)、「前」の content を commit の digest を base にして restore する。Redo はその逆([`startRestore()`](../src/devstudio/model/renderedithistory.cpp#L584)、[`sendRestore()`](../src/devstudio/model/renderedithistory.cpp#L607))。restore の commit の `documents` が次の base になる
+- **決定 4**: 着地時の区切りは、add / remove_authored_pass、fork、import、`edit_render_features` の materialize と、下の D4 の commit。1 行は `Cannot undo past "<項目>": it created or removed files. (RD-1b)`。RU-1b(`20827de4`)で区切りは外れた
+- **決定 5**: [`refuseOperation()`](../src/devstudio/model/renderedithistory.cpp#L696)。`"<項目>" cannot be undone: <reference> changed since. Undo the later edit first, or refresh.`(reference は拒否の `reference`、無ければ `mismatches[0]`)。項目は残る。`render_pipeline_preflight_failed` は message のまま
+- **決定 6**:
+  - Edit メニュー(`pelican.editMenu`)に **Undo Render Edit** / **Redo Render Edit**(`pelican.edit.undoRenderEdit` / `.redoRenderEdit`)([menu](../src/devstudio/view/mainwindow.cpp#L890))
+  - Frame Plan の toolbar の Refresh の右に **Undo** / **Redo**(`pelican.framePlan.undoButton` / `.redoButton`)。action の押せる・押せないと tooltip(`Undo <項目>` / `Nothing to undo`)に従う([ボタン](../src/devstudio/view/frameplanwidget.cpp#L4191))
+  - キーは action の shortcut(Ctrl+Z、Redo は Ctrl+Y と Ctrl+Shift+Z)で、範囲は `Qt::WidgetWithChildrenShortcut`([キーの範囲](../src/devstudio/view/mainwindow.cpp#L729))。action を Frame Plan・Pass Editor(の scroll)・Render Features と、Render Features から開く dialog(Task Editor・Fork・Regions・Records・Scene AS・frame node の順)に付けた([dialog に渡す所](../src/devstudio/view/renderfeatureswidget.cpp#L2091))。focus が中のテキスト欄にあれば、その欄の Undo が先に取る
+  - 1 行は Frame Plan の status 行と、status bar に 8 秒([`renderHistoryChanged()`](../src/devstudio/view/mainwindow.cpp#L742))
+  - restore の commit の後、`source_digest` を共有の digest に知らせ、Frame Plan が plan と authoring context を読み直し、Pass Editor が context を読み直してフォームを作り直す([`renderDocumentsRestored()`](../src/devstudio/view/mainwindow.cpp#L770)、[Pass Editor](../src/devstudio/view/fullscreenpasswidget.cpp#L3647))
+  - project を替えると履歴を消す。engine が切れたら送信中のものだけを捨て、履歴は残す
+- **決定 7**: 確認の文は `… Undo takes it back (Undo on the Frame Plan, or Ctrl+Z there). …`([文](../src/devstudio/view/frameplanedit.cpp#L1580))
+- **決定 8**: 統合していない。Graph tab の後の編集で断られたときは決定 5 の 1 行
+- **仕様から外れた所(実装者の判断)**:
+  - D1: Inspector にも Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z を足した。scene の Undo / Redo のボタンを押す(押せないときは何もしない)([キー](../src/devstudio/view/inspectorwidget.cpp#L301))
+  - D2: シナリオの最初の Undo は toolbar のボタン。GPU の lane は窓を active にしないので、キーが届かない(キーは下の `devstudio_render_undo_keys_test` が見る)
+  - D3: Pass Editor で既存の pass を編集した後に新しい pass を始めると、name 欄などがロックされたままだった既存の不具合を直した([直した所](../src/devstudio/view/fullscreenpasswidget.cpp#L3317))
+  - D4: 区切りを method だけでなく、「編集の前の読みに無い文書を書いた」か「文書を消した」commit にも広げた(最初の render target など)
+  - D5: render の編集の返事を待っている間の Undo / Redo は `Wait for the render edit in flight.`、Undo / Redo の最中は `Wait for the Undo or Redo in flight.` を出して何も送らない([`undo()`](../src/devstudio/model/renderedithistory.cpp#L542))
+  - D6: commit が `restart_required` だった項目(route の既定)は、戻すと再起動をもう一度求める
+- **test**:
+  - `devstudio_render_history_test`(新規。偽の transport)に着地時 5 本
+    - `RU-1 an edit is recorded with the documents it wrote, and Undo / Redo restore them under the digests the commits named`([test](../test/devstudio_render_history_test.cpp#L189))
+    - `RU-1 an edit that changed nothing, or was refused, is not recorded`([test](../test/devstudio_render_history_test.cpp#L288))
+    - `RU-1 an edit that created or removed a file is a barrier Undo stops at`(RU-1b で消え、RU-1b の test に置き換わった)
+    - `RU-1 a restore the engine refuses says so in one line and keeps the history`([test](../test/devstudio_render_history_test.cpp#L708))
+    - `RU-1 Undo waits for what is in flight, and an engine that went away drops it`([test](../test/devstudio_render_history_test.cpp#L790))
+  - `devstudio_render_undo_keys_test`(新規。実の MainWindow と偽の engine の process、offscreen): `RU-1 Ctrl+Z is the render history's in the Frame Plan and the Pass Editor, the graph's in the Graph tab and the scene's in the Inspector`([test](../test/devstudio_render_undo_keys_test.cpp#L333))
+    - Frame Plan で Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z が履歴に行く。Frame Plan の filter 欄では行かない。Graph tab は canvas が受ける。Inspector は scene の `undo`。Pass Editor は履歴
+    - Render Features と dialog のキーは test していない
+  - `devstudio_graphcanvas_test` の `LP-4c Add loop sends the new body and the loop in one list` の section を、`pass_set` と `canonical_anchor` を書かない形に書き換えた([section](../test/devstudio_graphcanvas_test.cpp#L1226))
+  - `devstudio_frameplan_graph_test` の LP-4e の Decompose の test は、確認の文が `Undo takes it back` を含むことを見る([test](../test/devstudio_frameplan_graph_test.cpp#L11429))
+- **変異**(実装者の報告。1 本ずつ入れて、すべて赤)
+  - base_digest に編集前の digest を使う(受け入れ 1 の対照)
+  - no_change も積む
+  - 区切りで止まらない
+  - external_modification の判定を消す
+  - shortcut を `Qt::WindowShortcut` にする
+  - Frame Plan に action を付けない
+  - Inspector のキーを外す
+  - Add fullscreen pass に `pass_set` を戻す(受け入れ 3 の対照)
+  - ループの anchor の自動付与を戻す(受け入れ 3 の対照)
+  - 履歴に知らせない(シナリオが赤)
+- **シナリオ(受け入れ 4)**: 新しい `render_undo_roundtrip`([シナリオ](../test/studio_scenarios/render_undo_roundtrip.json))と fixture `test/fixtures/studio_render_undo_roundtrip/`(`studio_material_loop_decompose` を別の名前で写し、`scene_color` を反転して描く `shaders/ru1_invert.frag` を足したもの)。着地時の json の `steps` は 76。実装者の報告では 78 step で緑
+  - Frame Plan で `present` を見出しで開き、Pass Editor の fragment の一覧で `project://shaders/ru1_invert` を選んで Save → 中央の色が変わる → toolbar の Undo で fragment が `engine://passthrough` に戻り、中央と隅の色が前と同じ → Redo で反転に戻る
+  - `forward_opaque` を Decompose into loop(確認の文が `Undo takes it back` を含む)→ root に `forward_opaque_draws` → **Edit ▸ Undo Render Edit**(action で発火)で root の node が 0 個、`forward_opaque` が root の material pass に戻り、Frame Plan に `node_draw_loop` が無い → toolbar の Redo でループが戻る → toolbar の Undo でもう一度戻す
+  - Add fullscreen pass で `ru1_tint` を足す → Undo が `Cannot undo past "Add pass ru1_tint": it created or removed files. (RD-1b)` を出し、pass は残る(この手は RU-1b で書き換えた)
+  - 受け入れ 5(`graph_loop_expand`)の結果は報告の要約に無い(未確認)。`graph_loop_expand.json` は RU-1 で変わっていない
+- **受け入れ 6**: `-L studio_cpu -LE gpu` 409/409 緑(実装者の報告)
+- **テキスト入力の欄(受け入れ 7)**: RU-1 が足した欄は無い。シナリオで打つのは Add fullscreen pass の pass 名 `ru1_tint` の 1 回(着地時の json で確認)
+- **穴**(実装者の報告)
+  - Frame Plan で node を動かすと root の `layout` が書き換わり、それより前の root の編集の Undo が `external_modification` で断られる(RU-1b で解消)
+  - 別の panel の編集の ticket を待っている間は、写しが古くなりうる
+  - preset だけを restore したとき(root の digest が変わらない)、Render Features と Graph tab は自分からは読み直さない
+  - `Undid …` の行は、続く Frame Plan の読み直しの status で上書きされる(status bar には 8 秒残る)
+
+### RU-1b: 作る・消す編集も Undo する(RD-1b の上)/ layout だけの変化で断られない
+
+**中段(Studio のみ)。実装者: Claude(Opus)。RU-1(fa413aeb)の上。engine の契約は RD-1 / RD-1b(`docs/manual/13_editor.md` の同じ節。ここには写さない)。**
+
+#### 前提
+- RU-1 の履歴(`src/devstudio/model/renderedithistory.*`)は、作る・消す編集(add / remove_authored_pass、fork、materialize、import、前に無かった文書を書いた commit、文書を消した commit)を**区切り**にし、Undo はそこで止まる
+- RD-1b: restore の各文書で `content: null` は削除、`base_digest: null` は「今は無い」。書ける範囲に、今の root と戻す先の root が名指す project の preset / feature が加わった。予約の場所は `render_document_not_writable {reason: "reserved_location", location}`、root の削除は `root_document`。作る編集の commit の `documents` に作った文書の digest、消した文書は null
+- undo の手順(作る編集・消す編集の restore の形)は manual 13 の「undo の手順」
+- RU-1 の穴: Frame Plan で node を動かす(か Graph tab の配置)と root の `layout` が書き換わり、direct root ではそれより前の root の編集の Undo が `external_modification` で断られる。よく起きる
+
+#### 決定
+1. **区切りを外す**: commit の `documents` で「前は無く今はある」文書は、Undo で `content: null`(base = commit の digest)、「前はあり今は null」の文書は、Undo で `base_digest: null` + 前の content。Redo はその逆。編集の前の写しは、消される文書も含めて取る(参照なしの読みに、消す編集で消える fragment が含まれるかを確かめ、無ければ名指しで読む)
+2. 予約の場所・root の削除で断られたら、その 1 行(区切りと同じ扱いで履歴は残す)
+3. **layout だけの変化を吸収する**: commit の直後に、書き換わった文書の content も読んで持つ(「後」)。Undo のときに今の content を読み、今と「後」が **layout の member だけ**違う(engine が読まない member。graphcomposition の `set_layout` の説明と `requireLayout` で確かめる)なら、「前」の content に今の layout の member を載せたものを、**今の digest** を base にして restore する。layout 以外も違えば今どおり断る。Redo も同じ
+4. Frame Plan の toolbar の tooltip と Edit メニューの項目名は今どおり
+
+#### 受け入れ
+1. 履歴の test(fake の RPC): add_authored_pass の Undo が root の restore + 作った文書の `content: null` を 1 回で送る → Redo が逆。remove_authored_pass の Undo が `base_digest: null` + 前の content。fork の Undo。区切りが無くなった(対照: 区切りに戻す変異で赤)
+2. layout の test: 編集 → 別の layout の変化(今の digest が変わる)→ Undo が今の digest を base に、前の content + 今の layout で restore を送る。layout 以外も変わっていれば断る(対照: layout を見ずに断る変異 / layout 以外の違いも吸収する変異で赤)
+3. GPU シナリオ `render_undo_roundtrip` を伸ばす: Add fullscreen pass → Undo で pass と fragment ファイルが消え(rpc と file の有無)、同じ名前でもう一度 Add できる → Redo。Pass Editor の編集 → Frame Plan で node を動かす → Undo が通る
+4. `-L studio_cpu -LE gpu` 緑
+5. 報告にテキスト入力の欄
+
+#### 着地(2026-09-27、20827de4)
+- **決定 1**: 区切りだった 4 method も積む 16 個の 1 つにした([一覧](../src/devstudio/model/renderedithistory.cpp#L24))
+  - `finishEdit()` が commit の `documents` を 1 つずつ見る。編集の前の読みに無い文書は「前」を空にし(Undo で `content: null`、base は commit の digest)、`null` の文書は前の content を持つ(Undo で `base_digest: null`)([`finishEdit()`](../src/devstudio/model/renderedithistory.cpp#L470))。restore の列は [`sendRestore()`](../src/devstudio/model/renderedithistory.cpp#L607) が組み、両側とも無い文書は送らない
+  - `remove_authored_pass` は、参照なしの読みに加えて `fragment_reference` を名指しでも読む([`beforeRequest()`](../src/devstudio/model/renderedithistory.cpp#L307))。実装者の報告では、fragment は参照なしの読みにも入り、名指しは保険
+  - Redo は、Undo が読んだ今の content(消えた文書は無し)を、Undo の commit の digest を base に送る
+  - 区切りとして残るのは 2 つ: 編集の前の読みが返らなかった(`its documents could not be read before it`)、消えた文書をどちらの読みでも持っていない(`what it removed could not be read before it`)
+- **決定 2**: `render_document_not_writable` の `reserved_location` / `root_document` を受けると、その項目を区切りにして 1 行を出す([`refuseOperation()`](../src/devstudio/model/renderedithistory.cpp#L696))
+  - `"<項目>" cannot be undone: it would create or delete <reference> under <location>, where the project keeps documents that are not render documents.`
+  - `"<項目>" cannot be undone: it would delete the root <reference>.`
+  - toolbar の tooltip も区切りの理由を言う(`Cannot undo past "<項目>": <理由>`)([tooltip](../src/devstudio/view/mainwindow.cpp#L742))
+- **決定 3**:
+  - commit の直後に、書き換わった文書を名指して読み、commit の digest と一致した content だけを「後」として持つ([`receiveAfterRead()`](../src/devstudio/model/renderedithistory.cpp#L513))。先に別の編集が着地していて一致しなければ持たない
+  - Undo / Redo で、今の root の digest が base と違い、今と「後」が layout だけ違えば([`differsOnlyInLayout()`](../src/devstudio/model/renderedithistory.cpp#L163))、戻す content に後から変わった layout の member だけを今のもので載せ([`withLaterLayout()`](../src/devstudio/model/renderedithistory.cpp#L173))、base を今の digest にする([判定する所](../src/devstudio/model/renderedithistory.cpp#L621))
+  - layout は root の top-level の `layout` と、各 definition の `layout`([範囲](../src/devstudio/model/renderedithistory.cpp#L92))。member ごとの 3 方向の合わせ方で、「後」と今が同じ member は「前」のまま、変わった member は今のもの([合わせる所](../src/devstudio/model/renderedithistory.cpp#L123))
+  - 吸収するのは `kind` が root の文書だけ。preset は吸収しない
+  - 仕様(今の layout を丸ごと載せる)から外れた理由(実装者の判断): 取り消す編集が自分で書いた配置を残すと、無い node を指す配置が残り、次の `set_layout` が `graph.layout_invalid@1` で断られる
+- **決定 4**: 項目名と Edit メニューは変えていない
+- **途中で直した不具合(draw_loop の拒否 5 つ)**: LP-2 で engine が `graph.loop_phase_crossing@1` / `graph.loop_variant_missing@1` / `graph.loop_override_interface@1` / `graph.loop_override_needs_compiler@1` / `graph.loop_override_compile_limit@1` を最上位の code と field で返すようになった(engine `992225fb`)。文は LP-4c の表に既にあり、直したのは次の 3 点
+  - `graph.loop_variant_missing@1` の field `variant`(material の変種)を graph の変種と取り違え、`The outline graph refused it:` を前に付けていた。message の `<code>: {…}` に同じ `variant` があれば graph の変種と見なさない([`graphRefusalVariant()`](../src/devstudio/model/inspectormodel.cpp#L927))。Graph tab の `diagnostic()` と Frame Plan の `renderAuthoringRefusalLine()` がこれを使う。実装者の報告では、engine は field 名を `material_variant` に変える予定
+  - 変種の preflight では code の横の `variant` が graph の変種で、拒否自身の field は message の中にだけある。message の中の field を、code の横の同じ名前のものより優先する([読む所](../src/devstudio/model/inspectormodel.cpp#L888))
+  - Frame Plan の編集の拒否と render target の form の拒否でも、ループの code なら文を出す([Frame Plan](../src/devstudio/view/frameplanwidget.cpp#L2574)、[render target の form](../src/devstudio/view/frameplanedit.cpp#L1473))
+- **test**:
+  - `devstudio_render_history_test` に RU-1b の 7 本(RU-1 の区切りの test を置き換えた)
+    - `RU-1b Add pass is undone by restoring the root and deleting its fragment in one restore, and Redo writes the fragment again`([test](../test/devstudio_render_history_test.cpp#L324))
+    - `RU-1b Remove pass is undone by writing the fragment again from what was read before it`([test](../test/devstudio_render_history_test.cpp#L386))
+    - `RU-1b fork, Make editable and a first render target are undone by deleting what they created`([test](../test/devstudio_render_history_test.cpp#L423))
+    - `RU-1b an edit whose commit erased a document is undone by writing it again`([test](../test/devstudio_render_history_test.cpp#L470))
+    - `RU-1b Undo stops where the documents could not be read, or where the engine does not create or delete them`([test](../test/devstudio_render_history_test.cpp#L481))
+    - `RU-1b a root that changed since only in placement is undone on its digest now, with the placement it has now`([test](../test/devstudio_render_history_test.cpp#L611)): Redo も同じ形
+    - `RU-1b a root that changed since in more than placement is refused as before`([test](../test/devstudio_render_history_test.cpp#L661)): node も変わった / commit の後の読みより先に別の編集が着地した / preset は吸収しない の 3 section
+  - `devstudio_graphcanvas_test`: `LP-2 the draw-loop refusals the engine names read as sentences, a graph variant first, and mark the loop`([test](../test/devstudio_graphcanvas_test.cpp#L1945))
+  - `devstudio_frameplan_graph_test`: `LP-4c a loop's or a definition's refusal reads as its sentence, and a graph variant is named whatever the code` に LP-2 の拒否を足した([test](../test/devstudio_frameplan_graph_test.cpp#L11341))
+- **変異**(実装者の報告)
+  - 区切りに戻す: RU-1b の test 5 本が赤、シナリオが 76 手目で赤(受け入れ 1 の対照)
+  - layout を吸収しない: placement の test が赤、シナリオが 125 手目で赤(受け入れ 2 の対照)
+  - layout 以外も吸収する: もう一方の test が赤(受け入れ 2 の対照)
+  - 拒否の文の表から 1 行消す / variant の判定を外す / message の field を優先しない: それぞれ 2 本赤
+- **シナリオ(受け入れ 3)**: `render_undo_roundtrip` を伸ばした([シナリオ](../test/studio_scenarios/render_undo_roundtrip.json))。json の `steps` は 127。実装者の報告では 129 手で緑
+  - RU-1 の区切りの手を置き換えた: Add fullscreen pass で `ru1_tint` → `get_render_documents` の件数 2、`passes/authoring/` に fragment のファイル → toolbar の Undo で `Undid "Add pass ru1_tint".`、pass が canvas から消え、件数 1、ファイルが無い。`present` は反転の fragment のまま
+  - 同じ名前でもう一度 Add → 同じファイル名で書かれる → Undo で消える → Redo で `Redid "Add pass ru1_tint".`、件数 2、ファイルが戻る
+  - `present` を Pass Editor で `engine://passthrough` に戻して Save → Frame Plan で `present` を見出しで drag(`get_graph_instances` の `layout.frame_plan.main_render.nodes.present` が入る)→ toolbar の Undo が `Undid "Edit pass present".` を出し、fragment が反転に戻り、配置は残る
+- **受け入れ 4**: `-L studio_cpu -LE gpu` 416/416 緑(実装者の報告)
+- **テキスト入力の欄(受け入れ 5)**(実装者の報告)
+  - Pass Editor の新しい pass の名前(既定は空)。減らす案は、挿入位置から既定の名前を入れること
+  - シナリオで打つのは `ru1_tint` の 2 回(json で確認)
+- **穴**(実装者の報告)
+  - 「作った」の判定は「編集の前の読みに無い」こと。書ける範囲の外の既存ファイルを編集が置き換えた場合、Undo はそれを消す(今ある編集では起きない)
+  - commit の直後の読みより先に別の編集が着地すると、その項目は layout を吸収しない。吸収は root だけ
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
