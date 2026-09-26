@@ -165,6 +165,16 @@ struct FramePlanPassInputs {
     bool operator==(const FramePlanPassInputs &) const = default;
 };
 
+// LP-4a: a pass's `view_select` (LP-Va): the view axes it runs for, as
+// get_frame_plan lists them. Empty when the node runs every view of its
+// family.
+struct FramePlanViewSelectAxis {
+    std::string axis;
+    std::uint64_t value = 0;
+
+    bool operator==(const FramePlanViewSelectAxis &) const = default;
+};
+
 struct FramePlanNode {
     std::string name;
     std::string authored_name;
@@ -179,6 +189,10 @@ struct FramePlanNode {
     std::vector<std::string> history_reads;
     std::vector<std::string> writes;
     std::string view_family;
+    std::vector<FramePlanViewSelectAxis> view_select;
+    // LP-4a: the frame ran no view the node's view_select matches (the
+    // engine's execution trace says so); the node recorded nothing.
+    bool no_selected_view = false;
     std::string snapshot_after;
     std::size_t byte_size = 0;
     std::optional<FramePlanMaterialFilter> material_filter;
@@ -367,6 +381,8 @@ struct FramePlanPhysicalScope {
     std::size_t execution_count = 0;
     std::size_t view_mask = 0;
     std::optional<std::size_t> rasterization_samples;
+    // LP-4a: the scope's passes run only for these view axes.
+    std::vector<FramePlanViewSelectAxis> view_select;
 
     bool operator==(const FramePlanPhysicalScope &) const = default;
 };

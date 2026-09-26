@@ -452,6 +452,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   pelican_define_test(devstudio_engine_failure_test QT GPU GOLDEN
     pelican_studio_viewport
     pelican_studio_frame_plan
+    # LP-4a: frameplanedit reads view_select refusals from Studio's table.
+    pelican_studio_inspector_model
     pelican_core
     VulkanMemoryAllocator
     VulkanMemoryAllocator-Hpp
@@ -497,6 +499,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   pelican_define_test(devstudio_frameplan_graph_test QT QT_OFFSCREEN
     pelican_studio_viewport
     pelican_studio_frame_plan
+    # LP-4a: frameplanedit reads view_select refusals from Studio's table.
+    pelican_studio_inspector_model
     pelican_core
     Qt6::Core
     Qt6::Test

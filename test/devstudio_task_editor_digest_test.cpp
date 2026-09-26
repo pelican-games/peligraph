@@ -25,6 +25,8 @@
 #include <QApplication>
 #include <QDialog>
 #include <QElapsedTimer>
+#include <QLabel>
+#include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSet>
@@ -215,6 +217,57 @@ TEST_CASE("Q-15 the Task Editor reads the document again when another panel "
     REQUIRE(followed);
     rig.answer(*followed, taskContext(RootC));
     CHECK(editor.toPlainText() == draft);
+}
+
+TEST_CASE("LP-4a the Task Editor's Apply keeps a task's view_select, and a "
+          "view_select refusal reads as its sentence",
+          "[devstudio][task-editor][lp4a][view-select][widget]") {
+    Rig rig;
+    rig.features->editComputeTask(QStringLiteral("blur"));
+    const auto read = rig.next("get_compute_task_authoring");
+    REQUIRE(read);
+    // The task runs for cascade 1 of the directional shadow.
+    auto context = taskContext(RootA);
+    auto &task = context["tasks"][0];
+    task["declaration"]["view_family"] = "$shadow/directional";
+    task["declaration"]["view_select"] = {{"cascade", 1}};
+    task["declaration_json"] = task.at("declaration").dump(2);
+    rig.answer(*read, context);
+    QDialog *dialog = rig.editor();
+    REQUIRE(dialog != nullptr);
+
+    // Everything but the name may change; here the dispatch, through the form.
+    required<QLineEdit>(*dialog, "pelican.computeTasks.dispatchAxis0")
+        .setText(QStringLiteral("4"));
+    required<QPushButton>(*dialog, "pelican.computeTasks.updateDispatch").click();
+    auto &apply = required<QPushButton>(*dialog, "pelican.computeTasks.apply");
+    REQUIRE(apply.isEnabled());
+    apply.click();
+    const auto edit = rig.next("edit_compute_task");
+    REQUIRE(edit);
+    const auto &sent = edit->at("params").at("task");
+    INFO(sent.dump());
+    CHECK(sent.at("dispatch").at("groups") == Json::array({4, 1, 1}));
+    CHECK(sent.at("view_select") == Json{{"cascade", 1}});
+    CHECK(sent.at("view_family") == "$shadow/directional");
+
+    // The engine refuses the candidate for view_select.
+    rig.answer(*edit, {{"status", "accepted"}, {"ticket", "lp4a-task"}});
+    const auto result = rig.next("get_edit_result");
+    REQUIRE(result);
+    const Json fields{{"pass", "blur"},
+                      {"family", "$shadow/directional"},
+                      {"axis", "light"}};
+    Json error = fields;
+    error["code"] = "graph.view_select_runtime_axis@1";
+    error["message"] = "graph.view_select_runtime_axis@1: " + fields.dump();
+    rig.answer(*result, {{"status", "rejected"},
+                         {"committed", false},
+                         {"error", error}});
+    CHECK(required<QLabel>(*dialog, "pelican.computeTasks.notice").text() ==
+          QStringLiteral("blur: light of $shadow/directional is decided each "
+                         "frame and cannot be selected "
+                         "(graph.view_select_runtime_axis@1)."));
 }
 
 } // namespace PelicanStudio

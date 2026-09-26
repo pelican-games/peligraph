@@ -203,6 +203,18 @@ modelReferenceChoices(std::string_view current,
 // "<sentence> (<code>)", or empty when neither names a code Studio knows.
 [[nodiscard]] std::string knownRefusalDescription(std::string_view code,
                                                   std::string_view message);
+// LP-4a: the four view_select refusals (LP-Va) are sentences made from the
+// refusal's own fields -- the pass, the view family, the axis, and for a
+// value past the axis its value and length:
+//   graph.view_select_axis_unknown@1       {pass, family, axis[, value, length]}
+//   graph.view_select_runtime_axis@1       {pass, family, axis}
+//   graph.view_select_primary_family@1     {pass, family}
+//   graph.view_select_needs_target_plan@1  {pass}
+// `error` is a rejection's `error` object: the fields sit beside its code
+// (the render edit service puts them there), or, for a refusal carried inside
+// another's message, in the "<code>: {...}" of that message. Answers
+// "<sentence> (<code>)." in Q-10's form, or empty for any other refusal.
+[[nodiscard]] std::string viewSelectRefusalDescription(const nlohmann::json &error);
 
 struct ComponentAddRow {
     std::size_t candidate = 0;  // index into the catalog's "candidates"

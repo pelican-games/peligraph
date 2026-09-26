@@ -16,6 +16,7 @@
 #include "materialpassform.hpp"
 #include "renderconfigdigest.hpp"
 #include "shadersourceresolver.hpp"
+#include "inspectormodel.hpp"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -2489,9 +2490,10 @@ struct FramePlanWidget::Impl {
             return text(framePlanRenderTargetRejection(*error,
                                                        authoring.preset_name));
         // G-6: a graph variant that refused the edit is named, whatever the
-        // edit was.
+        // edit was. LP-4a: a view_select refusal reads as its sentence.
         if (error != response.end() && error->is_object() &&
-            error->contains("variant"))
+            (error->contains("variant") ||
+             !viewSelectRefusalDescription(*error).empty()))
             return text(renderAuthoringRefusalLine(*error));
         if (error != response.end() && error->is_object() &&
             submitted_method == "add_authored_pass") {
@@ -3185,6 +3187,13 @@ struct FramePlanWidget::Impl {
                     QString::number(
                         static_cast<qulonglong>(node.declaration_index)));
             addFact(facts, owner.tr("View family"), text(node.view_family));
+            // LP-4a: the views of the family the node runs for.
+            if (!node.view_select.empty())
+                addFact(facts, owner.tr("View select"),
+                        text(framePlanViewSelectLine(node.view_select).substr(6)));
+            if (const auto idle = framePlanNoSelectedViewNotice(node);
+                !idle.empty())
+                addFact(facts, owner.tr("This frame"), text(idle));
             addFact(facts, owner.tr("Material variant"),
                     text(node.material_variant));
             if (!node.snapshot_after.empty()) {
@@ -3560,12 +3569,17 @@ struct FramePlanWidget::Impl {
                 item->setText(0, text(scope.id));
                 item->setText(1, text(scope.kind));
                 item->setText(2, joined(scope.nodes));
-                item->setText(
-                    3, owner.tr("%1; %2 execution(s); %3 local reads")
-                           .arg(text(scope.view_execution))
-                           .arg(static_cast<qulonglong>(scope.execution_count))
-                           .arg(static_cast<qulonglong>(
-                               scope.local_reads.size())));
+                QString scope_facts =
+                    owner.tr("%1; %2 execution(s); %3 local reads")
+                        .arg(text(scope.view_execution))
+                        .arg(static_cast<qulonglong>(scope.execution_count))
+                        .arg(static_cast<qulonglong>(
+                            scope.local_reads.size()));
+                // LP-4a: a scope whose passes run only for some views.
+                if (!scope.view_select.empty())
+                    scope_facts += QStringLiteral("; %1").arg(
+                        text(framePlanViewSelectLine(scope.view_select)));
+                item->setText(3, scope_facts);
             }
 
             auto *lowering_group = groupItem(

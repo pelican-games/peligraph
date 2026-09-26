@@ -149,6 +149,24 @@ std::uint64_t unsignedInteger(const Json &value, std::string_view context) {
     throw invalid(std::string{context} + " must be a non-negative integer");
 }
 
+// LP-4a: `view_select` as get_frame_plan writes it -- an object of axis
+// names to non-negative integers -- in the order the object lists them.
+// Absent reads as empty (the node runs every view of its family).
+std::vector<FramePlanViewSelectAxis> optionalViewSelect(
+    const Json &object, std::string_view context) {
+    std::vector<FramePlanViewSelectAxis> axes;
+    const auto found = object.find("view_select");
+    if (found == object.end() || found->is_null()) return axes;
+    const std::string where = std::string{context} + ".view_select";
+    if (!found->is_object()) throw invalid(where + " must be an object");
+    for (const auto &[axis, value] : found->items()) {
+        if (axis.empty()) throw invalid(where + " has an empty axis name");
+        axes.push_back(FramePlanViewSelectAxis{
+            axis, unsignedInteger(value, where + "." + axis)});
+    }
+    return axes;
+}
+
 std::size_t requireSizeField(const Json &object, std::string_view field,
                              std::string_view context) {
     const auto found = object.find(field);
@@ -1026,6 +1044,10 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         node.history_reads = stringArray(value, "reads_history", context);
         node.writes = stringArray(value, "writes", context, true);
         node.view_family = optionalStringField(value, "view_family", context);
+        node.view_select = optionalViewSelect(value, context);
+        node.no_selected_view =
+            optionalBoolField(value, "no_selected_view", context)
+                .value_or(false);
         node.snapshot_after =
             optionalStringField(value, "snapshot_after", context);
         node.byte_size = optionalSizeField(value, "byte_size", context).value_or(0);
@@ -1300,6 +1322,7 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
                 .view_mask = requireSizeField(value, "view_mask", context),
                 .rasterization_samples = optionalSizeField(
                     value, "rasterization_samples", context),
+                .view_select = optionalViewSelect(value, context),
             };
             model.physical_plan.scopes.push_back(std::move(scope));
         }

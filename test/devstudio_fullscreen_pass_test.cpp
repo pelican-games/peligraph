@@ -1,6 +1,7 @@
 #include "fullscreenpasswidget.hpp"
 #include "renderconfigdigest.hpp"
 #include "frameplanedit.hpp"
+#include "panelhelp.hpp"
 #include "fullscreenpasssettings.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "fullscreenshadertemplate.hpp"
@@ -4803,5 +4804,92 @@ TEST_CASE("VI-3b Save moving a pass off engine://passthrough drops "
         INFO(params.dump());
         CHECK(params.at("shader").at("defines") == shader.at("defines"));
     }
+}
+
+TEST_CASE("LP-4a the Pass Editor's Save keeps a pass's view_select, and a "
+          "view_select refusal reads as its sentence",
+          "[devstudio][fullscreen-pass][lp4a][view-select]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    const Json view_select{{"cascade", 1}};
+    const Json original{
+        {"name", "sun_mask"}, {"type", "fullscreen"},
+        {"view_family", "$shadow/directional"}, {"view_select", view_select},
+        {"input", Json::array({"input"})},
+        {"output", {{"color", Json::array({"output"})}, {"depth", nullptr}}},
+        {"shader", {{"vertex", "engine://fullscreen"},
+                    {"fragment", "engine://fullscreen"}}}};
+    Json graph{{"name", "edit_graph"},
+               {"passes", Json::array({{{"name", "sun_mask"},
+                                        {"declaration", original},
+                                        {"editable_preset_pass", true},
+                                        {"preset_declaration", original}}})},
+               {"anchor_candidates",
+                Json::array({{{"position", 0}, {"insert", "before:sun_mask"}}})}};
+    Json context{{"source_digest", {{"hex", std::string(64, 'a')}}},
+                 {"pipeline_preset",
+                  {{"source_digest", {{"hex", std::string(64, 'b')}}}}},
+                 {"graphs", Json::array({graph})}};
+    authoring.succeed(authoring.requests.back().id, context);
+    auto plan = minimalFramePlan(
+        "edit_graph", Json::array({resource("input"), resource("output")}));
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    form.editPresetPass(QStringLiteral("edit_graph"), QStringLiteral("sun_mask"));
+    authoring.succeed(authoring.requests.back().id, context);
+    refresh.succeed(refresh.requests.back(),
+                    QByteArray::fromStdString(plan.dump()));
+    REQUIRE(required<QLineEdit>(form, "pelican.fullscreenPass.name").text() ==
+            QStringLiteral("sun_mask"));
+
+    // Everything but the name may change; here the fragment.
+    required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment")
+        .setText(QStringLiteral("project://shaders/sun_mask"));
+    auto &save = required<QPushButton>(form, "pelican.fullscreenPass.save");
+    REQUIRE(save.isEnabled());
+    save.click();
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("edit_preset_pass"));
+    const auto params = Json::parse(
+        QJsonDocument(authoring.requests.back().params).toJson().toStdString());
+    INFO(params.dump());
+    CHECK(params.at("shader").at("fragment") == "project://shaders/sun_mask");
+    // edit_preset_pass replaces the members it is given and keeps the rest
+    // (the engine test "LP-4a edit_preset_pass keeps a fullscreen pass's
+    // view_select" holds it to that), so view_select stays by not being sent.
+    CHECK_FALSE(params.contains("view_select"));
+    CHECK_FALSE(params.contains("view_family"));
+    const std::set<std::string> accepted{
+        "base_source_digest", "base_preset_digest", "base_feature_digest",
+        "graph", "pass_name", "input", "output", "shader", "ray_query",
+        "uses_light_data", "push_constants", "clear_colors"};
+    for (const auto &[key, value] : params.items()) {
+        INFO(key);
+        CHECK(accepted.contains(key));
+    }
+
+    // The engine refuses the candidate for view_select: the panel says the
+    // sentence, not the fields as JSON.
+    Json fields{{"pass", "sun_mask"},
+                {"family", "$shadow/directional"},
+                {"axis", "cascade"},
+                {"value", 4},
+                {"length", 4}};
+    Json error = fields;
+    error["code"] = "graph.view_select_axis_unknown@1";
+    error["message"] = "graph.view_select_axis_unknown@1: " + fields.dump();
+    authoring.succeed(authoring.requests.back().id,
+                      {{"status", "rejected"},
+                       {"committed", false},
+                       {"error", error}});
+    const QString sentence = QStringLiteral(
+        "sun_mask: cascade 4 is outside $shadow/directional's 4 views (0..3) "
+        "(graph.view_select_axis_unknown@1).");
+    auto &status =
+        required<QLabel>(form, "pelican.fullscreenPass.authoringStatus");
+    CHECK(status.text() == oneLine(sentence));
+    CHECK(status.toolTip().contains(sentence));
+    CHECK_FALSE(status.text().contains(QStringLiteral("{")));
 }
 } // namespace PelicanStudio

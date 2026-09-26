@@ -636,7 +636,125 @@ std::string knownRefusalDescription(std::string_view code, std::string_view mess
     for (const auto &entry : UnavailableComponentTexts)
         if (message.find(entry.code) != std::string_view::npos)
             return componentUnavailableDescription(entry.code);
+    // LP-4a: a view_select refusal carries its fields in the message.
+    return viewSelectRefusalDescription(
+        nlohmann::json{{"code", std::string{code}}, {"message", std::string{message}}});
+}
+
+namespace {
+
+constexpr std::string_view ViewSelectAxisUnknownCode = "graph.view_select_axis_unknown@1";
+constexpr std::string_view ViewSelectRuntimeAxisCode = "graph.view_select_runtime_axis@1";
+constexpr std::string_view ViewSelectPrimaryFamilyCode = "graph.view_select_primary_family@1";
+constexpr std::string_view ViewSelectNeedsTargetPlanCode =
+    "graph.view_select_needs_target_plan@1";
+constexpr std::array<std::string_view, 4> ViewSelectRefusalCodes{
+    ViewSelectAxisUnknownCode, ViewSelectRuntimeAxisCode, ViewSelectPrimaryFamilyCode,
+    ViewSelectNeedsTargetPlanCode};
+
+// The fields object right after "<code>: " in a message, when there is one:
+// the engine writes a named refusal as "<code>: <fields JSON>", and a broader
+// refusal may quote it after words of its own.
+std::optional<nlohmann::json> fieldsAfterCode(std::string_view message, std::string_view code) {
+    for (auto at = message.find(code); at != std::string_view::npos;
+         at = message.find(code, at + 1)) {
+        auto rest = message.substr(at + code.size());
+        if (!rest.starts_with(": {")) continue;
+        rest.remove_prefix(2);
+        int depth = 0;
+        bool in_string = false;
+        bool escaped = false;
+        for (std::size_t index = 0; index < rest.size(); ++index) {
+            const char c = rest[index];
+            if (in_string) {
+                if (escaped) escaped = false;
+                else if (c == '\\') escaped = true;
+                else if (c == '"') in_string = false;
+                continue;
+            }
+            if (c == '"') in_string = true;
+            else if (c == '{') ++depth;
+            else if (c == '}' && --depth == 0) {
+                auto fields = nlohmann::json::parse(rest.substr(0, index + 1), nullptr, false);
+                if (!fields.is_discarded() && fields.is_object()) return fields;
+                break;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+// A field as the sentence shows it: a string as written, a number as a
+// number; empty when the refusal does not carry it.
+std::string refusalField(const nlohmann::json &fields, const char *key) {
+    const auto found = fields.find(key);
+    if (found == fields.end()) return {};
+    if (found->is_string()) return found->get<std::string>();
+    if (found->is_number_integer()) return found->dump();
     return {};
+}
+
+} // namespace
+
+std::string viewSelectRefusalDescription(const nlohmann::json &error) {
+    if (!error.is_object()) return {};
+    const auto code_value = error.find("code");
+    const std::string own_code = code_value != error.end() && code_value->is_string()
+                                     ? code_value->get<std::string>()
+                                     : std::string{};
+    const auto message_value = error.find("message");
+    const std::string message = message_value != error.end() && message_value->is_string()
+                                    ? message_value->get<std::string>()
+                                    : std::string{};
+    std::string_view code;
+    nlohmann::json fields;
+    for (const auto candidate : ViewSelectRefusalCodes) {
+        if (own_code != candidate) continue;
+        code = candidate;
+        // The edit service lays the fields beside the code; anything else
+        // still has them in its message.
+        fields = error.contains("pass") ? error
+                                        : fieldsAfterCode(message, candidate)
+                                              .value_or(nlohmann::json::object());
+    }
+    if (code.empty()) {
+        for (const auto candidate : ViewSelectRefusalCodes) {
+            if (auto quoted = fieldsAfterCode(message, candidate)) {
+                code = candidate;
+                fields = std::move(*quoted);
+                break;
+            }
+        }
+    }
+    if (code.empty()) return {};
+    auto pass = refusalField(fields, "pass");
+    if (pass.empty()) pass = "A pass";
+    const auto family = refusalField(fields, "family");
+    const auto axis = refusalField(fields, "axis");
+    std::string sentence;
+    if (code == ViewSelectAxisUnknownCode) {
+        const auto value = refusalField(fields, "value");
+        const auto length = fields.find("length");
+        if (!value.empty() && length != fields.end() && length->is_number_integer() &&
+            length->get<std::int64_t>() >= 0) {
+            const auto count = length->get<std::uint64_t>();
+            sentence = pass + ": " + axis + " " + value + " is outside " + family + "'s " +
+                       std::to_string(count) + " views " +
+                       (count == 0 ? std::string{"(it has none)"}
+                                   : "(0.." + std::to_string(count - 1) + ")");
+        } else {
+            sentence = pass + ": " + family + " has no view axis named " + axis;
+        }
+    } else if (code == ViewSelectRuntimeAxisCode) {
+        sentence = pass + ": " + axis + " of " + family +
+                   " is decided each frame and cannot be selected";
+    } else if (code == ViewSelectPrimaryFamilyCode) {
+        sentence = pass + " draws the main view (" + family + "), which has no axes to select";
+    } else {
+        sentence = pass + ": view_select needs the physical target plan, which this "
+                          "configuration does not build";
+    }
+    return sentence + " (" + std::string{code} + ").";
 }
 
 std::string componentUnavailableTag(std::string_view code) {

@@ -153,6 +153,10 @@ inline constexpr auto FramePlanSocketWarningItem = "node_socket_warning";
 // VI-3b: the Fix button beside the variadic band's end. A press on it asks
 // for the group's sockets to be fixed (socketsFixRequested).
 inline constexpr auto FramePlanSocketFixItem = "node_socket_fix";
+// LP-4a: the "view: cascade 2" line under the heading of a node that runs
+// only for some views of its family (view_select). Not a band: nothing on it
+// is retyped here.
+inline constexpr auto FramePlanViewSelectItem = "node_view_select";
 
 // A node's height follows its resource count rather than a constant, so the
 // numbers the scene draws with are published for the scene test to name.

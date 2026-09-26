@@ -6,6 +6,7 @@
 #include "jsonrpcrequest.hpp"
 #include "taskresourceconnections.hpp"
 #include "taskconnectiongraphics.hpp"
+#include "inspectormodel.hpp"
 
 #include "../viewport/embeddedviewport.hpp"
 
@@ -60,6 +61,12 @@ QString responseError(const QJsonObject &response) {
     const auto error = response.value(QStringLiteral("error"));
     if (error.isObject()) {
         const auto object = error.toObject();
+        // LP-4a: a view_select refusal reads as its sentence, the code last.
+        if (const auto sentence = viewSelectRefusalDescription(nlohmann::json::parse(
+                QJsonDocument{object}.toJson(QJsonDocument::Compact).toStdString(),
+                nullptr, false));
+            !sentence.empty())
+            return QString::fromStdString(sentence);
         const auto message =
             object.value(QStringLiteral("message")).toString();
         const auto code =
@@ -1085,6 +1092,7 @@ public:
     layout->addWidget(update_connections);
     connect(update_connections, &QPushButton::clicked, this, [this] { updateConnections(); });
     notice = new QLabel(this);
+    notice->setObjectName(QStringLiteral("pelican.computeTasks.notice"));
     notice->setWordWrap(true);
     // Q-12: the way to where a node's task is edited sits on the line that
     // says so.

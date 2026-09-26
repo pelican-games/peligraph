@@ -524,4 +524,18 @@ std::string framePlanRenderTargetRejection(
 // `error` is the rejection's `error` object.
 std::string renderAuthoringRefusalLine(const nlohmann::json &error);
 
+// --- LP-4a: view_select (LP-Va).
+
+// The line under a node's heading when the node runs only for some views of
+// its family: "view: cascade 2", several axes joined by ", " in the order the
+// frame plan lists them. Empty for a node without view_select. The value is
+// the number; naming it (face +X) waits for the engine's axis labels.
+std::string framePlanViewSelectLine(
+    const std::vector<FramePlanViewSelectAxis> &axes);
+
+// What a node that ran no view this frame says when pointed at:
+// "No view of <family> matches view_select this frame." Empty for a node
+// that ran.
+std::string framePlanNoSelectedViewNotice(const FramePlanNode &node);
+
 } // namespace PelicanStudio

@@ -1,6 +1,7 @@
 #include "frameplanedit.hpp"
 
 #include "fullscreenshadertemplate.hpp"
+#include "inspectormodel.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1504,9 +1505,32 @@ std::string renderAuthoringRefusalLine(const Json &error) {
     const auto variant = textOr(error, "variant");
     std::string line;
     if (!variant.empty()) line = "The " + variant + " graph refused it: ";
+    // LP-4a: a view_select refusal reads as its sentence, the code last.
+    if (const auto sentence = viewSelectRefusalDescription(error);
+        !sentence.empty())
+        return line + sentence;
     if (!code.empty()) line += code;
     if (!message.empty()) line += (code.empty() ? "" : ": ") + message;
     return line.empty() ? std::string{"the engine refused the edit"} : line;
+}
+
+std::string framePlanViewSelectLine(
+    const std::vector<FramePlanViewSelectAxis> &axes) {
+    if (axes.empty()) return {};
+    std::string line = "view: ";
+    for (std::size_t index = 0; index < axes.size(); ++index) {
+        if (index != 0) line += ", ";
+        line += axes[index].axis + " " + std::to_string(axes[index].value);
+    }
+    return line;
+}
+
+std::string framePlanNoSelectedViewNotice(const FramePlanNode &node) {
+    if (!node.no_selected_view) return {};
+    return "No view of " +
+           (node.view_family.empty() ? std::string{"its view family"}
+                                     : node.view_family) +
+           " matches view_select this frame.";
 }
 
 } // namespace PelicanStudio

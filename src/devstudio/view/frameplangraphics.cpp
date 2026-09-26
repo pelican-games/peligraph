@@ -1125,6 +1125,9 @@ struct NodeBodyLayout {
     std::vector<DrawnRow> inputs;
     // N-8: the retypeable fields, between the heading and the sockets.
     std::vector<FramePlanInlineBand> bands;
+    // LP-4a: "view: cascade 2", above the bands; empty for a node without
+    // view_select.
+    QString view_line;
     // VI-3a: the rows of the variadic group (its members and its drop end),
     // as [first, last] indices into `inputs`.
     std::optional<std::pair<std::size_t, std::size_t>> variadic_rows;
@@ -1170,6 +1173,7 @@ NodeBodyLayout nodeBodyLayout(const FramePlanModel &model,
                               const FramePlanInputSockets *sockets = nullptr) {
     NodeBodyLayout layout;
     layout.bands = std::move(bands);
+    layout.view_line = qtext(framePlanViewSelectLine(node.view_select));
     // Sorted, not in declaration order: WP318 fixes that the scene ignores the
     // order of every input array, and a row's y position is scene geometry.
     std::vector<std::string> written{node.writes.begin(), node.writes.end()};
@@ -1225,11 +1229,16 @@ NodeBodyLayout nodeBodyLayout(const FramePlanModel &model,
             layout.width,
             row_metrics.horizontalAdvance(band.label + ": " + band.value) +
                 34.0);
+    if (!layout.view_line.isEmpty())
+        layout.width = std::max<qreal>(
+            layout.width,
+            row_metrics.horizontalAdvance(layout.view_line) + 28.0);
     layout.width = std::min(layout.width, FramePlanNodeMaximumWidth);
 
     const auto rows = static_cast<qreal>(layout.outputs.size() +
                                          layout.inputs.size() +
-                                         layout.bands.size());
+                                         layout.bands.size() +
+                                         (layout.view_line.isEmpty() ? 0 : 1));
     // The GPU-timing line keeps its own row: it is published for every node,
     // including an anchor that has no resource of its own.
     layout.height = FramePlanHeaderHeight + FramePlanSectionPadding +
@@ -1361,6 +1370,14 @@ void addNodeBody(QGraphicsPathItem &item, const FramePlanNode &node,
                   (FramePlanHeaderHeight - heading_metrics.height()) / 2.0);
     annotateIdentity(*label, FramePlanNodeLabelItem, graph, node.name);
     label->setAcceptedMouseButtons(Qt::NoButton);
+    // LP-4a: a node whose view_select matched no view of this frame did not
+    // run: its heading is dimmed, and says why when pointed at.
+    if (const QString idle = qtext(framePlanNoSelectedViewNotice(node));
+        !idle.isEmpty()) {
+        band->setOpacity(0.45);
+        band->setToolTip(idle);
+        label->setToolTip(idle);
+    }
 
     // The kind stays visible beside the name: an anchor now looks like every
     // other node, so the word is the only thing that says what it is.
@@ -1458,6 +1475,26 @@ void addNodeBody(QGraphicsPathItem &item, const FramePlanNode &node,
 
     qreal cursor_y = FramePlanHeaderHeight + FramePlanSectionPadding +
                      FramePlanSocketRowHeight;
+    // LP-4a: which views of its family the node runs for. It is about the
+    // node itself, so it opens the section under the heading.
+    if (!layout.view_line.isEmpty()) {
+        const QString shown = row_metrics.elidedText(
+            layout.view_line, Qt::ElideMiddle, layout.width - 28.0);
+        auto *view = new QGraphicsSimpleTextItem(shown, &item);
+        view->setFont(row_font);
+        view->setBrush(QColor{QStringLiteral("#b9c9e8")});
+        view->setPos(14.0, cursor_y + (FramePlanSocketRowHeight -
+                                       row_metrics.height()) /
+                                          2.0);
+        view->setToolTip(
+            QStringLiteral("%1 runs only for the views of %2 with %3.")
+                .arg(node_name,
+                     node.view_family.empty() ? QStringLiteral("its family")
+                                              : qtext(node.view_family),
+                     layout.view_line.mid(6)));
+        tag(view, FramePlanViewSelectItem);
+        cursor_y += FramePlanSocketRowHeight;
+    }
     // N-8: the retypeable fields. They are drawn before the sockets because
     // they are about the node itself rather than about what flows through it,
     // and a click on one opens an editor over exactly this rectangle.
@@ -3212,6 +3249,12 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                     ignoredLegacyRegionNotice(model, node);
                 if (!legacy_notice.isEmpty()) {
                     tooltip += QStringLiteral("\n%1").arg(legacy_notice);
+                }
+                // LP-4a: the node did not run this frame.
+                if (const QString idle =
+                        qtext(framePlanNoSelectedViewNotice(node));
+                    !idle.isEmpty()) {
+                    tooltip += QStringLiteral("\n%1").arg(idle);
                 }
                 item->setToolTip(tooltip);
                 addNodeBody(*item, node, body, model.graph,

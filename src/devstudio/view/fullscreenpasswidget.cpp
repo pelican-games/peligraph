@@ -16,6 +16,7 @@
 #include "renderconfigsection.hpp"
 #include "passshapepolicy.hpp"
 #include "rasterpass.hpp"
+#include "inspectormodel.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -1507,7 +1508,14 @@ struct FullscreenPassWidget::Impl {
     void rejectAuthoring(const Json &response) {
         if (refusedForMovedDocument(response)) return;
         submitted_kind = AuthoringRequest::none;
-        const QString message = responseError(response);
+        const auto error = response.find("error");
+        // LP-4a: a view_select refusal is its sentence, the code last; the
+        // engine's message is its fields as JSON.
+        const auto view_select =
+            error != response.end() ? viewSelectRefusalDescription(*error)
+                                    : std::string{};
+        const QString message =
+            view_select.empty() ? responseError(response) : text(view_select);
         if (compile_log->showMessage(message)) {
             authoringError(owner.tr("shader compile failed; see the log "
                                     "below"));
@@ -1518,7 +1526,6 @@ struct FullscreenPassWidget::Impl {
         if (offerShaderContract(response)) return;
         // G-6: the refusal's own line is what the panel shows -- its code,
         // and the graph variant that refused it -- not "authoring failed".
-        const auto error = response.find("error");
         authoringError(
             message,
             error != response.end() && error->is_object()

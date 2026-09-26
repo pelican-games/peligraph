@@ -22,6 +22,8 @@
 
 #include "frameplanedit.hpp"
 #include "frameplaneditcapability.hpp"
+#include "inspectormodel.hpp"
+#include "panelhelp.hpp"
 #include "frameplangraphics.hpp"
 #include "frameplanwidget.hpp"
 #include "fullscreenshadertemplate.hpp"
@@ -10590,6 +10592,361 @@ TEST_CASE("VI-3b Fix sockets: why it cannot, and what it rewrites",
         CHECK(statusText(fixture.widget) ==
               QStringLiteral("wp343_mixed_a's shader has no sockets Studio fixed."));
         CHECK(vi3bRead(root / "shaders" / "vi.frag") == original);
+    }
+}
+
+// --- LP-4a: view_select (LP-Va) on the canvas, in the details, and in the
+// refusal lines.
+
+namespace {
+
+// The WP343 editing fixture with view_select written the way get_frame_plan
+// writes it: `a` runs for cascade 2, the task `b` for face 3 of light 0, `c`
+// for cascade 1 but no view of this frame matched it, and `d` for every view
+// (the control).
+Json lp4aWire() {
+    Json wire = mixedEditingWire();
+    for (auto &node : wire["nodes"]) {
+        const auto name = node.at("name").get<std::string>();
+        if (name == "wp343_mixed_a") {
+            node["view_family"] = "$shadow/directional";
+            node["view_select"] = {{"cascade", 2}};
+        } else if (name == "wp343_mixed_b") {
+            node["view_family"] = "$shadow/point";
+            node["view_select"] = {{"light", 0}, {"face", 3}};
+        } else if (name == "wp343_mixed_c") {
+            node["view_family"] = "$shadow/directional";
+            node["view_select"] = {{"cascade", 1}};
+            node["no_selected_view"] = true;
+        }
+    }
+    for (auto &scope : wire["physical_target_plan"]["scopes"])
+        for (const auto &member : scope.at("nodes"))
+            if (member == "wp343_mixed_a") scope["view_select"] = {{"cascade", 2}};
+    return wire;
+}
+
+std::map<std::string, QString> lp4aViewLines(QGraphicsScene &canvas) {
+    std::map<std::string, QString> lines;
+    for (QGraphicsItem *item : itemsOfKind(canvas, FramePlanViewSelectItem))
+        lines.emplace(item->data(FramePlanNameRole).toString().toStdString(),
+                      static_cast<QGraphicsSimpleTextItem *>(item)->text());
+    return lines;
+}
+
+QGraphicsItem *lp4aHeader(QGraphicsScene &canvas, const char *node) {
+    for (QGraphicsItem *item : itemsOfKind(canvas, FramePlanNodeHeaderItem))
+        if (item->data(FramePlanNameRole).toString() == QLatin1String{node})
+            return item;
+    return nullptr;
+}
+
+// What the engine's edit service answers when the render pipeline refused
+// the candidate for view_select: the code, its fields beside it, and a
+// message that is the code with the fields as JSON (carriedRefusalMessage).
+Json lp4aRefusal(const char *code, Json fields) {
+    Json error = fields;
+    error["code"] = code;
+    error["message"] = std::string{code} + ": " + fields.dump();
+    error["ticket"] = "lp4a-1";
+    error["participant"] = "pelican.render_pipeline";
+    return error;
+}
+
+} // namespace
+
+TEST_CASE("LP-4a view_select is one line under the heading, and a node that "
+          "ran no view this frame is dimmed and says why",
+          "[devstudio][frame-plan][lp4a][view-select]") {
+    application();
+    const Json wire = lp4aWire();
+    const auto model = buildFramePlanModel(wire.dump());
+
+    // The model reads both, and the scope's.
+    const auto &a = vi3aNode(model, "wp343_mixed_a");
+    const auto &b = vi3aNode(model, "wp343_mixed_b");
+    const auto &c = vi3aNode(model, "wp343_mixed_c");
+    const auto &d = vi3aNode(model, "wp343_mixed_d");
+    CHECK(a.view_select ==
+          std::vector<FramePlanViewSelectAxis>{{"cascade", 2}});
+    CHECK_FALSE(a.no_selected_view);
+    CHECK(c.no_selected_view);
+    CHECK(d.view_select.empty());
+    CHECK_FALSE(d.no_selected_view);
+    CHECK(framePlanViewSelectLine(a.view_select) == "view: cascade 2");
+    // Several axes, in the order the plan lists them.
+    CHECK(framePlanViewSelectLine(b.view_select) == "view: face 3, light 0");
+    CHECK(framePlanViewSelectLine(d.view_select).empty());
+    const auto scope = std::ranges::find_if(
+        model.physical_plan.scopes, [](const FramePlanPhysicalScope &value) {
+            return std::ranges::find(value.nodes, "wp343_mixed_a") !=
+                   value.nodes.end();
+        });
+    REQUIRE(scope != model.physical_plan.scopes.end());
+    CHECK(scope->view_select ==
+          std::vector<FramePlanViewSelectAxis>{{"cascade", 2}});
+    CHECK(framePlanNoSelectedViewNotice(c) ==
+          "No view of $shadow/directional matches view_select this frame.");
+    CHECK(framePlanNoSelectedViewNotice(a).empty());
+
+    SECTION("the canvas draws the line on the nodes that have one") {
+        FramePlanGraphicsScene canvas;
+        canvas.populateWholeFrame(model);
+        const auto lines = lp4aViewLines(canvas);
+        CHECK(lines == std::map<std::string, QString>{
+                           {"wp343_mixed_a", QStringLiteral("view: cascade 2")},
+                           {"wp343_mixed_b",
+                            QStringLiteral("view: face 3, light 0")},
+                           {"wp343_mixed_c", QStringLiteral("view: cascade 1")},
+                       });
+        // The control: a node without view_select has no line.
+        CHECK_FALSE(lines.contains("wp343_mixed_d"));
+        // Under the heading, above the node's sockets.
+        QGraphicsItem *line = nullptr;
+        for (QGraphicsItem *item : itemsOfKind(canvas, FramePlanViewSelectItem))
+            if (item->data(FramePlanNameRole).toString() ==
+                QLatin1String{"wp343_mixed_a"})
+                line = item;
+        REQUIRE(line != nullptr);
+        QGraphicsItem *heading = lp4aHeader(canvas, "wp343_mixed_a");
+        REQUIRE(heading != nullptr);
+        CHECK(line->sceneBoundingRect().top() >=
+              heading->sceneBoundingRect().bottom());
+        std::size_t sockets = 0;
+        for (QGraphicsItem *socket : itemsOfKind(canvas, FramePlanSocketItem)) {
+            if (socket->data(FramePlanNameRole).toString() !=
+                QLatin1String{"wp343_mixed_a"})
+                continue;
+            ++sockets;
+            CHECK(line->sceneBoundingRect().bottom() <=
+                  socket->sceneBoundingRect().center().y());
+        }
+        CHECK(sockets > 0);
+
+        // The node that ran no view: its heading is dimmed and says why.
+        QGraphicsItem *idle = lp4aHeader(canvas, "wp343_mixed_c");
+        REQUIRE(idle != nullptr);
+        CHECK(idle->opacity() < 1.0);
+        CHECK(idle->toolTip() ==
+              QStringLiteral("No view of $shadow/directional matches "
+                             "view_select this frame."));
+        CHECK(nodeItem(canvas, "wp343_mixed_c")
+                  ->toolTip()
+                  .contains(QStringLiteral("matches view_select this frame")));
+        // The control: a node that ran keeps its heading as it was.
+        CHECK(heading->opacity() == 1.0);
+        CHECK(heading->toolTip().isEmpty());
+        CHECK_FALSE(nodeItem(canvas, "wp343_mixed_a")
+                        ->toolTip()
+                        .contains(QStringLiteral("matches view_select")));
+    }
+
+    SECTION("the details list it for the node and for its scope") {
+        EmbeddedViewport viewport;
+        FramePlanWidget widget{&viewport};
+        widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+        QApplication::processEvents();
+        QStringList selects;
+        QStringList frames;
+        QStringList scopes;
+        for (auto *tree : widget.findChildren<QTreeWidget *>()) {
+            for (const auto *item : tree->findItems(
+                     QStringLiteral("View select"),
+                     Qt::MatchExactly | Qt::MatchRecursive, 1))
+                selects.push_back(item->text(2));
+            for (const auto *item : tree->findItems(
+                     QStringLiteral("This frame"),
+                     Qt::MatchExactly | Qt::MatchRecursive, 1))
+                frames.push_back(item->text(2));
+            for (const auto *item : tree->findItems(
+                     QStringLiteral("view: cascade 2"),
+                     Qt::MatchContains | Qt::MatchRecursive, 3))
+                scopes.push_back(item->text(0));
+        }
+        selects.sort();
+        CHECK(selects == QStringList{QStringLiteral("cascade 1"),
+                                     QStringLiteral("cascade 2"),
+                                     QStringLiteral("face 3, light 0")});
+        CHECK(frames == QStringList{QStringLiteral(
+                            "No view of $shadow/directional matches "
+                            "view_select this frame.")});
+        CHECK(scopes == QStringList{QString::fromStdString(scope->id)});
+    }
+}
+
+TEST_CASE("LP-4a the four view_select refusals read as one sentence each, "
+          "the code last",
+          "[devstudio][frame-plan][lp4a][refusal]") {
+    application();
+    SECTION("the sentences") {
+        CHECK(renderAuthoringRefusalLine(lp4aRefusal(
+                  "graph.view_select_axis_unknown@1",
+                  {{"pass", "cube_depth"},
+                   {"family", "$capture/cube"},
+                   {"axis", "cascade"}})) ==
+              "cube_depth: $capture/cube has no view axis named cascade "
+              "(graph.view_select_axis_unknown@1).");
+        CHECK(renderAuthoringRefusalLine(lp4aRefusal(
+                  "graph.view_select_axis_unknown@1",
+                  {{"pass", "sun_depth"},
+                   {"family", "$shadow/directional"},
+                   {"axis", "cascade"},
+                   {"value", 4},
+                   {"length", 4}})) ==
+              "sun_depth: cascade 4 is outside $shadow/directional's 4 views "
+              "(0..3) (graph.view_select_axis_unknown@1).");
+        CHECK(renderAuthoringRefusalLine(lp4aRefusal(
+                  "graph.view_select_runtime_axis@1",
+                  {{"pass", "sun_depth"},
+                   {"family", "$shadow/directional"},
+                   {"axis", "light"}})) ==
+              "sun_depth: light of $shadow/directional is decided each frame "
+              "and cannot be selected (graph.view_select_runtime_axis@1).");
+        CHECK(renderAuthoringRefusalLine(lp4aRefusal(
+                  "graph.view_select_primary_family@1",
+                  {{"pass", "tint"}, {"family", "$main"}})) ==
+              "tint draws the main view ($main), which has no axes to select "
+              "(graph.view_select_primary_family@1).");
+        CHECK(renderAuthoringRefusalLine(lp4aRefusal(
+                  "graph.view_select_needs_target_plan@1",
+                  {{"pass", "tint"}})) ==
+              "tint: view_select needs the physical target plan, which this "
+              "configuration does not build "
+              "(graph.view_select_needs_target_plan@1).");
+    }
+
+    SECTION("carried inside a broader refusal, and from a graph variant") {
+        const Json wrapped{
+            {"code", "render_pipeline_preflight_failed"},
+            {"message",
+             "render pipeline candidate was rejected: "
+             "graph.view_select_runtime_axis@1: "
+             "{\"axis\":\"light\",\"family\":\"$shadow/spot\","
+             "\"pass\":\"spot_depth\"}"}};
+        CHECK(renderAuthoringRefusalLine(wrapped) ==
+              "spot_depth: light of $shadow/spot is decided each frame and "
+              "cannot be selected (graph.view_select_runtime_axis@1).");
+        // The graph canvas reads the same table.
+        CHECK(knownRefusalDescription(wrapped.at("code").get<std::string>(),
+                                      wrapped.at("message").get<std::string>()) ==
+              renderAuthoringRefusalLine(wrapped));
+        auto variant = lp4aRefusal("graph.view_select_primary_family@1",
+                                   {{"pass", "tint"}, {"family", "$main"}});
+        variant["variant"] = "preview";
+        CHECK(renderAuthoringRefusalLine(variant) ==
+              "The preview graph refused it: tint draws the main view "
+              "($main), which has no axes to select "
+              "(graph.view_select_primary_family@1).");
+    }
+
+    SECTION("the control: any other refusal keeps its code and message") {
+        CHECK(renderAuthoringRefusalLine(
+                  Json{{"code", "gate_closed"},
+                       {"message", "The editor gate is closed"}}) ==
+              "gate_closed: The editor gate is closed");
+        CHECK(viewSelectRefusalDescription(
+                  Json{{"code", "gate_closed"},
+                       {"message", "The editor gate is closed"}})
+                  .empty());
+    }
+
+    SECTION("the Frame Plan's status line says it after a refused drag") {
+        EditingFixture fixture;
+        fixture.open();
+        auto &logical = fixture.logical();
+        fixture.dragSocket(QStringLiteral("wp343_mixed_d"),
+                           QStringLiteral("wp343_mixed_d_output"),
+                           QStringLiteral("output"),
+                           nodeItem(logical, "wp343_mixed_a"));
+        REQUIRE(fixture.recorder.submits == 1);
+        fixture.recorder.result(
+            fixture.recorder.submit_id,
+            QByteArray::fromStdString(
+                Json{{"status", "accepted"}, {"ticket", "lp4a-1"}}.dump()));
+        QApplication::processEvents();
+        REQUIRE(fixture.recorder.ticket_id != 0);
+        fixture.recorder.result(
+            fixture.recorder.ticket_id,
+            QByteArray::fromStdString(
+                Json{{"status", "rejected"},
+                     {"committed", false},
+                     {"error", lp4aRefusal("graph.view_select_axis_unknown@1",
+                                           {{"pass", "wp343_mixed_a"},
+                                            {"family", "$capture/cube"},
+                                            {"axis", "cascade"}})}}
+                    .dump()));
+        QApplication::processEvents();
+        const QString sentence = QStringLiteral(
+            "wp343_mixed_a: $capture/cube has no view axis named cascade "
+            "(graph.view_select_axis_unknown@1).");
+        auto *status = fixture.widget.findChild<QLabel *>(
+            QStringLiteral("pelican.framePlanStatus"));
+        REQUIRE(status != nullptr);
+        CHECK(status->text() == oneLine(sentence));
+        CHECK(status->toolTip().startsWith(sentence));
+        CHECK_FALSE(status->text().contains(QStringLiteral("{")));
+    }
+}
+
+TEST_CASE("LP-4a an edit on the canvas keeps a pass's and a task's view_select",
+          "[devstudio][frame-plan][lp4a][view-select][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    // `a` and the task both run for cascade 1 of the directional shadow.
+    fixture.tweak_context = [](Json &context) {
+        for (auto &graph : context["graphs"])
+            for (auto &pass : graph["passes"])
+                if (pass.at("name") == "wp343_mixed_a")
+                    for (const char *key : {"declaration", "preset_declaration"}) {
+                        pass[key]["view_family"] = "$shadow/directional";
+                        pass[key]["view_select"] = {{"cascade", 1}};
+                    }
+    };
+    fixture.catalog["tasks"][0]["declaration"]["view_family"] =
+        "$shadow/directional";
+    fixture.catalog["tasks"][0]["declaration"]["view_select"] = {
+        {"cascade", 1}};
+    fixture.open();
+    auto &logical = fixture.logical();
+
+    SECTION("a pass: edit_preset_pass keeps every member it is not given, so "
+            "view_select stays by not being sent") {
+        fixture.dragSocket(QStringLiteral("wp343_mixed_d"),
+                           QStringLiteral("wp343_mixed_d_output"),
+                           QStringLiteral("output"),
+                           nodeItem(logical, "wp343_mixed_a"));
+        REQUIRE(fixture.recorder.submits == 1);
+        REQUIRE(fixture.recorder.method == QStringLiteral("edit_preset_pass"));
+        const auto sent = Json::parse(
+            QJsonDocument(fixture.recorder.params).toJson().toStdString());
+        CHECK(sent.at("input") == Json::array({"wp343_mixed_d_output"}));
+        CHECK_FALSE(sent.contains("view_select"));
+        CHECK_FALSE(sent.contains("view_family"));
+        // Only members the engine's fullscreen edit takes: anything else
+        // would be refused, and a null would erase the member.
+        const std::set<std::string> accepted{
+            "base_source_digest", "base_preset_digest", "base_feature_digest",
+            "graph", "pass_name", "input", "output", "shader", "ray_query",
+            "uses_light_data", "push_constants", "clear_colors"};
+        for (const auto &[key, value] : sent.items()) {
+            INFO(key);
+            CHECK(accepted.contains(key));
+        }
+    }
+
+    SECTION("a task: the whole declaration goes back, view_select with it") {
+        fixture.dragSocket(QStringLiteral("wp343_mixed_a"),
+                           QStringLiteral("wp343_mixed_a_output"),
+                           QStringLiteral("output"),
+                           nodeItem(logical, "wp343_mixed_b"));
+        REQUIRE(fixture.recorder.submits == 1);
+        REQUIRE(fixture.recorder.method == QStringLiteral("edit_compute_task"));
+        const auto sent = Json::parse(
+            QJsonDocument(fixture.recorder.params).toJson().toStdString());
+        CHECK(sent.at("task").at("reads") ==
+              Json::array({"wp343_mixed_a_output"}));
+        CHECK(sent.at("task").at("view_select") == Json{{"cascade", 1}});
+        CHECK(sent.at("task").at("view_family") == "$shadow/directional");
     }
 }
 } // namespace PelicanStudio

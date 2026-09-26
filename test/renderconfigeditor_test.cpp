@@ -7665,4 +7665,64 @@ TEST_CASE("LP-0a an edit names a target composition decides, and recomposing ref
 }
 #endif
 
+
+// LP-4a: Studio's Pass Editor and canvas never send view_select (LP-Va) with
+// edit_preset_pass -- the edit takes a fixed field set per pass type -- so a
+// pass keeps its view_select only because every member the edit is not given
+// stays as the document holds it. This holds the fullscreen edit to that,
+// with the fields exactly as the Pass Editor's Save sends them.
+TEST_CASE("LP-4a edit_preset_pass keeps a fullscreen pass's view_select",
+          "[render-config-editor][preset-pass-edit][lp4a]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    auto preset = Json::parse(resolver.loadText("engine://render_pipelines/hybrid_v1.json"));
+    preset["config"]["render_targets"].push_back({
+        {"name", "view_probe_color"}, {"extent_scale", 1.0}, {"format", "R16G16B16A16_SFLOAT"},
+        {"format_class", "data"}, {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}});
+    auto &passes = preset["config"]["rendering_passes"][0]["passes"];
+    passes.push_back({
+        {"name", "view_probe"}, {"type", "fullscreen"},
+        {"view_select", {{"cascade", 1}}},
+        {"input", Json::array({"gbuffer_normal"})},
+        {"output", {{"color", Json::array({"view_probe_color"})}, {"depth", nullptr}}},
+        {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}}}});
+    const auto preset_path = project.root / "passes" / "view_probe.json";
+    writeBytes(preset_path, preset.dump(2));
+    auto root = Json::parse(readBytes(project.render_config));
+    renderingSectionOf(root)["pipeline"]["preset"] = "project://passes/view_probe.json";
+    writeBytes(project.render_config, root.dump(2));
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto context = service->getRenderAuthoringContext(Json::object());
+    const auto &context_passes = context.at("graphs").at(0).at("passes");
+    const auto editable = std::find_if(context_passes.begin(), context_passes.end(),
+                                       [](const auto &pass) { return pass.at("name") == "view_probe"; });
+    REQUIRE(editable != context_passes.end());
+    REQUIRE(editable->at("editable_preset_pass") == true);
+    REQUIRE(editable->at("preset_declaration").at("view_select") == Json{{"cascade", 1}});
+    const auto accepted = service->editPresetPass(
+        {{"base_source_digest", context.at("source_digest").at("hex")},
+         {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+         {"graph", "main_render"}, {"pass_name", "view_probe"},
+         {"input", Json::array({"gbuffer_albedo"})},
+         {"output", {{"color", Json::array({"view_probe_color"})}, {"depth", nullptr}}},
+         {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://scene_present"}}},
+         {"ray_query", false}});
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    service->commitPending();
+    const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("committed") == true);
+    const auto written = Json::parse(readBytes(preset_path));
+    const auto &written_passes = written.at("config").at("rendering_passes").at(0).at("passes");
+    const auto saved = std::find_if(written_passes.begin(), written_passes.end(),
+                                    [](const auto &pass) { return pass.at("name") == "view_probe"; });
+    REQUIRE(saved != written_passes.end());
+    CHECK(saved->at("shader").at("fragment") == "engine://scene_present");
+    CHECK(saved->at("input") == Json::array({"gbuffer_albedo"}));
+    CHECK(saved->at("view_select") == Json{{"cascade", 1}});
+}
+
 } // namespace Pelican
