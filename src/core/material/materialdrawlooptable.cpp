@@ -13,14 +13,18 @@ namespace Pelican {
 
 namespace {
 
+// Never destroyed. A table owned by a renderer generation in the global
+// module container is destroyed during static destruction; these statics are
+// first used after that container is constructed, so they would be destroyed
+// before it and the table's destructor would erase from a dead vector.
 std::mutex &liveTablesMutex() {
-    static std::mutex mutex;
-    return mutex;
+    static auto *mutex = new std::mutex;
+    return *mutex;
 }
 
 std::vector<MaterialDrawLoopTable *> &liveTables() {
-    static std::vector<MaterialDrawLoopTable *> tables;
-    return tables;
+    static auto *tables = new std::vector<MaterialDrawLoopTable *>;
+    return *tables;
 }
 
 std::uint32_t maxReflectedSet(const ShaderReflection &reflection) {
