@@ -3165,6 +3165,14 @@ OrderedJson RenderConfigEditorService::enqueueAuthoredPassTicket(
     RenderConfigCandidateDocumentSet candidate_documents,
     const std::string &reference, bool edits_additional_documents,
     const AuthoredCandidateCheck &check, bool restart_required) {
+    // RD-1: restore_render_documents names no fragment; its refusals and its
+    // accepted answer carry the method instead.
+    const auto preflight_details = [&] {
+        OrderedJson details{{"participant", "pelican.render_pipeline"}};
+        if (reference.empty()) details["method"] = operation;
+        else details["fragment_reference"] = reference;
+        return details;
+    };
     try {
         // This is the decisive staged-file contrast: neither the feature nor
         // preset resolver may bypass the request-local document set.
@@ -3172,16 +3180,12 @@ OrderedJson RenderConfigEditorService::enqueueAuthoredPassTicket(
             dependencies_.resolve_authoring_context(candidate_documents);
         if (check) check(candidate);
     } catch (const std::exception &error) {
-        return preflightRejection(error,
-                                  {{"participant", "pelican.render_pipeline"},
-                                   {"fragment_reference", reference}});
+        return preflightRejection(error, preflight_details());
     }
     // G-6: the same candidate, by every variant the engine will compose it
     // with when it publishes.
     if (auto refused = preflightGraphVariants(
-            candidate_documents,
-            {{"participant", "pelican.render_pipeline"},
-             {"fragment_reference", reference}})) {
+            candidate_documents, preflight_details())) {
         return *refused;
     }
 
@@ -3199,10 +3203,11 @@ OrderedJson RenderConfigEditorService::enqueueAuthoredPassTicket(
         .restart_required = restart_required,
     });
     results_[ticket_id] = {{"ticket", ticket_id}, {"status", "pending"}};
-    return {{"ticket", ticket_id},
-            {"status", "accepted"},
-            {"base_source_digest", digestJson(base_digest)},
-            {"fragment_reference", reference}};
+    OrderedJson accepted{{"ticket", ticket_id},
+                         {"status", "accepted"},
+                         {"base_source_digest", digestJson(base_digest)}};
+    if (!reference.empty()) accepted["fragment_reference"] = reference;
+    return accepted;
 }
 
 OrderedJson RenderConfigEditorService::addAuthoredPass(
@@ -3800,6 +3805,449 @@ OrderedJson RenderConfigEditorService::editRenderTargets(const Json &params) {
                                      /*edits_additional_documents=*/true);
 }
 
+namespace {
+
+// RD-1: the documents a committed candidate wrote, {reference: sha256 hex}
+// (null for one it erased), keyed by the reference the candidate names it by.
+// A document the candidate carries unchanged is not listed. Studio uses the
+// digest as the next base_digest of restore_render_documents.
+OrderedJson writtenDocumentDigests(
+    const RenderConfigCandidateDocumentSet &documents) {
+    OrderedJson written = OrderedJson::object();
+    for (const auto &document : documents.documents()) {
+        if (document.operation == RenderConfigDocumentOperation::erase) {
+            written[document.reference] = nullptr;
+            continue;
+        }
+        const auto digest = renderConfigSourceDigest(document.bytes);
+        if (document.expected.existence ==
+                RenderConfigDocumentExistence::missing ||
+            digest != document.expected.digest)
+            written[document.reference] = digest;
+    }
+    return written;
+}
+
+std::string_view renderDocumentSchema(std::string_view kind) {
+    return kind == "preset" ? "pelican.render_pipeline"
+                            : "pelican.render_feature";
+}
+
+// RD-1: whether bytes are a render document of the kind the composition
+// reads them as. A root is judged by the editor's own inspection instead.
+bool isRenderDocumentOfKind(std::string_view bytes, std::string_view kind) {
+    try {
+        const auto document = Json::parse(bytes);
+        return document.is_object() &&
+               document.value("schema", std::string{}) ==
+                   renderDocumentSchema(kind);
+    } catch (const Json::exception &) {
+        return false;
+    }
+}
+
+void appendFeatureReferences(const Json &features,
+                             std::vector<std::string> &references) {
+    if (!features.is_array()) return;
+    for (const auto &entry : features) {
+        if (entry.is_string()) {
+            references.push_back(entry.get<std::string>());
+        } else if (entry.is_object()) {
+            const auto ref = entry.find("ref");
+            if (ref != entry.end() && ref->is_string())
+                references.push_back(ref->get<std::string>());
+        }
+    }
+}
+
+} // namespace
+
+std::vector<RenderConfigEditorService::WritableRenderDocument>
+RenderConfigEditorService::writableRenderDocuments() const {
+    std::vector<WritableRenderDocument> documents;
+    documents.push_back(WritableRenderDocument{
+        .reference = dependencies_.source_reference,
+        .normalized_reference = source_normalized_reference_,
+        .path = dependencies_.source_path,
+        .kind = "root",
+    });
+    if (!dependencies_.resolve_authoring_context ||
+        !dependencies_.normalize_reference ||
+        !dependencies_.resolve_document_path)
+        return documents;
+    const auto current =
+        dependencies_.resolve_authoring_context(currentDocumentSet());
+    // A document is writable only when all of these hold: it is not an
+    // engine document or a fragment address, it resolves to a regular file
+    // inside the project root (symbolic links resolved), and its bytes are the
+    // kind of render document the composition reads it as. A scene, code or
+    // asset document fails the last one even when a list names it.
+    const auto consider = [&](const std::string &reference,
+                              std::string_view kind) {
+        if (reference.empty() || reference.starts_with("engine://") ||
+            reference.find('#') != std::string::npos)
+            return;
+        try {
+            auto normalized = dependencies_.normalize_reference(reference);
+            if (std::any_of(documents.begin(), documents.end(),
+                            [&](const auto &entry) {
+                                return entry.normalized_reference == normalized;
+                            }))
+                return;
+            auto path = dependencies_.resolve_document_path(reference);
+            if (!isWithinDirectory(dependencies_.project_root, path)) return;
+            std::error_code error;
+            if (!std::filesystem::is_regular_file(path, error) || error) return;
+            if (!isRenderDocumentOfKind(readFileBytes(path), kind)) return;
+            documents.push_back(WritableRenderDocument{
+                .reference = reference,
+                .normalized_reference = std::move(normalized),
+                .path = std::move(path),
+                .kind = std::string{kind},
+            });
+        } catch (const std::exception &) {
+            // A reference that does not resolve to a project file is not one
+            // this service writes.
+        }
+    };
+    // The forked preset: only a project:// one is the project's to write, as
+    // every preset edit requires.
+    std::vector<std::string> features;
+    if (current.pipeline_preset &&
+        current.pipeline_preset->reference.starts_with("project://")) {
+        consider(current.pipeline_preset->reference, "preset");
+    }
+    if (current.pipeline_preset_bytes) {
+        try {
+            const auto preset = Json::parse(*current.pipeline_preset_bytes);
+            if (preset.is_object() && preset.contains("config") &&
+                preset.at("config").is_object())
+                appendFeatureReferences(
+                    preset.at("config").value("features", Json::array()),
+                    features);
+        } catch (const Json::exception &) {
+        }
+    }
+    appendFeatureReferences(
+        renderingSectionOrEmpty(Json::parse(document_.bytes()))
+            .value("features", Json::array()),
+        features);
+    appendFeatureReferences(current.config.value("features", Json::array()),
+                            features);
+    for (const auto &pass : current.pass_provenance)
+        features.push_back(pass.provider_reference);
+    for (const auto &resource : current.resource_provenance)
+        features.push_back(resource.provider_reference);
+    for (const auto &reference : features) consider(reference, "feature");
+    return documents;
+}
+
+const RenderConfigEditorService::WritableRenderDocument *
+RenderConfigEditorService::findWritableRenderDocument(
+    const std::vector<WritableRenderDocument> &writable,
+    const std::string &reference) const {
+    // Refused before normalization: a normalizer that drops a fragment
+    // address or aliases an engine name must not turn it into a document.
+    if (reference.empty() || reference.starts_with("engine://") ||
+        reference.find('#') != std::string::npos)
+        return nullptr;
+    std::string normalized;
+    try {
+        normalized = dependencies_.normalize_reference(reference);
+    } catch (const std::exception &) {
+        return nullptr;
+    }
+    const auto found = std::find_if(
+        writable.begin(), writable.end(), [&](const auto &entry) {
+            return entry.normalized_reference == normalized;
+        });
+    return found == writable.end() ? nullptr : &*found;
+}
+
+OrderedJson RenderConfigEditorService::renderDocumentNotWritable(
+    std::string_view method, const std::string &reference) const {
+    std::string reason = "not_render_document";
+    std::string explanation =
+        "it is not a render document the current composition writes (the "
+        "root, the forked preset or a project feature document)";
+    if (reference.starts_with("engine://")) {
+        reason = "engine_document";
+        explanation = "engine documents are never written";
+    } else if (reference.find('#') != std::string::npos) {
+        reason = "fragment_address";
+        explanation = "a fragment address is not a document";
+    } else {
+        bool inside = false;
+        try {
+            if (dependencies_.resolve_document_path)
+                inside = isWithinDirectory(
+                    dependencies_.project_root,
+                    dependencies_.resolve_document_path(reference));
+        } catch (const std::exception &) {
+        }
+        if (!inside) {
+            reason = "outside_project";
+            explanation = "it does not resolve to a file inside the project";
+        }
+    }
+    return rejection(std::string{renderDocumentNotWritableCode},
+                     "Render document " + reference +
+                         " cannot be read or restored here: " + explanation,
+                     {{"method", std::string{method}},
+                      {"reference", reference},
+                      {"reason", reason}});
+}
+
+OrderedJson RenderConfigEditorService::getRenderDocuments(
+    const Json &params) const {
+    constexpr std::string_view method = "get_render_documents";
+    requireOnly(params, {"references"}, method);
+    std::optional<std::vector<std::string>> requested;
+    if (const auto found = params.find("references"); found != params.end()) {
+        if (!found->is_array())
+            throw std::invalid_argument(
+                "get_render_documents references must be an array of strings");
+        requested.emplace();
+        for (const auto &reference : *found) {
+            if (!reference.is_string())
+                throw std::invalid_argument(
+                    "get_render_documents references must be an array of strings");
+            requested->push_back(reference.get<std::string>());
+        }
+    }
+    if (!dependencies_.resolve_authoring_context ||
+        !dependencies_.normalize_reference ||
+        !dependencies_.resolve_document_path)
+        return rejection("method_unavailable",
+                         "get_render_documents requires the project document resolver",
+                         {{"method", std::string{method}}});
+    std::vector<WritableRenderDocument> writable;
+    try {
+        writable = writableRenderDocuments();
+    } catch (const std::exception &error) {
+        return preflightRejection(error, {{"participant", "pelican.render_pipeline"},
+                                          {"method", std::string{method}}});
+    }
+    std::vector<const WritableRenderDocument *> selected;
+    if (!requested) {
+        for (const auto &entry : writable) selected.push_back(&entry);
+    } else {
+        for (const auto &reference : *requested) {
+            const auto *found = findWritableRenderDocument(writable, reference);
+            if (found == nullptr)
+                return renderDocumentNotWritable(method, reference);
+            selected.push_back(found);
+        }
+    }
+    auto documents = OrderedJson::array();
+    for (const auto *entry : selected) {
+        std::string bytes;
+        try {
+            bytes = readFileBytes(entry->path);
+        } catch (const std::exception &error) {
+            return rejection("external_modification", error.what(),
+                             {{"method", std::string{method}},
+                              {"reference", entry->reference}});
+        }
+        documents.push_back({{"reference", entry->reference},
+                             {"kind", entry->kind},
+                             {"digest", renderConfigSourceDigest(bytes)},
+                             {"content", std::move(bytes)}});
+    }
+    return {{"documents", std::move(documents)}};
+}
+
+OrderedJson RenderConfigEditorService::restoreRenderDocuments(
+    const Json &params) {
+    constexpr std::string_view method = "restore_render_documents";
+    requireOnly(params, {"documents"}, method);
+    const auto requested = params.find("documents");
+    if (requested == params.end() || !requested->is_array() ||
+        requested->empty())
+        throw std::invalid_argument(
+            "restore_render_documents requires a non-empty documents array");
+    struct Restore {
+        std::string reference;
+        std::string base_digest;
+        std::string content;
+    };
+    std::vector<Restore> restores;
+    for (const auto &entry : *requested) {
+        requireOnly(entry, {"reference", "base_digest", "content"},
+                    "restore_render_documents document");
+        Restore restore{
+            .reference = requireString(entry, "reference", method),
+            .base_digest = requireString(entry, "base_digest", method),
+            .content = requireString(entry, "content", method),
+        };
+        if (!isLowerHexDigest(restore.base_digest))
+            throw std::invalid_argument(
+                "restore_render_documents base_digest must be 64 lowercase hex characters");
+        restores.push_back(std::move(restore));
+    }
+    if (!dependencies_.resolve_authoring_context ||
+        !dependencies_.normalize_reference ||
+        !dependencies_.resolve_document_path)
+        return rejection("method_unavailable",
+                         "restore_render_documents requires the project document resolver",
+                         {{"method", std::string{method}}});
+
+    const auto gate = gateSnapshot();
+    if (!gate.can_edit) {
+        return rejection("gate_closed", "render config editing is currently disabled",
+                         {{"method", std::string{method}},
+                          {"reason", primaryReason(gate.reasons)},
+                          {"gate_epoch", gate.epoch}});
+    }
+    std::vector<WritableRenderDocument> writable;
+    try {
+        writable = writableRenderDocuments();
+    } catch (const std::exception &error) {
+        return preflightRejection(error, {{"participant", "pelican.render_pipeline"},
+                                          {"method", std::string{method}}});
+    }
+
+    // Every reference first: a request that names a document this service
+    // does not write is refused before any digest is compared.
+    std::vector<const WritableRenderDocument *> targets;
+    for (const auto &restore : restores) {
+        const auto *found =
+            findWritableRenderDocument(writable, restore.reference);
+        if (found == nullptr)
+            return renderDocumentNotWritable(method, restore.reference);
+        if (std::find(targets.begin(), targets.end(), found) != targets.end())
+            throw std::invalid_argument(
+                "restore_render_documents names " + restore.reference +
+                " more than once");
+        targets.push_back(found);
+    }
+
+    // CAS: each document as it is now against the digest it was read with.
+    // The root is the engine-owned document (and the file must still hold
+    // it); every other document is compared on disk. The root is held to the
+    // engine's document whether or not the request restores it.
+    auto mismatches = OrderedJson::array();
+    const auto mismatch = [&](const std::string &reference,
+                              const std::string &expected,
+                              const std::string &provided) {
+        mismatches.push_back({{"reference", reference},
+                              {"expected_digest", expected},
+                              {"provided_digest", provided}});
+    };
+    const auto disk_digest = [](const std::filesystem::path &path) {
+        try {
+            return renderConfigSourceDigest(readFileBytes(path));
+        } catch (const std::exception &) {
+            return std::string{};
+        }
+    };
+    const auto root_on_disk = disk_digest(dependencies_.source_path);
+    bool root_restored = false;
+    for (std::size_t index = 0; index < restores.size(); ++index) {
+        const auto &restore = restores[index];
+        const auto &target = *targets[index];
+        if (target.kind == "root") {
+            root_restored = true;
+            if (restore.base_digest != document_.sourceDigest())
+                mismatch(restore.reference, document_.sourceDigest(),
+                         restore.base_digest);
+            else if (root_on_disk != document_.sourceDigest())
+                mismatch(restore.reference, root_on_disk, restore.base_digest);
+            continue;
+        }
+        const auto current = disk_digest(target.path);
+        if (current != restore.base_digest)
+            mismatch(restore.reference, current, restore.base_digest);
+    }
+    if (!root_restored && root_on_disk != document_.sourceDigest())
+        mismatch(dependencies_.source_reference, root_on_disk,
+                 document_.sourceDigest());
+    if (!mismatches.empty()) {
+        const auto first = mismatches.front();
+        return rejection(
+            "external_modification",
+            "Render document " + first.at("reference").get<std::string>() +
+                " changed since it was read",
+            {{"method", std::string{method}},
+             {"reference", first.at("reference")},
+             {"expected_digest", first.at("expected_digest")},
+             {"provided_digest", first.at("provided_digest")},
+             {"mismatches", std::move(mismatches)}});
+    }
+
+    // The candidate: the editor's current document set with each restored
+    // document's bytes in place, each held to the digest it was read with.
+    auto root = document_;
+    auto candidate_documents = currentDocumentSet().documents();
+    for (std::size_t index = 0; index < restores.size(); ++index) {
+        const auto &restore = restores[index];
+        const auto &target = *targets[index];
+        const auto refuse_content = [&](const std::string &message) {
+            return rejection("render_pipeline_preflight_failed", message,
+                             {{"participant", "pelican.render_pipeline"},
+                              {"method", std::string{method}},
+                              {"reference", restore.reference}});
+        };
+        if (target.kind == "root") {
+            try {
+                root = AuthoredRenderConfigDocument::inspect(restore.content);
+            } catch (const RenderConfigLegacyRoot &error) {
+                return rejection(std::string{renderConfigLegacyRootCode},
+                                 error.what(),
+                                 {{"method", std::string{method}},
+                                  {"reference", restore.reference}});
+            } catch (const std::exception &error) {
+                return refuse_content(error.what());
+            }
+        } else if (!isRenderDocumentOfKind(restore.content, target.kind)) {
+            return refuse_content(
+                "The restored " + restore.reference + " is not a " +
+                std::string{renderDocumentSchema(target.kind)} + " document");
+        }
+        RenderConfigCandidateDocument document{
+            .reference = target.reference,
+            .normalized_reference = target.normalized_reference,
+            .path = target.path,
+            .operation = RenderConfigDocumentOperation::replace,
+            .expected = {RenderConfigDocumentExistence::present,
+                         restore.base_digest},
+            .bytes = restore.content,
+        };
+        const auto existing = std::find_if(
+            candidate_documents.begin(), candidate_documents.end(),
+            [&](const auto &entry) {
+                return entry.normalized_reference ==
+                       target.normalized_reference;
+            });
+        if (existing != candidate_documents.end()) *existing = std::move(document);
+        else candidate_documents.insert(candidate_documents.begin(),
+                                        std::move(document));
+    }
+    RenderConfigCandidateDocumentSet candidate_set{
+        source_normalized_reference_, std::move(candidate_documents)};
+
+    // G-4: material_route_default is read once per engine start; a restore
+    // that changes it says so, as add_authored_pass does.
+    bool restart_required = false;
+    try {
+        restart_required =
+            readMaterialRouteDefault(
+                renderingSectionOrEmpty(Json::parse(document_.bytes()))) !=
+            readMaterialRouteDefault(
+                renderingSectionOrEmpty(Json::parse(root.bytes())));
+    } catch (const std::exception &error) {
+        return preflightRejection(error, {{"participant", "pelican.render_pipeline"},
+                                          {"method", std::string{method}}});
+    }
+    auto result = enqueueAuthoredPassTicket(
+        std::string{method}, gate, document_.sourceDigest(), std::move(root),
+        std::move(candidate_set), std::string{},
+        /*edits_additional_documents=*/true, {}, restart_required);
+    if (result.value("status", std::string{}) == "accepted")
+        pending_.back().reload_managed_baselines = true;
+    return result;
+}
+
 OrderedJson RenderConfigEditorService::getResult(
     const Json &params) const {
     requireOnly(params, {"ticket"}, "get_edit_result");
@@ -3918,7 +4366,15 @@ void RenderConfigEditorService::completeCommitTransaction(
         }
 
         document_ = std::move(transaction->ticket.candidate);
-        if (transaction->ticket.candidate_documents) {
+        const auto written_documents =
+            transaction->ticket.candidate_documents
+                ? writtenDocumentDigests(*transaction->ticket.candidate_documents)
+                : OrderedJson::object();
+        if (transaction->ticket.reload_managed_baselines) {
+            // RD-1: a restore may have changed which fragments the root
+            // names; read them again from what was just written.
+            loadManagedDocumentBaselines();
+        } else if (transaction->ticket.candidate_documents) {
             for (const auto &candidate :
                  transaction->ticket.candidate_documents->documents()) {
                 if (candidate.normalized_reference ==
@@ -3955,6 +4411,8 @@ void RenderConfigEditorService::completeCommitTransaction(
             {"source_digest", digestJson(document_.sourceDigest())},
             {"source_commit_called",
              transaction->source_commit_called},
+            // RD-1: what this commit wrote, {reference: sha256 hex}.
+            {"documents", written_documents},
         };
         if (!transaction->ticket.operation.empty()) {
             completed["operation"] =
@@ -4057,6 +4515,8 @@ void RenderConfigEditorService::commitPending() noexcept {
                     {"source_digest",
                      digestJson(document_.sourceDigest())},
                     {"source_commit_called", false},
+                    // RD-1: nothing was written.
+                    {"documents", OrderedJson::object()},
                 });
                 continue;
             }
@@ -4072,6 +4532,8 @@ void RenderConfigEditorService::commitPending() noexcept {
                 auto receipt = commitRenderConfigCandidateDocuments(
                     dependencies_.project_root, *ticket.candidate_documents);
                 (void)receipt;
+                auto written_documents =
+                    writtenDocumentDigests(*ticket.candidate_documents);
                 document_ = std::move(ticket.candidate);
                 const auto runtime = dependencies_.runtime_snapshot();
                 finish(OrderedJson{
@@ -4084,6 +4546,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                     {"published_generation", runtime.published_generation},
                     {"source_digest", digestJson(document_.sourceDigest())},
                     {"source_commit_called", true},
+                    {"documents", std::move(written_documents)},
                 });
                 continue;
             }

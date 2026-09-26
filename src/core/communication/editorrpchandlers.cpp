@@ -279,6 +279,14 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("edit_render_targets", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editRenderTargets(params); });
     });
+    // RD-1: read the render documents whole, and write them back under CAS
+    // (Studio's undo of render edits).
+    server.setHandler("get_render_documents", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getRenderDocuments(params); });
+    });
+    server.setHandler("restore_render_documents", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.restoreRenderDocuments(params); });
+    });
     server.setHandler("get_edit_result", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getEditResult(params); });
     });

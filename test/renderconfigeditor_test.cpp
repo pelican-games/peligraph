@@ -8270,4 +8270,350 @@ TEST_CASE("LP-3b decompose_material_pass edits a forked preset and the root toge
     }
 }
 
+// --- RD-1: get_render_documents / restore_render_documents (Studio's undo of
+// render edits) and the documents a commit wrote.
+
+namespace {
+
+struct Rd1Harness {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    ActualCpuRenderRuntime runtime;
+    std::unique_ptr<RenderConfigEditorService> service;
+
+    explicit Rd1Harness(bool direct) {
+        if (direct) writeBytes(project.render_config, lp3bDirectRoot(project).dump(2) + "\n");
+        resolver.setup(project.root, false);
+        service = makeProjectService(project, resolver, runtime);
+    }
+
+    nlohmann::ordered_json context() { return service->getRenderAuthoringContext(Json::object()); }
+
+    nlohmann::ordered_json commit(const nlohmann::ordered_json &submission) {
+        INFO(submission.dump());
+        REQUIRE(submission.at("status") == "accepted");
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", submission.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        return result;
+    }
+
+    void fork() {
+        const auto current = context();
+        commit(service->forkRenderPipeline(
+            {{"base_source_digest", current.at("source_digest").at("hex")},
+             {"base_preset_digest", current.at("pipeline_preset").at("source_digest").at("hex")},
+             {"destination_reference", "project://passes/local-pipeline.json"}}));
+    }
+
+    std::filesystem::path presetPath() const { return project.root / "passes" / "local-pipeline.json"; }
+
+    nlohmann::ordered_json decompose(const std::string &pass) {
+        const auto current = context();
+        Json request{{"base_source_digest", current.at("source_digest").at("hex")}, {"pass", pass}};
+        if (current.contains("pipeline_preset"))
+            request["base_preset_digest"] = current.at("pipeline_preset").at("source_digest").at("hex");
+        return service->decomposeMaterialPass(request);
+    }
+};
+
+// The documents of a get_render_documents answer, by reference.
+std::map<std::string, Json> rd1Documents(const nlohmann::ordered_json &answer) {
+    INFO(answer.dump());
+    REQUIRE(answer.contains("documents"));
+    std::map<std::string, Json> documents;
+    for (const auto &document : answer.at("documents"))
+        documents.emplace(document.at("reference").get<std::string>(), Json(document));
+    return documents;
+}
+
+Json rd1Restore(const Json &read, const Json &base_digest) {
+    return {{"reference", read.at("reference")}, {"base_digest", base_digest}, {"content", read.at("content")}};
+}
+
+Json rd1Document(const std::string &reference, const Json &base_digest, const std::string &content) {
+    return {{"reference", reference}, {"base_digest", base_digest}, {"content", content}};
+}
+
+Json rd1Error(const nlohmann::ordered_json &answer) {
+    INFO(answer.dump());
+    REQUIRE(answer.at("status") == "rejected");
+    return Json(answer.at("error"));
+}
+
+} // namespace
+
+TEST_CASE("RD-1 restore_render_documents undoes decompose_material_pass on a direct root",
+          "[render-config-editor][rd1]") {
+    Rd1Harness harness{true};
+    REQUIRE(harness.context().at("config_kind") == "direct");
+    const auto plan_before = harness.runtime.frame_plan;
+    const auto root_before = readBytes(harness.project.render_config);
+
+    // Every document the composition writes: here the root alone (its
+    // features are the engine's).
+    const auto read = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+    REQUIRE(read.size() == 1);
+    const auto root = read.at("passes/main.json");
+    CHECK(root.at("kind") == "root");
+    CHECK(root.at("content") == root_before);
+    CHECK(root.at("digest") == renderConfigSourceDigest(root_before));
+
+    const auto decomposed = harness.commit(harness.decompose("forward_opaque"));
+    const auto root_after = readBytes(harness.project.render_config);
+    REQUIRE(root_after != root_before);
+    // The commit says what it wrote, by the digest the next CAS needs.
+    CHECK(Json(decomposed.at("documents")) ==
+          Json{{"passes/main.json", renderConfigSourceDigest(root_after)}});
+    const auto published = harness.runtime.snapshot.published_generation;
+
+    const auto accepted = harness.service->restoreRenderDocuments(
+        {{"documents", Json::array({rd1Restore(root, Json(decomposed.at("documents").at("passes/main.json")))})}});
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    CHECK_FALSE(accepted.contains("fragment_reference"));
+    // Nothing is written before the ticket commits.
+    CHECK(readBytes(harness.project.render_config) == root_after);
+    const auto restored = harness.commit(accepted);
+    CHECK(restored.at("operation") == "restore_render_documents");
+    CHECK(Json(restored.at("documents")) == Json{{"passes/main.json", renderConfigSourceDigest(root_before)}});
+    // Byte for byte, recomposed and republished, with the plan it had.
+    CHECK(readBytes(harness.project.render_config) == root_before);
+    CHECK(harness.service->documentForTesting().bytes() == root_before);
+    CHECK(harness.runtime.snapshot.published_generation == published + 1);
+    CHECK(harness.runtime.frame_plan == plan_before);
+    CHECK(harness.context().at("source_digest").at("hex") == renderConfigSourceDigest(root_before));
+}
+
+TEST_CASE("RD-1 restore_render_documents undoes decompose_material_pass of a forked preset",
+          "[render-config-editor][rd1]") {
+    Rd1Harness harness{false};
+    const auto engine_only = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+    // The engine's preset is not the project's to write.
+    CHECK(engine_only.size() == 1);
+    CHECK(engine_only.contains("passes/main.json"));
+    harness.fork();
+    const auto plan_before = harness.runtime.frame_plan;
+    const auto root_before = readBytes(harness.project.render_config);
+    const auto preset_before = readBytes(harness.presetPath());
+    const std::string preset_reference = "project://passes/local-pipeline.json";
+
+    const auto read = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+    REQUIRE(read.size() == 2);
+    CHECK(read.at(preset_reference).at("kind") == "preset");
+    CHECK(read.at(preset_reference).at("content") == preset_before);
+    // Asked by name, the one document.
+    const auto one = rd1Documents(harness.service->getRenderDocuments(
+        {{"references", Json::array({preset_reference})}}));
+    REQUIRE(one.size() == 1);
+    CHECK(one.at(preset_reference) == read.at(preset_reference));
+
+    const auto decomposed = harness.commit(harness.decompose("forward_opaque"));
+    const auto root_after = readBytes(harness.project.render_config);
+    const auto preset_after = readBytes(harness.presetPath());
+    REQUIRE(Json(decomposed.at("documents")) ==
+            Json{{"passes/main.json", renderConfigSourceDigest(root_after)},
+                 {preset_reference, renderConfigSourceDigest(preset_after)}});
+    const auto written = Json(decomposed.at("documents"));
+    const Json restore_request{
+        {"documents",
+         Json::array({rd1Restore(read.at("passes/main.json"), written.at("passes/main.json")),
+                      rd1Restore(read.at(preset_reference), written.at(preset_reference))})}};
+
+    SECTION("both documents come back in one ticket") {
+        const auto restored = harness.commit(harness.service->restoreRenderDocuments(restore_request));
+        CHECK(Json(restored.at("documents")) ==
+              Json{{"passes/main.json", renderConfigSourceDigest(root_before)},
+                   {preset_reference, renderConfigSourceDigest(preset_before)}});
+        CHECK(readBytes(harness.project.render_config) == root_before);
+        CHECK(readBytes(harness.presetPath()) == preset_before);
+        CHECK(harness.runtime.frame_plan == plan_before);
+        CHECK(harness.context().at("pipeline_preset").at("source_digest").at("hex") ==
+              renderConfigSourceDigest(preset_before));
+    }
+    SECTION("an edit in between is named, and nothing is written") {
+        // edit_preset_pass says what it wrote: the preset alone.
+        const auto current = harness.context();
+        const auto edited = harness.commit(harness.service->editPresetPass(
+            {{"base_source_digest", current.at("source_digest").at("hex")},
+             {"base_preset_digest", current.at("pipeline_preset").at("source_digest").at("hex")},
+             {"graph", "main_render"}, {"pass_name", "forward_transparent"}, {"ray_query", false}}));
+        const auto preset_edited = readBytes(harness.presetPath());
+        REQUIRE(preset_edited != preset_after);
+        CHECK(Json(edited.at("documents")) == Json{{preset_reference, renderConfigSourceDigest(preset_edited)}});
+
+        const auto applies = harness.runtime.apply_calls;
+        const auto error = rd1Error(harness.service->restoreRenderDocuments(restore_request));
+        CHECK(error.at("code") == "external_modification");
+        CHECK(error.at("method") == "restore_render_documents");
+        CHECK(error.at("reference") == preset_reference);
+        CHECK(error.at("expected_digest") == renderConfigSourceDigest(preset_edited));
+        CHECK(error.at("provided_digest") == renderConfigSourceDigest(preset_after));
+        CHECK(error.at("mismatches").size() == 1);
+        harness.service->commitPending();
+        CHECK(harness.runtime.apply_calls == applies);
+        CHECK(readBytes(harness.project.render_config) == root_after);
+        CHECK(readBytes(harness.presetPath()) == preset_edited);
+    }
+    SECTION("a document changed outside the editor is named too") {
+        writeBytes(harness.presetPath(), preset_after + "\n");
+        const auto error = rd1Error(harness.service->restoreRenderDocuments(restore_request));
+        CHECK(error.at("code") == "external_modification");
+        CHECK(error.at("reference") == preset_reference);
+        harness.service->commitPending();
+        CHECK(readBytes(harness.project.render_config) == root_after);
+        CHECK(readBytes(harness.presetPath()) == preset_after + "\n");
+    }
+}
+
+TEST_CASE("RD-1 restore_render_documents restores a project feature document",
+          "[render-config-editor][rd1]") {
+    RenderTargetHarness harness{false};
+    harness.commit(addOp(sceneTarget("rd1_first")));
+    const auto read = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+    REQUIRE(read.contains(renderTargetFragment));
+    CHECK(read.at(renderTargetFragment).at("kind") == "feature");
+    const auto fragment_before = readBytes(harness.fragmentPath());
+    const auto root_before = readBytes(harness.project.render_config);
+
+    // The second target changes the fragment and leaves the root as it is.
+    const auto added = harness.commit(addOp(sceneTarget("rd1_second")));
+    const auto fragment_after = readBytes(harness.fragmentPath());
+    REQUIRE(Json(added.at("documents")) ==
+            Json{{renderTargetFragment, renderConfigSourceDigest(fragment_after)}});
+    REQUIRE(harness.target("rd1_second").has_value());
+
+    const auto accepted = harness.service->restoreRenderDocuments(
+        {{"documents", Json::array({rd1Restore(read.at(renderTargetFragment),
+                                               Json(added.at("documents").at(renderTargetFragment)))})}});
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    harness.service->commitPending();
+    const auto restored = harness.service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(restored.dump());
+    REQUIRE(restored.at("committed") == true);
+    CHECK(readBytes(harness.fragmentPath()) == fragment_before);
+    CHECK(readBytes(harness.project.render_config) == root_before);
+    // The editor's own record of the fragment is the restored one: the target
+    // is gone from the context and the next edit's CAS holds.
+    CHECK_FALSE(harness.target("rd1_second").has_value());
+    CHECK(harness.target("rd1_first").has_value());
+    harness.commit(addOp(sceneTarget("rd1_third")));
+}
+
+TEST_CASE("RD-1 restore_render_documents refuses what it may not write, and content that does not compose",
+          "[render-config-editor][rd1]") {
+    Rd1Harness harness{false};
+    harness.fork();
+    const std::string preset_reference = "project://passes/local-pipeline.json";
+    const auto read = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+    const auto root = read.at("passes/main.json");
+    const auto preset = read.at(preset_reference);
+    const auto root_before = readBytes(harness.project.render_config);
+    const auto preset_before = readBytes(harness.presetPath());
+    // A file beside the project, outside its root.
+    const auto outside = harness.project.root.parent_path() /
+                         ("rd1-outside-" + harness.project.root.filename().string() + ".json");
+    writeBytes(outside, preset_before);
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() {
+            std::error_code ignored;
+            std::filesystem::remove(path, ignored);
+        }
+    } cleanup{outside};
+    const auto applies = harness.runtime.apply_calls;
+    const auto unchanged = [&] {
+        harness.service->commitPending();
+        CHECK(harness.runtime.apply_calls == applies);
+        CHECK(readBytes(harness.project.render_config) == root_before);
+        CHECK(readBytes(harness.presetPath()) == preset_before);
+        CHECK(readBytes(outside) == preset_before);
+    };
+    const auto restore = [&](const Json &documents) {
+        return harness.service->restoreRenderDocuments({{"documents", documents}});
+    };
+
+    SECTION("a reference that is not a render document of this composition") {
+        const std::vector<std::pair<std::string, std::string>> refused{
+            {"engine://render_pipelines/hybrid_v1.json", "engine_document"},
+            {"engine://features/ui.json", "engine_document"},
+            {"passes/main.json#/rendering", "fragment_address"},
+            {"project://../" + outside.filename().string(), "outside_project"},
+            {outside.generic_string(), "outside_project"},
+            {"project://project.json", "not_render_document"},
+            {"project://passes/no-such-document.json", "not_render_document"},
+        };
+        for (const auto &[reference, reason] : refused) {
+            INFO(reference);
+            const auto restored = rd1Error(restore(Json::array(
+                {rd1Document(reference, renderConfigSourceDigest(preset_before), preset_before)})));
+            CHECK(restored.at("code") == "render_document_not_writable");
+            CHECK(restored.at("method") == "restore_render_documents");
+            CHECK(restored.at("reference") == reference);
+            CHECK(restored.at("reason") == reason);
+            const auto got = rd1Error(harness.service->getRenderDocuments(
+                {{"references", Json::array({reference})}}));
+            CHECK(got.at("code") == "render_document_not_writable");
+            CHECK(got.at("method") == "get_render_documents");
+            CHECK(got.at("reason") == reason);
+        }
+        // One refused reference refuses the whole request.
+        const auto project_json = readBytes(harness.project.root / "project.json");
+        const auto mixed = rd1Error(restore(Json::array(
+            {rd1Restore(root, root.at("digest")),
+             rd1Document("project://project.json", renderConfigSourceDigest(project_json), "{}")})));
+        CHECK(mixed.at("code") == "render_document_not_writable");
+        CHECK(readBytes(harness.project.root / "project.json") == project_json);
+        unchanged();
+    }
+    SECTION("content the composition refuses is refused before anything is written") {
+        auto broken = Json::parse(root_before);
+        broken["rendering"]["features"].push_back("project://features/rd1-missing.json");
+        const auto missing_feature = rd1Error(restore(Json::array(
+            {rd1Document("passes/main.json", root.at("digest"), broken.dump(2))})));
+        CHECK(missing_feature.at("code") == "render_pipeline_preflight_failed");
+        CHECK(missing_feature.at("method") == "restore_render_documents");
+
+        const auto not_json = rd1Error(restore(Json::array(
+            {rd1Document("passes/main.json", root.at("digest"), "{ not json")})));
+        CHECK(not_json.at("code") == "render_pipeline_preflight_failed");
+        CHECK(not_json.at("reference") == "passes/main.json");
+
+        const auto legacy_root = rd1Error(restore(Json::array(
+            {rd1Document("passes/main.json", root.at("digest"),
+                         Json::parse(root_before).at("rendering").dump(2))})));
+        CHECK(legacy_root.at("code") == "render_config.legacy_root@1");
+
+        // A preset's bytes must stay a preset.
+        const auto wrong_kind = rd1Error(restore(Json::array(
+            {rd1Document(preset_reference, preset.at("digest"),
+                         Json{{"schema", "pelican.render_feature"}, {"version", 1}, {"name", "rd1"}}.dump(2))})));
+        CHECK(wrong_kind.at("code") == "render_pipeline_preflight_failed");
+        CHECK(wrong_kind.at("reference") == preset_reference);
+
+        // A preset that names a feature document that is not there.
+        auto preset_json = Json::parse(preset_before);
+        auto features = preset_json["config"].value("features", Json::array());
+        features.push_back("project://features/rd1-missing.json");
+        preset_json["config"]["features"] = features;
+        const auto bad_preset = rd1Error(restore(Json::array(
+            {rd1Document(preset_reference, preset.at("digest"), preset_json.dump(2))})));
+        CHECK(bad_preset.at("code") == "render_pipeline_preflight_failed");
+        CHECK(bad_preset.at("method") == "restore_render_documents");
+        unchanged();
+    }
+    SECTION("a malformed request is the caller's error") {
+        CHECK_THROWS_AS(restore(Json::array()), std::invalid_argument);
+        CHECK_THROWS_AS(restore(Json::array({rd1Restore(root, root.at("digest")),
+                                             rd1Restore(root, root.at("digest"))})),
+                        std::invalid_argument);
+        CHECK_THROWS_AS(restore(Json::array({rd1Restore(root, "ABC")})), std::invalid_argument);
+        CHECK_THROWS_AS(harness.service->getRenderDocuments({{"references", "passes/main.json"}}),
+                        std::invalid_argument);
+        unchanged();
+    }
+}
+
 } // namespace Pelican

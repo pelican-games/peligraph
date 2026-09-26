@@ -23,6 +23,13 @@
 
 namespace Pelican {
 
+// RD-1: get_render_documents / restore_render_documents named a reference
+// that is not a render document the current composition writes. Fields:
+// {method, reference, reason}; reason is "engine_document",
+// "fragment_address", "outside_project" or "not_render_document".
+inline constexpr std::string_view renderDocumentNotWritableCode =
+    "render_document_not_writable";
+
 struct RenderFeatureCatalogEntry {
     std::string name;
     std::string reference;
@@ -141,6 +148,18 @@ class RenderConfigEditorService {
         // G-4: the edit changes material_route_default, which the engine
         // reads once at start. The committed result says restart_required.
         bool restart_required = false;
+        // RD-1: restore_render_documents may change which managed fragments
+        // the root names, so the baselines are read again after it commits.
+        bool reload_managed_baselines = false;
+    };
+
+    // RD-1: one render document the current composition can write -- the
+    // root, the forked (project) preset, or a project feature document.
+    struct WritableRenderDocument {
+        std::string reference;
+        std::string normalized_reference;
+        std::filesystem::path path;
+        std::string kind; // "root", "preset" or "feature"
     };
 
     struct ManagedDocumentBaseline {
@@ -244,6 +263,18 @@ class RenderConfigEditorService {
     const RenderFeatureCatalogEntry *findCatalogReference(
         std::string_view reference) const noexcept;
     RenderConfigCandidateDocumentSet currentDocumentSet() const;
+    // RD-1: every render document the current composition can write, root
+    // first. Nothing outside the project root, nothing engine://, and nothing
+    // that is not a render document of the kind the composition reads it as.
+    std::vector<WritableRenderDocument> writableRenderDocuments() const;
+    // The entry of `writable` a request's reference names, or null.
+    const WritableRenderDocument *findWritableRenderDocument(
+        const std::vector<WritableRenderDocument> &writable,
+        const std::string &reference) const;
+    // RD-1: render_document_not_writable for a reference that is not one of
+    // writableRenderDocuments(), with the reason it is not.
+    nlohmann::ordered_json renderDocumentNotWritable(
+        std::string_view method, const std::string &reference) const;
     void loadManagedDocumentBaselines();
     void completeCommitTransaction(
         const std::shared_ptr<CommitTransaction> &transaction,
@@ -314,6 +345,16 @@ class RenderConfigEditorService {
     // `project://passes/authoring/render-targets.json`, through the same
     // candidate-set preflight and ticket as add_authored_pass.
     nlohmann::ordered_json editRenderTargets(
+        const nlohmann::json &params);
+    // RD-1: the render documents the current composition can write, byte for
+    // byte, with their digests (`references` omitted: all of them).
+    nlohmann::ordered_json getRenderDocuments(
+        const nlohmann::json &params) const;
+    // RD-1: write documents read by get_render_documents back, whole, in one
+    // ticket: every document's current digest must equal its base_digest, and
+    // the candidate goes through the same preflight (with variants) and
+    // recomposition as any edit before anything is written.
+    nlohmann::ordered_json restoreRenderDocuments(
         const nlohmann::json &params);
     nlohmann::ordered_json getResult(
         const nlohmann::json &params) const;

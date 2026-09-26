@@ -1449,6 +1449,17 @@ OrderedJson EditorCommandService::editRenderTargets(const Json &params) {
     return render_config_editor_->editRenderTargets(params);
 }
 
+// RD-1.
+OrderedJson EditorCommandService::getRenderDocuments(const Json &params) const {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->getRenderDocuments(params);
+}
+
+OrderedJson EditorCommandService::restoreRenderDocuments(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->restoreRenderDocuments(params);
+}
+
 OrderedJson EditorCommandService::getEditResult(const Json &params) const {
     if (procedural_asset_editor_ && params.is_object() && params.contains("ticket") &&
         params.at("ticket").is_string() && params.at("ticket").get<std::string>().starts_with("procedural-asset-edit-"))
@@ -2417,6 +2428,16 @@ OrderedJson EditorCommandRpcAdapter::editRenderTargets(
             "edit_render_targets requires a mutable editor service");
     }
     return mutable_service_->editRenderTargets(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getRenderDocuments(const Json &params) const {
+    return service_.getRenderDocuments(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::restoreRenderDocuments(const Json &params) const {
+    if (mutable_service_ == nullptr)
+        throw std::logic_error("restore_render_documents requires a mutable editor service");
+    return mutable_service_->restoreRenderDocuments(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getEditResult(const Json &params) const {
