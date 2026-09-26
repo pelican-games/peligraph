@@ -26272,6 +26272,85 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
   - 「作った」の判定は「編集の前の読みに無い」こと。書ける範囲の外の既存ファイルを編集が置き換えた場合、Undo はそれを消す(今ある編集では起きない)
   - commit の直後の読みより先に別の編集が着地すると、その項目は layout を吸収しない。吸収は root だけ
 
+### LP-4d1: ループゾーン(1)— root の canvas にループの body を枠で描き、その場で編集する
+
+**中段〜上段(Studio のみ。Graph tab の scene の前提を変える)。実装者: Claude(Opus)。LP-4c / LP-4e / RU-1b の上(develop 20827de4)。合意は 2026-09-26 に利用者と決めた「LP-4 の見え方」(Blender のループゾーン。8 項目)。設計は `docs/design_graph_loops.md` §2・§9。Studio での見え方は `docs/manual/13_editor.md` の「ループをゾーンで見る・編集する」。**
+
+#### 前提
+- LP-4c では、ループの body は instance と同じく「中に入って」(ダブルクリック / Open body)編集していた。`GraphCanvasScene::repopulate()` は今の scope の 1 つだけを描き、`Builder` も scope を 1 つだけ受けた
+- item は scope を持つが、多くの処理が暗黙に「今の scope」を使っていた(折り畳み、配置の刈り込み、`canConnect` / `connectInput` / `setNodeParameter` / `removeNode` / `setNodeLabel` / `suggestNodeId` / `addNodeOps`、値・label の編集、Delete、線の確定)。選択・辺・automation の名前(`graph_node#<id>`)は id だけで識別していた
+- scene の配置は 1 scope 分だけ。definition の node の位置は definition 自身の `layout.nodes`
+- LP-4c のループの node は、body の `graph.input` を入力ソケット、`p` / `p[]` を出力ソケットに持つ
+
+#### 決定
+1. **scene が複数の scope を描く**: 1 回の描画で root と、root の各ループの「今の分岐の body」の definition を描く。item の識別・選択・編集・配置は (scope, id)。root だけを描くときの結果は今と同じ。instance の「中に入る」は今どおり(instance はゾーンにしない)
+2. **ゾーンの見た目**: ループを枠で描く。見出しの帯にループの label・段の印(`expand ×N` / `draw_loop N materials` / `loop`)・分岐のタブ(`if … / elif … / else`。else だけならタブ無し。タブはセッションの状態)。左の縁に入力(外側 = ループの入力、内側 = body の `graph.input`)、右の縁に出力(内側 = body の出力、外側 = `p` / `p[]`)。枠の中に body の node(`graph.input` は描かない)を definition の `layout.nodes` の位置で。枠の大きさは中身の外接 + 余白(最小あり)。共有の印。枠を畳むと LP-4c の node の見た目
+3. **ゾーンの中の編集**は全部 `scope: <definition>`: 動かす(definition の `set_layout`)、線、切る、消す、label、値、右クリックの Add node(palette に graph.loop / graph.instance は出さない)。枠を動かすのは root の `set_layout`。1 回の drag で両方の layout は変わらない
+4. **undo**: LP-4c の Graph tab の履歴のまま。scope ごとの `set_layout` が混ざっても byte 一致で戻る
+5. **automation の名前**: root の node は今のまま。body の node は `graph_node#<definition>/<id>`。ゾーン・タブ・縁のソケットにも名前。`test/studio_scenarios/README.md` の表に足す
+6. **自動配置**: 位置の無い body の node は枠の中で自動配置する
+
+#### 受け入れ
+1. scene の test(fake の文書): root の node・枠・body の node が描かれ、body の item の scope が definition。タブで body が変わる。else だけならタブ無し。対照: 1 scope だけを描く変異で body が出ない
+2. 編集の payload の test: 枠の中の移動 → definition の `set_layout`、枠の移動 → root の `set_layout`、枠の中の線 → `scope: <definition>` の `set_input`、Add node → definition への `add_node`、消す・label。対照: 今の scope のまま送る変異で赤
+3. (scope, id) の test: root と body に同じ id があっても、選択・値の編集・消すが取り違えない
+4. undo の test: 枠の中の編集と枠の移動を Undo / Redo して byte 一致
+5. GPU シナリオ `loop_zone_edit`: ループを置く → 枠が見える → 枠の中に pass を置く → 枠の中で node を動かす → Frame Plan のグループが `×N` → 枠を動かす → rpc で root と definition の layout を確かめる → Undo
+6. 既存の Graph tab の test とシナリオ(graph_read / graph_edit_roundtrip / graph_observe_roundtrip / graph_auto_layout / graph_canvas_zoom_pan / graph_reroute_tie / graph_loop_expand)がそのまま緑(名前が変わったものは一覧で報告)
+7. `-L studio_cpu -LE gpu` 緑
+8. 報告にテキスト入力の欄
+
+#### やらないこと(LP-4d2)
+外の node から枠の中へ線を引いて入力を足す、carry の戻り矢印と編集、回ごとの入力(`element`)の線の見た目、展開の結果の表示(×N の中身)、draw_loop の枠と material pass の draws のつなぎの見た目の磨き。engine の `set_outputs`(DO-1、bb05a072)は縁へ出力を引く操作のためのもので、この WP の Studio はまだ送らない
+
+#### 着地(2026-09-27、f9882d28)
+- **決定 1**: [`GraphCanvasScene::repopulate()`](../src/devstudio/view/graphcanvaswidget.cpp#L1110) が、root を置く前に root のループごとのゾーンを計画し([計画する所](../src/devstudio/view/graphcanvaswidget.cpp#L1166))、root を描いた後に各 body を枠の子 item の中に definition 自身の座標で描く([body を描く所](../src/devstudio/view/graphcanvaswidget.cpp#L1491))
+  - model に scope を明示する編集の関数を足した(`connectInput` / `disconnectInput` / `setNodeParameter` / `removeNode` / `setNodeLabel` / `addNodeOpsIn` / `paletteOperationsIn` / `suggestNodeId` / `setDrawVariant` / `setDrawOverride` などの scope つきの形。[宣言](../src/devstudio/model/graphcanvasmodel.hpp#L807))。今までの形は今の scope でこれを呼ぶ
+  - 選択・折り畳み・配置・値と label のその場編集・線は (scope, id) で持つ。配置は scope ごと([`placement()`](../src/devstudio/view/graphcanvaswidget.cpp#L532))。押したときの選択は item の scope で行う([`mousePressEvent()`](../src/devstudio/view/graphcanvaswidget.cpp#L1904))
+  - 線は同じ scope の中だけで確定する([`finishConnection()`](../src/devstudio/view/graphcanvaswidget.cpp#L1864))
+  - ゾーンの body の node には `Values from:` の出力の値を載せない([外す所](../src/devstudio/model/graphcanvasmodel.cpp#L1175))
+- **決定 2**: 枠は [`layoutZone()`](../src/devstudio/view/graphcanvasdrawing.cpp#L612) が大きさを決め、[`Builder::addZone()`](../src/devstudio/view/graphcanvasdrawing.cpp#L647) が描く。右の縁の破線は `addZoneLink()`(描くだけ)
+  - 段の字は `loops[]` の報告から `expand ×2` / `draw_loop N materials`、報告の前は `loop`。共有は橙色の `shared (N users)`
+  - タブは [`GraphCanvasModel::showLoopBranch()`](../src/devstudio/model/graphcanvasmodel.cpp#L1067) が選ぶ。Open body の分岐の選択と同じ状態(`loop_branch_`)を使う。`"body": null` の分岐のタブは薄く、押しても変わらない
+  - body の出力の一覧は `GraphCanvasModel::bodyOutputs()`、今の分岐の body は `GraphCanvasModel::loopZoneBody()`
+  - 枠の中央は body の node なので、automation の `click` が当たる所を item が持てるようにした(`NodeGraphHotspotRole`。[宣言](../src/devstudio/view/nodegraphics.hpp#L54)、[枠が見出しを指す所](../src/devstudio/view/graphcanvasdrawing.cpp#L665)、[automation が読む所](../src/devstudio/automation/automationcommands.cpp#L518))
+- **決定 3**: 枠の中の操作は item の scope の関数で `scope: <definition>` を送る。枠の中で開いた右クリックのメニューと palette は body に足す。ゾーンか枠の中の node を選んでいるときの Add fullscreen pass・palette(右の詳細表の上の **Add node...** から開くものも)も body に足す([足す先を決める所](../src/devstudio/view/graphcanvaswidget.cpp#L1683))。body の node の移動は definition の配置に、枠の移動は root の配置に書く
+- **決定 4**: Graph tab の履歴は変えていない(LP-4c の `inverseOps()` が op の scope ごとに戻す)。scene の test で byte 一致を見た
+- **決定 5**: body の item は `GraphCanvasZoneScopeRole` に definition を持ち、automation の名前の前に `<definition>/` が付く([付ける所](../src/devstudio/automation/automationcommands.cpp#L244))。README の表に `graph_zone#<loop>` / `graph_zone_label#<loop>/stage` / `…/shared` / `graph_zone_tab#<loop>/<branch>` / `graph_socket#<loop>/<port>` / `graph_socket#<definition>/<input>/value` / `graph_zone_socket#<loop>/out:<output>` / `graph_zone_link#<definition>/<loop>/out:<output>` / `graph_node#<definition>/<id>` を足した([README](../test/studio_scenarios/README.md#L220))。Open body で入ったときの名前は今までどおり
+- **決定 6**: 位置の無い body の node は、root と同じ自動配置を枠の中の箱に対して行う
+- **仕様から外れた判断**(実装者の報告)
+  1. 同じ definition を 2 つのループが使うと、枠に描くのは文書順で最初のループだけ。もう一方は LP-4c の node で描く
+  2. ゾーン(または中の node)を選んでいると、Add fullscreen pass・palette・側面の Add は body に入る
+  3. Auto layout は root だけを並べ直す([`GraphCanvasScene::autoLayout()`](../src/devstudio/view/graphcanvaswidget.cpp#L450))。body は位置の無い node だけを自動配置する
+  4. ループの三角は「枠 ⇔ node」の切り替えになった(tooltip `Fold the zone into the loop's node` / `Open the loop's zone`)。見出しだけへの畳みは無くなった
+  5. LP-4c の不具合を直した: `p[]` の行で port と label が入れ替わっていて、線がソケットに届いていなかった。今は label が `<名前>[] (each)`、port が `<名前>[]`([行を組む所](../src/devstudio/view/graphcanvasdrawing.cpp#L151))
+  6. シナリオでは count を 2 にした(Frame Plan は 2 回以上でグループを作るため)
+- **test**: `devstudio_graphcanvas_scene_test` に `[lp4d1]` の 4 本
+  - `LP-4d1 the root draws a loop as a zone around its body, in the body's own scope`([test](../test/devstudio_graphcanvas_scene_test.cpp#L3669))
+  - `LP-4d1 an edit inside a zone goes to the body's definition, and moving the zone to the root`([test](../test/devstudio_graphcanvas_scene_test.cpp#L3775))
+  - `LP-4d1 a root node and a body node with one id are picked, edited and removed apart`([test](../test/devstudio_graphcanvas_scene_test.cpp#L3868))
+  - `LP-4d1 Undo and Redo take a zone's edits and its move back, byte for byte`([test](../test/devstudio_graphcanvas_scene_test.cpp#L3923))
+- **変異**(実装者の報告。どれも赤)
+  - ゾーンの計画を `if (false)` にする: 4 本が赤(受け入れ 1 の対照)
+  - hotspot を枠の中央にする
+  - `connectInput` を今の scope の token で送る / body の移動を root の配置に書く(受け入れ 2 の対照)
+  - 押したときの選択を今の scope で行う(受け入れ 3 の対照)
+  - `inverseOps()` の `set_layout` の scope を常に root にする(受け入れ 4 の対照)
+  - automation の名前から definition の前置きを外す: シナリオの 27 手目の wait が赤
+- **シナリオ(受け入れ 5)**: `loop_zone_edit`([シナリオ](../test/studio_scenarios/loop_zone_edit.json))。json の `steps` は 66。実装者の報告では 68/68 で緑
+  - Add loop → `graph_zone#loop` と段の字 → 見出しでゾーンを選んで Add fullscreen pass → body が 2 node・root は 1 node、`graph_node#loop_body/render_fullscreen` が見え `graph_node#render_fullscreen` は無い
+  - Count 2 → pass を枠の中で drag → definition の `layout.nodes` に入り root の `layout` は空 → `loops[0].count` 2、段の字 `expand ×2`、Frame Plan の Refresh の後に `loop loop ×2`
+  - 枠を見出しで drag → root の `layout.nodes` に `loop` が入り `render_fullscreen` は入らない、definition の配置は前のまま → Undo 2 回で root の配置、definition の配置の順に戻る
+- **受け入れ 6**: 既存の Graph tab のシナリオ 7 本が緑、名前の変更は無し(実装者の報告)
+- **受け入れ 7**: `-L studio_cpu -LE gpu` 420/420 緑(実装者の報告)
+- **テキスト入力の欄(受け入れ 8)**(実装者の報告): 足していない。シナリオで打つのは New Project の場所と名前、Count の 2
+- **穴**(実装者の報告)
+  - body の node を枠の外まで drag している間は枠が追いつかない(離すと描き直す)
+  - ゾーンの中の render 系の node の長い parameters の pill がはみ出す
+  - Frame Plan の Open in Graph は今も body の scope に入る
+  - hotspot はシナリオでは確かめていない(scene の test の変異で守っている)
+  - このうち pill・枠の追従・Open in Graph は LP-4d2 で扱う予定
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
