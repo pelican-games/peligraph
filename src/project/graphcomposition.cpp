@@ -1815,6 +1815,9 @@ struct DeferredCheck {
         // Nothing names the removed `definition` any more (remove_definition),
         // unless a definition of that name is there again.
         definition_unreferenced,
+        // Nothing outside `definition` reads its removed public output `port`
+        // (set_outputs, DO-1), unless it was declared again.
+        output_unreferenced,
     };
     Kind kind;
     // instance_port: the scope holding the instance, empty for the root.
@@ -1860,6 +1863,89 @@ bool declaresInput(const Json &candidate, const std::string &definition,
     return false;
 }
 
+bool declaresOutput(const Json &candidate, const std::string &definition,
+                    const std::string &output) {
+    const auto definitions = candidate.find("definitions");
+    if (definitions == candidate.end() || !definitions->is_object() ||
+        !definitions->contains(definition))
+        return false;
+    const auto &body = definitions->at(definition);
+    const auto outputs = body.find("outputs");
+    return outputs != body.end() && outputs->is_object() && outputs->contains(output);
+}
+
+// The object a scope's `nodes` and `outputs` live on: the document for the
+// root (the empty name), else that definition's body.
+const Json *findScopeBody(const Json &candidate, const std::string &scope) {
+    if (scope.empty()) return &candidate;
+    const auto definitions = candidate.find("definitions");
+    if (definitions == candidate.end() || !definitions->is_object() ||
+        !definitions->contains(scope) || !definitions->at(scope).is_object())
+        return nullptr;
+    return &definitions->at(scope);
+}
+
+// DO-1: nothing outside `definition` reads its public output `output` any more.
+// A graph.instance of it offers the output as its port of that name; a
+// graph.loop over it (every branch body alike) as `p` and `p[]`, which the loop
+// declares in its `outputs` and may carry from. An edge into any node of the
+// referrer's scope, or that scope's own `outputs`, reads it by that port -- an
+// edge with an `element` reads `p[]`. A loop whose other body still has the
+// output is not asked: its bodies disagree, and the expansion names that
+// (graph.loop_branch_interface@1).
+void requireOutputUnreferenced(const Json &candidate, const std::string &definition,
+                               const std::string &output) {
+    for (const auto &reference : definitionReferences(candidate, definition)) {
+        const auto &node = *reference.referrer;
+        const auto op = node.value("op", std::string{});
+        const bool loop = op == "graph.loop";
+        if (!loop && op != "graph.instance") continue;
+        if (loop) {
+            const auto bodies = suppliedDefinitions(node);
+            if (std::any_of(bodies.begin(), bodies.end(), [&](const std::string &body) {
+                    return declaresOutput(candidate, body, output);
+                }))
+                continue;
+        }
+        const auto refuse = [&](Json detail) {
+            detail["definition"] = definition;
+            detail["output"] = output;
+            detail["node"] = reference.node;
+            throw GraphRegistryError("graph.output_referenced@1", std::move(detail));
+        };
+        const auto reads = [&](const Json &endpoint) {
+            if (!endpoint.is_object() || endpoint.value("node", std::string{}) != reference.node)
+                return false;
+            const auto port = endpoint.value("port", std::string{});
+            return port == output || (loop && port == output + "[]");
+        };
+        if (loop) {
+            for (const auto &declared : node.value("outputs", Json::array()))
+                if (declared == output || declared == output + "[]") refuse({{"field", "outputs"}});
+            const auto parameters = node.value("parameters", Json::object());
+            const auto carry = parameters.is_object() ? parameters.value("carry", Json::array()) : Json::array();
+            if (carry.is_array())
+                for (const auto &pair : carry)
+                    if (pair.is_object() && pair.value("from", std::string{}) == output)
+                        refuse({{"field", "carry"}});
+        }
+        const auto *scope = findScopeBody(candidate, reference.scope);
+        if (scope == nullptr) continue;
+        if (const auto nodes = scope->find("nodes"); nodes != scope->end() && nodes->is_array())
+            for (const auto &consumer : *nodes) {
+                if (!consumer.is_object()) continue;
+                const auto inputs = consumer.find("inputs");
+                if (inputs == consumer.end() || !inputs->is_object()) continue;
+                for (const auto &[port, endpoint] : inputs->items())
+                    if (reads(endpoint))
+                        refuse({{"consumer", consumer.value("id", std::string{})}, {"port", port}});
+            }
+        if (const auto outputs = scope->find("outputs"); outputs != scope->end() && outputs->is_object())
+            for (const auto &[port, endpoint] : outputs->items())
+                if (reads(endpoint)) refuse({{"scope_output", port}});
+    }
+}
+
 // `in_place` is the run for an op that failed on its own: the check is asked
 // of the document as that op found it, where the removed port is still there.
 void runDeferredCheck(const Json &candidate, const DeferredCheck &check, bool in_place = false) {
@@ -1885,6 +1971,12 @@ void runDeferredCheck(const Json &candidate, const DeferredCheck &check, bool in
                           declaresInput(candidate, check.definition, check.port)))
             return;
         requireInputUnreferenced(candidate, check.definition, check.port);
+        return;
+    case DeferredCheck::Kind::output_unreferenced:
+        if (!in_place && (!known.contains(check.definition) ||
+                          declaresOutput(candidate, check.definition, check.port)))
+            return;
+        requireOutputUnreferenced(candidate, check.definition, check.port);
         return;
     case DeferredCheck::Kind::definition_unreferenced: {
         if (known.contains(check.definition)) return;
@@ -2156,6 +2248,55 @@ void applyOperation(Json &candidate, const Json &operation, const std::string &k
             auto &node = locateNode(scope, definitions, id);
             if (label.get_ref<const std::string &>().empty()) node.erase("label");
             else node["label"] = label;
+        } else if (kind == "set_outputs") {
+            // DO-1: the scope's public outputs, replaced whole. Its inverse is
+            // the same op carrying the outputs the scope held before. Each
+            // endpoint names a node of this scope as it stands at this op, the
+            // way remove_node's check of the outputs reads them; whether the
+            // port of an instance or a loop exists is the expansion's to say,
+            // since a later op may change what that node offers.
+            const auto found = operation.find("outputs");
+            if (found == operation.end())
+                throw std::invalid_argument("set_outputs requires an outputs object");
+            const auto &outputs = *found;
+            object(outputs, "set_outputs requires an outputs object");
+            if (scope.container == nullptr)
+                throw std::invalid_argument("graph document scope has no container");
+            for (const auto &[port, endpoint] : outputs.items()) {
+                // A port name follows the node id rule; `[]` at its end is how
+                // a loop spells a body output per element, so a body output
+                // may not end with it.
+                (void)identifier(Json(port));
+                if (port.ends_with("[]"))
+                    throw std::invalid_argument("graph output name cannot end with []: " + port);
+                object(endpoint, "set_outputs endpoint must be an object");
+                if (endpoint.size() != 2 || !endpoint.contains("node") || !endpoint.contains("port"))
+                    throw std::invalid_argument("set_outputs endpoint requires exactly node and port: " + port);
+                const auto id = opNodeName(endpoint.at("node"));
+                const auto source_port = identifier(endpoint.at("port"));
+                const auto &source = locateNode(scope, definitions, id);
+                const auto op = source.value("op", std::string{});
+                if (op == "graph.input") {
+                    if (source_port != "value")
+                        throw std::invalid_argument("graph input output port must be value");
+                } else if (!isStructuralSupplier(source)) {
+                    const auto ports = source.value("outputs", Json::array());
+                    if (!ports.is_array() || std::find(ports.begin(), ports.end(), source_port) == ports.end())
+                        throw std::invalid_argument("unknown graph output port: " + id + "." + source_port);
+                }
+            }
+            const auto previous = scope.outputs != nullptr && scope.outputs->is_object()
+                ? *scope.outputs : Json::object();
+            (*scope.container)["outputs"] = outputs;
+            // An output that is gone may still be read from outside the body;
+            // the reader may be rewired later in the list.
+            if (!scope.root)
+                for (const auto &[port, endpoint] : previous.items()) {
+                    (void)endpoint;
+                    if (!outputs.contains(port))
+                        checks.push_back({DeferredCheck::Kind::output_unreferenced, {}, {},
+                                          scope.name, port});
+                }
         } else if (kind == "set_layout") {
             // Where the editor put things. The engine carries it and reads
             // none of it, so this op touches nothing an evaluation depends on:

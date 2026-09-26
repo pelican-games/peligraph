@@ -139,6 +139,16 @@ ExpandedGraphDocument expandGraphDocument(const nlohmann::json &document);
 //   {"op":"set_node_parameters","node":"<id>","parameters":{...}}
 //   {"op":"set_node_label","node":"<id>","label":"<text>"}   ("" clears)
 //   {"op":"set_layout","layout":{...}|null}                  (null clears)
+//   {"op":"set_outputs","outputs":{"<port>":{"node","port"},...}}
+//       (DO-1) replaces the scope's public `outputs` whole; its inverse is the
+//       same op with the previous outputs. Each endpoint names a node of the
+//       scope (graph.node_missing@1). A definition output that is gone and is
+//       still read from outside -- an instance's port, a loop's declared
+//       `p` / `p[]` or `carry.from`, an edge or the referrer scope's
+//       `outputs` reading them -- is graph.output_referenced@1
+//       {definition, output, node, consumer+port | scope_output | field},
+//       checked at the end of the list; branch bodies left disagreeing are
+//       graph.loop_branch_interface@1 from the expansion.
 // and three that act on the document's `definitions` and take no scope (LP-0c):
 //   {"op":"add_definition","name":"<name>","definition":{...}?}
 //       an empty body {"nodes":[],"outputs":{}} unless one is given

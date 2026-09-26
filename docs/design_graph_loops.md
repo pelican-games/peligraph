@@ -694,6 +694,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `graph.definition_referenced@1` | 編集 | `{definition, referenced_by}` |
 | `graph.definition_duplicate@1` | 編集 | `{definition}`(LP-0c) |
 | `graph.definition_missing@1` | 編集 | `{definition}`(rename では `from`。LP-0c) |
+| `graph.output_referenced@1`(`set_outputs` で消した出力) | 編集(列の最後) | `{definition, output, node}` に `{consumer, port}` / `{scope_output}` / `{field: outputs｜carry}` のどれか(DO-1) |
 | `graph.target_ref_unknown@1` | 組み直し | `{node, name}` |
 | `graph.input_index_invalid@1` | 編集・読み込み | `{node, input_index, reason: missing｜duplicate, ports}`(LP-1d) |
 | `graph.target_ref_type_mismatch@1` | 組み直し | `{node, name, field, declared, actual}`(field: `kind` / `topology`。LP-0a) |

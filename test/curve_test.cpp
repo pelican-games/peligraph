@@ -1559,3 +1559,163 @@ TEST_CASE("LP-1a a document with a loop is saved as written, without its expansi
     // The loop itself is no expanded node.
     for (const auto &node : expanded.nodes) CHECK(node.at("id") != "steps");
 }
+
+namespace {
+// DO-1: the outputs op for one scope.
+nlohmann::json do1SetOutputs(const char *scope, nlohmann::json outputs) {
+    return {{"op", "set_outputs"}, {"scope", scope}, {"outputs", std::move(outputs)}};
+}
+
+nlohmann::json do1Endpoint(const char *node, const char *port) {
+    return {{"node", node}, {"port", port}};
+}
+} // namespace
+
+TEST_CASE("DO-1 set_outputs adds a loop body output that the loop's p and p[] then read, in either order",
+          "[curve][graph-composition][graph-definition-edit][do1]") {
+    using Json = nlohmann::json;
+    const auto document = lp1aEditDocument();
+    // Both branch bodies gain `again`, the loop declares it as `p` and `p[]`,
+    // and the root reads `p`.
+    const Json bodies = Json::array({
+        do1SetOutputs("first", {{"image", do1Endpoint("first_fill", "color")},
+                                {"again", do1Endpoint("first_fill", "color")}}),
+        do1SetOutputs("paint", {{"image", do1Endpoint("fill", "color")},
+                                {"again", do1Endpoint("fill", "color")}})});
+    auto loop = document.at("nodes").at(1);
+    loop["outputs"] = Json::array({"image", "again", "again[]"});
+    const Json wiring = Json::array({
+        Json{{"op", "replace_node"}, {"node", loop}},
+        do1SetOutputs("root", {{"final", do1Endpoint("steps", "again")}})});
+    auto bodies_first = bodies;
+    bodies_first.insert(bodies_first.end(), wiring.begin(), wiring.end());
+    auto wired_first = wiring;
+    wired_first.insert(wired_first.end(), bodies.begin(), bodies.end());
+    const auto edited = Pelican::editGraphDocument(document, bodies_first);
+    CHECK(Pelican::editGraphDocument(document, wired_first) == edited);
+    CHECK(edited.at("definitions").at("paint").at("outputs").at("again") == do1Endpoint("fill", "color"));
+    CHECK(edited.at("outputs") == Json{{"final", do1Endpoint("steps", "again")}});
+    const auto expanded = Pelican::expandGraphDocument(edited);
+    CHECK(expanded.outputs.contains("final"));
+    // Nothing else of the document moved.
+    auto rest = edited;
+    rest["definitions"]["first"]["outputs"].erase("again");
+    rest["definitions"]["paint"]["outputs"].erase("again");
+    rest["nodes"][1]["outputs"] = Json::array({"image"});
+    rest["outputs"] = Json::object();
+    CHECK(rest == document);
+
+    // The inverse carries what each scope held before, in either order too.
+    const Json unbodies = Json::array({
+        do1SetOutputs("first", document.at("definitions").at("first").at("outputs")),
+        do1SetOutputs("paint", document.at("definitions").at("paint").at("outputs"))});
+    const Json unwiring = Json::array({
+        Json{{"op", "replace_node"}, {"node", document.at("nodes").at(1)}},
+        do1SetOutputs("root", document.at("outputs"))});
+    auto unwired_first = unwiring;
+    unwired_first.insert(unwired_first.end(), unbodies.begin(), unbodies.end());
+    auto unbodies_first = unbodies;
+    unbodies_first.insert(unbodies_first.end(), unwiring.begin(), unwiring.end());
+    CHECK(Pelican::editGraphDocument(edited, unwired_first) == document);
+    CHECK(Pelican::editGraphDocument(edited, unbodies_first) == document);
+    CHECK(Pelican::editGraphDocument(edited, unbodies_first).dump(2) == document.dump(2));
+}
+
+TEST_CASE("DO-1 an output still read from outside its body is not removed, and the reader is named",
+          "[curve][graph-composition][graph-definition-edit][do1]") {
+    using Json = nlohmann::json;
+    // An instance's port: read by an edge, then by the root's outputs.
+    const auto curves = parameterGraphCompositionFixture();
+    const Json drop = Json::array({do1SetOutputs("scaled_curve", Json::object())});
+    CHECK(lp0cEditCode(curves, drop) == "graph.output_referenced@1");
+    CHECK(lp0cEditDetail(curves, drop) ==
+          Json{{"definition", "scaled_curve"}, {"output", "result"}, {"node", "left"},
+               {"consumer", "render"}, {"port", "value"}});
+    const Json rewire{{"op", "set_input"}, {"node", "render"}, {"port", "value"},
+                      {"source", do1Endpoint("two", "value")}};
+    const Json after_rewire = Json::array({drop.at(0), rewire});
+    CHECK(lp0cEditDetail(curves, after_rewire) ==
+          Json{{"definition", "scaled_curve"}, {"output", "result"}, {"node", "left"},
+               {"scope_output", "left"}});
+    // Every reader taken off in the same list, in any order: the output goes.
+    const Json root_outputs = do1SetOutputs("root", {{"gpu", curves.at("outputs").at("gpu")}});
+    CHECK(lp0cEditCode(curves, Json::array({drop.at(0), rewire, root_outputs})) == "<accepted>");
+    CHECK(lp0cEditCode(curves, Json::array({root_outputs, rewire, drop.at(0)})) == "<accepted>");
+    // Declared again by the end of the list, it was never lost.
+    CHECK(lp0cEditCode(curves, Json::array({drop.at(0),
+        do1SetOutputs("scaled_curve", curves.at("definitions").at("scaled_curve").at("outputs"))})) ==
+          "<accepted>");
+
+    // A loop's: its declared `p`, its carry, an edge reading `p[]`.
+    const auto document = lp1aEditDocument();
+    const Json empty_bodies = Json::array({do1SetOutputs("first", Json::object()),
+                                           do1SetOutputs("paint", Json::object())});
+    CHECK(lp0cEditCode(document, empty_bodies) == "graph.output_referenced@1");
+    CHECK(lp0cEditDetail(document, empty_bodies) ==
+          Json{{"definition", "first"}, {"output", "image"}, {"node", "steps"}, {"field", "outputs"}});
+    auto undeclared = document;
+    undeclared["nodes"][1]["outputs"] = Json::array();
+    CHECK(lp0cEditCode(undeclared, empty_bodies) == "<accepted>");
+    auto carried = undeclared;
+    carried["nodes"][1]["parameters"]["carry"] = Json::array({{{"from", "image"}, {"to", "target"}}});
+    CHECK(lp0cEditDetail(carried, empty_bodies) ==
+          Json{{"definition", "first"}, {"output", "image"}, {"node", "steps"}, {"field", "carry"}});
+    auto per_element = undeclared;
+    per_element["nodes"].push_back({{"id", "reader"}, {"op", "value.add"},
+        {"inputs", {{"a", {{"node", "steps"}, {"port", "image[]"}, {"element", 0}}}}},
+        {"outputs", Json::array({"value"})}});
+    CHECK(lp0cEditDetail(per_element, empty_bodies) ==
+          Json{{"definition", "first"}, {"output", "image"}, {"node", "steps"},
+               {"consumer", "reader"}, {"port", "a"}});
+}
+
+TEST_CASE("DO-1 a loop's branch bodies change their outputs together, in one list",
+          "[curve][graph-composition][graph-definition-edit][do1]") {
+    using Json = nlohmann::json;
+    const auto document = lp1aEditDocument();
+    // One body alone: the bodies disagree, and the other body is named.
+    const Json first_only = Json::array({do1SetOutputs("first",
+        {{"image", do1Endpoint("first_fill", "color")}, {"again", do1Endpoint("first_fill", "color")}})});
+    CHECK(lp0cEditCode(document, first_only) == "graph.loop_branch_interface@1");
+    CHECK(lp0cEditDetail(document, first_only) ==
+          Json{{"node", "steps"}, {"branch", 1}, {"definition", "paint"}, {"port", "again"}});
+    // Removing from one body only is the same disagreement, not a reference:
+    // the other body still has the output the loop declares.
+    const Json drop_first = Json::array({do1SetOutputs("first", Json::object())});
+    CHECK(lp0cEditCode(document, drop_first) == "graph.loop_branch_interface@1");
+    CHECK(lp0cEditDetail(document, drop_first) ==
+          Json{{"node", "steps"}, {"branch", 1}, {"definition", "paint"}, {"port", "image"}});
+    // Both in one list are aligned.
+    auto both = first_only;
+    both.push_back(do1SetOutputs("paint",
+        {{"image", do1Endpoint("fill", "color")}, {"again", do1Endpoint("fill", "color")}}));
+    CHECK(lp0cEditCode(document, both) == "<accepted>");
+}
+
+TEST_CASE("DO-1 set_outputs refuses a malformed outputs map",
+          "[curve][graph-composition][graph-definition-edit][do1]") {
+    using Json = nlohmann::json;
+    const auto document = lp1aEditDocument();
+    const auto one = [](const char *port, Json endpoint) { return Json{{port, std::move(endpoint)}}; };
+    // A node the scope does not hold is named with the scope.
+    const Json absent = Json::array({do1SetOutputs("paint", one("image", do1Endpoint("first_fill", "color")))});
+    CHECK(lp0cEditCode(document, absent) == "graph.node_missing@1");
+    CHECK(lp0cEditDetail(document, absent) == Json{{"node", "first_fill"}, {"scope", "paint"}});
+    // The rest is a malformed request.
+    const auto malformed = [&](Json outputs) {
+        CAPTURE(outputs);
+        CHECK_THROWS_AS(Pelican::editGraphDocument(document,
+            Json::array({do1SetOutputs("paint", std::move(outputs))})), std::invalid_argument);
+    };
+    malformed(Json::array());
+    malformed(one("image", do1Endpoint("fill", "absent")));  // a port the node lacks
+    malformed(one("image", do1Endpoint("image", "value")));
+    malformed(one("image", Json{{"node", "fill"}}));
+    malformed(one("image", Json{{"node", "fill"}, {"port", "color"}, {"element", 0}}));
+    malformed(one("image", "fill.color"));
+    malformed(one("", do1Endpoint("fill", "color")));
+    malformed(one("a/b", do1Endpoint("fill", "color")));
+    malformed(one("image[]", do1Endpoint("fill", "color")));
+    CHECK_THROWS_AS(Pelican::editGraphDocument(document, Json::array({Json{{"op", "set_outputs"},
+        {"scope", "paint"}}})), std::invalid_argument);
+}

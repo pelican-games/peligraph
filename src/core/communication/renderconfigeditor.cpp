@@ -2417,6 +2417,11 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
                     edited.at("definitions") != source.value("definitions", Json{}))
                     candidate = candidate.withRootValue(
                         "definitions", edited.at("definitions").dump(2));
+                // DO-1: set_outputs may replace the root's public outputs.
+                if (edited.value("outputs", Json::object()) !=
+                    source.value("outputs", Json::object()))
+                    candidate = candidate.withRootValue(
+                        "outputs", edited.value("outputs", Json::object()).dump(2));
                 // And the root scope's own placement, on the same terms.
                 if (edited.value("layout", Json::object()) !=
                     source.value("layout", Json::object()))

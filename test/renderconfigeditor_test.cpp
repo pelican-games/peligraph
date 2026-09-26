@@ -1220,6 +1220,43 @@ TEST_CASE("instance inputs change supply atomically and report what was drawn",
         REQUIRE(readBytes(source.path) == saved);
     }
 
+    SECTION("DO-1 set_outputs replaces a scope's outputs over edit_graph_document") {
+        const auto saved = [&] { return Json::parse(readBytes(source.path)); };
+        const auto original = saved();
+        const Json sum{{"node", "sum"}, {"port", "value"}};
+        // A definition output and the root output that reads it, in one list.
+        REQUIRE(commit(edit(Json::array({
+            Json{{"op", "set_outputs"}, {"scope", "root"},
+                 {"outputs", {{"pulse", {{"node", "left"}, {"port", "twice"}}}}}},
+            Json{{"op", "set_outputs"}, {"scope", "gain_curve"},
+                 {"outputs", {{"value", sum}, {"twice", sum}}}}})))
+                .at("committed") == true);
+        CHECK(saved().at("definitions").at("gain_curve").at("outputs") ==
+              Json{{"value", sum}, {"twice", sum}});
+        // The root's own outputs travel back out too.
+        CHECK(saved().at("outputs") == Json{{"pulse", {{"node", "left"}, {"port", "twice"}}}});
+        // Still read by the root, so not removed; the file is untouched.
+        const auto before = readBytes(source.path);
+        const auto refused = edit(Json::array({Json{{"op", "set_outputs"}, {"scope", "gain_curve"},
+            {"outputs", {{"value", sum}}}}}));
+        REQUIRE(refused.at("status") == "rejected");
+        CHECK(refused.at("error").at("code") == "graph.output_referenced@1");
+        CHECK(refused.at("error").at("definition") == "gain_curve");
+        CHECK(refused.at("error").at("output") == "twice");
+        CHECK(refused.at("error").at("node") == "left");
+        CHECK(refused.at("error").at("scope_output") == "pulse");
+        CHECK(readBytes(source.path) == before);
+        // The inverse is the same op with what each scope held before.
+        REQUIRE(commit(edit(Json::array({
+            Json{{"op", "set_outputs"}, {"scope", "gain_curve"},
+                 {"outputs", original.at("definitions").at("gain_curve").at("outputs")}},
+            Json{{"op", "set_outputs"}, {"outputs", original.at("outputs")}}})))
+                .at("committed") == true);
+        CHECK(saved() == original);
+        draw();
+        REQUIRE(portValue("gain").at("value") == 2.5);
+    }
+
     SECTION("the operation catalog reaches the editor over the same service") {
         const auto catalog = service->getGraphCatalog(Json::object());
         REQUIRE(catalog.at("schema") == "pelican.graph_catalog");
