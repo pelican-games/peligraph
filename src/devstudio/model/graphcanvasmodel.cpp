@@ -1105,9 +1105,13 @@ std::size_t GraphCanvasModel::definitionUseCount(std::string_view definition) co
         if (!node.is_object()) continue;
         if (text(node, "op") == "graph.instance" && text(node, "definition") == definition)
             ++uses;
-        if (isLoop(node))
-            for (const auto &body : loopBranchBodies(node))
-                if (body == definition) ++uses;
+        // Q-17: a loop is one user however many of its branches run the
+        // definition. Two branches of one loop are one place to edit it from;
+        // "shared" warns of an edit reaching another loop or instance.
+        if (isLoop(node) && std::ranges::any_of(loopBranchBodies(node), [&](const auto &body) {
+                return body == definition;
+            }))
+            ++uses;
     }
     return uses;
 }

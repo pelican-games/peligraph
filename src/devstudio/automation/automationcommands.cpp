@@ -1503,6 +1503,13 @@ AutomationReply commandSelect(const AutomationHost &host,
     if (!text.isString() && !index.isDouble())
         return AutomationReply::failure(
             BadRequest, QStringLiteral("select needs text or index"));
+    // Q-17: a switched-off widget is refused by name, as click refuses one
+    // (Q-16). A person cannot pick in it; setCurrentIndex could, and the
+    // panel behind it had said "not now" by switching it off.
+    if (!widget->isEnabled())
+        return AutomationReply::failure(
+            BadRequest,
+            QStringLiteral("the widget named \"%1\" is disabled").arg(name));
 
     if (auto *combo = qobject_cast<QComboBox *>(widget)) {
         int row = index.isDouble() ? index.toInt(-1)
@@ -1513,7 +1520,25 @@ AutomationReply commandSelect(const AutomationHost &host,
                 QStringLiteral("\"%1\" has no entry %2")
                     .arg(name, text.isString() ? text.toString()
                                                : QString::number(index.toInt())));
+        const QString wanted = combo->itemText(row);
+        // The combo is held while its own signal runs: a panel that rebuilds
+        // its rows from here leaves this one to go when the event loop comes
+        // back, and it is read below.
+        const QPointer<QComboBox> held{combo};
         combo->setCurrentIndex(row);
+        // Q-17: the choice has to still be there once the panel has heard
+        // it. A panel that refused it puts the value it holds back, and a
+        // select that answered "ok" over that let the scenario go on as if
+        // it had chosen, and fail steps later on what the choice never did.
+        // A picker -- a list that hands its entry to a field and goes back to
+        // its placeholder, "Pick..." -- holds no entry afterwards (index -1):
+        // it took the choice by using it. Any other entry is not the one
+        // chosen.
+        if (!held.isNull() && held->currentIndex() >= 0 &&
+            (held->currentIndex() != row || held->currentText() != wanted))
+            return AutomationReply::failure(
+                BadRequest, QStringLiteral("\"%1\" did not take \"%2\"; it holds \"%3\"")
+                                .arg(name, wanted, held->currentText()));
         return AutomationReply::success(QJsonObject{
             {QStringLiteral("name"), name},
             {QStringLiteral("index"), row},

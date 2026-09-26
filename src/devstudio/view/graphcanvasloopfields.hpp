@@ -49,6 +49,13 @@ class GraphCanvasLoopFields final : public QWidget {
     // four times a second does not take a field away from under the cursor.
     void showLoop(const std::string &id);
 
+    // Q-17: the fields take an edit only while the model can send one. From
+    // the moment an edit (or a read of the document) is in flight until the
+    // document is read back, every field is switched off -- a choice made in
+    // between would be refused by the model and lost without a word -- and
+    // switched on again once. Called by the owner whenever the model moved.
+    void followEditable();
+
     // "1, 4" / "1 4" -> {1, 4}. Nothing when a piece is not an integer.
     static std::optional<std::vector<std::int64_t>> parseIntegers(const QString &text);
     static QString integersText(const std::vector<std::int64_t> &values);
@@ -86,6 +93,9 @@ class GraphCanvasLoopFields final : public QWidget {
     // condition read off its row.
     void commitWhereTags();
     void commitDrawWhen(std::size_t branch);
+    // Q-17: a branch's choices the model refused go back to what the
+    // document says, so the row never shows a choice that was not sent.
+    void restoreBranch(std::size_t branch);
     void addDrawBranchRow(QGridLayout &grid, const GraphCanvasLoop &loop, std::size_t index,
                           int row, bool editable);
 
@@ -98,6 +108,9 @@ class GraphCanvasLoopFields final : public QWidget {
     std::optional<GraphCanvasLoop> current_;
 
     QLabel *summary_ = nullptr;
+    // Q-17: everything that edits the loop -- the form and the rows -- sits
+    // in here, switched off while the model cannot take an edit.
+    QWidget *fields_ = nullptr;
     QSpinBox *count_ = nullptr;
     QToolButton *count_expression_toggle_ = nullptr;
     QLineEdit *count_expression_ = nullptr;

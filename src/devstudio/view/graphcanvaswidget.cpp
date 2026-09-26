@@ -4312,6 +4312,9 @@ struct GraphCanvasWidget::Impl {
                 showDetails();
             }
         }
+        // Q-17: an edit or a read in flight changes no revision, so the Loop
+        // fields are not rebuilt for it; they follow it here instead.
+        if (loop_fields != nullptr) loop_fields->followEditable();
         showNotice();
         refresh->setEnabled(model.canRefresh());
         synchronizeTimeline();

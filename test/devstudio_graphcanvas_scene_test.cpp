@@ -3465,6 +3465,200 @@ TEST_CASE("LP-4e a draw_loop's Loop fields: the rows it takes, the rows it does 
     CHECK(sent[0].at("parameters").at("where") == Json{{"tags", {{"exclude", {"decal", "sky"}}}}});
 }
 
+// Q-17. The Loop fields were built for a model that could edit when they were
+// built, and an edit in flight does not rebuild them: nothing they show has
+// changed until the document is read back. A body picked in between reached a
+// model that could only refuse, and the choice was lost without a word -- the
+// row still said "(nothing)" while the document kept its body. Each step of
+// the edit's round trip is held here by not answering it.
+TEST_CASE("Q-17 a branch's body picked while an edit is in flight is sent, or the row cannot be "
+          "picked in",
+          "[devstudio][graph-canvas][scene][q17]") {
+    (void)application();
+    const Json color{{"semantic", "pelican.render.color_signal@1"},
+                     {"arguments", {{"reference", "scene"}, {"transfer", "linear"},
+                                    {"range", "extended"}}}};
+    const Json depth{{"semantic", "pelican.render.depth@1"},
+                     {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+    const auto documentFor = [&](const std::string &material) {
+        return Json{
+            {"definitions", {{"forward_opaque_draw",
+                {{"nodes", Json::array({{{"id", "step"}, {"op", "draw.material"},
+                                         {"parameters", Json::object()}, {"outputs", {"draws"}}}})},
+                 {"outputs", {{"draws", {{"node", "step"}, {"port", "draws"}}}}}}}}},
+            {"nodes", Json::array({
+                {{"id", "scene_color_ref"}, {"op", "render.target_ref"},
+                 {"parameters", {{"name", "scene_color"}, {"type", color}}}, {"outputs", {"resource"}}},
+                {{"id", "scene_depth_ref"}, {"op", "render.target_ref"},
+                 {"parameters", {{"name", "scene_depth"}, {"type", depth}}}, {"outputs", {"resource"}}},
+                {{"id", "forward_opaque_draws"}, {"op", "graph.loop"},
+                 {"parameters", {{"over", {{"draw_items", {{"contract", "forward_opaque_v1"}}}}},
+                                 {"order", {{"by", "phase_default"}}},
+                                 {"branches", Json::array({
+                                     {{"when", {{"material", material}}},
+                                      {"body", "forward_opaque_draw"}},
+                                     {{"body", "forward_opaque_draw"}}})}}},
+                 {"outputs", {"draws"}}},
+                {{"id", "forward_opaque"}, {"op", "render.material_pass"},
+                 {"parameters", {{"material_contract", "forward_opaque_v1"},
+                                 {"pass_set", "main_render"}}},
+                 {"inputs", {{"color", {{"node", "scene_color_ref"}, {"port", "resource"}}},
+                             {"depth", {{"node", "scene_depth_ref"}, {"port", "resource"}}},
+                             {"draws", {{"node", "forward_opaque_draws"}, {"port", "draws"}}}}},
+                 {"outputs", Json::array()}}})}};
+    };
+    const std::string metal = "project://m.material.json#metal";
+    const std::string glass = "project://m.material.json#glass";
+    Json catalog = visualCatalog();
+    for (const char *op : {"render.target_ref", "render.material_pass", "draw.material"})
+        catalog["modules"][1]["operations"].push_back(
+            {{"op", op}, {"domain", "rendering"}, {"evaluation", "direct"}, {"sink", false},
+             {"ports", "parameter_dependent"}});
+    RecordedCapability transport;
+    auto capability = transport.capability();
+    capability.requestFramePlan = [&transport](QString *) {
+        transport.calls.push_back({QStringLiteral("get_frame_plan")});
+        return transport.next++;
+    };
+    PelicanStudio::GraphCanvasWidget widget{capability};
+    widget.resize(1100, 700);
+    widget.show();
+    QCoreApplication::processEvents();
+    const auto answerRpc = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        REQUIRE(transport.deliver);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    answerRpc(QStringLiteral("get_graph_instances"), context(documentFor(metal)));
+    answerRpc(QStringLiteral("get_graph_catalog"), catalog);
+    answerRpc(QStringLiteral("get_frame_plan"),
+              Json{{"loops", Json::array({{{"node", "forward_opaque_draws"}, {"tier", "draw_loop"},
+                                           {"pass", "forward_opaque"}, {"count", 2},
+                                           {"elements", Json::array({
+                                               {{"element", metal}, {"index", 0}, {"branch", 0}},
+                                               {{"element", glass}, {"index", 1}, {"branch", 1}}})},
+                                           {"unmatched_branches", Json::array()},
+                                           {"total", 2}, {"offset", 0}, {"limit", 256}}})}});
+    widget.scene().selectNode("forward_opaque_draws");
+    QCoreApplication::processEvents();
+
+    const auto field = [&](const char *name) {
+        auto *combo = widget.findChild<QComboBox *>(QString::fromLatin1(name));
+        REQUIRE(combo != nullptr);
+        return combo;
+    };
+    const auto edits = [&] { return transport.countOf(QStringLiteral("edit_graph_document")); };
+    // What a person (or a scenario) can do with the body at this moment: when
+    // the row can be picked in, the pick goes out; when it cannot, nothing is
+    // lost. A pick that neither went out nor was refused is the bug.
+    const auto bodyPickNotLost = [&] {
+        auto *body = field("pelican.graphCanvasLoop.branch0.body");
+        if (!body->isEnabled()) return true;
+        const int before = edits();
+        body->setCurrentIndex(body->findText(QStringLiteral("(nothing)")));
+        QCoreApplication::processEvents();
+        return edits() == before + 1;
+    };
+
+    auto *material = field("pelican.graphCanvasLoop.branch0.material");
+    REQUIRE(material->isEnabled());
+    REQUIRE(field("pelican.graphCanvasLoop.branch0.body")->isEnabled());
+    material->setCurrentIndex(material->findData(QString::fromStdString(glass)));
+    QCoreApplication::processEvents();
+    REQUIRE(edits() == 1);
+    // Sent, not yet accepted.
+    CHECK(bodyPickNotLost());
+    CHECK_FALSE(field("pelican.graphCanvasLoop.branch0.body")->isEnabled());
+    // Accepted, its ticket not yet committed.
+    answerRpc(QStringLiteral("edit_graph_document"), Json{{"status", "accepted"}, {"ticket", "q17"}});
+    REQUIRE(transport.countOf(QStringLiteral("get_edit_result")) == 1);
+    CHECK(bodyPickNotLost());
+    // Committed, the document not yet read back.
+    const int reads = transport.countOf(QStringLiteral("get_graph_instances"));
+    answerRpc(QStringLiteral("get_edit_result"), Json{{"status", "committed"}, {"committed", true}});
+    REQUIRE(transport.countOf(QStringLiteral("get_graph_instances")) == reads + 1);
+    CHECK(bodyPickNotLost());
+    REQUIRE(edits() == 1);
+    // Read back: the row is on again, and a pick goes out.
+    answerRpc(QStringLiteral("get_graph_instances"), context(documentFor(glass)));
+    auto *body = field("pelican.graphCanvasLoop.branch0.body");
+    REQUIRE(body->isEnabled());
+    CHECK(field("pelican.graphCanvasLoop.branch0.material")->currentText() ==
+          QString::fromStdString(glass));
+    body->setCurrentIndex(body->findText(QStringLiteral("(nothing)")));
+    QCoreApplication::processEvents();
+    REQUIRE(edits() == 2);
+    const auto sent = Json::parse(transport.calls.back().body.toStdString());
+    REQUIRE(sent.size() == 1);
+    CHECK(sent[0].at("parameters").at("branches").at(0).at("body").is_null());
+}
+
+// Q-17. The second guard: a pick the model refuses all the same does not stay
+// on screen. The row goes back to what the document says, so neither a person
+// nor automation's select is told the choice was made.
+TEST_CASE("Q-17 a branch choice the model refuses goes back to what the document says",
+          "[devstudio][graph-canvas][scene][q17]") {
+    (void)application();
+    const Json body{{"nodes", Json::array({{{"id", "target"}, {"op", "graph.input"},
+                                            {"default", 0.0}}})},
+                    {"outputs", Json::object()}};
+    Json document{{"definitions", {{"step", body}, {"paint", body}}},
+                  {"nodes", Json::array({
+                      {{"id", "steps"}, {"op", "graph.loop"},
+                       {"parameters", {{"over", {{"range", {{"count", 2}}}}},
+                                       {"branches", Json::array({
+                                           {{"when", {{"element", 0}}}, {"body", "paint"}},
+                                           {{"body", "step"}}})}}},
+                       {"outputs", Json::array()}}})}};
+    RecordedCapability transport;
+    PelicanStudio::GraphCanvasWidget widget{transport.capability()};
+    widget.resize(900, 600);
+    widget.show();
+    QCoreApplication::processEvents();
+    const auto answerRpc = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    answerRpc(QStringLiteral("get_graph_instances"), context(document));
+    answerRpc(QStringLiteral("get_graph_catalog"), visualCatalog());
+    widget.scene().selectNode("steps");
+    QCoreApplication::processEvents();
+
+    // A read of the document in flight: the model takes no edit, and the
+    // fields say so.
+    widget.refresh();
+    QCoreApplication::processEvents();
+    auto *fields = widget.findChild<QWidget *>(QStringLiteral("pelican.graphCanvasLoop.fields"));
+    REQUIRE(fields != nullptr);
+    CHECK_FALSE(fields->isEnabled());
+    // Forced on, as the fields were before: each refused choice goes back.
+    fields->setEnabled(true);
+    auto *chosen = widget.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasLoop.branch0.body"));
+    auto *when = widget.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasLoop.branch0.when"));
+    REQUIRE(chosen != nullptr);
+    REQUIRE(when != nullptr);
+    REQUIRE(chosen->isEnabled());
+    chosen->setCurrentIndex(chosen->findText(QStringLiteral("(nothing)")));
+    QCoreApplication::processEvents();
+    CHECK(chosen->currentText() == QStringLiteral("paint"));
+    when->setCurrentIndex(when->findData(QStringLiteral("element_in")));
+    QCoreApplication::processEvents();
+    CHECK(when->currentData().toString() == QStringLiteral("element"));
+    CHECK(transport.countOf(QStringLiteral("edit_graph_document")) == 0);
+
+    // The read lands: the fields are on, and a choice goes out.
+    answerRpc(QStringLiteral("get_graph_instances"), context(document));
+    CHECK(fields->isEnabled());
+    chosen = widget.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasLoop.branch0.body"));
+    chosen->setCurrentIndex(chosen->findText(QStringLiteral("(nothing)")));
+    QCoreApplication::processEvents();
+    CHECK(transport.countOf(QStringLiteral("edit_graph_document")) == 1);
+}
+
 TEST_CASE("LP-4e the Graph tab selects the loop a decompose made once a document holds it",
           "[devstudio][graph-canvas][scene][lp4e]") {
     (void)application();
@@ -4346,6 +4540,42 @@ TEST_CASE("LP-4d2 a zone says what the loop became, and a draw_loop's tabs how m
     REQUIRE(tabs.size() == 2);
     CHECK(tabs[0].second == QStringLiteral("if m#a (1)"));
     CHECK(tabs[1].second == QStringLiteral("else (2)"));
+}
+
+// Q-17, decision 4. "Shared" warns that an edit in a body reaches another
+// loop or instance. Two branches of one loop running the same body are one
+// place to edit it from, and are not counted twice; the count is of nodes.
+TEST_CASE("Q-17 a body two branches of one loop run is not shared; another loop running it is",
+          "[devstudio][graph-canvas][scene][q17]") {
+    (void)application();
+    auto document = zoneDocument();
+    document["nodes"][2]["parameters"]["branches"] =
+        Json::array({{{"when", {{"element", 0}}}, {"body", "first"}}, {{"body", "first"}}});
+    const auto sharedMark = [](GraphCanvasScene &scene) {
+        return dynamic_cast<QGraphicsSimpleTextItem *>(
+            scopedItem(scene, PelicanStudio::GraphCanvasZoneLabelItem, QString{},
+                       QStringLiteral("steps"), QStringLiteral("shared")));
+    };
+    {
+        ZoneHarness one{document};
+        one.open();
+        one.answerReads();
+        one.scene.repopulate();
+        CHECK(one.model.definitionUseCount("first") == 1);
+        CHECK(sharedMark(one.scene) == nullptr);
+    }
+    // The control: a second loop over the same body is a second user.
+    auto again = document["nodes"][2];
+    again["id"] = "again";
+    document["nodes"].push_back(again);
+    ZoneHarness two{document};
+    two.open();
+    two.answerReads();
+    two.scene.repopulate();
+    CHECK(two.model.definitionUseCount("first") == 2);
+    auto *mark = sharedMark(two.scene);
+    REQUIRE(mark != nullptr);
+    CHECK(mark->text() == QStringLiteral("shared (2 users)"));
 }
 
 TEST_CASE("LP-4d2 the frame follows a body node while it is dragged, and a long pill keeps to its node",

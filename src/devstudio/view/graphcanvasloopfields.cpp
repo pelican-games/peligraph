@@ -400,12 +400,20 @@ GraphCanvasLoopFields::GraphCanvasLoopFields(
                                    tr("Only materials with every one of these tags"));
     form->addRow(caption(tr("Tags")), tags_row_);
     form_ = form;
-    layout->addLayout(form);
+    // Q-17: the form and the rows in one widget, switched off together while
+    // the model cannot take an edit. The form's fields move into it with the
+    // layout.
+    fields_ = new QWidget(this);
+    fields_->setObjectName(fieldName(QStringLiteral("fields")));
+    auto *fields_layout = new QVBoxLayout(fields_);
+    fields_layout->setContentsMargins(0, 0, 0, 0);
+    fields_layout->addLayout(form);
+    layout->addWidget(fields_);
 
-    rows_ = new QWidget(this);
+    rows_ = new QWidget(fields_);
     rows_layout_ = new QVBoxLayout(rows_);
     rows_layout_->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(rows_);
+    fields_layout->addWidget(rows_);
     hide();
 }
 
@@ -432,7 +440,17 @@ void GraphCanvasLoopFields::showLoop(const std::string &id) {
         shown_ = shown;
         rebuild(*loop);
     }
+    followEditable();
     show();
+}
+
+void GraphCanvasLoopFields::followEditable() {
+    // Q-17. The rows are built for a model that could edit when they were
+    // built; an edit in flight since then does not rebuild them (nothing they
+    // show has changed yet), so they said "go ahead" while the model could
+    // only refuse. A switched-off parent keeps each field's own state: a
+    // field off for its own reason stays off when this comes back on.
+    fields_->setEnabled(model_.canEdit());
 }
 
 void GraphCanvasLoopFields::clearRows() {
@@ -446,10 +464,10 @@ void GraphCanvasLoopFields::clearRows() {
     for (QWidget *child : rows_->findChildren<QWidget *>()) child->setObjectName(QString{});
     rows_->hide();
     rows_->deleteLater();
-    rows_ = new QWidget(this);
+    rows_ = new QWidget(fields_);
     rows_layout_ = new QVBoxLayout(rows_);
     rows_layout_->setContentsMargins(0, 0, 0, 0);
-    static_cast<QVBoxLayout *>(layout())->addWidget(rows_);
+    static_cast<QVBoxLayout *>(fields_->layout())->addWidget(rows_);
 }
 
 void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop) {
@@ -777,17 +795,20 @@ void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop) {
         connect(drawn.body, &QComboBox::currentIndexChanged, this, [this, index](int chosen) {
             if (!current_ || index >= branch_rows_.size() || chosen < 0) return;
             const auto data = branch_rows_[index].body->itemData(chosen).toString();
+            bool sent = false;
             if (data == QLatin1String{"nothing"}) {
-                after(model_.setLoopBranchBody(loop_, index, std::nullopt));
+                sent = model_.setLoopBranchBody(loop_, index, std::nullopt);
             } else if (data == QLatin1String{"new"}) {
                 // The name is proposed, not asked for: the definition can be
                 // renamed later, and a new body is only useful once it is
                 // there to be opened.
-                after(model_.newLoopBranchDefinition(
-                    loop_, index, model_.suggestDefinitionName(loop_ + "_body")));
+                sent = model_.newLoopBranchDefinition(
+                    loop_, index, model_.suggestDefinitionName(loop_ + "_body"));
             } else {
-                after(model_.setLoopBranchBody(loop_, index, data.toStdString()));
+                sent = model_.setLoopBranchBody(loop_, index, data.toStdString());
             }
+            if (!sent) restoreBranch(index);
+            after(sent);
         });
         if (!last) {
             const auto button = [&](const char *column, const QString &text, bool enabled) {
@@ -1132,7 +1153,33 @@ void GraphCanvasLoopFields::commitDrawWhen(std::size_t branch) {
                                     "condition."));
         return;
     }
-    after(model_.setLoopBranchDrawWhen(loop_, branch, when));
+    const bool sent = model_.setLoopBranchDrawWhen(loop_, branch, when);
+    if (!sent) restoreBranch(branch);
+    after(sent);
+}
+
+void GraphCanvasLoopFields::restoreBranch(std::size_t branch) {
+    if (!current_ || branch >= branch_rows_.size() || branch >= current_->branches.size())
+        return;
+    const auto &row = branch_rows_[branch];
+    const auto &shown = current_->branches[branch];
+    const auto put = [](QComboBox *combo, int index) {
+        if (combo == nullptr) return;
+        const QSignalBlocker block{combo};
+        combo->setCurrentIndex(std::max(0, index));
+    };
+    if (row.body != nullptr)
+        put(row.body, shown.nothing ? 0 : row.body->findData(qtext(shown.body)));
+    if (row.when != nullptr)
+        put(row.when, row.when->findData(shown.when == "other" ? QString{} : qtext(shown.when)));
+    const auto &when = shown.draw_when;
+    if (row.material != nullptr)
+        put(row.material, when.material ? row.material->findData(qtext(*when.material)) : 0);
+    if (row.contract != nullptr)
+        put(row.contract, when.contract ? row.contract->findData(qtext(*when.contract)) : 0);
+    if (row.skinned != nullptr) put(row.skinned, !when.skinned ? 0 : (*when.skinned ? 1 : 2));
+    if (row.has_variant != nullptr)
+        put(row.has_variant, !when.has_variant ? 0 : (*when.has_variant ? 1 : 2));
 }
 
 void GraphCanvasLoopFields::commitWhereTags() {
@@ -1400,7 +1447,9 @@ void GraphCanvasLoopFields::commitBranchWhen(std::size_t branch) {
         const auto first = values->empty() ? std::int64_t{0} : values->front();
         values = std::vector<std::int64_t>{first};
     }
-    after(model_.setLoopBranchWhen(loop_, branch, when, *values));
+    const bool sent = model_.setLoopBranchWhen(loop_, branch, when, *values);
+    if (!sent) restoreBranch(branch);
+    after(sent);
 }
 
 // --- LP-4f1, decision 4: the element another loop's p[] is read at.

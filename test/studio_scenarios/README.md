@@ -327,6 +327,14 @@ owes a reply on this line cannot enter, the same reason `action` fires a menu
 entry rather than opening the menu -- so it sets the current index, which emits
 the combo's own `currentIndexChanged`, the signal a popup choice emits too.
 
+Q-17: `select` on a switched-off list, tree or combo (itself, or the panel it
+sits in) is refused with `automation.bad_request@1` and `the widget named "…"
+is disabled`, as `click` is. A combo is read back once the panel has heard the
+choice: when it then holds another entry -- a panel that refused the choice
+puts its value back -- the step fails with `"…" did not take "…"`. A picker
+that hands its entry on and goes back to its placeholder ("Pick...", no entry)
+took the choice.
+
 OL-1 named the rows themselves, for a gesture that starts or ends on one: `<list or tree>::row#<text>` is the row a person reads as `<text>`, among the rows the view shows (a folded branch's rows are not on screen, so they are not found). The view is scrolled to it first; a press lands in the middle of it. `drag` from one row to another is how `outliner_edit_roundtrip` moves an object under another, and `wait` with `missing` is how it sees a row go:
 
     {"cmd": "drag", "from": {"name": "pelican.outliner::row#Cube_copy1"},

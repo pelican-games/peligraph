@@ -810,3 +810,82 @@ TEST_CASE("Q-16: click refuses a disabled widget by name",
                                 QStringLiteral("pelican.testInnerUndo")}});
     CHECK(undos == 1);
 }
+
+// Q-17: setCurrentIndex works on a switched-off combo, where a person cannot
+// pick; and a select that answered "ok" while the panel put its value back
+// let a scenario go on as if it had chosen, and fail steps later on what the
+// choice never did.
+TEST_CASE("Q-17: select refuses a disabled widget, and fails when the choice does not take",
+          "[devstudio][automation][q17]") {
+    Fixture fixture;
+    const auto choose = [&fixture](const char *name, const char *text) {
+        return fixture.run(QStringLiteral("select"),
+                           QJsonObject{{QStringLiteral("name"), QString::fromLatin1(name)},
+                                       {QStringLiteral("text"), QString::fromLatin1(text)}});
+    };
+
+    // Switched off by the panel it sits in, not by itself.
+    auto *panel = new QWidget(fixture.window.centralWidget());
+    auto *panel_layout = new QVBoxLayout(panel);
+    auto *body = new QComboBox(panel);
+    body->setObjectName(QStringLiteral("pelican.testBody"));
+    body->addItems({QStringLiteral("(nothing)"), QStringLiteral("draw")});
+    body->setCurrentIndex(1);
+    panel_layout->addWidget(body);
+    fixture.window.centralWidget()->layout()->addWidget(panel);
+    int bodies = 0;
+    QObject::connect(body, &QComboBox::currentIndexChanged, [&bodies] { ++bodies; });
+    panel->setEnabled(false);
+    QApplication::processEvents();
+    const AutomationReply under_off = choose("pelican.testBody", "(nothing)");
+    CHECK_FALSE(under_off.ok);
+    CHECK(under_off.code == QStringLiteral("automation.bad_request@1"));
+    CHECK(under_off.message.contains(QStringLiteral("pelican.testBody")));
+    CHECK(under_off.message.contains(QStringLiteral("disabled")));
+    CHECK(bodies == 0);
+    CHECK(body->currentText() == QStringLiteral("draw"));
+    // A tree switched off itself: the same refusal, no press.
+    fixture.tree->setEnabled(false);
+    const auto tree_before = fixture.tree_selections.size();
+    const AutomationReply tree_off = choose("pelican.testOutliner", "Camera");
+    CHECK_FALSE(tree_off.ok);
+    CHECK(tree_off.message.contains(QStringLiteral("disabled")));
+    CHECK(fixture.tree_selections.size() == tree_before);
+    fixture.tree->setEnabled(true);
+
+    // Switched on: a panel that refuses the choice puts its value back.
+    panel->setEnabled(true);
+    QApplication::processEvents();
+    bool refuse = true;
+    QObject::connect(body, &QComboBox::currentIndexChanged, [&refuse, body] {
+        if (!refuse) return;
+        const QSignalBlocker block{body};
+        body->setCurrentIndex(1);
+    });
+    const AutomationReply refused = choose("pelican.testBody", "(nothing)");
+    CHECK_FALSE(refused.ok);
+    CHECK(refused.code == QStringLiteral("automation.bad_request@1"));
+    CHECK(refused.message.contains(QStringLiteral("\"pelican.testBody\" did not take \"(nothing)\"")));
+    CHECK(bodies == 1);
+
+    // The control: a panel that keeps the choice, and a picker that uses its
+    // entry and goes back to its placeholder, both took it.
+    refuse = false;
+    CHECK(choose("pelican.testBody", "(nothing)").ok);
+    CHECK(body->currentText() == QStringLiteral("(nothing)"));
+    auto *picker = new QComboBox(panel);
+    picker->setObjectName(QStringLiteral("pelican.testPicker"));
+    picker->setPlaceholderText(QStringLiteral("Pick..."));
+    picker->addItems({QStringLiteral("blur"), QStringLiteral("tonemap")});
+    picker->setCurrentIndex(-1);
+    panel_layout->addWidget(picker);
+    QString picked;
+    QObject::connect(picker, &QComboBox::currentIndexChanged, [&picked, picker](int index) {
+        if (index < 0) return;
+        picked = picker->itemText(index);
+        const QSignalBlocker block{picker};
+        picker->setCurrentIndex(-1);
+    });
+    CHECK(choose("pelican.testPicker", "tonemap").ok);
+    CHECK(picked == QStringLiteral("tonemap"));
+}
