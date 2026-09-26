@@ -63,6 +63,12 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "LP-1c the shipped planar mip chain loop fills every mip as the six filter tasks do",
+    "[golden][headless][lp1c][reflection][graph-loop]") {
+    GoldenHarness::runLp1cPlanarDecomposition();
+}
+
+TEST_CASE(
     "GPU-written indexed draw count handles zero max overflow and CPU fallback",
     "[golden][headless][wp210]") {
     GoldenHarness::runGpuDrawIndirect();

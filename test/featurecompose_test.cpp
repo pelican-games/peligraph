@@ -5,6 +5,7 @@
 #include "../src/project/renderconfigsection.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "lp3a_decompose_support.hpp"
+#include "lp1c_decompose_support.hpp"
 #include "../src/project/materialdrawloop.hpp"
 #include "../src/project/materialpassdecompose.hpp"
 #include "../src/project/renderfeatureoverlay.hpp"
@@ -7238,6 +7239,172 @@ TEST_CASE("LP-0d a graph node that depends on a feature the variant excluded is 
         CHECK(lp1aNamesUnder(resolved.normalized_config, "later/").size() == 2);
         REQUIRE_NOTHROW(compileRenderPipeline(resolved));
     }
+}
+
+namespace {
+// The hybrid preset with `features`, and nothing in the graph.
+nlohmann::json lp1cOnePiece(const nlohmann::json &features) {
+    using Json = nlohmann::json;
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", Json::object()},
+                {"nodes", Json::array()}, {"outputs", Json::object()},
+                {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+                               {"features", features}}}};
+}
+
+nlohmann::json lp1cTemplate(const std::string &name) {
+    return nlohmann::json::parse(engineResourceOrThrow("graphs/" + name));
+}
+
+// What a pass declaration binds: its sampled images (a set: the feature's
+// shaders bind them by position, a graph pass's by port name), its
+// attachments, shader, load, clear and blend.
+nlohmann::json lp1cPassBinding(const nlohmann::json &pass, const std::map<std::string, std::string> &names,
+                               const nlohmann::json &config) {
+    using Json = nlohmann::json;
+    std::set<std::string> buffers;
+    for (const auto &buffer : config.value("buffers", Json::array())) buffers.insert(buffer.at("name").get<std::string>());
+    Json images = Json::array();
+    for (const auto &input : pass.value("input", Json::array()))
+        if (!buffers.contains(input.get<std::string>())) images.push_back(TestSupport::lp1cRenamed(names, input.get<std::string>()));
+    std::sort(images.begin(), images.end());
+    Json colors = Json::array();
+    for (const auto &color : pass.at("output").at("color"))
+        colors.push_back(TestSupport::lp1cRenamed(names, color.is_string() ? color.get<std::string>()
+                                                              : color.at("target").get<std::string>()));
+    // The one-piece upsample loads through its attachment, the graph's
+    // through the pass: either is a load.
+    auto load = pass.value("color_load_op", std::string{});
+    for (const auto &color : pass.at("output").at("color"))
+        if (color.is_object() && color.contains("load_op")) load = color.at("load_op").get<std::string>();
+    auto shader = pass.at("shader");
+    shader.erase("defines");
+    return Json{{"images", images}, {"colors", colors}, {"shader", shader}, {"load", load},
+                {"clear_color", pass.value("clear_color", Json{})},
+                {"raster_state", pass.value("raster_state", Json{})}};
+}
+
+void lp1cRequireSamePlan(const RenderFeatureComposeResult &one_piece, const RenderFeatureComposeResult &decomposed,
+                         const std::map<std::string, std::string> &names) {
+    const auto one_piece_plan = TestSupport::lp1cComparablePlan(lp1aPlanJson(one_piece), names);
+    const auto decomposed_plan = TestSupport::lp1cComparablePlan(lp1aPlanJson(decomposed), {});
+    const auto &one_nodes = one_piece_plan.at("nodes");
+    const auto &graph_nodes = decomposed_plan.at("nodes");
+    CHECK(one_nodes.size() == graph_nodes.size());
+    for (std::size_t i = 0; i < std::min(one_nodes.size(), graph_nodes.size()); ++i) {
+        INFO(one_nodes.at(i).dump() << "\n" << graph_nodes.at(i).dump());
+        CHECK(one_nodes.at(i) == graph_nodes.at(i));
+    }
+    CHECK(one_piece_plan.at("levels") == decomposed_plan.at("levels"));
+    CHECK(one_piece_plan.at("barriers") == decomposed_plan.at("barriers"));
+}
+} // namespace
+
+// LP-1c acceptance 3, bloom: engine://graphs/bloom_loop.json taken into a
+// project in place of engine://features/bloom.json composes the same main
+// frame plan -- the same passes in the same order and levels, reading and
+// writing the same resources, with the same barriers -- once each name of the
+// feature is spelled as the graph spells it (lp1cBloomNames). Its targets have
+// the feature's formats and sizes, and its passes bind the same images in the
+// same order with the same shaders, loads, clears and blends.
+TEST_CASE("LP-1c the shipped bloom graph composes the bloom feature's frame plan, pass for pass",
+          "[render-feature][graph-composition][lp1c]") {
+    using Json = nlohmann::json;
+    const auto names = TestSupport::lp1cBloomNames();
+    const auto one_piece_document = lp1cOnePiece(Json::array({"engine://features/bloom.json"}));
+    const auto decomposed_document =
+        TestSupport::lp1cApplyDecomposition(one_piece_document, lp1cTemplate("bloom_loop.json"));
+    CHECK(decomposed_document.at("rendering").at("features").empty());
+    const auto one_piece = lp0aCompose(one_piece_document);
+    const auto decomposed = lp0aCompose(decomposed_document);
+
+    // Nothing of the feature is left.
+    for (const auto &[from, to] : names) {
+        INFO(from);
+        CHECK(decomposed.config.dump().find("\"" + from + "\"") == std::string::npos);
+    }
+    REQUIRE(decomposed.graph_loops.size() == 2);
+    CHECK(decomposed.graph_loops.at(0).node == "bloom_down");
+    CHECK(decomposed.graph_loops.at(0).count == 4);
+    CHECK(decomposed.graph_loops.at(1).node == "bloom_up");
+    CHECK(decomposed.graph_loops.at(1).count == 3);
+
+    lp1cRequireSamePlan(one_piece, decomposed, names);
+
+    // The declarations behind the plan.
+    const auto target = [](const Json &config, const std::string &name) {
+        for (const auto &entry : config.at("render_targets"))
+            if (entry.at("name") == name) return entry;
+        FAIL("no render target " << name);
+        return Json{};
+    };
+    for (const auto &[from, to] : names) {
+        INFO(from << " -> " << to);
+        if (from.ends_with("_RT")) {
+            auto one = target(one_piece.config, from);
+            auto graph = target(decomposed.config, to);
+            for (auto *entry : {&one, &graph}) entry->erase("name");
+            CHECK(one == graph);
+        } else if (from != "bloom.intensity") {
+            CHECK(lp1cPassBinding(passByName(one_piece.config, from), names, one_piece.config) ==
+                  lp1cPassBinding(passByName(decomposed.config, to), {}, decomposed.config));
+        }
+    }
+    // The feature's parameter defaults reach the shaders as the same
+    // defines: every shader compiles with the same set.
+    CHECK_FALSE(passByName(decomposed.config, "bloom_threshold").at("shader").contains("defines"));
+    const std::set<std::string> one_piece_defines(one_piece.shader_defines.begin(), one_piece.shader_defines.end());
+    const std::set<std::string> decomposed_defines(decomposed.shader_defines.begin(), decomposed.shader_defines.end());
+    CHECK(one_piece_defines == decomposed_defines);
+    CHECK(one_piece_defines.contains("PELICAN_FEATURE_BLOOM_THRESHOLD=0.400000006"));
+
+    REQUIRE_NOTHROW(compileComposition(decomposed));
+}
+
+// LP-1c acceptance 3, planar: engine://graphs/planar_mip_chain_loop.json with
+// the planar feature's six filter tasks replaced by its loop composes the same
+// main frame plan, and each copy is the task it stands for: the same shader,
+// region, views, dispatch and mips.
+TEST_CASE("LP-1c the shipped planar mip chain replaces the six filter tasks with the same plan",
+          "[render-feature][graph-composition][lp1c]") {
+    using Json = nlohmann::json;
+    const auto names = TestSupport::lp1cPlanarNames();
+    const auto one_piece_document = lp1cOnePiece(Json::array({"engine://features/planar_reflection.json"}));
+    const auto decomposed_document =
+        TestSupport::lp1cApplyDecomposition(one_piece_document, lp1cTemplate("planar_mip_chain_loop.json"));
+    const auto one_piece = lp0aCompose(one_piece_document);
+    const auto decomposed = lp0aCompose(decomposed_document);
+    REQUIRE(decomposed.graph_loops.size() == 1);
+    CHECK(decomposed.graph_loops.at(0).count == 6);
+
+    const auto task_names = [](const Json &config) {
+        std::vector<std::string> result;
+        for (const auto &task : config.at("compute_tasks")) result.push_back(task.at("name").get<std::string>());
+        return result;
+    };
+    std::vector<std::string> expected;
+    for (const auto &name : task_names(one_piece.config)) expected.push_back(TestSupport::lp1cRenamed(names, name));
+    CHECK(task_names(decomposed.config) == expected);
+    for (const auto &[from, to] : names) {
+        INFO(from << " -> " << to);
+        auto one = lp1bTask(one_piece.config, from);
+        auto graph = lp1bTask(decomposed.config, to);
+        for (auto *task : {&one, &graph}) {
+            task->erase("name");
+            // Ordering is compared through the plan: the copies chain by
+            // explicit edges where the tasks relied on declaration order.
+            task->erase("after");
+            task->erase("before");
+            // A graph port says `kind` where the feature lets it be inferred.
+            for (auto &[port, binding] : task->at("resource_ports").items())
+                if (binding.value("kind", std::string{}) == "image") binding.erase("kind");
+        }
+        CHECK(one == graph);
+    }
+    // The last copy keeps the last task's place before forward_transparent.
+    CHECK(lp1bContains(lp1bTask(decomposed.config, "planar_mip_chain/5/filter").at("before"), "forward_transparent"));
+
+    lp1cRequireSamePlan(one_piece, decomposed, names);
+    REQUIRE_NOTHROW(compileComposition(decomposed));
 }
 
 

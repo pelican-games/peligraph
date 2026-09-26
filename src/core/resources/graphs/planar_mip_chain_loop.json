@@ -1,0 +1,79 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "decomposes": {
+    "feature": "engine://features/planar_reflection.json",
+    "pass_replacements": {
+      "planar_reflection_filter_mip_1": "planar_mip_chain",
+      "planar_reflection_filter_mip_2": "planar_mip_chain",
+      "planar_reflection_filter_mip_3": "planar_mip_chain",
+      "planar_reflection_filter_mip_4": "planar_mip_chain",
+      "planar_reflection_filter_mip_5": "planar_mip_chain",
+      "planar_reflection_filter_mip_6": "planar_mip_chain"
+    }
+  },
+  "definitions": {
+    "planar_mip_step": {
+      "nodes": [
+        {
+          "id": "color",
+          "op": "render.target_ref",
+          "parameters": {
+            "name": "planar_reflection_color",
+            "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended", "topology": "two_d_array"}}
+          },
+          "outputs": ["resource"]
+        },
+        {
+          "id": "filter",
+          "op": "render.compute",
+          "parameters": {
+            "regions": ["planar_reflection.prefilter"],
+            "shader": "engine://render_algorithms/planar_reflection/standard_prefilter",
+            "schedule": "per_view",
+            "view_family": "$reflection/planar",
+            "dispatch": {"groups_from": {"port": "filtered_color"}},
+            "ports": {
+              "source_color": {
+                "kind": "image",
+                "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended", "topology": "two_d_array"}},
+                "access": "read",
+                "binding": "sampled",
+                "view": "family_array",
+                "sampling": {"filter": "linear", "address": "clamp_to_edge"},
+                "subresource": {"mip": {"$expr": "element"}, "layer": 0}
+              },
+              "filtered_color": {
+                "kind": "image",
+                "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended", "topology": "two_d_array"}},
+                "access": "write",
+                "binding": "storage",
+                "view": "family_array",
+                "subresource": {"mip": {"$expr": "element + 1"}, "layer": 0}
+              }
+            }
+          },
+          "inputs": {
+            "source_color": {"node": "color", "port": "resource"},
+            "filtered_color": {"node": "color", "port": "resource"}
+          },
+          "outputs": ["filtered_color"]
+        }
+      ],
+      "outputs": {}
+    }
+  },
+  "nodes": [
+    {
+      "id": "planar_mip_chain",
+      "op": "graph.loop",
+      "parameters": {
+        "over": {"range": {"count": {"$expr": "mip_levels_of(\"planar_reflection_color\") - 1"}}},
+        "branches": [{"body": "planar_mip_step"}]
+      },
+      "inputs": {},
+      "outputs": []
+    }
+  ],
+  "outputs": {}
+}

@@ -107,6 +107,11 @@ b_embed(pelican_resources features/sky_ambient.json)
 b_embed(pelican_resources features/picking.json)
 b_embed(pelican_resources features/velocity.json)
 b_embed(pelican_resources features/taa.json)
+# LP-1c: the decomposed standard features, written as graph.loop templates
+# (docs/design_graph_loops.md 5.3). A project copies their definitions and
+# nodes into its own graph document; the engine never reads them itself.
+b_embed(pelican_resources graphs/bloom_loop.json)
+b_embed(pelican_resources graphs/planar_mip_chain_loop.json)
 b_embed(pelican_resources input/editor_transform_actions.json)
 b_embed(pelican_resources input/free_camera_actions.json)
 b_embed(pelican_resources input/overlays/editor_transform_blender.json)

@@ -56,5 +56,7 @@ void runImportedRenderComponent();
 void runBloomLoadSemantics();
 void runBloomFeatureParameters();
 void runBloomRuntimeParameter();
+void runLp1cBloomDecomposition();
+void runLp1cPlanarDecomposition();
 
 } // namespace Pelican::GoldenHarness

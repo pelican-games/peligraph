@@ -490,6 +490,10 @@ bloom と planar reflection の分解版を、engine 付属の graph として�
 
 v0 では feature の JSON はループに書き換えない。一体版は、そのまま残す。
 
+**出荷の形(LP-1c)**: `engine://graphs/<名前>.json` は engine が読まない**雛形**の graph 文書で、`decomposes: {feature, remove_feature?, pass_replacements?, shader_defines?}` を持つ。project は (1) 雛形の `definitions` と `nodes` を自分の graph へ写す(名前の衝突は断る)、(2) `remove_feature` なら feature を外す、(3) `pass_replacements` を feature の instance に書く、(4) `shader_defines` を `rendering.shader_defines` に足す。手順の実装は `test/lp1c_decompose_support.hpp`。(3)(4) を書く RPC は無い(文書を直接編集する)。
+- 置き場所の書き方の例: ループに `canonical_anchor` を書くと合成の pass より後ろに入って順序が循環する。bloom では 2 本のループを `insert: {before: bloom_composite}` にし、合成に明示の `after: bloom_threshold` を付けた。
+- **LP-1c で見つかった制約(LP-1d で塞ぐ)**: graph の fullscreen は読む画像をすべて resource port(反映名 `pelican_resource_<port>`)にするので、`inputTexture` を固定 binding で読む engine の bloom shader や、`PELICAN_DECLARE_INPUT_<i>` / 可変入力で書く shader(Studio の雛形、`engine://passthrough`)を graph から使えない。LP-1c の bloom の一致の検査は、port の accessor で読む shader の写しで行った。
+
 **使い方**:分解版は、一体版の feature の pass を**置き換える**形で使う(§6 の「feature の pass の置き換え」)。
 
 - bloom は、分解版が feature 全体の代わりになる。そのため feature を外して、分解版の graph を入れる。

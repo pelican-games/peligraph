@@ -1,6 +1,7 @@
 #include "../src/core/container.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "lp3a_decompose_support.hpp"
+#include "lp1c_decompose_support.hpp"
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/animation/animationservice.hpp"
 #include "../src/core/animation/vrmapplication.hpp"
@@ -149,6 +150,10 @@ struct PlanarReflectionProbe {
     std::vector<std::uint8_t> color_bytes;
     std::vector<std::uint8_t>
         filtered_color_bytes;
+    // LP-1c: every mip of planar_reflection_color, layer by layer
+    // (index = mip * 2 + layer).
+    std::vector<std::vector<std::uint8_t>>
+        color_mip_bytes;
     std::vector<
         std::array<std::uint32_t, 3>>
         filter_dispatch_groups;
@@ -7457,21 +7462,30 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         auto &compute_tasks =
             GET_MODULE(
                 ComputeTaskContainer);
-        const auto first_filter_id =
-            compute_tasks
-                .getComputeTaskIdByName(
-                    "planar_reflection_filter_mip_1");
+        // LP-1c: the filter of mip N is the feature's task, or, when a
+        // pass_replacements put the mip chain loop in its place, the loop's
+        // element N - 1.
+        const auto filter_id = [&](std::uint32_t mip) {
+            const auto task = compute_tasks.getComputeTaskIdByName(
+                "planar_reflection_filter_mip_" + std::to_string(mip));
+            if (task.value >= 0) return task;
+            return compute_tasks.getComputeTaskIdByName(
+                "planar_mip_chain/" + std::to_string(mip - 1) + "/filter");
+        };
+        const auto first_filter_id = filter_id(1);
         for (std::uint32_t mip = 1;
              mip < 7; ++mip) {
             filter_dispatch_groups.push_back(
                 compute_tasks
                     .dispatchGroupsForTesting(
-                        compute_tasks
-                            .getComputeTaskIdByName(
-                                "planar_reflection_filter_mip_" +
-                                std::to_string(
-                                    mip))));
+                        filter_id(mip)));
         }
+        std::vector<std::vector<std::uint8_t>>
+            color_mip_bytes;
+        for (std::uint32_t mip = 0; mip < 7; ++mip)
+            for (std::uint32_t layer = 0; layer < 2; ++layer)
+                color_mip_bytes.push_back(
+                    readColorTargetBytes(color, layer, mip));
         planar_reflection =
             PlanarReflectionProbe{
                 .albedo =
@@ -7497,6 +7511,9 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
                 .filtered_color_bytes =
                     readColorTargetBytes(
                         color, 0, 6),
+                .color_mip_bytes =
+                    std::move(
+                        color_mip_bytes),
                 .filter_dispatch_groups =
                     std::move(
                         filter_dispatch_groups),
@@ -12993,6 +13010,68 @@ void GoldenHarness::runDrawLoopDecomposedEquivalence() {
         ++compared;
     }
     REQUIRE(compared == hybrid_modes.size());
+}
+
+// LP-1c acceptance 2 and 3 on the device: the planar reflection golden frame
+// drawn with the feature's six filter tasks, and again with them replaced
+// through pass_replacements by engine://graphs/planar_mip_chain_loop.json.
+// The final pixels, every mip of every layer of planar_reflection_color, each
+// filter's dispatch and shader, and the frame's node order (under the name
+// table) are the same.
+void GoldenHarness::runLp1cPlanarDecomposition() {
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const GoldenCase golden_case{"planar_reflection_runtime", "planar_reflection",
+                                 sourceRoot() / "test/golden/shadow_off", goldenWidth, goldenHeight};
+    const auto one_piece = renderCase(golden_case);
+    std::size_t rewritten = 0;
+    DrawLoopProbe decomposition;
+    decomposition.rewrite_project = [&](const std::filesystem::path &root) {
+        const auto path = root / "passes" / "main.json";
+        const auto graph_template =
+            nlohmann::json::parse(engineResourceOrThrow("graphs/planar_mip_chain_loop.json"));
+        writeTextFile(path, TestSupport::lp1cApplyDecomposition(nlohmann::json::parse(readTextFile(path)),
+                                                                graph_template)
+                                .dump(2));
+        ++rewritten;
+    };
+    const auto decomposed = [&] {
+        DrawLoopProbeScope scope{decomposition};
+        return renderCase(golden_case);
+    }();
+    REQUIRE(rewritten == 1);
+    REQUIRE(one_piece.planar_reflection);
+    REQUIRE(decomposed.planar_reflection);
+    const auto &one = *one_piece.planar_reflection;
+    const auto &graph = *decomposed.planar_reflection;
+    CHECK(one.filter_shader == "engine://render_algorithms/planar_reflection/standard_prefilter");
+    CHECK(graph.filter_shader == one.filter_shader);
+    CHECK(graph.filter_dispatch_groups == one.filter_dispatch_groups);
+    REQUIRE(one.color_mip_bytes.size() == 14);
+    REQUIRE(graph.color_mip_bytes.size() == one.color_mip_bytes.size());
+    for (std::size_t index = 0; index < one.color_mip_bytes.size(); ++index) {
+        INFO("layer " << index % 2 << " mip " << index / 2);
+        REQUIRE(one.color_mip_bytes[index].size() == graph.color_mip_bytes[index].size());
+        std::size_t differing = 0;
+        for (std::size_t byte = 0; byte < one.color_mip_bytes[index].size(); ++byte)
+            if (one.color_mip_bytes[index][byte] != graph.color_mip_bytes[index][byte]) ++differing;
+        CHECK(differing == 0);
+    }
+    // The chain filtered something: the last mip of the first view is not empty.
+    CHECK(std::any_of(one.color_mip_bytes[12].begin(), one.color_mip_bytes[12].end(),
+                      [](std::uint8_t byte) { return byte != 0; }));
+    REQUIRE(one_piece.image.pixels.size() == decomposed.image.pixels.size());
+    CHECK(one_piece.image.pixels == decomposed.image.pixels);
+    const auto names = TestSupport::lp1cPlanarNames();
+    std::vector<std::string> expected_order;
+    for (const auto &name : one_piece.plan_order) expected_order.push_back(TestSupport::lp1cRenamed(names, name));
+    CHECK(decomposed.plan_order == expected_order);
+    std::cout << "LP1C_PLANAR mips=" << one.color_mip_bytes.size() / 2
+              << " planNodes=" << expected_order.size() << " differingBytes=0\n";
+#else
+    SKIP("LP-1c planar decomposition requires the standard render algorithms and runtime shader compilation");
+#endif
 }
 
 namespace {

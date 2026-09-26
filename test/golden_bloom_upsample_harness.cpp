@@ -3,6 +3,7 @@
 #include "../src/project/rendercomponent.hpp"
 #include "../src/project/renderconfigsection.hpp"
 #include "render_graph_root_test_support.hpp"
+#include "lp1c_decompose_support.hpp"
 #include "vulkan_test_support.hpp"
 
 #include "../src/core/appflow/enginetime.hpp"
@@ -38,6 +39,7 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <picosha2.h>
@@ -1608,6 +1610,164 @@ void GoldenHarness::runBloomRuntimeParameter() {
     } catch (const std::runtime_error &error) {
         TestSupport::skipIfVulkanDeviceUnavailable(
             error, "P-2a-2 bloom runtime parameter GPU fixture unavailable");
+        throw;
+    }
+}
+
+namespace {
+// LP-1c: the shipping example's frame (the emissive quad of the WP357 probe),
+// drawn once with engine://features/bloom.json and once with it removed and
+// engine://graphs/bloom_loop.json taken into the graph root in its place.
+// Every bloom level, the threshold and the display are read back; each is
+// read by the name the leg gives it (lp1cBloomNames maps the feature's names
+// to the graph's). TRANSFER_SRC is observational: the one-piece leg adds it
+// through a trailing feature's render_target_overrides, the decomposed leg
+// on its render.image nodes.
+constexpr const char *lp1cBloomProbeFeatureFile = "features/lp1c_bloom_probe.json";
+
+struct Lp1cBloomCapture {
+    // By the one-piece name.
+    std::map<std::string, RenderTargetReadback> targets;
+    RenderTargetReadback display;
+    nlohmann::json plan;
+};
+
+// Adds TRANSFER_SRC to every render.image, and points every pass that uses
+// an engine bloom shader at the fixture copy that reads its inputs through
+// resource ports (test/fixtures/lp1c; see runLp1cBloomDecomposition).
+void lp1cPrepareNodes(nlohmann::json &nodes) {
+    for (auto &node : nodes) {
+        if (node.at("op") == "render.image") node["parameters"]["usage"].push_back("TRANSFER_SRC");
+        auto &parameters = node["parameters"];
+        if (!parameters.is_object() || !parameters.contains("shader") || !parameters.at("shader").is_object()) continue;
+        auto &fragment = parameters.at("shader")["fragment"];
+        constexpr std::string_view engine_prefix = "engine://";
+        if (fragment.is_string() && fragment.get<std::string>().starts_with("engine://bloom_"))
+            fragment = "shaders/" + fragment.get<std::string>().substr(engine_prefix.size());
+    }
+}
+
+Lp1cBloomCapture lp1cCaptureBloom(bool decomposed) {
+    const auto root = wp357TempProject(decomposed ? "lp1c_bloom_decomposed" : "lp1c_bloom_one_piece");
+    const auto names = TestSupport::lp1cBloomNames();
+    try {
+        wp357WriteProjectShell(root, "LP-1c bloom decomposition", "main_render");
+        auto shipping = wp357ReadJson(
+            wp357SourceRoot() / "projects" / "example" / "passes" / "main_rendering_config.json");
+        auto config = renderingSectionOf(shipping);
+        nlohmann::json document;
+        if (decomposed) {
+            auto graph_template = nlohmann::json::parse(engineResourceOrThrow("graphs/bloom_loop.json"));
+            lp1cPrepareNodes(graph_template.at("nodes"));
+            for (auto &[name, body] : graph_template.at("definitions").items()) lp1cPrepareNodes(body.at("nodes"));
+            for (const auto *stem : {"bloom_highpass", "bloom_blur_h", "bloom_blur_v", "bloom_upsample", "bloom_composite"})
+                wp357WriteText(root / "shaders" / (std::string{stem} + ".frag"),
+                               wp357ReadText(wp357SourceRoot() / "test" / "fixtures" / "lp1c" / (std::string{stem} + ".frag")));
+            document = TestSupport::lp1cApplyDecomposition(wp357WrapGraphRoot(config), graph_template);
+        } else {
+            nlohmann::json overrides = nlohmann::json::object();
+            for (const auto &[from, to] : names)
+                if (from.ends_with("_RT")) overrides[from] = {{"usage", nlohmann::json::array({"TRANSFER_SRC"})}};
+            wp357WriteText(root / lp1cBloomProbeFeatureFile,
+                           nlohmann::json{{"schema", "pelican.render_feature"}, {"version", 1},
+                                          {"name", "lp1c_bloom_probe"}, {"render_target_overrides", overrides}}
+                               .dump(2));
+            config.at("features").push_back("project://" + std::string{lp1cBloomProbeFeatureFile});
+            document = wp357WrapGraphRoot(config);
+        }
+        wp357WriteText(root / "passes" / "main.json", document.dump(2));
+        Lp1cBloomCapture capture;
+        {
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(root, false);
+            GET_MODULE(ProjectSource).setProjectData(wp357ReadJson(root / "project.json").dump());
+            auto &launch = GET_MODULE(EngineLaunchConfig);
+            launch.headless = true;
+            launch.shader_hot_reload = false;
+            launch.headless_extent = wp357RenderExtent;
+            launch.headless_frames = 1;
+            auto &time = GET_MODULE(EngineTime);
+            time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+            auto &renderer = GET_MODULE(Renderer);
+            wp357PlaceProductionStimulus();
+            time.advance();
+            renderer.render();
+            GET_MODULE(VulkanManageCore).waitIdle();
+            for (const auto &[from, to] : names) {
+                if (!from.ends_with("_RT")) continue;
+                capture.targets.emplace(from, RendererTestAccess::readRenderTarget(
+                    renderer, decomposed ? to : from, ImageSubresourceRange{}));
+            }
+            capture.display = RendererTestAccess::readRenderTarget(renderer, "display", ImageSubresourceRange{});
+            capture.plan = renderer.currentFramePlanJson();
+        }
+        std::filesystem::remove_all(root);
+        return capture;
+    } catch (...) {
+        std::filesystem::remove_all(root);
+        throw;
+    }
+}
+} // namespace
+
+// LP-1c acceptance 1 and 3 on the device: the decomposed bloom draws every
+// level, the threshold and the display byte for byte as the bloom feature
+// does, and the frame it ran is the feature's plan under the name table.
+//
+// The engine's bloom shaders read their inputs as fixed pass-input bindings
+// (`inputTexture` at binding 0 ...). A graph render.fullscreen pass binds
+// every image it reads as a resource port, and the port's shader interface
+// requires the reflected name pelican_resource_<port>, so those shaders
+// refuse to load in the shipped graph as it stands. The decomposed leg
+// therefore draws with test/fixtures/lp1c's copies of the five shaders, which
+// differ only in reading through the generated accessors. What this compares
+// is everything else: the loops' expansion, extents, carry, write-back,
+// order, targets, intensity buffer and defines.
+void GoldenHarness::runLp1cBloomDecomposition() {
+    setupLogger();
+    try {
+        const auto one_piece = lp1cCaptureBloom(false);
+        const auto decomposed = lp1cCaptureBloom(true);
+        REQUIRE(one_piece.targets.size() == 9);
+        for (const auto &[name, readback] : one_piece.targets) {
+            INFO(name);
+            const auto &graph = decomposed.targets.at(name);
+            REQUIRE(readback.format == graph.format);
+            REQUIRE(readback.extent.width == graph.extent.width);
+            REQUIRE(readback.extent.height == graph.extent.height);
+            REQUIRE(readback.bytes.size() == graph.bytes.size());
+            std::size_t differing = 0;
+            for (std::size_t i = 0; i < readback.bytes.size(); ++i)
+                if (readback.bytes[i] != graph.bytes[i]) ++differing;
+            CHECK(differing == 0);
+        }
+        REQUIRE(one_piece.display.bytes.size() == decomposed.display.bytes.size());
+        CHECK(wp357ChangedPixels(one_piece.display, decomposed.display, false) == 0);
+        // Bloom did draw: the smallest level holds light, and the composite
+        // left the display brighter than the quad alone.
+        const auto &v0 = one_piece.targets.at("Bloom_Upsample_V_0_RT");
+        CHECK(std::any_of(v0.bytes.begin(), v0.bytes.end(), [](std::uint8_t byte) { return byte != 0; }));
+        auto one_plan = TestSupport::lp1cComparablePlan(one_piece.plan, TestSupport::lp1cBloomNames());
+        auto graph_plan = TestSupport::lp1cComparablePlan(decomposed.plan, {});
+        // The running plan also says which shader each pass resolved and how
+        // it binds its inputs; the two legs' bloom shaders differ there by
+        // construction (above), so that part is not compared.
+        for (auto *plan : {&one_plan, &graph_plan})
+            for (auto &node : plan->at("nodes")) {
+                node.erase("shader_resolution");
+                node.erase("pass_inputs");
+            }
+        REQUIRE(one_plan.at("nodes").size() == graph_plan.at("nodes").size());
+        for (std::size_t i = 0; i < one_plan.at("nodes").size(); ++i) {
+            INFO(one_plan.at("nodes").at(i).dump() << " / " << graph_plan.at("nodes").at(i).dump());
+            CHECK(one_plan.at("nodes").at(i) == graph_plan.at("nodes").at(i));
+        }
+        CHECK(one_plan.at("levels") == graph_plan.at("levels"));
+        CHECK(one_plan.at("barriers") == graph_plan.at("barriers"));
+        std::cout << "LP1C_BLOOM targets=" << one_piece.targets.size()
+                  << " planNodes=" << one_plan.at("nodes").size() << " differingBytes=0\n";
+    } catch (const std::runtime_error &error) {
+        TestSupport::skipIfVulkanDeviceUnavailable(error, "LP-1c bloom decomposition GPU fixture unavailable");
         throw;
     }
 }

@@ -40,4 +40,10 @@ TEST_CASE(
     GoldenHarness::runBloomRuntimeParameter();
 }
 
+TEST_CASE(
+    "LP-1c the shipped bloom graph draws the bloom feature's levels and frame byte for byte",
+    "[golden][headless][lp1c][bloom][graph-loop]") {
+    GoldenHarness::runLp1cBloomDecomposition();
+}
+
 } // namespace Pelican

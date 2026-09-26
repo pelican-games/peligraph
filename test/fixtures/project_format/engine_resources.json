@@ -49,6 +49,8 @@
     "features/sky_ambient.json",
     "features/taa.json",
     "features/velocity.json",
+    "graphs/bloom_loop.json",
+    "graphs/planar_mip_chain_loop.json",
     "input/editor_transform_actions.json",
     "input/free_camera_actions.json",
     "input/overlays/editor_transform_blender.json",
