@@ -1,0 +1,561 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_loop_expand",
+  "description": "LP-4c: a graph.loop built on the Graph tab from a Blank project, with Studio's own controls only. Add loop puts a loop in the root over a new, empty body whose name Studio proposes (add_definition and add_node in one edit). Open body enters it; Add fullscreen pass puts the engine's passthrough there, drawing into an image of its own. Back in the root the Loop fields set the count to 3: the engine's frame plan reports the loop expanded three times, the Loop fields say so, and the Frame Plan shows the three copies as one folded group, loop loop x3. A count of 1 leaves one copy. Add branch puts a branch for element 0 in front of the else, and choosing (nothing) for it moves element 0 off the else, which no element takes any more (unmatched_branches). Undo, three times, brings the count back to 3 with the one branch.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "File > New Project..., fired by name",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "loop_project"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the blank project's present is on the Frame Plan canvas",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the Graph tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the blank project's graph has no node yet",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 0
+    },
+    {
+      "label": "the canvas has read the new document and can edit it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add loop: a loop over a new, empty body Studio names",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addLoop"
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the loop stands in the root",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].op",
+      "value": "graph.loop"
+    },
+    {
+      "label": "over one element",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.over.range.count",
+      "value": 1
+    },
+    {
+      "label": "running the new body, which arrived in the same edit",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.branches[0].body",
+      "value": "loop_body"
+    },
+    {
+      "label": "the body is empty",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.loop_body.nodes.$len",
+      "value": 0
+    },
+    {
+      "label": "the loop is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#loop",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick it",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#loop"
+    },
+    {
+      "label": "the Loop fields are shown for it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.count",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "no JSON of its parameters is drawn as a pill",
+      "expect": "list_count",
+      "pattern": "pelican.graphCanvasView::graph_value_pill#loop/",
+      "value": 0
+    },
+    {
+      "label": "Open body",
+      "cmd": "click",
+      "name": "pelican.graphCanvasLoop.openBody"
+    },
+    {
+      "label": "the canvas is inside the body, entered through the loop",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasBreadcrumb",
+      "text": "root / loop_body",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the branch the body belongs to is named beside the trail",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoopBranch",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Add fullscreen pass: the engine's passthrough into an image of its own",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addFullscreenPass"
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the body holds the image and the pass",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.loop_body.nodes.$len",
+      "value": 2
+    },
+    {
+      "label": "the pass is drawn in the body",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "back to the root",
+      "cmd": "select",
+      "name": "pelican.graphCanvasScope",
+      "text": "root"
+    },
+    {
+      "label": "the loop is drawn again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#loop",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "pick it",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#loop"
+    },
+    {
+      "label": "the count field is there",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.count",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "type a count of 3",
+      "cmd": "type",
+      "name": "pelican.graphCanvasLoop.count",
+      "text": "3"
+    },
+    {
+      "label": "Enter sends it",
+      "cmd": "key",
+      "name": "pelican.graphCanvasLoop.count",
+      "sequence": "Return"
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the document says 3",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.over.range.count",
+      "value": 3
+    },
+    {
+      "label": "the frame plan reports the loop expanded three times",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].count",
+      "value": 3,
+      "retry_ms": 60000
+    },
+    {
+      "label": "one element each",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].elements.$len",
+      "value": 3
+    },
+    {
+      "label": "as the expand tier",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].tier",
+      "value": "expand"
+    },
+    {
+      "label": "the Loop fields read the report",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.summary",
+      "contains": "expand ×3",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "a picture of the Graph tab with the Loop fields",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "graph_loop_expand_graph.png"
+    },
+    {
+      "label": "the Frame Plan tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "the Frame Plan is a snapshot: read it again after the Graph tab's edits",
+      "cmd": "click",
+      "name": "pelican.framePlanRefresh"
+    },
+    {
+      "label": "the three copies are one folded group",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::group#__pelican_group__:loop:loop",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "named after the loop, with its count",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::group_label#__pelican_group__:loop:loop",
+      "contains": "loop loop ×3",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "a picture of the Frame Plan with the loop's group",
+      "expect": "screenshot",
+      "name": "pelican.framePlan",
+      "path": "graph_loop_expand_frame_plan.png"
+    },
+    {
+      "label": "back to the Graph tab",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "pick the loop",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#loop"
+    },
+    {
+      "label": "type a count of 1",
+      "cmd": "type",
+      "name": "pelican.graphCanvasLoop.count",
+      "text": "1"
+    },
+    {
+      "label": "Enter sends it",
+      "cmd": "key",
+      "name": "pelican.graphCanvasLoop.count",
+      "sequence": "Return"
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "one copy is left",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].elements.$len",
+      "value": 1,
+      "retry_ms": 60000
+    },
+    {
+      "label": "before a branch is added, no branch goes untaken",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].unmatched_branches.$len",
+      "value": 0
+    },
+    {
+      "label": "Add branch",
+      "cmd": "click",
+      "name": "pelican.graphCanvasLoop.addBranch"
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "two branches now",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.branches.$len",
+      "value": 2
+    },
+    {
+      "label": "the new one is for element 0, in front of the else",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.branches[0].when.element",
+      "value": 0
+    },
+    {
+      "label": "its body is chosen from a list",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.branch0.body",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "(nothing) for element 0",
+      "cmd": "select",
+      "name": "pelican.graphCanvasLoop.branch0.body",
+      "text": "(nothing)"
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the branch runs no body",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.branches[0].body",
+      "value": null
+    },
+    {
+      "label": "element 0 takes the new branch",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].elements[0].branch",
+      "value": 0,
+      "retry_ms": 60000
+    },
+    {
+      "label": "and no element takes the else any more",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].unmatched_branches[0]",
+      "value": 1,
+      "retry_ms": 60000
+    },
+    {
+      "label": "the branch table says so",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.branch1.matched",
+      "text": "no element takes this branch",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "a picture of the branch table",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "graph_loop_expand_branches.png"
+    },
+    {
+      "label": "Undo is offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvas.undoButton",
+      "enabled": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Undo (nothing)",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.undo"
+    },
+    {
+      "label": "the undo is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the branch runs the body again",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.branches[0].body",
+      "value": "loop_body"
+    },
+    {
+      "label": "Undo is offered again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvas.undoButton",
+      "enabled": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Undo Add branch",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.undo"
+    },
+    {
+      "label": "the undo is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "one branch again",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.branches.$len",
+      "value": 1
+    },
+    {
+      "label": "Undo is offered a third time",
+      "cmd": "wait",
+      "name": "pelican.graphCanvas.undoButton",
+      "enabled": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Undo the count of 1",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.undo"
+    },
+    {
+      "label": "the undo is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the count is 3 again",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.over.range.count",
+      "value": 3
+    },
+    {
+      "label": "and the loop expands three times again",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].count",
+      "value": 3,
+      "retry_ms": 60000
+    },
+    {
+      "label": "the Loop fields read 3",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.summary",
+      "contains": "expand ×3",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "a picture of the Graph tab after the undo",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "graph_loop_expand_undone.png"
+    }
+  ]
+}

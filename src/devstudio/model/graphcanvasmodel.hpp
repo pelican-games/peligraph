@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -34,6 +35,10 @@ struct GraphCanvasPort {
     bool connected = false;
     std::string source_node;
     std::string source_port;
+    // LP-4c: an edge that reads one element of a loop's `p[]` names the
+    // element; this is that `element` as the document holds it (dumped), or
+    // empty for an ordinary edge.
+    std::string source_element;
     // The authored scalar stored on the node for this port.
     bool has_parameter = false;
     nlohmann::json parameter;
@@ -58,6 +63,9 @@ struct GraphCanvasOutput {
     // the node values answer for a definition body as well as for the root.
     bool has_value = false;
     double value = 0;
+    // LP-4c: a loop's `p[]` -- one value per element, not one value. `type`
+    // is then the type of each element.
+    bool bundle = false;
 
     bool operator==(const GraphCanvasOutput &) const = default;
 };
@@ -75,8 +83,20 @@ struct GraphCanvasNode {
     bool sink = false;
     bool contract_known = false;
     // Set for graph.instance nodes; names the definition scope to descend to.
+    // For a graph.loop it is the body a descent lands in (the branch chosen
+    // for it, else the first branch that has a body).
     std::string definition;
     bool instance = false;
+    // LP-4c: a graph.loop. Its input ports are its first body's graph.input
+    // nodes and its outputs the `p` / `p[]` it declares; its parameters are
+    // the Loop fields, never ports.
+    bool loop = false;
+    // What the heading shows beside the name for a loop: the mark and the
+    // tier with its count when the report has them ("expand x3"), or "loop".
+    std::string badge;
+    // LP-4c, decision 9: the last refused edit named this node.
+    bool refused = false;
+    std::string refusal;
     bool has_owner = false;
     std::string owner_scene;
     std::uint64_t owner_object = 0;
@@ -159,6 +179,77 @@ struct GraphCanvasCatalogEntry {
     bool operator==(const GraphCanvasCatalogEntry &) const = default;
 };
 
+// LP-4c. One branch of a graph.loop as the branch table shows it.
+struct GraphCanvasLoopBranch {
+    // "else" (no `when`), "element", "element_in", "element_not_in", or
+    // "other" for a condition the table has no form for (an expression).
+    std::string when = "else";
+    std::vector<std::int64_t> values;
+    // The definition the branch runs; empty with `nothing` for `"body": null`.
+    std::string body;
+    bool nothing = false;
+    // From get_frame_plan's loops[]: the elements that took this branch, and
+    // whether none did (`unmatched_branches`). Empty without a report.
+    std::vector<std::int64_t> matched;
+    bool unmatched = false;
+};
+
+struct GraphCanvasLoopCarry {
+    std::string from;
+    std::string to;
+    // The carried input has no loop input edge, which the engine refuses:
+    // its first element would have nothing to start from.
+    bool to_unbound = false;
+};
+
+// LP-4c. What the Loop fields show for one root graph.loop: its parameters
+// read into the fields' own terms, its body's boundary, and the report.
+struct GraphCanvasLoop {
+    std::string id;
+    // over.range.count: an integer, or an expression ({"$expr": ...}).
+    bool count_expression = false;
+    std::int64_t count = 0;
+    std::string count_text;
+    bool descending = false;
+    std::optional<std::int64_t> limit;
+    // "" (automatic), "expand" or "draw_loop".
+    std::string tier;
+    // "" (none), "element_in" or "element_not_in".
+    std::string where;
+    std::vector<std::int64_t> where_values;
+    // Where the copies land among the passes (LP-0b): a canonical anchor's
+    // name, or "" for none. `insert` names a pass instead, shown as it is.
+    std::string anchor;
+    std::string insert;
+    // A body with a fullscreen or raster pass: only such a loop takes a place
+    // (graph.insert_on_compute@1 otherwise).
+    bool body_draws = false;
+    std::vector<GraphCanvasLoopBranch> branches;
+    std::vector<GraphCanvasLoopCarry> carry;
+    // The loop node's own `outputs`: which `p` and `p[]` it declares.
+    std::vector<std::string> outputs;
+    // The boundary every branch shares, read off the first branch that has a
+    // body (its graph.input nodes, its outputs).
+    std::string body;
+    std::vector<std::string> body_inputs;
+    std::vector<std::string> body_outputs;
+    // get_frame_plan's loops[] entry for this loop, when one arrived.
+    bool reported = false;
+    std::string reported_tier;
+    std::int64_t reported_count = 0;
+};
+
+// LP-4c, decision 9: where a refused edit points. A loop refused by name
+// marks the loop; a node of a loop's copy (`loop_origin`) marks the loop and
+// the body node in its own scope.
+struct GraphCanvasRefusalMark {
+    std::string scope;
+    std::string node;
+    std::string reason;
+
+    bool operator==(const GraphCanvasRefusalMark &) const = default;
+};
+
 // One animation sink `get_status.animation` reported for the owner the watched
 // instance names. Read-only: the Timeline draws it beside the value traces so
 // "what the pose side is doing" and "what the values partition produced" are
@@ -214,6 +305,8 @@ class GraphCanvasModel {
         Status,
         Submit,
         Result,
+        // LP-4c: get_frame_plan, for its loops[] only.
+        Loops,
     };
     struct PendingRequest {
         std::uint64_t id = 0;
@@ -322,6 +415,8 @@ class GraphCanvasModel {
     // another writer's revision invalidates it instead of overwriting them.
     std::string history_digest_;
     static constexpr std::size_t historyCapacity = 100;
+    // LP-4c, decision 7: each op is inverted against the document the ops
+    // before it produced, which a copy of the document is walked through.
     nlohmann::json inverseOps(const nlohmann::json &ops) const;
     bool submitHistory(HistoryAction action, HistoryEntry entry);
     void commitHistory(const nlohmann::json &response);
@@ -330,6 +425,30 @@ class GraphCanvasModel {
     // The current scope and the path taken to reach it. The first entry is
     // always the root scope.
     std::vector<std::string> breadcrumb_{std::string{}};
+    // LP-4c, decision 5: the loop the current body was entered through, and
+    // which branch of it each loop opens (the branch combo's choice).
+    std::string entered_loop_;
+    std::map<std::string, std::size_t, std::less<>> loop_branch_;
+
+    // LP-4c: get_frame_plan's loops[], by loop id. Read whenever a document
+    // with a root graph.loop arrives.
+    nlohmann::json loop_reports_ = nlohmann::json::object();
+    bool loop_reports_received_ = false;
+    void requestLoopReports();
+    const nlohmann::json *loopReport(std::string_view id) const;
+    // Decision 9: what the last refusal pointed at.
+    std::vector<GraphCanvasRefusalMark> refusal_marks_;
+    void markRefusal(const nlohmann::json &error, const std::string &reason);
+    // The branch a loop runs for one element: the report's answer when there
+    // is one, else the first branch whose integer condition holds.
+    std::optional<std::size_t> branchForElement(std::string_view loop,
+                                                std::int64_t element) const;
+    // The body a descent into the loop lands in: the chosen branch's, else
+    // the first branch that has one. Empty when no branch has a body.
+    std::string loopEntryBody(const nlohmann::json &node) const;
+    // One gesture on a loop's parameters: the whole object, one key changed.
+    bool setLoopParameters(const std::string &id, nlohmann::json parameters);
+    [[nodiscard]] nlohmann::json loopParameters(std::string_view id) const;
 
     void request(RequestKind kind, std::string method, nlohmann::json params);
     void read(RequestKind kind, std::string method, nlohmann::json params);
@@ -626,6 +745,104 @@ class GraphCanvasModel {
     nlohmann::json definitionDefaults(std::string_view definition) const;
 
     const InspectorNotice &editNotice() const noexcept { return edit_notice_; }
+
+    // --- LP-4c: graph.loop.
+
+    // A root graph.loop read into the Loop fields' terms, or nothing.
+    [[nodiscard]] std::optional<GraphCanvasLoop> loop(std::string_view id) const;
+    [[nodiscard]] bool loopReportsReceived() const noexcept {
+        return loop_reports_received_;
+    }
+    // A definition name no definition is using, from `base`.
+    [[nodiscard]] std::string suggestDefinitionName(std::string_view base = "loop_body") const;
+    // Decision 2. The ops "Add loop" sends: over one element, one branch
+    // running `body`, and every body output declared as `p`. With
+    // `new_definition` set, the body is a new, empty definition of that name,
+    // added in the same list.
+    [[nodiscard]] nlohmann::json addLoopOps(const std::string &body,
+                                            const std::string &new_definition = {}) const;
+    bool addLoop(const std::string &body, const std::string &new_definition = {});
+
+    // Decision 3: the Loop fields. Each is one gesture: one set_node_parameters
+    // carrying the whole parameters object with one member changed (or, for
+    // the outputs, one replace_node).
+    bool setLoopCount(const std::string &id, std::int64_t count);
+    bool setLoopCountExpression(const std::string &id, const std::string &expression);
+    bool setLoopDescending(const std::string &id, bool descending);
+    bool setLoopLimit(const std::string &id, std::optional<std::int64_t> limit);
+    // "" (automatic), "expand" or "draw_loop".
+    bool setLoopTier(const std::string &id, const std::string &tier);
+    // "" (none), "element_in" or "element_not_in".
+    bool setLoopWhere(const std::string &id, const std::string &kind,
+                      const std::vector<std::int64_t> &values);
+    bool setLoopCarry(const std::string &id,
+                      const std::vector<std::pair<std::string, std::string>> &carry);
+    bool setLoopOutputs(const std::string &id, const std::vector<std::string> &outputs);
+    // Where the copies land: one of loopAnchors() as canonical_anchor, or ""
+    // for none (the end of the pass family). Either way an `insert` goes.
+    bool setLoopAnchor(const std::string &id, const std::string &anchor);
+    // The canonical anchors a loop can be placed at, in the frame's order.
+    [[nodiscard]] static const std::vector<std::string> &loopAnchors();
+    // The anchor a loop takes when a pass is first put in its body and it has
+    // no place yet: after the main scene passes, before tonemapping.
+    static constexpr std::string_view defaultLoopAnchor = "post_main";
+
+    // Decision 4: the branch table. The last branch is the else, which is
+    // never removed, moved or given a condition.
+    bool addLoopBranch(const std::string &id);
+    bool removeLoopBranch(const std::string &id, std::size_t branch);
+    bool moveLoopBranch(const std::string &id, std::size_t branch, int delta);
+    // "element", "element_in" or "element_not_in" with its integers.
+    bool setLoopBranchWhen(const std::string &id, std::size_t branch,
+                           const std::string &when, const std::vector<std::int64_t> &values);
+    // An empty optional is `(nothing)`, the `null` body.
+    bool setLoopBranchBody(const std::string &id, std::size_t branch,
+                           const std::optional<std::string> &body);
+    // "New definition...": a definition with the loop's boundary (its first
+    // body's graph.input nodes and outputs) under `name`, and the branch
+    // running it, in one list.
+    bool newLoopBranchDefinition(const std::string &id, std::size_t branch,
+                                 const std::string &name);
+    // The definitions a branch of this loop may run: those whose boundary is
+    // the loop's (the same graph.input ids and the same outputs).
+    [[nodiscard]] std::vector<std::string> loopBodyChoices(std::string_view id) const;
+
+    // One gesture's op list as built elsewhere -- the zone gestures of LP-4d
+    // put a loop input and its body's graph.input in one list -- sent with
+    // its inverse like every other gesture.
+    bool submitEdit(nlohmann::json ops);
+
+    // LP-0c's three definition ops, for the undo they need (decision 7).
+    bool renameDefinition(const std::string &from, const std::string &to);
+    bool removeDefinition(const std::string &name);
+
+    // Decision 5. The loop the current scope was entered through (empty when
+    // it was not), its branch the descent opened, and a switch to another
+    // branch's body while inside.
+    [[nodiscard]] const std::string &enteredLoop() const noexcept { return entered_loop_; }
+    [[nodiscard]] std::size_t loopBranch(std::string_view id) const;
+    bool selectLoopBranch(std::size_t branch);
+    // How many root nodes (instances and loop branches) name a definition:
+    // more than one is the "shared" mark.
+    [[nodiscard]] std::size_t definitionUseCount(std::string_view definition) const;
+
+    // Decision 6. The other loops' `p[]` outputs a root loop's input can read
+    // one element of, as (loop, port).
+    [[nodiscard]] std::vector<std::pair<std::string, std::string>>
+    perIterationSources(std::string_view receiver) const;
+    bool connectPerIteration(const std::string &node, const std::string &port,
+                             const std::string &source_node, const std::string &source_port,
+                             const std::string &expression = "element");
+
+    // Decision 9. What the last refused edit pointed at; cleared by the next
+    // edit that commits.
+    [[nodiscard]] const std::vector<GraphCanvasRefusalMark> &refusalMarks() const noexcept {
+        return refusal_marks_;
+    }
+    // Decision 10. Open the body node a loop copy came from: the scope of
+    // the branch that element ran, entered through the loop. False when the
+    // loop, the branch or the node is not in the document.
+    bool enterLoopOrigin(std::string_view loop, std::int64_t element, std::string_view node);
 };
 
 } // namespace PelicanStudio

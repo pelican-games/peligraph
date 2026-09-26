@@ -433,6 +433,7 @@ struct FramePlanWidget::Impl {
     std::function<void(const QString &, const QString &)> preset_pass_edit_action;
     std::function<void(const QString &)> task_edit_action;
     FramePlanWidget::GraphNodeOpenAction graph_node_open_action;
+    FramePlanWidget::GraphLoopNodeOpenAction graph_loop_node_open_action;
     std::function<void(const QString &, const QStringList &)> task_connection_action;
     std::function<void(const QString &, const QString &, const QStringList &)> pass_connection_action;
     std::function<void(const QString &, const QStringList &, quint64)> node_order_action;
@@ -964,7 +965,7 @@ struct FramePlanWidget::Impl {
         logical_scene->setOpenInGraphAction(open_in_graph);
         logical_scene->openInGraphOffered =
             [this](const FramePlanNodeKey &node) {
-                return graphNodeOf(node) != nullptr;
+                return graphNodeOf(node) != nullptr || loopOriginOf(node) != nullptr;
             };
         // F-1: named like the insert entries, and offered on a right-click
         // over open canvas and on the toolbar.
@@ -2610,7 +2611,29 @@ struct FramePlanWidget::Impl {
         return row != nullptr && row->graph_node ? &*row->graph_node : nullptr;
     }
 
+    // LP-4c. The loop_origin of a pass or task a graph.loop expanded.
+    const FramePlanLoopOrigin *loopOriginOf(const FramePlanNodeKey &node) const {
+        if (!model || node.graph != model->graph) return nullptr;
+        const auto found = std::ranges::find(model->nodes, node.name, &FramePlanNode::name);
+        return found != model->nodes.end() && found->loop_origin ? &*found->loop_origin
+                                                                 : nullptr;
+    }
+
     void openInGraph(const std::optional<FramePlanNodeKey> &node) {
+        // Decision 10: an expanded copy opens the body node it copies, in the
+        // body its element's branch runs.
+        if (const auto *origin = node ? loopOriginOf(*node) : nullptr) {
+            if (!graph_loop_node_open_action) {
+                showStatus(owner.tr("Opening the Graph tab is unavailable."));
+                return;
+            }
+            if (!graph_loop_node_open_action(text(origin->loop), origin->element,
+                                             text(origin->node)))
+                showStatus(owner.tr("The Graph tab has no loop %1 with a body node %2 yet: "
+                                    "refresh it.")
+                               .arg(text(origin->loop), text(origin->node)));
+            return;
+        }
         const auto *source = node ? graphNodeOf(*node) : nullptr;
         if (source == nullptr) {
             showStatus(owner.tr("Select a task a graph node made first."));
@@ -3213,6 +3236,10 @@ struct FramePlanWidget::Impl {
                     QString::number(
                         static_cast<qulonglong>(node.declaration_index)));
             addFact(facts, owner.tr("View family"), text(node.view_family));
+            // LP-4c: the loop that expanded it, and what it copies.
+            if (node.loop_origin)
+                addFact(facts, owner.tr("Loop origin"),
+                        text(framePlanLoopOriginLine(*node.loop_origin)));
             // LP-4a: the views of the family the node runs for.
             if (!node.view_select.empty())
                 addFact(facts, owner.tr("View select"),
@@ -3493,6 +3520,9 @@ struct FramePlanWidget::Impl {
                         lifetimeLabel(resource.lifetime));
             }
             addFact(facts, owner.tr("Reason"), text(resource.reason));
+            if (resource.loop_origin)
+                addFact(facts, owner.tr("Loop origin"),
+                        text(framePlanLoopOriginLine(*resource.loop_origin)));
             addFact(facts, owner.tr("Provider feature"),
                     text(resource.provider_feature));
             addFact(facts, owner.tr("Provider ref"),
@@ -3900,6 +3930,10 @@ void FramePlanWidget::setPresetPassConnectionAction(std::function<void(const QSt
 
 void FramePlanWidget::setGraphNodeOpenAction(GraphNodeOpenAction action) {
     impl_->graph_node_open_action = std::move(action);
+}
+
+void FramePlanWidget::setGraphLoopNodeOpenAction(GraphLoopNodeOpenAction action) {
+    impl_->graph_loop_node_open_action = std::move(action);
 }
 
 void FramePlanWidget::setTaskEditAction(std::function<void(const QString &)> action) {

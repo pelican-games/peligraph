@@ -529,6 +529,24 @@ QString regionGroupingUnavailableReason(const FramePlanModel &model) {
 // would silently invent overlap/nesting semantics that the view does not have.
 GroupingDecision groupingUnit(const FramePlanModel &model,
                               const FramePlanNode &node) {
+    // LP-4c, decision 8: the copies one graph.loop expanded are one group,
+    // named after the loop with its count, ahead of any region or feature --
+    // the loop is what the author wrote, the copies are derived.
+    if (node.loop_origin) {
+        const auto &loop = node.loop_origin->loop;
+        QString label = QStringLiteral("loop %1").arg(qtext(loop));
+        if (const auto found = std::ranges::find(model.loops, loop, &FramePlanLoop::node);
+            found != model.loops.end())
+            label += QStringLiteral(" ×%1").arg(static_cast<qulonglong>(found->count));
+        return GroupingDecision{
+            .unit = GroupingUnit{
+                .key = "loop:" + loop,
+                .entity_base = "__pelican_group__:loop:" + loop,
+                .label = label,
+                .subject = QStringLiteral("Loop \"%1\"").arg(qtext(loop)),
+            },
+        };
+    }
     const LoweringNodeLookup lookup = loweringNode(model, node);
     if (lookup.state == LoweringNodeLookupState::unavailable) {
         return GroupingDecision{
@@ -811,9 +829,18 @@ std::vector<GroupDefinition> discoverGroups(const FramePlanModel &model) {
     std::map<std::string, GroupingUnit, std::less<>> units_by_key;
     std::vector<GroupDefinition> warnings;
     if (!model.physical_plan.loweringGraphAvailable()) {
+        // LP-4c: a loop's copies are grouped by their loop_origin, which the
+        // plan states itself; only the region and feature groups need the
+        // lowering graph.
         std::vector<std::string> members;
         members.reserve(model.nodes.size());
         for (const auto &node : model.nodes) {
+            if (node.loop_origin) {
+                GroupingDecision decision = groupingUnit(model, node);
+                members_by_key[decision.unit->key].push_back(node.name);
+                units_by_key.emplace(decision.unit->key, std::move(*decision.unit));
+                continue;
+            }
             members.push_back(node.name);
         }
         const std::string key = "diagnostic:region-grouping-unavailable";
@@ -827,9 +854,10 @@ std::vector<GroupDefinition> discoverGroups(const FramePlanModel &model) {
             .warning_only = true,
             .reason = regionGroupingUnavailableReason(model),
         });
-        return warnings;
     }
     for (const auto &node : model.nodes) {
+        // Without the lowering graph only the loops above were grouped.
+        if (!model.physical_plan.loweringGraphAvailable()) break;
         GroupingDecision decision = groupingUnit(model, node);
         if (!decision.reason.isEmpty()) {
             const std::string key = "diagnostic:" +
@@ -2446,6 +2474,13 @@ void FramePlanGraphicsScene::pruneGroupState() {
     std::erase_if(collapsed_groups_, [&](const GroupStateKey &group_key) {
         return !collapsible_groups.contains(group_key);
     });
+    // LP-4c: a loop's copies start folded, one box "loop <id> xN" in place of
+    // N copies of the same body. Once seen, the group stays as the user
+    // leaves it.
+    for (const auto &group : groups)
+        if (group.collapsible && group.key.starts_with("loop:") &&
+            seen_loop_groups_.insert(group.state_key).second)
+            collapsed_groups_.insert(group.state_key);
     if (current_group_scope_) {
         const GroupDefinition *scope =
             findGroup(groups, *current_group_scope_);

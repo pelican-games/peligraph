@@ -637,8 +637,11 @@ std::string knownRefusalDescription(std::string_view code, std::string_view mess
         if (message.find(entry.code) != std::string_view::npos)
             return componentUnavailableDescription(entry.code);
     // LP-4a: a view_select refusal carries its fields in the message.
-    return viewSelectRefusalDescription(
-        nlohmann::json{{"code", std::string{code}}, {"message", std::string{message}}});
+    const nlohmann::json error{{"code", std::string{code}}, {"message", std::string{message}}};
+    if (auto view_select = viewSelectRefusalDescription(error); !view_select.empty())
+        return view_select;
+    // LP-4c: and so does a loop's or a definition's.
+    return graphLoopRefusalDescription(error);
 }
 
 namespace {
@@ -755,6 +758,140 @@ std::string viewSelectRefusalDescription(const nlohmann::json &error) {
                           "configuration does not build";
     }
     return sentence + " (" + std::string{code} + ").";
+}
+
+namespace {
+
+// LP-4c, decision 9. One sentence per code; `{field}` is the refusal's field
+// of that name (a list is joined with ", "), and a field the refusal does not
+// carry reads as "?". A new code reads as the engine's message until a row is
+// added here.
+struct GraphLoopRefusalText {
+    std::string_view code;
+    std::string_view sentence;
+};
+constexpr std::array<GraphLoopRefusalText, 24> GraphLoopRefusalTexts{{
+    {"graph.loop_branch_else_missing@1",
+     "Loop {node} has no else: its last branch must have no condition"},
+    {"graph.loop_branch_interface@1",
+     "Branch {branch} of loop {node} runs {definition}, whose inputs and outputs "
+     "differ from the loop's at {port}"},
+    {"graph.loop_nested@1",
+     "A loop stands in the root document only, and its body cannot hold a loop ({node})"},
+    {"graph.loop_feature_pending@1", "Loop {node} uses {feature}, which this engine does not run"},
+    {"graph.loop_tier_unsupported@1", "Loop {node} has no stage it can run in ({reason})"},
+    {"graph.loop_tier_mismatch@1", "Loop {node} is fixed to {tier}, but it can only run as {actual}"},
+    {"graph.loop_order_unsupported@1", "Loop {node} cannot be ordered that way in its stage"},
+    {"graph.loop_expression_invalid@1",
+     "An expression of loop {node} is not valid: {reason} at {pointer}"},
+    {"graph.loop_carry_type_mismatch@1",
+     "Loop {node} carries {from} into {to}, which takes another type"},
+    {"graph.loop_element_unknown@1",
+     "Input {port} of {node} reads element {element}, which the loop it reads does not have"},
+    {"graph.loop_output_empty@1", "Output {port} of loop {node} is empty: the loop ran no element"},
+    {"graph.loop_expansion_limit@1", "Loop {node} would make {count} copies; the limit is {limit}"},
+    {"graph.loop_expansion_referenced@1",
+     "{name} is a name a loop makes, which cannot be referred to; name the loop ({pointer})"},
+    {"graph.loop_contract_unsupported@1", "Loop {node} draws with {contract}, which its stage does not take"},
+    {"graph.loop_variant_missing@1", "Loop {node}: material {material} has no {variant} variant"},
+    {"graph.loop_phase_crossing@1", "Loop {node}: material {material} draws in another phase"},
+    {"graph.loop_override_interface@1", "Loop {node}: material {material} has no binding {binding}"},
+    {"graph.loop_override_needs_compiler@1",
+     "Loop {node} changes shader defines, which needs the runtime shader compiler"},
+    {"graph.loop_override_compile_limit@1",
+     "Loop {node} needs {count} shader compiles; the limit is {limit}"},
+    {"graph.definition_role@1", "Definition {definition} holds {node}, which a body of its kind cannot"},
+    {"graph.definition_referenced@1", "Definition {definition} is still used by {referenced_by}"},
+    {"graph.definition_duplicate@1", "A definition named {definition} already exists"},
+    {"graph.definition_missing@1", "There is no definition named {definition}"},
+    {"graph.definition_immutable@1",
+     "{node} is made by an instance or a loop; edit it in its definition"},
+}};
+
+// The fields after a code in a message: "<code> {...}" (how a GraphRegistryError
+// spells itself) or "<code>: {...}".
+std::optional<nlohmann::json> graphFieldsAfterCode(std::string_view message, std::string_view code) {
+    if (auto fields = fieldsAfterCode(message, code)) return fields;
+    const auto at = message.find(code);
+    if (at == std::string_view::npos) return std::nullopt;
+    auto rest = message.substr(at + code.size());
+    if (!rest.starts_with(" {")) return std::nullopt;
+    rest.remove_prefix(1);
+    // The object runs to its matching brace; the parser is asked to take
+    // exactly that much by trying each closing brace in turn.
+    for (std::size_t end = rest.find('}'); end != std::string_view::npos;
+         end = rest.find('}', end + 1)) {
+        auto fields = nlohmann::json::parse(rest.substr(0, end + 1), nullptr, false);
+        if (!fields.is_discarded() && fields.is_object()) return fields;
+    }
+    return std::nullopt;
+}
+
+std::string graphRefusalFieldText(const nlohmann::json &fields, std::string_view key) {
+    const auto found = fields.find(std::string{key});
+    if (found == fields.end()) return "?";
+    if (found->is_string()) return found->get<std::string>();
+    if (found->is_number_integer() || found->is_number_unsigned()) return found->dump();
+    if (found->is_array()) {
+        std::string joined;
+        for (const auto &value : *found) {
+            if (!joined.empty()) joined += ", ";
+            joined += value.is_string() ? value.get<std::string>() : value.dump();
+        }
+        return joined;
+    }
+    return found->dump();
+}
+
+} // namespace
+
+std::string graphLoopRefusalDescription(const nlohmann::json &error) {
+    if (!error.is_object()) return {};
+    const auto own_code = error.value("code", std::string{});
+    const auto message = error.value("message", std::string{});
+    const GraphLoopRefusalText *entry = nullptr;
+    nlohmann::json fields = nlohmann::json::object();
+    for (const auto &candidate : GraphLoopRefusalTexts) {
+        if (candidate.code != own_code) continue;
+        entry = &candidate;
+        if (const auto relayed = error.find("error_fields");
+            relayed != error.end() && relayed->is_object())
+            fields = *relayed;
+        else
+            fields = error;
+        // A refusal with no fields of its own may still quote them. The
+        // members every refusal has are not fields of this one.
+        bool own_fields = false;
+        for (auto member = fields.begin(); member != fields.end(); ++member)
+            own_fields = own_fields || (member.key() != "code" && member.key() != "message" &&
+                                        member.key() != "variant" && member.key() != "ticket");
+        if (!own_fields)
+            if (auto quoted = graphFieldsAfterCode(message, candidate.code))
+                fields = std::move(*quoted);
+    }
+    if (entry == nullptr) {
+        for (const auto &candidate : GraphLoopRefusalTexts)
+            if (auto quoted = graphFieldsAfterCode(message, candidate.code)) {
+                entry = &candidate;
+                fields = std::move(*quoted);
+                break;
+            }
+    }
+    if (entry == nullptr) return {};
+    std::string sentence;
+    const std::string_view pattern = entry->sentence;
+    for (std::size_t index = 0; index < pattern.size();) {
+        const auto open = pattern.find('{', index);
+        if (open == std::string_view::npos) {
+            sentence += pattern.substr(index);
+            break;
+        }
+        const auto close = pattern.find('}', open);
+        sentence += pattern.substr(index, open - index);
+        sentence += graphRefusalFieldText(fields, pattern.substr(open + 1, close - open - 1));
+        index = close + 1;
+    }
+    return sentence + " (" + std::string{entry->code} + ").";
 }
 
 std::string componentUnavailableTag(std::string_view code) {

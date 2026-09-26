@@ -1,5 +1,6 @@
 #include "graphcanvaswidget.hpp"
 #include "graphcanvasdrawing.hpp"
+#include "graphcanvasloopfields.hpp"
 
 #include "inlineediteventfilter.hpp"
 #include "panelhelp.hpp"
@@ -1432,6 +1433,38 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
                 Qt::QueuedConnection);
         });
     }
+    // LP-4c: the named additions, where they apply -- a loop in the root, a
+    // fullscreen pass anywhere the catalog has one.
+    if (add_loop_action_ != nullptr && add_loop_action_->isEnabled())
+        menu.addAction(add_loop_action_);
+    if (add_fullscreen_action_ != nullptr && add_fullscreen_action_->isEnabled())
+        menu.addAction(add_fullscreen_action_);
+    // Decision 6: an input of a root loop can read one element of another
+    // loop's p[].
+    if (model_ != nullptr && perIterationRequested && model_->currentScope().empty()) {
+        for (QGraphicsItem *item : items(event->scenePos())) {
+            if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasSocketItem} &&
+                nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeLabelItem})
+                continue;
+            const auto port = item->data(GraphCanvasPortRole).toString().toStdString();
+            const auto node = item->data(NodeGraphNameRole).toString().toStdString();
+            if (port.empty()) continue;
+            const auto loop = model_->loop(node);
+            if (!loop || std::ranges::find(loop->body_inputs, port) == loop->body_inputs.end())
+                continue;
+            if (model_->perIterationSources(node).empty()) break;
+            QAction *each = menu.addAction(QObject::tr("Per iteration…"));
+            QObject::connect(each, &QAction::triggered, this, [this, node, port] {
+                QMetaObject::invokeMethod(
+                    this,
+                    [this, node, port] {
+                        if (perIterationRequested) perIterationRequested(node, port);
+                    },
+                    Qt::QueuedConnection);
+            });
+            break;
+        }
+    }
     // The two entries the owner named are the same objects the automation
     // surface fires: a scenario must not have to open a popup to reach them.
     if (auto_layout_action_ != nullptr) {
@@ -1787,11 +1820,32 @@ bool GraphCanvasScene::addFromPalette(const std::string &op,
     // under: asking twice would answer differently once the node exists.
     const auto ops = model_->addNodeOps(op, definition);
     if (ops.empty()) return false;
-    const auto &added = ops.back();
+    // The node the gesture is about is the last one added; LP-4c's list can
+    // end with the loop that runs the scope being given a place.
+    std::string added;
+    for (const auto &entry : ops)
+        if (entry.value("op", std::string{}) == "add_node")
+            added = entry.at("node").value("id", std::string{});
     if (!model_->addNode(op, definition)) return false;
+    placeNewNode(added);
+    afterEdit(true);
+    return true;
+}
+
+bool GraphCanvasScene::addLoop(const std::string &body, const std::string &new_definition) {
+    if (model_ == nullptr || !model_->canEdit()) return false;
+    const auto ops = model_->addLoopOps(body, new_definition);
+    if (ops.empty()) return false;
+    const auto &added = ops.back();
+    if (!model_->addLoop(body, new_definition)) return false;
     placeNewNode(added.at("node").value("id", std::string{}));
     afterEdit(true);
     return true;
+}
+
+void GraphCanvasScene::setAddActions(QAction *add_loop, QAction *add_fullscreen) {
+    add_loop_action_ = add_loop;
+    add_fullscreen_action_ = add_fullscreen;
 }
 
 bool GraphCanvasScene::deleteSelection() {
@@ -2110,6 +2164,13 @@ struct GraphCanvasWidget::Impl {
     QLabel *breadcrumb = nullptr;
     QLabel *notice = nullptr;
     QTreeWidget *details = nullptr;
+    // LP-4c: the Loop fields for a selected root loop (decisions 3, 4), and,
+    // inside a loop's body, the branch it shows and whether it is shared.
+    GraphCanvasLoopFields *loop_fields = nullptr;
+    QComboBox *loop_branch = nullptr;
+    QLabel *shared_mark = nullptr;
+    QAction *add_loop_action = nullptr;
+    QAction *add_fullscreen_action = nullptr;
     QLineEdit *label_edit = nullptr;
     QPushButton *apply_label = nullptr;
     QPushButton *add_node = nullptr;
@@ -2172,6 +2233,17 @@ struct GraphCanvasWidget::Impl {
         breadcrumb = new QLabel(&view);
         breadcrumb->setObjectName(QStringLiteral("pelican.graphCanvasBreadcrumb"));
         controls->addWidget(breadcrumb);
+        // LP-4c, decision 5: inside a loop's body, which branch's body it is.
+        loop_branch = new QComboBox(&view);
+        loop_branch->setObjectName(QStringLiteral("pelican.graphCanvasLoopBranch"));
+        loop_branch->setToolTip(QObject::tr("The branch of the loop whose body is shown"));
+        loop_branch->hide();
+        controls->addWidget(loop_branch);
+        shared_mark = new QLabel(&view);
+        shared_mark->setObjectName(QStringLiteral("pelican.graphCanvasShared"));
+        shared_mark->setStyleSheet(QStringLiteral("color: #b9770e;"));
+        shared_mark->hide();
+        controls->addWidget(shared_mark);
         controls->addStretch(1);
         controls->addWidget(new QLabel(QObject::tr("Values from:"), &view));
         value_instances = new QComboBox(&view);
@@ -2261,6 +2333,26 @@ struct GraphCanvasWidget::Impl {
                          [this] { scene->untieSelection(); });
         scene->setMenuActions(auto_layout_action, fit_view_action, tie_action,
                               untie_action);
+        // LP-4c. "Add loop" puts a loop in the root over a new, empty body
+        // named by a proposal -- no dialog, no name to type -- and "Add
+        // fullscreen pass" the engine's passthrough into an image of its own,
+        // in the scope on screen. Both are named, so the canvas menu and the
+        // automation surface fire the same object; the palette offers both
+        // too, with the body to choose.
+        add_loop_action = new QAction(QObject::tr("Add loop"), &view);
+        add_loop_action->setObjectName(QStringLiteral("pelican.graphCanvas.addLoop"));
+        view.addAction(add_loop_action);
+        QObject::connect(add_loop_action, &QAction::triggered, &view, [this] {
+            scene->addLoop({}, model.suggestDefinitionName());
+        });
+        add_fullscreen_action = new QAction(QObject::tr("Add fullscreen pass"), &view);
+        add_fullscreen_action->setObjectName(
+            QStringLiteral("pelican.graphCanvas.addFullscreenPass"));
+        view.addAction(add_fullscreen_action);
+        QObject::connect(add_fullscreen_action, &QAction::triggered, &view, [this] {
+            scene->addFromPalette("render.fullscreen");
+        });
+        scene->setAddActions(add_loop_action, add_fullscreen_action);
         canvas->setDragMode(QGraphicsView::RubberBandDrag);
         canvas->setRenderHint(QPainter::Antialiasing, true);
         // Delete has to reach the scene, and a right-click on the canvas has to
@@ -2340,6 +2432,20 @@ struct GraphCanvasWidget::Impl {
         audio_layout->addRow(caption(QObject::tr("Wrap")), audio_wrap);
         side_layout->addWidget(audio_row);
         audio_row->hide();
+        loop_fields = new GraphCanvasLoopFields(
+            model, [this] { dispatch(); },
+            [this](const std::string &loop) {
+                // From the event loop: the scope change rebuilds the fields
+                // the press came from.
+                QMetaObject::invokeMethod(
+                    &view, [this, loop] {
+                        scene->enterNode(loop);
+                        dispatch();
+                    },
+                    Qt::QueuedConnection);
+            },
+            side);
+        side_layout->addWidget(loop_fields);
         details = new QTreeWidget(side);
         details->setObjectName(QStringLiteral("pelican.graphCanvasDetails"));
         details->setColumnCount(2);
@@ -2406,6 +2512,22 @@ struct GraphCanvasWidget::Impl {
         // from inside a drag and from inside a rebuild.
         scene->placementChanged = [this] { showNotice(); };
         scene->addNodeRequested = [this](const QPointF &) { openPalette(); };
+        scene->perIterationRequested = [this](const std::string &node,
+                                              const std::string &port) {
+            openPerIteration(node, port);
+        };
+        QObject::connect(loop_branch, &QComboBox::currentIndexChanged, &view,
+                         [this](int index) {
+                             if (index < 0) return;
+                             const auto branch = static_cast<std::size_t>(
+                                 loop_branch->itemData(index).toULongLong());
+                             if (!model.selectLoopBranch(branch)) return;
+                             scene->repopulate();
+                             syncScopeControls();
+                             syncValueControls();
+                             showDetails();
+                             dispatch();
+                         });
         scene->fitViewRequested = [this] { canvas->fitView(); };
         // A scope shown for the first time -- which includes the first draw
         // after a document arrives -- is fitted; one being returned to keeps
@@ -2551,6 +2673,8 @@ struct GraphCanvasWidget::Impl {
                     qtext(request.params.value("instance", std::string{})), &error);
             else if (request.method == "get_status" && graph.requestStatus)
                 transport = graph.requestStatus(&error);
+            else if (request.method == "get_frame_plan" && graph.requestFramePlan)
+                transport = graph.requestFramePlan(&error);
             else if (request.method == "set_time" && graph.requestSetTime)
                 transport = graph.requestSetTime(
                     request.params.value("t", 0.0), &error);
@@ -2589,6 +2713,82 @@ struct GraphCanvasWidget::Impl {
         for (const auto &step : model.breadcrumb())
             trail.push_back(step.empty() ? QStringLiteral("root") : qtext(step));
         breadcrumb->setText(trail.join(QStringLiteral(" / ")));
+        syncLoopBranch();
+    }
+
+    // LP-4c, decision 5: inside a loop's body, the branches that have one to
+    // switch to, and the "shared" mark when another node runs it too.
+    void syncLoopBranch() {
+        const QSignalBlocker block{loop_branch};
+        loop_branch->clear();
+        const auto &entered = model.enteredLoop();
+        const auto loop = entered.empty() ? std::nullopt : model.loop(entered);
+        if (loop) {
+            for (std::size_t index = 0; index < loop->branches.size(); ++index) {
+                const auto &branch = loop->branches[index];
+                if (branch.nothing || branch.body.empty()) continue;
+                const bool last = index + 1 == loop->branches.size();
+                QString condition = last ? QObject::tr("else")
+                                         : branch.when == "element"
+                                               ? QObject::tr("element = %1")
+                                                     .arg(GraphCanvasLoopFields::integersText(branch.values))
+                                         : branch.when == "element_in"
+                                               ? QObject::tr("element in %1")
+                                                     .arg(GraphCanvasLoopFields::integersText(branch.values))
+                                         : branch.when == "element_not_in"
+                                               ? QObject::tr("element not in %1")
+                                                     .arg(GraphCanvasLoopFields::integersText(branch.values))
+                                               : QObject::tr("expression");
+                loop_branch->addItem(QObject::tr("%1: %2 → %3")
+                                         .arg(qtext(entered), condition, qtext(branch.body)),
+                                     static_cast<qulonglong>(index));
+            }
+            const int current = loop_branch->findData(
+                static_cast<qulonglong>(model.loopBranch(entered)));
+            loop_branch->setCurrentIndex(current < 0 ? 0 : current);
+        }
+        loop_branch->setVisible(loop.has_value() && loop_branch->count() > 0);
+        const auto &scope = model.currentScope();
+        const auto uses = scope.empty() ? std::size_t{0} : model.definitionUseCount(scope);
+        shared_mark->setText(QObject::tr("shared (%1 users)").arg(uses));
+        shared_mark->setToolTip(QObject::tr(
+            "Other instances or loops run this definition too: an edit here changes them all."));
+        shared_mark->setVisible(uses > 1);
+    }
+
+    // Decision 6: which other loop's p[] this input reads one element of, and
+    // the element: `element` (the receiving loop's own) unless rewritten.
+    void openPerIteration(const std::string &node, const std::string &port) {
+        if (!model.canEdit()) return;
+        const auto sources = model.perIterationSources(node);
+        if (sources.empty()) return;
+        QDialog dialog{&view};
+        dialog.setObjectName(QStringLiteral("pelican.graphCanvasPerIteration"));
+        dialog.setWindowTitle(QObject::tr("Per iteration: %1.%2").arg(qtext(node), qtext(port)));
+        auto *layout = new QFormLayout(&dialog);
+        auto *source = new QComboBox(&dialog);
+        source->setObjectName(QStringLiteral("pelican.graphCanvasPerIteration.source"));
+        for (const auto &[loop, output] : sources)
+            source->addItem(QStringLiteral("%1.%2").arg(qtext(loop), qtext(output)));
+        layout->addRow(QObject::tr("Reads"), source);
+        auto *element = new QLineEdit(QStringLiteral("element"), &dialog);
+        element->setObjectName(QStringLiteral("pelican.graphCanvasPerIteration.element"));
+        element->setToolTip(QObject::tr(
+            "Which element it reads, per element of %1: `element` is that element.")
+                                .arg(qtext(node)));
+        layout->addRow(QObject::tr("Element"), element);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+                                             &dialog);
+        layout->addRow(buttons);
+        QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+        QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        if (dialog.exec() != QDialog::Accepted) return;
+        const auto index = static_cast<std::size_t>(source->currentIndex());
+        if (index >= sources.size()) return;
+        const auto expression = element->text().trimmed().toStdString();
+        if (model.connectPerIteration(node, port, sources[index].first, sources[index].second,
+                                      expression.empty() ? std::string{"element"} : expression))
+            dispatch();
     }
 
     void syncValueControls() {
@@ -2785,6 +2985,14 @@ struct GraphCanvasWidget::Impl {
             if (!scope.root) definitions->addItem(qtext(scope.label), qtext(scope.id));
         definitions->hide();
         layout->addWidget(definitions);
+        // LP-4c: a loop's body can be a new definition, whose name is
+        // proposed and can be changed before it exists.
+        auto *new_name = new QLineEdit(qtext(model.suggestDefinitionName()), &dialog);
+        new_name->setObjectName(QStringLiteral("pelican.graphCanvasPaletteNewDefinition"));
+        new_name->setToolTip(QObject::tr("The name of the new, empty body definition"));
+        new_name->hide();
+        layout->addWidget(new_name);
+        const QString new_definition_data = QStringLiteral("\x1f" "new");
         auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
                                                  QDialogButtonBox::Cancel,
                                              &dialog);
@@ -2809,10 +3017,21 @@ struct GraphCanvasWidget::Impl {
         };
         const auto syncDefinition = [&] {
             auto *row = list->currentItem();
-            definitions->setVisible(
-                row != nullptr &&
-                row->data(Qt::UserRole).toString() == QLatin1String{"graph.instance"});
+            const auto op = row != nullptr ? row->data(Qt::UserRole).toString() : QString{};
+            const bool loop = op == QLatin1String{"graph.loop"};
+            // Only a loop can bring a body of its own.
+            const int offered = definitions->findData(new_definition_data);
+            if (loop && offered < 0)
+                definitions->insertItem(0, QObject::tr("New definition…"), new_definition_data);
+            else if (!loop && offered >= 0)
+                definitions->removeItem(offered);
+            if (loop && offered < 0) definitions->setCurrentIndex(0);
+            definitions->setVisible(loop || op == QLatin1String{"graph.instance"});
+            new_name->setVisible(loop && definitions->currentData().toString() ==
+                                             new_definition_data);
         };
+        QObject::connect(definitions, &QComboBox::currentIndexChanged, &dialog,
+                         [&] { syncDefinition(); });
         QObject::connect(search, &QLineEdit::textChanged, &dialog, [&] {
             reload();
             syncDefinition();
@@ -2830,8 +3049,13 @@ struct GraphCanvasWidget::Impl {
         if (dialog.exec() != QDialog::Accepted) return;
         auto *row = list->currentItem();
         if (row == nullptr) return;
-        scene->addFromPalette(row->data(Qt::UserRole).toString().toStdString(),
-                              definitions->currentData().toString().toStdString());
+        const auto op = row->data(Qt::UserRole).toString().toStdString();
+        if (op == "graph.loop" && definitions->currentData().toString() == new_definition_data) {
+            const auto name = new_name->text().trimmed().toStdString();
+            scene->addLoop({}, name.empty() ? model.suggestDefinitionName() : name);
+            return;
+        }
+        scene->addFromPalette(op, definitions->currentData().toString().toStdString());
     }
 
     void showDetails() {
@@ -2844,6 +3068,7 @@ struct GraphCanvasWidget::Impl {
             label_edit->clear();
             syncUiNodeRow(nullptr);
             syncAudioRow(nullptr);
+            loop_fields->showLoop({});
             return;
         }
         const auto nodes = model.nodes();
@@ -2852,11 +3077,14 @@ struct GraphCanvasWidget::Impl {
             label_edit->clear();
             syncUiNodeRow(nullptr);
             syncAudioRow(nullptr);
+            loop_fields->showLoop({});
             return;
         }
         label_edit->setText(qtext(found->label));
         syncUiNodeRow(&*found);
         syncAudioRow(&*found);
+        // LP-4c: a loop's parameters are its fields, not rows of JSON.
+        loop_fields->showLoop(found->loop ? found->id : std::string{});
         const auto row = [this](const QString &field, const QString &value) {
             auto *item = new QTreeWidgetItem(details);
             item->setText(0, field);
@@ -2886,8 +3114,10 @@ struct GraphCanvasWidget::Impl {
         row(QObject::tr("sink"),
             found->sink ? QObject::tr("yes") : QObject::tr("no"));
         if (!found->definition.empty())
-            row(QObject::tr("definition"), qtext(found->definition));
-        if (!found->parameters.empty()) {
+            row(QObject::tr(found->loop ? "body" : "definition"), qtext(found->definition));
+        if (found->refused)
+            row(QObject::tr("refused"), qtext(found->refusal))->setToolTip(1, qtext(found->refusal));
+        if (!found->parameters.empty() && !found->loop) {
             auto *parameters = row(QObject::tr("parameters"), {});
             for (const auto &[name, value] : found->parameters.items()) {
                 auto *entry = new QTreeWidgetItem(parameters);
@@ -2920,11 +3150,13 @@ struct GraphCanvasWidget::Impl {
             for (const auto &port : found->outputs) {
                 auto *entry = new QTreeWidgetItem(outputs);
                 entry->setText(0, qtext(port.port));
+                const QString type = port.bundle
+                                         ? QObject::tr("one per element: %1").arg(type_text(port.type))
+                                         : type_text(port.type);
                 entry->setText(1,
                     port.has_value
-                        ? QStringLiteral("%1  ·  %2")
-                              .arg(type_text(port.type), numberText(port.value))
-                        : type_text(port.type));
+                        ? QStringLiteral("%1  ·  %2").arg(type, numberText(port.value))
+                        : type);
             }
             outputs->setExpanded(true);
         }
@@ -2969,6 +3201,9 @@ struct GraphCanvasWidget::Impl {
                                        !scene->dragging() && !scene->layoutPending();
         undo_action->setEnabled(history_available && model.canUndo());
         redo_action->setEnabled(history_available && model.canRedo());
+        add_loop_action->setEnabled(model.canEdit() && model.currentScope().empty());
+        add_fullscreen_action->setEnabled(
+            model.canEdit() && !model.paletteOperations("render.fullscreen").empty());
         const bool content_changed = rendered_content != model.contentRevision();
         const bool report_changed = rendered_report != model.reportRevision();
         // A redraw deletes the in-place editor, so it waits for the editor to
@@ -3125,6 +3360,28 @@ bool GraphCanvasWidget::revealGraphNode(const QString &scope,
             std::ranges::find(offered, root_instance) != offered.end())
             model.watchInstance(root_instance);
     }
+    impl_->scene->repopulate();
+    impl_->scene->selectNode(id);
+    impl_->syncScopeControls();
+    impl_->syncValueControls();
+    impl_->showDetails();
+    impl_->dispatch();
+    for (QGraphicsItem *item : impl_->scene->items()) {
+        if (item->data(NodeGraphItemKindRole).toString() !=
+                QLatin1String{GraphCanvasNodeItem} ||
+            item->data(NodeGraphNameRole).toString() != node)
+            continue;
+        impl_->canvas->centerOn(item);
+        break;
+    }
+    return true;
+}
+
+bool GraphCanvasWidget::revealLoopOrigin(const QString &loop, qint64 element,
+                                         const QString &node) {
+    auto &model = impl_->model;
+    const auto id = node.toStdString();
+    if (!model.enterLoopOrigin(loop.toStdString(), element, id)) return false;
     impl_->scene->repopulate();
     impl_->scene->selectNode(id);
     impl_->syncScopeControls();

@@ -56,6 +56,11 @@ class FramePlanWidget final : public QWidget {
     using GraphNodeOpenAction = std::function<bool(
         const QString &scope, const QString &node, const QString &instance)>;
     void setGraphNodeOpenAction(GraphNodeOpenAction action);
+    // LP-4c, decision 10. "Open in Graph" on a pass or task a graph.loop
+    // expanded: the loop, the element and the body node its loop_origin names.
+    using GraphLoopNodeOpenAction = std::function<bool(
+        const QString &loop, qint64 element, const QString &node)>;
+    void setGraphLoopNodeOpenAction(GraphLoopNodeOpenAction action);
     void setPresetPassEditAction(std::function<void(const QString &, const QString &)> action);
     // N-8. What the canvas is allowed to change, and where its placement is
     // kept. Without these the canvas is exactly the read-only projection it was

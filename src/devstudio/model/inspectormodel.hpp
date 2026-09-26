@@ -215,6 +215,13 @@ modelReferenceChoices(std::string_view current,
 // another's message, in the "<code>: {...}" of that message. Answers
 // "<sentence> (<code>)." in Q-10's form, or empty for any other refusal.
 [[nodiscard]] std::string viewSelectRefusalDescription(const nlohmann::json &error);
+// LP-4c, decision 9: the graph.loop_* and graph.definition_* refusals, one
+// sentence each, made from the refusal's own fields (the loop, the branch,
+// the definition, the port, the counts). `error` is read as for view_select:
+// the fields beside the code, in `error_fields`, or in the message after the
+// code ("<code> {...}" as the engine writes it, or "<code>: {...}"). Answers
+// "<sentence> (<code>).", or empty for any other refusal.
+[[nodiscard]] std::string graphLoopRefusalDescription(const nlohmann::json &error);
 
 struct ComponentAddRow {
     std::size_t candidate = 0;  // index into the catalog's "candidates"

@@ -189,6 +189,38 @@ struct FramePlanViewAxis {
     bool operator==(const FramePlanViewAxis &) const = default;
 };
 
+// LP-4c: where an expanded pass, task or target came from (LP-1a's
+// loop_origin): the graph.loop, the element that expanded it, and the node's
+// id in the branch body's definition. Studio reads these rather than taking
+// the expanded name (`<loop>/<element>/<node>`) apart.
+struct FramePlanLoopOrigin {
+    std::string loop;
+    std::int64_t element = 0;
+    std::string node;
+
+    bool operator==(const FramePlanLoopOrigin &) const = default;
+};
+
+struct FramePlanLoopElement {
+    std::int64_t element = 0;
+    std::size_t index = 0;
+    std::size_t branch = 0;
+
+    bool operator==(const FramePlanLoopElement &) const = default;
+};
+
+// get_frame_plan's top-level loops[]: one per graph.loop, a loop that
+// expanded nothing included.
+struct FramePlanLoop {
+    std::string node;
+    std::string tier;
+    std::size_t count = 0;
+    std::vector<FramePlanLoopElement> elements;
+    std::vector<std::size_t> unmatched_branches;
+
+    bool operator==(const FramePlanLoop &) const = default;
+};
+
 struct FramePlanNode {
     std::string name;
     std::string authored_name;
@@ -211,6 +243,8 @@ struct FramePlanNode {
     // LP-4a: the frame ran no view the node's view_select matches (the
     // engine's execution trace says so); the node recorded nothing.
     bool no_selected_view = false;
+    // LP-4c: set for a pass or task a graph.loop expanded.
+    std::optional<FramePlanLoopOrigin> loop_origin;
     std::string snapshot_after;
     std::size_t byte_size = 0;
     std::optional<FramePlanMaterialFilter> material_filter;
@@ -318,6 +352,8 @@ struct FramePlanResource {
     std::string fallback;
     std::vector<std::string> material_consumers;
     std::vector<std::string> fullscreen_consumers;
+    // LP-4c: set for a target or buffer a graph.loop expanded.
+    std::optional<FramePlanLoopOrigin> loop_origin;
 
     bool operator==(const FramePlanResource &) const = default;
 };
@@ -555,6 +591,8 @@ struct FramePlanModel {
     std::size_t response_bytes = 0;
     std::string raw_json;
     std::vector<FramePlanNode> nodes;
+    // LP-4c: loops[], empty when the composed graph has no graph.loop.
+    std::vector<FramePlanLoop> loops;
     std::vector<FramePlanBarrier> barriers;
     std::vector<FramePlanDependency> dependencies;
     std::vector<FramePlanResource> resources;

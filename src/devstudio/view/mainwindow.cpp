@@ -398,6 +398,16 @@ void MainWindow::createWorkspace() {
         return true;
     };
     frame_plan_->setGraphNodeOpenAction(open_graph_node);
+    // LP-4c, decision 10: a pass a loop expanded opens the body node it
+    // copies, entered through its loop.
+    frame_plan_->setGraphLoopNodeOpenAction(
+        [this, render_tabs](const QString &loop, qint64 element, const QString &node) {
+            if (!graph_canvas_->revealLoopOrigin(loop, element, node)) return false;
+            render_tabs->setCurrentWidget(graph_canvas_);
+            docks_[FramePlanDock]->show();
+            docks_[FramePlanDock]->raise();
+            return true;
+        });
     render_features_->setGraphNodeOpenAction(open_graph_node);
     inspector_->setRayGroupAction([this, render_tabs](const QString &group) {
         docks_[FramePlanDock]->show();
@@ -747,6 +757,22 @@ void MainWindow::createMenus() {
             toggle->setObjectName(
                 QStringLiteral("pelican.view.panels.") + leaf);
         panels_menu->addAction(toggle);
+    }
+    // LP-4c: which tab of the render tools is in front, as named entries --
+    // `pelican.view.renderTools.graph` and the like -- so a scenario that
+    // edits in the Graph tab can look at what the Frame Plan made of it.
+    QMenu *render_tools_menu = view_menu->addMenu(tr("&Render Tools"));
+    render_tools_menu->setObjectName(QStringLiteral("pelican.renderToolsMenu"));
+    const std::pair<QString, QString> render_tool_tabs[] = {
+        {QStringLiteral("frame_plan"), tr("&Frame Plan")},
+        {QStringLiteral("render_features"), tr("F&eatures")},
+        {QStringLiteral("graph"), tr("&Graph")},
+    };
+    for (const auto &[id, label] : render_tool_tabs) {
+        QAction *show_tab = render_tools_menu->addAction(label);
+        show_tab->setObjectName(QStringLiteral("pelican.view.renderTools.") + id);
+        connect(show_tab, &QAction::triggered, this,
+                [this, id = id]() { showRenderToolsTab(id); });
     }
 
     QMenu *layout_menu = menuBar()->addMenu(tr("&Layout"));

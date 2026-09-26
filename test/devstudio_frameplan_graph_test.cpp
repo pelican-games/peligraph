@@ -11277,4 +11277,91 @@ TEST_CASE("LP-4b a task's View menu back to All views drops view_select from "
     CHECK_FALSE(task.contains("view_select"));
     CHECK(task.at("view_family") == "$shadow/directional");
 }
+TEST_CASE("LP-4c a loop's copies are one folded group named with the loop's count, "
+          "and their details name the body node",
+          "[devstudio][frame-plan][grouping][lp4c]") {
+    (void)application();
+    // A fake get_frame_plan: the bloom pair of the real wire, told it is the
+    // two elements of one loop.
+    Json wire = regionGroupingBaselineFramePlan();
+    const StringSet members{"HorizontalBlur_0", "VerticalBlur_0"};
+    std::int64_t element = 0;
+    for (auto &node : wire.at("nodes"))
+        if (members.contains(node.at("name").get<std::string>()))
+            node["loop_origin"] = {{"loop", "bloom_loop"}, {"element", element++},
+                                   {"node", "blur"}};
+    REQUIRE(element == 2);
+    wire["loops"] = Json::array({{{"node", "bloom_loop"}, {"tier", "expand"}, {"count", 2},
+                                  {"elements", Json::array({
+                                      {{"element", 0}, {"index", 0}, {"branch", 0}},
+                                      {{"element", 1}, {"index", 1}, {"branch", 0}}})},
+                                  {"unmatched_branches", Json::array()}}});
+    const FramePlanModel model = buildFramePlanModel(wire.dump());
+    REQUIRE(model.loops.size() == 1);
+    CHECK(model.loops[0] == FramePlanLoop{"bloom_loop", "expand", 2,
+                                          {{0, 0, 0}, {1, 1, 0}}, {}});
+    const auto vertical = std::ranges::find(model.nodes, "VerticalBlur_0", &FramePlanNode::name);
+    REQUIRE(vertical != model.nodes.end());
+    REQUIRE(vertical->loop_origin);
+    CHECK(*vertical->loop_origin == FramePlanLoopOrigin{"bloom_loop", 1, "blur"});
+    // The details line.
+    CHECK(framePlanLoopOriginLine(*vertical->loop_origin) ==
+          "loop bloom_loop · element 1 · body node blur");
+
+    FramePlanGraphicsScene scene;
+    scene.populate(model, FramePlanNodeKey{model.graph, "swapchain"}, 64);
+    // Folded on first sight: one group box in place of the copies.
+    QGraphicsItem *group = singleGroupItem(scene);
+    CHECK(strings(group->data(FramePlanMembersRole)) == members);
+    CHECK(visibleSceneTextContains(scene, QStringLiteral("loop bloom_loop ×2")));
+    for (const auto &member : members) CHECK(nodeItem(scene, member) == nullptr);
+    // And it opens like any group.
+    const QString group_id = group->data(FramePlanGroupIdRole).toString();
+    REQUIRE(scene.expandGroup(group_id));
+    CHECK(itemsOfKind(scene, FramePlanGroupItem).empty());
+    for (const auto &member : members) CHECK(nodeItem(scene, member) != nullptr);
+    // Expanded once, it stays expanded when the plan is read again.
+    scene.populate(model, FramePlanNodeKey{model.graph, "swapchain"}, 64);
+    CHECK(itemsOfKind(scene, FramePlanGroupItem).empty());
+
+    // The plan says where each copy came from, so the group does not wait
+    // for the lowering graph the region and feature groups need.
+    Json unplanned = wire;
+    unplanned.erase("physical_target_plan");
+    const FramePlanModel without_lowering = buildFramePlanModel(unplanned.dump());
+    REQUIRE_FALSE(without_lowering.physical_plan.loweringGraphAvailable());
+    FramePlanGraphicsScene bare;
+    bare.populate(without_lowering, FramePlanNodeKey{without_lowering.graph, "swapchain"}, 64);
+    CHECK(strings(singleGroupItem(bare)->data(FramePlanMembersRole)) == members);
+}
+
+TEST_CASE("LP-4c a loop's or a definition's refusal reads as its sentence, "
+          "and a graph variant is named whatever the code",
+          "[devstudio][frame-plan][lp4c][refusal]") {
+    application();
+    // LP-0d: the graph's own code, `variant` beside the fields, no message.
+    const Json variant{{"code", "graph.loop_expression_invalid@1"},
+                       {"variant", "preview"},
+                       {"node", "steps"},
+                       {"pointer", "/nodes/1/parameters/over/range/count"},
+                       {"reason", "not_static"}};
+    CHECK(renderAuthoringRefusalLine(variant) ==
+          "The preview graph refused it: An expression of loop steps is not valid: "
+          "not_static at /nodes/1/parameters/over/range/count "
+          "(graph.loop_expression_invalid@1).");
+    // The render target form says the same for it.
+    CHECK(framePlanRenderTargetRejection(variant) == renderAuthoringRefusalLine(variant));
+    // A view_select refusal with a variant, handed on the same way.
+    const Json view_select{{"code", "graph.view_select_primary_family@1"},
+                           {"variant", "xr"},
+                           {"pass", "tint"},
+                           {"family", "$main"}};
+    CHECK(framePlanRenderTargetRejection(view_select) ==
+          "The xr graph refused it: tint draws the main view ($main), which has "
+          "no axes to select (graph.view_select_primary_family@1).");
+    // Without a variant a definition refusal is its sentence alone.
+    CHECK(renderAuthoringRefusalLine({{"code", "graph.definition_duplicate@1"},
+                                      {"definition", "loop_body"}}) ==
+          "A definition named loop_body already exists (graph.definition_duplicate@1).");
+}
 } // namespace PelicanStudio

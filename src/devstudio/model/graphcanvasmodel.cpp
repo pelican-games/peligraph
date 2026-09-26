@@ -19,6 +19,19 @@ using Json = nlohmann::json;
 std::string diagnostic(const Json &response) {
     const auto &error = response.at("error");
     if (error.is_string()) return error.get<std::string>();
+    // LP-0d: a graph variant (preview, XR) that refused the edit is named
+    // first, whatever the code -- its graph refusal keeps the graph's code.
+    const auto variant_member = error.find("variant");
+    const auto variant = variant_member != error.end() && variant_member->is_string()
+                             ? variant_member->get<std::string>()
+                             : std::string{};
+    const auto prefix =
+        variant.empty() ? std::string{} : "The " + variant + " graph refused it: ";
+    // LP-4c, decision 9: a loop's or a definition's refusal is a sentence
+    // made from the fields the engine lays beside its code; a view_select
+    // one likewise (LP-4a).
+    if (auto loop = graphLoopRefusalDescription(error); !loop.empty()) return prefix + loop;
+    if (auto view = viewSelectRefusalDescription(error); !view.empty()) return prefix + view;
     auto message = error.value("message", std::string{"The graph read failed."});
     // Q-10: a code Studio has a sentence for reads as that sentence, also when
     // it arrives inside the message of a broader refusal (a sound refused
@@ -27,12 +40,12 @@ std::string diagnostic(const Json &response) {
                                ? error.at("code").get<std::string>()
                                : std::string{};
     if (auto known = knownRefusalDescription(code_text, message); !known.empty())
-        return known;
+        return prefix + known;
     if (error.contains("code")) {
         const auto &code = error.at("code");
         message += " (" + (code.is_string() ? code.get<std::string>() : code.dump()) + ")";
     }
-    return message;
+    return prefix + message;
 }
 
 std::string text(const Json &value, const char *key) {
@@ -54,6 +67,76 @@ std::vector<std::string> definitionInputs(const Json &definition) {
     return ports;
 }
 
+// The output names of a definition, in the order its outputs object keeps.
+std::vector<std::string> definitionOutputs(const Json &definition) {
+    std::vector<std::string> ports;
+    const auto outputs = definition.find("outputs");
+    if (outputs == definition.end() || !outputs->is_object()) return ports;
+    for (const auto &[name, endpoint] : outputs->items()) {
+        (void)endpoint;
+        ports.push_back(name);
+    }
+    return ports;
+}
+
+bool isLoop(const Json &node) {
+    return node.is_object() && text(node, "op") == "graph.loop";
+}
+
+// LP-4c. The bodies of a loop's branches, in order; an empty string is a
+// branch with `"body": null` (or none the table can read).
+std::vector<std::string> loopBranchBodies(const Json &node) {
+    std::vector<std::string> bodies;
+    const auto parameters = node.find("parameters");
+    if (parameters == node.end() || !parameters->is_object()) return bodies;
+    const auto branches = parameters->find("branches");
+    if (branches == parameters->end() || !branches->is_array()) return bodies;
+    for (const auto &branch : *branches)
+        bodies.push_back(branch.is_object() ? text(branch, "body") : std::string{});
+    return bodies;
+}
+
+// The integers of a `when` / `where` list, or nothing when one of them is not
+// a literal integer (an expression the table has no form for).
+std::optional<std::vector<std::int64_t>> integerList(const Json &values) {
+    std::vector<std::int64_t> result;
+    if (!values.is_array()) return std::nullopt;
+    for (const auto &value : values) {
+        if (!value.is_number_integer()) return std::nullopt;
+        result.push_back(value.get<std::int64_t>());
+    }
+    return result;
+}
+
+// A branch's condition, read into the table's terms.
+GraphCanvasLoopBranch readLoopBranch(const Json &branch) {
+    GraphCanvasLoopBranch read;
+    if (!branch.is_object()) {
+        read.when = "other";
+        return read;
+    }
+    const auto body = branch.find("body");
+    if (body == branch.end() || body->is_null()) read.nothing = true;
+    else if (body->is_string()) read.body = body->get<std::string>();
+    const auto when = branch.find("when");
+    if (when == branch.end()) return read;
+    read.when = "other";
+    if (!when->is_object() || when->size() != 1) return read;
+    const auto first = when->begin();
+    const std::string key = first.key();
+    const Json &value = first.value();
+    if (key == "element" && value.is_number_integer()) {
+        read.when = "element";
+        read.values = {value.get<std::int64_t>()};
+    } else if (key == "element_in" || key == "element_not_in") {
+        if (auto values = integerList(value)) {
+            read.when = key;
+            read.values = std::move(*values);
+        }
+    }
+    return read;
+}
+
 // A logical type and a logical type pattern both name the semantic type under
 // the same key. That name is the whole of what the socket needs.
 std::string semanticTypeName(const Json &owner, const char *key) {
@@ -66,6 +149,10 @@ std::string semanticTypeName(const Json &owner, const char *key) {
 // declare its type. Composition expands it into value.parameter, whose output
 // is the scalar -- so that, and not "unknown", is what leaves its port.
 constexpr auto kGraphInputType = "pelican.value.scalar@1";
+
+// LP-4c: the one parameter-dependent operation the palette offers, seeded
+// whole by addNodeOps.
+constexpr std::string_view kFullscreenTemplate = "render.fullscreen";
 
 void collectUiNodes(const Json &node, const std::string &parent,
                     std::vector<GraphCanvasUiNode> &out) {
@@ -231,6 +318,10 @@ void GraphCanvasModel::clearContext() {
     definitions_reported_ = false;
     context_received_ = false;
     breadcrumb_ = {std::string{}};
+    entered_loop_.clear();
+    loop_reports_ = Json::object();
+    loop_reports_received_ = false;
+    refusal_marks_.clear();
     values_received_ = false;
     values_published_ = false;
     values_ = Json::array();
@@ -330,6 +421,22 @@ void GraphCanvasModel::requestObservation() {
          instance.empty() ? Json::object() : Json{{"instance", instance}});
 }
 
+void GraphCanvasModel::requestLoopReports() {
+    // Only a document with a loop has anything in loops[]: a frame plan read
+    // for any other would be the whole plan for nothing.
+    if (!connected_ || std::ranges::none_of(nodes_, isLoop)) {
+        loop_reports_ = Json::object();
+        loop_reports_received_ = false;
+        return;
+    }
+    read(RequestKind::Loops, "get_frame_plan", Json::object());
+}
+
+const Json *GraphCanvasModel::loopReport(std::string_view id) const {
+    const auto found = loop_reports_.find(std::string{id});
+    return found == loop_reports_.end() ? nullptr : &*found;
+}
+
 void GraphCanvasModel::watchInstance(std::string instance) {
     if (values_instance_ == instance) return;
     setWatchedInstance(std::move(instance));
@@ -401,6 +508,9 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
     }
     if (const auto pending = takeRead(id)) {
         const auto kind = pending->kind;
+        // LP-4c: the loop report only adds marks to what the document
+        // already draws. Without it the canvas says "loop" and nothing else.
+        if (kind == RequestKind::Loops) return;
         if (kind == RequestKind::Catalog) catalog_requested_ = false;
         // The canvas keeps standing: a report that did not arrive removes an
         // overlay, never the graph the document already described.
@@ -447,8 +557,22 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         try {
             const auto response = Json::parse(json);
             if (response.contains("error")) {
+                if (pending.kind == RequestKind::Loops) return;
                 if (pending.kind == RequestKind::Catalog) catalog_requested_ = false;
                 failure_ = {InspectorNoticeKind::Error, diagnostic(response)};
+                ++report_revision_;
+                return;
+            }
+            if (pending.kind == RequestKind::Loops) {
+                // Only loops[] is read off the plan; by loop id.
+                auto reports = Json::object();
+                const auto loops = response.find("loops");
+                if (loops != response.end() && loops->is_array())
+                    for (const auto &loop : *loops)
+                        if (loop.is_object() && !text(loop, "node").empty())
+                            reports[text(loop, "node")] = loop;
+                loop_reports_ = std::move(reports);
+                loop_reports_received_ = true;
                 ++report_revision_;
                 return;
             }
@@ -494,6 +618,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             failure_ = {};
             ++report_revision_;
         } catch (const std::exception &error) {
+            if (pending.kind == RequestKind::Loops) return;
             if (pending.kind == RequestKind::Catalog) catalog_requested_ = false;
             failure_ = {InspectorNoticeKind::Error, error.what()};
             ++report_revision_;
@@ -528,6 +653,9 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                     layout_retry_ = pending_history_->entry.forward;
                 pending_history_.reset();
                 edit_notice_ = {InspectorNoticeKind::Error, diagnostic(response)};
+                // LP-4c, decision 9: and where the refusal points.
+                markRefusal(error, edit_notice_.message);
+                ++content_revision_;
                 refresh();
                 return;
             }
@@ -550,6 +678,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 throw std::invalid_argument("The graph edit did not commit: " + status);
             commitHistory(response);
             layout_retrying_ = false;
+            refusal_marks_.clear();
             edit_notice_ = {InspectorNoticeKind::Success, "Graph change saved."};
             refresh();
         } catch (const std::exception &error) {
@@ -627,6 +756,16 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         for (std::size_t index = 1; index < breadcrumb_.size(); ++index)
             if (definitions_.contains(breadcrumb_[index])) trail.push_back(breadcrumb_[index]);
         breadcrumb_ = std::move(trail);
+        // LP-4c: the loop a body was entered through has to still be there,
+        // still running the body on screen.
+        if (!entered_loop_.empty()) {
+            const auto *loop = findNode({}, entered_loop_);
+            const auto bodies = loop != nullptr ? loopBranchBodies(*loop)
+                                                : std::vector<std::string>{};
+            if (breadcrumb_.size() != 2 ||
+                std::ranges::find(bodies, breadcrumb_.back()) == bodies.end())
+                entered_loop_.clear();
+        }
         ++content_revision_;
         // The document moved under the reported values: ask again rather than
         // showing the previous generation's numbers against new ports.
@@ -637,6 +776,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         ++report_revision_;
         requestValues();
         requestObservation();
+        requestLoopReports();
     } catch (const std::exception &error) {
         failure_ = {InspectorNoticeKind::Error, error.what()};
         ++content_revision_;
@@ -654,6 +794,7 @@ std::vector<GraphCanvasScope> GraphCanvasModel::scopes() const {
 }
 
 bool GraphCanvasModel::selectScope(std::string_view scope) {
+    entered_loop_.clear();
     if (scope.empty()) {
         breadcrumb_ = {std::string{}};
         enteredScope();
@@ -673,9 +814,24 @@ void GraphCanvasModel::enteredScope() {
     requestObservation();
 }
 
+std::string GraphCanvasModel::loopEntryBody(const Json &node) const {
+    const auto bodies = loopBranchBodies(node);
+    const auto chosen = loop_branch_.find(text(node, "id"));
+    if (chosen != loop_branch_.end() && chosen->second < bodies.size() &&
+        !bodies[chosen->second].empty() && definitions_.contains(bodies[chosen->second]))
+        return bodies[chosen->second];
+    for (const auto &body : bodies)
+        if (!body.empty() && definitions_.contains(body)) return body;
+    return {};
+}
+
 bool GraphCanvasModel::canEnterInstance(std::string_view node_id) const {
     const auto *node = findNode(currentScope(), node_id);
-    if (node == nullptr || text(*node, "op") != "graph.instance") return false;
+    if (node == nullptr) return false;
+    // LP-4c, decision 5: a loop opens the body its chosen branch runs, the
+    // way an instance opens its definition.
+    if (currentScope().empty() && isLoop(*node)) return !loopEntryBody(*node).empty();
+    if (text(*node, "op") != "graph.instance") return false;
     const auto definition = text(*node, "definition");
     return !definition.empty() && definitions_.contains(definition);
 }
@@ -687,6 +843,18 @@ bool GraphCanvasModel::enterInstance(std::string_view node_id) {
     // The watch is set before the scope moves and the reads go out after, so
     // one descent is one question rather than the root's and then the body's.
     const auto *node = findNode(currentScope(), node_id);
+    if (currentScope().empty() && isLoop(*node)) {
+        // A loop owns no scene object: there is no instance to watch, and
+        // the body's values are not any one element's.
+        const auto body = loopEntryBody(*node);
+        const auto bodies = loopBranchBodies(*node);
+        loop_branch_[std::string{node_id}] = static_cast<std::size_t>(
+            std::distance(bodies.begin(), std::ranges::find(bodies, body)));
+        entered_loop_ = std::string{node_id};
+        breadcrumb_.push_back(body);
+        enteredScope();
+        return true;
+    }
     const auto definition = text(*node, "definition");
     const bool watch = currentScope().empty() &&
                        node->find("owner") != node->end() &&
@@ -701,8 +869,90 @@ bool GraphCanvasModel::enterInstance(std::string_view node_id) {
 bool GraphCanvasModel::leaveScope() {
     if (breadcrumb_.size() <= 1) return false;
     breadcrumb_.pop_back();
+    entered_loop_.clear();
     enteredScope();
     return true;
+}
+
+std::size_t GraphCanvasModel::loopBranch(std::string_view id) const {
+    const auto *node = findNode({}, id);
+    if (node == nullptr || !isLoop(*node)) return 0;
+    const auto bodies = loopBranchBodies(*node);
+    const auto body = loopEntryBody(*node);
+    const auto found = std::ranges::find(bodies, body);
+    return found == bodies.end() ? 0 : static_cast<std::size_t>(found - bodies.begin());
+}
+
+bool GraphCanvasModel::selectLoopBranch(std::size_t branch) {
+    if (entered_loop_.empty() || breadcrumb_.size() != 2) return false;
+    const auto *node = findNode({}, entered_loop_);
+    if (node == nullptr) return false;
+    const auto bodies = loopBranchBodies(*node);
+    if (branch >= bodies.size() || bodies[branch].empty() ||
+        !definitions_.contains(bodies[branch]))
+        return false;
+    loop_branch_[entered_loop_] = branch;
+    if (breadcrumb_.back() == bodies[branch]) return true;
+    breadcrumb_.back() = bodies[branch];
+    enteredScope();
+    return true;
+}
+
+std::size_t GraphCanvasModel::definitionUseCount(std::string_view definition) const {
+    std::size_t uses = 0;
+    for (const auto &node : nodes_) {
+        if (!node.is_object()) continue;
+        if (text(node, "op") == "graph.instance" && text(node, "definition") == definition)
+            ++uses;
+        if (isLoop(node))
+            for (const auto &body : loopBranchBodies(node))
+                if (body == definition) ++uses;
+    }
+    return uses;
+}
+
+bool GraphCanvasModel::enterLoopOrigin(std::string_view loop, std::int64_t element,
+                                       std::string_view node) {
+    const auto *found = findNode({}, loop);
+    if (found == nullptr || !isLoop(*found)) return false;
+    const auto bodies = loopBranchBodies(*found);
+    const auto branch = branchForElement(loop, element);
+    if (!branch || *branch >= bodies.size() || bodies[*branch].empty()) return false;
+    if (findNode(bodies[*branch], node) == nullptr) return false;
+    breadcrumb_ = {std::string{}};
+    loop_branch_[std::string{loop}] = *branch;
+    entered_loop_ = std::string{loop};
+    breadcrumb_.push_back(bodies[*branch]);
+    enteredScope();
+    return true;
+}
+
+std::optional<std::size_t> GraphCanvasModel::branchForElement(std::string_view loop,
+                                                              std::int64_t element) const {
+    if (const auto *report = loopReport(loop)) {
+        const auto elements = report->find("elements");
+        if (elements != report->end() && elements->is_array())
+            for (const auto &entry : *elements)
+                if (entry.is_object() && entry.value("element", std::int64_t{-1}) == element &&
+                    entry.contains("branch") && entry.at("branch").is_number_integer() &&
+                    entry.at("branch").get<std::int64_t>() >= 0)
+                    return static_cast<std::size_t>(entry.at("branch").get<std::int64_t>());
+    }
+    // No report: the conditions the table can read are integers, so they
+    // can be asked here. An expression stops the walk -- guessing past it
+    // would be naming a branch the engine may not run.
+    const auto *node = findNode({}, loop);
+    if (node == nullptr) return std::nullopt;
+    const auto parameters = node->value("parameters", Json::object());
+    const auto branches = parameters.value("branches", Json::array());
+    for (std::size_t index = 0; index < branches.size(); ++index) {
+        const auto read = readLoopBranch(branches[index]);
+        if (read.when == "else") return index;
+        if (read.when == "other") return std::nullopt;
+        const bool listed = std::ranges::find(read.values, element) != read.values.end();
+        if ((read.when == "element" || read.when == "element_in") == listed) return index;
+    }
+    return std::nullopt;
 }
 
 const Json *GraphCanvasModel::scopeNodes(std::string_view scope) const {
@@ -725,6 +975,9 @@ const Json *GraphCanvasModel::findNode(std::string_view scope, std::string_view 
 const Json *GraphCanvasModel::nodeOutputs(std::string_view scope,
                                           std::string_view id) const {
     if (!node_values_received_ || !node_values_published_) return nullptr;
+    // LP-4c: a loop's body is no instance's; the watched instance's values
+    // are about another body, whatever node ids the two share.
+    if (!scope.empty() && !entered_loop_.empty()) return nullptr;
     // The reply answers one question. If the scope on screen would ask a
     // different one, the answer in hand is not about these nodes.
     const auto expected = scope.empty() ? std::string{} : values_instance_;
@@ -873,6 +1126,37 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
         drawn.label = text(node, "label");
         drawn.definition = text(node, "definition");
         drawn.instance = drawn.op == "graph.instance";
+        // LP-4c: a loop stands only in the root document, where its ports
+        // are its body's boundary.
+        drawn.loop = root && drawn.op == "graph.loop";
+        // The body the ports are read from: the first branch that has one,
+        // which is the boundary every branch has to share.
+        std::string port_body;
+        if (drawn.loop) {
+            for (const auto &body : loopBranchBodies(node))
+                if (!body.empty() && definitions_.contains(body)) {
+                    port_body = body;
+                    break;
+                }
+            drawn.definition = loopEntryBody(node);
+            // No catalog entry names it (design §8): it is structure, as
+            // the palette files it, not an operation the catalog missed.
+            drawn.contract_known = true;
+            drawn.domain = "structure";
+            drawn.evaluation = "direct";
+            drawn.badge = "↻ loop";
+            if (const auto *report = loopReport(drawn.id)) {
+                const auto tier = text(*report, "tier");
+                const auto count = report->value("count", std::int64_t{0});
+                if (!tier.empty())
+                    drawn.badge = "↻ " + tier + " ×" + std::to_string(count);
+            }
+        }
+        for (const auto &mark : refusal_marks_)
+            if (mark.scope == scope && mark.node == drawn.id) {
+                drawn.refused = true;
+                drawn.refusal = mark.reason;
+            }
         const auto parameters = node.find("parameters");
         if (parameters != node.end() && parameters->is_object()) drawn.parameters = *parameters;
         const auto owner = node.find("owner");
@@ -916,6 +1200,14 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
             // port list, in the order the definition declares them.
             for (auto &port : definitionInputs(definitions_.at(drawn.definition)))
                 add_port(std::move(port), false, kGraphInputType);
+        } else if (drawn.loop) {
+            // LP-4c: the body's graph.input nodes, like an instance's. What
+            // flows in is whatever the body reads it as -- a render resource
+            // as often as a scalar -- so no type is claimed for it. The
+            // parameters (over, branches, ...) are the Loop fields, not ports.
+            if (!port_body.empty())
+                for (auto &port : definitionInputs(definitions_.at(port_body)))
+                    add_port(std::move(port), false);
         } else if (declared) {
             for (const auto &input : contract->value("inputs", Json::array())) {
                 GraphCanvasPort port;
@@ -948,9 +1240,12 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
                     port.connected = true;
                     port.source_node = text(*edge, "node");
                     port.source_port = text(*edge, "port");
+                    if (const auto element = edge->find("element"); element != edge->end())
+                        port.source_element = element->dump();
                 }
             }
-            const auto stored = drawn.parameters.find(port.port);
+            const auto stored = drawn.loop ? drawn.parameters.end()
+                                           : drawn.parameters.find(port.port);
             if (stored != drawn.parameters.end()) {
                 port.has_parameter = true;
                 port.parameter = *stored;
@@ -985,6 +1280,23 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
                     (void)target;
                     drawn.outputs.push_back(GraphCanvasOutput{
                         name, definitionOutputType(drawn.definition, name, 8)});
+                }
+        } else if (drawn.loop) {
+            // LP-4c: what the loop declares, `p` (the last element's) and
+            // `p[]` (one per element), each typed by the body's output `p`.
+            const auto authored = node.find("outputs");
+            if (authored != node.end() && authored->is_array())
+                for (const auto &output : *authored) {
+                    if (!output.is_string()) continue;
+                    GraphCanvasOutput drawn_output;
+                    drawn_output.port = output.get<std::string>();
+                    drawn_output.bundle = drawn_output.port.ends_with("[]");
+                    const auto base = drawn_output.bundle
+                                          ? drawn_output.port.substr(0, drawn_output.port.size() - 2)
+                                          : drawn_output.port;
+                    if (!port_body.empty())
+                        drawn_output.type = definitionOutputType(port_body, base, 8);
+                    drawn.outputs.push_back(std::move(drawn_output));
                 }
         } else if (drawn.op == "graph.input") {
             // The structural boundary port. Its single output is the scalar
@@ -1092,47 +1404,170 @@ bool GraphCanvasModel::submitOps(Json ops) {
 }
 
 Json GraphCanvasModel::inverseOps(const Json &ops) const {
-    Json inverse = Json::array();
+    // LP-4c, decision 7. One list can add a node and point a later op at it,
+    // or add a definition and then a node in it. Each op is therefore
+    // inverted against the document as the ops before it left it: a copy of
+    // the document is walked through the list, and every inverse is read off
+    // the copy at that point. The inverses run in reverse order; whole nodes
+    // and whole definition bodies are restored, so unknown fields and absent
+    // values survive Undo.
+    Json nodes = nodes_;
+    Json definitions = definitions_.is_object() ? definitions_ : Json::object();
+    const auto scopeNodesOf = [&](const std::string &scope) -> Json * {
+        if (scope.empty()) return &nodes;
+        const auto found = definitions.find(scope);
+        if (found == definitions.end() || !found->is_object()) return nullptr;
+        auto &body = *found;
+        if (!body.contains("nodes") || !body.at("nodes").is_array())
+            body["nodes"] = Json::array();
+        return &body.at("nodes");
+    };
+    const auto locate = [](Json &scope_nodes, const std::string &id) {
+        return std::ranges::find_if(scope_nodes, [&](const Json &value) {
+            return value.is_object() && text(value, "id") == id;
+        });
+    };
+    // A definition renamed in the list is still restored under the name the
+    // document had before it, which is the name the placement is filed under.
+    std::map<std::string, std::string> original_name;
+    const auto originalScope = [&](const std::string &scope) {
+        const auto found = original_name.find(scope);
+        return found == original_name.end() ? scope : found->second;
+    };
+    std::vector<Json> inverses;
     std::set<std::string> layouts;
-    // Canvas batches only contain independent node additions (including seed
-    // constants). Other gestures change a single node or one scope's layout.
-    // Restore whole nodes so unknown fields and absent values survive Undo.
-    for (auto it = ops.rbegin(); it != ops.rend(); ++it) {
-        const auto &op = *it;
+    for (const auto &op : ops) {
         const auto kind = op.at("op").get<std::string>();
-        const auto scope = op.value("scope", std::string{"root"});
+        const auto scope = op.contains("scope") && op.at("scope").is_string()
+                               ? op.at("scope").get<std::string>()
+                               : std::string{"root"};
         const auto model_scope = scope == "root" ? std::string{} : scope;
-        Json back{{"scope", scope}};
-        if (kind == "add_node") {
-            back["op"] = "remove_node";
-            back["node"] = op.at("node").at("id");
-        } else if (kind == "set_layout") {
-            layouts.insert(model_scope);
+        if (kind == "add_definition") {
+            const auto name = op.at("name").get<std::string>();
+            inverses.push_back(Json{{"op", "remove_definition"}, {"name", name}});
+            auto body = op.value("definition", Json{});
+            if (body.is_null()) body = Json{{"nodes", Json::array()}, {"outputs", Json::object()}};
+            definitions[name] = std::move(body);
+            original_name.erase(name);
             continue;
-        } else {
-            const auto id = op.at("node").get<std::string>();
-            const auto *node = findNode(model_scope, id);
-            if (node == nullptr) throw std::logic_error("Graph history node is missing: " + id);
-            back["op"] = kind == "remove_node" ? "add_node" : "replace_node";
-            back["node"] = *node;
-            if (kind == "remove_node") {
-                const auto *nodes = scopeNodes(model_scope);
-                const auto found = std::ranges::find_if(*nodes, [&](const Json &value) {
-                    return text(value, "id") == id;
-                });
-                back["index"] = std::distance(nodes->begin(), found);
-            }
-            // Topology edits discard placements for removed nodes/edges in
-            // the same transaction. Restore those only after their endpoints.
-            if (kind == "remove_node" || kind == "set_input")
-                layouts.insert(model_scope);
         }
-        inverse.push_back(std::move(back));
+        if (kind == "remove_definition") {
+            const auto name = op.at("name").get<std::string>();
+            const auto found = definitions.find(name);
+            if (found == definitions.end())
+                throw std::logic_error("Graph history definition is missing: " + name);
+            // The body goes back whole, placement included: it travels inside.
+            inverses.push_back(
+                Json{{"op", "add_definition"}, {"name", name}, {"definition", *found}});
+            definitions.erase(found);
+            continue;
+        }
+        if (kind == "rename_definition") {
+            const auto from = op.at("from").get<std::string>();
+            const auto to = op.at("to").get<std::string>();
+            const auto found = definitions.find(from);
+            if (found == definitions.end())
+                throw std::logic_error("Graph history definition is missing: " + from);
+            inverses.push_back(Json{{"op", "rename_definition"}, {"from", to}, {"to", from}});
+            auto body = std::move(*found);
+            definitions.erase(from);
+            definitions[to] = std::move(body);
+            // The references follow the body in the same op, as the engine
+            // moves them: an instance's definition and a loop's branches.
+            for (auto &node : nodes) {
+                if (!node.is_object()) continue;
+                if (text(node, "op") == "graph.instance" && text(node, "definition") == from)
+                    node["definition"] = to;
+                if (isLoop(node) && node.contains("parameters") &&
+                    node.at("parameters").is_object() &&
+                    node.at("parameters").contains("branches") &&
+                    node.at("parameters").at("branches").is_array())
+                    for (auto &branch : node["parameters"]["branches"])
+                        if (branch.is_object() && text(branch, "body") == from)
+                            branch["body"] = to;
+            }
+            original_name[to] = originalScope(from);
+            original_name.erase(from);
+            continue;
+        }
+        if (kind == "set_layout") {
+            layouts.insert(originalScope(model_scope));
+            continue;
+        }
+        auto *scope_nodes = scopeNodesOf(model_scope);
+        if (scope_nodes == nullptr)
+            throw std::logic_error("Graph history scope is missing: " + scope);
+        if (kind == "add_node") {
+            const auto &node = op.at("node");
+            inverses.push_back(Json{{"scope", scope}, {"op", "remove_node"},
+                                    {"node", node.at("id")}});
+            const auto index = op.find("index");
+            if (index != op.end() && index->is_number_integer() &&
+                index->get<std::int64_t>() >= 0 &&
+                index->get<std::size_t>() <= scope_nodes->size())
+                scope_nodes->insert(scope_nodes->begin() + index->get<std::ptrdiff_t>(), node);
+            else
+                scope_nodes->push_back(node);
+            continue;
+        }
+        // replace_node names its node by the node it carries.
+        const auto id = kind == "replace_node" ? op.at("node").at("id").get<std::string>()
+                                               : op.at("node").get<std::string>();
+        const auto found = locate(*scope_nodes, id);
+        if (found == scope_nodes->end())
+            throw std::logic_error("Graph history node is missing: " + id);
+        Json back{{"scope", scope}};
+        back["op"] = kind == "remove_node" ? "add_node" : "replace_node";
+        back["node"] = *found;
+        if (kind == "remove_node")
+            back["index"] = std::distance(scope_nodes->begin(), found);
+        inverses.push_back(std::move(back));
+        // Topology edits discard placements for removed nodes/edges in the
+        // same transaction. Restore those only after their endpoints.
+        if (kind == "remove_node" || kind == "set_input" || kind == "replace_node")
+            layouts.insert(originalScope(model_scope));
+        // And the copy moves on, so the next op reads what this one left.
+        auto &node = *found;
+        if (kind == "remove_node") {
+            scope_nodes->erase(found);
+        } else if (kind == "replace_node") {
+            node = op.at("node");
+        } else if (kind == "set_input") {
+            const auto port = op.at("port").get<std::string>();
+            const auto &source = op.at("source");
+            if (source.is_null()) {
+                if (node.contains("inputs") && node.at("inputs").is_object()) {
+                    node["inputs"].erase(port);
+                    if (node["inputs"].empty()) node.erase("inputs");
+                }
+            } else {
+                node["inputs"][port] = source;
+            }
+        } else if (kind == "set_node_parameters") {
+            const auto &parameters = op.at("parameters");
+            if (parameters.empty()) node.erase("parameters");
+            else node["parameters"] = parameters;
+        } else if (kind == "set_node_label") {
+            const auto &label = op.at("label");
+            if (label.is_string() && label.get_ref<const std::string &>().empty())
+                node.erase("label");
+            else
+                node["label"] = label;
+        }
     }
+    Json inverse = Json::array();
+    for (auto it = inverses.rbegin(); it != inverses.rend(); ++it)
+        inverse.push_back(std::move(*it));
     for (const auto &scope : layouts) {
+        // A scope the list created has no placement to go back to: the
+        // inverse removes it.
+        if (!scope.empty() && !definitions_.contains(scope)) continue;
+        // A scope with no placement goes back to having none: an empty one
+        // would be a member the document did not have.
         const auto layout = scopeLayout(scope);
         inverse.push_back(Json{{"op", "set_layout"},
-            {"scope", scope.empty() ? std::string{"root"} : scope}, {"layout", layout}});
+            {"scope", scope.empty() ? std::string{"root"} : scope},
+            {"layout", layout.empty() ? Json{} : layout}});
     }
     return inverse;
 }
@@ -1314,12 +1749,61 @@ Json GraphCanvasModel::addNodeOps(const std::string &op, const std::string &defi
         ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", std::move(node)}});
         return ops;
     }
+    // LP-4c: a loop over an existing body. A new body is addLoopOps's second
+    // argument, which the palette passes itself.
+    if (op == "graph.loop") return addLoopOps(definition);
     if (op == "graph.instance") {
         if (!root || definition.empty() || !definitions_.contains(definition))
             return Json::array();
         node["definition"] = definition;
         node["parameters"] = definitionDefaults(definition);
         ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", std::move(node)}});
+        return ops;
+    }
+    if (op == kFullscreenTemplate) {
+        // LP-4c. A fullscreen pass is not a name alone: its ports, its shader
+        // and the family it runs in are its parameters. It arrives drawing
+        // with the engine's passthrough into an image of its own -- the
+        // smallest pass that is a whole document -- and the image is added
+        // in the same list, as a required input's constant is.
+        if (operation(op) == nullptr) return Json::array();
+        const Json type{{"semantic", "pelican.render.color_signal@1"},
+                        {"arguments", Json{{"reference", "scene"}, {"transfer", "linear"},
+                                           {"range", "extended"}}}};
+        const auto image = id + "__color";
+        ops.push_back(Json{{"op", "add_node"}, {"scope", scope},
+            {"node", Json{{"id", image}, {"op", "render.image"},
+                          {"parameters", Json{{"type", type}, {"format", "R8G8B8A8_UNORM"},
+                                              {"extent_scale", 1.0},
+                                              {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED",
+                                                                     "TRANSFER_SRC"})}}},
+                          {"outputs", Json::array({"resource"})}}}});
+        node["parameters"] = Json{
+            {"pass_set", "main_render"},
+            {"shader", Json{{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
+            {"ports", Json{{"color", Json{{"kind", "image"}, {"type", type}, {"access", "write"},
+                                          {"attachment", "color"}, {"location", 0}}}}}};
+        node["inputs"] = Json{{"color", Json{{"node", image}, {"port", "resource"}}}};
+        node["outputs"] = Json::array({"color"});
+        ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", std::move(node)}});
+        // A body node takes its place among the passes from the loop that
+        // runs it, and a loop whose body draws nothing cannot hold one
+        // (graph.insert_on_compute@1). The first pass put in such a body
+        // gives each loop running it a place in the same list; without one
+        // the copies would land after the family's output_transform.
+        if (!root)
+            for (const auto &loop : nodes_) {
+                if (!isLoop(loop)) continue;
+                const auto bodies = loopBranchBodies(loop);
+                if (std::ranges::find(bodies, currentScope()) == bodies.end()) continue;
+                auto parameters = loop.value("parameters", Json::object());
+                if (parameters.contains("insert") || parameters.contains("canonical_anchor"))
+                    continue;
+                parameters["canonical_anchor"] = std::string{defaultLoopAnchor};
+                ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", "root"},
+                                   {"node", text(loop, "id")},
+                                   {"parameters", std::move(parameters)}});
+            }
         return ops;
     }
     const auto *contract = operation(op);
@@ -1391,6 +1875,486 @@ bool GraphCanvasModel::addNode(const std::string &op, const std::string &definit
     return submitOps(std::move(ops));
 }
 
+// --- LP-4c: graph.loop.
+
+Json GraphCanvasModel::loopParameters(std::string_view id) const {
+    const auto *node = findNode({}, id);
+    if (node == nullptr || !isLoop(*node)) return Json::object();
+    const auto found = node->find("parameters");
+    if (found == node->end() || !found->is_object()) return Json::object();
+    return *found;
+}
+
+bool GraphCanvasModel::setLoopParameters(const std::string &id, Json parameters) {
+    if (!canEdit()) return false;
+    const auto *node = findNode({}, id);
+    if (node == nullptr || !isLoop(*node)) return false;
+    if (node->value("parameters", Json::object()) == parameters) return false;
+    // Loops stand in the root document only, so the op names the root
+    // whatever scope the canvas is showing.
+    return submitOps(Json::array({Json{
+        {"op", "set_node_parameters"}, {"scope", "root"}, {"node", id},
+        {"parameters", std::move(parameters)}}}));
+}
+
+std::optional<GraphCanvasLoop> GraphCanvasModel::loop(std::string_view id) const {
+    const auto *node = findNode({}, id);
+    if (node == nullptr || !isLoop(*node)) return std::nullopt;
+    GraphCanvasLoop loop;
+    loop.id = std::string{id};
+    const auto parameters = loopParameters(id);
+    const auto over = parameters.value("over", Json::object());
+    const auto range = over.is_object() ? over.value("range", Json::object()) : Json::object();
+    const auto count = range.is_object() ? range.find("count") : range.end();
+    if (range.is_object() && count != range.end()) {
+        if (count->is_number_integer()) {
+            loop.count = count->get<std::int64_t>();
+        } else if (count->is_object() && count->contains("$expr")) {
+            loop.count_expression = true;
+            loop.count_text = text(*count, "$expr");
+        }
+    }
+    const auto order = parameters.find("order");
+    loop.descending = order != parameters.end() && order->is_object() &&
+                      text(*order, "direction") == "descending";
+    const auto limit = parameters.find("limit");
+    if (limit != parameters.end() && limit->is_number_integer())
+        loop.limit = limit->get<std::int64_t>();
+    loop.tier = text(parameters, "tier");
+    const auto where = parameters.find("where");
+    if (where != parameters.end() && where->is_object() && where->size() == 1) {
+        const auto first = where->begin();
+        if (first.key() == "element_in" || first.key() == "element_not_in")
+            if (auto values = integerList(first.value())) {
+                loop.where = first.key();
+                loop.where_values = std::move(*values);
+            }
+    }
+    loop.anchor = text(parameters, "canonical_anchor");
+    if (const auto insert = parameters.find("insert");
+        insert != parameters.end() && insert->is_object() && insert->size() == 1)
+        loop.insert = insert->begin().key() + " " +
+                      (insert->begin()->is_string() ? insert->begin()->get<std::string>()
+                                                    : insert->begin()->dump());
+    for (const auto &branch : parameters.value("branches", Json::array()))
+        loop.branches.push_back(readLoopBranch(branch));
+    const auto inputs = node->value("inputs", Json::object());
+    for (const auto &pair : parameters.value("carry", Json::array())) {
+        if (!pair.is_object()) continue;
+        GraphCanvasLoopCarry carry{text(pair, "from"), text(pair, "to"), false};
+        carry.to_unbound = !inputs.is_object() || !inputs.contains(carry.to);
+        loop.carry.push_back(std::move(carry));
+    }
+    for (const auto &output : node->value("outputs", Json::array()))
+        if (output.is_string()) loop.outputs.push_back(output.get<std::string>());
+    for (const auto &branch : loop.branches)
+        if (!branch.body.empty() && definitions_.contains(branch.body)) {
+            loop.body = branch.body;
+            loop.body_inputs = definitionInputs(definitions_.at(branch.body));
+            loop.body_outputs = definitionOutputs(definitions_.at(branch.body));
+            break;
+        }
+    for (const auto &branch : loop.branches) {
+        const auto *nodes = branch.body.empty() ? nullptr : scopeNodes(branch.body);
+        if (nodes == nullptr) continue;
+        for (const auto &body_node : *nodes) {
+            const auto op = text(body_node, "op");
+            loop.body_draws = loop.body_draws || op == "render.fullscreen" || op == "render.raster";
+        }
+    }
+    if (const auto *report = loopReport(id)) {
+        loop.reported = true;
+        loop.reported_tier = text(*report, "tier");
+        loop.reported_count = report->value("count", std::int64_t{0});
+        for (const auto &element : report->value("elements", Json::array())) {
+            if (!element.is_object()) continue;
+            const auto branch = element.value("branch", std::int64_t{-1});
+            if (branch < 0 || static_cast<std::size_t>(branch) >= loop.branches.size()) continue;
+            loop.branches[static_cast<std::size_t>(branch)].matched.push_back(
+                element.value("element", std::int64_t{0}));
+        }
+        for (const auto &branch : report->value("unmatched_branches", Json::array()))
+            if (branch.is_number_integer() && branch.get<std::int64_t>() >= 0 &&
+                static_cast<std::size_t>(branch.get<std::int64_t>()) < loop.branches.size())
+                loop.branches[static_cast<std::size_t>(branch.get<std::int64_t>())].unmatched = true;
+    }
+    return loop;
+}
+
+std::string GraphCanvasModel::suggestDefinitionName(std::string_view base) const {
+    std::string name{base.empty() ? std::string_view{"loop_body"} : base};
+    std::ranges::replace(name, '.', '_');
+    std::ranges::replace(name, '/', '_');
+    const auto taken = [&](const std::string &candidate) {
+        return candidate == "root" || definitions_.contains(candidate);
+    };
+    if (!taken(name)) return name;
+    for (int suffix = 2; suffix < 10000; ++suffix) {
+        auto candidate = name + "_" + std::to_string(suffix);
+        if (!taken(candidate)) return candidate;
+    }
+    return name;
+}
+
+Json GraphCanvasModel::addLoopOps(const std::string &body,
+                                  const std::string &new_definition) const {
+    Json ops = Json::array();
+    // A loop stands in the root document only (graph.loop_nested@1).
+    if (!currentScope().empty()) return ops;
+    std::string runs = body;
+    auto outputs = Json::array();
+    if (!new_definition.empty()) {
+        if (new_definition == "root" || new_definition.find('/') != std::string::npos ||
+            definitions_.contains(new_definition))
+            return Json::array();
+        ops.push_back(Json{{"op", "add_definition"}, {"name", new_definition}});
+        runs = new_definition;
+    } else {
+        if (body.empty() || !definitions_.contains(body)) return Json::array();
+        for (const auto &output : definitionOutputs(definitions_.at(body))) outputs.push_back(output);
+    }
+    Json node{{"id", suggestNodeId("loop")},
+              {"op", "graph.loop"},
+              {"parameters",
+               Json{{"over", Json{{"range", Json{{"count", 1}}}}},
+                    {"branches", Json::array({Json{{"body", runs}}})}}},
+              {"outputs", std::move(outputs)}};
+    ops.push_back(Json{{"op", "add_node"}, {"scope", "root"}, {"node", std::move(node)}});
+    return ops;
+}
+
+bool GraphCanvasModel::addLoop(const std::string &body, const std::string &new_definition) {
+    if (!canEdit()) return false;
+    auto ops = addLoopOps(body, new_definition);
+    if (ops.empty()) return false;
+    return submitOps(std::move(ops));
+}
+
+bool GraphCanvasModel::setLoopCount(const std::string &id, std::int64_t count) {
+    auto parameters = loopParameters(id);
+    if (count < 0) return false;
+    parameters["over"] = Json{{"range", Json{{"count", count}}}};
+    return setLoopParameters(id, std::move(parameters));
+}
+
+bool GraphCanvasModel::setLoopCountExpression(const std::string &id,
+                                              const std::string &expression) {
+    if (expression.empty()) return false;
+    auto parameters = loopParameters(id);
+    parameters["over"] = Json{{"range", Json{{"count", Json{{"$expr", expression}}}}}};
+    return setLoopParameters(id, std::move(parameters));
+}
+
+bool GraphCanvasModel::setLoopDescending(const std::string &id, bool descending) {
+    auto parameters = loopParameters(id);
+    // Ascending is what an absent order means, so it is written by leaving
+    // the member out rather than by spelling the default.
+    if (descending)
+        parameters["order"] = Json{{"by", "element"}, {"direction", "descending"}};
+    else
+        parameters.erase("order");
+    return setLoopParameters(id, std::move(parameters));
+}
+
+bool GraphCanvasModel::setLoopLimit(const std::string &id, std::optional<std::int64_t> limit) {
+    auto parameters = loopParameters(id);
+    if (limit) {
+        if (*limit < 0) return false;
+        parameters["limit"] = *limit;
+    } else {
+        parameters.erase("limit");
+    }
+    return setLoopParameters(id, std::move(parameters));
+}
+
+bool GraphCanvasModel::setLoopTier(const std::string &id, const std::string &tier) {
+    auto parameters = loopParameters(id);
+    if (tier.empty()) parameters.erase("tier");
+    else if (tier == "expand" || tier == "draw_loop") parameters["tier"] = tier;
+    else return false;
+    return setLoopParameters(id, std::move(parameters));
+}
+
+bool GraphCanvasModel::setLoopWhere(const std::string &id, const std::string &kind,
+                                    const std::vector<std::int64_t> &values) {
+    auto parameters = loopParameters(id);
+    if (kind.empty()) parameters.erase("where");
+    else if (kind == "element_in" || kind == "element_not_in")
+        parameters["where"] = Json{{kind, values}};
+    else return false;
+    return setLoopParameters(id, std::move(parameters));
+}
+
+bool GraphCanvasModel::setLoopCarry(
+    const std::string &id, const std::vector<std::pair<std::string, std::string>> &carry) {
+    auto parameters = loopParameters(id);
+    if (carry.empty()) {
+        parameters.erase("carry");
+    } else {
+        auto pairs = Json::array();
+        for (const auto &[from, to] : carry) {
+            if (from.empty() || to.empty()) return false;
+            pairs.push_back(Json{{"from", from}, {"to", to}});
+        }
+        parameters["carry"] = std::move(pairs);
+    }
+    return setLoopParameters(id, std::move(parameters));
+}
+
+bool GraphCanvasModel::setLoopOutputs(const std::string &id,
+                                      const std::vector<std::string> &outputs) {
+    if (!canEdit()) return false;
+    const auto *node = findNode({}, id);
+    if (node == nullptr || !isLoop(*node)) return false;
+    auto replaced = *node;
+    replaced["outputs"] = outputs;
+    if (replaced == *node) return false;
+    // No op sets a node's outputs on its own: the node goes back whole, which
+    // is also exactly what its Undo sends.
+    return submitOps(Json::array({Json{
+        {"op", "replace_node"}, {"scope", "root"}, {"node", std::move(replaced)}}}));
+}
+
+const std::vector<std::string> &GraphCanvasModel::loopAnchors() {
+    // The engine's canonical anchors (featurecompose.cpp), in frame order.
+    static const std::vector<std::string> anchors{
+        "sprite", "post_main", "tonemap", "post_ldr",
+        "pelican_ui", "debug_draw", "debug_text", "imgui"};
+    return anchors;
+}
+
+bool GraphCanvasModel::setLoopAnchor(const std::string &id, const std::string &anchor) {
+    auto parameters = loopParameters(id);
+    if (!anchor.empty() && std::ranges::find(loopAnchors(), anchor) == loopAnchors().end())
+        return false;
+    // One place at a time: an anchor and an insert exclude each other.
+    parameters.erase("insert");
+    if (anchor.empty()) parameters.erase("canonical_anchor");
+    else parameters["canonical_anchor"] = anchor;
+    return setLoopParameters(id, std::move(parameters));
+}
+
+bool GraphCanvasModel::addLoopBranch(const std::string &id) {
+    auto parameters = loopParameters(id);
+    auto branches = parameters.value("branches", Json::array());
+    if (!branches.is_array() || branches.empty()) return false;
+    // A new branch goes in front of the else and runs the else's body, so
+    // the list it arrives in is one the engine takes: the same boundary, and
+    // a condition (element 0) that is an integer the table can edit.
+    const auto &last = branches.back();
+    Json added{{"when", Json{{"element", 0}}}};
+    added["body"] = last.is_object() && last.contains("body") ? last.at("body") : Json{};
+    branches.insert(branches.end() - 1, std::move(added));
+    parameters["branches"] = std::move(branches);
+    return setLoopParameters(id, std::move(parameters));
+}
+
+bool GraphCanvasModel::removeLoopBranch(const std::string &id, std::size_t branch) {
+    auto parameters = loopParameters(id);
+    auto branches = parameters.value("branches", Json::array());
+    // The else is the last row, and it is never removed.
+    if (!branches.is_array() || branch + 1 >= branches.size()) return false;
+    branches.erase(branches.begin() + static_cast<std::ptrdiff_t>(branch));
+    parameters["branches"] = std::move(branches);
+    return setLoopParameters(id, std::move(parameters));
+}
+
+bool GraphCanvasModel::moveLoopBranch(const std::string &id, std::size_t branch, int delta) {
+    auto parameters = loopParameters(id);
+    auto branches = parameters.value("branches", Json::array());
+    if (!branches.is_array() || branch + 1 >= branches.size() || delta == 0) return false;
+    const auto target = static_cast<std::int64_t>(branch) + delta;
+    // Only among the conditional rows: the else stays last.
+    if (target < 0 || static_cast<std::size_t>(target) + 1 >= branches.size()) return false;
+    std::swap(branches[branch], branches[static_cast<std::size_t>(target)]);
+    parameters["branches"] = std::move(branches);
+    return setLoopParameters(id, std::move(parameters));
+}
+
+bool GraphCanvasModel::setLoopBranchWhen(const std::string &id, std::size_t branch,
+                                         const std::string &when,
+                                         const std::vector<std::int64_t> &values) {
+    auto parameters = loopParameters(id);
+    auto branches = parameters.value("branches", Json::array());
+    if (!branches.is_array() || branch + 1 >= branches.size()) return false;
+    auto &row = branches[branch];
+    if (!row.is_object()) return false;
+    if (when == "element") {
+        if (values.size() != 1) return false;
+        row["when"] = Json{{"element", values.front()}};
+    } else if (when == "element_in" || when == "element_not_in") {
+        row["when"] = Json{{when, values}};
+    } else {
+        return false;
+    }
+    parameters["branches"] = std::move(branches);
+    return setLoopParameters(id, std::move(parameters));
+}
+
+bool GraphCanvasModel::setLoopBranchBody(const std::string &id, std::size_t branch,
+                                         const std::optional<std::string> &body) {
+    auto parameters = loopParameters(id);
+    auto branches = parameters.value("branches", Json::array());
+    if (!branches.is_array() || branch >= branches.size() || !branches[branch].is_object())
+        return false;
+    if (body && !definitions_.contains(*body)) return false;
+    branches[branch]["body"] = body ? Json(*body) : Json{};
+    parameters["branches"] = std::move(branches);
+    return setLoopParameters(id, std::move(parameters));
+}
+
+bool GraphCanvasModel::newLoopBranchDefinition(const std::string &id, std::size_t branch,
+                                               const std::string &name) {
+    if (!canEdit()) return false;
+    const auto shape = loop(id);
+    if (!shape || branch >= shape->branches.size()) return false;
+    if (name.empty() || name == "root" || name.find('/') != std::string::npos ||
+        definitions_.contains(name))
+        return false;
+    // The loop's boundary, empty inside: the first body's graph.input nodes
+    // as they are declared, and its outputs. An output a boundary port feeds
+    // is kept feeding it; an output some other node makes cannot be written
+    // without that node, so the body is copied whole instead -- a branch
+    // whose boundary differs is refused (graph.loop_branch_interface@1).
+    Json definition{{"nodes", Json::array()}, {"outputs", Json::object()}};
+    if (!shape->body.empty()) {
+        const auto &source = definitions_.at(shape->body);
+        bool whole = false;
+        for (const auto &node : source.value("nodes", Json::array()))
+            if (node.is_object() && text(node, "op") == "graph.input")
+                definition["nodes"].push_back(node);
+        // items() borrows its container, so the object outlives the loop.
+        const auto source_outputs = source.value("outputs", Json::object());
+        for (const auto &[port, endpoint] : source_outputs.items()) {
+            const auto *producer =
+                endpoint.is_object() ? findNode(shape->body, text(endpoint, "node")) : nullptr;
+            if (producer == nullptr || text(*producer, "op") != "graph.input") {
+                whole = true;
+                break;
+            }
+            definition["outputs"][port] = endpoint;
+        }
+        if (whole) {
+            definition = source;
+            definition.erase("layout");
+        }
+    }
+    auto parameters = loopParameters(id);
+    auto branches = parameters.value("branches", Json::array());
+    if (!branches.is_array() || !branches[branch].is_object()) return false;
+    branches[branch]["body"] = name;
+    parameters["branches"] = std::move(branches);
+    return submitOps(Json::array({
+        Json{{"op", "add_definition"}, {"name", name}, {"definition", std::move(definition)}},
+        Json{{"op", "set_node_parameters"}, {"scope", "root"}, {"node", id},
+             {"parameters", std::move(parameters)}}}));
+}
+
+std::vector<std::string> GraphCanvasModel::loopBodyChoices(std::string_view id) const {
+    std::vector<std::string> choices;
+    const auto shape = loop(id);
+    if (!shape) return choices;
+    const auto sorted = [](std::vector<std::string> values) {
+        std::ranges::sort(values);
+        return values;
+    };
+    const auto inputs = sorted(shape->body_inputs);
+    const auto outputs = sorted(shape->body_outputs);
+    for (const auto &[name, definition] : definitions_.items()) {
+        // With no body yet, any definition sets the boundary.
+        if (!shape->body.empty() && (sorted(definitionInputs(definition)) != inputs ||
+                                     sorted(definitionOutputs(definition)) != outputs))
+            continue;
+        choices.push_back(name);
+    }
+    return choices;
+}
+
+bool GraphCanvasModel::submitEdit(Json ops) { return submitOps(std::move(ops)); }
+
+bool GraphCanvasModel::renameDefinition(const std::string &from, const std::string &to) {
+    if (!canEdit() || !definitions_.contains(from) || to.empty() || from == to) return false;
+    return submitOps(Json::array({Json{
+        {"op", "rename_definition"}, {"from", from}, {"to", to}}}));
+}
+
+bool GraphCanvasModel::removeDefinition(const std::string &name) {
+    if (!canEdit() || !definitions_.contains(name)) return false;
+    return submitOps(Json::array({Json{{"op", "remove_definition"}, {"name", name}}}));
+}
+
+std::vector<std::pair<std::string, std::string>>
+GraphCanvasModel::perIterationSources(std::string_view receiver) const {
+    std::vector<std::pair<std::string, std::string>> sources;
+    for (const auto &node : nodes_) {
+        if (!isLoop(node)) continue;
+        const auto id = text(node, "id");
+        // A loop reading its own `p[]` would be a cycle.
+        if (id == receiver) continue;
+        for (const auto &output : node.value("outputs", Json::array()))
+            if (output.is_string() && output.get<std::string>().ends_with("[]"))
+                sources.emplace_back(id, output.get<std::string>());
+    }
+    return sources;
+}
+
+bool GraphCanvasModel::connectPerIteration(const std::string &node, const std::string &port,
+                                           const std::string &source_node,
+                                           const std::string &source_port,
+                                           const std::string &expression) {
+    if (!canEdit() || expression.empty()) return false;
+    const auto *receiver = findNode({}, node);
+    if (receiver == nullptr || !isLoop(*receiver)) return false;
+    const auto sources = perIterationSources(node);
+    if (std::ranges::find(sources, std::pair{source_node, source_port}) == sources.end())
+        return false;
+    // `element` in the expression is the receiving loop's element: each of
+    // its elements reads that element of the other loop's `p[]`.
+    return submitOps(Json::array({Json{
+        {"op", "set_input"}, {"scope", "root"}, {"node", node}, {"port", port},
+        {"source", Json{{"node", source_node}, {"port", source_port},
+                        {"element", Json{{"$expr", expression}}}}}}}));
+}
+
+void GraphCanvasModel::markRefusal(const Json &error, const std::string &reason) {
+    refusal_marks_.clear();
+    if (!error.is_object()) return;
+    // The engine puts a named refusal's fields beside its code; a relayed
+    // one may carry them as error_fields.
+    const auto fields_member = error.find("error_fields");
+    const Json &fields = fields_member != error.end() && fields_member->is_object()
+                             ? *fields_member
+                             : error;
+    const auto code = text(error, "code");
+    const auto mark = [&](const std::string &scope, const std::string &node) {
+        if (node.empty() || findNode(scope, node) == nullptr) return;
+        GraphCanvasRefusalMark entry{scope, node, reason};
+        if (std::ranges::find(refusal_marks_, entry) == refusal_marks_.end())
+            refusal_marks_.push_back(std::move(entry));
+    };
+    // A node of one element's copy: the loop, and the body node it copies,
+    // in the scope of the branch that element ran.
+    if (const auto origin = fields.find("loop_origin");
+        origin != fields.end() && origin->is_object()) {
+        const auto loop_id = text(*origin, "loop");
+        mark({}, loop_id);
+        const auto *loop_node = findNode({}, loop_id);
+        const auto element = origin->value("element", std::int64_t{0});
+        if (loop_node != nullptr && isLoop(*loop_node)) {
+            const auto bodies = loopBranchBodies(*loop_node);
+            const auto branch = branchForElement(loop_id, element);
+            if (branch && *branch < bodies.size() && !bodies[*branch].empty())
+                mark(bodies[*branch], text(*origin, "node"));
+        }
+        return;
+    }
+    // A loop refused by name.
+    if (code.starts_with("graph.loop_")) {
+        const auto node = fields.find("node");
+        if (node != fields.end() && node->is_string()) mark({}, node->get<std::string>());
+    }
+}
+
 std::vector<GraphCanvasCatalogEntry> GraphCanvasModel::paletteOperations(
     std::string_view text_filter, std::string_view domain) const {
     const auto lowered = [](std::string_view value) {
@@ -1409,10 +2373,12 @@ std::vector<GraphCanvasCatalogEntry> GraphCanvasModel::paletteOperations(
     for (const auto &[op, declaration] : operations_.items()) {
         // The two structural operations are added below, on the side of the
         // boundary each belongs to, and never taken from the catalog.
-        if (op == "graph.input" || op == "graph.instance") continue;
+        if (op == "graph.input" || op == "graph.instance" || op == "graph.loop") continue;
         // An operation whose ports follow its parameters cannot be authored
-        // from a name alone: the palette does not pretend otherwise.
-        if (text(declaration, "ports") != "declared") continue;
+        // from a name alone: the palette does not pretend otherwise. LP-4c
+        // makes one exception, render.fullscreen, which arrives whole: the
+        // engine's passthrough drawing into an image of its own (addNodeOps).
+        if (text(declaration, "ports") != "declared" && op != kFullscreenTemplate) continue;
         GraphCanvasCatalogEntry entry{op, text(declaration, "domain"),
                                       text(declaration, "evaluation"),
                                       declaration.value("sink", false), false};
@@ -1427,6 +2393,10 @@ std::vector<GraphCanvasCatalogEntry> GraphCanvasModel::paletteOperations(
             GraphCanvasCatalogEntry entry{"graph.instance", "structure", "direct", false, true};
             if (matches(entry)) result.push_back(std::move(entry));
         }
+        // LP-4c: a loop stands in the root too, and can bring its body with
+        // it (a new definition), so it is offered with no definition yet.
+        GraphCanvasCatalogEntry loop_entry{"graph.loop", "structure", "direct", false, true};
+        if (matches(loop_entry)) result.push_back(std::move(loop_entry));
     } else {
         GraphCanvasCatalogEntry entry{"graph.input", "structure", "direct", false, true};
         if (matches(entry)) result.push_back(std::move(entry));

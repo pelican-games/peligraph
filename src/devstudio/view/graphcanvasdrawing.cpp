@@ -70,7 +70,8 @@ class BreadcrumbItem final : public QGraphicsRectItem {
 // port and an instance are not "some values node".
 QColor nodeColor(const GraphCanvasNode &node) {
     const StudioTheme &theme = currentStudioTheme();
-    if (node.op == "graph.instance")
+    // LP-4c: a loop is structure the way an instance is.
+    if (node.op == "graph.instance" || node.loop)
         return theme.domainTint(QStringLiteral("instance"));
     if (node.op == "graph.input")
         return theme.domainTint(QStringLiteral("input"));
@@ -116,6 +117,9 @@ QString portSummary(const GraphCanvasPort &port) {
     if (port.connected)
         text += QStringLiteral(" <- %1.%2")
                     .arg(qtext(port.source_node), qtext(port.source_port));
+    // LP-4c: an edge that reads one element of a loop's p[] says which.
+    if (port.connected && !port.source_element.empty())
+        text += QStringLiteral(" [element %1]").arg(qtext(port.source_element));
     else if (port.has_parameter)
         text += QStringLiteral(" = %1").arg(qtext(port.parameter.dump()));
     if (port.has_value)
@@ -143,7 +147,9 @@ Node Builder::prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &
     entry.node = &node;
     for (const auto &output : node.outputs)
         entry.outputs.push_back(Row{
-            qtext(output.port), qtext(output.port), qtext(output.type),
+            // LP-4c: a p[] is one value per element, and says so.
+            output.bundle ? QObject::tr("%1 (each)").arg(qtext(output.port)) : qtext(output.port),
+            qtext(output.port), qtext(output.type),
             socketStyleFor(graphCanvasSocketFacts(model, output.type)),
             // No source word on an output: there is only one place an
             // output value can come from, and naming it every row would
@@ -162,7 +168,8 @@ Node Builder::prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &
                      18.0 + heading_metrics_.horizontalAdvance(
                                 qtext(node.heading())) +
                          12.0 +
-                         row_metrics_.horizontalAdvance(qtext(node.op)) +
+                         row_metrics_.horizontalAdvance(
+                             qtext(node.badge.empty() ? node.op : node.badge)) +
                          14.0);
     for (const auto &row : entry.outputs) {
         qreal needed = row_metrics_.horizontalAdvance(row.label) + 34.0;
@@ -225,7 +232,12 @@ void Builder::addNode(const Node &entry, int column, const QPointF &position,
     // The body is neutral; the heading band carries the domain colour, so
     // a long port list does not turn into a wall of one hue.
     item->setBrush(theme_.canvas.node_body);
-    item->setPen(QPen{theme_.canvas.node_border, 1.2});
+    // LP-4c, decision 9: the node a refused edit pointed at has a red rim,
+    // and says why when hovered.
+    item->setPen(node.refused ? QPen{QColor{QStringLiteral("#c0392b")}, 2.6}
+                              : QPen{theme_.canvas.node_border, 1.2});
+    item->setData(GraphCanvasRefusalRole, node.refused ? qtext(node.refusal) : QString{});
+    if (node.refused) item->setToolTip(qtext(node.refusal));
     item->setFlag(QGraphicsItem::ItemIsMovable, true);
     item->setFlag(QGraphicsItem::ItemIsSelectable, true);
     item->setFlag(QGraphicsItem::ItemSendsGeometryChanges, true);
@@ -260,7 +272,9 @@ void Builder::addNodeHeader(QGraphicsPathItem *item, const Node &entry) {
     const GraphCanvasNode &node = *entry.node;
     const QString node_name = qtext(node.id);
     const QString heading = qtext(node.heading());
-    const QString type_name = qtext(node.op);
+    // LP-4c: a loop shows its mark and what it became ("expand x3") where
+    // another node shows its operation.
+    const QString type_name = qtext(node.badge.empty() ? node.op : node.badge);
     const qreal width = entry.width;
     const bool folded = entry.folded;
     const auto tag = [&](QGraphicsItem *child, const char *kind) {
@@ -321,7 +335,7 @@ void Builder::addNodeHeader(QGraphicsPathItem *item, const Node &entry) {
     kind->setPos(width - 10.0 - row_metrics_.horizontalAdvance(type_name),
                  (GraphCanvasHeaderHeight - row_metrics_.height()) / 2.0);
     tag(kind, GraphCanvasNodeLabelItem);
-    kind->setData(GraphCanvasOpRole, type_name);
+    kind->setData(GraphCanvasOpRole, qtext(node.op));
     kind->setData(GraphCanvasHeadingRole, true);
 }
 

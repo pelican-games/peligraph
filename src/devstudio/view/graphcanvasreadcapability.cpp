@@ -56,6 +56,10 @@ GraphCanvasReadCapability graphCanvasReadCapability(EmbeddedViewport &viewport) 
             return viewport.requestRpc(QStringLiteral("get_status"),
                                        QJsonObject{}, error);
         },
+        .requestFramePlan = [&viewport](QString *error) {
+            return viewport.requestRpc(QStringLiteral("get_frame_plan"),
+                                       QJsonObject{}, error);
+        },
         .requestSetTime = [&viewport](double time, QString *error) {
             return viewport.requestRpc(
                 QStringLiteral("set_time"),

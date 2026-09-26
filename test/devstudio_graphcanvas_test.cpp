@@ -122,6 +122,8 @@ Json catalog() {
 
 struct Harness {
     GraphCanvasModel model;
+    // What get_graph_catalog answers on open().
+    Json catalog_reply = catalog();
 
     PelicanStudio::InspectorRpcRequest take(std::string_view method) {
         auto requests = model.takeRpcRequests();
@@ -142,7 +144,7 @@ struct Harness {
             if (request.method == "get_graph_instances")
                 model.receiveRpcResult(request.request_id, document.dump());
             else if (request.method == "get_graph_catalog" && with_catalog)
-                model.receiveRpcResult(request.request_id, catalog().dump());
+                model.receiveRpcResult(request.request_id, catalog_reply.dump());
         }
     }
     const GraphCanvasNode &node(const std::string &id) {
@@ -824,9 +826,12 @@ struct GraphHistoryHarness {
     void refresh() {
         client.reply(client.take("get_graph_instances"), snapshot());
     }
+    // LP-4c: the op list the last commit() sent.
+    Json last_ops;
     void commit() {
         const auto submit = client.take("edit_graph_document");
         REQUIRE(submit.params.at("base_source_digest") == digest());
+        last_ops = submit.params.at("ops");
         auto edited = Pelican::editGraphDocument(document, submit.params.at("ops"));
         client.reply(submit, {{"status", "accepted"}, {"ticket", "edit"}});
         REQUIRE_FALSE(client.model.canUndo());
@@ -1037,4 +1042,534 @@ TEST_CASE("Rejected graph edits retain history but successful branches discard R
     h.commit();
     REQUIRE_FALSE(h.client.model.canRedo());
     REQUIRE(h.client.model.canUndo());
+}
+
+// --- LP-4c: graph.loop on the Graph tab.
+
+namespace {
+
+Json lp4cColorType() {
+    return {{"semantic", "pelican.render.color_signal@1"},
+            {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+}
+
+// A loop body: a boundary port `target`, and a passthrough drawing into an
+// image of its own, which is the body's one output.
+Json lp4cBody(const std::string &pass) {
+    const auto type = lp4cColorType();
+    return Json{{"nodes", Json::array({
+        {{"id", "target"}, {"op", "graph.input"}},
+        {{"id", "image"}, {"op", "render.image"},
+         {"parameters", {{"type", type}, {"format", "R16G16B16A16_SFLOAT"}, {"extent_scale", 1.0},
+                         {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}}},
+         {"outputs", {"resource"}}},
+        {{"id", pass}, {"op", "render.fullscreen"},
+         {"parameters", {{"pass_set", "main_render"},
+                         {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
+                         {"ports", {{"color", {{"kind", "image"}, {"type", type}, {"access", "write"},
+                                               {"attachment", "color"}, {"location", 0}}}}}}},
+         {"inputs", {{"color", {{"node", "image"}, {"port", "resource"}}}}},
+         {"outputs", {"color"}}}})},
+        {"outputs", {{"image", {{"node", pass}, {"port", "color"}}}}}};
+}
+
+// Element 0 runs `first`, every other element `paint`; `spare` is a body
+// nothing runs, with another boundary.
+Json lp4cDocument() {
+    return Json{{"schema", "pelican.graph"}, {"version", 1},
+        {"definitions", {{"first", lp4cBody("first_fill")}, {"paint", lp4cBody("fill")},
+                         {"spare", {{"nodes", Json::array({{{"id", "gain"}, {"op", "graph.input"},
+                                                            {"default", 1.0}}})},
+                                    {"outputs", Json::object()}}}}},
+        {"nodes", Json::array({
+            {{"id", "lit"}, {"op", "render.target_ref"},
+             {"parameters", {{"name", "lit_color"}, {"type", lp4cColorType()}}}, {"outputs", {"resource"}}},
+            {{"id", "steps"}, {"op", "graph.loop"},
+             {"parameters", {{"over", {{"range", {{"count", 3}}}}},
+                             {"branches", Json::array({{{"when", {{"element", 0}}}, {"body", "first"}},
+                                                       {{"body", "paint"}}})}}},
+             {"inputs", {{"target", {{"node", "lit"}, {"port", "resource"}}}}},
+             {"outputs", {"image", "image[]"}}}})},
+        {"outputs", Json::object()}};
+}
+
+// The catalog with the render operations, which declare no ports of their
+// own (parameter_dependent), as the engine publishes them.
+Json lp4cCatalog() {
+    auto reply = catalog();
+    auto &render = reply["modules"][1]["operations"];
+    for (const char *op : {"render.image", "render.target_ref", "render.fullscreen"})
+        render.push_back({{"op", op}, {"domain", "rendering"}, {"evaluation", "direct"},
+                          {"sink", false}, {"ports", "parameter_dependent"}});
+    return reply;
+}
+
+// get_frame_plan's answer for the loop: element 0 on branch 0 and the others
+// on branch 1.
+Json lp4cFramePlan(std::int64_t count = 3) {
+    auto elements = Json::array();
+    for (std::int64_t element = 0; element < count; ++element)
+        elements.push_back({{"element", element}, {"index", element}, {"branch", element == 0 ? 0 : 1}});
+    return {{"schema", "pelican.frame_plan"}, {"version", 1},
+            {"loops", Json::array({{{"node", "steps"}, {"tier", "expand"}, {"count", count},
+                                    {"elements", elements},
+                                    {"unmatched_branches", Json::array()}}})}};
+}
+
+struct LoopHarness : GraphHistoryHarness {
+    LoopHarness() {
+        document = lp4cDocument();
+        client.catalog_reply = lp4cCatalog();
+    }
+    // The loop report the model asks for once the document holds a loop.
+    void report(const Json &plan = lp4cFramePlan()) {
+        client.reply(client.take("get_frame_plan"), plan);
+    }
+    // One gesture's op list, refused, so the next gesture starts clean.
+    Json refuse(const Json &error = Json{{"code", "invalid_graph_document"},
+                                         {"message", "refused in the test"}}) {
+        const auto submit = client.take("edit_graph_document");
+        const auto ops = submit.params.at("ops");
+        client.reply(submit, {{"status", "rejected"}, {"committed", false}, {"error", error}});
+        refresh();
+        return ops;
+    }
+    Json parameters(const Json &ops) {
+        REQUIRE(ops.size() == 1);
+        REQUIRE(ops[0].at("op") == "set_node_parameters");
+        CHECK(ops[0].at("scope") == "root");
+        CHECK(ops[0].at("node") == "steps");
+        return ops[0].at("parameters");
+    }
+};
+
+} // namespace
+
+TEST_CASE("LP-4c a loop's ports are its body's boundary and its parameters are not ports",
+          "[studio][graph-canvas][lp4c]") {
+    REQUIRE_NOTHROW(Pelican::editGraphDocument(lp4cDocument(), Json::array()));
+    LoopHarness h;
+    h.open();
+    const auto loop = h.client.node("steps");
+    CHECK(loop.loop);
+    CHECK_FALSE(loop.instance);
+    // The input ports are the first body's graph.input nodes, and nothing else:
+    // over and branches are the Loop fields.
+    REQUIRE(loop.inputs.size() == 1);
+    CHECK(loop.inputs[0].port == "target");
+    CHECK(loop.inputs[0].connected);
+    CHECK(loop.inputs[0].source_node == "lit");
+    CHECK_FALSE(loop.inputs[0].has_parameter);
+    CHECK(std::ranges::none_of(loop.inputs, [](const auto &port) {
+        return port.port == "over" || port.port == "branches";
+    }));
+    // The outputs are the p and p[] it declares; p[] is a bundle.
+    REQUIRE(loop.outputs.size() == 2);
+    CHECK_FALSE(output(loop, "image").bundle);
+    CHECK(output(loop, "image[]").bundle);
+    // A descent opens the first body.
+    CHECK(loop.definition == "first");
+    CHECK(h.client.model.canEnterInstance("steps"));
+    // Before the report the heading says loop; after it, the tier and count.
+    CHECK(loop.badge == "↻ loop");
+    h.report();
+    CHECK(h.client.node("steps").badge == "↻ expand ×3");
+
+    const auto read = h.client.model.loop("steps");
+    REQUIRE(read);
+    CHECK(read->count == 3);
+    CHECK_FALSE(read->count_expression);
+    CHECK(read->body == "first");
+    CHECK(read->body_inputs == std::vector<std::string>{"target"});
+    CHECK(read->body_outputs == std::vector<std::string>{"image"});
+    REQUIRE(read->branches.size() == 2);
+    CHECK(read->branches[0].when == "element");
+    CHECK(read->branches[0].values == std::vector<std::int64_t>{0});
+    CHECK(read->branches[0].matched == std::vector<std::int64_t>{0});
+    CHECK(read->branches[1].when == "else");
+    CHECK(read->branches[1].matched == std::vector<std::int64_t>{1, 2});
+    CHECK(read->reported_count == 3);
+    // Only the boundary-sharing definitions are a branch's choices.
+    CHECK(h.client.model.loopBodyChoices("steps") == std::vector<std::string>{"first", "paint"});
+}
+
+TEST_CASE("LP-4c Add loop sends the new body and the loop in one list",
+          "[studio][graph-canvas][lp4c]") {
+    LoopHarness h;
+    h.open();
+    CHECK(h.client.model.suggestDefinitionName() == "loop_body");
+    SECTION("over a new, empty definition") {
+        REQUIRE(h.client.model.addLoop({}, "loop_body"));
+        h.commit();
+        CHECK(h.last_ops == Json::array({
+            {{"op", "add_definition"}, {"name", "loop_body"}},
+            {{"op", "add_node"}, {"scope", "root"},
+             {"node", {{"id", "loop"}, {"op", "graph.loop"},
+                       {"parameters", {{"over", {{"range", {{"count", 1}}}}},
+                                       {"branches", Json::array({{{"body", "loop_body"}}})}}},
+                       {"outputs", Json::array()}}}}}));
+        CHECK(h.document.at("definitions").at("loop_body") ==
+              Json{{"nodes", Json::array()}, {"outputs", Json::object()}});
+        CHECK(h.client.model.suggestDefinitionName() == "loop_body_2");
+    }
+    SECTION("over an existing body, declaring its outputs as p") {
+        REQUIRE(h.client.model.addLoop("paint"));
+        // Its boundary port has no loop input yet, which the engine refuses:
+        // the list is what is looked at here.
+        const auto ops = h.refuse();
+        REQUIRE(ops.size() == 1);
+        CHECK(ops[0].at("op") == "add_node");
+        CHECK(ops[0].at("node").at("parameters").at("branches") ==
+              Json::array({{{"body", "paint"}}}));
+        CHECK(ops[0].at("node").at("outputs") == Json::array({"image"}));
+    }
+    SECTION("the first pass put in the new body gives the loop a place, in the same list") {
+        REQUIRE(h.client.model.addLoop({}, "loop_body"));
+        h.commit();
+        REQUIRE(h.client.model.enterInstance("loop"));
+        REQUIRE(h.client.model.currentScope() == "loop_body");
+        // A fullscreen pass arrives whole: an image of its own, the pass
+        // drawing the engine's passthrough into it.
+        REQUIRE(h.client.model.addNode("render.fullscreen"));
+        h.commit();
+        REQUIRE(h.last_ops.size() == 3);
+        CHECK(h.last_ops[0].at("node").at("op") == "render.image");
+        CHECK(h.last_ops[1].at("node").at("op") == "render.fullscreen");
+        CHECK(h.last_ops[1].at("node").at("inputs").at("color").at("node") ==
+              h.last_ops[0].at("node").at("id"));
+        CHECK(h.last_ops[2].at("op") == "set_node_parameters");
+        CHECK(h.last_ops[2].at("node") == "loop");
+        CHECK(h.last_ops[2].at("parameters").at("canonical_anchor") == "post_main");
+        CHECK(h.document.at("definitions").at("loop_body").at("nodes").size() == 2);
+        // A second pass leaves the place the loop has.
+        REQUIRE(h.client.model.addNode("render.fullscreen"));
+        h.commit();
+        CHECK(h.last_ops.size() == 2);
+        // The Place field moves it; an empty choice takes it away.
+        REQUIRE(h.client.model.selectScope(""));
+        const auto read = h.client.model.loop("loop");
+        REQUIRE(read);
+        CHECK(read->body_draws);
+        CHECK(read->anchor == "post_main");
+        REQUIRE(h.client.model.setLoopAnchor("loop", "post_ldr"));
+        h.commit();
+        CHECK(h.document.at("nodes").back().at("parameters").at("canonical_anchor") == "post_ldr");
+        CHECK_FALSE(h.client.model.setLoopAnchor("loop", "nowhere"));
+    }
+    // A loop stands in the root only; the palette says so.
+    const auto root_palette = h.client.model.paletteOperations("graph.loop");
+    CHECK(std::ranges::any_of(root_palette, [](const auto &entry) { return entry.op == "graph.loop"; }));
+    REQUIRE(h.client.model.selectScope("paint"));
+    CHECK(h.client.model.addLoopOps("paint").empty());
+    CHECK(h.client.model.paletteOperations("graph.loop").empty());
+}
+
+TEST_CASE("LP-4c the Loop fields each send the loop's parameters with one member changed",
+          "[studio][graph-canvas][lp4c]") {
+    LoopHarness h;
+    h.open();
+    const auto base = h.document.at("nodes").at(1).at("parameters");
+    const auto with = [&](const char *key, const Json &value) {
+        auto expected = base;
+        expected[key] = value;
+        return expected;
+    };
+    REQUIRE(h.client.model.setLoopCount("steps", 5));
+    CHECK(h.parameters(h.refuse()) == with("over", {{"range", {{"count", 5}}}}));
+    REQUIRE(h.client.model.setLoopCountExpression("steps", "2 + 1"));
+    CHECK(h.parameters(h.refuse()) == with("over", {{"range", {{"count", {{"$expr", "2 + 1"}}}}}}));
+    REQUIRE(h.client.model.setLoopDescending("steps", true));
+    CHECK(h.parameters(h.refuse()) == with("order", {{"by", "element"}, {"direction", "descending"}}));
+    REQUIRE(h.client.model.setLoopLimit("steps", 2));
+    CHECK(h.parameters(h.refuse()) == with("limit", 2));
+    REQUIRE(h.client.model.setLoopTier("steps", "draw_loop"));
+    CHECK(h.parameters(h.refuse()) == with("tier", "draw_loop"));
+    REQUIRE(h.client.model.setLoopWhere("steps", "element_not_in", {1, 4}));
+    CHECK(h.parameters(h.refuse()) == with("where", {{"element_not_in", {1, 4}}}));
+    REQUIRE(h.client.model.setLoopWhere("steps", "element_in", {2}));
+    CHECK(h.parameters(h.refuse()) == with("where", {{"element_in", {2}}}));
+    REQUIRE(h.client.model.setLoopCarry("steps", {{"image", "target"}}));
+    CHECK(h.parameters(h.refuse()) ==
+          with("carry", Json::array({{{"from", "image"}, {"to", "target"}}})));
+    // Setting what is already there sends nothing.
+    CHECK_FALSE(h.client.model.setLoopDescending("steps", false));
+    CHECK_FALSE(h.client.model.setLoopLimit("steps", std::nullopt));
+    CHECK_FALSE(h.client.model.setLoopTier("steps", ""));
+    // The outputs are the node's own member: one replace_node.
+    REQUIRE(h.client.model.setLoopOutputs("steps", {"image[]"}));
+    const auto replaced = h.refuse();
+    REQUIRE(replaced.size() == 1);
+    CHECK(replaced[0].at("op") == "replace_node");
+    auto expected = h.document.at("nodes").at(1);
+    expected["outputs"] = Json::array({"image[]"});
+    CHECK(replaced[0].at("node") == expected);
+    // And the ones the engine takes commit.
+    REQUIRE(h.client.model.setLoopCount("steps", 2));
+    h.commit();
+    REQUIRE(h.client.model.setLoopDescending("steps", true));
+    h.commit();
+    REQUIRE(h.client.model.setLoopLimit("steps", 1));
+    h.commit();
+    REQUIRE(h.client.model.setLoopWhere("steps", "element_not_in", {1}));
+    h.commit();
+    const auto read = h.client.model.loop("steps");
+    REQUIRE(read);
+    CHECK(read->count == 2);
+    CHECK(read->descending);
+    CHECK(read->limit == std::optional<std::int64_t>{1});
+    CHECK(read->where == "element_not_in");
+    CHECK(read->where_values == std::vector<std::int64_t>{1});
+}
+
+TEST_CASE("LP-4c the branch table adds, removes, orders and conditions branches",
+          "[studio][graph-canvas][lp4c]") {
+    LoopHarness h;
+    h.open();
+    const auto branches = [&] {
+        return h.document.at("nodes").at(1).at("parameters").at("branches");
+    };
+    // Added in front of the else, running the else's body.
+    REQUIRE(h.client.model.addLoopBranch("steps"));
+    h.commit();
+    CHECK(branches() == Json::array({{{"when", {{"element", 0}}}, {"body", "first"}},
+                                     {{"when", {{"element", 0}}}, {"body", "paint"}},
+                                     {{"body", "paint"}}}));
+    REQUIRE(h.client.model.setLoopBranchWhen("steps", 1, "element_in", {1, 2}));
+    h.commit();
+    CHECK(branches()[1].at("when") == Json{{"element_in", {1, 2}}});
+    REQUIRE(h.client.model.setLoopBranchWhen("steps", 1, "element_not_in", {0}));
+    h.commit();
+    CHECK(branches()[1].at("when") == Json{{"element_not_in", {0}}});
+    REQUIRE(h.client.model.setLoopBranchWhen("steps", 1, "element", {2}));
+    h.commit();
+    CHECK(branches()[1].at("when") == Json{{"element", 2}});
+    REQUIRE(h.client.model.moveLoopBranch("steps", 1, -1));
+    h.commit();
+    CHECK(branches()[0].at("when") == Json{{"element", 2}});
+    CHECK(branches()[1].at("body") == "first");
+    // (nothing) is the null body.
+    REQUIRE(h.client.model.setLoopBranchBody("steps", 0, std::nullopt));
+    h.commit();
+    CHECK(branches()[0].at("body").is_null());
+    REQUIRE(h.client.model.setLoopBranchBody("steps", 0, std::string{"paint"}));
+    h.commit();
+    CHECK(branches()[0].at("body") == "paint");
+    REQUIRE(h.client.model.removeLoopBranch("steps", 0));
+    h.commit();
+    CHECK(branches().size() == 2);
+    // The else is the last row: never removed, moved or conditioned.
+    CHECK_FALSE(h.client.model.removeLoopBranch("steps", 1));
+    CHECK_FALSE(h.client.model.moveLoopBranch("steps", 0, 1));
+    CHECK_FALSE(h.client.model.setLoopBranchWhen("steps", 1, "element", {3}));
+    CHECK(std::ranges::none_of(h.client.model.takeRpcRequests(), [](const auto &request) {
+        return request.method == "edit_graph_document";
+    }));
+
+    // New definition...: the loop's boundary in a definition of its own, and
+    // the branch running it, in one list. The body's output is made by a
+    // pass, so the body is copied whole.
+    REQUIRE(h.client.model.newLoopBranchDefinition("steps", 0, "first_copy"));
+    h.commit();
+    REQUIRE(h.last_ops.size() == 2);
+    CHECK(h.last_ops[0] == Json{{"op", "add_definition"}, {"name", "first_copy"},
+                                {"definition", lp4cBody("first_fill")}});
+    CHECK(h.last_ops[1].at("op") == "set_node_parameters");
+    CHECK(branches()[0].at("body") == "first_copy");
+    // A body whose outputs come off its boundary is copied empty: only its
+    // graph.input nodes.
+    auto passthrough = lp4cDocument();
+    passthrough["definitions"]["first"] = Json{
+        {"nodes", Json::array({{{"id", "target"}, {"op", "graph.input"}}})},
+        {"outputs", {{"image", {{"node", "target"}, {"port", "value"}}}}}};
+    passthrough["definitions"]["paint"] = passthrough["definitions"]["first"];
+    LoopHarness empty;
+    empty.document = passthrough;
+    empty.open();
+    REQUIRE(empty.client.model.newLoopBranchDefinition("steps", 1, "blank"));
+    const auto ops = empty.refuse();
+    CHECK(ops[0].at("definition") == passthrough["definitions"]["first"]);
+}
+
+TEST_CASE("LP-4c Per iteration reads one element of another loop's p[]",
+          "[studio][graph-canvas][lp4c]") {
+    LoopHarness h;
+    auto reader = h.document.at("nodes").at(1);
+    reader["id"] = "reader";
+    reader["outputs"] = Json::array();
+    h.document["nodes"].push_back(reader);
+    h.open();
+    const auto sources = h.client.model.perIterationSources("reader");
+    CHECK(sources == std::vector<std::pair<std::string, std::string>>{{"steps", "image[]"}});
+    // A loop does not read its own p[].
+    CHECK(h.client.model.perIterationSources("steps").empty());
+    REQUIRE(h.client.model.connectPerIteration("reader", "target", "steps", "image[]"));
+    CHECK(h.refuse() == Json::array({{{"op", "set_input"}, {"scope", "root"}, {"node", "reader"},
+                                      {"port", "target"},
+                                      {"source", {{"node", "steps"}, {"port", "image[]"},
+                                                  {"element", {{"$expr", "element"}}}}}}}));
+    REQUIRE(h.client.model.connectPerIteration("reader", "target", "steps", "image[]",
+                                               "element - 1"));
+    CHECK(h.refuse()[0].at("source").at("element") == Json{{"$expr", "element - 1"}});
+    CHECK_FALSE(h.client.model.connectPerIteration("reader", "target", "lit", "resource"));
+}
+
+TEST_CASE("LP-4c Undo inverts each op against what the ops before it left",
+          "[studio][graph-canvas][lp4c][graph-history]") {
+    LoopHarness h;
+    h.document["nodes"].push_back(
+        {{"id", "clock"}, {"op", "value.input"}, {"parameters", {{"name", "scene_time"}}},
+         {"outputs", {"value"}}});
+    h.open();
+    const auto before = h.document;
+    const auto roundTrip = [&](const Json &after) {
+        REQUIRE(h.client.model.canUndo());
+        REQUIRE(h.client.model.undo());
+        h.commit();
+        CHECK(h.document == before);
+        CHECK(h.document.dump(2) == before.dump(2));
+        REQUIRE(h.client.model.redo());
+        h.commit();
+        CHECK(h.document == after);
+        CHECK(h.document.dump(2) == after.dump(2));
+    };
+    SECTION("add_definition, then a loop over it") {
+        REQUIRE(h.client.model.addLoop({}, "loop_body"));
+        h.commit();
+        roundTrip(h.document);
+    }
+    SECTION("add_node, then set_input naming the node just added") {
+        REQUIRE(h.client.model.submitEdit(Json::array({
+            {{"op", "add_node"}, {"scope", "root"},
+             {"node", {{"id", "sum"}, {"op", "value.add"},
+                       {"inputs", {{"b", {{"node", "clock"}, {"port", "value"}}}}},
+                       {"outputs", {"value"}}}}},
+            {{"op", "set_input"}, {"scope", "root"}, {"node", "sum"}, {"port", "a"},
+             {"source", {{"node", "clock"}, {"port", "value"}}}}})));
+        h.commit();
+        CHECK(h.document.at("nodes").back().at("inputs").at("a").at("node") == "clock");
+        roundTrip(h.document);
+    }
+    SECTION("rename_definition, with the loop's branch following it") {
+        REQUIRE(h.client.model.renameDefinition("paint", "brush"));
+        h.commit();
+        CHECK(h.document.at("nodes").at(1).at("parameters").at("branches").at(1).at("body") == "brush");
+        roundTrip(h.document);
+    }
+    SECTION("remove_definition comes back with its body") {
+        REQUIRE(h.client.model.removeDefinition("spare"));
+        h.commit();
+        CHECK_FALSE(h.document.at("definitions").contains("spare"));
+        CHECK(h.client.model.undo());
+        h.commit();
+        CHECK(h.document == before);
+        CHECK(h.document.dump(2) == before.dump(2));
+    }
+}
+
+TEST_CASE("LP-4c loop and definition refusals read as sentences and mark where they point",
+          "[studio][graph-canvas][lp4c]") {
+    using PelicanStudio::graphLoopRefusalDescription;
+    // The engine lays the fields beside the code.
+    CHECK(graphLoopRefusalDescription({{"code", "graph.loop_branch_else_missing@1"}, {"node", "steps"}}) ==
+          "Loop steps has no else: its last branch must have no condition "
+          "(graph.loop_branch_else_missing@1).");
+    CHECK(graphLoopRefusalDescription({{"code", "graph.loop_branch_interface@1"}, {"node", "steps"},
+                                       {"branch", 1}, {"definition", "spare"}, {"port", "gain"}}) ==
+          "Branch 1 of loop steps runs spare, whose inputs and outputs differ from the loop's at gain "
+          "(graph.loop_branch_interface@1).");
+    CHECK(graphLoopRefusalDescription({{"code", "graph.loop_expression_invalid@1"}, {"node", "steps"},
+                                       {"pointer", "/nodes/1/parameters/over/range/count"},
+                                       {"reason", "syntax"}}) ==
+          "An expression of loop steps is not valid: syntax at /nodes/1/parameters/over/range/count "
+          "(graph.loop_expression_invalid@1).");
+    CHECK(graphLoopRefusalDescription({{"code", "graph.loop_element_unknown@1"}, {"node", "reader"},
+                                       {"port", "target"}, {"element", 7}}) ==
+          "Input target of reader reads element 7, which the loop it reads does not have "
+          "(graph.loop_element_unknown@1).");
+    CHECK(graphLoopRefusalDescription({{"code", "graph.loop_expansion_limit@1"}, {"node", "steps"},
+                                       {"count", 100}, {"limit", 64}}) ==
+          "Loop steps would make 100 copies; the limit is 64 (graph.loop_expansion_limit@1).");
+    CHECK(graphLoopRefusalDescription({{"code", "graph.definition_referenced@1"}, {"definition", "paint"},
+                                       {"referenced_by", {"steps", "other"}}}) ==
+          "Definition paint is still used by steps, other (graph.definition_referenced@1).");
+    // Quoted in a message, as a GraphRegistryError spells itself.
+    CHECK(graphLoopRefusalDescription(
+              {{"code", "render_pipeline_preflight_failed"},
+               {"message", "graph.loop_expansion_limit@1 {\"count\":70,\"limit\":64,\"node\":\"steps\"}"}}) ==
+          "Loop steps would make 70 copies; the limit is 64 (graph.loop_expansion_limit@1).");
+    CHECK(graphLoopRefusalDescription({{"code", "invalid_graph_document"}, {"message", "x"}}).empty());
+
+    LoopHarness h;
+    h.open();
+    SECTION("a loop refused by name is marked") {
+        REQUIRE(h.client.model.setLoopCount("steps", 100));
+        h.refuse({{"code", "graph.loop_expansion_limit@1"}, {"message", "limit"},
+                  {"node", "steps"}, {"count", 100}, {"limit", 64}});
+        CHECK(h.client.model.notice().message ==
+              "Loop steps would make 100 copies; the limit is 64 (graph.loop_expansion_limit@1).");
+        CHECK(h.client.node("steps").refused);
+        CHECK_FALSE(h.client.node("lit").refused);
+        // An edit that commits takes the mark away.
+        REQUIRE(h.client.model.setLoopCount("steps", 2));
+        h.commit();
+        CHECK_FALSE(h.client.node("steps").refused);
+    }
+    SECTION("an element's copy marks the loop and the body node of that element's branch") {
+        h.report();
+        REQUIRE(h.client.model.setLoopCount("steps", 4));
+        h.refuse({{"code", "graph.loop_expression_invalid@1"}, {"message", "refused"},
+                  {"node", "steps/2/fill"}, {"pointer", "/definitions/paint/nodes/2"},
+                  {"reason", "not_static"},
+                  {"loop_origin", {{"loop", "steps"}, {"element", 2}, {"node", "fill"}}}});
+        CHECK(h.client.model.refusalMarks().size() == 2);
+        CHECK(h.client.node("steps").refused);
+        REQUIRE(h.client.model.selectScope("paint"));
+        CHECK(h.client.node("fill").refused);
+        REQUIRE(h.client.model.selectScope("first"));
+        CHECK_FALSE(h.client.node("first_fill").refused);
+    }
+    SECTION("a graph variant that refused it is named first") {
+        REQUIRE(h.client.model.setLoopCount("steps", 100));
+        h.refuse({{"code", "graph.loop_expansion_limit@1"}, {"variant", "preview"},
+                  {"node", "steps"}, {"count", 100}, {"limit", 64}});
+        CHECK(h.client.model.notice().message ==
+              "The preview graph refused it: Loop steps would make 100 copies; the limit is 64 "
+              "(graph.loop_expansion_limit@1).");
+    }
+}
+
+TEST_CASE("LP-4c a descent into a loop opens its chosen branch, and a copy's origin opens its body",
+          "[studio][graph-canvas][lp4c]") {
+    LoopHarness h;
+    h.open();
+    REQUIRE(h.client.model.enterInstance("steps"));
+    CHECK(h.client.model.currentScope() == "first");
+    CHECK(h.client.model.enteredLoop() == "steps");
+    CHECK(h.client.model.definitionUseCount("first") == 1);
+    // The branch combo swaps the body in place.
+    REQUIRE(h.client.model.selectLoopBranch(1));
+    CHECK(h.client.model.currentScope() == "paint");
+    CHECK(h.client.model.breadcrumb() == std::vector<std::string>{"", "paint"});
+    REQUIRE(h.client.model.leaveScope());
+    CHECK(h.client.model.enteredLoop().empty());
+    // The branch chosen is the one opened next time.
+    REQUIRE(h.client.model.enterInstance("steps"));
+    CHECK(h.client.model.currentScope() == "paint");
+    REQUIRE(h.client.model.leaveScope());
+    // Decision 10: element 0 ran `first`, element 2 `paint` (the report).
+    h.report();
+    REQUIRE(h.client.model.enterLoopOrigin("steps", 2, "fill"));
+    CHECK(h.client.model.currentScope() == "paint");
+    REQUIRE(h.client.model.enterLoopOrigin("steps", 0, "first_fill"));
+    CHECK(h.client.model.currentScope() == "first");
+    CHECK_FALSE(h.client.model.enterLoopOrigin("steps", 0, "fill"));
+    // A definition two loops run is shared.
+    auto shared = lp4cDocument();
+    auto second = shared.at("nodes").at(1);
+    second["id"] = "again";
+    shared["nodes"].push_back(second);
+    LoopHarness twice;
+    twice.document = shared;
+    twice.open();
+    CHECK(twice.client.model.definitionUseCount("paint") == 2);
 }

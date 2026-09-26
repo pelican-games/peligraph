@@ -46,6 +46,10 @@ struct GraphCanvasReadCapability {
     std::function<qint64(const QString &instance, QString *error)>
         requestGraphNodeValues;
     std::function<qint64(QString *error)> requestStatus;
+    // LP-4c: get_frame_plan, whose loops[] say how many elements each loop
+    // expanded and which branch each took. The canvas reads nothing else of
+    // the plan, and asks only when the document holds a loop.
+    std::function<qint64(QString *error)> requestFramePlan;
     // The scrub, as two explicit writes. Nothing else on this canvas moves the
     // engine's clock or asks it to draw.
     std::function<qint64(double time, QString *error)> requestSetTime;

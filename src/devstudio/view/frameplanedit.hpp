@@ -524,6 +524,10 @@ std::string framePlanRenderTargetRejection(
 // `error` is the rejection's `error` object.
 std::string renderAuthoringRefusalLine(const nlohmann::json &error);
 
+// LP-4c: the details line of a pass, task or target a graph.loop expanded --
+// "loop steps · element 2 · body node fill".
+std::string framePlanLoopOriginLine(const FramePlanLoopOrigin &origin);
+
 // --- LP-4a: view_select (LP-Va).
 
 // The line under a node's heading when the node runs only for some views of

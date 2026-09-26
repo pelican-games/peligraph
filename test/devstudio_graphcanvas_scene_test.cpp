@@ -28,6 +28,7 @@
 #include <QTabWidget>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QSpinBox>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
@@ -3257,4 +3258,87 @@ TEST_CASE("Q-12 Open in Graph switches to the Graph tab and picks the node in it
         CHECK(model.currentScope().empty());
         CHECK_FALSE(scene.selectedNode().has_value());
     }
+}
+
+TEST_CASE("LP-4c the Loop fields and Add loop go out through the capability",
+          "[devstudio][graph-canvas][scene][lp4c]") {
+    (void)application();
+    // A root loop over one body with a boundary port, next to nothing else.
+    const Json body{{"nodes", Json::array({{{"id", "target"}, {"op", "graph.input"},
+                                            {"default", 0.0}}})},
+                    {"outputs", Json::object()}};
+    Json document{{"definitions", {{"step", body}}},
+                  {"nodes", Json::array({
+                      {{"id", "steps"}, {"op", "graph.loop"},
+                       {"parameters", {{"over", {{"range", {{"count", 2}}}}},
+                                       {"branches", Json::array({{{"body", "step"}}})}}},
+                       {"outputs", Json::array()}}})}};
+    RecordedCapability transport;
+    PelicanStudio::GraphCanvasWidget widget{transport.capability()};
+    widget.resize(900, 600);
+    widget.show();
+    QCoreApplication::processEvents();
+    const auto answerRpc = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        REQUIRE(transport.deliver);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+    };
+    answerRpc(QStringLiteral("get_graph_instances"), context(document));
+    answerRpc(QStringLiteral("get_graph_catalog"), visualCatalog());
+
+    auto *fields = widget.findChild<QWidget *>(QStringLiteral("pelican.graphCanvasLoop"));
+    REQUIRE(fields != nullptr);
+    CHECK_FALSE(fields->isVisible());
+    // Picking the loop shows its fields, read off its parameters.
+    widget.scene().selectNode("steps");
+    QCoreApplication::processEvents();
+    CHECK(fields->isVisible());
+    auto *count = widget.findChild<QSpinBox *>(QStringLiteral("pelican.graphCanvasLoop.count"));
+    REQUIRE(count != nullptr);
+    CHECK(count->value() == 2);
+    REQUIRE(widget.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasLoop.branch0.body")) !=
+            nullptr);
+    // The parameters are fields, never a JSON pill on the canvas.
+    for (QGraphicsItem *item : widget.scene().items())
+        CHECK(item->data(PelicanStudio::NodeGraphItemKindRole).toString() !=
+              QLatin1String{PelicanStudio::GraphCanvasValuePillItem});
+
+    // One field, one edit: the count, sent when the field is left.
+    count->setValue(4);
+    Q_EMIT count->editingFinished();
+    QCoreApplication::processEvents();
+    REQUIRE(transport.countOf(QStringLiteral("edit_graph_document")) == 1);
+    const auto sent = Json::parse(transport.calls.back().body.toStdString());
+    REQUIRE(sent.size() == 1);
+    CHECK(sent[0].at("op") == "set_node_parameters");
+    CHECK(sent[0].at("parameters").at("over") == Json{{"range", {{"count", 4}}}});
+    CHECK(sent[0].at("parameters").at("branches") == Json::array({{{"body", "step"}}}));
+
+    // Add loop, from its named entry: a new body and the loop, in one list.
+    RecordedCapability second;
+    PelicanStudio::GraphCanvasWidget other{second.capability()};
+    other.show();
+    QCoreApplication::processEvents();
+    const auto answerSecond = [&](const QString &method, const Json &reply) {
+        const qint64 id = second.idOf(method);
+        REQUIRE(id != 0);
+        second.deliver(id, QByteArray::fromStdString(reply.dump()));
+    };
+    answerSecond(QStringLiteral("get_graph_instances"), context(document));
+    answerSecond(QStringLiteral("get_graph_catalog"), visualCatalog());
+    QAction *add_loop = nullptr;
+    for (QAction *action : other.actions())
+        if (action->objectName() == QLatin1String{"pelican.graphCanvas.addLoop"}) add_loop = action;
+    REQUIRE(add_loop != nullptr);
+    REQUIRE(add_loop->isEnabled());
+    add_loop->trigger();
+    QCoreApplication::processEvents();
+    REQUIRE(second.countOf(QStringLiteral("edit_graph_document")) == 1);
+    const auto added = Json::parse(second.calls.back().body.toStdString());
+    REQUIRE(added.size() == 2);
+    CHECK(added[0] == Json{{"op", "add_definition"}, {"name", "loop_body"}});
+    CHECK(added[1].at("node").at("op") == "graph.loop");
+    CHECK(added[1].at("node").at("parameters").at("branches") ==
+          Json::array({{{"body", "loop_body"}}}));
 }

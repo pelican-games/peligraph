@@ -62,6 +62,9 @@ inline constexpr int GraphCanvasCollapsedRole = Qt::UserRole + 3139;
 // needs in order to say the same thing without parsing a string.
 inline constexpr int GraphCanvasControlIndexRole = Qt::UserRole + 3140;
 inline constexpr int GraphCanvasTieSlotRole = Qt::UserRole + 3141;
+// LP-4c: a node the last refused edit pointed at carries the sentence the
+// refusal read as (empty otherwise); it is drawn with a red rim.
+inline constexpr int GraphCanvasRefusalRole = Qt::UserRole + 3142;
 inline constexpr int GraphCanvasScopeRole = NodeGraphGraphRole;
 
 inline constexpr auto GraphCanvasNodeItem = "graph_node";
@@ -193,6 +196,13 @@ class GraphCanvasScene final : public QGraphicsScene {
     // The scene finished drawing a scope. The view needs this to know when a
     // scope it has never shown is on screen, so it can fit it.
     std::function<void()> repopulated;
+    // LP-4c, decision 6: "Per iteration..." on an input of a root loop. The
+    // owner asks which loop's p[] it reads.
+    std::function<void(const std::string &node, const std::string &port)>
+        perIterationRequested;
+    // LP-4c: the two named additions the canvas menu offers besides the
+    // palette ("Add loop", "Add fullscreen pass").
+    void setAddActions(QAction *add_loop, QAction *add_fullscreen);
 
     [[nodiscard]] const std::optional<std::string> &selectedNode() const noexcept {
         return selected_node_;
@@ -315,6 +325,11 @@ class GraphCanvasScene final : public QGraphicsScene {
     // Add one operation from the palette, at the position the right-click
     // named (or beside the selection when it came from elsewhere).
     bool addFromPalette(const std::string &op, const std::string &definition = {});
+    // LP-4c: a loop over `body`, or over a new definition of that name.
+    bool addLoop(const std::string &body, const std::string &new_definition);
+    // LP-4c: descend into an instance's definition or a loop's body, as a
+    // double-click on the node does.
+    void enterNode(const std::string &id) { enterInstanceScope(id); }
     [[nodiscard]] const QPointF &lastContextPosition() const noexcept {
         return context_position_;
     }
@@ -390,6 +405,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     QAction *fit_view_action_ = nullptr;
     QAction *tie_action_ = nullptr;
     QAction *untie_action_ = nullptr;
+    QAction *add_loop_action_ = nullptr;
+    QAction *add_fullscreen_action_ = nullptr;
     QPointF context_position_;
     // Where the next added node goes, when the palette was opened over empty
     // canvas rather than beside a selected node.
@@ -468,6 +485,11 @@ class GraphCanvasWidget final : public QWidget {
     // anything.
     [[nodiscard]] bool canRevealGraphNode(const QString &scope,
                                           const QString &node) const;
+    // LP-4c, decision 10. Show the body node an expanded pass or task came
+    // from (get_frame_plan's loop_origin): the loop's body for that element's
+    // branch, entered through the loop, with the node selected. False, with
+    // nothing changed, when the document holds no such loop, branch or node.
+    bool revealLoopOrigin(const QString &loop, qint64 element, const QString &node);
     // The same ingestion boundary the production RPC callback uses.
     void receiveResult(qint64 request_id, const QByteArray &result_json);
     void receiveFailure(qint64 request_id, const QString &message);

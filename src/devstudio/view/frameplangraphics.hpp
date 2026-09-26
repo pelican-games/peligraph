@@ -440,6 +440,8 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     int current_depth_ = 1;
     using GroupStateKey = std::pair<std::string, std::string>;
     std::set<GroupStateKey> collapsed_groups_;
+    // LP-4c: the loop groups already shown once (folded on first sight).
+    std::set<GroupStateKey> seen_loop_groups_;
     std::optional<GroupStateKey> current_group_scope_;
     std::map<GroupStateKey, std::vector<std::string>> session_groups_;
     std::size_t next_session_group_id_ = 1;

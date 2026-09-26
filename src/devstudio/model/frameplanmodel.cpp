@@ -203,6 +203,75 @@ std::vector<FramePlanViewAxis> optionalViewAxes(const Json &object,
     return axes;
 }
 
+// LP-4c: `loop_origin` as get_frame_plan writes it on an expanded pass, task,
+// target or buffer -- {loop, element, node}. Absent reads as none.
+std::optional<FramePlanLoopOrigin> optionalLoopOrigin(const Json &object,
+                                                      std::string_view context) {
+    const auto found = object.find("loop_origin");
+    if (found == object.end() || found->is_null()) return std::nullopt;
+    const std::string where = std::string{context} + ".loop_origin";
+    if (!found->is_object()) throw invalid(where + " must be an object");
+    FramePlanLoopOrigin origin;
+    origin.loop = requireStringField(*found, "loop", where);
+    origin.node = requireStringField(*found, "node", where);
+    const auto element = found->find("element");
+    if (element == found->end() || !element->is_number_integer())
+        throw invalid(where + ".element must be an integer");
+    origin.element = element->get<std::int64_t>();
+    if (origin.loop.empty() || origin.node.empty())
+        throw invalid(where + " must name a loop and a node");
+    return origin;
+}
+
+// LP-4c: the top-level `loops` (LP-1a): {node, tier, count, elements:
+// [{element, index, branch}], unmatched_branches}. Absent when the composed
+// graph has no graph.loop.
+std::vector<FramePlanLoop> optionalLoops(const Json &root) {
+    std::vector<FramePlanLoop> loops;
+    const auto found = root.find("loops");
+    if (found == root.end() || found->is_null()) return loops;
+    if (!found->is_array()) throw invalid("loops must be an array");
+    for (std::size_t index = 0; index < found->size(); ++index) {
+        const auto &value = found->at(index);
+        const std::string context = "loops[" + std::to_string(index) + "]";
+        if (!value.is_object()) throw invalid(context + " must be an object");
+        FramePlanLoop loop;
+        loop.node = requireStringField(value, "node", context);
+        loop.tier = optionalStringField(value, "tier", context);
+        loop.count = static_cast<std::size_t>(
+            unsignedInteger(value.value("count", Json{0}), context + ".count"));
+        if (const auto elements = value.find("elements");
+            elements != value.end() && !elements->is_null()) {
+            if (!elements->is_array()) throw invalid(context + ".elements must be an array");
+            for (std::size_t at = 0; at < elements->size(); ++at) {
+                const auto &entry = elements->at(at);
+                const std::string element_context =
+                    context + ".elements[" + std::to_string(at) + "]";
+                if (!entry.is_object()) throw invalid(element_context + " must be an object");
+                const auto element = entry.find("element");
+                if (element == entry.end() || !element->is_number_integer())
+                    throw invalid(element_context + ".element must be an integer");
+                loop.elements.push_back(FramePlanLoopElement{
+                    element->get<std::int64_t>(),
+                    static_cast<std::size_t>(unsignedInteger(
+                        entry.value("index", Json{0}), element_context + ".index")),
+                    static_cast<std::size_t>(unsignedInteger(
+                        entry.value("branch", Json{0}), element_context + ".branch"))});
+            }
+        }
+        if (const auto unmatched = value.find("unmatched_branches");
+            unmatched != value.end() && !unmatched->is_null()) {
+            if (!unmatched->is_array())
+                throw invalid(context + ".unmatched_branches must be an array");
+            for (const auto &branch : *unmatched)
+                loop.unmatched_branches.push_back(static_cast<std::size_t>(
+                    unsignedInteger(branch, context + ".unmatched_branches")));
+        }
+        loops.push_back(std::move(loop));
+    }
+    return loops;
+}
+
 std::size_t requireSizeField(const Json &object, std::string_view field,
                              std::string_view context) {
     const auto found = object.find(field);
@@ -1054,6 +1123,7 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
 
     const auto &nodes = requireArrayField(root, "nodes", "root");
     const auto &barriers = requireArrayField(root, "barriers", "root");
+    model.loops = optionalLoops(root);
     std::unordered_set<std::string> names;
     std::unordered_set<std::size_t> orders;
     model.nodes.reserve(nodes.size());
@@ -1085,6 +1155,7 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         node.no_selected_view =
             optionalBoolField(value, "no_selected_view", context)
                 .value_or(false);
+        node.loop_origin = optionalLoopOrigin(value, context);
         node.snapshot_after =
             optionalStringField(value, "snapshot_after", context);
         node.byte_size = optionalSizeField(value, "byte_size", context).value_or(0);
@@ -1561,6 +1632,7 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
                 optionalStringField(value, "provider_feature", context);
             resource.provider_reference =
                 optionalStringField(value, "provider_ref", context);
+            resource.loop_origin = optionalLoopOrigin(value, context);
             if (resource.kind == "buffer") {
                 resource.format = "buffer";
             }

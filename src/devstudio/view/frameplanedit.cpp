@@ -1467,6 +1467,10 @@ std::string framePlanRenderTargetRejection(const Json &error,
     const auto code = textOr(error, "code");
     const auto name = textOr(error, "name");
     const auto message = textOr(error, "message");
+    // LP-0d: a graph variant (preview, XR) that refused the edit says so
+    // whatever the code -- its graph refusal keeps the graph's own code now,
+    // with `variant` among its fields.
+    if (!textOr(error, "variant").empty()) return renderAuthoringRefusalLine(error);
     if (code == "render_target_referenced") {
         std::vector<std::string> users;
         if (const auto found = error.find("users");
@@ -1492,11 +1496,14 @@ std::string framePlanRenderTargetRejection(const Json &error,
     if (code == "render_target_not_found")
         return "No render target named " + name + " is declared.";
     if (code == "render_pipeline_preflight_failed")
-        return textOr(error, "variant").empty()
-                   ? "The engine refused the render target: " + message
-                   : renderAuthoringRefusalLine(error);
+        return "The engine refused the render target: " + message;
     if (code.empty()) return message;
     return code + ": " + message;
+}
+
+std::string framePlanLoopOriginLine(const FramePlanLoopOrigin &origin) {
+    return "loop " + origin.loop + " · element " + std::to_string(origin.element) +
+           " · body node " + origin.node;
 }
 
 std::string renderAuthoringRefusalLine(const Json &error) {
@@ -1507,6 +1514,11 @@ std::string renderAuthoringRefusalLine(const Json &error) {
     if (!variant.empty()) line = "The " + variant + " graph refused it: ";
     // LP-4a: a view_select refusal reads as its sentence, the code last.
     if (const auto sentence = viewSelectRefusalDescription(error);
+        !sentence.empty())
+        return line + sentence;
+    // LP-4c: and so does a loop's or a definition's (LP-0d hands these on
+    // with the graph's own code and the fields beside it, no message).
+    if (const auto sentence = graphLoopRefusalDescription(error);
         !sentence.empty())
         return line + sentence;
     if (!code.empty()) line += code;
