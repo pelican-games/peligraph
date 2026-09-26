@@ -39,6 +39,7 @@
 #endif
 #include "../playback/seqplayer.hpp"
 #include "../phys/physworld.hpp"
+#include "../../project/materialdrawloop.hpp"
 #include "../../project/projectformat.hpp"
 #include "../../project/projectmigration.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
@@ -1833,7 +1834,22 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
 
     server.setHandler("get_frame_plan", [&modules](const nlohmann::json &params) {
         requireObjectParams(params, "get_frame_plan");
-        return modules.renderer.currentFramePlanJson();
+        // LP-3b: a draw_loop's elements come a page at a time
+        // ({loop_elements: {node, offset?, limit?}}; the first 256 else).
+        std::optional<DrawLoopElementPage> page;
+        try {
+            page = parseDrawLoopElementPage(params);
+        } catch (const std::invalid_argument &error) {
+            throw JsonRpcHandlerError{JsonRpcErrorCodes::invalidParams, error.what()};
+        }
+        auto plan = modules.renderer.currentFramePlanJson();
+        if (!pageDrawLoopElements(plan, page)) {
+            throw JsonRpcHandlerError{
+                JsonRpcErrorCodes::invalidParams,
+                "get_frame_plan loop_elements.node names no draw_loop of the frame plan: " + page->node,
+                {{"code", "draw_loop_unknown"}, {"node", page->node}}};
+        }
+        return plan;
     });
 
     internal::configurePhysicsRpcHandlers(server, modules.physics);

@@ -222,6 +222,29 @@ void applyMaterialDrawLoopElementsToFramePlanJson(
     nlohmann::json &plan, const MaterialDrawLoopRules &rules,
     const std::vector<MaterialDrawSubject> &subjects);
 
+// LP-3b: get_frame_plan's paging of a draw_loop's elements. The request is
+// `get_frame_plan {loop_elements: {node, offset?, limit?}}` (node: the
+// graph.loop id; offset defaults to 0, limit to 256 and is 1..4096); every
+// other draw_loop gets the default page.
+inline constexpr std::size_t drawLoopElementPageDefaultLimit = 256;
+inline constexpr std::size_t drawLoopElementPageMaxLimit = 4096;
+
+struct DrawLoopElementPage {
+    std::string node;
+    std::size_t offset = 0;
+    std::size_t limit = drawLoopElementPageDefaultLimit;
+};
+
+// get_frame_plan's params: `{}` gives nullopt. Throws std::invalid_argument
+// for anything else than `loop_elements` of the shape above.
+std::optional<DrawLoopElementPage> parseDrawLoopElementPage(const nlohmann::json &params);
+
+// Each draw_loop entry of plan.loops keeps elements [offset, offset + limit)
+// -- `page`'s for page->node, the first 256 for the others -- and gains
+// `total` (every element; `count` stays that too), `offset` and `limit`.
+// Returns false, changing nothing, when page names no draw_loop of the plan.
+bool pageDrawLoopElements(nlohmann::json &plan, const std::optional<DrawLoopElementPage> &page);
+
 // LP-3a, section 4.2.5: the materials a draw_loop leaves unserved -- inside
 // its over and where, on a branch whose body draws nothing (a `"body": null`
 // branch counts as served). material_route_unserved@1 lists them.

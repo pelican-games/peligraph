@@ -344,6 +344,7 @@ class EditorCommandService {
     nlohmann::ordered_json getGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params);
     nlohmann::ordered_json editGraphDocument(const nlohmann::json &params);
+    nlohmann::ordered_json decomposeMaterialPass(const nlohmann::json &params);
     nlohmann::ordered_json getGraphValues(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphNodeValues(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphCatalog(const nlohmann::json &params) const;
@@ -437,6 +438,7 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json getGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphDocument(const nlohmann::json &params) const;
+    nlohmann::ordered_json decomposeMaterialPass(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphValues(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphNodeValues(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphCatalog(const nlohmann::json &params) const;

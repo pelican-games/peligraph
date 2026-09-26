@@ -3001,6 +3001,10 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         if (found == families.end()) families.push_back(std::move(family));
         else for (auto &pass : family.at("passes")) (*found)["passes"].push_back(std::move(pass));
     }
+    // LP-3b: a graph pass placed with `declared: true` stands among the
+    // declared passes before any feature is composed, as the pass it was
+    // decomposed from did.
+    if (common_graph) placeDeclaredRenderGraphPassRuns(resolved_config, lowered_graph);
     std::vector<RenderPassProvenance> pass_provenance;
     std::vector<RenderResourceProvenance> resource_provenance;
     const auto authored_source =

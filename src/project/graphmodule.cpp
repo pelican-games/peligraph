@@ -125,11 +125,21 @@ void checkRenderPlacement(const std::string &op, const Json &parameters, const J
     if (parameters.contains("insert") && parameters.contains("canonical_anchor"))
         throw std::invalid_argument("render insert and canonical_anchor exclude each other: " + nodeId(node));
     if (const auto insert = parameters.find("insert"); insert != parameters.end()) {
-        const auto side = insert->is_object() && insert->size() == 1 ? insert->begin() : insert->end();
+        // LP-3b: `declared: true` beside the side places the pass among the
+        // declared passes, before any feature (RenderGraphPassRun::declared).
+        const auto declared = insert->is_object() ? insert->find("declared") : insert->end();
+        const bool has_declared = declared != insert->end();
+        if (has_declared && !declared->is_boolean())
+            throw std::invalid_argument("render insert declared must be a boolean: " + nodeId(node));
+        auto side = insert->end();
+        if (insert->is_object() && insert->size() == (has_declared ? 2u : 1u))
+            for (auto entry = insert->begin(); entry != insert->end(); ++entry)
+                if (entry.key() != "declared") side = entry;
         if (side == insert->end() || (side.key() != "after" && side.key() != "before") ||
             !side->is_string() || side->get_ref<const std::string &>().empty())
-            throw std::invalid_argument("render insert must be {\"after\" | \"before\": \"<pass>\"}: " +
-                                        nodeId(node));
+            throw std::invalid_argument(
+                "render insert must be {\"after\" | \"before\": \"<pass>\", \"declared\"?: true}: " +
+                nodeId(node));
     }
     if (const auto anchor = parameters.find("canonical_anchor"); anchor != parameters.end()) {
         if (!anchor->is_string())
@@ -664,8 +674,10 @@ bool isRenderMaterialPassParameter(std::string_view key) {
         "ray_query",
         // Its attachments' load, store and clear.
         "color_load_op", "color_store_op", "depth_load_op", "depth_store_op", "clear_color", "clear_colors",
-        // Any pass's views and region tags.
-        "view_family", "view_select", "region_tags",
+        // Any pass's views and region tags. LP-3b: `regions` is the key the
+        // pass JSON reads them from (parseOptionalRegionTags), so a
+        // decomposed pass keeps its tags.
+        "view_family", "view_select", "region_tags", "regions",
         // Where it lands.
         "pass_set", "after", "before", "insert", "canonical_anchor"};
     return keys.contains(key);

@@ -25,6 +25,7 @@
 #include "../src/core/material/materialdrawlooptable.hpp"
 #include "../src/core/renderer/materialrender.hpp"
 #include "../src/project/materialdrawloop.hpp"
+#include "../src/project/materialpassdecompose.hpp"
 #include "../src/core/material/projectmaterialasset.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/gltf.hpp"
@@ -12989,6 +12990,118 @@ void GoldenHarness::runDrawLoopDecomposedEquivalence() {
             REQUIRE(baseline.image.height == graph.image.height);
             REQUIRE(baseline.image.pixels == graph.image.pixels);
         }
+        ++compared;
+    }
+    REQUIRE(compared == hybrid_modes.size());
+}
+
+namespace {
+
+// LP-3b: every rendering root of the project that selects the hybrid preset
+// is forked (the preset's config in its rendering section, a direct root) and
+// its three material passes are decomposed by decompose_material_pass's own
+// rewrite (materialpassdecompose.hpp), in the preset's order.
+std::size_t decomposeHybridRootsWithRpcRewrite(const std::filesystem::path &root) {
+    const auto preset = nlohmann::json::parse(
+        engineResourceOrThrow("render_pipelines/hybrid_v1.json"))
+                            .at("config");
+    std::size_t rewritten = 0;
+    for (const auto &entry :
+         std::filesystem::recursive_directory_iterator(root)) {
+        if (!entry.is_regular_file() ||
+            entry.path().extension() != ".json") {
+            continue;
+        }
+        nlohmann::json document;
+        try {
+            document = nlohmann::json::parse(readTextFile(entry.path()));
+        } catch (const nlohmann::json::exception &) {
+            continue;
+        }
+        if (!document.is_object() ||
+            document.value("schema", std::string{}) != "pelican.graph" ||
+            !document.contains("rendering") ||
+            document.at("rendering").value("pipeline", nlohmann::json{}) !=
+                nlohmann::json{{"preset",
+                                "engine://render_pipelines/hybrid_v1.json"}}) {
+            continue;
+        }
+        document["rendering"] = TestSupport::lp3aForkPreset(
+            document.at("rendering"), preset);
+        auto ordered = nlohmann::ordered_json::parse(document.dump());
+        const auto targets = nlohmann::json::parse(
+            ordered.at("rendering").at("render_targets").dump());
+        const auto declared_target =
+            [&targets](const std::string &name) -> const nlohmann::json * {
+            for (const auto &target : targets) {
+                if (target.value("name", std::string{}) == name) {
+                    return &target;
+                }
+            }
+            return nullptr;
+        };
+        for (const auto *pass :
+             {"deferred_geometry", "forward_opaque", "forward_transparent"}) {
+            (void)decomposeMaterialPass(ordered.at("rendering"), ordered,
+                                        pass, declared_target);
+        }
+        writeTextFile(entry.path(), ordered.dump(2));
+        ++rewritten;
+    }
+    return rewritten;
+}
+
+} // namespace
+
+// LP-3b acceptance 1: decompose_material_pass's rewrite of the hybrid
+// golden cases -- the preset forked into the rendering section, its material
+// passes then written as render.material_pass + draw_loop graph.loop +
+// definition with insert.declared -- renders the same pixels, issues the same
+// material-pass binds and draws, and compiles the same draw queue bytes as the
+// one-piece preset. shadow_b_layer_* carry shadow_directional (a feature whose
+// surface resources reach the forward passes) and the rest of the hybrid
+// features the cases select.
+void GoldenHarness::runMaterialPassDecomposeEquivalence() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const std::set<std::string> hybrid_modes{
+        "shadow_b_layer_engine", "shadow_b_layer_off",
+        "shadow_b_layer_project", "usd0c_openpbr_material",
+    };
+    std::size_t compared = 0;
+    for (const auto &golden_case : loadGoldenInventoryCases()) {
+        if (!hybrid_modes.contains(golden_case.mode)) continue;
+        CAPTURE(golden_case.name);
+        DrawLoopProbe one_piece;
+        RenderedCase baseline = [&] {
+            DrawLoopProbeScope scope{one_piece};
+            return renderCase(golden_case);
+        }();
+        REQUIRE_FALSE(one_piece.records.empty());
+        REQUIRE_FALSE(one_piece.table_filled);
+        REQUIRE_FALSE(one_piece.queue_bytes.empty());
+        std::size_t rewritten = 0;
+        DrawLoopProbe decomposed;
+        decomposed.rewrite_project = [&](const std::filesystem::path &root) {
+            rewritten = decomposeHybridRootsWithRpcRewrite(root);
+        };
+        RenderedCase graph = [&] {
+            DrawLoopProbeScope scope{decomposed};
+            return renderCase(golden_case);
+        }();
+        REQUIRE(rewritten > 0);
+        // Every material draw came through the loops' table entries.
+        REQUIRE(decomposed.table_filled);
+        REQUIRE(decomposed.material_draws > 0);
+        REQUIRE(decomposed.table_hits == decomposed.material_draws);
+        REQUIRE(normalizedDrawRecords(one_piece.records) ==
+                normalizedDrawRecords(decomposed.records));
+        const bool same_queue_bytes =
+            one_piece.queue_bytes == decomposed.queue_bytes;
+        REQUIRE(same_queue_bytes);
+        REQUIRE(baseline.image.width == graph.image.width);
+        REQUIRE(baseline.image.height == graph.image.height);
+        REQUIRE(baseline.image.pixels == graph.image.pixels);
         ++compared;
     }
     REQUIRE(compared == hybrid_modes.size());

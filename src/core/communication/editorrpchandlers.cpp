@@ -231,6 +231,9 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("edit_graph_document", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editGraphDocument(params); });
     });
+    server.setHandler("decompose_material_pass", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.decomposeMaterialPass(params); });
+    });
     server.setHandler("get_graph_values", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getGraphValues(params); });
     });

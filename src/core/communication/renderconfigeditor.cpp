@@ -9,6 +9,7 @@
 #include "../../project/graphcomposition.hpp"
 #include "../../project/graphvariantpolicy.hpp"
 #include "../../project/graphpartition.hpp"
+#include "../../project/materialpassdecompose.hpp"
 #include "../../project/renderconfigsection.hpp"
 #include "renderconfigtransaction.hpp"
 
@@ -2422,6 +2423,182 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
                 return rejection("invalid_graph_document", error.what());
             }
         }, {}, std::nullopt, layout_only);
+}
+
+namespace {
+
+bool declaresRenderPass(const OrderedJson &owner, const std::string &pass) {
+    const auto families = owner.find("rendering_passes");
+    if (families == owner.end() || !families->is_array()) return false;
+    for (const auto &family : *families) {
+        const auto passes = family.find("passes");
+        if (passes == family.end() || !passes->is_array()) continue;
+        for (const auto &declaration : *passes)
+            if (declaration.is_object() && declaration.value("name", std::string{}) == pass) return true;
+    }
+    return false;
+}
+
+} // namespace
+
+OrderedJson RenderConfigEditorService::decomposeMaterialPass(const Json &params) {
+    constexpr auto method = "decompose_material_pass";
+    requireOnly(params, {"base_source_digest", "base_preset_digest", "pass"}, method);
+    const auto base_digest = requireString(params, "base_source_digest", method);
+    const auto pass = requireString(params, "pass", method);
+    std::optional<std::string> preset_digest;
+    if (params.contains("base_preset_digest")) {
+        preset_digest = requireString(params, "base_preset_digest", method);
+        if (!isLowerHexDigest(*preset_digest))
+            throw std::invalid_argument("decompose_material_pass base_preset_digest must be 64 lowercase hex characters");
+    }
+    if (!isLowerHexDigest(base_digest))
+        throw std::invalid_argument("decompose_material_pass base_source_digest must be 64 lowercase hex characters");
+    if (!dependencies_.resolve_authoring_context || !dependencies_.normalize_reference ||
+        !dependencies_.resolve_document_path)
+        return rejection("method_unavailable", "decompose_material_pass requires the project document resolver");
+    try {
+        const auto current = dependencies_.resolve_authoring_context(currentDocumentSet());
+        // The composed targets decide the image type a new render.target_ref
+        // declares (materialpassdecompose.hpp).
+        const auto composed_target = [&current](const std::string &name) -> const Json * {
+            const auto targets = current.config.find("render_targets");
+            if (targets == current.config.end() || !targets->is_array()) return nullptr;
+            for (const auto &target : *targets)
+                if (target.is_object() && target.value("name", std::string{}) == name) return &target;
+            return nullptr;
+        };
+        const auto refused = [&](const MaterialPassDecomposeError &error) {
+            return rejection(error.code(), error.what(), error.fields());
+        };
+        // A name neither the rendering section nor the preset declares.
+        const auto undeclared = [&](const OrderedJson &root) {
+            const auto graph_pass = [&] {
+                const auto nodes = root.find("nodes");
+                if (nodes == root.end() || !nodes->is_array()) return false;
+                return std::any_of(nodes->begin(), nodes->end(), [&](const OrderedJson &node) {
+                    return node.is_object() && node.value("id", std::string{}) == pass &&
+                           node.value("op", std::string{}) == "render.material_pass";
+                });
+            }();
+            const auto provenance = std::find_if(current.pass_provenance.begin(), current.pass_provenance.end(),
+                [&](const RenderPassProvenance &entry) { return entry.name == pass; });
+            OrderedJson fields{{"pass", pass}};
+            std::string message;
+            if (graph_pass) {
+                fields["reason"] = "graph_pass";
+                message = "it is already a render.material_pass of the graph";
+            } else if (provenance != current.pass_provenance.end() &&
+                       provenance->source == RenderPipelineProvenanceSource::feature) {
+                fields["reason"] = "feature_pass";
+                fields["feature"] = provenance->provider_feature;
+                message = "it is a pass of the feature " + provenance->provider_feature +
+                          "; replace it with the feature's pass_replacements";
+            } else {
+                fields["reason"] = "not_found";
+                message = "neither the rendering section nor the preset declares it";
+            }
+            return rejection(std::string{materialPassNotDecomposableCode},
+                             "Material pass " + pass + " cannot be decomposed: " + message, std::move(fields));
+        };
+        const auto summary = [&](const MaterialPassDecomposition &decomposition) {
+            return OrderedJson{{"pass", pass},
+                               {"family", decomposition.family},
+                               {"insert", decomposition.insert},
+                               {"loop", decomposition.loop},
+                               {"definition", decomposition.definition},
+                               {"target_refs", decomposition.target_refs},
+                               {"added_target_refs", decomposition.added_target_refs}};
+        };
+
+        if (!current.pipeline_preset) {
+            // A direct root: its rendering section and its graph, one document.
+            if (preset_digest)
+                throw std::invalid_argument(
+                    "decompose_material_pass: a direct root selects no preset; omit base_preset_digest");
+            OrderedJson decomposed;
+            auto result = queueRootEdit(base_digest, method,
+                [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+                    auto root = OrderedJson::parse(candidate.bytes());
+                    auto &section = renderingSectionOf(root);
+                    if (!declaresRenderPass(section, pass)) return undeclared(root);
+                    try {
+                        decomposed = summary(::Pelican::decomposeMaterialPass(section, root, pass, composed_target));
+                    } catch (const MaterialPassDecomposeError &error) {
+                        return refused(error);
+                    } catch (const GraphRegistryError &error) {
+                        return rejection(error.code(), error.what(), OrderedJson::parse(error.detail().dump()));
+                    }
+                    candidate = candidate.withSectionValue("rendering_passes", section.at("rendering_passes").dump(2))
+                                    .withRootValue("nodes", root.at("nodes").dump(2))
+                                    .withRootValue("definitions", root.at("definitions").dump(2));
+                    return std::nullopt;
+                });
+            if (result.at("status") == "accepted") result["decomposed"] = std::move(decomposed);
+            return result;
+        }
+
+        // A preset root: the pass lives in the preset, which must be the
+        // project's own (forked) one; the graph lives in the root. Both
+        // digests are compared before the pass is looked at, as the direct
+        // root's is (queueRootEdit compares it again, with the gate).
+        if (base_digest != document_.sourceDigest())
+            return rejection("external_modification",
+                             "render config base digest no longer matches the engine-owned document",
+                             {{"expected_source_digest", document_.sourceDigest()},
+                              {"provided_source_digest", base_digest}});
+        const auto current_preset_digest =
+            current.pipeline_preset_bytes ? renderConfigSourceDigest(*current.pipeline_preset_bytes) : std::string{};
+        if (preset_digest && *preset_digest != current_preset_digest)
+            return rejection("external_modification", "The selected preset changed since it was read",
+                             {{"expected_preset_digest", current_preset_digest},
+                              {"provided_preset_digest", *preset_digest}});
+        auto root = OrderedJson::parse(document_.bytes());
+        const auto &reference = current.pipeline_preset->reference;
+        if (!current.pipeline_preset_bytes) return undeclared(root);
+        auto preset = OrderedJson::parse(*current.pipeline_preset_bytes);
+        if (!preset.contains("config") || !declaresRenderPass(preset.at("config"), pass)) return undeclared(root);
+        if (!reference.starts_with("project://"))
+            return rejection("project_preset_required",
+                             "Fork the selected preset into the project before decomposing its passes",
+                             {{"pass", pass}, {"preset", reference}});
+        if (!preset_digest)
+            throw std::invalid_argument(
+                "decompose_material_pass requires base_preset_digest for a pass of the project preset");
+        OrderedJson decomposed;
+        try {
+            decomposed = summary(::Pelican::decomposeMaterialPass(preset.at("config"), root, pass, composed_target));
+        } catch (const MaterialPassDecomposeError &error) {
+            return refused(error);
+        } catch (const GraphRegistryError &error) {
+            return rejection(error.code(), error.what(), OrderedJson::parse(error.detail().dump()));
+        }
+        decomposed["preset_reference"] = reference;
+        const std::array documents{RenderConfigCandidateDocument{
+            .reference = reference,
+            .normalized_reference = dependencies_.normalize_reference(reference),
+            .path = dependencies_.resolve_document_path(reference),
+            .operation = RenderConfigDocumentOperation::replace,
+            .expected = {RenderConfigDocumentExistence::present, *preset_digest},
+            .bytes = preset.dump(2),
+        }};
+        // The root is document_ itself (queueRootEdit compares the digest
+        // first), so the graph computed above is the candidate's.
+        auto result = queueRootEdit(base_digest, method,
+            [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+                candidate = candidate.withRootValue("nodes", root.at("nodes").dump(2))
+                                .withRootValue("definitions", root.at("definitions").dump(2));
+                return std::nullopt;
+            }, documents, preset_digest);
+        if (result.at("status") == "accepted") result["decomposed"] = std::move(decomposed);
+        return result;
+    } catch (const RenderConfigSectionUnlocated &error) {
+        return rejection("render_config_section_unlocated", error.what(), {{"method", method}});
+    } catch (const std::invalid_argument &) {
+        throw;
+    } catch (const std::exception &error) {
+        return preflightRejection(error);
+    }
 }
 
 OrderedJson RenderConfigEditorService::getGraphValues(const Json &params) const {

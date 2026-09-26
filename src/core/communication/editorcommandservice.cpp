@@ -1368,6 +1368,11 @@ OrderedJson EditorCommandService::editGraphDocument(const Json &params) {
     return render_config_editor_->editGraphDocument(params);
 }
 
+OrderedJson EditorCommandService::decomposeMaterialPass(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->decomposeMaterialPass(params);
+}
+
 OrderedJson EditorCommandService::getGraphValues(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->getGraphValues(params);
@@ -2330,6 +2335,11 @@ OrderedJson EditorCommandRpcAdapter::editGraphInstances(const Json &params) cons
 OrderedJson EditorCommandRpcAdapter::editGraphDocument(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
     return mutable_service_->editGraphDocument(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::decomposeMaterialPass(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
+    return mutable_service_->decomposeMaterialPass(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getGraphValues(const Json &params) const {

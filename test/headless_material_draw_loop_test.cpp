@@ -30,6 +30,7 @@
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/watch/reloadservice.hpp"
 #include "../src/project/materialdrawloop.hpp"
+#include "../src/project/materialpassdecompose.hpp"
 #include "../src/project/materialformat.hpp"
 #include "../src/project/materiallowering.hpp"
 #include "../src/project/surfaceformat.hpp"
@@ -1333,6 +1334,87 @@ TEST_CASE("LP-3a a draw_loop's branches draw each material its own way",
     });
 #else
     SUCCEED("LP-3a GPU acceptance is compiler-ON only");
+#endif
+}
+
+
+TEST_CASE("LP-3b get_frame_plan pages a draw_loop's materials",
+          "[headless][render][lp3b][draw-loop]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    runDrawLoopCase("Vulkan LP-3b draw loop paging unavailable", [](DrawLoopScene &scene) {
+        using Json = nlohmann::json;
+        // The hybrid preset forked into the section, its deferred_geometry
+        // keeping the materials tagged `loop` (the engine's own built-in
+        // material is not one), then decomposed by decompose_material_pass's
+        // own rewrite: the filter becomes the loop's where.
+        const auto decompose = [](Json root) {
+            const auto preset =
+                Json::parse(engineResourceOrThrow(
+                                "render_pipelines/hybrid_v1.json"))
+                    .at("config");
+            root["rendering"] = TestSupport::lp3aForkPreset(
+                root.at("rendering"), preset);
+            for (auto &pass : root["rendering"]["rendering_passes"][0]["passes"])
+                if (pass.at("name") == "deferred_geometry")
+                    pass["material_filter"] = {{"include", {"loop"}}};
+            auto ordered = nlohmann::ordered_json::parse(root.dump());
+            (void)decomposeMaterialPass(ordered.at("rendering"), ordered,
+                                        "deferred_geometry");
+            return Json::parse(ordered.dump());
+        };
+        setUpDrawLoopScene(scene, Json::array(), {}, decompose);
+        // Three materials of the loop's contract: the scene's and two more.
+        for (const auto *name : {"second_quad", "third_quad"}) {
+            (void)registerSurfaceMaterial(
+                loopSurfaceReference, loopSurfaceSource,
+                Json{
+                    {"schema", "pelican.material"},
+                    {"version", 1},
+                    {"materials",
+                     Json::array({{
+                         {"name", name},
+                         {"tags", {"loop"}},
+                         {"surface", std::string{loopSurfaceReference}},
+                         {"values", {{"tint", {0.02, 0.08, 1.0, 1.0}}}},
+                     }})},
+                },
+                name);
+        }
+        (void)scene.render();
+
+        // What the get_frame_plan handler does with its params.
+        const auto plan = [](const Json &params) {
+            auto json = GET_MODULE(Renderer).currentFramePlanJson();
+            REQUIRE(pageDrawLoopElements(json, parseDrawLoopElementPage(params)));
+            REQUIRE(json.contains("loops"));
+            for (const auto &loop : json.at("loops"))
+                if (loop.at("node") == "deferred_geometry_draws") return loop;
+            FAIL("no deferred_geometry_draws in loops[]");
+            return Json{};
+        };
+        const auto first = plan({{"loop_elements", {{"node", "deferred_geometry_draws"}, {"limit", 2}}}});
+        INFO(first.dump());
+        CHECK(first.at("tier") == "draw_loop");
+        CHECK(first.at("total") == 3);
+        CHECK(first.at("count") == 3);
+        CHECK(first.at("offset") == 0);
+        CHECK(first.at("limit") == 2);
+        REQUIRE(first.at("elements").size() == 2);
+        const auto rest = plan({{"loop_elements", {{"node", "deferred_geometry_draws"}, {"offset", 2}, {"limit", 2}}}});
+        REQUIRE(rest.at("elements").size() == 1);
+        CHECK(rest.at("total") == 3);
+        // The pages together are the whole list, in order.
+        const auto whole = plan(Json::object());
+        REQUIRE(whole.at("elements").size() == 3);
+        CHECK(whole.at("elements").at(0) == first.at("elements").at(0));
+        CHECK(whole.at("elements").at(1) == first.at("elements").at(1));
+        CHECK(whole.at("elements").at(2) == rest.at("elements").at(0));
+        auto unknown = GET_MODULE(Renderer).currentFramePlanJson();
+        CHECK_FALSE(pageDrawLoopElements(
+            unknown, parseDrawLoopElementPage({{"loop_elements", {{"node", "no_such_loop"}}}})));
+    });
+#else
+    SUCCEED("LP-3b GPU acceptance is compiler-ON only");
 #endif
 }
 

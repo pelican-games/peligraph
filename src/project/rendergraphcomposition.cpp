@@ -189,6 +189,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         bool after;
         std::string anchor;
         Json pass;
+        bool declared = false;
     };
     std::vector<std::string> graph_pass_order;
     std::map<std::string, std::pair<Json, Json>> graph_pass_edges;
@@ -281,6 +282,8 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                 const auto &insert = parameters.at("insert");
                 pending.after = insert.contains("after");
                 pending.anchor = insert.at(pending.after ? "after" : "before").get<std::string>();
+                // LP-3b: placed among the declared passes, before any feature.
+                pending.declared = insert.value("declared", false);
             } else {
                 pending.anchor = parameters.at("canonical_anchor").get<std::string>();
             }
@@ -765,11 +768,11 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             const auto run = std::find_if(lowered.placed_runs.begin(), lowered.placed_runs.end(),
                 [&](const RenderGraphPassRun &candidate) {
                     return candidate.family == pending.family && candidate.after == pending.after &&
-                        candidate.anchor == pending.anchor;
+                        candidate.anchor == pending.anchor && candidate.declared == pending.declared;
                 });
             if (run == lowered.placed_runs.end())
                 lowered.placed_runs.push_back({pending.node, pending.family, pending.after, pending.anchor,
-                                               {std::move(pending.pass)}});
+                                               {std::move(pending.pass)}, pending.declared});
             else run->passes.push_back(std::move(pending.pass));
         }
     }
@@ -895,12 +898,11 @@ std::optional<RenderLoopOrigin> loopCopyOrigin(const std::string &name, const st
 }
 } // namespace
 
-void placeRenderGraphPassRuns(Json &composed, const LoweredRenderGraphDocument &lowered) {
-    // LP-0b: place each run once its anchor exists. A run may be anchored at
-    // a pass another run places, so place what can be placed until nothing
-    // moves; the first run left is refused by name.
-    std::vector<const RenderGraphPassRun *> pending;
-    for (const auto &run : lowered.placed_runs) pending.push_back(&run);
+namespace {
+// LP-0b: place each run once its anchor exists. A run may be anchored at a
+// pass another run places, so place what can be placed until nothing moves;
+// the first run left is refused by name.
+void placeRenderGraphPassRunList(Json &composed, std::vector<const RenderGraphPassRun *> pending) {
     while (!pending.empty()) {
         const auto ready = std::find_if(pending.begin(), pending.end(), [&](const RenderGraphPassRun *run) {
             return !findRenderPassAnchorMatches(composed, run->anchor).empty();
@@ -909,6 +911,23 @@ void placeRenderGraphPassRuns(Json &composed, const LoweredRenderGraphDocument &
         placeRenderGraphPassRun(composed, **next);
         pending.erase(next);
     }
+}
+} // namespace
+
+void placeRenderGraphPassRuns(Json &composed, const LoweredRenderGraphDocument &lowered) {
+    std::vector<const RenderGraphPassRun *> pending;
+    for (const auto &run : lowered.placed_runs)
+        if (!run.declared) pending.push_back(&run);
+    placeRenderGraphPassRunList(composed, std::move(pending));
+}
+
+void placeDeclaredRenderGraphPassRuns(Json &config, LoweredRenderGraphDocument &lowered) {
+    std::vector<const RenderGraphPassRun *> pending;
+    for (const auto &run : lowered.placed_runs)
+        if (run.declared) pending.push_back(&run);
+    if (pending.empty()) return;
+    placeRenderGraphPassRunList(config, std::move(pending));
+    std::erase_if(lowered.placed_runs, [](const RenderGraphPassRun &run) { return run.declared; });
 }
 
 namespace {

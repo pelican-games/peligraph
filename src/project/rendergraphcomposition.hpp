@@ -57,6 +57,14 @@ struct RenderGraphPassRun {
     std::string anchor;
     // Lowered pass declarations, in execution order.
     std::vector<nlohmann::json> passes;
+    // LP-3b: `insert: {after|before: X, declared: true}`. The run is placed
+    // among the passes the rendering section and the preset declare (and the
+    // graph's appended passes), before any feature is composed
+    // (placeDeclaredRenderGraphPassRuns), so the features see it where a
+    // declared pass would stand: their insert may name it, their
+    // pass_overrides reach it, an integration's requires_passes finds it.
+    // decompose_material_pass writes its render.material_pass this way.
+    bool declared = false;
 };
 
 // LP-1a: one branch body of a graph.loop, lowered once as a template. Every
@@ -302,6 +310,14 @@ void applyRenderFeaturePassReplacements(nlohmann::json &composed, const LoweredR
 // render.target_ref is checked. `lowered` is the document
 // withoutExcludedGraphDependents returned (LP-0d).
 void placeRenderGraphPassRuns(nlohmann::json &composed, const LoweredRenderGraphDocument &lowered);
+
+// LP-3b: places the runs whose insert says `declared: true` in `config` --
+// the preset resolved with the rendering section and the graph's appended
+// passes, before any feature -- and takes them out of lowered.placed_runs;
+// placeRenderGraphPassRuns places the rest later. The anchor must be there
+// already (graph.insert_anchor_unknown@1 / graph.insert_family_mismatch@1
+// otherwise, as for any run): a feature's pass cannot be one.
+void placeDeclaredRenderGraphPassRuns(nlohmann::json &config, LoweredRenderGraphDocument &lowered);
 
 // LP-1a: the expand stage (docs/design_graph_loops.md 5.1, 5.2). For each
 // loop, in dependency order:

@@ -22,6 +22,7 @@ add_library(pelican_project
     logicalrendergraph.cpp
     logicalrendertype.cpp
     materialdrawloop.cpp
+    materialpassdecompose.cpp
     materialscreeninput.cpp
     materialoutput.cpp
     materiallowering.cpp

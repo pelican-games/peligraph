@@ -647,6 +647,9 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
   - definition
 - engine の preset と feature は、fork していなければ `project_preset_required` で断る。
 - 逆の操作は v0 では持たない(Studio の undo と git が担う)。
+- **実装(LP-3b)**: 返り値は ticket に `decomposed: {pass, family, insert, loop, definition, target_refs, added_target_refs, preset_reference?}` を足した形。分解できない pass は `material_pass_not_decomposable {pass, reason}`(reason: `not_found` / `graph_pass` / `feature_pass` / `not_material` / `contract_unsupported` / `field_unsupported` / `attachment_unsupported`)。置き場所は直後の pass の `before`(無ければ直前の `after`)に **`insert.declared: true`** を付ける: pass を feature の合成より**前**に、宣言の列へ置く(feature が名指しする pass、たとえば rt_shadow_mask の `after:deferred_geometry` や `pass_overrides` の対象を分解しても、feature の合成が通るため)。`declared` の置き場で anchor が無ければ `graph.insert_anchor_unknown@1`(feature の pass は anchor にできない)。
+- **残る穴**: 書き換え前の rendering 節(preset なら preset と root の 2 文書)を CAS 付きで丸ごと書き戻す RPC が無い。Studio の undo の方法は LP-4 の前に決める。
+- `get_frame_plan {loop_elements: {node, offset?, limit?}}` で draw_loop の要素を paging する(既定 256、範囲 1〜4096、各要素に `total` / `offset` / `limit`)。
 
 **Studio(GUI session)**
 

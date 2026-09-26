@@ -1,6 +1,8 @@
 #include "materialdrawloop.hpp"
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -214,6 +216,96 @@ void applyMaterialDrawLoopElementsToFramePlanJson(
         loop["elements"] = std::move(elements);
         loop["unmatched_branches"] = std::move(unmatched);
     }
+}
+
+std::optional<DrawLoopElementPage> parseDrawLoopElementPage(
+    const nlohmann::json &params) {
+    if (params.is_null()) return std::nullopt;
+    if (!params.is_object()) {
+        throw std::invalid_argument("get_frame_plan params must be an object");
+    }
+    const auto request = params.find("loop_elements");
+    if (request == params.end()) return std::nullopt;
+    if (!request->is_object()) {
+        throw std::invalid_argument(
+            "get_frame_plan loop_elements must be {node, offset?, limit?}");
+    }
+    for (const auto &[key, value] : request->items()) {
+        (void)value;
+        if (key != "node" && key != "offset" && key != "limit") {
+            throw std::invalid_argument(
+                "get_frame_plan loop_elements does not take " + key);
+        }
+    }
+    const auto node = request->find("node");
+    if (node == request->end() || !node->is_string() ||
+        node->get_ref<const std::string &>().empty()) {
+        throw std::invalid_argument(
+            "get_frame_plan loop_elements.node must name a graph.loop");
+    }
+    DrawLoopElementPage page{node->get<std::string>()};
+    const auto count = [&](const char *key, std::size_t fallback,
+                           std::size_t minimum, std::size_t maximum) {
+        const auto found = request->find(key);
+        if (found == request->end()) return fallback;
+        if (!found->is_number_unsigned() &&
+            !(found->is_number_integer() && found->get<std::int64_t>() >= 0)) {
+            throw std::invalid_argument(
+                std::string{"get_frame_plan loop_elements."} + key +
+                " must be a non-negative integer");
+        }
+        const auto value = found->get<std::uint64_t>();
+        if (value < minimum || value > maximum) {
+            throw std::invalid_argument(
+                std::string{"get_frame_plan loop_elements."} + key +
+                " must be in " + std::to_string(minimum) + ".." +
+                std::to_string(maximum));
+        }
+        return static_cast<std::size_t>(value);
+    };
+    page.offset = count("offset", 0, 0, std::numeric_limits<std::uint32_t>::max());
+    page.limit = count("limit", drawLoopElementPageDefaultLimit, 1,
+                       drawLoopElementPageMaxLimit);
+    return page;
+}
+
+bool pageDrawLoopElements(nlohmann::json &plan,
+                          const std::optional<DrawLoopElementPage> &page) {
+    const auto loops = plan.find("loops");
+    const auto isDrawLoop = [](const nlohmann::json &loop) {
+        return loop.is_object() &&
+               loop.value("tier", std::string{}) == "draw_loop";
+    };
+    if (page) {
+        const bool known =
+            loops != plan.end() && loops->is_array() &&
+            std::any_of(loops->begin(), loops->end(), [&](const auto &loop) {
+                return isDrawLoop(loop) &&
+                       loop.value("node", std::string{}) == page->node;
+            });
+        if (!known) return false;
+    }
+    if (loops == plan.end() || !loops->is_array()) return true;
+    for (auto &loop : *loops) {
+        if (!isDrawLoop(loop)) continue;
+        const bool requested =
+            page && loop.value("node", std::string{}) == page->node;
+        const auto offset = requested ? page->offset : std::size_t{0};
+        const auto limit =
+            requested ? page->limit : drawLoopElementPageDefaultLimit;
+        auto all = loop.value("elements", nlohmann::json::array());
+        const auto total = all.is_array() ? all.size() : std::size_t{0};
+        auto elements = nlohmann::json::array();
+        for (std::size_t index = offset;
+             index < total && index - offset < limit; ++index) {
+            elements.push_back(std::move(all.at(index)));
+        }
+        loop["elements"] = std::move(elements);
+        loop["total"] = total;
+        loop["offset"] = offset;
+        loop["limit"] = limit;
+    }
+    return true;
 }
 
 std::vector<std::size_t> materialDrawLoopUnservedSubjects(

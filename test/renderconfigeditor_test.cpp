@@ -1,5 +1,6 @@
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "render_graph_root_test_support.hpp"
+#include "lp3a_decompose_support.hpp"
 #include "../src/core/communication/editorrpchandlers.hpp"
 #include "../src/core/communication/renderconfigeditor.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
@@ -8071,6 +8072,202 @@ TEST_CASE("LP-4a edit_preset_pass keeps a fullscreen pass's view_select",
     CHECK(saved->at("shader").at("fragment") == "engine://scene_present");
     CHECK(saved->at("input") == Json::array({"gbuffer_albedo"}));
     CHECK(saved->at("view_select") == Json{{"cascade", 1}});
+}
+
+
+// --- LP-3b: decompose_material_pass.
+
+namespace {
+
+nlohmann::json lp3bHybridPreset() {
+    return nlohmann::json::parse(engineResourceOrThrow("render_pipelines/hybrid_v1.json")).at("config");
+}
+
+// animgraph_demo's root with the hybrid preset forked into its rendering
+// section: a direct root that declares the preset's passes itself.
+nlohmann::json lp3bDirectRoot(const TemporaryAnimgraphProject &project) {
+    auto root = nlohmann::json::parse(readBytes(project.render_config));
+    root["rendering"] = TestSupport::lp3aForkPreset(root.at("rendering"), lp3bHybridPreset());
+    return root;
+}
+
+std::vector<std::string> lp3bPlanOrder(const nlohmann::json &plan) {
+    std::vector<std::string> names;
+    for (const auto &node : plan.at("nodes")) names.push_back(node.at("name").get<std::string>());
+    return names;
+}
+
+const nlohmann::json *lp3bNode(const nlohmann::json &root, std::string_view id) {
+    for (const auto &node : root.at("nodes"))
+        if (node.at("id") == std::string{id}) return &node;
+    return nullptr;
+}
+
+bool lp3bDeclares(const nlohmann::json &owner, std::string_view pass) {
+    for (const auto &family : owner.at("rendering_passes"))
+        for (const auto &declaration : family.at("passes"))
+            if (declaration.at("name") == std::string{pass}) return true;
+    return false;
+}
+
+} // namespace
+
+TEST_CASE("LP-3b decompose_material_pass rewrites a direct root's material pass in one ticket",
+          "[render-config-editor][lp3b][decompose]") {
+    TemporaryAnimgraphProject project;
+    writeBytes(project.render_config, lp3bDirectRoot(project).dump(2) + "\n");
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto context = service->getRenderAuthoringContext(Json::object());
+    REQUIRE(context.at("config_kind") == "direct");
+    const auto digest = context.at("source_digest").at("hex").get<std::string>();
+    const auto order_before = lp3bPlanOrder(runtime.frame_plan);
+    const auto root_before = readBytes(project.render_config);
+    const Json request{{"base_source_digest", digest}, {"pass", "forward_opaque"}};
+
+    const auto accepted = service->decomposeMaterialPass(request);
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    CHECK(Json(accepted.at("decomposed")) ==
+          Json{{"pass", "forward_opaque"},
+               {"family", "main_render"},
+               {"insert", {{"before", "__snapshot_opaque_color"}, {"declared", true}}},
+               {"loop", "forward_opaque_draws"},
+               {"definition", "forward_opaque_draw"},
+               {"target_refs", {"lit_color_ref", "scene_depth_ref"}},
+               {"added_target_refs", {"lit_color_ref", "scene_depth_ref"}}});
+    CHECK(readBytes(project.render_config) == root_before);
+    service->commitPending();
+    const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("committed") == true);
+    CHECK(result.at("operation") == "decompose_material_pass");
+
+    // One document: the section lost the pass, the graph gained it.
+    const auto root = Json::parse(readBytes(project.render_config));
+    CHECK_FALSE(lp3bDeclares(root.at("rendering"), "forward_opaque"));
+    CHECK(lp3bDeclares(root.at("rendering"), "forward_transparent"));
+    const auto *pass = lp3bNode(root, "forward_opaque");
+    REQUIRE(pass != nullptr);
+    CHECK(pass->at("op") == "render.material_pass");
+    CHECK(pass->at("inputs").at("draws") == Json{{"node", "forward_opaque_draws"}, {"port", "draws"}});
+    REQUIRE(lp3bNode(root, "forward_opaque_draws") != nullptr);
+    CHECK(lp3bNode(root, "forward_opaque_draws")->at("op") == "graph.loop");
+    CHECK(root.at("definitions").contains("forward_opaque_draw"));
+    // The pass runs where it ran.
+    CHECK(lp3bPlanOrder(runtime.frame_plan) == order_before);
+
+    // The digest the edit was made against names the old root.
+    CHECK(service->decomposeMaterialPass(request).at("error").at("code") == "external_modification");
+    const auto fresh = service->getRenderAuthoringContext(Json::object()).at("source_digest").at("hex");
+    const auto refusal = [&](const std::string &name) {
+        const auto rejected = service->decomposeMaterialPass({{"base_source_digest", fresh}, {"pass", name}});
+        INFO(rejected.dump());
+        REQUIRE(rejected.at("status") == "rejected");
+        return Json(rejected.at("error"));
+    };
+    const auto again = refusal("forward_opaque");
+    CHECK(again.at("code") == "material_pass_not_decomposable");
+    CHECK(again.at("pass") == "forward_opaque");
+    CHECK(again.at("reason") == "graph_pass");
+    const auto feature = refusal("shadow_depth");
+    CHECK(feature.at("code") == "material_pass_not_decomposable");
+    CHECK(feature.at("reason") == "feature_pass");
+    CHECK(feature.at("feature") == "shadow_directional");
+    CHECK(refusal("no_such_pass").at("reason") == "not_found");
+    CHECK(refusal("ssao_pass").at("reason") == "not_material");
+    // A direct root has no preset to compare.
+    CHECK_THROWS_AS(service->decomposeMaterialPass({{"base_source_digest", fresh},
+                                                    {"base_preset_digest", std::string(64, '0')},
+                                                    {"pass", "forward_transparent"}}),
+                    std::invalid_argument);
+    service->commitPending();
+    CHECK(Json::parse(readBytes(project.render_config)) == root);
+}
+
+TEST_CASE("LP-3b decompose_material_pass edits a forked preset and the root together",
+          "[render-config-editor][lp3b][decompose]") {
+    // animgraph_demo selects the engine preset hybrid_v1.
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto commit = [&](const nlohmann::ordered_json &submission) {
+        INFO(submission.dump());
+        REQUIRE(submission.at("status") == "accepted");
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", submission.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+    };
+    const auto order_before = lp3bPlanOrder(runtime.frame_plan);
+    auto context = service->getRenderAuthoringContext(Json::object());
+    REQUIRE(context.at("config_kind") == "preset");
+
+    // Not forked: the engine's preset is not the project's to rewrite.
+    const auto root_before = readBytes(project.render_config);
+    const auto engine = service->decomposeMaterialPass(
+        {{"base_source_digest", context.at("source_digest").at("hex")},
+         {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+         {"pass", "forward_opaque"}});
+    INFO(engine.dump());
+    CHECK(engine.at("error").at("code") == "project_preset_required");
+    CHECK(engine.at("error").at("pass") == "forward_opaque");
+    CHECK(engine.at("error").at("preset") == "engine://render_pipelines/hybrid_v1.json");
+    service->commitPending();
+    CHECK(readBytes(project.render_config) == root_before);
+
+    commit(service->forkRenderPipeline(
+        {{"base_source_digest", context.at("source_digest").at("hex")},
+         {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+         {"destination_reference", "project://passes/local-pipeline.json"}}));
+    context = service->getRenderAuthoringContext(Json::object());
+    const auto preset_path = project.root / "passes" / "local-pipeline.json";
+    const auto preset_before = readBytes(preset_path);
+    const Json request{{"base_source_digest", context.at("source_digest").at("hex")},
+                       {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+                       {"pass", "forward_opaque"}};
+
+    SECTION("the preset loses the pass and the root gains it, in one ticket") {
+        const auto accepted = service->decomposeMaterialPass(request);
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        CHECK(accepted.at("decomposed").at("preset_reference") == "project://passes/local-pipeline.json");
+        commit(accepted);
+        const auto preset = Json::parse(readBytes(preset_path));
+        CHECK_FALSE(lp3bDeclares(preset.at("config"), "forward_opaque"));
+        CHECK(lp3bDeclares(preset.at("config"), "forward_transparent"));
+        const auto root = Json::parse(readBytes(project.render_config));
+        REQUIRE(lp3bNode(root, "forward_opaque") != nullptr);
+        CHECK(lp3bNode(root, "forward_opaque")->at("parameters").at("insert") ==
+              Json{{"before", "__snapshot_opaque_color"}, {"declared", true}});
+        CHECK(root.at("rendering").at("pipeline").at("preset") == "project://passes/local-pipeline.json");
+        CHECK(lp3bPlanOrder(runtime.frame_plan) == order_before);
+        // The preset's digest the edit was made against is gone too.
+        CHECK(service->decomposeMaterialPass(request).at("error").at("code") == "external_modification");
+    }
+    SECTION("a stale preset digest is refused before anything is written") {
+        auto stale = request;
+        stale["base_preset_digest"] = std::string(64, '0');
+        const auto rejected = service->decomposeMaterialPass(stale);
+        INFO(rejected.dump());
+        CHECK(rejected.at("error").at("code") == "external_modification");
+        auto missing = request;
+        missing.erase("base_preset_digest");
+        CHECK_THROWS_AS(service->decomposeMaterialPass(missing), std::invalid_argument);
+        service->commitPending();
+        CHECK(readBytes(preset_path) == preset_before);
+    }
+    SECTION("a stale root digest is refused before anything is written") {
+        auto stale = request;
+        stale["base_source_digest"] = std::string(64, '0');
+        CHECK(service->decomposeMaterialPass(stale).at("error").at("code") == "external_modification");
+        service->commitPending();
+        CHECK(readBytes(preset_path) == preset_before);
+    }
 }
 
 } // namespace Pelican

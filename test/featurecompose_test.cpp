@@ -6,6 +6,7 @@
 #include "render_graph_root_test_support.hpp"
 #include "lp3a_decompose_support.hpp"
 #include "../src/project/materialdrawloop.hpp"
+#include "../src/project/materialpassdecompose.hpp"
 #include "../src/project/renderfeatureoverlay.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/core/loader/engineresources.hpp"
@@ -27,6 +28,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <iterator>
 #include <nlohmann/json.hpp>
@@ -7236,6 +7238,241 @@ TEST_CASE("LP-0d a graph node that depends on a feature the variant excluded is 
         CHECK(lp1aNamesUnder(resolved.normalized_config, "later/").size() == 2);
         REQUIRE_NOTHROW(compileRenderPipeline(resolved));
     }
+}
+
+
+namespace {
+// LP-3b: the hybrid preset forked into the rendering section -- a direct root
+// that declares the preset's passes itself.
+nlohmann::json lp3bDirectRoot(const nlohmann::json &features) {
+    return TestSupport::renderGraphRoot(TestSupport::lp3aForkPreset(
+        nlohmann::json{{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+                       {"features", features}},
+        lp3aHybridPreset()));
+}
+
+// The production rewrite (decompose_material_pass's), one pass after another.
+nlohmann::json lp3bDecompose(const nlohmann::json &root, std::initializer_list<const char *> passes) {
+    auto ordered = nlohmann::ordered_json::parse(root.dump());
+    for (const auto *pass : passes) (void)decomposeMaterialPass(ordered.at("rendering"), ordered, pass);
+    return nlohmann::json::parse(ordered.dump());
+}
+
+// The refusal decomposing `pass` of `root` raises, with the documents it
+// was given left as they were.
+std::pair<std::string, nlohmann::json> lp3bRefusal(const nlohmann::json &root, const std::string &pass) {
+    auto ordered = nlohmann::ordered_json::parse(root.dump());
+    const auto before = ordered;
+    try {
+        (void)decomposeMaterialPass(ordered.at("rendering"), ordered, pass);
+    } catch (const MaterialPassDecomposeError &error) {
+        CHECK(ordered == before);
+        return {error.code(), nlohmann::json::parse(error.fields().dump())};
+    } catch (const GraphRegistryError &error) {
+        CHECK(ordered == before);
+        return {error.code(), error.detail()};
+    }
+    FAIL("decompose was not refused by name");
+    return {};
+}
+
+nlohmann::json lp3bWithoutDeclared(nlohmann::json document) {
+    for (auto &node : document.at("nodes"))
+        if (node.at("op") == "render.material_pass") node["parameters"]["insert"].erase("declared");
+    return document;
+}
+} // namespace
+
+TEST_CASE("LP-3b decompose writes a declared material pass as the graph nodes it means",
+          "[render-feature][graph-composition][lp3b]") {
+    using Json = nlohmann::json;
+    const auto root = lp3bDirectRoot(Json::array());
+    const auto decomposed = lp3bDecompose(root, {"forward_opaque"});
+
+    // The section loses the pass and nothing else.
+    auto expected_rendering = root.at("rendering");
+    auto &passes = expected_rendering.at("rendering_passes").at(0).at("passes");
+    passes.erase(std::find_if(passes.begin(), passes.end(),
+                              [](const Json &pass) { return pass.at("name") == "forward_opaque"; }));
+    CHECK(decomposed.at("rendering") == expected_rendering);
+    // The graph gains exactly the pass, its references, its loop and the body.
+    CHECK(decomposed.at("nodes") == Json::array({
+        {{"id", "lit_color_ref"}, {"op", "render.target_ref"},
+         {"parameters", {{"name", "lit_color"},
+                         {"type", {{"semantic", "pelican.render.legacy_opaque_image@1"}, {"arguments", Json::object()}}}}},
+         {"outputs", {"resource"}}},
+        {{"id", "scene_depth_ref"}, {"op", "render.target_ref"},
+         {"parameters", {{"name", "scene_depth"},
+                         {"type", {{"semantic", "pelican.render.depth@1"},
+                                   {"arguments", {{"representation", "device"}, {"space", "projection"}}}}}}},
+         {"outputs", {"resource"}}},
+        {{"id", "forward_opaque_draws"}, {"op", "graph.loop"},
+         {"parameters", {{"over", {{"draw_items", {{"contract", "forward_opaque_v1"}}}}},
+                         {"order", {{"by", "phase_default"}}},
+                         {"branches", Json::array({{{"body", "forward_opaque_draw"}}})}}},
+         {"outputs", {"draws"}}},
+        {{"id", "forward_opaque"}, {"op", "render.material_pass"},
+         {"parameters", {{"material_contract", "forward_opaque_v1"}, {"color_load_op", "load"},
+                         {"depth_load_op", "load"}, {"depth_store_op", "store"}, {"pass_set", "main_render"},
+                         {"insert", {{"before", "__snapshot_opaque_color"}, {"declared", true}}}}},
+         {"inputs", {{"color", {{"node", "lit_color_ref"}, {"port", "resource"}}},
+                     {"depth", {{"node", "scene_depth_ref"}, {"port", "resource"}}},
+                     {"draws", {{"node", "forward_opaque_draws"}, {"port", "draws"}}}}},
+         {"outputs", Json::array()}},
+    }));
+    CHECK(decomposed.at("definitions") == Json{
+        {"forward_opaque_draw",
+         {{"nodes", Json::array({{{"id", "step"}, {"op", "draw.material"}, {"parameters", Json::object()},
+                                  {"outputs", {"draws"}}}})},
+          {"outputs", {{"draws", {{"node", "step"}, {"port", "draws"}}}}}}}});
+    REQUIRE_NOTHROW(partitionGraphDocument(decomposed));
+
+    // The next pass reuses the references the first one added.
+    auto ordered = nlohmann::ordered_json::parse(decomposed.dump());
+    const auto transparent = decomposeMaterialPass(ordered.at("rendering"), ordered, "forward_transparent");
+    CHECK(transparent.target_refs == std::vector<std::string>{"lit_color_ref", "scene_depth_ref"});
+    CHECK(transparent.added_target_refs.empty());
+    CHECK(transparent.insert == nlohmann::ordered_json{{"before", "scene_present"}, {"declared", true}});
+    // The G-buffer pass: five colors, first in its family.
+    const auto geometry = decomposeMaterialPass(ordered.at("rendering"), ordered, "deferred_geometry");
+    CHECK(geometry.target_refs == std::vector<std::string>{"gbuffer_albedo_ref", "gbuffer_normal_ref",
+                                                           "gbuffer_material_ref", "gbuffer_worldpos_ref",
+                                                           "g_emissive_ref", "scene_depth_ref"});
+    CHECK(geometry.insert == nlohmann::ordered_json{{"before", "ssao_pass"}, {"declared", true}});
+    const auto composed = lp0aCompose(Json::parse(ordered.dump()));
+    CHECK(passByName(composed.config, "deferred_geometry").at("clear_colors") ==
+          Json{{"gbuffer_worldpos", {0.0, 0.0, 0.0, 0.0}}});
+}
+
+TEST_CASE("LP-3b a decomposed pass composes where the declared one stood, features and all",
+          "[render-feature][graph-composition][lp3b]") {
+    using Json = nlohmann::json;
+    // shadow_directional + sky_ambient: surface resources reach the forward
+    // passes, a feature pass lands after deferred_lighting. clustered_lighting
+    // and shadow_point: pass_overrides name forward_opaque and
+    // forward_transparent. rt_shadow_mask: its insert names deferred_geometry.
+    for (const auto &features : {Json::array(),
+                                 Json::array({"engine://features/shadow_directional.json",
+                                              "engine://features/sky_ambient.json"}),
+                                 Json::array({"engine://features/clustered_lighting.json",
+                                              "engine://features/shadow_point.json"}),
+                                 Json::array({"engine://features/rt_shadow_mask.json"})}) {
+        INFO(features.dump());
+        const auto one_piece = lp0aCompose(lp3bDirectRoot(features));
+        const auto document =
+            lp3bDecompose(lp3bDirectRoot(features), {"deferred_geometry", "forward_opaque", "forward_transparent"});
+        const auto decomposed = lp0aCompose(document);
+        CHECK(lp0bDeclared(decomposed.config) == lp0bDeclared(one_piece.config));
+        CHECK(lp0bPlanOrder(decomposed) == lp0bPlanOrder(one_piece));
+        for (const auto *pass : {"deferred_geometry", "forward_opaque", "forward_transparent"}) {
+            INFO(pass);
+            CHECK(lp3aPassFields(decomposed.config, pass) == lp3aPassFields(one_piece.config, pass));
+        }
+        CHECK(decomposed.surface_resource_contracts == one_piece.surface_resource_contracts);
+        CHECK(decomposed.pass_provenance == one_piece.pass_provenance);
+        REQUIRE(decomposed.material_draw_loops != nullptr);
+        CHECK(decomposed.material_draw_loops->passes.size() == 3);
+        REQUIRE_NOTHROW(compileComposition(decomposed));
+        // Control: placed after the features (no `declared`), the passes are
+        // not there when a feature names them (a pass_override, an insert).
+        if (features.empty() || features.at(0) == "engine://features/shadow_directional.json") continue;
+        CHECK_THROWS(lp0aCompose(lp3bWithoutDeclared(document)));
+    }
+}
+
+TEST_CASE("LP-3b decompose refuses what the graph cannot say, by name",
+          "[render-feature][graph-composition][lp3b]") {
+    using Json = nlohmann::json;
+    const auto root = lp3bDirectRoot(Json::array());
+    const auto forward = [&](const std::function<void(Json &)> &change) {
+        auto changed = root;
+        for (auto &pass : changed.at("rendering").at("rendering_passes").at(0).at("passes"))
+            if (pass.at("name") == "forward_opaque") change(pass);
+        return changed;
+    };
+    using Refusal = std::pair<std::string, Json>;
+    const std::string code{materialPassNotDecomposableCode};
+    CHECK(lp3bRefusal(root, "no_such_pass") == Refusal{code, {{"pass", "no_such_pass"}, {"reason", "not_found"}}});
+    CHECK(lp3bRefusal(root, "ssao_pass") ==
+          Refusal{code, {{"pass", "ssao_pass"}, {"reason", "not_material"}, {"type", "fullscreen"}}});
+    CHECK(lp3bRefusal(forward([](Json &pass) { pass["input"] = Json::array({"ssao_blur"}); }), "forward_opaque") ==
+          Refusal{code, {{"pass", "forward_opaque"}, {"reason", "field_unsupported"}, {"field", "input"}}});
+    CHECK(lp3bRefusal(forward([](Json &pass) { pass.erase("material_contract"); }), "forward_opaque") ==
+          Refusal{code, {{"pass", "forward_opaque"}, {"reason", "contract_unsupported"}, {"contract", nullptr}}});
+    CHECK(lp3bRefusal(forward([](Json &pass) {
+                          pass["output"]["color"] = Json::array({{{"target", "lit_color"}, {"subresource", {{"mip", 0}}}}});
+                      }),
+                      "forward_opaque") ==
+          Refusal{code, {{"pass", "forward_opaque"}, {"reason", "attachment_unsupported"}, {"socket", "color"}}});
+    auto taken = root;
+    taken["nodes"].push_back({{"id", "forward_opaque_draws"}, {"op", "value.constant"}, {"parameters", {{"value", 1.0}}},
+                              {"outputs", {"value"}}});
+    CHECK(lp3bRefusal(taken, "forward_opaque") ==
+          Refusal{"graph.node_duplicate@1", {{"node", "forward_opaque_draws"}, {"scope", "root"}}});
+    auto defined = root;
+    defined["definitions"]["forward_opaque_draw"] = {{"nodes", Json::array()}, {"outputs", Json::object()}};
+    CHECK(lp3bRefusal(defined, "forward_opaque") ==
+          Refusal{"graph.definition_duplicate@1", {{"definition", "forward_opaque_draw"}}});
+}
+
+TEST_CASE("LP-3b insert.declared places a graph pass among the declared passes only",
+          "[render-feature][graph-composition][lp0b][lp3b]") {
+    using Json = nlohmann::json;
+    // A feature's pass is not there yet when the declared passes are placed.
+    const auto feature_anchor =
+        lp0bGraph({"blit"}, {{"insert", {{"after", "HighLuminanceExtraction"}, {"declared", true}}}});
+    const auto [code, fields] = lp0aRefusal(feature_anchor);
+    CHECK(code == "graph.insert_anchor_unknown@1");
+    CHECK(fields == Json{{"node", "blit"}, {"anchor", "HighLuminanceExtraction"}});
+    // A declared pass: the same place as without the flag.
+    const auto declared = lp0aCompose(lp0bGraph({"blit"}, {{"insert", {{"after", "deferred_lighting"}, {"declared", true}}}}));
+    const auto names = lp0bDeclared(declared.config);
+    CHECK(lp0bIndex(names, "blit") == lp0bIndex(names, "deferred_lighting") + 1);
+    REQUIRE_NOTHROW(compileComposition(declared));
+    // The flag is a boolean beside one side.
+    CHECK_THROWS(partitionGraphDocument(lp0bGraph({"blit"}, {{"insert", {{"after", "deferred_lighting"}, {"declared", "yes"}}}})));
+    CHECK_THROWS(partitionGraphDocument(lp0bGraph({"blit"}, {{"insert", {{"declared", true}}}})));
+}
+
+TEST_CASE("LP-3b get_frame_plan pages a draw_loop's elements",
+          "[render-feature][graph-composition][lp3b]") {
+    using Json = nlohmann::json;
+    const auto element = [](int index) {
+        return Json{{"element", "m" + std::to_string(index)}, {"index", index}, {"branch", 0}};
+    };
+    const Json plan{{"loops", Json::array({
+        {{"node", "forward_opaque_draws"}, {"tier", "draw_loop"}, {"count", 3},
+         {"elements", Json::array({element(0), element(1), element(2)})}, {"unmatched_branches", Json::array()},
+         {"pass", "forward_opaque"}},
+        {{"node", "steps"}, {"tier", "expand"}, {"count", 1}, {"elements", Json::array({element(0)})},
+         {"unmatched_branches", Json::array()}},
+    })}};
+    const auto paged = [&](const Json &params) {
+        auto copy = plan;
+        REQUIRE(pageDrawLoopElements(copy, parseDrawLoopElementPage(params)));
+        CHECK(copy.at("loops").at(1) == plan.at("loops").at(1));
+        return copy.at("loops").at(0);
+    };
+    const auto first = paged({{"loop_elements", {{"node", "forward_opaque_draws"}, {"limit", 2}}}});
+    CHECK(first.at("elements") == Json::array({element(0), element(1)}));
+    CHECK(first.at("total") == 3);
+    CHECK(first.at("count") == 3);
+    CHECK(first.at("offset") == 0);
+    CHECK(first.at("limit") == 2);
+    const auto rest = paged({{"loop_elements", {{"node", "forward_opaque_draws"}, {"offset", 2}, {"limit", 2}}}});
+    CHECK(rest.at("elements") == Json::array({element(2)}));
+    CHECK(rest.at("total") == 3);
+    const auto whole = paged(Json::object());
+    CHECK(whole.at("elements").size() == 3);
+    CHECK(whole.at("limit") == drawLoopElementPageDefaultLimit);
+    // An unknown loop, or an expand loop, is not paged; bad shapes are refused.
+    auto unchanged = plan;
+    CHECK_FALSE(pageDrawLoopElements(unchanged, parseDrawLoopElementPage({{"loop_elements", {{"node", "steps"}}}})));
+    CHECK(unchanged == plan);
+    CHECK_THROWS_AS(parseDrawLoopElementPage({{"loop_elements", {{"node", "x"}, {"limit", 0}}}}), std::invalid_argument);
+    CHECK_THROWS_AS(parseDrawLoopElementPage({{"loop_elements", {{"node", "x"}, {"offset", -1}}}}), std::invalid_argument);
+    CHECK_THROWS_AS(parseDrawLoopElementPage({{"loop_elements", {{"limit", 2}}}}), std::invalid_argument);
+    CHECK_THROWS_AS(parseDrawLoopElementPage({{"loop_elements", {{"node", "x"}, {"page", 1}}}}), std::invalid_argument);
 }
 
 } // namespace Pelican

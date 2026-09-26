@@ -253,6 +253,12 @@ class RenderConfigEditorService {
     nlohmann::ordered_json getGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params);
     nlohmann::ordered_json editGraphDocument(const nlohmann::json &params);
+    // LP-3b: a one-piece material pass of the rendering section or of a
+    // forked (project) preset, rewritten as a render.material_pass with the
+    // same name and place, render.target_ref nodes, a draw_loop graph.loop
+    // and its body definition (materialpassdecompose.hpp) -- the section or
+    // the preset and the graph in one ticket.
+    nlohmann::ordered_json decomposeMaterialPass(const nlohmann::json &params);
     nlohmann::ordered_json getGraphValues(const nlohmann::json &params) const;
     // AG-3a. Every node in one scope of the published document with what the
     // drawn frame's evaluation gave it -- the definition-scope values
