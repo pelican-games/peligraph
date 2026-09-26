@@ -3964,12 +3964,198 @@ RenderConfigEditorService::findWritableRenderDocument(
     return found == writable.end() ? nullptr : &*found;
 }
 
+std::vector<RenderConfigEditorService::WritableRenderDocument>
+RenderConfigEditorService::namedRenderDocuments(
+    std::string_view root_bytes,
+    const std::function<std::optional<std::string>(const std::string &)>
+        &preset_bytes) const {
+    std::vector<WritableRenderDocument> named;
+    if (!dependencies_.normalize_reference ||
+        !dependencies_.resolve_document_path)
+        return named;
+    std::vector<std::pair<std::string, std::string_view>> references;
+    try {
+        const auto root = Json::parse(root_bytes);
+        const auto &section = renderingSectionOrEmpty(root);
+        std::vector<std::string> features;
+        appendFeatureReferences(section.value("features", Json::array()),
+                                features);
+        const auto pipeline = section.find("pipeline");
+        if (pipeline != section.end() && pipeline->is_object()) {
+            const auto preset = pipeline->find("preset");
+            if (preset != pipeline->end() && preset->is_string()) {
+                const auto reference = preset->get<std::string>();
+                // Only a project:// preset is the project's, as every preset
+                // edit requires.
+                if (reference.starts_with("project://"))
+                    references.emplace_back(reference, "preset");
+                try {
+                    if (const auto bytes = preset_bytes(reference)) {
+                        const auto document = Json::parse(*bytes);
+                        if (document.is_object() &&
+                            document.contains("config") &&
+                            document.at("config").is_object())
+                            appendFeatureReferences(
+                                document.at("config").value("features",
+                                                            Json::array()),
+                                features);
+                    }
+                } catch (const std::exception &) {
+                    // A preset that does not read names no features; the
+                    // candidate's preflight says why it does not compose.
+                }
+            }
+        }
+        for (auto &feature : features)
+            references.emplace_back(std::move(feature), "feature");
+    } catch (const std::exception &) {
+        // A root that does not parse names nothing; its content is refused
+        // by the restore's own content check.
+    }
+    for (const auto &[reference, kind] : references) {
+        if (reference.empty() || reference.starts_with("engine://") ||
+            reference.find('#') != std::string::npos)
+            continue;
+        try {
+            auto normalized = dependencies_.normalize_reference(reference);
+            if (normalized == source_normalized_reference_ ||
+                std::any_of(named.begin(), named.end(), [&](const auto &entry) {
+                    return entry.normalized_reference == normalized;
+                }))
+                continue;
+            auto path = dependencies_.resolve_document_path(reference);
+            // The path, or for a document to create the directory it lands
+            // in, resolves inside the project (symbolic links resolved).
+            if (!isWithinDirectory(dependencies_.project_root, path)) continue;
+            named.push_back(WritableRenderDocument{
+                .reference = reference,
+                .normalized_reference = std::move(normalized),
+                .path = std::move(path),
+                .kind = std::string{kind},
+            });
+        } catch (const std::exception &) {
+        }
+    }
+    return named;
+}
+
+bool RenderConfigEditorService::isAbsentProjectDocument(
+    const std::string &reference) const {
+    if (reference.empty() || reference.starts_with("engine://") ||
+        reference.find('#') != std::string::npos ||
+        !dependencies_.resolve_document_path)
+        return false;
+    try {
+        const auto path = dependencies_.resolve_document_path(reference);
+        if (!isWithinDirectory(dependencies_.project_root, path)) return false;
+        std::error_code error;
+        const auto status = std::filesystem::symlink_status(path, error);
+        // A not-found path may also set `error`; the type says it.
+        return status.type() == std::filesystem::file_type::not_found;
+    } catch (const std::exception &) {
+        return false;
+    }
+}
+
+namespace {
+
+std::string asciiLower(std::string text) {
+    for (auto &character : text)
+        if (character >= 'A' && character <= 'Z')
+            character = static_cast<char>(character - 'A' + 'a');
+    return text;
+}
+
+// Whether `relative` lies under `directory` (both project-relative, compared
+// component by component and without case: a Windows project is).
+bool isUnderRelativeDirectory(const std::filesystem::path &relative,
+                              const std::filesystem::path &directory) {
+    auto relative_it = relative.begin();
+    for (const auto &component : directory) {
+        if (relative_it == relative.end() ||
+            asciiLower(relative_it->generic_string()) !=
+                asciiLower(component.generic_string()))
+            return false;
+        ++relative_it;
+    }
+    return relative_it != relative.end();
+}
+
+} // namespace
+
+std::optional<std::string> RenderConfigEditorService::reservedProjectLocation(
+    const std::filesystem::path &path) const {
+    std::error_code error;
+    const auto root =
+        std::filesystem::weakly_canonical(dependencies_.project_root, error);
+    if (error) return std::nullopt;
+    const auto candidate = std::filesystem::weakly_canonical(path, error);
+    if (error) return std::nullopt;
+    const auto relative = candidate.lexically_relative(root);
+    if (relative.empty() || relative.begin() == relative.end()) return std::nullopt;
+
+    // The project template's own places (src/project/projecttemplate.cpp and
+    // the .gitignore it writes): code, scenes, assets, input, UI, vendored
+    // packages (install_package), editor metadata and build output.
+    const auto first = asciiLower(relative.begin()->generic_string());
+    for (const std::string_view reserved :
+         {".pelican", "code", "assets", "scenes", "input", "ui", "packages",
+          "build", "out", "output"}) {
+        if (first == reserved && std::next(relative.begin()) != relative.end())
+            return std::string{reserved} + "/";
+    }
+    if (first.starts_with("build-") &&
+        std::next(relative.begin()) != relative.end())
+        return relative.begin()->generic_string() + "/";
+
+    // The directories project.json's basic_config paths name (a project may
+    // keep its scene or UI elsewhere), except one that holds the rendering
+    // config root.
+    std::error_code root_error;
+    const auto root_relative =
+        std::filesystem::weakly_canonical(dependencies_.source_path, root_error)
+            .lexically_relative(root);
+    std::optional<std::string> found;
+    const auto consider = [&](std::string value) {
+        if (found) return;
+        if (value.starts_with("project://")) value.erase(0, 10);
+        // Only document paths; a window title is not a place.
+        if (!value.ends_with(".json") || value.find("://") != std::string::npos)
+            return;
+        const auto parent =
+            std::filesystem::path{value}.lexically_normal().parent_path();
+        if (parent.empty() || parent.is_absolute() ||
+            parent.begin()->generic_string() == "..")
+            return;
+        if (root_error || isUnderRelativeDirectory(root_relative, parent))
+            return;
+        if (isUnderRelativeDirectory(relative, parent))
+            found = parent.generic_string() + "/";
+    };
+    try {
+        const auto project =
+            Json::parse(readFileBytes(dependencies_.project_root / "project.json"));
+        const auto basic = project.find("basic_config");
+        if (basic == project.end() || !basic->is_object()) return std::nullopt;
+        std::function<void(const Json &)> visit = [&](const Json &value) {
+            if (value.is_string()) consider(value.get<std::string>());
+            else if (value.is_object() || value.is_array())
+                for (const auto &child : value) visit(child);
+        };
+        for (const auto &[key, value] : basic->items())
+            if (key != "rendering_config_json") visit(value);
+    } catch (const std::exception &) {
+    }
+    return found;
+}
+
 OrderedJson RenderConfigEditorService::renderDocumentNotWritable(
     std::string_view method, const std::string &reference) const {
     std::string reason = "not_render_document";
     std::string explanation =
         "it is not a render document the current composition writes (the "
-        "root, the forked preset or a project feature document)";
+        "root, the forked preset or a project feature document) or one the "
+        "restored root or preset names";
     if (reference.starts_with("engine://")) {
         reason = "engine_document";
         explanation = "engine documents are never written";
@@ -4034,8 +4220,18 @@ OrderedJson RenderConfigEditorService::getRenderDocuments(
     } else {
         for (const auto &reference : *requested) {
             const auto *found = findWritableRenderDocument(writable, reference);
-            if (found == nullptr)
+            if (found == nullptr) {
+                // RD-1b: a document inside the project that is not there now
+                // (one an edit deleted, or one an undo would create) is named
+                // as missing, not as a document this service does not write.
+                if (isAbsentProjectDocument(reference))
+                    return rejection(
+                        std::string{renderDocumentMissingCode},
+                        "Render document " + reference + " is not there",
+                        {{"method", std::string{method}},
+                         {"reference", reference}});
                 return renderDocumentNotWritable(method, reference);
+            }
             selected.push_back(found);
         }
     }
@@ -4066,10 +4262,22 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
         requested->empty())
         throw std::invalid_argument(
             "restore_render_documents requires a non-empty documents array");
+    // RD-1b: base_digest null is "not there now" (the document is created),
+    // content null is "delete it". Both keys are always present.
     struct Restore {
         std::string reference;
-        std::string base_digest;
-        std::string content;
+        std::optional<std::string> base_digest;
+        std::optional<std::string> content;
+    };
+    const auto string_or_null = [&](const Json &entry, const char *field) {
+        const auto found = entry.find(field);
+        if (found == entry.end() || !(found->is_null() || found->is_string()))
+            throw std::invalid_argument(
+                std::string{"restore_render_documents document requires "} +
+                field + " as a string or null");
+        return found->is_null()
+                   ? std::optional<std::string>{}
+                   : std::optional<std::string>{found->get<std::string>()};
     };
     std::vector<Restore> restores;
     for (const auto &entry : *requested) {
@@ -4077,12 +4285,17 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
                     "restore_render_documents document");
         Restore restore{
             .reference = requireString(entry, "reference", method),
-            .base_digest = requireString(entry, "base_digest", method),
-            .content = requireString(entry, "content", method),
+            .base_digest = string_or_null(entry, "base_digest"),
+            .content = string_or_null(entry, "content"),
         };
-        if (!isLowerHexDigest(restore.base_digest))
+        if (restore.base_digest && !isLowerHexDigest(*restore.base_digest))
             throw std::invalid_argument(
                 "restore_render_documents base_digest must be 64 lowercase hex characters");
+        if (!restore.base_digest && !restore.content)
+            throw std::invalid_argument(
+                "restore_render_documents " + restore.reference +
+                ": base_digest and content cannot both be null (a document "
+                "that is not there cannot be deleted)");
         restores.push_back(std::move(restore));
     }
     if (!dependencies_.resolve_authoring_context ||
@@ -4107,14 +4320,129 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
                                           {"method", std::string{method}}});
     }
 
-    // Every reference first: a request that names a document this service
-    // does not write is refused before any digest is compared.
-    std::vector<const WritableRenderDocument *> targets;
+    // RD-1b: besides what the current composition writes, the documents the
+    // current and the restored root (and each one's preset) name may be
+    // created or deleted -- an authored fragment, the project preset, a
+    // materialized or imported feature. The restored root is the request's
+    // when it restores the root; its preset's bytes are the request's when it
+    // restores the preset, else what is on disk (or the engine's).
+    const auto restored_content =
+        [&](const std::string &reference) -> const Restore * {
+        std::string normalized;
+        try {
+            normalized = dependencies_.normalize_reference(reference);
+        } catch (const std::exception &) {
+            return nullptr;
+        }
+        for (const auto &restore : restores) {
+            if (restore.reference.starts_with("engine://") ||
+                restore.reference.find('#') != std::string::npos)
+                continue;
+            try {
+                if (dependencies_.normalize_reference(restore.reference) ==
+                    normalized)
+                    return &restore;
+            } catch (const std::exception &) {
+            }
+        }
+        return nullptr;
+    };
+    const auto preset_on_disk =
+        [&](const std::string &reference) -> std::optional<std::string> {
+        if (reference.starts_with("engine://"))
+            return engineResourceOrThrow(reference.substr(9));
+        const auto path = dependencies_.resolve_document_path(reference);
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error) || error)
+            return std::nullopt;
+        return readFileBytes(path);
+    };
+    const auto restored_preset =
+        [&](const std::string &reference) -> std::optional<std::string> {
+        if (const auto *restore = restored_content(reference))
+            return restore->content;
+        return preset_on_disk(reference);
+    };
+    std::string restored_root = document_.bytes();
     for (const auto &restore : restores) {
         const auto *found =
             findWritableRenderDocument(writable, restore.reference);
-        if (found == nullptr)
-            return renderDocumentNotWritable(method, restore.reference);
+        if (found != nullptr && found->kind == "root" && restore.content)
+            restored_root = *restore.content;
+    }
+    auto named = namedRenderDocuments(document_.bytes(), preset_on_disk);
+    for (auto &entry : namedRenderDocuments(restored_root, restored_preset)) {
+        if (std::none_of(named.begin(), named.end(), [&](const auto &other) {
+                return other.normalized_reference == entry.normalized_reference;
+            }))
+            named.push_back(std::move(entry));
+    }
+
+    // Every reference first: a request that names a document this service
+    // does not write is refused before any digest is compared.
+    std::vector<const WritableRenderDocument *> targets;
+    // RD-1b: a document is created or deleted only outside the places the
+    // project keeps its code, scenes, assets and generated files. Replacing a
+    // render document that is already there (RD-1) is not limited by this.
+    const auto reserved_refusal = [&](const Restore &restore,
+                                      const WritableRenderDocument &target)
+        -> std::optional<OrderedJson> {
+        if (restore.content && restore.base_digest) return std::nullopt;
+        const auto location = reservedProjectLocation(target.path);
+        if (!location) return std::nullopt;
+        return rejection(
+            std::string{renderDocumentNotWritableCode},
+            "Render document " + restore.reference + " is under " + *location +
+                ", where the project keeps documents that are not render "
+                "documents; it is not created or deleted there",
+            {{"method", std::string{method}},
+             {"reference", restore.reference},
+             {"reason", "reserved_location"},
+             {"location", *location}});
+    };
+    for (const auto &restore : restores) {
+        const auto *found =
+            findWritableRenderDocument(writable, restore.reference);
+        if (found != nullptr) {
+            if (auto refused = reserved_refusal(restore, *found))
+                return *refused;
+        } else {
+            // A document the current composition does not write, that the
+            // current or the restored one names: it is either not there (and
+            // is created, or the CAS below says it is gone) or a file of the
+            // kind it is named as. A file of another kind -- a scene, code or
+            // an asset a restored root names -- is not written or deleted.
+            found = findWritableRenderDocument(named, restore.reference);
+            if (found == nullptr)
+                return renderDocumentNotWritable(method, restore.reference);
+            if (auto refused = reserved_refusal(restore, *found))
+                return *refused;
+            std::error_code error;
+            const auto status = std::filesystem::symlink_status(found->path, error);
+            const bool absent =
+                status.type() == std::filesystem::file_type::not_found;
+            // A request that says the document is not there is answered by
+            // the CAS when it is; nothing is written either way.
+            if (!absent && restore.base_digest) {
+                bool of_kind = false;
+                try {
+                    of_kind = std::filesystem::is_regular_file(found->path) &&
+                              isRenderDocumentOfKind(readFileBytes(found->path),
+                                                     found->kind);
+                } catch (const std::exception &) {
+                }
+                if (!of_kind)
+                    return renderDocumentNotWritable(method, restore.reference);
+            }
+        }
+        if (found->kind == "root" && !restore.content)
+            return rejection(
+                std::string{renderDocumentNotWritableCode},
+                "Render document " + restore.reference +
+                    " is the root; it is restored, never deleted",
+                {{"method", std::string{method}},
+                 {"reference", restore.reference},
+                 {"reason", "root_document"}});
         if (std::find(targets.begin(), targets.end(), found) != targets.end())
             throw std::invalid_argument(
                 "restore_render_documents names " + restore.reference +
@@ -4126,15 +4454,26 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
     // The root is the engine-owned document (and the file must still hold
     // it); every other document is compared on disk. The root is held to the
     // engine's document whether or not the request restores it.
+    // RD-1b: a document that is not there is null on both sides.
     auto mismatches = OrderedJson::array();
-    const auto mismatch = [&](const std::string &reference,
-                              const std::string &expected,
-                              const std::string &provided) {
-        mismatches.push_back({{"reference", reference},
-                              {"expected_digest", expected},
-                              {"provided_digest", provided}});
+    const auto digest_json = [](const std::optional<std::string> &digest) {
+        return digest ? OrderedJson(*digest) : OrderedJson(nullptr);
     };
-    const auto disk_digest = [](const std::filesystem::path &path) {
+    const auto mismatch = [&](const std::string &reference,
+                              const std::optional<std::string> &expected,
+                              const std::optional<std::string> &provided) {
+        mismatches.push_back({{"reference", reference},
+                              {"expected_digest", digest_json(expected)},
+                              {"provided_digest", digest_json(provided)}});
+    };
+    // The document as it is now: nullopt when nothing is at the path (not
+    // even a dangling link), "" when something is there that does not read.
+    const auto disk_digest = [](const std::filesystem::path &path)
+        -> std::optional<std::string> {
+        std::error_code error;
+        const auto status = std::filesystem::symlink_status(path, error);
+        if (status.type() == std::filesystem::file_type::not_found)
+            return std::nullopt;
         try {
             return renderConfigSourceDigest(readFileBytes(path));
         } catch (const std::exception &) {
@@ -4142,16 +4481,16 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
         }
     };
     const auto root_on_disk = disk_digest(dependencies_.source_path);
+    const std::optional<std::string> root_digest = document_.sourceDigest();
     bool root_restored = false;
     for (std::size_t index = 0; index < restores.size(); ++index) {
         const auto &restore = restores[index];
         const auto &target = *targets[index];
         if (target.kind == "root") {
             root_restored = true;
-            if (restore.base_digest != document_.sourceDigest())
-                mismatch(restore.reference, document_.sourceDigest(),
-                         restore.base_digest);
-            else if (root_on_disk != document_.sourceDigest())
+            if (restore.base_digest != root_digest)
+                mismatch(restore.reference, root_digest, restore.base_digest);
+            else if (root_on_disk != root_digest)
                 mismatch(restore.reference, root_on_disk, restore.base_digest);
             continue;
         }
@@ -4159,9 +4498,8 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
         if (current != restore.base_digest)
             mismatch(restore.reference, current, restore.base_digest);
     }
-    if (!root_restored && root_on_disk != document_.sourceDigest())
-        mismatch(dependencies_.source_reference, root_on_disk,
-                 document_.sourceDigest());
+    if (!root_restored && root_on_disk != root_digest)
+        mismatch(dependencies_.source_reference, root_on_disk, root_digest);
     if (!mismatches.empty()) {
         const auto first = mismatches.front();
         return rejection(
@@ -4177,6 +4515,8 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
 
     // The candidate: the editor's current document set with each restored
     // document's bytes in place, each held to the digest it was read with.
+    // RD-1b: a document with base_digest null is created (held to "not
+    // there"), one with content null is deleted.
     auto root = document_;
     auto candidate_documents = currentDocumentSet().documents();
     for (std::size_t index = 0; index < restores.size(); ++index) {
@@ -4188,9 +4528,12 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
                               {"method", std::string{method}},
                               {"reference", restore.reference}});
         };
-        if (target.kind == "root") {
+        if (!restore.content) {
+            // Deleted: nothing to check but that the composition still
+            // composes without it (the candidate's preflight).
+        } else if (target.kind == "root") {
             try {
-                root = AuthoredRenderConfigDocument::inspect(restore.content);
+                root = AuthoredRenderConfigDocument::inspect(*restore.content);
             } catch (const RenderConfigLegacyRoot &error) {
                 return rejection(std::string{renderConfigLegacyRootCode},
                                  error.what(),
@@ -4199,7 +4542,7 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
             } catch (const std::exception &error) {
                 return refuse_content(error.what());
             }
-        } else if (!isRenderDocumentOfKind(restore.content, target.kind)) {
+        } else if (!isRenderDocumentOfKind(*restore.content, target.kind)) {
             return refuse_content(
                 "The restored " + restore.reference + " is not a " +
                 std::string{renderDocumentSchema(target.kind)} + " document");
@@ -4208,10 +4551,18 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
             .reference = target.reference,
             .normalized_reference = target.normalized_reference,
             .path = target.path,
-            .operation = RenderConfigDocumentOperation::replace,
-            .expected = {RenderConfigDocumentExistence::present,
-                         restore.base_digest},
-            .bytes = restore.content,
+            .operation = !restore.content ? RenderConfigDocumentOperation::erase
+                         : !restore.base_digest
+                             ? RenderConfigDocumentOperation::create
+                             : RenderConfigDocumentOperation::replace,
+            .expected =
+                restore.base_digest
+                    ? RenderConfigDocumentExpectedState{
+                          RenderConfigDocumentExistence::present,
+                          *restore.base_digest}
+                    : RenderConfigDocumentExpectedState{
+                          RenderConfigDocumentExistence::missing, {}},
+            .bytes = restore.content.value_or(std::string{}),
         };
         const auto existing = std::find_if(
             candidate_documents.begin(), candidate_documents.end(),
@@ -4220,9 +4571,24 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
                        target.normalized_reference;
             });
         if (existing != candidate_documents.end()) *existing = std::move(document);
-        else candidate_documents.insert(candidate_documents.begin(),
-                                        std::move(document));
+        else candidate_documents.push_back(std::move(document));
     }
+    // As add_authored_pass and remove_authored_pass order them: a created
+    // document exists before a root names it, and a deleted one goes after
+    // the root has stopped naming it. The transaction is atomic either way;
+    // the order is what a reader between two steps would see.
+    const auto step = [](const RenderConfigCandidateDocument &document) {
+        switch (document.operation) {
+        case RenderConfigDocumentOperation::create: return 0;
+        case RenderConfigDocumentOperation::replace: return 1;
+        case RenderConfigDocumentOperation::erase: return 2;
+        }
+        return 1;
+    };
+    std::stable_sort(candidate_documents.begin(), candidate_documents.end(),
+                     [&](const auto &left, const auto &right) {
+                         return step(left) < step(right);
+                     });
     RenderConfigCandidateDocumentSet candidate_set{
         source_normalized_reference_, std::move(candidate_documents)};
 

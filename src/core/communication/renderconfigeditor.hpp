@@ -26,9 +26,17 @@ namespace Pelican {
 // RD-1: get_render_documents / restore_render_documents named a reference
 // that is not a render document the current composition writes. Fields:
 // {method, reference, reason}; reason is "engine_document",
-// "fragment_address", "outside_project" or "not_render_document".
+// "fragment_address", "outside_project", "not_render_document" or (RD-1b,
+// restore only) "root_document" for a request to delete the root.
 inline constexpr std::string_view renderDocumentNotWritableCode =
     "render_document_not_writable";
+
+// RD-1b: get_render_documents named a document inside the project that is
+// not there now (a fragment an edit deleted, or one an undo would create).
+// Fields: {method, reference}. Its restore_render_documents base_digest is
+// null.
+inline constexpr std::string_view renderDocumentMissingCode =
+    "render_document_missing";
 
 struct RenderFeatureCatalogEntry {
     std::string name;
@@ -271,6 +279,25 @@ class RenderConfigEditorService {
     const WritableRenderDocument *findWritableRenderDocument(
         const std::vector<WritableRenderDocument> &writable,
         const std::string &reference) const;
+    // RD-1b: the documents a root names, whether or not they are there: its
+    // preset (a project:// one only) and every feature the root or that preset
+    // lists. `preset_bytes` gives the preset's bytes (nullopt: none). Only
+    // references that are not engine:// or fragment addresses and resolve
+    // inside the project are listed; `path` may not exist.
+    std::vector<WritableRenderDocument> namedRenderDocuments(
+        std::string_view root_bytes,
+        const std::function<std::optional<std::string>(const std::string &)>
+            &preset_bytes) const;
+    // RD-1b: the reference is not engine:// or a fragment address, resolves
+    // inside the project, and nothing is at that path.
+    bool isAbsentProjectDocument(const std::string &reference) const;
+    // RD-1b: the reserved directory `path` lies under ("code/", ".pelican/",
+    // ...), or nullopt. Reserved are the places the project template keeps
+    // code, scenes, assets, input, UI, vendored packages and generated files,
+    // and the directories project.json's basic_config paths name (except one
+    // that holds the rendering config root).
+    std::optional<std::string> reservedProjectLocation(
+        const std::filesystem::path &path) const;
     // RD-1: render_document_not_writable for a reference that is not one of
     // writableRenderDocuments(), with the reason it is not.
     nlohmann::ordered_json renderDocumentNotWritable(
@@ -347,13 +374,20 @@ class RenderConfigEditorService {
     nlohmann::ordered_json editRenderTargets(
         const nlohmann::json &params);
     // RD-1: the render documents the current composition can write, byte for
-    // byte, with their digests (`references` omitted: all of them).
+    // byte, with their digests (`references` omitted: all of them). RD-1b: a
+    // named document inside the project that is not there is
+    // render_document_missing.
     nlohmann::ordered_json getRenderDocuments(
         const nlohmann::json &params) const;
     // RD-1: write documents read by get_render_documents back, whole, in one
     // ticket: every document's current digest must equal its base_digest, and
     // the candidate goes through the same preflight (with variants) and
     // recomposition as any edit before anything is written.
+    // RD-1b: `content: null` deletes the document and `base_digest: null`
+    // says it is not there now (so it is created); not both. Besides what the
+    // current composition writes, the documents the restored root (and its
+    // preset) name may be created or deleted; a deletion is limited to what
+    // the current or the restored composition names.
     nlohmann::ordered_json restoreRenderDocuments(
         const nlohmann::json &params);
     nlohmann::ordered_json getResult(
