@@ -30,7 +30,7 @@
             "shader": {"vertex": "engine://fullscreen", "fragment": "engine://bloom_blur_h"},
             "clear_color": [0.0, 0.0, 0.0, 0.0],
             "ports": {
-              "source": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}}, "access": "read"},
+              "source": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}}, "access": "read", "binding": "input", "input_index": 0},
               "color": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}}, "access": "write", "attachment": "color", "location": 0}
             }
           },
@@ -60,7 +60,7 @@
             "shader": {"vertex": "engine://fullscreen", "fragment": "engine://bloom_blur_v"},
             "clear_color": [0.0, 0.0, 0.0, 0.0],
             "ports": {
-              "source": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}}, "access": "read"},
+              "source": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}}, "access": "read", "binding": "input", "input_index": 0},
               "color": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}}, "access": "write", "attachment": "color", "location": 0}
             }
           },
@@ -97,7 +97,7 @@
               ]
             },
             "ports": {
-              "source": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}}, "access": "read"},
+              "source": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}}, "access": "read", "binding": "input", "input_index": 0},
               "color": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}}, "access": "write", "attachment": "color", "location": 0}
             }
           },
@@ -156,7 +156,7 @@
         },
         "clear_color": [0.0, 0.0, 0.0, 0.0],
         "ports": {
-          "source": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}}, "access": "read"},
+          "source": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}}, "access": "read", "binding": "input", "input_index": 0},
           "color": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}}, "access": "write", "attachment": "color", "location": 0}
         }
       },
@@ -221,8 +221,8 @@
         "shader": {"vertex": "engine://fullscreen", "fragment": "engine://bloom_composite"},
         "color_load_op": "Load",
         "ports": {
-          "scene": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}}, "access": "read"},
-          "bloom": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}}, "access": "read"},
+          "scene": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}}, "access": "read", "binding": "input", "input_index": 0},
+          "bloom": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}}, "access": "read", "binding": "input", "input_index": 1},
           "bloomIntensity": {"kind": "buffer", "element": "float", "access": "read"},
           "color": {"kind": "image", "type": {"semantic": "pelican.render.color_signal@1", "arguments": {"reference": "display", "transfer": "output_encoded", "range": "normalized"}}, "access": "write", "attachment": "color", "location": 0}
         }

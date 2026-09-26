@@ -779,6 +779,67 @@ TEST_CASE("VI-1 engine://passthrough writes the input PELICAN_PASSTHROUGH_INPUT 
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+// LP-1d acceptance 2 on the device: a graph render.fullscreen gives
+// engine://passthrough two images as its numbered inputs -- vi_red through
+// port z_first (input_index 0), vi_green through a_second (input_index 1);
+// both the port names and the target names sort the other way round -- and
+// PELICAN_PASSTHROUGH_INPUT=1 shows the second: green. The graph pass draws
+// vi_shown just before `present`, which shows vi_shown.
+TEST_CASE("LP-1d a graph fullscreen pass gives engine://passthrough its inputs by input_index",
+          "[vi1][lp1d][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("lp1d_graph_inputs");
+    const auto root = dir.root / "project";
+    writeProject(root, {{"vi_red", red}, {"vi_green", green}},
+                 Json{{"input", Json::array({"vi_shown"})}, {"shader", passthroughShader()}});
+    const auto config_path = root / "passes/main_rendering_config.json";
+    auto document = Json::parse(readFile(config_path));
+    auto shown = document.at("rendering").at("render_targets").at(0);
+    shown["name"] = "vi_shown";
+    document["rendering"]["render_targets"].push_back(shown);
+    const Json type{{"semantic", "pelican.render.color_signal@1"},
+                    {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    const auto ref = [&](const std::string &id, const std::string &name) {
+        return Json{{"id", id}, {"op", "render.target_ref"},
+                    {"parameters", {{"name", name}, {"type", type}}}, {"outputs", {"resource"}}};
+    };
+    const auto numbered = [&](int input_index) {
+        return Json{{"kind", "image"}, {"type", type}, {"access", "read"},
+                    {"binding", "input"}, {"input_index", input_index}};
+    };
+    document["nodes"] = Json::array({ref("red_ref", "vi_red"), ref("green_ref", "vi_green"),
+        ref("shown_ref", "vi_shown"),
+        {{"id", "pick"}, {"op", "render.fullscreen"},
+         {"parameters", {{"pass_set", "main_render"}, {"insert", {{"before", "present"}}},
+             {"shader", passthroughShader(Json::array({"PELICAN_PASSTHROUGH_INPUT=1"}))},
+             {"ports", {{"z_first", numbered(0)}, {"a_second", numbered(1)},
+                        {"color", {{"kind", "image"}, {"type", type}, {"access", "write"},
+                                   {"attachment", "color"}, {"location", 0}}}}}}},
+         {"inputs", {{"z_first", {{"node", "red_ref"}, {"port", "resource"}}},
+                     {"a_second", {{"node", "green_ref"}, {"port", "resource"}}},
+                     {"color", {{"node", "shown_ref"}, {"port", "resource"}}}}},
+         {"outputs", {"color"}}}});
+    writeFile(config_path, document.dump(2));
+    const auto capture = dir.root / "capture.png";
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+
+    CHECK(every(rpc.frame(capture), green));
+    // The pass bound two texture inputs through passthrough's variadic group.
+    const auto plan = rpc.result("get_frame_plan");
+    const auto pick = std::find_if(plan.at("nodes").begin(), plan.at("nodes").end(),
+                                   [](const Json &node) { return node.value("name", std::string{}) == "pick"; });
+    REQUIRE(pick != plan.at("nodes").end());
+    INFO(pick->dump(2));
+    CHECK(pick->at("pass_inputs").at("pass_texture_inputs") == 2);
+    CHECK(pick->at("pass_inputs").at("variadic_range") == Json{{"first", 0}, {"max", 8}});
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
 TEST_CASE("VI-1 a pass define the engine sets itself is refused by name through the editor",
           "[vi1][render-config-editor][rpc][gpu]") {
     setupLogger(true);

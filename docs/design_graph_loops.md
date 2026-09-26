@@ -492,7 +492,7 @@ v0 では feature の JSON はループに書き換えない。一体版は、�
 
 **出荷の形(LP-1c)**: `engine://graphs/<名前>.json` は engine が読まない**雛形**の graph 文書で、`decomposes: {feature, remove_feature?, pass_replacements?, shader_defines?}` を持つ。project は (1) 雛形の `definitions` と `nodes` を自分の graph へ写す(名前の衝突は断る)、(2) `remove_feature` なら feature を外す、(3) `pass_replacements` を feature の instance に書く、(4) `shader_defines` を `rendering.shader_defines` に足す。手順の実装は `test/lp1c_decompose_support.hpp`。(3)(4) を書く RPC は無い(文書を直接編集する)。
 - 置き場所の書き方の例: ループに `canonical_anchor` を書くと合成の pass より後ろに入って順序が循環する。bloom では 2 本のループを `insert: {before: bloom_composite}` にし、合成に明示の `after: bloom_threshold` を付けた。
-- **LP-1c で見つかった制約(LP-1d で塞ぐ)**: graph の fullscreen は読む画像をすべて resource port(反映名 `pelican_resource_<port>`)にするので、`inputTexture` を固定 binding で読む engine の bloom shader や、`PELICAN_DECLARE_INPUT_<i>` / 可変入力で書く shader(Studio の雛形、`engine://passthrough`)を graph から使えない。LP-1c の bloom の一致の検査は、port の accessor で読む shader の写しで行った。
+- **LP-1c で見つかった制約(LP-1d で塞いだ)**: graph の fullscreen / raster の読みの image port に `binding: "input"` と `input_index`(0 から連続)を書くと、resource port ではなく pass の `input` 配列のその番号で読まれる(`inputTexture`、`PELICAN_DECLARE_INPUT_<i>`、可変入力、`engine://passthrough` の shader がそのまま使える。`history: true` と併用可)。bloom の雛形は engine の shader のまま一致する。
 
 **使い方**:分解版は、一体版の feature の pass を**置き換える**形で使う(§6 の「feature の pass の置き換え」)。
 
@@ -695,6 +695,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `graph.definition_duplicate@1` | 編集 | `{definition}`(LP-0c) |
 | `graph.definition_missing@1` | 編集 | `{definition}`(rename では `from`。LP-0c) |
 | `graph.target_ref_unknown@1` | 組み直し | `{node, name}` |
+| `graph.input_index_invalid@1` | 編集・読み込み | `{node, input_index, reason: missing｜duplicate, ports}`(LP-1d) |
 | `graph.target_ref_type_mismatch@1` | 組み直し | `{node, name, field, declared, actual}`(field: `kind` / `topology`。LP-0a) |
 | `graph.history_write@1` | 編集・読み込み・組み直し | `{node, port}`(`X@history` へ書く port。LP-0a) |
 | `graph.history_unavailable@1` | 組み直し | `{node, port, target}`(history を持たない target の `@history` を読む。LP-0a) |

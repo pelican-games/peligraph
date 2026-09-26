@@ -10,6 +10,7 @@
 #include "../src/project/materialpassdecompose.hpp"
 #include "../src/project/renderfeatureoverlay.hpp"
 #include "../src/project/renderpipeline.hpp"
+#include "../src/project/passshapepolicy.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
@@ -33,6 +34,7 @@
 #include <iostream>
 #include <iterator>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -7255,8 +7257,8 @@ nlohmann::json lp1cTemplate(const std::string &name) {
     return nlohmann::json::parse(engineResourceOrThrow("graphs/" + name));
 }
 
-// What a pass declaration binds: its sampled images (a set: the feature's
-// shaders bind them by position, a graph pass's by port name), its
+// What a pass declaration binds: its sampled images in their input order
+// (both run the engine's shaders, which bind them by position; LP-1d), its
 // attachments, shader, load, clear and blend.
 nlohmann::json lp1cPassBinding(const nlohmann::json &pass, const std::map<std::string, std::string> &names,
                                const nlohmann::json &config) {
@@ -7266,7 +7268,6 @@ nlohmann::json lp1cPassBinding(const nlohmann::json &pass, const std::map<std::s
     Json images = Json::array();
     for (const auto &input : pass.value("input", Json::array()))
         if (!buffers.contains(input.get<std::string>())) images.push_back(TestSupport::lp1cRenamed(names, input.get<std::string>()));
-    std::sort(images.begin(), images.end());
     Json colors = Json::array();
     for (const auto &color : pass.at("output").at("color"))
         colors.push_back(TestSupport::lp1cRenamed(names, color.is_string() ? color.get<std::string>()
@@ -7405,6 +7406,191 @@ TEST_CASE("LP-1c the shipped planar mip chain replaces the six filter tasks with
 
     lp1cRequireSamePlan(one_piece, decomposed, names);
     REQUIRE_NOTHROW(compileComposition(decomposed));
+}
+
+namespace {
+// LP-1d: engine://passthrough in a graph render.fullscreen, reading `beta`
+// through port z_first as input 0 and `alpha` through a_second as input 1
+// (both names sort the other way round), and `gamma` through an ordinary
+// resource port. The rendering section declares the targets.
+nlohmann::json lp1dNumberedInputs() {
+    using Json = nlohmann::json;
+    const auto type = lp0aSceneColorType();
+    const Json target_base{{"extent_scale", 1.0}, {"format", "R16G16B16A16_SFLOAT"},
+                           {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+                           {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}};
+    auto targets = Json::array();
+    for (const auto *name : {"alpha", "beta", "gamma", "trail", "out"}) {
+        auto target = target_base;
+        target["name"] = name;
+        if (std::string_view{name} == "trail") target["history"] = true;
+        targets.push_back(std::move(target));
+    }
+    const auto ref = [&](const std::string &id, const std::string &name) {
+        return Json{{"id", id}, {"op", "render.target_ref"},
+                    {"parameters", {{"name", name}, {"type", type}}}, {"outputs", {"resource"}}};
+    };
+    const auto read = [&](std::optional<int> input_index) {
+        Json port{{"kind", "image"}, {"type", type}, {"access", "read"}};
+        if (input_index) {
+            port["binding"] = "input";
+            port["input_index"] = *input_index;
+        }
+        return port;
+    };
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", Json::object()},
+        {"nodes", Json::array({ref("alpha_ref", "alpha"), ref("beta_ref", "beta"), ref("gamma_ref", "gamma"),
+                               ref("trail_ref", "trail"), ref("out_ref", "out"),
+            {{"id", "show"}, {"op", "render.fullscreen"},
+             {"parameters", {{"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"},
+                                         {"defines", {"PELICAN_PASSTHROUGH_INPUT=1"}}}},
+                 {"ports", {{"z_first", read(0)}, {"a_second", read(1)}, {"gamma", read(std::nullopt)},
+                            {"color", {{"kind", "image"}, {"type", type}, {"access", "write"},
+                                       {"attachment", "color"}, {"location", 0}}}}}}},
+             {"inputs", {{"z_first", {{"node", "beta_ref"}, {"port", "resource"}}},
+                         {"a_second", {{"node", "alpha_ref"}, {"port", "resource"}}},
+                         {"gamma", {{"node", "gamma_ref"}, {"port", "resource"}}},
+                         {"color", {{"node", "out_ref"}, {"port", "resource"}}}}},
+             {"outputs", {"color"}}}})},
+        {"outputs", Json::object()},
+        {"rendering", {{"render_targets", targets}, {"rendering_passes", Json::array()}}}};
+}
+
+// The graph refusal `document` raises when it is partitioned (as an edit is).
+std::pair<std::string, nlohmann::json> lp1dPartitionRefusal(const nlohmann::json &document) {
+    try {
+        (void)partitionGraphDocument(document);
+    } catch (const GraphRegistryError &error) {
+        return {error.code(), error.detail()};
+    }
+    FAIL("the graph was not refused by name");
+    return {};
+}
+
+nlohmann::json &lp1dShowPorts(nlohmann::json &document) { return document["nodes"][5]["parameters"]["ports"]; }
+} // namespace
+
+// LP-1d acceptance 2 (the CPU half; the GPU half is in VI-1's file): a port
+// with `binding: "input"` is not a resource port. It is the pass's input
+// number input_index, whatever its port or resource name; the resource
+// ports' reads follow the numbered ones.
+TEST_CASE("LP-1d a graph port with binding input is the pass's input number input_index",
+          "[render-feature][graph-composition][lp1d]") {
+    using Json = nlohmann::json;
+    const auto document = lp1dNumberedInputs();
+
+    SECTION("numbered inputs in their order, then the resource ports' reads") {
+        const auto composed = lp0aCompose(document);
+        const auto &pass = passByName(composed.config, "show");
+        CHECK(pass.at("input") == Json::array({"beta", "alpha", "gamma"}));
+        CHECK(pass.at("resource_ports").size() == 1);
+        CHECK(pass.at("resource_ports").at("gamma").at("resource") == "gamma");
+        CHECK(pass.at("shader").at("defines") == Json::array({"PELICAN_PASSTHROUGH_INPUT=1"}));
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
+    SECTION("only numbered inputs: no resource port at all") {
+        auto plain = document;
+        lp1dShowPorts(plain).erase("gamma");
+        plain["nodes"][5]["inputs"].erase("gamma");
+        const auto composed = lp0aCompose(plain);
+        const auto &pass = passByName(composed.config, "show");
+        CHECK(pass.at("input") == Json::array({"beta", "alpha"}));
+        CHECK(pass.at("resource_ports").empty());
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
+    SECTION("a history read is a numbered input too (LP-0a)") {
+        auto history = document;
+        lp1dShowPorts(history)["z_first"]["history"] = true;
+        history["nodes"][5]["inputs"]["z_first"]["node"] = "trail_ref";
+        const auto composed = lp0aCompose(history);
+        const auto &pass = passByName(composed.config, "show");
+        CHECK(pass.at("input") == Json::array({"trail@history", "alpha", "gamma"}));
+        CHECK_FALSE(pass.at("resource_ports").contains("z_first"));
+        REQUIRE_NOTHROW(compileComposition(composed));
+        // A target without history: the same named refusal as a resource port's.
+        auto without = history;
+        without["nodes"][3]["parameters"]["name"] = "beta";
+        const auto [code, fields] = lp0aRefusal(without);
+        CHECK(code == "graph.history_unavailable@1");
+        CHECK(fields == Json{{"node", "show"}, {"port", "z_first"}, {"target", "beta"}});
+    }
+    SECTION("the same image as two inputs is the rendering section's duplicate input") {
+        auto twice = document;
+        twice["nodes"][5]["inputs"]["a_second"]["node"] = "beta_ref";
+        const auto composed = lp0aCompose(twice);
+        const auto &pass = passByName(composed.config, "show");
+        CHECK(pass.at("input") == Json::array({"beta", "beta", "gamma"}));
+        // The pass-shape rule the engine's pass parser applies when it loads.
+        const auto violations = evaluatePassShape(
+            defaultPassShapePolicy(), passShapeObservationFromJson(RenderPassType::fullscreen, pass));
+        CHECK(std::any_of(violations.begin(), violations.end(), [](const PassShapeViolation &violation) {
+            return violation.kind == PassShapeViolationKind::duplicate_input && violation.target == "beta";
+        }));
+    }
+}
+
+// LP-1d acceptance 3: the numbers run 0, 1, ... n - 1, each once.
+TEST_CASE("LP-1d input_index gaps and duplicates are refused by name",
+          "[render-feature][graph-composition][lp1d]") {
+    using Json = nlohmann::json;
+    const auto document = lp1dNumberedInputs();
+    REQUIRE_NOTHROW(partitionGraphDocument(document));
+
+    auto gap = document;
+    lp1dShowPorts(gap)["a_second"]["input_index"] = 2;
+    auto [code, fields] = lp1dPartitionRefusal(gap);
+    CHECK(code == "graph.input_index_invalid@1");
+    CHECK(fields == Json{{"node", "show"}, {"input_index", 1}, {"reason", "missing"}, {"ports", Json::array()}});
+
+    auto no_zero = document;
+    lp1dShowPorts(no_zero)["z_first"]["input_index"] = 2;
+    std::tie(code, fields) = lp1dPartitionRefusal(no_zero);
+    CHECK(code == "graph.input_index_invalid@1");
+    CHECK(fields == Json{{"node", "show"}, {"input_index", 0}, {"reason", "missing"}, {"ports", Json::array()}});
+
+    auto duplicate = document;
+    lp1dShowPorts(duplicate)["a_second"]["input_index"] = 0;
+    std::tie(code, fields) = lp1dPartitionRefusal(duplicate);
+    CHECK(code == "graph.input_index_invalid@1");
+    CHECK(fields == Json{{"node", "show"}, {"input_index", 0}, {"reason", "duplicate"},
+                         {"ports", Json::array({"a_second", "z_first"})}});
+
+    // The same in a loop body's definition, as the shipped bloom's passes are.
+    auto bloom = lp1cTemplate("bloom_loop.json");
+    const auto one_piece = lp1cOnePiece(Json::array({"engine://features/bloom.json"}));
+    REQUIRE_NOTHROW(partitionGraphDocument(TestSupport::lp1cApplyDecomposition(one_piece, bloom)));
+    auto &h_blur = bloom["definitions"]["bloom_down_step"]["nodes"][2];
+    REQUIRE(h_blur.at("id") == "h_blur");
+    h_blur["parameters"]["ports"]["source"]["input_index"] = 1;
+    std::tie(code, fields) = lp1dPartitionRefusal(TestSupport::lp1cApplyDecomposition(one_piece, bloom));
+    CHECK(code == "graph.input_index_invalid@1");
+    CHECK(fields == Json{{"node", "bloom_down/$0/h_blur"}, {"input_index", 0}, {"reason", "missing"}, {"ports", Json::array()}});
+
+    // What an input port may be is checked as a malformed declaration.
+    for (const auto &[port, change] : std::vector<std::pair<std::string, Json>>{
+             {"a_second", {{"input_index", -1}}},
+             {"a_second", {{"input_index", "1"}}},
+             {"a_second", {{"input_index", nullptr}}},
+             {"gamma", {{"input_index", 2}}},
+             {"a_second", {{"sampling", {{"filter", "nearest"}}}}},
+             {"a_second", {{"view", "per_view"}}},
+             {"a_second", {{"subresource", {{"mip", 0}}}}},
+             {"color", {{"binding", "input"}, {"input_index", 2}}}}) {
+        INFO(port << " " << change.dump());
+        auto invalid = document;
+        for (const auto &[key, value] : change.items()) {
+            if (value.is_null()) lp1dShowPorts(invalid)[port].erase(key);
+            else lp1dShowPorts(invalid)[port][key] = value;
+        }
+        CHECK_THROWS(partitionGraphDocument(invalid));
+    }
+    // A compute task binds resource ports only.
+    auto compute = document;
+    compute["nodes"][5]["op"] = "render.compute";
+    lp1dShowPorts(compute).erase("color");
+    compute["nodes"][5]["inputs"].erase("color");
+    compute["nodes"][5]["parameters"]["shader"] = "engine://passthrough";
+    CHECK_THROWS(partitionGraphDocument(compute));
 }
 
 

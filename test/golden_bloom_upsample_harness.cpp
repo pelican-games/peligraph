@@ -1632,19 +1632,11 @@ struct Lp1cBloomCapture {
     nlohmann::json plan;
 };
 
-// Adds TRANSFER_SRC to every render.image, and points every pass that uses
-// an engine bloom shader at the fixture copy that reads its inputs through
-// resource ports (test/fixtures/lp1c; see runLp1cBloomDecomposition).
+// Adds TRANSFER_SRC to every render.image. The passes keep the engine's
+// bloom shaders (LP-1d: their ports read as numbered inputs).
 void lp1cPrepareNodes(nlohmann::json &nodes) {
-    for (auto &node : nodes) {
+    for (auto &node : nodes)
         if (node.at("op") == "render.image") node["parameters"]["usage"].push_back("TRANSFER_SRC");
-        auto &parameters = node["parameters"];
-        if (!parameters.is_object() || !parameters.contains("shader") || !parameters.at("shader").is_object()) continue;
-        auto &fragment = parameters.at("shader")["fragment"];
-        constexpr std::string_view engine_prefix = "engine://";
-        if (fragment.is_string() && fragment.get<std::string>().starts_with("engine://bloom_"))
-            fragment = "shaders/" + fragment.get<std::string>().substr(engine_prefix.size());
-    }
 }
 
 Lp1cBloomCapture lp1cCaptureBloom(bool decomposed) {
@@ -1660,9 +1652,6 @@ Lp1cBloomCapture lp1cCaptureBloom(bool decomposed) {
             auto graph_template = nlohmann::json::parse(engineResourceOrThrow("graphs/bloom_loop.json"));
             lp1cPrepareNodes(graph_template.at("nodes"));
             for (auto &[name, body] : graph_template.at("definitions").items()) lp1cPrepareNodes(body.at("nodes"));
-            for (const auto *stem : {"bloom_highpass", "bloom_blur_h", "bloom_blur_v", "bloom_upsample", "bloom_composite"})
-                wp357WriteText(root / "shaders" / (std::string{stem} + ".frag"),
-                               wp357ReadText(wp357SourceRoot() / "test" / "fixtures" / "lp1c" / (std::string{stem} + ".frag")));
             document = TestSupport::lp1cApplyDecomposition(wp357WrapGraphRoot(config), graph_template);
         } else {
             nlohmann::json overrides = nlohmann::json::object();
@@ -1714,15 +1703,11 @@ Lp1cBloomCapture lp1cCaptureBloom(bool decomposed) {
 // level, the threshold and the display byte for byte as the bloom feature
 // does, and the frame it ran is the feature's plan under the name table.
 //
-// The engine's bloom shaders read their inputs as fixed pass-input bindings
-// (`inputTexture` at binding 0 ...). A graph render.fullscreen pass binds
-// every image it reads as a resource port, and the port's shader interface
-// requires the reflected name pelican_resource_<port>, so those shaders
-// refuse to load in the shipped graph as it stands. The decomposed leg
-// therefore draws with test/fixtures/lp1c's copies of the five shaders, which
-// differ only in reading through the generated accessors. What this compares
-// is everything else: the loops' expansion, extents, carry, write-back,
-// order, targets, intensity buffer and defines.
+// LP-1d: both legs draw with the engine's bloom shaders, which read their
+// inputs as fixed pass-input bindings (`inputTexture` at binding 0 ...); the
+// shipped graph's ports say `binding: "input"` with their input_index. So the
+// plan compares also which shader each pass resolved and how it binds its
+// inputs.
 void GoldenHarness::runLp1cBloomDecomposition() {
     setupLogger();
     try {
@@ -1747,16 +1732,8 @@ void GoldenHarness::runLp1cBloomDecomposition() {
         // left the display brighter than the quad alone.
         const auto &v0 = one_piece.targets.at("Bloom_Upsample_V_0_RT");
         CHECK(std::any_of(v0.bytes.begin(), v0.bytes.end(), [](std::uint8_t byte) { return byte != 0; }));
-        auto one_plan = TestSupport::lp1cComparablePlan(one_piece.plan, TestSupport::lp1cBloomNames());
-        auto graph_plan = TestSupport::lp1cComparablePlan(decomposed.plan, {});
-        // The running plan also says which shader each pass resolved and how
-        // it binds its inputs; the two legs' bloom shaders differ there by
-        // construction (above), so that part is not compared.
-        for (auto *plan : {&one_plan, &graph_plan})
-            for (auto &node : plan->at("nodes")) {
-                node.erase("shader_resolution");
-                node.erase("pass_inputs");
-            }
+        const auto one_plan = TestSupport::lp1cComparablePlan(one_piece.plan, TestSupport::lp1cBloomNames());
+        const auto graph_plan = TestSupport::lp1cComparablePlan(decomposed.plan, {});
         REQUIRE(one_plan.at("nodes").size() == graph_plan.at("nodes").size());
         for (std::size_t i = 0; i < one_plan.at("nodes").size(); ++i) {
             INFO(one_plan.at("nodes").at(i).dump() << " / " << graph_plan.at("nodes").at(i).dump());

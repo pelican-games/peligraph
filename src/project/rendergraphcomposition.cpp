@@ -481,13 +481,16 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         Json attachments = {{"color", Json::array()}, {"depth", nullptr}};
         std::map<unsigned, std::string> colors;
         std::set<std::string> reads, writes;
+        // LP-1d: images read as the pass's numbered inputs (binding "input"),
+        // by input_index; the graph module checked the numbers run from 0.
+        std::map<std::int64_t, std::string> numbered;
         auto after = parameters.value("after", Json::array());
         if (!after.is_array()) throw std::invalid_argument("render after must be an array");
         for (const auto &[port, declaration] : ports.items()) {
             for (const auto &[key, value] : declaration.items())
                 if (key != "element" && key != "domain" && key != "access" && key != "kind" && key != "type" &&
                     key != "binding" && key != "view" && key != "sampling" && key != "subresource" &&
-                    key != "history" &&
+                    key != "history" && key != "input_index" &&
                     !(graphics && (key == "attachment" || key == "location")))
                     throw std::invalid_argument("unknown render port setting: " + key);
             const auto &endpoint = node.at("inputs").at(port);
@@ -537,6 +540,12 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             }
             if (graphics && (access != "read" || declaration.contains("location")))
                 throw std::invalid_argument("graphics shader ports require read access; outputs require attachments");
+            if (graphics && declaration.value("binding", std::string{}) == "input") {
+                // No resource port: the shader reads it by its input number
+                // (inputTexture, PELICAN_DECLARE_INPUT_<i>, a variadic group).
+                numbered.emplace(declaration.at("input_index").get<std::int64_t>(), resource);
+                continue;
+            }
             if (access != "write") reads.insert(resource);
             if (access != "read") writes.insert(resource);
             auto binding = declaration;
@@ -560,7 +569,12 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             }
             parameters.erase("reads");
             parameters.erase("writes");
-            parameters["input"] = reads;
+            // The numbered inputs first, in their order; then what the
+            // resource ports read, which binds by port name wherever it lands.
+            Json input = Json::array();
+            for (const auto &[index, resource] : numbered) input.push_back(resource);
+            for (const auto &resource : reads) input.push_back(resource);
+            parameters["input"] = std::move(input);
             parameters["output"] = std::move(attachments);
             parameters["type"] = node.at("op") == "render.fullscreen" ? "fullscreen" : "raster";
             landGraphicsPass(id, std::move(parameters), body);

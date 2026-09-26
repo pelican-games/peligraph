@@ -293,6 +293,38 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
     } else if (op == "render.compute" || op == "render.fullscreen" || op == "render.raster") {
         const auto &ports = parameters.at("ports");
         if (!ports.is_object()) throw std::invalid_argument("render ports must be an object");
+        // LP-1d: ports read as the pass's numbered inputs, by input_index.
+        std::map<std::int64_t, std::vector<std::string>> input_indices;
+        for (const auto &[port, declaration] : ports.items()) {
+            if (declaration.is_object() && declaration.value("binding", Json{}) == "input") {
+                if (op == "render.compute")
+                    throw std::invalid_argument("render.compute ports bind as resource ports, not inputs: " + port);
+                if (declaration.value("kind", std::string{"buffer"}) != "image" ||
+                    declaration.value("access", std::string{}) != "read" || declaration.contains("attachment"))
+                    throw std::invalid_argument("an input port reads an image: " + port);
+                for (const auto *key : {"view", "sampling", "subresource"})
+                    if (declaration.contains(key))
+                        throw std::invalid_argument(std::string("an input port takes no ") + key + ": " + port);
+                const auto index = declaration.find("input_index");
+                if (index == declaration.end() || !index->is_number_integer() || index->get<std::int64_t>() < 0)
+                    throw std::invalid_argument("an input port requires a non-negative integer input_index: " + port);
+                input_indices[index->get<std::int64_t>()].push_back(port);
+            } else if (declaration.is_object() && declaration.contains("input_index")) {
+                throw std::invalid_argument("input_index requires binding \"input\": " + port);
+            }
+        }
+        // The numbers are the pass's `input` positions: each once, from 0.
+        std::int64_t expected = 0;
+        for (const auto &[index, holders] : input_indices) {
+            if (index != expected)
+                throw GraphRegistryError("graph.input_index_invalid@1",
+                    {{"node", nodeId(node)}, {"input_index", expected}, {"reason", "missing"},
+                     {"ports", Json::array()}});
+            if (holders.size() > 1)
+                throw GraphRegistryError("graph.input_index_invalid@1",
+                    {{"node", nodeId(node)}, {"input_index", index}, {"reason", "duplicate"}, {"ports", holders}});
+            ++expected;
+        }
         for (const auto &[port, declaration] : ports.items()) {
             const auto type = resourceType(registry, declaration);
             contract.inputs.emplace(port, GraphInputContract{exactLogicalTypePattern(registry, type)});
