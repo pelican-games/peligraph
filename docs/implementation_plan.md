@@ -25882,6 +25882,232 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - 結果: `-L studio_cpu -LE gpu` 383/383、`outliner_edit_roundtrip` `-j1` 10/10
 - 残した穴: 自分の最後の読み取りから save までの間に別の client が編集すると、その編集を読み直さない可能性がある(Save は Inspector が空いているときだけ通るので窓は狭い)。`wait enabled` から `click` までの競争の仕組み自体は残る
 
+### LP-4c: Graph tab で graph.loop を作って編集する(ゾーン表示の前の土台。expand 段)
+
+**下段〜中段(Studio のみ)。実装者: Claude(Opus)。設計は `docs/design_graph_loops.md`(§2・§5・§9・§10)。engine の契約は LP-0c / LP-1a / LP-1b(別 session。Studio 側の合意と契約のメモは repo の外)で、develop の `6f0f6360`(LP-1b)まで入っている。**
+
+#### 位置づけ
+利用者と合意した見え方は「Blender のループゾーン」(枠の中に body を並べて直接編集)で、それは LP-4d でやる。この WP はその前に、**Graph tab でループを置いて、分岐と body と回数を Studio の操作だけで組み、展開の結果を Frame Plan で見られる**ようにする。body は今の instance と同じく「中に入る」で編集する。
+
+#### 前提(develop `6f0f6360` 時点)
+- Graph tab は `graph.loop` を知らない。catalog に無い構造 node なので、parameters のキー(`over`・`branches` …)が入力 port の行と JSON の pill として出る
+- 構造 node の palette は `paletteOperations`、足す op は `addNodeOps`。「中に入る」は `graph.instance` 専用(`canEnterInstance` / `enterInstance`)
+- undo の `inverseOps` は、各 op の `node` を今の文書で `findNode` する。同じ列で `add_node` した node を後の op が指すと `std::logic_error`、definition の op は `op.at("node")` で例外
+- `set_input` の source は `{node, port}` だけを送っている。engine は `{node, port, element?}` を受ける(LP-1b)
+- engine の op は `add_definition` / `remove_definition` / `rename_definition`(LP-0c)。検査は列の最後に 1 回
+- Frame Plan tab は `loops[]` / `loop_origin` を読んでいない。グループの畳み・中に入る(WP341/343/350)は Frame Plan tab 側にある
+- 拒否は `diagnostic()` の汎用の文
+
+#### 決定
+1. **model が graph.loop を node として理解する**。入力 port = 先頭の分岐の body の definition の `graph.input`(instance と同じ)。parameters のキーは port にしない。出力 port = `outputs` に宣言した `p` と `p[]`(型は body の出力の型。`p[]` は束と分かる表示)。見出しにループの印と `expand ×N`(段が分からなければ `loop`)
+2. **palette から Add loop**(root だけ): body の definition を選ぶ(既存)か **New definition**(名前は提案で埋める。`add_definition` で空の body を作り、同じ列で `add_node graph.loop`)。初期形は `over: {range: {count: 1}}`・`branches: [{body: <def>}]`、`outputs` は body の出力ごとに `p`
+3. **side 欄に Loop の欄**(JSON の pill を出さない): 回数(整数の spin、`ƒ` で式の欄)、並べ方、上から N 個、段の固定(自動 / expand / draw_loop)、絞る(無し / `element in` / `element not in` と整数の並び)、carry(行ごとに body の出力 → body の入力。to にループの入力 edge が無ければ注意)、outputs(body の出力ごとに `p` / `p[]` の check)
+4. **分岐表**: 行 = 分岐。`when`(`else` / `element =` / `element in` / `element not in` + 整数)、`body`(入出力が同じ definition だけ。`(nothing)` = `null`。`New definition…` は先頭の分岐の body の入出力を写した空の definition を作る)、並べ替え・足す・消す。最後の行は `else` 固定。各行に報告の `elements` から当たる要素、当たらない行は警告(`unmatched_branches`)
+5. **中に入る**: ダブルクリックで今の分岐の body の scope へ(`enterInstance` を definition 一般に)。分岐を選ぶ combo をパンくずの横に。同じ definition を他でも使っていれば「共有」の印
+6. **回ごとの入力**: 入力の行の右クリック `Per iteration…` で、他のループの `p[]` を選び、`set_input` の source に `element: {"$expr": "element"}` を付けて張る(式は書き換え可)
+7. **undo**: 1 回の `edit_graph_document` の op の列を、前の op を当てた後の文書で逆にする。definition の op の逆(add ↔ remove、rename の逆、remove の逆は本体つきの add)を足す。同じ列で足した node を後の op が指しても例外にしない
+8. **Frame Plan tab**: `loops[]` と `loop_origin` を読み、展開後の pass / task を loop ごとのグループ(WP341 と同じ畳み・中に入る。名前 `loop <id>`、見出しに `×N`)に。ノードの詳細に `loop_origin`
+9. **拒否の文**: `graph.loop_*` と `graph.definition_*` を Studio の拒否の表に 1 文ずつ(code は末尾の括弧)。`error_fields.node` が loop の id なら loop node に赤い印。`loop_origin` があれば loop と body の scope のその node に赤い印
+10. **Frame Plan から Graph へ**: 展開後の pass の Open in Graph は `loop_origin` で body の scope のその node へ
+11. (LP-0d の追加依頼)変種の preflight の拒否は、graph の code のまま `error_fields.variant` 付きで届く。Studio の前置きは code を問わず `variant` で付ける
+
+#### 受け入れ
+1. model の test(fake の `get_graph_instances`): loop の port が body から来る / parameters が port にならない(対照: 今の分岐に戻す変異で赤)
+2. 操作の payload の test: Add loop(New definition を含む 1 回の列)、Loop の欄の各項目、分岐表(足す・消す・並べ替え・when の各形・New definition・`(nothing)`)、carry、Per iteration の `element`
+3. undo の test: 「add_definition + add_node graph.loop」、「add_node + 同じ列で足した node を指す set_input」、rename_definition、remove_definition(本体つきの add に戻る)を undo → redo して元の文書と byte 一致(対照: 今の `inverseOps` で例外)
+4. Frame Plan の test(fake の `get_frame_plan` の `loops[]` / `loop_origin`): loop ごとのグループ、`×N`、詳細の行
+5. 拒否の test: 主な code(else_missing / branch_interface / expression_invalid / element_unknown / expansion_limit / definition_referenced)の文と、赤い印の行き先(loop の id / `loop_origin`)
+6. **GPU シナリオ `graph_loop_expand`**(blank から): Add loop(New definition)→ body に入って pass を置く → root に戻って回数 3 → Frame Plan に loop のグループ `×3`、展開後の pass が 3 本(`loops[0].count == 3`)→ 回数 1 → 分岐を足して `element = 0` に `(nothing)` → `elements` の `branch` が変わる → Undo で回数 3 に戻る
+7. `-L studio_cpu -LE gpu` 緑
+8. 報告にテキスト入力の欄(整数の並び、式、definition の名前)と減らす案
+
+#### やらないこと
+- ゾーン表示(枠の中に body を出す、外から線を引いて入力を足す、carry の戻り矢印)→ LP-4d
+- draw_loop 段(`draw.*`、Decompose into loop)→ LP-3a / LP-3b の後(LP-4e で入った)
+
+#### 着地(2026-09-27、34c87287)
+- **決定 1**: node に `loop`・`badge`・`refused` を足した([node の型](../src/devstudio/model/graphcanvasmodel.hpp#L94))
+  - 入力 port は、body を持つ最初の分岐の body の `graph.input`。型は付けない(下の D7)。出力は `outputs` の `p` / `p[]` で、`p[]` は `bundle` の印と `(each)` の字、型は body の出力 `p` の型([port を作る所](../src/devstudio/model/graphcanvasmodel.cpp#L1371))
+  - parameters は port にも pill にもせず、詳細表にも `parameters` の行を出さない。見出しは `↻ loop`、報告があれば `↻ expand ×3`([見出しの字](../src/devstudio/model/graphcanvasmodel.cpp#L1315))。ループの色は instance と同じ
+  - Graph tab は文書にループがあるときだけ、文書を読むたびに `get_frame_plan` を読んで `loops[]` を使う。そのため capability に `requestFramePlan` を足した([capability](../src/devstudio/view/graphcanvasreadcapability.hpp#L52))
+- **決定 2**: `addLoopOps()`([Add loop の列](../src/devstudio/model/graphcanvasmodel.cpp#L2293))
+  - palette の `graph.loop` は root だけ。body の combo の先頭に `New definition…` と名前の欄(`suggestDefinitionName()` の提案で埋まる)が出る([palette で分ける所](../src/devstudio/view/graphcanvaswidget.cpp#L3104))
+  - 既存の body を選ぶと `outputs` は body の出力ごとに `p`。New definition では body の出力がまだ無いので `outputs` は空
+  - 右クリックと action の **Add loop**(`pelican.graphCanvas.addLoop`)は、dialog 無しで提案の名前の新しい body を作る([action](../src/devstudio/view/graphcanvaswidget.cpp#L2345))
+- **決定 3**: 新しい `GraphCanvasLoopFields`([欄](../src/devstudio/view/graphcanvasloopfields.cpp#L135)、[組み直す所](../src/devstudio/view/graphcanvasloopfields.cpp#L348))
+  - 欄は Count(spin と `ƒ` の式の欄)、Order、Limit(`first` の check と spin)、Stage、Place(下の D2)、Where、Outputs、Carry。各欄の変更は parameters を丸ごと 1 鍵だけ変えた `set_node_parameters` 1 回。Outputs だけは `replace_node`
+  - 表示の署名が変わったときだけ組み直す(報告が 1 秒に何度か届いても、触っている欄を取り替えない)
+- **決定 4**: 分岐表([表](../src/devstudio/view/graphcanvasloopfields.cpp#L531))。model の `addLoopBranch()`([足す所](../src/devstudio/model/graphcanvasmodel.cpp#L2431))・`setLoopBranchWhen()`・`newLoopBranchDefinition()`([New definition…](../src/devstudio/model/graphcanvasmodel.cpp#L2508))・`loopBodyChoices()`([候補](../src/devstudio/model/graphcanvasmodel.cpp#L2555))
+  - 新しい分岐は else の前、条件 `element = 0`、body は else と同じ。`element =` は整数 1 つ(欄の最初、空なら 0)。条件が式の分岐は `(expression)` と出して値の欄を押せなくする
+  - New definition… の名前は `<loop>_body` から提案し、`add_definition` と `set_node_parameters` を 1 列で送る(下の D6)
+- **決定 5**: `canEnterInstance()` / `enterInstance()` がループも扱い、選んでいる分岐の body に入る([入る所](../src/devstudio/model/graphcanvasmodel.cpp#L990))
+  - 分岐の combo(`pelican.graphCanvasLoopBranch`。項目 `loop: element = 0 → loop_body`)と `shared (N users)` の印(`pelican.graphCanvasShared`)([合わせる所](../src/devstudio/view/graphcanvaswidget.cpp#L2762))。数えるのは root の instance とループの分岐が名指す回数(`definitionUseCount()`)
+  - Loop の欄の **Open body**(下の D3)
+- **決定 6**: `connectPerIteration()`([送る所](../src/devstudio/model/graphcanvasmodel.cpp#L2603))と dialog `pelican.graphCanvasPerIteration`([dialog](../src/devstudio/view/graphcanvaswidget.cpp#L2802))。右クリックの `Per iteration…` は、root のループの body の入力で、`p[]` を宣言した他のループがあるときだけ出る([右クリック](../src/devstudio/view/graphcanvaswidget.cpp#L1456))。張った入力の要約に `[element …]` が付く
+- **決定 7**: `inverseOps()` を書き直した([逆を作る所](../src/devstudio/model/graphcanvasmodel.cpp#L1601))。文書の写しを列に沿って進め、各 op の逆をその時点の写しから読む。definition の op の逆、rename の後の配置は元の名前で戻す
+- **決定 8**: Frame Plan の model が `loops[]` と `loop_origin`(node・target・buffer)を読む([読む所](../src/devstudio/model/frameplanmodel.cpp#L229))
+  - `groupingUnit()` がループの回を region / feature より先にまとめ、名前は `loop <id> ×N`([グループ](../src/devstudio/view/frameplangraphics.cpp#L532))。lowering graph の無い plan でもループのグループだけは作る
+  - 詳細の `Loop origin` の行(`loop steps · element 2 · body node fill`)([行](../src/devstudio/view/frameplanwidget.cpp#L3406))
+- **決定 9**: 拒否の文の表 `graphLoopRefusalDescription()`([表](../src/devstudio/model/inspectormodel.cpp#L773))。着地時は 24 code(LP-4e で 25 code と draw_loop の reason 4 つになった)
+  - Graph tab の `diagnostic()`([文を選ぶ所](../src/devstudio/model/graphcanvasmodel.cpp#L19))と Frame Plan の `renderAuthoringRefusalLine()`([Frame Plan の行](../src/devstudio/view/frameplanedit.cpp#L1645))が引く。`knownRefusalDescription()` も最後にこれを引く
+  - 赤い印は `markRefusal()`([印を付ける所](../src/devstudio/model/graphcanvasmodel.cpp#L2621))。`graph.loop_*` の `node` がループの id ならそのループ、`loop_origin` があればループと、その要素の分岐の body のその node。縁を赤くし、hover と詳細表の `refused` の行で文を出す([縁を描く所](../src/devstudio/view/graphcanvasdrawing.cpp#L235))。次に commit した編集で消える
+- **決定 10**: Frame Plan の Open in Graph が `loop_origin` のある node で `revealLoopOrigin()`([開く所](../src/devstudio/view/graphcanvaswidget.cpp#L3440))を呼ぶ。MainWindow がつなぐ([つなぐ所](../src/devstudio/view/mainwindow.cpp#L408))
+- **決定 11(LP-0d)**: `diagnostic()` と `renderAuthoringRefusalLine()` は、`variant` があれば code を問わず `The <variant> graph refused it: ` を前に付ける。`framePlanRenderTargetRejection()` も `variant` があれば `renderAuthoringRefusalLine()` に回す([回す所](../src/devstudio/view/frameplanedit.cpp#L1470))
+- **仕様から外れた所(実装者の判断)**:
+  - D1: Graph tab に fullscreen pass の雛形 **Add fullscreen pass**(`pelican.graphCanvas.addFullscreenPass`)。自前の `render.image`(`<pass>__color`)に `engine://passthrough` で書く pass を 1 列で置く。palette も `render.fullscreen` をこの形で出す
+  - D2: 置き場所の無いループの body に最初の pass を置くとき、同じ列でループに `canonical_anchor: post_main` を付けた。Loop の欄に Place を足した(body に fullscreen / raster の pass が無いループでは押せない)。着地のときに「LP-1e で engine が既定の位置を直したので、RU-1 で外す」とした。RU-1(`fa413aeb`)で外れ、同時に Add fullscreen pass が `pass_set: "main_render"` を書くのもやめた。Place の欄は残っている
+  - D3: Loop の欄に **Open body** のボタン(ダブルクリックと同じ)
+  - D4: View ▸ Render Tools に tab ごとの action(`pelican.view.renderTools.frame_plan` / `.render_features` / `.graph`)([menu](../src/devstudio/view/mainwindow.cpp#L911))。シナリオが Graph と Frame Plan を行き来するため
+  - D5: ループのグループは最初に見えたときに畳む([畳む所](../src/devstudio/view/frameplangraphics.cpp#L2504))。Graph での編集の後は Frame Plan の Refresh が要る
+  - D6: 分岐の New definition… は、出力を `graph.input` 以外の node が作る body では、本体ごと写す(配置は除く)
+  - D7: 拒否の fields は code の横と `error_fields` の両方から読む。ループの入力 port に型を付けない(body が資源として読むことも多いため)。汎用の `submitEdit()` を公開した(LP-4d のゾーンの操作が 1 列を組むため)。undo で配置の無かった scope は `set_layout` を `null` で戻す
+- **test**:
+  - `devstudio_graphcanvas_test` に 8 本
+    - `LP-4c a loop's ports are its body's boundary and its parameters are not ports`([test](../test/devstudio_graphcanvas_test.cpp#L1148))
+    - `LP-4c Add loop sends the new body and the loop in one list`([test](../test/devstudio_graphcanvas_test.cpp#L1196))
+    - `LP-4c the Loop fields each send the loop's parameters with one member changed`([test](../test/devstudio_graphcanvas_test.cpp#L1270))
+    - `LP-4c the branch table adds, removes, orders and conditions branches`([test](../test/devstudio_graphcanvas_test.cpp#L1327))
+    - `LP-4c Per iteration reads one element of another loop's p[]`([test](../test/devstudio_graphcanvas_test.cpp#L1396))
+    - `LP-4c Undo inverts each op against what the ops before it left`([test](../test/devstudio_graphcanvas_test.cpp#L1419))
+    - `LP-4c loop and definition refusals read as sentences and mark where they point`([test](../test/devstudio_graphcanvas_test.cpp#L1472)): 受け入れ 5 の 6 code、message の中の引用、変種の前置き、印の行き先
+    - `LP-4c a descent into a loop opens its chosen branch, and a copy's origin opens its body`([test](../test/devstudio_graphcanvas_test.cpp#L1544))
+  - `devstudio_graphcanvas_scene_test`: `LP-4c the Loop fields and Add loop go out through the capability`([test](../test/devstudio_graphcanvas_scene_test.cpp#L3263))
+  - `devstudio_frameplan_graph_test` に 2 本
+    - `LP-4c a loop's copies are one folded group named with the loop's count, and their details name the body node`([test](../test/devstudio_frameplan_graph_test.cpp#L11283)): 最初は畳まれ、開いたら読み直しでも開いたまま。lowering graph の無い plan でもまとまる
+    - `LP-4c a loop's or a definition's refusal reads as its sentence, and a graph variant is named whatever the code`([test](../test/devstudio_frameplan_graph_test.cpp#L11341))
+- **変異**(実装者の報告。1 本ずつ入れて、すべて赤)
+  - loop の分岐を無効にして parameters が port に戻る
+  - Add loop から `add_definition` を外す
+  - 新しい分岐を else の後ろに足す
+  - 回ごとの入力から `element` を外す
+  - `inverseOps` を旧版に戻す(`key 'node' not found`)
+  - loop のグループ分けを外す
+  - 最初に畳むのを外す
+  - 赤い印を付けない
+  - 拒否の文の表から 1 行消す
+  - 変種の前置きを、code で分ける元の分岐に戻す
+  - `diagnostic()` の前置きを消す
+  - 配置の自動付与(D2)を外す(シナリオが `no terminal output_transform` で赤)
+- **シナリオ(受け入れ 6)**: 新しい `graph_loop_expand`([シナリオ](../test/studio_scenarios/graph_loop_expand.json))。json の `steps` は 82。実装者の報告では 84 step で緑
+  - Blank pipeline の project を作り、Graph tab で Add loop → `nodes[0]` が `graph.loop`、`over.range.count` 1、`branches[0].body` が同じ編集で作られた空の `loop_body`。ループを選んで Loop の欄が出て、`graph_value_pill#loop/` が 0 個
+  - Open body → パンくず `root / loop_body` と分岐の combo → Add fullscreen pass で body に 2 node
+  - root で Count に 3 → `loops[0]` が `count` 3・要素 3・`tier` `expand`、要約が `expand ×3` → Frame Plan を Refresh して `group#__pelican_group__:loop:loop` と `loop loop ×3`
+  - Count 1 → 要素 1 → Add branch(`when.element` 0)→ `(nothing)` → `elements[0].branch` 0、`unmatched_branches[0]` 1、else の行が `no element takes this branch`
+  - Undo 3 回で body・分岐の数・回数 3 が戻り、`loops[0].count` が 3 に戻る
+- **受け入れ 7**: `-L studio_cpu -LE gpu` 394/394 緑(実装者の報告)
+- **テキスト入力の欄(受け入れ 8)**(実装者の報告)
+  - 回数の式(`ƒ` の欄)
+  - Where の整数の並び
+  - 分岐の条件の値
+  - New definition の名前(palette の欄。提案 `loop_body` で埋まっている。右クリックの Add loop と分岐の New definition… は打たない)
+  - Per iteration の式(既定 `element`)
+  - シナリオで打ったのは New Project のフォルダと名前、Count の 2 回
+- **穴**(実装者の報告)
+  - definition の改名・削除の UI が無い(model の `renameDefinition()` / `removeDefinition()` と undo はある)
+  - `×N` の表示と Frame Plan の読み直しは、手動の Refresh
+  - Place は canonical anchor だけ。式の条件は表で編集できない
+  - Frame Plan の Open in Graph から Graph tab へのつなぎ(widget)は test していない(model の `enterLoopOrigin()` は test にある)
+  - Per iteration はシナリオで通していない
+
+### LP-4e: material ごとの分岐(draw_loop 段)を Studio から組む — Decompose into loop と draw.*
+
+**中段(Studio のみ)。実装者: Claude(Opus)。LP-4c(34c87287)の上。設計は `docs/design_graph_loops.md` §4・§9。engine の契約は LP-3a / LP-3b(別 session。メモは repo の外)。手本は `test/lp3a_decompose_support.hpp`。**
+
+#### 位置づけ
+利用者の最初の問い「deferred も forward も material に対するループ処理なのに、node から変えられないのか」に答える WP。今の material pass を**ボタン 1 つでループの形に分解**し、material ごとの分岐で描き方(variant・render state・define)を変えられるようにする。ゾーン表示は LP-4d(この WP は LP-4c の「中に入る」で body を編集する)。
+
+#### 決定
+1. **Decompose into loop**(Frame Plan の material pass の右クリックと、Pass Editor のボタン): 確認のダイアログ(「この pass を graph の node とループに書き換えます。今は元に戻せません(RD-1 が入ると Undo できるようになります)」+ 何ができるかの 1 行)→ `decompose_material_pass {base_source_digest, base_preset_digest?, pass}`。direct root の pass は preset digest 無し、fork 済み preset の pass は付ける。engine の preset の pass は `project_preset_required` を読める文で出し、fork の手順へ誘導する
+   - commit したら Graph tab に切り替えて、できた loop(`decomposed.loop`)を選ぶ
+   - 拒否 `material_pass_not_decomposable` の reason ごとに 1 文(not_found / graph_pass / feature_pass / not_material / contract_unsupported / field_unsupported / attachment_unsupported)
+   - 分解できない pass ではメニューの項目を無効にし、理由を tooltip に(分からなければ送って拒否の文で)
+2. **Graph tab の render.material_pass**: parameter_dependent の op を扱う。socket は engine の契約(forward = `color`、G-buffer = `albedo` / `normal` / `material` / `worldpos` / `emissive`、+ `depth` と任意の `draws`)から。palette からも置ける(`material_contract` は combo)
+3. **draw_loop の loop**: LP-4c の Loop の欄を段に応じて変える。`over.draw_items.contract` は読むだけ。where は tags の include / exclude / require_all。order・limit・carry は出さない。分岐表の when は `material`(候補は `loops[]` のこの loop の `elements` の照合の鍵。`total` を読み、page を送って全部集める)/ `tags` / `contract` / `skinned` / `has_variant`(複数は AND)。当たる material は `elements` の `branch` から
+4. **body の draw.***: body の palette に `draw.material` / `draw.variant {variant}` / `draw.override {render_state?, defines?}`。`after` の線で描く順、body の `outputs.draws` が列の末尾。variant は文字列(候補が分かれば combo)。override の render_state はよく使うもの(cull・depth test / write・blend)を欄に、defines は 1 行 1 つ
+5. **Frame Plan**: draw_loop は展開されない。material pass のノードに `loop: <id> (N materials)` の 1 行、詳細に分岐ごとの material の一覧(`total` を使い、多ければ「さらに読む」)
+6. **拒否の文**: `graph.loop_draws_unconnected@1` / `graph.definition_role@1` / `graph.loop_contract_unsupported@1` / `graph.loop_tier_unsupported@1` の draw_loop の reason(carry_in_draw_loop / limit_in_draw_loop / resource_in_draw_body / mixed_body)を LP-4c の表に足す
+
+#### 受け入れ
+1. payload の test: Decompose(direct root / fork 済み preset で digest の付け方)、commit 後に Graph tab で loop が選ばれる、拒否の各 reason の文
+2. model の test: render.material_pass の socket が契約から出る(forward と G-buffer)。対照: `ports == "declared"` だけの palette に戻す変異で palette に出ない
+3. Loop の欄と分岐表の test: draw_loop で出す欄 / 出さない欄、when の各属性の payload、material の候補が paging を集める(`total` > limit の fake で)
+4. **GPU シナリオ `material_loop_decompose`**: material pass を持つ project を repo 外へ複製 → Frame Plan で Decompose into loop → 確認 → Graph tab に loop と render.material_pass → 画面が分解前と同じ → 分岐を足して `material = <箱の material>` に `draw.override` か `(nothing)` → 画面の箱が変わる → `loops[0].elements` の branch が変わる
+5. `-L studio_cpu -LE gpu` 緑
+6. 報告にテキスト入力の欄と減らす案
+
+#### やらないこと
+- ゾーン表示 → LP-4d
+- Decompose の Undo → RD-1(engine)の後の「render の編集の undo」WP(RU-1 として `fa413aeb` で入った)
+
+#### 着地(2026-09-27、08b767f2)
+- **決定 1**: Frame Plan の右クリックの **Decompose into loop...**(`pelican.framePlan.decomposeIntoLoop`)と、Pass Editor の同名のボタン(`pelican.fullscreenPass.decomposeIntoLoop`。material pass のときだけ出て、Frame Plan の処理を呼ぶ。[ボタン](../src/devstudio/view/fullscreenpasswidget.cpp#L495)、[つなぐ所](../src/devstudio/view/mainwindow.cpp#L342))
+  - 項目が出るのは、authoring context で type が material の pass と、既に draw_loop が描いている pass。ループの回・task・fullscreen pass には出ない([項目を出す所](../src/devstudio/view/frameplanwidget.cpp#L2680))
+  - 送る前に分かる理由は `framePlanDecomposeRefusal()`([理由](../src/devstudio/view/frameplanedit.cpp#L1526))。項目を無効にして tooltip に出す(material でない、feature の pass、fork していない engine の preset の pass、既に draw_loop がある、context がまだ無い)
+  - 確認は `QMessageBox`(`pelican.framePlan.decomposeConfirm`、`.ok` / `.cancel`、既定は Cancel)([確認を出す所](../src/devstudio/view/frameplanwidget.cpp#L2691))。着地時の文は `… It cannot be undone yet (RD-1 brings Undo for it).` と、何ができるかの段落。RU-1(`fa413aeb`)で `Undo takes it back (Undo on the Frame Plan, or Ctrl+Z there).` に変わった([文](../src/devstudio/view/frameplanedit.cpp#L1577))
+  - 要求は Decompose を押した時点の context で組み直す。`base_preset_digest` は、pass が root でなく preset にあり、config が direct でないときだけ付ける([要求](../src/devstudio/view/frameplanedit.cpp#L1558))
+  - accepted の応答の `decomposed.loop` を覚え、commit で `setLoopDecomposedAction` を呼ぶ。MainWindow が Graph tab を前に出し、`revealNodeWhenPresent()` でループが文書に現れたら選ぶ(今の文書に無ければ読み直す)([つなぐ所](../src/devstudio/view/mainwindow.cpp#L418)、[選ぶ所](../src/devstudio/view/graphcanvaswidget.cpp#L3471))
+  - 拒否の文は `framePlanDecomposeRejection()`([文](../src/devstudio/view/frameplanedit.cpp#L1596))。7 つの reason、`project_preset_required`、`graph.node_duplicate@1`。ほかは `renderAuthoringRefusalLine()`
+- **決定 2**: `render.material_pass` のソケットは `materialPassColorSockets()`([ソケット](../src/devstudio/model/graphcanvasmodel.cpp#L2763))。`material_outputs` があればその出力の名前、forward の 2 契約は `color`、`deferred_geometry_v1`(と `legacy_gbuffer_v1`)は G-buffer の 5 つ。続けて `depth` と任意の `draws`(型は draw stream)。出力 port は無い([port を作る所](../src/devstudio/model/graphcanvasmodel.cpp#L1379))
+  - palette は `paletteOperations()` が `ports == "declared"` の外に 3 つを通す: `render.fullscreen`(LP-4c)、root の `render.material_pass`、draw_loop の body の `draw.*`([palette](../src/devstudio/model/graphcanvasmodel.cpp#L2660))。palette の Contract の combo は `pelican.graphCanvasPaletteContract`(`forward_opaque_v1` / `deferred_geometry_v1` / `forward_transparent_v1`)
+  - 選んだ material pass の Contract の欄は `GraphCanvasDrawFields`(`pelican.graphCanvasDraw.contract`)([欄](../src/devstudio/view/graphcanvasloopfields.cpp#L862))
+- **決定 3**: `over.draw_items` のループでは Count・Order・Limit・Place・Where(element)・Outputs・Carry を隠し、Contract(読むだけ)と Tags(any of / none of / all of)を出す([出し分ける所](../src/devstudio/view/graphcanvasloopfields.cpp#L415))
+  - 分岐の行は body と ↑ ↓ × の段、条件の段(material / tags / contract / skinned / has variant)、当たった material の段([条件の段](../src/devstudio/view/graphcanvasloopfields.cpp#L735))。条件は `setLoopBranchDrawWhen()`([送る所](../src/devstudio/model/graphcanvasmodel.cpp#L2802))。全部 `(any)` の行は送らない
+  - material の候補は報告の `elements` の文字列の鍵。`total` が持っている数より多ければ、`get_frame_plan {loop_elements: {node, offset, limit: 4096}}` でループごとに続きを読む([ページを読む所](../src/devstudio/model/graphcanvasmodel.cpp#L524))
+  - 新しい分岐の条件は報告の最初の material(`material = <鍵>`)、報告の前は `has_variant: true`([足す所](../src/devstudio/model/graphcanvasmodel.cpp#L2431))
+- **決定 4**: `draw.*` は `drawBodyScope()`(draw_loop が走らせる body か、既に draw step を持つ definition)でだけ palette に出る([判定](../src/devstudio/model/graphcanvasmodel.cpp#L2781))。置く列は [draw step を置く所](../src/devstudio/model/graphcanvasmodel.cpp#L2038)
+  - 欄は `GraphCanvasDrawFields`: `draw.variant` は打てる combo の Variant、`draw.override` は Cull / Depth test / Depth write / Blend の combo(先頭の `(material's)` は鍵を書かない)と Defines(1 行 1 つ)+ Apply defines([欄を合わせる所](../src/devstudio/view/graphcanvasloopfields.cpp#L949))。何も替えない override は送らない([送る所](../src/devstudio/model/graphcanvasmodel.cpp#L2841))
+- **決定 5**: material pass の見出しの下の 1 行は `framePlanDrawLoopLine()`([1 行](../src/devstudio/view/frameplanedit.cpp#L1518))。item の種類は `node_draw_loop`。詳細の `Draw loop <id>` と分岐ごとの material、`<k> of <total> shown` と **Read more**(`pelican.framePlan.loopMaterialsMore`、256 件ずつ)([詳細](../src/devstudio/view/frameplanwidget.cpp#L3580))
+- **決定 6**: 表に `graph.loop_draws_unconnected@1` を足し、`graph.definition_role@1` の文を draw step の文に替え(LP-4c では `Definition {definition} holds {node}, which a body of its kind cannot`)、`graph.loop_tier_unsupported@1` は `reason` が draw_loop の 4 つなら何を直すかを言う文に替える([reason の文](../src/devstudio/model/inspectormodel.cpp#L824))。`graph.loop_contract_unsupported@1` は LP-4c の表に既にあった
+- **途中で直した不具合**: Frame Plan の model と Graph tab が、loop の要素を整数だけと決めつけていた(draw_loop の要素は material の鍵の文字列)。Frame Plan は `FramePlanLoopElement::key` を足し、`pass`・`offset`・`total` も読む
+- **仕様から外れた所(実装者の判断)**:
+  1. engine の preset の pass はメニューを無効にし、「Features tab の Fork で先に fork」の文を出す(送って `project_preset_required` を受けるのでなく)
+  2. palette の `render.material_pass` は、ソケットごとの `render.image`(`<pass>__<socket>`)と depth の image を同じ op 列で置いてつなぐ(GPU では未確認)
+  3. `draw.*` は body の列の先頭に入れる(今の先頭の `after` を新しい step につなぐ。`draws` を作る step は末尾のまま)
+  4. `draw.override` は `render_state: {cull: none}` で置く。`draw.variant` は pass の `material_variant`、無ければ `"variant"` で置く(`suggestDrawVariant()`)
+- **test**:
+  - `devstudio_frameplan_graph_test` に 3 本
+    - `LP-4e Decompose into loop confirms, sends the digests its pass lives under, and shows the loop it made`([test](../test/devstudio_frameplan_graph_test.cpp#L11403)): forked / direct の 2 通り
+    - `LP-4e Decompose into loop says why it cannot, before and after it is sent`([test](../test/devstudio_frameplan_graph_test.cpp#L11464))
+    - `LP-4e a material pass a draw_loop draws in says so under its heading, and lists its materials by branch`([test](../test/devstudio_frameplan_graph_test.cpp#L11582))
+  - `devstudio_graphcanvas_test` に 4 本
+    - `LP-4e a material pass's sockets come from its contract, and the palette places one`([test](../test/devstudio_graphcanvas_test.cpp#L1681))
+    - `LP-4e a draw step arrives at the head of its body's list and its fields are one gesture each`([test](../test/devstudio_graphcanvas_test.cpp#L1755))
+    - `LP-4e a draw_loop's fields: tags where, material branches, and every page of materials`([test](../test/devstudio_graphcanvas_test.cpp#L1797)): 300 件のうち 256 件の報告から続きを 1 回読む
+    - `LP-4e a draw_loop's refusals read as sentences that say what to change`([test](../test/devstudio_graphcanvas_test.cpp#L1887))
+  - `devstudio_graphcanvas_scene_test` に 2 本
+    - `LP-4e a draw_loop's Loop fields: the rows it takes, the rows it does not, and a branch's material`([test](../test/devstudio_graphcanvas_scene_test.cpp#L3346))
+    - `LP-4e the Graph tab selects the loop a decompose made once a document holds it`([test](../test/devstudio_graphcanvas_scene_test.cpp#L3463))
+  - `devstudio_fullscreen_pass_test`: 既存の `Studio edits material and raster connections and restores the fullscreen form` に、Pass Editor のボタンの section を足した([test](../test/devstudio_fullscreen_pass_test.cpp#L2455))
+- **変異** M1〜M11(実装者の報告。1 本ずつ入れて、すべて赤)
+  - M1: `base_preset_digest` を送らない
+  - M2: commit 後にループを渡さない
+  - M3: `revealPending` が選ばない
+  - M4: `field_unsupported` の文を消す
+  - M5: palette を `ports == "declared"` だけに戻す
+  - M6: forward の socket を G-buffer にする
+  - M7: page を送らない
+  - M8: draw_loop でも Count の欄を出す
+  - M9: when から `skinned` を落とす
+  - M10: tier の reason 別の文を消す
+  - M11: MainWindow で Graph tab への切り替えとループの選択を外す(シナリオの手順 18 で赤)
+- **シナリオ(受け入れ 4)**: 新しい `material_loop_decompose`([シナリオ](../test/studio_scenarios/material_loop_decompose.json))と fixture `test/fixtures/studio_material_loop_decompose/`(direct root の rendering 節が forward の `forward_opaque` と `present` を宣言。箱 1 つと平らな色の `g1_flat`)。json の `steps` は 47。実装者の報告では 49 手順で緑
+  - 分解の前後で、箱の色 `#ffb33f`・背景 `#000000`・色数 2 が一致(実装者の報告の値。json は前の値を覚えて比べる)
+  - Add branch(最初の material `pelican.builtin.transparent`)→ 箱の material `materials/g1_flat.material.json#g1_flat` を combo で選ぶ → `(nothing)` → 中央が背景の色、色数 1、`loops[0].elements[2].branch` が 0、`elements[0].branch` が 1
+  - Frame Plan を Refresh して `node_draw_loop#forward_opaque`
+  - 着地時は確認の文に `cannot be undone yet` があることを見ていた。RU-1 で `Undo takes it back` に変わった
+- **受け入れ 5**: `-L studio_cpu -LE gpu` 403/403 緑(実装者の報告)
+- **テキスト入力の欄(受け入れ 6)**(実装者の報告)
+  - Tags(any of / none of / all of)
+  - 分岐の行の tags
+  - Variant の名前(候補は pass の `material_variant` だけ)
+  - Defines
+  - material の鍵は combo で選び、打たない。シナリオで打つものは無い
+- **穴**(実装者の報告)
+  - 分岐の行の tags は include だけ編集できる(`exclude` / `require_all` は文書のまま残す)
+  - `has_variant` に文字列を書いた `when` は表で表せない
+  - Frame Plan の Read more を押して続きを読む所は test していない(ボタンが出ることだけ)
+  - `render.target_ref` の parameters が pill のまま
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
