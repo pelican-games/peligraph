@@ -602,6 +602,250 @@ TEST_CASE("graph inverse operations validate indexes and replacement topology",
              {"node", {{"id", "shape"}, {"op", "graph.instance"}, {"definition", "scaled_curve"}}}}})));
 }
 
+namespace {
+// The code a refused edit is named by, or "<accepted>". A refusal that is not
+// named (std::invalid_argument) escapes, so a case that expects a code fails
+// loudly on it.
+std::string lp0cEditCode(const nlohmann::json &document, const nlohmann::json &ops) {
+    try {
+        (void)Pelican::editGraphDocument(document, ops);
+    } catch (const Pelican::GraphRegistryError &error) {
+        return error.code();
+    }
+    return "<accepted>";
+}
+
+nlohmann::json lp0cEditDetail(const nlohmann::json &document, const nlohmann::json &ops) {
+    try {
+        (void)Pelican::editGraphDocument(document, ops);
+    } catch (const Pelican::GraphRegistryError &error) {
+        return error.detail();
+    }
+    return nullptr;
+}
+} // namespace
+
+TEST_CASE("LP-0c a definition is added and filled in one op list and saved as written",
+          "[curve][graph-composition][graph-definition-edit]") {
+    using Json = nlohmann::json;
+    const auto document = parameterGraphCompositionFixture();
+    const Json knob{{"id", "knob"}, {"op", "value.constant"}, {"parameters", {{"value", 3}}},
+                    {"outputs", Json::array({"value"})}};
+    // The body is addressed by `scope` in the very list that creates it.
+    const auto edited = Pelican::editGraphDocument(document, Json::array({
+        Json{{"op", "add_definition"}, {"name", "echo"}},
+        Json{{"op", "add_node"}, {"scope", "echo"}, {"node", knob}},
+        Json{{"op", "add_node"}, {"node", {{"id", "echo_use"}, {"op", "graph.instance"},
+                                           {"definition", "echo"}}}}}));
+    CHECK(edited.at("definitions").at("echo") ==
+          Json{{"nodes", Json::array({knob})}, {"outputs", Json::object()}});
+    // Nothing else moved: the rest of the document is the one that went in.
+    auto without = edited;
+    without["definitions"].erase("echo");
+    without["nodes"].erase(without["nodes"].size() - 1);
+    CHECK(without == document);
+    // The body expands under its instance.
+    const auto expanded = Pelican::expandGraphDocument(edited);
+    CHECK(expanded.origins.contains("echo_use/knob"));
+    // Saved and read back, it is the same document.
+    CHECK(Json::parse(edited.dump(2)) == edited);
+    // An empty definition is the default body; a given body is taken whole.
+    const Json body{{"nodes", Json::array({knob})}, {"outputs", {{"value", {{"node", "knob"}, {"port", "value"}}}}},
+                    {"layout", {{"nodes", {{"knob", {{"x", 1}, {"y", 2}}}}}}}};
+    CHECK(Pelican::editGraphDocument(document, Json::array({
+        Json{{"op", "add_definition"}, {"name", "whole"}, {"definition", body}}}))
+              .at("definitions").at("whole") == body);
+    // The first add creates `definitions` when the document had none.
+    const Json bare{{"schema", "pelican.graph"}, {"version", 1},
+                    {"nodes", Json::array({knob})}, {"outputs", Json::object()}};
+    const auto created = Pelican::editGraphDocument(bare, Json::array({
+        Json{{"op", "add_definition"}, {"name", "echo"}}}));
+    CHECK(created.at("definitions") ==
+          Json{{"echo", {{"nodes", Json::array()}, {"outputs", Json::object()}}}});
+}
+
+TEST_CASE("LP-0c renaming a definition rewrites its references and renames back byte for byte",
+          "[curve][graph-composition][graph-definition-edit]") {
+    using Json = nlohmann::json;
+    const auto document = parameterGraphCompositionFixture();
+    const auto renamed = Pelican::editGraphDocument(document, Json::array({
+        Json{{"op", "rename_definition"}, {"from", "scaled_curve"}, {"to", "shaped"}}}));
+    CHECK_FALSE(renamed.at("definitions").contains("scaled_curve"));
+    CHECK(renamed.at("definitions").at("shaped") == document.at("definitions").at("scaled_curve"));
+    for (const auto index : {3, 4}) CHECK(renamed.at("nodes").at(index).at("definition") == "shaped");
+    const auto expanded = Pelican::expandGraphDocument(renamed);
+    CHECK(expanded.origins.at("left/shape").definition == "shaped");
+    const auto back = Pelican::editGraphDocument(renamed, Json::array({
+        Json{{"op", "rename_definition"}, {"from", "shaped"}, {"to", "scaled_curve"}}}));
+    CHECK(back == document);
+    // Key order included: the object keeps its keys sorted, so the bytes match.
+    CHECK(back.dump(2) == document.dump(2));
+
+    // A check an earlier op recorded follows the rename: the port is declared
+    // under the new name, after the instance already supplies it.
+    const Json bias{{"id", "bias"}, {"op", "graph.input"}};
+    CHECK(lp0cEditCode(document, Json::array({
+        Json{{"op", "set_input"}, {"node", "left"}, {"port", "bias"},
+             {"source", {{"node", "two"}, {"port", "value"}}}},
+        Json{{"op", "set_input"}, {"node", "right"}, {"port", "bias"},
+             {"source", {{"node", "two"}, {"port", "value"}}}},
+        Json{{"op", "rename_definition"}, {"from", "scaled_curve"}, {"to", "shaped"}},
+        Json{{"op", "add_node"}, {"scope", "shaped"}, {"node", bias}}})) == "<accepted>");
+}
+
+TEST_CASE("LP-0c a definition still named is not removed, and a removal comes back as an add",
+          "[curve][graph-composition][graph-definition-edit]") {
+    using Json = nlohmann::json;
+    const auto document = parameterGraphCompositionFixture();
+    const Json remove_scaled = Json::array({
+        Json{{"op", "remove_definition"}, {"name", "scaled_curve"}}});
+    REQUIRE(lp0cEditCode(document, remove_scaled) == "graph.definition_referenced@1");
+    CHECK(lp0cEditDetail(document, remove_scaled) ==
+          Json{{"definition", "scaled_curve"}, {"referenced_by", Json::array({"left", "right"})}});
+
+    // A definition nothing names goes, and the add carrying its body restores it.
+    auto spare = document;
+    spare["definitions"]["spare"] = {
+        {"nodes", Json::array({Json{{"id", "k"}, {"op", "value.constant"},
+            {"parameters", {{"value", 1}}}, {"outputs", Json::array({"value"})}}})},
+        {"outputs", {{"value", {{"node", "k"}, {"port", "value"}}}}},
+        {"layout", {{"nodes", {{"k", {{"x", 4}, {"y", 5}}}}}}}};
+    const auto body = spare.at("definitions").at("spare");
+    const auto removed = Pelican::editGraphDocument(spare, Json::array({
+        Json{{"op", "remove_definition"}, {"name", "spare"}}}));
+    CHECK_FALSE(removed.at("definitions").contains("spare"));
+    const auto restored = Pelican::editGraphDocument(removed, Json::array({
+        Json{{"op", "add_definition"}, {"name", "spare"}, {"definition", body}}}));
+    CHECK(restored == spare);
+    CHECK(restored.dump(2) == spare.dump(2));
+
+    // The reference check waits for the end of the list: the instance that
+    // names the definition may be removed after it.
+    auto used = spare;
+    used["nodes"].push_back({{"id", "user"}, {"op", "graph.instance"}, {"definition", "spare"}});
+    CHECK(lp0cEditCode(used, Json::array({
+        Json{{"op", "remove_definition"}, {"name", "spare"}},
+        Json{{"op", "remove_node"}, {"node", "user"}}})) == "<accepted>");
+    const Json alone = Json::array({Json{{"op", "remove_definition"}, {"name", "spare"}}});
+    CHECK(lp0cEditCode(used, alone) == "graph.definition_referenced@1");
+    CHECK(lp0cEditDetail(used, alone).at("referenced_by") == Json::array({"user"}));
+    // And a definition of that name back in its place by the end is no loss.
+    CHECK(lp0cEditCode(used, Json::array({
+        Json{{"op", "remove_definition"}, {"name", "spare"}},
+        Json{{"op", "add_definition"}, {"name", "spare"}, {"definition", body}}})) == "<accepted>");
+}
+
+TEST_CASE("LP-0c an instance and its definition's boundary agree after the list, in either order",
+          "[curve][graph-composition][graph-definition-edit]") {
+    using Json = nlohmann::json;
+    const auto document = parameterGraphCompositionFixture();
+    const Json declare{{"op", "add_node"}, {"scope", "scaled_curve"},
+                       {"node", {{"id", "bias"}, {"op", "graph.input"}}}};
+    const auto supply = [](const char *instance) {
+        return Json{{"op", "set_input"}, {"node", instance}, {"port", "bias"},
+                    {"source", {{"node", "two"}, {"port", "value"}}}};
+    };
+    const auto declared_first = Pelican::editGraphDocument(document, Json::array({
+        declare, supply("left"), supply("right")}));
+    const auto supplied_first = Pelican::editGraphDocument(document, Json::array({
+        supply("left"), supply("right"), declare}));
+    CHECK(supplied_first == declared_first);
+    const auto expanded = Pelican::expandGraphDocument(supplied_first);
+    CHECK(expanded.instance_inputs.at("left/bias").source ==
+          Pelican::GraphInstanceInputSource::connected);
+    // The same for stored values.
+    CHECK(lp0cEditCode(document, Json::array({
+        Json{{"op", "set_node_parameters"}, {"node", "left"}, {"parameters", {{"gain", 2}, {"bias", 1}}}},
+        Json{{"op", "set_node_parameters"}, {"node", "right"}, {"parameters", {{"gain", 4}, {"bias", 1}}}},
+        declare})) == "<accepted>");
+    // One half alone is refused as it always was.
+    CHECK(lp0cEditCode(document, Json::array({supply("left")})) == "graph.input_unknown@1");
+    CHECK(lp0cEditDetail(document, Json::array({supply("left")})) ==
+          Json{{"node", "left"}, {"definition", "scaled_curve"}, {"port", "bias"}});
+    CHECK(lp0cEditCode(document, Json::array({
+        Json{{"op", "set_node_parameters"}, {"node", "left"}, {"parameters", {{"bias", 1}}}}})) ==
+          "graph.input_unknown@1");
+    CHECK_THROWS_AS(Pelican::editGraphDocument(document, Json::array({declare})),
+                    std::invalid_argument); // an unsupplied input without a default
+    // Clearing a port the definition never had is still a typo, named.
+    CHECK(lp0cEditCode(document, Json::array({
+        Json{{"op", "set_input"}, {"node", "left"}, {"port", "bias"}, {"source", nullptr}}})) ==
+          "graph.input_unknown@1");
+    // Taking the port out again, in either order.
+    const Json undeclare{{"op", "remove_node"}, {"scope", "scaled_curve"}, {"node", "bias"}};
+    const auto unsupply = [](const char *instance) {
+        return Json{{"op", "set_input"}, {"node", instance}, {"port", "bias"}, {"source", nullptr}};
+    };
+    CHECK(Pelican::editGraphDocument(declared_first, Json::array({
+        unsupply("left"), unsupply("right"), undeclare})) == document);
+    CHECK(Pelican::editGraphDocument(declared_first, Json::array({
+        undeclare, unsupply("left"), unsupply("right")})) == document);
+    CHECK(lp0cEditCode(declared_first, Json::array({undeclare})) == "graph.input_referenced@1");
+    CHECK(lp0cEditDetail(declared_first, Json::array({undeclare})) ==
+          Json{{"definition", "scaled_curve"}, {"input", "bias"}, {"instance", "left"}});
+    // A port declared again by the end of the list is not lost.
+    CHECK(lp0cEditCode(declared_first, Json::array({undeclare, declare})) == "<accepted>");
+    // An op refused for its own reason still names the instance first, as it
+    // did when the check ran in place: `gain` is also wired inside the body.
+    CHECK(lp0cEditCode(document, Json::array({
+        Json{{"op", "remove_node"}, {"scope", "scaled_curve"}, {"node", "gain"}}})) ==
+          "graph.input_referenced@1");
+    CHECK(lp0cEditCode(document, Json::array({
+        Json{{"op", "set_input"}, {"node", "left"}, {"port", "absent"},
+             {"source", {{"node", "two"}}}}})) == "graph.input_unknown@1");
+}
+
+TEST_CASE("LP-0c definition ops are refused by name",
+          "[curve][graph-composition][graph-definition-edit]") {
+    using Json = nlohmann::json;
+    const auto document = parameterGraphCompositionFixture();
+    const auto one = [](Json op) { return Json::array({std::move(op)}); };
+    const auto add = one({{"op", "add_definition"}, {"name", "scaled_curve"}});
+    CHECK(lp0cEditCode(document, add) == "graph.definition_duplicate@1");
+    CHECK(lp0cEditDetail(document, add) == Json{{"definition", "scaled_curve"}});
+    auto two = document;
+    two["definitions"]["other"] = {{"nodes", Json::array()}, {"outputs", Json::object()}};
+    const auto onto = one({{"op", "rename_definition"}, {"from", "other"}, {"to", "scaled_curve"}});
+    CHECK(lp0cEditCode(two, onto) == "graph.definition_duplicate@1");
+    CHECK(lp0cEditDetail(two, onto) == Json{{"definition", "scaled_curve"}});
+    const auto remove = one({{"op", "remove_definition"}, {"name", "absent"}});
+    CHECK(lp0cEditCode(document, remove) == "graph.definition_missing@1");
+    CHECK(lp0cEditDetail(document, remove) == Json{{"definition", "absent"}});
+    const auto rename = one({{"op", "rename_definition"}, {"from", "absent"}, {"to", "x"}});
+    CHECK(lp0cEditCode(document, rename) == "graph.definition_missing@1");
+    CHECK(lp0cEditDetail(document, rename) == Json{{"definition", "absent"}});
+    // definition_referenced is covered with its referrers above.
+
+    // A body that arrives whole obeys the rules its nodes would one at a time.
+    CHECK(lp0cEditCode(document, one({{"op", "add_definition"}, {"name", "nest"},
+        {"definition", {{"nodes", Json::array({Json{{"id", "inner"}, {"op", "graph.instance"},
+            {"definition", "scaled_curve"}}})}, {"outputs", Json::object()}}}})) ==
+          "graph.nested_instance@1");
+    CHECK(lp0cEditCode(document, one({{"op", "add_definition"}, {"name", "twice"},
+        {"definition", {{"nodes", Json::array({Json{{"id", "a"}, {"op", "graph.input"}},
+            Json{{"id", "a"}, {"op", "graph.input"}}})}, {"outputs", Json::object()}}}})) ==
+          "graph.node_duplicate@1");
+    // Names follow the node id rule, and "root" names the root scope.
+    for (const auto &name : Json::array({"", "a/b", 3, nullptr, "root"})) {
+        CAPTURE(name);
+        CHECK_THROWS_AS(Pelican::editGraphDocument(document, one({{"op", "add_definition"},
+            {"name", name}})), std::invalid_argument);
+        CHECK_THROWS_AS(Pelican::editGraphDocument(document, one({{"op", "rename_definition"},
+            {"from", "scaled_curve"}, {"to", name}})), std::invalid_argument);
+    }
+    for (const auto &body : Json::array({Json::array(), Json{{"nodes", Json::array()}},
+             Json{{"outputs", Json::object()}}, Json{{"nodes", Json::object()}, {"outputs", Json::object()}}})) {
+        CAPTURE(body);
+        CHECK_THROWS_AS(Pelican::editGraphDocument(document, one({{"op", "add_definition"},
+            {"name", "shape"}, {"definition", body}})), std::invalid_argument);
+    }
+    // They act on the document, not inside a body.
+    CHECK_THROWS_AS(Pelican::editGraphDocument(document, one({{"op", "add_definition"},
+        {"name", "x"}, {"scope", "scaled_curve"}})), std::invalid_argument);
+    CHECK(lp0cEditCode(document, one({{"op", "add_definition"}, {"name", "x"}, {"scope", "root"}})) ==
+          "<accepted>");
+}
+
 TEST_CASE("mixed graph keeps one document for scalar and render execution", "[curve][graph-composition]") {
     auto document = mixedGraphCompositionFixture();
     const Pelican::ValueGraph::Graph graph{document.dump()};

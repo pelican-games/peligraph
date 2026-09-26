@@ -1125,6 +1125,61 @@ TEST_CASE("instance inputs change supply atomically and report what was drawn",
         REQUIRE(portValue("gain").at("value") == 2.5);
     }
 
+    SECTION("LP-0c definitions are created, renamed and removed over edit_graph_document") {
+        const auto saved = [&] { return Json::parse(readBytes(source.path)); };
+        const auto definitions = [&] {
+            return Json(service->getGraphInstances(Json::object()).at("definitions"));
+        };
+        const auto original = saved();
+        // Created and filled in one list, then read back from the file.
+        const Json knob{{"id", "knob"}, {"op", "value.constant"},
+                        {"parameters", {{"value", 3}}}, {"outputs", Json::array({"value"})}};
+        REQUIRE(commit(edit(Json::array({
+            Json{{"op", "add_definition"}, {"name", "echo"}},
+            Json{{"op", "add_node"}, {"scope", "echo"}, {"node", knob}}})))
+                .at("committed") == true);
+        const Json echo{{"nodes", Json::array({knob})}, {"outputs", Json::object()}};
+        CHECK(saved().at("definitions").at("echo") == echo);
+        CHECK(definitions().at("echo") == echo);
+
+        // Renamed with its instance's reference, and the document still draws.
+        REQUIRE(commit(edit(Json::array({Json{{"op", "rename_definition"},
+            {"from", "gain_curve"}, {"to", "gain_shape"}}}))).at("committed") == true);
+        CHECK(instance().at("definition") == "gain_shape");
+        CHECK_FALSE(saved().at("definitions").contains("gain_curve"));
+        draw();
+        REQUIRE(portValue("gain").at("value") == 2.5);
+
+        // Still named, so not removed; the file is untouched.
+        const auto before = readBytes(source.path);
+        const auto refused = edit(Json::array({Json{{"op", "remove_definition"},
+            {"name", "gain_shape"}}}));
+        REQUIRE(refused.at("status") == "rejected");
+        CHECK(refused.at("error").at("code") == "graph.definition_referenced@1");
+        CHECK(refused.at("error").at("definition") == "gain_shape");
+        CHECK(Json(refused.at("error").at("referenced_by")) == Json::array({"left"}));
+        CHECK(refused.at("error").at("message") ==
+              R"(graph.definition_referenced@1 {"definition":"gain_shape","referenced_by":["left"]})");
+        CHECK(readBytes(source.path) == before);
+
+        // The inverse of a removal is the add with the body read beforehand.
+        const auto body = definitions().at("echo");
+        REQUIRE(commit(edit(Json::array({Json{{"op", "remove_definition"}, {"name", "echo"}}})))
+                .at("committed") == true);
+        CHECK_FALSE(saved().at("definitions").contains("echo"));
+        REQUIRE(commit(edit(Json::array({
+            Json{{"op", "add_definition"}, {"name", "echo"}, {"definition", body}},
+            Json{{"op", "rename_definition"}, {"from", "gain_shape"}, {"to", "gain_curve"}}})))
+                .at("committed") == true);
+        CHECK(saved().at("definitions").at("echo") == echo);
+        REQUIRE(commit(edit(Json::array({Json{{"op", "remove_definition"}, {"name", "echo"}}})))
+                .at("committed") == true);
+        // Every op above undone: the same document as the one we started with.
+        CHECK(saved() == original);
+        draw();
+        REQUIRE(portValue("gain").at("value") == 2.5);
+    }
+
     SECTION("the scope boundary is refused by name in both directions") {
         const auto saved = readBytes(source.path);
         const auto reject = [&](Json ops, const char *code) {

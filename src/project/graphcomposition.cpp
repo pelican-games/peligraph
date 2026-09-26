@@ -6,6 +6,7 @@
 #include <iterator>
 #include <set>
 #include <stdexcept>
+#include <vector>
 
 namespace Pelican {
 namespace {
@@ -417,34 +418,84 @@ EditScope resolveEditScope(Json &candidate, const Json &operation) {
     return scope;
 }
 
-// Every `graph.instance` in the document that stands on this definition and
-// supplies this boundary port -- with a stored parameter or with an edge. A
-// nested instance inside another definition counts the same as a root one.
-void requireInputUnreferenced(const Json &candidate, const std::string &definition,
-                              const std::string &input) {
-    const auto check = [&](const Json &nodes) {
-        for (const auto &node : nodes) {
-            if (!node.is_object() || node.value("op", std::string{}) != "graph.instance" ||
-                node.value("definition", std::string{}) != definition)
-                continue;
-            const auto supplies = [&](const char *key) {
-                const auto found = node.find(key);
-                return found != node.end() && found->is_object() && found->contains(input);
-            };
-            if (!supplies("parameters") && !supplies("inputs")) continue;
-            throw GraphRegistryError("graph.input_referenced@1",
-                {{"definition", definition}, {"input", input},
-                 {"instance", node.value("id", std::string{})}});
+// --- Who names a definition. LP-0c.
+//
+// One walk answers it for every consumer: remove_definition refuses a
+// definition something still names, rename_definition rewrites every name in
+// the same op, and the boundary-port check (requireInputUnreferenced) finds the
+// instances that supply a port. A new kind of referrer is added here once and
+// all three see it. The root document is walked first, then the definition
+// bodies in the document's key order; a nested instance inside a definition
+// counts the same as a root one.
+//
+// `Document` is `Json` or `const Json`, so the same walk both reads (the
+// checks) and writes (rename). `visit(scope, node, field)` gets the scope that
+// holds the referring node -- the empty string for the root document, else the
+// definition's name -- the node, and where in the node the name is written.
+template <typename Document, typename Visit>
+void visitDefinitionReferences(Document &document, const std::string &definition,
+                               Visit &&visit) {
+    const auto walk = [&](auto &nodes, const std::string &scope) {
+        if (!nodes.is_array()) return;
+        for (auto &node : nodes) {
+            if (!node.is_object()) continue;
+            if (node.value("op", std::string{}) == "graph.instance") {
+                const auto found = node.find("definition");
+                if (found != node.end() && found->is_string() && *found == definition)
+                    visit(scope, node, Json::json_pointer{"/definition"});
+            }
+            // LP-1a adds graph.loop here: every `parameters.branches[i].body`
+            // that names this definition is a reference, written at
+            // `/parameters/branches/<i>/body`. remove / rename / the port
+            // check then cover a loop's branches without further change.
         }
     };
-    const auto nodes = candidate.find("nodes");
-    if (nodes != candidate.end() && nodes->is_array()) check(*nodes);
-    const auto definitions = candidate.find("definitions");
-    if (definitions == candidate.end() || !definitions->is_object()) return;
-    for (const auto &[name, body] : definitions->items()) {
-        (void)name;
-        const auto body_nodes = body.find("nodes");
-        if (body_nodes != body.end() && body_nodes->is_array()) check(*body_nodes);
+    if (const auto nodes = document.find("nodes"); nodes != document.end())
+        walk(*nodes, std::string{});
+    const auto definitions = document.find("definitions");
+    if (definitions == document.end() || !definitions->is_object()) return;
+    for (auto body = definitions->begin(); body != definitions->end(); ++body) {
+        if (!body->is_object()) continue;
+        if (const auto nodes = body->find("nodes"); nodes != body->end())
+            walk(*nodes, body.key());
+    }
+}
+
+struct DefinitionReference {
+    // Empty for the root document, else the definition holding the referrer.
+    std::string scope;
+    std::string node;
+    Json::json_pointer field;
+    // Into the document the list was taken from; valid while it is unchanged.
+    const Json *referrer = nullptr;
+};
+
+std::vector<DefinitionReference> definitionReferences(const Json &document,
+                                                      const std::string &definition) {
+    std::vector<DefinitionReference> references;
+    visitDefinitionReferences(document, definition,
+        [&](const std::string &scope, const Json &node, const Json::json_pointer &field) {
+            references.push_back({scope, node.value("id", std::string{}), field, &node});
+        });
+    return references;
+}
+
+// Every reference to this definition that supplies this boundary port -- with
+// a stored parameter or with an edge. Only a `graph.instance` supplies ports by
+// the definition's input names (LP-1a decides how a graph.loop's `inputs` /
+// `carry` reach its branch bodies, and adds that here).
+void requireInputUnreferenced(const Json &candidate, const std::string &definition,
+                              const std::string &input) {
+    for (const auto &reference : definitionReferences(candidate, definition)) {
+        const auto &node = *reference.referrer;
+        if (node.value("op", std::string{}) != "graph.instance") continue;
+        const auto supplies = [&](const char *key) {
+            const auto found = node.find(key);
+            return found != node.end() && found->is_object() && found->contains(input);
+        };
+        if (!supplies("parameters") && !supplies("inputs")) continue;
+        throw GraphRegistryError("graph.input_referenced@1",
+            {{"definition", definition}, {"input", input}, {"instance", reference.node}});
     }
 }
 
@@ -752,15 +803,222 @@ void requireInstancePort(const Json &node, const Json &definitions, const std::s
         {{"node", node.at("id")}, {"definition", node.value("definition", std::string{})},
          {"port", port}});
 }
-} // namespace
 
-nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
-    if (!ops.is_array()) throw std::invalid_argument("graph document ops must be an array");
-    auto candidate = document;
-    if (!candidate.at("nodes").is_array())
-        throw std::invalid_argument("graph nodes must be an array");
-    if (const auto found = candidate.find("definitions"); found != candidate.end())
-        object(*found, "graph definitions must be an object");
+// --- Checks on the whole document, run once after the last op. LP-0c.
+//
+// An instance's ports and its definition's boundary are two bodies, and an
+// editor changes them with two ops: "add a graph.input to the definition" and
+// "supply it on the instance", in either order, or the removal of both. The
+// agreement between the two -- and whether a removed definition is still named
+// -- is therefore checked on the candidate the whole list produced, not after
+// each op. Each op records what it would have checked; if the op itself then
+// fails for another reason, its own records are checked first, so an op that
+// is refused still reports the same code it always did.
+struct DeferredCheck {
+    enum class Kind : std::uint8_t {
+        // `port` of instance `node` in `scope` is a graph.input of its
+        // definition (set_input / set_node_parameters).
+        instance_port,
+        // No reference to `definition` still supplies its removed graph.input
+        // `port` (remove_node of a graph.input), unless it was declared again.
+        input_unreferenced,
+        // Nothing names the removed `definition` any more (remove_definition),
+        // unless a definition of that name is there again.
+        definition_unreferenced,
+    };
+    Kind kind;
+    // instance_port: the scope holding the instance, empty for the root.
+    std::string scope;
+    std::string node;
+    std::string definition;
+    std::string port;
+    // instance_port recorded by a `set_input` that clears the port, when the
+    // port was the definition's at that point: declared then, or declared at
+    // the start of the list and removed by an earlier op. Clearing such a port
+    // is how a supply is taken away, so it holds even if the port is gone by
+    // the end -- but only if nothing supplies it again.
+    bool cleared_known_port = false;
+};
+
+const Json *findScopeNode(const Json &candidate, const std::string &scope,
+                          const std::string &id) {
+    const Json *nodes = nullptr;
+    if (scope.empty()) {
+        if (const auto found = candidate.find("nodes"); found != candidate.end()) nodes = &*found;
+    } else if (const auto definitions = candidate.find("definitions");
+               definitions != candidate.end() && definitions->is_object() &&
+               definitions->contains(scope) && definitions->at(scope).is_object()) {
+        const auto &body = definitions->at(scope);
+        if (const auto found = body.find("nodes"); found != body.end()) nodes = &*found;
+    }
+    if (nodes == nullptr || !nodes->is_array()) return nullptr;
+    for (const auto &node : *nodes)
+        if (node.is_object() && node.value("id", std::string{}) == id) return &node;
+    return nullptr;
+}
+
+bool declaresInput(const Json &candidate, const std::string &definition,
+                   const std::string &input) {
+    const auto definitions = candidate.find("definitions");
+    if (definitions == candidate.end() || !definitions->is_object() ||
+        !definitions->contains(definition))
+        return false;
+    for (const auto &node : definitions->at(definition).value("nodes", Json::array()))
+        if (node.value("op", std::string{}) == "graph.input" &&
+            node.value("id", std::string{}) == input)
+            return true;
+    return false;
+}
+
+// `in_place` is the run for an op that failed on its own: the check is asked
+// of the document as that op found it, where the removed port is still there.
+void runDeferredCheck(const Json &candidate, const DeferredCheck &check, bool in_place = false) {
+    static const Json no_definitions = Json::object();
+    const auto definitions = candidate.find("definitions");
+    const auto &known = definitions == candidate.end() || !definitions->is_object()
+        ? no_definitions : *definitions;
+    switch (check.kind) {
+    case DeferredCheck::Kind::instance_port: {
+        // An instance a later op removed supplies nothing.
+        const auto *node = findScopeNode(candidate, check.scope, check.node);
+        if (node == nullptr) return;
+        const auto supplies = [&](const char *key) {
+            const auto found = node->find(key);
+            return found != node->end() && found->is_object() && found->contains(check.port);
+        };
+        if (check.cleared_known_port && !supplies("inputs") && !supplies("parameters")) return;
+        requireInstancePort(*node, known, check.port);
+        return;
+    }
+    case DeferredCheck::Kind::input_unreferenced:
+        if (!in_place && (!known.contains(check.definition) ||
+                          declaresInput(candidate, check.definition, check.port)))
+            return;
+        requireInputUnreferenced(candidate, check.definition, check.port);
+        return;
+    case DeferredCheck::Kind::definition_unreferenced: {
+        if (known.contains(check.definition)) return;
+        auto referenced_by = Json::array();
+        for (const auto &reference : definitionReferences(candidate, check.definition))
+            if (std::find(referenced_by.begin(), referenced_by.end(), reference.node) ==
+                referenced_by.end())
+                referenced_by.push_back(reference.node);
+        if (referenced_by.empty()) return;
+        throw GraphRegistryError("graph.definition_referenced@1",
+            {{"definition", check.definition}, {"referenced_by", std::move(referenced_by)}});
+    }
+    }
+}
+
+// --- add_definition / remove_definition / rename_definition. LP-0c.
+//
+// A definition's name follows the node id rule: a nonempty string without a
+// slash. "root" is refused as well, because that token names the root document
+// in an op's `scope`: a definition called that could never be edited.
+
+bool isDefinitionOp(const std::string &kind) {
+    return kind == "add_definition" || kind == "remove_definition" ||
+           kind == "rename_definition";
+}
+
+std::string definitionName(const Json &operation, const char *member) {
+    const auto found = operation.find(member);
+    if (found == operation.end())
+        throw std::invalid_argument(std::string{"graph definition op requires "} + member);
+    return identifier(*found);
+}
+
+void requireNewDefinitionName(const std::string &name) {
+    if (name == kRootScope)
+        throw std::invalid_argument(
+            "graph definition cannot be named \"root\": that scope names the root document");
+}
+
+// The same rules add_node applies inside a definition scope, so a body that
+// arrives whole cannot hold what could not have been added one node at a time.
+void requireDefinitionBody(const std::string &name, const Json &body) {
+    object(body, "add_definition definition must be an object");
+    const auto nodes = body.find("nodes");
+    if (nodes == body.end() || !nodes->is_array())
+        throw std::invalid_argument("graph definition requires a nodes array: " + name);
+    const auto outputs = body.find("outputs");
+    if (outputs == body.end() || !outputs->is_object())
+        throw std::invalid_argument("graph definition requires an outputs object: " + name);
+    std::set<std::string> ids;
+    for (const auto &node : *nodes) {
+        object(node, "graph definition node must be an object");
+        const auto id = opNodeName(node.value("id", Json{}));
+        if (id.find('/') != std::string::npos)
+            throw GraphRegistryError("graph.definition_immutable@1",
+                {{"node", id}, {"reason", "instance_path"}});
+        if (!ids.insert(id).second)
+            throw GraphRegistryError("graph.node_duplicate@1", {{"node", id}, {"scope", name}});
+        if (node.value("op", std::string{}) == "graph.instance")
+            throw GraphRegistryError("graph.nested_instance@1", {{"node", id}, {"scope", name}});
+    }
+}
+
+void applyDefinitionOp(Json &candidate, const Json &operation, const std::string &kind,
+                       std::vector<DeferredCheck> &checks,
+                       std::vector<DeferredCheck> &recorded) {
+    // A definition op acts on the document, not inside one body.
+    if (const auto scope = operation.find("scope");
+        scope != operation.end() && !scope->is_null() && *scope != kRootScope)
+        throw std::invalid_argument("graph definition ops take no scope: " + kind);
+    const auto definitions = candidate.find("definitions");
+    const bool present = definitions != candidate.end();
+    const auto exists = [&](const std::string &name) {
+        return present && definitions->contains(name);
+    };
+    if (kind == "add_definition") {
+        const auto name = definitionName(operation, "name");
+        requireNewDefinitionName(name);
+        if (exists(name))
+            throw GraphRegistryError("graph.definition_duplicate@1", {{"definition", name}});
+        Json body{{"nodes", Json::array()}, {"outputs", Json::object()}};
+        if (const auto found = operation.find("definition");
+            found != operation.end() && !found->is_null()) {
+            requireDefinitionBody(name, *found);
+            body = *found;
+        }
+        candidate["definitions"][name] = std::move(body);
+    } else if (kind == "remove_definition") {
+        const auto name = definitionName(operation, "name");
+        if (!exists(name))
+            throw GraphRegistryError("graph.definition_missing@1", {{"definition", name}});
+        definitions->erase(name);
+        checks.push_back({DeferredCheck::Kind::definition_unreferenced, {}, {}, name, {}});
+    } else {
+        const auto from = definitionName(operation, "from");
+        const auto to = definitionName(operation, "to");
+        if (!exists(from))
+            throw GraphRegistryError("graph.definition_missing@1", {{"definition", from}});
+        requireNewDefinitionName(to);
+        if (exists(to))
+            throw GraphRegistryError("graph.definition_duplicate@1", {{"definition", to}});
+        auto body = std::move(definitions->at(from));
+        definitions->erase(from);
+        (*definitions)[to] = std::move(body);
+        // Every name moves with the body in this same op, so the document is
+        // never left naming a definition that is not there.
+        visitDefinitionReferences(candidate, from,
+            [&](const std::string &, Json &node, const Json::json_pointer &field) {
+                node[field] = to;
+            });
+        // And what earlier ops asked to be checked follows it too.
+        for (auto &check : recorded) {
+            if (check.scope == from) check.scope = to;
+            if (check.definition == from) check.definition = to;
+        }
+    }
+}
+
+void applyOperation(Json &candidate, const Json &operation, const std::string &kind,
+                    std::vector<DeferredCheck> &checks, std::vector<DeferredCheck> &recorded) {
+    if (isDefinitionOp(kind)) {
+        applyDefinitionOp(candidate, operation, kind, checks, recorded);
+        return;
+    }
     // The definition bodies are read fresh for every op: one op in the list can
     // change what the next one is allowed to do.
     static const Json no_definitions = Json::object();
@@ -768,9 +1026,7 @@ nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
         const auto found = candidate.find("definitions");
         return found == candidate.end() ? no_definitions : *found;
     };
-    for (const auto &operation : ops) {
-        object(operation, "graph document op must be an object");
-        const auto kind = operation.value("op", std::string{});
+    {
         const auto scope = resolveEditScope(candidate, operation);
         auto &nodes = *scope.nodes;
         const auto &definitions = definitionsOf();
@@ -796,7 +1052,7 @@ nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
                 // is validated below just like an ordinary graph edit.
                 locateNode(scope, definitions, id) = node;
                 pruneScopeLayout(scope);
-                continue;
+                return;
             }
             if (std::any_of(nodes.begin(), nodes.end(), [&](const Json &existing) {
                     return existing.contains("id") && existing.at("id") == id;
@@ -816,9 +1072,12 @@ nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
             const auto removed_op = locateNode(scope, definitions, id).value("op", std::string{});
             // A boundary port an instance is still supplying is that instance's
             // port. It is named first because it is the reference the canvas
-            // cannot show: the value lives outside the body being edited.
+            // cannot show: the value lives outside the body being edited. The
+            // instance side may be cleared later in the list, so the check is
+            // recorded, and runs here only if this op fails anyway.
             if (!scope.root && removed_op == "graph.input")
-                requireInputUnreferenced(candidate, scope.name, id);
+                checks.push_back({DeferredCheck::Kind::input_unreferenced, {}, {},
+                                  scope.name, id});
             // items() borrows its container, so the object has to outlive the
             // loop rather than be a temporary from value().
             const auto outputs =
@@ -843,8 +1102,22 @@ nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
             const auto id = opNodeName(operation.at("node"));
             const auto port = identifier(operation.at("port"));
             auto &node = locateNode(scope, definitions, id);
-            requireInstancePort(node, definitions, port);
             const auto &source = operation.at("source");
+            // The port may be declared by a later op in the list.
+            if (node.value("op", std::string{}) == "graph.instance") {
+                DeferredCheck check{DeferredCheck::Kind::instance_port,
+                                    scope.root ? std::string{} : scope.name, id, {}, port};
+                if (source.is_null()) {
+                    const auto reference = node.value("definition", std::string{});
+                    check.cleared_known_port =
+                        declaresInput(candidate, reference, port) ||
+                        std::any_of(recorded.begin(), recorded.end(), [&](const DeferredCheck &earlier) {
+                            return earlier.kind == DeferredCheck::Kind::input_unreferenced &&
+                                   earlier.definition == reference && earlier.port == port;
+                        });
+                }
+                checks.push_back(std::move(check));
+            }
             if (source.is_null()) {
                 if (const auto inputs = node.find("inputs"); inputs != node.end()) {
                     inputs->erase(port);
@@ -864,10 +1137,12 @@ nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
             const auto &parameters = operation.at("parameters");
             object(parameters, "set_node_parameters requires a parameters object");
             auto &node = locateNode(scope, definitions, id);
-            for (const auto &[name, value] : parameters.items()) {
-                (void)value;
-                requireInstancePort(node, definitions, name);
-            }
+            if (node.value("op", std::string{}) == "graph.instance")
+                for (const auto &[name, value] : parameters.items()) {
+                    (void)value;
+                    checks.push_back({DeferredCheck::Kind::instance_port,
+                                      scope.root ? std::string{} : scope.name, id, {}, name});
+                }
             if (parameters.empty()) node.erase("parameters");
             else node["parameters"] = parameters;
         } else if (kind == "set_node_label") {
@@ -899,6 +1174,33 @@ nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
             throw std::invalid_argument("unknown graph document op: " + kind);
         }
     }
+}
+} // namespace
+
+nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
+    if (!ops.is_array()) throw std::invalid_argument("graph document ops must be an array");
+    auto candidate = document;
+    if (!candidate.at("nodes").is_array())
+        throw std::invalid_argument("graph nodes must be an array");
+    if (const auto found = candidate.find("definitions"); found != candidate.end())
+        object(*found, "graph definitions must be an object");
+    // What the ops leave for the end: see DeferredCheck.
+    std::vector<DeferredCheck> deferred;
+    for (const auto &operation : ops) {
+        object(operation, "graph document op must be an object");
+        const auto kind = operation.value("op", std::string{});
+        std::vector<DeferredCheck> checks;
+        try {
+            applyOperation(candidate, operation, kind, checks, deferred);
+        } catch (...) {
+            // An op refused for its own reasons reports the whole-document
+            // check it recorded first, as it did when that check ran in place.
+            for (const auto &check : checks) runDeferredCheck(candidate, check, true);
+            throw;
+        }
+        deferred.insert(deferred.end(), checks.begin(), checks.end());
+    }
+    for (const auto &check : deferred) runDeferredCheck(candidate, check);
     // One expansion at the end: every op landed, or the document is refused
     // whole and the caller's document is untouched.
     (void)expandGraphDocument(candidate);

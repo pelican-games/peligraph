@@ -85,13 +85,29 @@ ExpandedGraphDocument expandGraphDocument(const nlohmann::json &document);
 //   {"op":"set_node_parameters","node":"<id>","parameters":{...}}
 //   {"op":"set_node_label","node":"<id>","label":"<text>"}   ("" clears)
 //   {"op":"set_layout","layout":{...}|null}                  (null clears)
-// applied in order to one candidate document, which is expanded once at the
-// end: either every op lands or the document is rejected whole. Failures that
-// an editor must tell apart are named -- graph.node_duplicate@1 /
-// graph.node_missing@1 / graph.input_unknown@1 / graph.input_referenced@1 /
-// graph.output_referenced@1 / graph.definition_immutable@1 /
-// graph.nested_instance@1 / graph.input_scope@1 /
-// graph.layout_invalid@1 -- as GraphRegistryError.
+// and three that act on the document's `definitions` and take no scope (LP-0c):
+//   {"op":"add_definition","name":"<name>","definition":{...}?}
+//       an empty body {"nodes":[],"outputs":{}} unless one is given
+//   {"op":"remove_definition","name":"<name>"}
+//   {"op":"rename_definition","from":"<name>","to":"<name>"}
+//       moves the body and rewrites every reference to it in the same op
+// Each has an inverse in the same vocabulary: add <-> remove, rename(a->b) <->
+// rename(b->a); the inverse of a remove is an add carrying the body the
+// document held before (an editor reads it before it sends the remove).
+// A definition's name follows the node id rule and may not be "root".
+// Ops are applied in order to one candidate document. The agreement between an
+// instance and its definition's boundary (graph.input_unknown@1,
+// graph.input_referenced@1) and whether a removed definition is still named
+// (graph.definition_referenced@1) are checked once after the last op, so an
+// editor may send "declare the port" and "supply it" in either order. The
+// candidate is then expanded once: either every op lands or the document is
+// rejected whole. Failures that an editor must tell apart are named --
+// graph.node_duplicate@1 / graph.node_missing@1 / graph.input_unknown@1 /
+// graph.input_referenced@1 / graph.output_referenced@1 /
+// graph.definition_immutable@1 / graph.nested_instance@1 /
+// graph.input_scope@1 / graph.layout_invalid@1 / graph.definition_duplicate@1 /
+// graph.definition_missing@1 / graph.definition_referenced@1 -- as
+// GraphRegistryError.
 //
 // `set_layout` is the one op that writes nothing the engine reads. It replaces
 // the addressed scope's `layout` member -- where the editor put the nodes, the
