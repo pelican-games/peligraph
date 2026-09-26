@@ -25859,6 +25859,29 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
   - Scopes の行はラベル無し(`view: face 2`)
   - submenu の軸の見出し(`QMenu::addSection`)の見え方は style に依存する
 
+### Q-16: 自分の commit を外部変更と取り違えて Undo が点滅する / 無効なボタンへの click が成功を返す
+
+**下段(Studio のみ)。実装者: Claude(Opus)。**
+
+#### 前提
+- GPU シナリオ `outliner_edit_roundtrip` が、負荷の高いとき(別 session の着地 gate の中)だけ間欠的に赤。step 35「the copy is back at the root」で 60 秒待っても `scene_revision` が 5 のまま(Undo が engine に届いていない)。続いて shutdown が 30 秒で終わらない(未保存の scene 編集が残り、未保存の問いが開いて止まる = 結果)
+- Inspector は 500ms ごとに `get_scene_revision` を問い合わせ、`observed_watch` と違えば外部変更として読み直す。`observed_watch` は watch の応答でしか進まず、自分の commit では進まなかった
+- automation の `click` は、QAction の無効は断るが、widget には無効を見ずに押下を送り、常に成功を返した
+
+#### 決定
+1. Inspector 自身の commit(edit / undo / redo / spawn / Outliner の編集 / preview commit / save)で `observed_watch` をその revision(と `preview_epoch`)へ進める。自分の最後の commit より前に出た watch 要求の応答では、外部変更と判定しない。別の client の編集は今どおり読み直す
+2. automation の `click` / `double_click` は、無効な widget(祖先が無効を含む)への押下を送らずに `automation.bad_request@1`(`the widget named "…" is disabled`)で断る
+3. 無効な widget を押して「何も起きないこと」を確かめているシナリオがあれば直す
+
+#### 着地(2026-09-26、3546a8ab)
+- 実装: `src/devstudio/model/inspectormodel.cpp`(自分の commit の世代 `own_commit_generation` と、watch 要求に持たせる世代)、`src/devstudio/automation/automationcommands.cpp`(`click` / `double_click` の無効の判定)。`test/studio_scenarios/README.md` の「押しても何も起きず 3 step 後に落ちる」の記述を新しい挙動に直した
+- test: `devstudio_inspector_test` の「Q-16 the Inspector's own commit does not read as an external change」(4 section。commit の読み直し中に出た watch / commit の前に出て後に届く watch / undo / save。各 section の末尾で別 client が revision を進めると読み直す = 対照)、`devstudio_automation_input_test` の「Q-16: click refuses a disabled widget by name」
+- 変異(実装者の報告): `observed_watch` を進めない / 世代の比較を外す / save で進めない / 無効を見ない → それぞれ赤
+- 計測(実装者の報告): 決定 1 を戻した build に負荷(非 GPU 全数 `-j16` を同時に)をかけ、`outliner_edit_roundtrip` を 10 回回すと、4 回で reparent の commit の直後に自分の commit を外部変更と見なす読み直しが起き、うち 2 回で Undo が 260〜320ms 無効に戻った。修正後は同じ負荷で 0 件。元の step 34 の赤そのものは 20 回で再現しなかった(一瞬の有効と click が重なる必要がある)。今後同じ競争を踏めば、決定 2 により step 34 で名前付きで落ちる
+- 決定 3: 全 27 本・104 か所の click を点検し、直すものは無かった
+- 結果: `-L studio_cpu -LE gpu` 383/383、`outliner_edit_roundtrip` `-j1` 10/10
+- 残した穴: 自分の最後の読み取りから save までの間に別の client が編集すると、その編集を読み直さない可能性がある(Save は Inspector が空いているときだけ通るので窓は狭い)。`wait enabled` から `click` までの競争の仕組み自体は残る
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
