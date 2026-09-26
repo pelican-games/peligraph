@@ -23,6 +23,7 @@
 #include "../src/core/watch/reloadgate.hpp"
 #include "../src/project/featurecompose.hpp"
 #include "../src/project/graphcomposition.hpp"
+#include "../src/project/materialdrawloop.hpp"
 #include "../src/project/rendercomponent.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/project/vulkanviewplanning.hpp"
@@ -7297,6 +7298,52 @@ TEST_CASE("G-4 the renderer's material_route_unserved@1 comes back as a named re
     // Nothing was written.
     CHECK(readBytes(harness.project.render_config) == root_before);
     CHECK(g4AuthoringFileCount(harness) == files_before);
+}
+
+// LP-2: the named refusals the engine raises while it builds the draw-loop
+// tables travel as "<code>: <JSON>" and come back as the named rejection,
+// the fields beside ticket and participant, as the view_select ones do.
+TEST_CASE("LP-2 a draw-loop refusal the renderer raises comes back as a named rejection with its fields",
+          "[render-config-editor][lp2][material-pass][rejection]") {
+    struct Case {
+        std::string_view code;
+        Json fields;
+    };
+    const auto refusal = GENERATE(
+        Case{materialDrawPhaseCrossingCode,
+             Json{{"node", "opaque_draws"}, {"material", "box"}}},
+        Case{materialDrawVariantMissingCode,
+             Json{{"node", "opaque_draws"}, {"material", "box"}, {"variant", "outline"}}},
+        Case{materialDrawOverrideInterfaceCode,
+             Json{{"node", "opaque_draws"}, {"material", "box"}, {"binding", "set 1 binding 0"}}},
+        Case{materialDrawOverrideNeedsCompilerCode, Json{{"node", "opaque_draws"}}},
+        Case{materialDrawOverrideCompileLimitCode,
+             Json{{"node", "opaque_draws"}, {"count", 17}, {"limit", 16}}});
+    INFO(refusal.code);
+    RenderTargetHarness harness{true};
+    const auto root_before = readBytes(harness.project.render_config);
+    harness.runtime.validate_candidate = [&](const RenderConfigCandidateDocumentSet &) {
+        throwMaterialDrawLoopRefusal(refusal.code, refusal.fields);
+    };
+    const auto accepted = harness.edit(addOp(sceneTarget("lp2_color")));
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    harness.service->commitPending();
+    const auto result = harness.service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("status") == "rejected");
+    CHECK(result.at("committed") == false);
+    const auto &error = result.at("error");
+    CHECK(error.at("code") == std::string{refusal.code});
+    CHECK(error.at("participant") == "pelican.render_pipeline");
+    CHECK(error.at("ticket") == accepted.at("ticket"));
+    for (const auto &[key, value] : refusal.fields.items()) {
+        INFO(key);
+        CHECK(error.at(key) == value);
+    }
+    CHECK_THAT(error.at("message").get<std::string>(),
+               Catch::Matchers::StartsWith(std::string{refusal.code} + ": "));
+    CHECK(readBytes(harness.project.render_config) == root_before);
 }
 
 // Q-14e: the renderer's typed input/shader mismatch reaches the ticket's

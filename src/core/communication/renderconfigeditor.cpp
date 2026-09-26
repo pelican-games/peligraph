@@ -9,6 +9,7 @@
 #include "../../project/graphcomposition.hpp"
 #include "../../project/graphvariantpolicy.hpp"
 #include "../../project/graphpartition.hpp"
+#include "../../project/materialdrawloop.hpp"
 #include "../../project/materialpassdecompose.hpp"
 #include "../../project/renderconfigsection.hpp"
 #include "renderconfigtransaction.hpp"
@@ -69,7 +70,10 @@ bool isCarriedRefusalCode(std::string_view code) {
            code == materialRouteDefaultUnavailableCode ||
            code == renderConfigLegacyTransactionDirCode ||
            // LP-Va: recompile-time view_select refusals.
-           isViewSelectRefusalCode(code);
+           isViewSelectRefusalCode(code) ||
+           // LP-2: the refusals raised while the draw-loop tables are
+           // built (the steps are judged against the loaded materials).
+           isMaterialDrawLoopRefusalCode(code);
 }
 
 // LP-0a: a graph refusal that only composing the candidate can raise (a
