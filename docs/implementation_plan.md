@@ -25696,6 +25696,169 @@ engine の変更 / 移行の手順そのもの / 移行の取り消し(backup �
 - **穴**: 詳細ツリーの shader の Open は、passthrough では無効のまま / canvas のインライン帯で fragment を替えても define は落ちない / 同じ resource の 2 本の線と、矢印の先の赤は C++ で未検査(VI-3a から)/ Pass Editor の Fix は未保存の下書きを見ない(今描いている `pass_inputs.fragment` を書き換える)
 - **テキスト入力の欄(受け入れ 8)**: 入力欄は増やしていない。足したのはボタンと action(Fix / Fix sockets / Make sockets variadic / Use engine://passthrough)。`sockets_fix_and_show` で打つのはフォルダだけ。Use engine://passthrough は shader を要らなくし、Fix sockets は宣言を Studio が書くので、入力の宣言の手打ちが減る
 
+### LP-4a: view_select を見せる(表示と拒否の行。欄は LP-4b)
+
+**下段(Studio のみ)。実装者: Claude(Opus)。契約は LP-Va(`c8e47325`、別 session)の `view_select` と拒否 4 つ。設計は `docs/design_graph_loops.md` §7(view の軸を選ぶ)。**
+
+#### 前提
+- LP-Va(engine)で pass / task に `view_select: {<軸>: <整数>}` が書けるようになった。rendering 節にも graph の render node にも書ける
+- `get_frame_plan` に `nodes[].view_select`、`physical_target_plan.scopes[].view_select`、実行 trace で一致する view が 0 個の node に `no_selected_view: true` が載る(どれも選択があるときだけ)
+- 拒否 4 つ(code と error_fields に分かれて届く): `graph.view_select_axis_unknown@1` {pass, family, axis, value?, length?} / `graph.view_select_runtime_axis@1` {pass, family, axis} / `graph.view_select_primary_family@1` {pass, family} / `graph.view_select_needs_target_plan@1` {pass}
+- 軸と長さを返す `view_axes` は LP-Va2(別 session、直後)で入る。**この WP では読まない**(欄は LP-4b)
+
+#### 決定
+1. model(`FramePlanNode`、scope の model)が `view_select` と `no_selected_view` を読む
+2. canvas の pass / task ノードの見出しの下(N-8 のバンドの並び)に、`view_select` があれば 1 行: `view: cascade 2`、複数の軸は `, ` でつなぐ(`view: light 0, face 3`)。face の値は数字のまま(ラベルは LP-4b で `view_axes.labels` から)
+3. `no_selected_view: true` のノードはこのフレームで走っていない: 見出しを薄くし、tooltip に `No view of <family> matches view_select this frame.` 相当。実行 trace を読む所(GPU timing の行と同じ出所)に合わせる
+4. 詳細ツリー(Frame Plan の node の詳細)に `view_select` の行。physical scope の表示があれば、その scope の `view_select` も
+5. 拒否の 1 行(Frame Plan の status 行と Pass Editor / Task Editor の拒否の行。Studio の拒否の文の表に足す):
+   - axis_unknown(value/length 無し): `<pass>: <family> has no view axis named <axis>.`
+   - axis_unknown(value/length 有り): `<pass>: <axis> <value> is outside <family>'s <length> views (0..<length-1>).`
+   - runtime_axis: `<pass>: <axis> of <family> is decided each frame and cannot be selected.`
+   - primary_family: `<pass> draws the main view (<family>), which has no axes to select.`
+   - needs_target_plan: `<pass>: view_select needs the physical target plan, which this configuration does not build.`
+   - 文言は周りの拒否の文に合わせて整えてよい。code は行の末尾の括弧に残す(Q-10 の形)
+6. Pass Editor が pass を読み直して Save するとき、`view_select` を**落とさない**(今の Save が宣言を verbatim に写す経路を確かめる。fullscreen 以外の「変わったキーだけ送る」経路も)。Task Editor も同じ
+
+#### 受け入れ
+1. 純粋な test(fake の `get_frame_plan` JSON): view_select のあるノードの 1 行、複数軸、無いノードには行が出ない(対照)。`no_selected_view` で見出しが薄くなり tooltip が出る
+2. 拒否の文の test: 4 つの code(axis_unknown は 2 形)で文が出る。対照: 表に足さない変異で `code: message` の汎用の行に戻って赤
+3. 保存で落とさない test: `view_select` を持つ pass の宣言を Pass Editor で読み、名前以外を変えて Save した payload に `view_select` が同じ値で残る。対照: 落とす変異で赤。Task Editor も同じ形で 1 本
+4. GPU シナリオは必須にしない。LP-Va の engine の test の fixture(`view_select` を書いた rendering 節)を repo 外へ複製して Studio で開けるなら、`view: cascade 1` の行が出ることを見る 1 本を足してよい
+5. `-L studio_cpu -LE gpu` 緑
+6. 報告にテキスト入力の欄(この WP では増やさないはず)
+
+#### 着地(2026-09-26、1d4a81b3)
+- **決定 1**: `FramePlanViewSelectAxis`(軸と値。[型](../src/devstudio/model/frameplanmodel.hpp#L171))の列を `FramePlanNode::view_select` と `FramePlanPhysicalScope::view_select` が持ち、`optionalViewSelect()`([読む所](../src/devstudio/model/frameplanmodel.cpp#L155))が読む。無い・`null` は空。object でない、軸名が空、値が 0 以上の整数でないときは model の組み立てが失敗する。`no_selected_view` は無ければ false([node で読む所](../src/devstudio/model/frameplanmodel.cpp#L1083))
+- **決定 2**: 1 行は `framePlanViewSelectLine()`([1 行を作る所](../src/devstudio/view/frameplanedit.cpp#L1517))。`nodeBodyLayout()` が見出しと N-8 の帯の間に 1 行分の高さを取り([行を数える所](../src/devstudio/view/frameplangraphics.cpp#L1178))、`addNodeBody()` が描く([描く所](../src/devstudio/view/frameplangraphics.cpp#L1483))。字は `#b9c9e8`、幅に収まらなければ中略。tooltip は `<pass> runs only for the views of <family> with <cascade 2>.`。item の種類は `node_view_select`(自動化面では `node_view_select#<pass>`)
+- **決定 3**: 文は `framePlanNoSelectedViewNotice()`([文を作る所](../src/devstudio/view/frameplanedit.cpp#L1531))が作る。`No view of <family> matches view_select this frame.`(family が空なら `its view family`)。見出しの帯の不透明度を 0.45 にし、帯と見出しの字に同じ tooltip を付ける([薄くする所](../src/devstudio/view/frameplangraphics.cpp#L1378))。node の tooltip にも同じ 1 行を足す([node の tooltip](../src/devstudio/view/frameplangraphics.cpp#L3258))
+- **決定 4**: 詳細ツリーに `View select`(`cascade 2`)の行を足す。走らなかった node には `This frame`(決定 3 の文)の行も足す([詳細の行](../src/devstudio/view/frameplanwidget.cpp#L3216))。Scopes の行は末尾に `; view: cascade 2` を足す([Scopes の行](../src/devstudio/view/frameplanwidget.cpp#L3606))
+- **決定 5**: 文は Studio の拒否の文の表(inspectormodel)に `viewSelectRefusalDescription()` として足した([文を作る所](../src/devstudio/model/inspectormodel.cpp#L699))
+  - field の取り方は 2 通り。edit service は error object の code の横に置く。広い拒否が引用したときは、その message の中の `<code>: {...}` に入っている
+  - 文は仕様の 5 つのとおりで、末尾は ` (<code>).`。長さ 0 の軸は `(0..<n-1>)` の代わりに `(it has none)`、pass が無ければ `A pass`
+  - `knownRefusalDescription()` も、知っている code に当たらなければ最後にこれを引く([引く所](../src/devstudio/model/inspectormodel.cpp#L640))。Graph タブの拒否の読み方も同じ文になる
+  - 出る所は 3 つ
+    - Frame Plan の status 行: `renderAuthoringRefusalLine()` が文を先に返す([Frame Plan の行](../src/devstudio/view/frameplanedit.cpp#L1509))。graph variant があれば前に `The <variant> graph refused it: ` が付く。widget は variant の無い view_select の拒否もこの行へ回す([回す分岐](../src/devstudio/view/frameplanwidget.cpp#L2519))
+    - Pass Editor([Pass Editor の拒否](../src/devstudio/view/fullscreenpasswidget.cpp#L1521))
+    - Task Editor の `responseError()`([Task Editor の拒否](../src/devstudio/view/renderfeatureswidget.cpp#L65))
+- **決定 6**: pass の Save は `view_select` を送らない(下の「外れた所」2)。task は宣言ごと送るので残る(Task Editor の Apply も、canvas の接続の編集も)
+- **仕様から外れた所(実装者の判断)**:
+  1. `no_selected_view` は、着地の時点では engine の実行 trace にしか無く、本番では点かなかった。LP-Va2(`0d816570`)で `get_frame_plan` に載り、点くようになった
+  2. pass の保存では `view_select` を送らない。当時の `edit_preset_pass` は `view_select` を受けなかったので、渡さない member を保つ engine に任せた。engine 側の test を 1 本足して確かめている(下の test)。LP-Va2 以後は受けるようになり、LP-4b で「欄を変えたときだけ送る」形にした
+  3. 軸の並びは `get_frame_plan` の順。Studio は JSON の object をキーの辞書順に持つので、辞書順になる
+  4. 拒否の文は inspectormodel の表に `viewSelectRefusalDescription` として足した。`knownRefusalDescription` も同じ文を答える
+  5. 行の形は `<文> (<code>).`。status 行は 90 字で切れ(`oneLine()`)、全文は tooltip にある
+  6. Task Editor の notice に object name `pelican.computeTasks.notice` を付けた([名前](../src/devstudio/view/renderfeatureswidget.cpp#L1155))。詳細に `This frame` の行を足した(決定 4)
+- **test**:
+  - `devstudio_frameplan_graph_test` に 3 本
+    - `LP-4a view_select is one line under the heading, and a node that ran no view this frame is dimmed and says why`([test](../test/devstudio_frameplan_graph_test.cpp#L10658))
+    - `LP-4a the four view_select refusals read as one sentence each, the code last`([test](../test/devstudio_frameplan_graph_test.cpp#L10777)): 5 つの文、`render_pipeline_preflight_failed` の message の中の引用、graph variant、Frame Plan の status 行。対照は別の拒否が `code: message` のままであること
+    - `LP-4a an edit on the canvas keeps a pass's and a task's view_select`([test](../test/devstudio_frameplan_graph_test.cpp#L10891)): pass の接続の編集は `view_select` を送らない(送る key は engine の fullscreen の編集が受ける key だけ)。task は宣言ごと送るので `view_select` が残る
+  - `devstudio_fullscreen_pass_test`: `LP-4a the Pass Editor's Save keeps a pass's view_select, and a view_select refusal reads as its sentence`([test](../test/devstudio_fullscreen_pass_test.cpp#L4809))
+  - `devstudio_task_editor_digest_test`: `LP-4a the Task Editor's Apply keeps a task's view_select, and a view_select refusal reads as its sentence`([test](../test/devstudio_task_editor_digest_test.cpp#L223))
+  - `renderconfigeditor_test`(engine): `LP-4a edit_preset_pass keeps a fullscreen pass's view_select`([test](../test/renderconfigeditor_test.cpp#L7893))。`view_select` を持つ preset の fullscreen pass に、`view_select` を省いた置換を送っても、書いた preset に `{"cascade":1}` が残る
+  - `devstudio_frameplan_graph_test` と `devstudio_engine_failure_test` のリンク先に `pelican_studio_inspector_model` を足した(frameplanedit が表を引くため)
+- **変異**(実装者の報告。M1〜M7、1 本ずつ入れて赤)。入れた変異は次のとおり
+  - 1 行を空にする
+  - opacity と tooltip を消す
+  - 拒否の表が何も返さない
+  - task の保存で `view_select` を落とす(Task Editor と canvas)
+  - pass の保存で `null` を送る
+  - canvas で宣言ごと送る
+  - engine の fullscreen の編集が `view_select` を消す
+  - 詳細の行を足さない
+- **受け入れ 4(GPU シナリオ)**: 足していない。LP-Va の engine の test の fixture がコードの中にしか無かったため(実装者の報告)。LP-4b で fixture を作ってシナリオを足した
+- **受け入れ 5**: `-L studio_cpu -LE gpu` 376/376 緑(実装者の報告)
+- **テキスト入力の欄(受け入れ 6)**: 入力欄は増やしていない(表示と拒否の文だけ)
+
+### LP-4b: view_select の欄(軸は engine の view_axes から)
+
+**下段(Studio のみ)。実装者: Claude(Opus)。契約は LP-Va と LP-Va2(`0d816570`、別 session)。LP-4a(1d4a81b3)の上。設計は `docs/design_graph_loops.md` §7・§9。**
+
+#### 前提
+- LP-4a で、model は `view_select` / `no_selected_view` を読み、canvas に `view: cascade 2` の 1 行、拒否の文、保存で落とさない(pass は送らずに engine の保持に任せる、task は宣言ごと送る)が入っている
+- LP-Va2 で `get_frame_plan` の pass(kind render)・compute・snapshot_copy の node に `view_axes: [{axis, length, runtime, labels?}]`。`edit_preset_pass` は全 pass 型の置換 payload で `view_select` を受ける(省略 = 保つ、`null` = 消す)
+
+#### 決定
+1. model が `view_axes` を読む
+2. **Pass Editor と Task Editor に View の欄**: `view_axes` の軸ごとに 1 行。
+   - `runtime:false`: combo。先頭 `All views`(選ばない)、続けて `0 .. length-1`。`labels` があれば `2 (+Y)` の形
+   - `runtime:true`: 選べない表示 `<axis>: every view, decided each frame`
+   - `view_axes` が `[]` か無い: 欄ごと出さない(`$main` の pass に余計な欄を出さない)
+   - 今の `view_select` の値を選んだ状態で開く。`view_select` に `view_axes` に無い軸があれば、その軸の行を警告付きで出す(値はそのまま。`Remove` で消せる)
+3. **保存**: pass は、View の欄を変えたときだけ `view_select` を送る(全軸 All → `null`、それ以外は選んだ軸だけの object)。変えていなければ今どおり送らない(engine が保つ)。task は宣言ごと送る(今どおり)
+4. **canvas から**: `view: …` の行(または見出し)の右クリックに `View` の submenu。軸ごとに `All views` / 値の radio。選ぶとすぐ `edit_preset_pass`(task は `edit_compute_task`)を送る。`view_axes` が空のノードには出さない
+5. canvas の 1 行と詳細は、`labels` があれば `view: face 2 (+Y)` と出す
+6. `no_selected_view` の表示は LP-4a のまま(LP-Va2 で本番でも点く。変更なし)
+
+#### 受け入れ
+1. 純粋な test(fake の `get_frame_plan`): cube の face(ラベル付き)、directional の light(選べない)+ cascade、`[]` で欄が無い、`view_select` に知らない軸 → 警告の行。対照: `view_axes` を読まずに欄を出す変異で `[]` のノードに欄が出て赤
+2. payload の test: 欄で cascade 1 → `view_select: {"cascade":1}`、All に戻す → `view_select: null`、欄を触らない Save → `view_select` を送らない(LP-4a の test を保つ)。task は宣言ごと。canvas の submenu も同じ payload
+3. GPU シナリオ(可能なら): cube capture か directional shadow を持つ sample project を repo 外へ複製して開き、feature / preset の pass(例: shadow の pass か cube の pass)を選んで View の欄で 1 つ選び Save → `get_frame_plan` の `nodes[].view_select` が変わり、canvas に `view: …` の行が出る → All に戻すと消える。どの project が使えるかは repo の projects/ と既存シナリオを調べて決める(pass を編集できない engine の preset なら fork の手順が要るので、既存シナリオの手順を流用)。作れなければ理由を報告
+4. `-L studio_cpu -LE gpu` 緑
+5. 報告にテキスト入力の欄(増やさない。値は combo)
+
+#### やらないこと
+Graph tab の render node の parameters に書く view_select の欄(LP-4 のループゾーンと一緒に)
+
+#### 着地(2026-09-26、cdaeb8ee)
+- **決定 1**: `FramePlanViewAxis`([型](../src/devstudio/model/frameplanmodel.hpp#L183))を `FramePlanNode::view_axes` に持ち、`optionalViewAxes()`([読む所](../src/devstudio/model/frameplanmodel.cpp#L173))が読む。`length` が `null` なら空、`runtime` の既定は false、`labels` は文字列の配列。無い・`null` は空
+- **決定 2**: 行を組むのは `framePlanViewFieldRows()`([行を組む所](../src/devstudio/view/frameplanedit.cpp#L1552))。行の種類は `choice` / `runtime` / `unknown` の 3 つ([行の型](../src/devstudio/view/frameplanedit.hpp#L556))。欄の widget は新しい `ViewSelectField`([欄](../src/devstudio/view/viewselectfield.hpp#L29)、[行を作る所](../src/devstudio/view/viewselectfield.cpp#L49))
+  - `choice`: 軸名のラベルと combo。項目は `All views`、`0`〜`length-1` で、ラベルがあれば `2 (+Y)`(`framePlanViewValueText()`。[値の字](../src/devstudio/view/frameplanedit.cpp#L1541))
+  - `runtime`(`runtime:true` か `length` が無い): 押せないラベル `<axis>: every view, decided each frame`。tooltip は `The engine decides this axis each frame, so it cannot be selected.`
+  - `unknown`(`view_select` にあって `view_axes` に無い軸): `<axis> <value>` のラベルと **Remove**。下に琥珀色の警告 `<family> has no view axis named <axis>: the engine will refuse it. Remove it.`(family が空なら `This view family`)
+  - 長さの外の値: combo に数字の項目を 1 つ足してそれを選び、警告 `<axis> <value> is outside its <length> views (0..<length-1>): the engine will refuse it.` を出す
+  - `view_axes` が空なら行は 0 で、欄ごと隠す。object name は `<prefix>.view`(欄)、`<prefix>.view.<axis>`(combo か runtime の行)、`<prefix>.view.<axis>.warning`、`<prefix>.view.<axis>.remove`
+  - Pass Editor(prefix `pelican.fullscreenPass`): Name の下の `View` の行([欄を置く所](../src/devstudio/view/fullscreenpasswidget.cpp#L426))。軸は frame plan の同名の node の `view_axes`、値は宣言の `view_select`、family は宣言の `view_family`(無ければ node の)を使う([読む所](../src/devstudio/view/fullscreenpasswidget.cpp#L2386))。新しい pass の下書きでは隠す
+  - Task Editor(prefix `pelican.computeTasks`): dispatch のフォームの下([欄を置く所](../src/devstudio/view/renderfeatureswidget.cpp#L1117))。新しい task では隠す([読む所](../src/devstudio/view/renderfeatureswidget.cpp#L454))。押せるのは dispatch のフォームと同じとき
+- **決定 3**: pass は `editedViewSelect()`([送るかを決める所](../src/devstudio/view/fullscreenpasswidget.cpp#L2404))が、Save の params に足すかを決める([足す所](../src/devstudio/view/fullscreenpasswidget.cpp#L2467))
+  - 欄が無いとき、選んだ値が元の宣言と同じとき: 送らない
+  - 全軸が All views: `null`
+  - それ以外: 選んだ軸だけの object
+  - task: 欄で選ぶと JSON 草稿の `view_select` だけを書き換え(全部 All なら key を消す)、notice に `View updated in the JSON draft. Apply task to save.` を出す([書き換える所](../src/devstudio/view/renderfeatureswidget.cpp#L479))。送るのは Apply task で、宣言ごと送る。草稿の JSON が壊れていれば `Fix the task JSON before choosing views.`。草稿を打ち直すと欄が追う([追う所](../src/devstudio/view/renderfeatureswidget.cpp#L469))
+- **決定 4**: `fillViewMenu()`([submenu を埋める所](../src/devstudio/view/frameplangraphics.cpp#L3918))。node の右クリックに `View`(objectName `pelican.framePlan.viewMenu`)を足す([右クリックに足す所](../src/devstudio/view/frameplangraphics.cpp#L4026))
+  - 中身: 軸ごとに見出し(軸名)を置く。`runtime` の軸は押せない 1 行。それ以外は `All views` と値の排他の check 項目で、今の値に印が付く。`unknown` の軸は `All views` と今の値だけ。長さの外の値も 1 項目足す
+  - 選ぶと、次の event で widget の `pickView()` を呼ぶ([選んだ後](../src/devstudio/view/frameplanwidget.cpp#L2477))。task なら `framePlanTaskViewSelectRequest()`([task の要求](../src/devstudio/view/frameplanedit.cpp#L1703))、pass なら `framePlanPassViewSelectRequest()`([pass の要求](../src/devstudio/view/frameplanedit.cpp#L1662))
+  - pass は `edit_preset_pass` に `view_select` を載せる(全部 All なら `null`)。fullscreen pass では `input` / `output` / `shader` も宣言どおりに載せる。宣言が output と shader を持たなければ送らず、`<pass> has no complete output and shader declaration to send back: edit it in the Pass Editor.`
+  - task は `edit_compute_task` で宣言ごと送り、全部 All なら `view_select` の key を消す
+  - 今と同じ選択は送らず、`<name> already runs for <axis> <value>.` を出す(All views なら `<axis> All views`。値にラベルは付かない)
+- **決定 5**: `framePlanViewSelectLine()` が `view_axes` のラベルを読む([1 行を作る所](../src/devstudio/view/frameplanedit.cpp#L1517))。canvas の 1 行(`view: face 2 (+Y)`)と、詳細の `View select` がラベルを付ける。Scopes の行はラベル無し(下の穴)
+- **決定 6**: 変更なし
+- **仕様から外れた所(実装者の判断)**:
+  1. task を All views に戻すと、宣言から `view_select` の key を消して送る(`null` は送らない)
+  2. Task Editor の軸は、Frame Plan が持つ plan から provider でもらう
+     - Frame Plan の `taskViewAxes()` が、kind が `compute` で `authored_name` が一致する node を探す([軸を引く所](../src/devstudio/view/frameplanwidget.cpp#L3807))
+     - MainWindow が `setTaskViewAxesProvider()` でつなぐ([つなぐ所](../src/devstudio/view/mainwindow.cpp#L372))
+  3. canvas から fullscreen pass に送るときは、`input` / `output` / `shader` も宣言どおりに送る(engine の fullscreen の編集がこの 3 つを必須にしているため)
+  4. 知らない軸の警告は、`view_axes` が空でないときだけ出る(空なら欄ごと出ない)
+  5. 長さの外の値は、combo に 1 項目足して警告を出す
+  6. View の submenu は、ノード上のどこを右クリックしても出る(仕様の「`view: …` の行か見出し」より広い)
+  7. 欄が出ているときは、Pass Editor の omitted(JSON にあって form に無い key の一覧)から `view_select` を外す([外す所](../src/devstudio/view/fullscreenpasswidget.cpp#L1911))
+  8. GPU の fixture(`test/fixtures/studio_view_select_field/`)は、engine の `cube_capture` の feature を project の feature(`project://features/cube_capture.json`)として写したもの
+     - `parameters` を抜き、`$resolution` を 256 に書き下した(engine は parameters を持つ feature の pass を編集に出さないため)
+     - pipeline は `hybrid_v1`(`cube_capture` が preset の `deferred_lighting` から binding を継ぐため)
+- **test**:
+  - `devstudio_frameplan_graph_test` に 3 本
+    - `LP-4b the View field's rows come from the engine's view_axes`([test](../test/devstudio_frameplan_graph_test.cpp#L11012)): cube の face(ラベル付き)、directional の light(選べない)と cascade、軸無しで行 0、知らない軸の警告、送る JSON
+    - `LP-4b the canvas: labels on the view line, and a View menu that sends one edit`([test](../test/devstudio_frameplan_graph_test.cpp#L11105)): 1 行と詳細のラベル、View が軸のある node にだけ出ること、項目と印、pass の face / All views(`null`)、今と同じ値は送らないこと、task は宣言ごと
+    - `LP-4b a task's View menu back to All views drops view_select from the declaration`([test](../test/devstudio_frameplan_graph_test.cpp#L11249))
+  - `devstudio_fullscreen_pass_test`: `LP-4b the Pass Editor's View field: one row per axis the engine reports, and Save sends view_select only when it changed`([test](../test/devstudio_fullscreen_pass_test.cpp#L4983))。directional、All views で `null`、欄を触らない Save は送らない、cube のラベル、`[]` で欄が無い、知らない軸を残す / Remove
+  - `devstudio_task_editor_digest_test`: `LP-4b the Task Editor's View field writes view_select into the declaration Apply sends`([test](../test/devstudio_task_editor_digest_test.cpp#L274))。cascade 1 が宣言に入る、All views で key が消える、触らなければ宣言のまま、JSON を打ち直すと欄が追う、軸の無い family では欄が無い
+  - LP-4a の test は変えていない
+- **変異**(実装者の報告): M1〜M15 を 1 本ずつ入れて、すべて赤
+- **シナリオ(受け入れ 3)**: 新しい `view_select_field`([シナリオ](../test/studio_scenarios/view_select_field.json)、fixture は名前の約束で `test/fixtures/studio_view_select_field/` を使う)。json の `steps` は 21。実装者の報告では 23 step で緑
+  - Whole frame で `cube_capture_ssao_blur` の node が出るのを待ち、rpc で `view_axes[0].labels[2]` が `+Y` であることを見る
+  - 見出しの double-click で Pass Editor に開き、`pelican.fullscreenPass.view.face` が `All views` であることを見る
+  - `2 (+Y)` を選んで Save する。rpc で `nodes[2].view_select.face` が 2 になり、`node_view_select#cube_capture_ssao_blur` が出て、欄が `2 (+Y)` で読み直されることを見る(screenshot `view_face_2.png`)
+  - `All views` に戻して Save する。`nodes[2]` に `view_select` が無く(`excludes`)、1 行が消えることを見る
+- **受け入れ 4**: `-L studio_cpu -LE gpu` 381/381 緑(実装者の報告)
+- **テキスト入力の欄(受け入れ 5)**: 入力欄は増やしていない。値は combo と submenu で選び、知らない軸は Remove で消す。新しいシナリオで打つものは無い
+- **穴**:
+  - Task Editor の欄と canvas の submenu は、GPU シナリオでは通していない(CPU の test で見ている)
+  - dialog を開いている間に plan が変わっても、欄は追わない(軸は開いたときと草稿を読み直したときに読む)
+  - Scopes の行はラベル無し(`view: face 2`)
+  - submenu の軸の見出し(`QMenu::addSection`)の見え方は style に依存する
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
