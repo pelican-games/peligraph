@@ -6825,6 +6825,250 @@ TEST_CASE("LP-0d a graph.loop replaces a pass with its expansion, ordered by its
     REQUIRE_NOTHROW(compileComposition(composed));
 }
 
+namespace {
+// LP-0e: render.shadow_depth drawing into what its `depth` socket is given, as
+// shadow_directional's shadow_depth pass draws into shadow_map.
+nlohmann::json lp0eShadowDepth(const std::string &id, const nlohmann::json &depth_source,
+                               const nlohmann::json &extra = nlohmann::json::object()) {
+    using Json = nlohmann::json;
+    Json parameters{{"pass_set", "main_render"},
+                    {"view_family", "$shadow/directional"},
+                    {"depth_store_op", "store"},
+                    {"shader", {{"vertex", "engine://shadow_depth"}}}};
+    for (const auto &[key, value] : extra.items()) parameters[key] = value;
+    return Json{{"id", id}, {"op", "render.shadow_depth"}, {"parameters", std::move(parameters)},
+                {"inputs", {{"depth", depth_source}}}, {"outputs", Json::array()}};
+}
+
+nlohmann::json lp0eSnapshotCopy(const std::string &id, const nlohmann::json &source,
+                                const nlohmann::json &destination, const nlohmann::json &parameters) {
+    return {{"id", id}, {"op", "render.snapshot_copy"}, {"parameters", parameters},
+            {"inputs", {{"source", source}, {"destination", destination}}}, {"outputs", nlohmann::json::array()}};
+}
+
+nlohmann::json lp0eColorType(const std::string &topology) {
+    auto type = lp0aSceneColorType();
+    type["arguments"]["topology"] = topology;
+    return type;
+}
+
+nlohmann::json lp0eTargetRef(const std::string &id, const std::string &name, const nlohmann::json &type) {
+    return {{"id", id}, {"op", "render.target_ref"}, {"parameters", {{"name", name}, {"type", type}}},
+            {"outputs", {"resource"}}};
+}
+
+// The hybrid preset with cube_capture, whose opaque color copy `replacement`
+// (when given) takes the place of.
+nlohmann::json lp0eCubeGraph(nlohmann::json nodes, const nlohmann::json &replacement) {
+    using Json = nlohmann::json;
+    Json feature{{"ref", "engine://features/cube_capture.json"}};
+    if (!replacement.is_null())
+        feature["pass_replacements"] = {{"cube_capture_snapshot_opaque_color", replacement}};
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", Json::object()},
+                {"nodes", std::move(nodes)}, {"outputs", Json::object()},
+                {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+                               {"features", Json::array({feature})}}}};
+}
+
+// The cube capture's opaque color copy, as a graph node.
+nlohmann::json lp0eCubeCopyNodes() {
+    using Json = nlohmann::json;
+    return Json::array({lp0eTargetRef("capture_color", "cube_capture_color", lp0eColorType("cube")),
+                        lp0eTargetRef("opaque_color", "cube_capture_opaque_color", lp0eColorType("two_d_array")),
+                        lp0eSnapshotCopy("opaque_color_copy", {{"node", "capture_color"}, {"port", "resource"}},
+                                         {{"node", "opaque_color"}, {"port", "resource"}},
+                                         {{"pass_set", "main_render"}, {"view_family", "$capture/cube"},
+                                          {"snapshot_after", "cube_capture_forward_opaque"}})});
+}
+
+// A main_render frame plan with `from` renamed `to`, less what says who
+// authored each node (a feature's pass and a graph node differ only there).
+nlohmann::json lp0eComparablePlan(const nlohmann::json &plan, const std::string &from, const std::string &to) {
+    using Json = nlohmann::json;
+    const auto rename = [&](Json &value) {
+        if (value.is_string() && value.get<std::string>() == from) value = to;
+    };
+    Json result{{"nodes", plan.at("nodes")}, {"barriers", plan.at("barriers")}, {"levels", plan.at("levels")}};
+    for (auto &node : result["nodes"]) {
+        for (const auto *key : {"source", "provider_feature", "provider_ref", "authored_name"}) node.erase(key);
+        rename(node["name"]);
+        if (node.contains("snapshot_after")) rename(node["snapshot_after"]);
+    }
+    for (auto &barrier : result["barriers"]) {
+        rename(barrier["from"]);
+        rename(barrier["to"]);
+    }
+    for (auto &level : result["levels"])
+        for (auto &name : level) rename(name);
+    return result;
+}
+} // namespace
+
+TEST_CASE("LP-0e render.shadow_depth takes shadow_depth's place as the same pass",
+          "[render-feature][graph-composition][lp0e][shadow]") {
+    using Json = nlohmann::json;
+    const Json nodes = Json::array({lp0dShadowRef(),
+                                    lp0eShadowDepth("graph_shadow", {{"node", "shadow"}, {"port", "resource"}})});
+    const auto kept = lp0aCompose(lp0dGraph(Json::array(), nullptr));
+    const auto composed = lp0aCompose(lp0dGraph(nodes, {{"shadow_depth", "graph_shadow"}}));
+
+    // The feature's pass, named by the node, where the feature's stood.
+    auto expected = passByName(kept.config, "shadow_depth");
+    expected["name"] = "graph_shadow";
+    CHECK(passByName(composed.config, "graph_shadow") == expected);
+    auto declared = lp0bDeclared(kept.config);
+    *std::find(declared.begin(), declared.end(), "shadow_depth") = "graph_shadow";
+    CHECK(lp0bDeclared(composed.config) == declared);
+    CHECK(lp0dContract(composed.surface_resource_contracts, "directional_shadow").at("producer") == "graph_shadow");
+
+    // The same frame plan: node, level, reads, writes, view axes, barriers.
+    CHECK(lp0eComparablePlan(lp1aPlanJson(composed), "graph_shadow", "graph_shadow") ==
+          lp0eComparablePlan(lp1aPlanJson(kept), "shadow_depth", "graph_shadow"));
+
+    SECTION("without a replacement it is one more pass of its family") {
+        const auto both = lp0aCompose(lp0dGraph(nodes, nullptr));
+        CHECK(passByName(both.config, "graph_shadow").at("type") == "shadow_depth");
+        CHECK(passByName(both.config, "shadow_depth").at("type") == "shadow_depth");
+    }
+    SECTION("its insert places it, as for any graph pass") {
+        auto placed = nodes;
+        placed[1]["parameters"]["insert"] = {{"after", "shadow_depth"}};
+        const auto result = lp0aCompose(lp0dGraph(placed, nullptr));
+        const auto order = lp0bDeclared(result.config);
+        CHECK(lp0bIndex(order, "graph_shadow") == lp0bIndex(order, "shadow_depth") + 1);
+    }
+}
+
+TEST_CASE("LP-0e render.snapshot_copy takes a cube capture copy's place as the same copy",
+          "[render-feature][graph-composition][lp0e][snapshot][cube]") {
+    using Json = nlohmann::json;
+    const auto kept = lp0aCompose(lp0eCubeGraph(Json::array(), nullptr));
+    const auto composed = lp0aCompose(lp0eCubeGraph(lp0eCubeCopyNodes(), "opaque_color_copy"));
+
+    auto expected = passByName(kept.config, "cube_capture_snapshot_opaque_color");
+    expected["name"] = "opaque_color_copy";
+    CHECK(passByName(composed.config, "opaque_color_copy") == expected);
+    auto declared = lp0bDeclared(kept.config);
+    *std::find(declared.begin(), declared.end(), "cube_capture_snapshot_opaque_color") = "opaque_color_copy";
+    CHECK(lp0bDeclared(composed.config) == declared);
+    // The same frame plan: the copy node (reads, writes, snapshot_after, byte
+    // size, face axis), its level and the barriers around it.
+    const auto plan = lp1aPlanJson(composed);
+    CHECK(lp1aPlanNode(plan, "opaque_color_copy")->at("kind") == "snapshot_copy");
+    CHECK(lp0eComparablePlan(plan, "opaque_color_copy", "opaque_color_copy") ==
+          lp0eComparablePlan(lp1aPlanJson(kept), "cube_capture_snapshot_opaque_color", "opaque_color_copy"));
+
+    SECTION("in a loop body, snapshot_after names the body's own pass per element") {
+        const Json body{{"nodes", Json::array({{{"id", "target"}, {"op", "graph.input"}},
+                                               {{"id", "snap"}, {"op", "graph.input"}},
+                                               lp1aFullscreen("paint", {{"node", "target"}, {"port", "value"}},
+                                                              {{"color_load_op", "Load"}}),
+                                               lp0eSnapshotCopy("copy", {{"node", "target"}, {"port", "value"}},
+                                                                {{"node", "snap"}, {"port", "value"}},
+                                                                {{"pass_set", "main_render"},
+                                                                 {"snapshot_after", "paint"}})})},
+                        {"outputs", Json::object()}};
+        const auto result = lp0aCompose(lp1aGraph(
+            Json::array({lp1aLit(), lp0bImage("snap_image"),
+                         lp1aLoop("copies", lp1aRange(2, "copy_body"),
+                                  {{"target", {{"node", "lit"}, {"port", "resource"}}},
+                                   {"snap", {{"node", "snap_image"}, {"port", "resource"}}}})}),
+            Json{{"copy_body", body}}));
+        const auto order = lp0bDeclared(result.config);
+        for (const auto *element : {"0", "1"}) {
+            INFO("element " << element);
+            const auto prefix = std::string{"copies/"} + element + "/";
+            const auto &copy = passByName(result.config, prefix + "copy");
+            CHECK(copy.at("type") == "snapshot_copy");
+            CHECK(copy.at("snapshot_after") == prefix + "paint");
+            CHECK(copy.at("source") == "lit_color");
+            CHECK(copy.at("destination") == "snap_image");
+            CHECK(lp0bListed(copy.at("after"), prefix + "paint"));
+            CHECK(lp0bIndex(order, prefix + "paint") < lp0bIndex(order, prefix + "copy"));
+        }
+        // Each element writes the one snap_image, so the second waits on the first.
+        CHECK(lp0bListed(passByName(result.config, "copies/1/copy").at("after"), "copies/0/copy"));
+    }
+}
+
+TEST_CASE("LP-0e a loop of render.shadow_depth selects one cascade per element in shadow_depth's place",
+          "[render-feature][graph-composition][lp0e][shadow]") {
+    using Json = nlohmann::json;
+    const Json body{{"nodes", Json::array({{{"id", "target"}, {"op", "graph.input"}},
+                                           lp0eShadowDepth("depth", {{"node", "target"}, {"port", "value"}},
+                                                           {{"view_select", {{"cascade", {{"$expr", "element"}}}}}})})},
+                    {"outputs", Json::object()}};
+    auto nodes = Json::array({lp0dShadowRef(),
+                              lp1aLoop("cascades", lp1aRange(3, "cascade"),
+                                       {{"target", {{"node", "shadow"}, {"port", "resource"}}}})});
+    const auto kept = lp0aCompose(lp0dGraph(Json::array(), nullptr));
+    const auto composed = lp0aCompose(lp0dGraph(nodes, {{"shadow_depth", "cascades"}}, Json{{"cascade", body}}));
+    const auto &config = composed.config;
+
+    const auto declared = lp0bDeclared(config);
+    const auto slot = lp0bIndex(lp0bDeclared(kept.config), "shadow_depth");
+    CHECK(std::find(declared.begin(), declared.end(), "shadow_depth") == declared.end());
+    for (std::int64_t element = 0; element < 3; ++element) {
+        INFO("element " << element);
+        const auto name = "cascades/" + std::to_string(element) + "/depth";
+        const auto &pass = passByName(config, name);
+        CHECK(pass.at("type") == "shadow_depth");
+        CHECK(pass.at("view_family") == "$shadow/directional");
+        CHECK(pass.at("view_select") == Json{{"cascade", element}});
+        CHECK(pass.at("output") == Json{{"color", nullptr}, {"depth", "shadow_map"}});
+        CHECK(lp0bIndex(declared, name) == slot + element);
+    }
+    CHECK(lp0dContract(composed.surface_resource_contracts, "directional_shadow").at("producer") ==
+          "cascades/2/depth");
+    // The frame plan carries each copy's cascade.
+    const auto plan = lp1aPlanJson(composed);
+    for (std::int64_t element = 0; element < 3; ++element)
+        CHECK(lp1aPlanNode(plan, "cascades/" + std::to_string(element) + "/depth")->at("view_select") ==
+              Json{{"cascade", element}});
+}
+
+TEST_CASE("LP-0e render.shadow_depth and render.snapshot_copy refusals",
+          "[render-feature][graph-composition][lp0e]") {
+    using Json = nlohmann::json;
+    const auto shadow = [](const Json &extra) {
+        return lp0dGraph(Json::array({lp0dShadowRef(),
+                                      lp0eShadowDepth("graph_shadow", {{"node", "shadow"}, {"port", "resource"}},
+                                                      extra)}),
+                         nullptr);
+    };
+    SECTION("a field the pass does not own, or one the sockets decide") {
+        for (const auto *field : {"draw", "output", "type", "name", "material_contract", "color_load_op"}) {
+            INFO(field);
+            CHECK_THROWS_AS(partitionGraphDocument(shadow({{field, "x"}})), std::invalid_argument);
+        }
+    }
+    SECTION("an unconnected depth socket") {
+        auto document = shadow(Json::object());
+        document["nodes"][1]["inputs"] = Json::object();
+        CHECK_THROWS_AS(partitionGraphDocument(document), std::invalid_argument);
+    }
+    SECTION("a canonical anchor that is not one") {
+        const auto [code, fields] = lp0bEditRefusal(shadow({{"canonical_anchor", "nowhere"}}));
+        CHECK(code == "graph.insert_anchor_unknown@1");
+        CHECK(fields == Json{{"node", "graph_shadow"}, {"anchor", "nowhere"}});
+    }
+    SECTION("a copy without snapshot_after, or with a field it does not own") {
+        auto nodes = lp0eCubeCopyNodes();
+        nodes[2]["parameters"].erase("snapshot_after");
+        CHECK_THROWS_AS(partitionGraphDocument(lp0eCubeGraph(nodes, nullptr)), std::invalid_argument);
+        nodes = lp0eCubeCopyNodes();
+        nodes[2]["parameters"]["shader"] = Json::object();
+        CHECK_THROWS_AS(partitionGraphDocument(lp0eCubeGraph(nodes, nullptr)), std::invalid_argument);
+    }
+    SECTION("a target the composition does not declare") {
+        auto nodes = lp0eCubeCopyNodes();
+        nodes[1]["parameters"]["name"] = "no_such_target";
+        const auto [code, fields] = lp0aRefusal(lp0eCubeGraph(nodes, nullptr));
+        CHECK(code == "graph.target_ref_unknown@1");
+        CHECK(fields == Json{{"node", "opaque_color"}, {"name", "no_such_target"}});
+    }
+}
+
 TEST_CASE("LP-0d pass_replacements refusals", "[render-feature][graph-composition][lp0d]") {
     using Json = nlohmann::json;
     const Json nodes = Json::array({lp0dShadowRef(),

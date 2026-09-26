@@ -108,6 +108,7 @@ foreach(expected IN ITEMS value.input value.constant value.parameter value.morph
                           ${expected_audio_operations}
                           render.scalar render.buffer render.attribute render.image
                           render.target_ref render.compute render.fullscreen render.raster
+                          render.shadow_depth render.snapshot_copy
                           ui.value ui.visible)
   if(NOT expected IN_LIST seen_operations)
     message(FATAL_ERROR "catalog is missing operation ${expected}")

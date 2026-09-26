@@ -7,6 +7,7 @@ void runProjectionJitterShadow();
 void runTaaDeterminism();
 void runBLayerShadowEquivalence();
 void runViewSelectCascadeShadowEquivalence();
+void runGraphShadowDepthEquivalence();
 void runMultiLightDirectionalShadows();
 void runPunctualShadows();
 void runShadowFiltering();

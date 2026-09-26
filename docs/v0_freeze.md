@@ -147,6 +147,8 @@ build から外した unit の op(`audio.*` / `pose.*`)だけが欠けてよい�
 | `render.material_pass` | pelican.render | rendering | direct | rebuild | — | parameter_dependent | — | — |
 | `render.raster` | pelican.render | rendering | direct | rebuild | — | parameter_dependent | — | — |
 | `render.scalar` | pelican.render | values | direct | rebuild | sink | declared | `value` | — |
+| `render.shadow_depth` | pelican.render | rendering | direct | rebuild | — | declared | `depth` | — |
+| `render.snapshot_copy` | pelican.render | rendering | direct | rebuild | — | declared | `destination`, `source` | — |
 | `render.target_ref` | pelican.render | rendering | direct | rebuild | — | parameter_dependent | — | — |
 | `ui.value` | pelican.ui | values | direct | rebuild | sink | declared | `value` | — |
 | `ui.visible` | pelican.ui | values | direct | rebuild | sink | declared | `value` | — |

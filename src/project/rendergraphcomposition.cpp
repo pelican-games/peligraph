@@ -93,6 +93,39 @@ std::vector<std::size_t> rankByOrderEdges(const std::vector<const Json *> &decla
     }
     return order;
 }
+
+// LP-0e: a render.shadow_depth / render.snapshot_copy node as the rendering
+// section's pass of that type, named by its id. `attach(port, after)` names
+// the resource on a socket's edge (adding to `after` what the pass waits for);
+// `graph_pass(name)` says whether a name is a pass this graph lowers here, so
+// a copy's snapshot_after among the graph's passes also orders the graph's
+// own declaration of them (the frame planner reads only after / before and
+// the data; snapshot_after is an execution edge).
+Json lowerRenderPassKindNode(const Json &node, Json parameters,
+                             const std::function<std::string(const std::string &, Json &)> &attach,
+                             const std::function<bool(const std::string &)> &graph_pass) {
+    const auto op = node.at("op").get<std::string>();
+    auto after = parameters.value("after", Json::array());
+    if (!after.is_array()) throw std::invalid_argument("render after must be an array");
+    parameters["name"] = node.at("id");
+    if (op == "render.shadow_depth") {
+        parameters["type"] = "shadow_depth";
+        // As the feature writes it: no color attachment.
+        parameters["output"] = Json{{"color", nullptr}, {"depth", attach("depth", after)}};
+    } else {
+        parameters["type"] = "snapshot_copy";
+        parameters["source"] = attach("source", after);
+        const auto destination = attach("destination", after);
+        parameters["destination"] = destination;
+        // The snapshot is what the feature's copies name: their destination.
+        parameters["snapshot"] = destination;
+        const auto snapshot_after = parameters.at("snapshot_after").get<std::string>();
+        if (graph_pass(snapshot_after) && std::find(after.begin(), after.end(), snapshot_after) == after.end())
+            after.push_back(snapshot_after);
+    }
+    if (!after.empty()) parameters["after"] = std::move(after);
+    return parameters;
+}
 }
 
 LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &document,
@@ -271,6 +304,41 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
     for (const auto &node : graph.nodes) {
         const auto id = node.at("id").get<std::string>();
         if (inactive(id)) continue;
+        // LP-0e: a render.shadow_depth / render.snapshot_copy node is the pass
+        // of that type (lowerRenderPassKindNode), placed like any graph pass.
+        if (const auto op = node.at("op").get<std::string>();
+            op == "render.shadow_depth" || op == "render.snapshot_copy") {
+            auto *const pass_body = bodyOf(id);
+            auto parameters = node.at("parameters");
+            // An active pass need not wait for one that no longer executes.
+            for (const auto *key : {"after", "before"})
+                if (const auto order = parameters.find(key); order != parameters.end() && order->is_array())
+                    order->erase(std::remove_if(order->begin(), order->end(), [&](const Json &name) {
+                        return name.is_string() && inactive(name.get<std::string>());
+                    }), order->end());
+            const auto attach = [&](const std::string &port, Json &after) {
+                const auto &endpoint = node.at("inputs").at(port);
+                recordLoopReads(id, endpoint);
+                const auto producer = endpoint.at("node").get<std::string>();
+                const auto &producer_op = nodes.at(producer)->at("op");
+                const bool other_body = bodyOf(producer) != nullptr && bodyOf(producer) != pass_body;
+                if (!other_body && producer_op != "render.buffer" && producer_op != "render.attribute" &&
+                    producer_op != "render.image" && producer_op != "render.target_ref" &&
+                    std::find(after.begin(), after.end(), producer) == after.end())
+                    after.push_back(producer);
+                return resourceName(endpoint);
+            };
+            const auto graph_pass = [&](const std::string &name) {
+                const auto found = nodes.find(name);
+                if (found == nodes.end() || inactive(name) || bodyOf(name) != pass_body) return false;
+                const auto &producer_op = found->second->at("op");
+                return producer_op != "render.buffer" && producer_op != "render.attribute" &&
+                       producer_op != "render.image" && producer_op != "render.target_ref" &&
+                       producer_op != "render.compute";
+            };
+            landGraphicsPass(id, lowerRenderPassKindNode(node, std::move(parameters), attach, graph_pass), pass_body);
+            continue;
+        }
         auto *const body = bodyOf(id);
         // LP-3a: a draw_loop body's step. The expander admits a draw.* node
         // nowhere else; the steps are read off the body below.
@@ -753,7 +821,9 @@ std::string composedTargetKind(const Json &target) {
 std::string composedTargetTopology(const Json &target) {
     if (target.value("dimension", std::string{"2d"}) == "cube") return "cube";
     const auto layers = target.find("layers");
-    if (layers != target.end() && layers->is_number_unsigned() && layers->get<std::uint64_t>() > 1)
+    // A layer count bound from a feature parameter may be a signed integer
+    // (an edit or an inline document writes one); it counts the same (LP-0e).
+    if (layers != target.end() && layers->is_number_integer() && layers->get<std::int64_t>() > 1)
         return "two_d_array";
     return "two_d";
 }
@@ -939,6 +1009,10 @@ std::set<std::string> declarationResources(const Json &declaration) {
         }
     if (const auto draw = declaration.find("draw"); draw != declaration.end() && draw->is_object())
         if (const auto index = draw->find("index_buffer"); index != draw->end()) add(*index);
+    // LP-0e: a snapshot copy names its two images in fields of their own.
+    if (declaration.value("type", std::string{}) == "snapshot_copy")
+        for (const auto *key : {"source", "destination"})
+            if (const auto found = declaration.find(key); found != declaration.end()) add(*found);
     return resources;
 }
 
@@ -958,6 +1032,11 @@ std::set<std::string> declarationWrites(const Json &declaration) {
             for (const auto &name : *colors) add(name);
         if (const auto depth = output->find("depth"); depth != output->end()) add(*depth);
     }
+    // LP-0e: a snapshot copy writes its destination.
+    if (declaration.value("type", std::string{}) == "snapshot_copy")
+        if (const auto destination = declaration.find("destination");
+            destination != declaration.end() && destination->is_string())
+            resources.insert(destination->get<std::string>());
     return resources;
 }
 
@@ -1746,6 +1825,10 @@ LoweredRenderGraphDocument withoutExcludedGraphDependents(Json &composed, const 
         for (const auto *key : {"after", "before"})
             for (const auto &name : orderNames(declaration, key))
                 if (const auto *feature = excludedPass(name)) return feature;
+        // LP-0e: the pass a snapshot copy copies after.
+        if (const auto snapshot = declaration.find("snapshot_after");
+            snapshot != declaration.end() && snapshot->is_string())
+            if (const auto *feature = excludedPass(snapshot->get<std::string>())) return feature;
         return nullptr;
     };
     // Why a graph pass or task goes: it replaces a pass of the feature, its

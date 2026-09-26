@@ -506,6 +506,8 @@ LoopBodyInterface loopBodyInterface(const Json &definition) {
             (parameters->contains("insert") || parameters->contains("canonical_anchor")))
             throw std::invalid_argument("a graph.loop body node takes its place from the loop's insert: " +
                                         node.value("id", std::string{}));
+        // LP-0e: a shadow depth pass and a snapshot copy are passes too.
+        if (op == "render.shadow_depth" || op == "render.snapshot_copy") result.traits.graphics = true;
     }
     const auto &outputs = definition.at("outputs");
     object(outputs, "graph outputs must be an object");
@@ -542,6 +544,13 @@ void scopeLocalOrder(Json &node, const std::map<std::string, const Json *> &loca
             name = path + name.get<std::string>();
         }
     }
+    // LP-0e: so does a snapshot copy's snapshot_after.
+    if (const auto snapshot = parameters->find("snapshot_after"); snapshot != parameters->end() && snapshot->is_string())
+        if (const auto found = local.find(snapshot->get<std::string>()); found != local.end()) {
+            const auto op = found->second->value("op", std::string{});
+            if (op != "graph.input" && op != "graph.instance" && op != "graph.loop")
+                *snapshot = path + snapshot->get<std::string>();
+        }
 }
 
 // LP-1b, decision 5: the places of a body node that take an expression, and

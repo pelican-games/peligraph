@@ -39,6 +39,11 @@ TEST_CASE("LP-Va cascade view_select split matches the shadow feature per layer"
     GoldenHarness::runViewSelectCascadeShadowEquivalence();
 }
 
+TEST_CASE("LP-0e a render.shadow_depth graph node in shadow_depth's place matches the feature per layer",
+          "[golden][headless][lp0e][shadow]") {
+    GoldenHarness::runGraphShadowDepthEquivalence();
+}
+
 TEST_CASE(
     "multiple directional lights cast matching forward and deferred shadows",
     "[golden][headless][shadow][wp242a]") {

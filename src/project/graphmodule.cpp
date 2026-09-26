@@ -22,6 +22,66 @@ std::string nodeId(const Json &node) {
     return found == node.end() || !found->is_string() ? std::string{} : found->get<std::string>();
 }
 
+// LP-0e: render.shadow_depth and render.snapshot_copy are the rendering
+// section's pass types of the same names. Their images are fixed sockets --
+// shadow_depth's `depth` attachment, snapshot_copy's `source` and
+// `destination` -- that take any image: a shadow map is a depth array, and a
+// copy's two images may differ in topology (cube capture copies a cube into a
+// 2D array). The pass checks formats, usage and extents when it is compiled,
+// as it does for the JSON form. Nothing comes out: whoever reads what the pass
+// wrote refers to the target (render.target_ref), as for render.material_pass.
+std::vector<std::string> renderPassKindSockets(const std::string &op) {
+    if (op == "render.shadow_depth") return {"depth"};
+    return {"source", "destination"};
+}
+
+// The parameters are the pass's own fields, less the ones the sockets and the
+// id decide (name, type, output, source, destination).
+GraphOperationContract renderPassKindPorts(const Json &node) {
+    const auto op = node.at("op").get<std::string>();
+    const auto id = nodeId(node);
+    const auto parameters = node.find("parameters");
+    if (parameters == node.end() || !parameters->is_object())
+        throw std::invalid_argument("render node parameters must be an object");
+    static const std::set<std::string, std::less<>> common{
+        "view_family", "view_select", "region_tags", "pass_set", "after", "before", "insert", "canonical_anchor"};
+    static const std::set<std::string, std::less<>> shadow_depth{
+        "shader", "ray_query", "depth_load_op", "depth_store_op", "resolution_domain"};
+    for (const auto &[key, value] : parameters->items()) {
+        (void)value;
+        const bool own = op == "render.shadow_depth" ? shadow_depth.contains(key) : key == "snapshot_after";
+        if (!own && !common.contains(key)) throw std::invalid_argument(op + " does not take " + key + ": " + id);
+    }
+    if (op == "render.snapshot_copy") {
+        // The frame planner orders the copy after this pass, as it does for
+        // the JSON form, which requires it too.
+        const auto after = parameters->find("snapshot_after");
+        if (after == parameters->end() || !after->is_string() || after->get_ref<const std::string &>().empty())
+            throw std::invalid_argument("render.snapshot_copy requires snapshot_after, the pass it copies after: " +
+                                        id);
+    }
+    // Where the pass lands, as for render.fullscreen / render.raster (LP-0b).
+    if (parameters->contains("insert") && parameters->contains("canonical_anchor"))
+        throw std::invalid_argument("render insert and canonical_anchor exclude each other: " + id);
+    if (const auto insert = parameters->find("insert"); insert != parameters->end()) {
+        const auto side = insert->is_object() && insert->size() == 1 ? insert->begin() : insert->end();
+        if (side == insert->end() || (side.key() != "after" && side.key() != "before") || !side->is_string() ||
+            side->get_ref<const std::string &>().empty())
+            throw std::invalid_argument("render insert must be {\"after\" | \"before\": \"<pass>\"}: " + id);
+    }
+    if (const auto anchor = parameters->find("canonical_anchor"); anchor != parameters->end()) {
+        if (!anchor->is_string()) throw std::invalid_argument("render canonical_anchor must be a string: " + id);
+        if (!isCanonicalRenderPassAnchor(anchor->get<std::string>()))
+            throw GraphRegistryError("graph.insert_anchor_unknown@1",
+                                     {{"node", id}, {"anchor", anchor->get<std::string>()}});
+    }
+    GraphOperationContract contract;
+    LogicalTypePattern image;
+    image.constructor = LogicalTypeConstructor::image;
+    for (const auto &socket : renderPassKindSockets(op)) contract.inputs.emplace(socket, GraphInputContract{image});
+    return contract;
+}
+
 LogicalType bufferType(const LogicalTypeRegistry &registry, const Json &declaration) {
     const auto element = declaration.at("element").get<std::string>();
     if (!shaderResourceBufferElementFromName(element))
@@ -218,6 +278,8 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
         declaration.erase("name");
         declaration["kind"] = "image";
         contract.outputs.emplace("resource", resourceType(registry, declaration));
+    } else if (op == "render.shadow_depth" || op == "render.snapshot_copy") {
+        contract = renderPassKindPorts(node);
     } else if (op == "render.compute" || op == "render.fullscreen" || op == "render.raster") {
         const auto &ports = parameters.at("ports");
         if (!ports.is_object()) throw std::invalid_argument("render ports must be an object");
@@ -496,6 +558,20 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
         },
         {"audio.volume", "audio.pitch"}});
 #endif
+    // LP-0e: a pass type whose sockets are fixed, so the catalog declares
+    // them; the factory still checks the parameters.
+    const auto pass_kind = [&](const char *op) {
+        auto registration = declared({}, {}, GraphExecutionDomain::rendering,
+            GraphOperationEvaluation::direct, GraphParameterChange::rebuild);
+        registration.factory = [types, scalar](const nlohmann::json &node) {
+            return renderPorts(*types, scalar, node);
+        };
+        LogicalTypePattern image;
+        image.constructor = LogicalTypeConstructor::image;
+        for (const auto &socket : renderPassKindSockets(op))
+            registration.contract.inputs.emplace(socket, GraphInputContract{image});
+        return std::pair<const std::string, GraphOperationRegistration>{op, std::move(registration)};
+    };
     const auto render = [&](const char *op) {
         auto registration = declared({}, {}, GraphExecutionDomain::rendering,
             GraphOperationEvaluation::direct, GraphParameterChange::rebuild);
@@ -522,6 +598,7 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
             // The publication sink runs where the value it uploads is evaluated.
             {"render.scalar", declared({{"value", required}}, {}, GraphExecutionDomain::values,
                 GraphOperationEvaluation::direct, GraphParameterChange::rebuild)},
+            pass_kind("render.shadow_depth"), pass_kind("render.snapshot_copy"),
             render("render.buffer"), render("render.attribute"), render("render.image"),
             render("render.target_ref"),
             render("render.compute"), render("render.fullscreen"), render("render.raster"),

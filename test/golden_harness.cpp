@@ -3582,7 +3582,17 @@ bool isViewSelectShadowGoldenMode(std::string_view mode) {
     return mode == "shadow_view_select_l1_feature" ||
            mode == "shadow_view_select_l1_split" ||
            mode == "shadow_view_select_l2_feature" ||
-           mode == "shadow_view_select_l2_split";
+           mode == "shadow_view_select_l2_split" ||
+           mode == "shadow_view_select_l1_graph" ||
+           mode == "shadow_view_select_l2_graph";
+}
+
+// LP-0e acceptance 1 ("_graph"): the feature's shadow_depth replaced
+// (pass_replacements) by a render.shadow_depth graph node that draws into
+// shadow_map through a render.target_ref.
+bool viewSelectShadowGraph(std::string_view mode) {
+    return isViewSelectShadowGoldenMode(mode) &&
+           mode.ends_with("_graph");
 }
 
 bool viewSelectShadowSplit(std::string_view mode) {
@@ -3772,6 +3782,48 @@ void writeBLayerShadowProject(const std::filesystem::path &root,
             main.replace(found, engine_ref.size(),
                          "project://features/shadow_directional.json");
             writeTextFile(root / "passes" / "main.json", main);
+        }
+        if (viewSelectShadowGraph(mode)) {
+            auto main = nlohmann::json::parse(
+                readTextFile(root / "passes" / "main.json"));
+            const nlohmann::json depth_type{
+                {"semantic", "pelican.render.depth@1"},
+                {"arguments",
+                 {{"representation", "device"},
+                  {"space", "projection"},
+                  {"topology", "two_d_array"}}}};
+            main["nodes"].push_back({
+                {"id", "shadow"},
+                {"op", "render.target_ref"},
+                {"parameters",
+                 {{"name", "shadow_map"}, {"type", depth_type}}},
+                {"outputs", nlohmann::json::array({"resource"})},
+            });
+            main["nodes"].push_back({
+                {"id", "graph_shadow_depth"},
+                {"op", "render.shadow_depth"},
+                {"parameters",
+                 {{"pass_set", "main_render"},
+                  {"view_family", "$shadow/directional"},
+                  {"depth_store_op", "store"},
+                  {"shader", {{"vertex", "engine://shadow_depth"}}}}},
+                {"inputs",
+                 {{"depth",
+                   {{"node", "shadow"}, {"port", "resource"}}}}},
+                {"outputs", nlohmann::json::array()},
+            });
+            bool replaced = false;
+            for (auto &feature : main["rendering"]["features"]) {
+                if (feature.is_object() &&
+                    feature.value("ref", std::string{}) ==
+                        "engine://features/shadow_directional.json") {
+                    feature["pass_replacements"] = {
+                        {"shadow_depth", "graph_shadow_depth"}};
+                    replaced = true;
+                }
+            }
+            REQUIRE(replaced);
+            writeTextFile(root / "passes" / "main.json", main.dump(2));
         }
         return;
     }
@@ -11503,6 +11555,80 @@ void GoldenHarness::runViewSelectCascadeShadowEquivalence() {
     }
 #else
     SKIP("LP-Va cascade view_select equivalence requires "
+         "the runtime shader compiler");
+#endif
+}
+
+// LP-0e acceptance 1. shadow_directional's shadow_depth replaced by a
+// render.shadow_depth graph node (pass_replacements) must leave every shadow
+// layer, the per-layer culling and the final image unchanged, for one and
+// for two lights; the node runs where the pass ran, once per view.
+void GoldenHarness::runGraphShadowDepthEquivalence() {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const auto golden_root =
+        sourceRoot() / "test/golden/shadow_b_layer_engine";
+    for (const auto lights : {1u, 2u}) {
+        const auto prefix =
+            "shadow_view_select_l" + std::to_string(lights);
+        INFO(lights << " light(s)");
+        const auto feature = renderCase(GoldenCase{
+            prefix + "_feature_runtime", prefix + "_feature",
+            golden_root, goldenWidth, goldenHeight});
+        const auto feature_observed = viewSelectShadowObservation();
+        const auto graph = renderCase(GoldenCase{
+            prefix + "_graph_runtime", prefix + "_graph",
+            golden_root, goldenWidth, goldenHeight});
+        const auto graph_observed = viewSelectShadowObservation();
+
+        const auto layers = 3u * lights;
+        REQUIRE(feature_observed.layer_depth.size() == layers);
+        REQUIRE(graph_observed.layer_depth.size() == layers);
+        for (std::uint32_t layer = 0; layer < layers; ++layer) {
+            INFO("layer " << layer);
+            REQUIRE(graph_observed.layer_depth[layer] ==
+                    feature_observed.layer_depth[layer]);
+            bool written = false;
+            for (std::size_t offset = 0;
+                 offset < graph_observed.layer_depth[layer].size();
+                 offset += sizeof(float)) {
+                float depth = 1.0f;
+                std::memcpy(&depth,
+                            graph_observed.layer_depth[layer].data() +
+                                offset,
+                            sizeof(depth));
+                written = written || depth < 0.9999f;
+            }
+            REQUIRE(written);
+        }
+        REQUIRE(graph_observed.visible_draws ==
+                feature_observed.visible_draws);
+        REQUIRE(graph.image.pixels == feature.image.pixels);
+
+        REQUIRE(graph_observed.invocations.size() == layers);
+        REQUIRE(feature_observed.invocations.size() == layers);
+        for (std::size_t index = 0; index < layers; ++index) {
+            REQUIRE(graph_observed.invocations[index].first ==
+                    "graph_shadow_depth");
+            REQUIRE(feature_observed.invocations[index].first ==
+                    "shadow_depth");
+            REQUIRE(graph_observed.invocations[index].second ==
+                    feature_observed.invocations[index].second);
+        }
+        // The running generation's frame plan has the node in the pass's
+        // place, and no feature pass beside it.
+        bool graph_node = false;
+        for (const auto &node :
+             graph_observed.frame_plan.at("nodes")) {
+            REQUIRE(node.at("name") != "shadow_depth");
+            graph_node = graph_node ||
+                         node.at("name") == "graph_shadow_depth";
+        }
+        REQUIRE(graph_node);
+    }
+#else
+    SKIP("LP-0e graph shadow_depth equivalence requires "
          "the runtime shader compiler");
 #endif
 }

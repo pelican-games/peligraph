@@ -1347,6 +1347,194 @@ TEST_CASE("LP-Va2 frame plan nodes carry their family's view axes",
         CHECK(main_pass.at("view_axes") == nlohmann::json::array());
     }
 }
+
+// LP-0e: a graph with render.snapshot_copy / render.shadow_depth nodes in the
+// place of feature passes, through the production compiler (compiler-only
+// planning compiles no shader).
+struct Lp0eCompiled {
+    nlohmann::json frame_plan;
+    FrameExecutionPlan execution;
+};
+
+Lp0eCompiled lp0eCompile(nlohmann::json nodes, nlohmann::json definitions,
+                         nlohmann::json features) {
+    ProgramInputFixture fixture;
+    fixture.config = nlohmann::json{
+        {"schema", "pelican.graph"},
+        {"version", 1},
+        {"definitions", std::move(definitions)},
+        {"nodes", std::move(nodes)},
+        {"outputs", nlohmann::json::object()},
+        {"rendering",
+         {{"pipeline",
+           {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+          {"features", std::move(features)}}},
+    };
+    fixture.backend_context = VulkanRenderCompilerBackendContext{
+        vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
+        VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}};
+    auto input = fixture.input();
+    input.runtime_shader_compiler_enabled = true;
+    const auto output = runRenderCompilerProgram(
+        defaultVulkanRenderCompilerProgram(), input);
+    const auto &variant = output.variants.front();
+    REQUIRE(variant.compiled_pipeline != nullptr);
+    return {framePlanToJson(variant.frame_plans.at("main_render"),
+                            variant.compiled_pipeline.get()),
+            variant.execution_plans.at("main_render")};
+}
+
+nlohmann::json lp0eImageType(const char *semantic, const char *topology) {
+    nlohmann::json arguments{{"topology", topology}};
+    if (std::string_view{semantic} == "pelican.render.depth@1") {
+        arguments["representation"] = "device";
+        arguments["space"] = "projection";
+    } else {
+        arguments["reference"] = "scene";
+        arguments["transfer"] = "linear";
+        arguments["range"] = "extended";
+    }
+    return {{"semantic", semantic}, {"arguments", std::move(arguments)}};
+}
+
+nlohmann::json lp0eRef(const char *id, const char *name,
+                       const nlohmann::json &type) {
+    return {{"id", id},
+            {"op", "render.target_ref"},
+            {"parameters", {{"name", name}, {"type", type}}},
+            {"outputs", {"resource"}}};
+}
+
+// A frame plan node less who authored it, renamed.
+nlohmann::json lp0ePlanNode(const nlohmann::json &plan, std::string_view name,
+                            const std::string &as) {
+    auto node = lpva2Node(plan, name);
+    for (const auto *key :
+         {"source", "provider_feature", "provider_ref", "authored_name"}) {
+        node.erase(key);
+    }
+    node["name"] = as;
+    return node;
+}
+
+TEST_CASE("LP-0e graph shadow_depth and snapshot_copy nodes compile in the "
+          "features' passes' place",
+          "[rendercompiler][view-select][lp0e][shadow][snapshot][cube]") {
+    using Json = nlohmann::json;
+    SECTION("a cube capture copy: the same frame plan node and execution edge") {
+        const Json copy{
+            {"id", "opaque_color_copy"},
+            {"op", "render.snapshot_copy"},
+            {"parameters",
+             {{"pass_set", "main_render"},
+              {"view_family", "$capture/cube"},
+              {"snapshot_after", "cube_capture_forward_opaque"}}},
+            {"inputs",
+             {{"source", {{"node", "capture_color"}, {"port", "resource"}}},
+              {"destination",
+               {{"node", "opaque_color"}, {"port", "resource"}}}}},
+            {"outputs", Json::array()}};
+        const auto kept = lp0eCompile(
+            Json::array(), Json::object(),
+            Json::array({"engine://features/cube_capture.json"}));
+        const auto graph = lp0eCompile(
+            Json::array({lp0eRef("capture_color", "cube_capture_color",
+                                 lp0eImageType("pelican.render.color_signal@1",
+                                               "cube")),
+                         lp0eRef("opaque_color", "cube_capture_opaque_color",
+                                 lp0eImageType("pelican.render.color_signal@1",
+                                               "two_d_array")),
+                         copy}),
+            Json::object(),
+            Json::array({{{"ref", "engine://features/cube_capture.json"},
+                          {"pass_replacements",
+                           {{"cube_capture_snapshot_opaque_color",
+                             "opaque_color_copy"}}}}}));
+        CHECK(lp0ePlanNode(graph.frame_plan, "opaque_color_copy",
+                           "opaque_color_copy") ==
+              lp0ePlanNode(kept.frame_plan,
+                           "cube_capture_snapshot_opaque_color",
+                           "opaque_color_copy"));
+        const auto edge = [](const FrameExecutionPlan &plan,
+                             const std::string &to) {
+            std::vector<std::pair<std::string, std::string>> found;
+            for (const auto &dependency : plan.dependencies) {
+                if (dependency.to == to) {
+                    found.emplace_back(dependency.from, dependency.reason);
+                }
+            }
+            return found;
+        };
+        const auto graph_edges = edge(graph.execution, "opaque_color_copy");
+        CHECK(graph_edges ==
+              edge(kept.execution, "cube_capture_snapshot_opaque_color"));
+        CHECK(std::find(graph_edges.begin(), graph_edges.end(),
+                        std::pair<std::string, std::string>{
+                            "cube_capture_forward_opaque",
+                            "pelican.dependency.snapshot_after@1"}) !=
+              graph_edges.end());
+    }
+    SECTION("a loop over the cascades, each copy selecting its own") {
+        const Json body{
+            {"nodes",
+             Json::array({
+                 {{"id", "target"}, {"op", "graph.input"}},
+                 {{"id", "depth"},
+                  {"op", "render.shadow_depth"},
+                  {"parameters",
+                   {{"pass_set", "main_render"},
+                    {"view_family", "$shadow/directional"},
+                    {"view_select", {{"cascade", {{"$expr", "element"}}}}},
+                    {"depth_store_op", "store"}}},
+                  {"inputs", {{"depth", {{"node", "target"}, {"port", "value"}}}}},
+                  {"outputs", Json::array()}},
+             })},
+            {"outputs", Json::object()}};
+        const Json loop{
+            {"id", "cascades"},
+            {"op", "graph.loop"},
+            {"parameters",
+             {{"over", {{"range", {{"count", 3}}}}},
+              {"branches", Json::array({{{"body", "cascade"}}})}}},
+            {"inputs", {{"target", {{"node", "shadow"}, {"port", "resource"}}}}},
+            {"outputs", Json::array()}};
+        const auto compiled = lp0eCompile(
+            Json::array({lp0eRef("shadow", "shadow_map",
+                                 lp0eImageType("pelican.render.depth@1",
+                                               "two_d_array")),
+                         loop}),
+            Json{{"cascade", body}},
+            Json::array({{{"ref", "engine://features/shadow_directional.json"},
+                          {"parameters", {{"cascade_count", 3}}},
+                          {"pass_replacements",
+                           {{"shadow_depth", "cascades"}}}}}));
+        const auto axes = Json::array({
+            {{"axis", "light"}, {"length", nullptr}, {"runtime", true}},
+            {{"axis", "cascade"}, {"length", 3}, {"runtime", false}},
+        });
+        for (std::int64_t element = 0; element < 3; ++element) {
+            const auto name =
+                "cascades/" + std::to_string(element) + "/depth";
+            INFO(name);
+            const auto node = lpva2Node(compiled.frame_plan, name);
+            CHECK(node.at("view_select") == Json{{"cascade", element}});
+            CHECK(node.at("view_axes") == axes);
+            CHECK(node.at("writes") == Json::array({"shadow_map"}));
+            const auto executed = std::find_if(
+                compiled.execution.nodes.begin(),
+                compiled.execution.nodes.end(),
+                [&](const auto &entry) { return entry.name == name; });
+            REQUIRE(executed != compiled.execution.nodes.end());
+            CHECK(executed->view_select ==
+                  RenderViewSelect{
+                      {"cascade", static_cast<std::uint32_t>(element)}});
+        }
+        for (const auto &node : compiled.frame_plan.at("nodes")) {
+            CHECK(node.at("name") != "shadow_depth");
+        }
+    }
+}
 #endif
 } // namespace
 } // namespace Pelican
