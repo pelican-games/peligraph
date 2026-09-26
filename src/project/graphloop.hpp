@@ -2,9 +2,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Pelican {
@@ -17,20 +19,31 @@ namespace Pelican {
 //
 //   {"id": "<loop>", "op": "graph.loop",
 //    "parameters": {
-//      "over":     {"range": {"count": <integer>}},
+//      "over":     {"range": {"count": <integer> | {"$expr": ...}}},
 //      "where":    <condition>,                       optional
 //      "order":    {"by": "element", "direction": "ascending" | "descending"},
 //      "limit":    <integer>,                         optional
 //      "branches": [{"when": <condition>, "body": "<definition>" | null}, ...,
 //                   {"body": "<definition>" | null}],  the last is the else
+//      "carry":    [{"from": "<body output>", "to": "<body graph.input>"}, ...],
 //      "tier":     "expand",                          optional
 //      "after": [...], "before": [...],               optional, graph node ids
 //      "insert": {"after" | "before": "<pass>"} | "canonical_anchor": "<anchor>"},
-//    "inputs":  {"<body graph.input>": {"node", "port"}},
-//    "outputs": ["<body output>", ...]}
+//    "inputs":  {"<body graph.input>": {"node", "port"[, "element": {"$expr": ...}]}},
+//    "outputs": ["<body output>", "<body output>[]", ...]}
 //
-// where a <condition> is {"element": n}, {"element_in": [n, ...]} or
-// {"element_not_in": [n, ...]} with integer literals.
+// where a <condition> is {"element": v}, {"element_in": [v, ...]} or
+// {"element_not_in": [v, ...]} and each v is an integer literal or, LP-1b, an
+// integer expression (graphloopexpression.hpp): in `where` it may read
+// `element`, in `when` also `index` and `count`; the count may read neither.
+//
+// LP-1b: `carry` hands a body output to the next element's body input: the
+// first element reads the loop's input edge, every later one the previous
+// element's output (an element with no body passes the value on). `p[]` is
+// the output of every element; another node reads one of them with an edge
+// that names the element, `{"node": "<loop>", "port": "p[]", "element":
+// {"$expr": ...}}`, whose `element` variable is the receiving loop's element
+// (a receiver that is no loop reads a constant element).
 //
 // The form is checked when a document is expanded (every edit, every load);
 // the elements are resolved and the bodies expanded per element after the
@@ -40,8 +53,10 @@ namespace Pelican {
 struct GraphLoopCondition {
     enum class Kind : std::uint8_t { always, element, element_in, element_not_in };
     Kind kind = Kind::always;
-    std::vector<std::int64_t> values;
-    bool matches(std::int64_t element) const;
+    // Each an integer literal or an expression object (LP-1b).
+    std::vector<nlohmann::json> values;
+    // The document pointer of each value, for graph.loop_expression_invalid@1.
+    std::vector<std::string> pointers;
 };
 
 struct GraphLoopBranch {
@@ -62,12 +77,24 @@ struct GraphLoopPlacement {
     std::string anchor;
 };
 
+// LP-1b: one `carry` entry: the body output `from` of an element is the
+// body input `to` of the next.
+struct GraphLoopCarry {
+    std::string from;
+    std::string to;
+};
+
 struct GraphLoopShape {
     std::string node;
+    // The loop node's JSON pointer in the authoring document (`/nodes/<i>`);
+    // expression refusals point below it.
+    std::string pointer;
     GraphLoopSet set = GraphLoopSet::range;
-    // `over.range.count`. LP-1b: a count written as an expression is
-    // evaluated at the resolution stage and handed to graphLoopElements.
+    // `over.range.count`, when it is a literal.
     std::int64_t range_count = 0;
+    // LP-1b: `over.range.count` written as an expression, evaluated at the
+    // resolution stage (graphLoopCount) with the composed targets' constants.
+    std::optional<nlohmann::json> range_count_expression;
     // The count is wired to a value that changes per frame
     // (`"count": {"node", "port"}`): refused as per_frame_value.
     bool per_frame_count = false;
@@ -75,6 +102,7 @@ struct GraphLoopShape {
     bool descending = false;
     std::optional<std::int64_t> limit;
     std::vector<GraphLoopBranch> branches;
+    std::vector<GraphLoopCarry> carry;
     std::optional<GraphLoopTier> tier;
     std::vector<std::string> after;
     std::vector<std::string> before;
@@ -92,10 +120,12 @@ inline constexpr std::size_t graphLoopGraphNodeLimit = 128;
 
 // Parse and check a graph.loop node's parameters. Shape errors are
 // std::invalid_argument (invalid_graph_document); graph.loop_branch_else_missing@1,
-// graph.loop_order_unsupported@1, graph.loop_feature_pending@1 and
+// graph.loop_order_unsupported@1, graph.loop_expression_invalid@1 and
 // graph.insert_anchor_unknown@1 are GraphRegistryError. The tier is not
-// decided here (classifyGraphLoopTier).
-GraphLoopShape parseGraphLoopShape(const nlohmann::json &node);
+// decided here (classifyGraphLoopTier). `pointer` is the node's JSON pointer
+// in the authoring document. graph.loop_feature_pending@1 (LP-1a) is no longer
+// thrown: LP-1b runs all four features it stood for; the code stays reserved.
+GraphLoopShape parseGraphLoopShape(const nlohmann::json &node, const std::string &pointer = {});
 
 // What a branch body holds, for the tier decision.
 struct GraphLoopBodyTraits {
@@ -120,12 +150,20 @@ struct GraphLoopElement {
     std::size_t branch = 0;
 };
 
+// Answers mip_levels_of / layers_of (graphloopexpression.hpp); empty where
+// no composed config is at hand, which makes every constant not_static.
+using GraphLoopConstants = std::function<std::int64_t(std::string_view function, const std::string &target)>;
+
+// LP-1b: the set's length: range.count, evaluated when it is an expression.
+// A refusal is graph.loop_expression_invalid@1 {node, pointer, reason}.
+std::int64_t graphLoopCount(const GraphLoopShape &shape, const GraphLoopConstants &constants);
+
 // where -> order -> limit over the elements 0..count-1, then each element's
-// branch. More than graphLoopIterationLimit elements is
-// graph.loop_expansion_limit@1 {node, count, limit}. `count` is the set's
-// length: range.count today; LP-1b passes an evaluated count, LP-Vb an axis
-// length.
-std::vector<GraphLoopElement> graphLoopElements(const GraphLoopShape &shape,
-                                                std::int64_t count);
+// branch (its `when` sees element, index and count). More than
+// graphLoopIterationLimit elements is graph.loop_expansion_limit@1 {node,
+// count, limit}. `count` is the set's length (graphLoopCount; LP-Vb an axis
+// length).
+std::vector<GraphLoopElement> graphLoopElements(const GraphLoopShape &shape, std::int64_t count,
+                                                const GraphLoopConstants &constants = {});
 
 } // namespace Pelican

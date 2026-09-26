@@ -1,6 +1,7 @@
 #include "rendergraphcomposition.hpp"
 #include "featurecompose.hpp"
 #include "graphpartition.hpp"
+#include "graphloopexpression.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -123,6 +124,14 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
     std::vector<PendingPlacement> pending_placements;
     std::set<std::string> resolving;
     std::function<std::string(const Json &)> resourceName = [&](const Json &endpoint) {
+        // LP-1b: a carried input, and one element of a loop's `p[]`, are
+        // named by placeholders each copy (each consumer) replaces.
+        if (const auto carry = endpoint.find(graphLoopCarryMarker); carry != endpoint.end())
+            return graphLoopCarryResource(carry->at("loop").get<std::string>(), carry->at("input").get<std::string>());
+        if (const auto read = endpoint.find(graphLoopOutputMarker);
+            read != endpoint.end() && read->contains("element") && !read->at("element").is_null())
+            return read->at("loop").get<std::string>() + "/$element/" + read->at("receiver").get<std::string>() + "/" +
+                   read->at("input").get<std::string>();
         const auto id = endpoint.at("node").get<std::string>();
         const auto &node = *nodes.at(id);
         if (node.at("op") == "render.buffer" || node.at("op") == "render.attribute" ||
@@ -135,6 +144,44 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         auto resource = resourceName(node.at("inputs").at(endpoint.at("port").get<std::string>()));
         resolving.erase(id);
         return resource;
+    };
+    // The loop outputs a port's value comes from, however far up the chain of
+    // passes it was handed down (LP-1a looked at the port's own edge only).
+    // A carried input stops the walk: its first value is the loop's to read.
+    std::function<void(const Json &, std::vector<Json> &)> loopReads = [&](const Json &endpoint,
+                                                                            std::vector<Json> &found) {
+        if (endpoint.contains(graphLoopCarryMarker)) return;
+        if (const auto read = endpoint.find(graphLoopOutputMarker); read != endpoint.end()) {
+            auto entry = *read;
+            entry["resource"] = resourceName(endpoint);
+            found.push_back(std::move(entry));
+            return;
+        }
+        const auto id = endpoint.at("node").get<std::string>();
+        const auto node = nodes.find(id);
+        if (node == nodes.end()) return;
+        const auto op = node->second->at("op").get<std::string>();
+        if (op == "render.buffer" || op == "render.attribute" || op == "render.image" || op == "render.target_ref")
+            return;
+        const auto inputs = node->second->find("inputs");
+        const auto port = endpoint.at("port").get<std::string>();
+        if (inputs == node->second->end() || !inputs->contains(port)) return;
+        loopReads(inputs->at(port), found);
+    };
+    const auto recordLoopReads = [&](const std::string &consumer, const Json &endpoint) {
+        std::vector<Json> found;
+        loopReads(endpoint, found);
+        for (const auto &read : found) {
+            RenderGraphLoopOutputRead entry{consumer, read.at("loop").get<std::string>(),
+                                            read.at("port").get<std::string>(), read.at("resource").get<std::string>(),
+                                            read.value("element", Json{}), read.value("receiver", std::string{}),
+                                            read.value("input", std::string{}), read.value("receiver_loop", false)};
+            const auto duplicate = std::find_if(lowered.loop_output_reads.begin(), lowered.loop_output_reads.end(),
+                [&](const RenderGraphLoopOutputRead &other) {
+                    return other.consumer == entry.consumer && other.resource == entry.resource;
+                });
+            if (duplicate == lowered.loop_output_reads.end()) lowered.loop_output_reads.push_back(std::move(entry));
+        }
     };
     for (const auto &node : graph.nodes) {
         const auto id = node.at("id").get<std::string>();
@@ -250,9 +297,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             // LP-1a: a loop's output. Which copy writes it is known only after
             // composition, so the reader waits on that copy there, not on the
             // template node here.
-            if (const auto read = endpoint.find(graphLoopOutputMarker); read != endpoint.end())
-                lowered.loop_output_reads.push_back({id, read->at("loop").get<std::string>(),
-                                                     read->at("port").get<std::string>(), target});
+            recordLoopReads(id, endpoint);
             const bool other_body = bodyOf(producer) != nullptr && bodyOf(producer) != body;
             if (!history && !other_body &&
                 nodes.at(producer)->at("op") != "render.buffer" &&
@@ -358,6 +403,26 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         } else (body != nullptr ? body->compute_tasks : config["compute_tasks"]).push_back(std::move(parameters));
     }
     lowered.graph_node_count = graph_pass_order.size() + config["compute_tasks"].size();
+    // LP-1b: the first value of each carried input that is a render resource
+    // (a scalar carry is the values partition's).
+    for (const auto &[id, expansion] : graph.loops) {
+        auto &loop = lowered.loops.at(loop_index.at(id));
+        for (const auto &pair : expansion.shape.carry) {
+            const auto found = expansion.inputs.find(pair.to);
+            if (found == expansion.inputs.end()) continue;
+            auto endpoint = *found;
+            endpoint.erase(graphLoopCarryMarker);
+            if (!nodes.contains(endpoint.at("node").get<std::string>())) continue;
+            RenderGraphLoopCarriedInput input{resourceName(endpoint), {}, {}};
+            std::vector<Json> reads;
+            loopReads(endpoint, reads);
+            if (!reads.empty()) {
+                input.loop = reads.front().at("loop").get<std::string>();
+                input.port = reads.front().at("port").get<std::string>();
+            }
+            loop.carried.emplace(pair.to, std::move(input));
+        }
+    }
     if (!lowered.loops.empty()) {
         // LP-1a: the graph's appended passes and its loops in one dependency
         // order (edges, after / before, reads of a loop's output, a body's
@@ -388,6 +453,8 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         for (const auto &loop : lowered.loops) {
             for (const auto &name : loop.shape.after) edge(name, loop.shape.node);
             for (const auto &name : loop.shape.before) edge(loop.shape.node, name);
+            for (const auto &[to, input] : loop.carried)
+                if (!input.loop.empty()) edge(input.loop, loop.shape.node);
             for (const auto &body : loop.branches) {
                 if (!body) continue;
                 for (const auto &[family, pass] : body->passes)
@@ -608,6 +675,25 @@ void checkHistoryRead(const Json &composed, const RenderGraphHistoryRead &read) 
 }
 }
 
+namespace {
+// LP-1b: a refusal that names one element's copy of a body node
+// (`<loop>/<element>/<node>`) says where it came from, in the shape the frame
+// plan's `loop_origin` has.
+std::optional<RenderLoopOrigin> loopCopyOrigin(const std::string &name, const std::vector<RenderGraphLoop> &loops) {
+    for (const auto &loop : loops) {
+        const auto &id = loop.shape.node;
+        if (name.size() <= id.size() + 1 || !name.starts_with(id) || name[id.size()] != '/') continue;
+        const auto rest = name.substr(id.size() + 1);
+        const auto slash = rest.find('/');
+        if (slash == std::string::npos || slash == 0 || slash > 18 || slash + 1 == rest.size()) continue;
+        const auto digits = rest.substr(0, slash);
+        if (!std::all_of(digits.begin(), digits.end(), [](char c) { return c >= '0' && c <= '9'; })) continue;
+        return RenderLoopOrigin{id, std::stoll(digits), rest.substr(slash + 1)};
+    }
+    return std::nullopt;
+}
+} // namespace
+
 RenderGraphLoopResolution resolveGraphDocumentAfterComposition(Json &composed, const LoweredRenderGraphDocument &lowered) {
     for (const auto &reference : lowered.target_refs) checkTargetReference(composed, reference);
     for (const auto &read : lowered.history_reads) checkHistoryRead(composed, read);
@@ -626,7 +712,24 @@ RenderGraphLoopResolution resolveGraphDocumentAfterComposition(Json &composed, c
     }
     // LP-1a: graph.loop expansion. LP-0d (pass_replacements, variant
     // removals) continues after it.
-    return expandRenderGraphLoops(composed, lowered);
+    //
+    // LP-1b: whatever refuses a node of one element's copy here -- a
+    // render.target_ref (LP-0a), a history read, an expression -- names the
+    // copy (`<loop>/<element>/<node>`); the refusal adds where the copy came
+    // from, as `loop_origin` {loop, element, node}, in this one place rather
+    // than at each check.
+    try {
+        return expandRenderGraphLoops(composed, lowered);
+    } catch (const GraphRegistryError &error) {
+        const auto &detail = error.detail();
+        const auto node = detail.is_object() ? detail.find("node") : detail.end();
+        if (node == detail.end() || !node->is_string() || detail.contains("loop_origin")) throw;
+        const auto origin = loopCopyOrigin(node->get<std::string>(), lowered.loops);
+        if (!origin) throw;
+        auto extended = detail;
+        extended["loop_origin"] = Json{{"loop", origin->loop}, {"element", origin->element}, {"node", origin->node}};
+        throw GraphRegistryError(error.code(), std::move(extended));
+    }
 }
 
 namespace {
@@ -718,6 +821,9 @@ void appendOrder(Json &declaration, const char *key, const std::string &name) {
     if (std::find(list.begin(), list.end(), name) == list.end()) list.push_back(name);
 }
 
+// A pass or task by name, and its family ("" for a task).
+using NamedDeclaration = std::pair<std::string, std::string>;
+
 // One element's copy of its branch body.
 struct LoopCopy {
     GraphLoopElement element;
@@ -729,12 +835,20 @@ struct LoopCopy {
     Json buffers = Json::array();
     // Reads or writes a resource the body does not own.
     bool external = false;
+    // LP-1b: body output port -> the resource this element's value is (a
+    // carried value resolved), and what each resource is written by.
+    std::map<std::string, std::string> outputs;
+    std::map<std::string, std::vector<NamedDeclaration>> writers;
 };
 
 struct LoopPlan {
     const RenderGraphLoop *loop = nullptr;
     std::vector<GraphLoopElement> elements;
     std::vector<LoopCopy> copies;
+    // LP-1b: the first value of each carried input (by `to`), and what wrote
+    // it when another loop did.
+    std::map<std::string, std::string> carried_first;
+    std::map<std::string, std::vector<NamedDeclaration>> carried_first_writers;
 };
 
 // Where a pass or task of the composed config is: the family of a pass, or
@@ -771,8 +885,8 @@ bool mayOrderAgainst(const std::string &family, const std::string &target_family
 }
 
 // The loops in the order their expansion has to run: a loop whose body reads
-// another loop's output, or which is ordered after it, comes later. Ties and
-// cycles keep the id order.
+// another loop's output (LP-1b: or whose carried input starts from it), or
+// which is ordered after it, comes later. Ties and cycles keep the id order.
 std::vector<std::size_t> loopDependencyOrder(const LoweredRenderGraphDocument &lowered) {
     const auto &loops = lowered.loops;
     std::map<std::string, std::size_t> index;
@@ -792,6 +906,9 @@ std::vector<std::size_t> loopDependencyOrder(const LoweredRenderGraphDocument &l
         for (const auto &name : loops[i].shape.before)
             if (const auto found = index.find(name); found != index.end() && found->second != i)
                 predecessors[found->second].insert(i);
+        for (const auto &[to, input] : loops[i].carried)
+            if (const auto found = index.find(input.loop); found != index.end() && found->second != i)
+                predecessors[i].insert(found->second);
     }
     std::vector<std::size_t> order;
     std::vector<bool> done(loops.size(), false);
@@ -809,19 +926,84 @@ std::vector<std::size_t> loopDependencyOrder(const LoweredRenderGraphDocument &l
     return order;
 }
 
-// Copy one element's body (step 2). LP-1b evaluates the element's `$expr` /
-// `$format` values, carry and per-element inputs here, on the copy, with the
-// element, its index and the count.
+// LP-1b: `mip_levels_of` / `layers_of` of the composed targets. A target the
+// runtime widens -- one a shadow_depth pass draws, whose layers follow the
+// lights -- or whose mip chain follows its extent is not known here.
+bool drawnByShadowDepth(const Json &composed, const std::string &target) {
+    const auto families = composed.find("rendering_passes");
+    if (families == composed.end() || !families->is_array()) return false;
+    for (const auto &family : *families)
+        for (const auto &pass : family.value("passes", Json::array())) {
+            if (!pass.is_object() || pass.value("type", std::string{}) != "shadow_depth") continue;
+            const auto output = pass.find("output");
+            if (output != pass.end() && declarationWrites(Json{{"output", *output}}).contains(target)) return true;
+        }
+    return false;
+}
+
+GraphLoopConstants composedConstants(const Json &composed) {
+    return [&composed](std::string_view function, const std::string &target) -> std::int64_t {
+        const auto *found = findComposedTarget(composed, target);
+        if (found == nullptr)
+            throw GraphLoopExpressionError(graphLoopExpressionNotStatic, "no composed target " + target);
+        if (drawnByShadowDepth(composed, target))
+            throw GraphLoopExpressionError(graphLoopExpressionNotStatic, target + " is widened at run time");
+        const bool mips = function == "mip_levels_of";
+        const auto value = found->find(mips ? "mip_levels" : "layers");
+        if (value == found->end())
+            return mips ? 1 : (found->value("dimension", std::string{"2d"}) == "cube" ? 6 : 1);
+        if (!value->is_number_integer())
+            throw GraphLoopExpressionError(graphLoopExpressionNotStatic,
+                                           target + "'s " + std::string{function} + " follows its extent");
+        return value->get<std::int64_t>();
+    };
+}
+
+// LP-1b: every `$expr` / `$format` in one copy's declaration, evaluated for
+// its element. `extent_scale` is the one real place; a `$format` is a string.
+// A refusal names the declaration (the copy) and the authored pointer.
+void evaluateExpressions(Json &value, const std::string &owner, const GraphLoopExpressionValues &values,
+                         const GraphLoopConstants &constants, bool real_place = false) {
+    if (isGraphLoopExpression(value)) {
+        const auto kind = isGraphLoopFormat(value) ? GraphLoopExpressionKind::format
+            : real_place ? GraphLoopExpressionKind::real : GraphLoopExpressionKind::integer;
+        const auto pointer = value.value("$pointer", std::string{});
+        try {
+            value = evaluateGraphLoopExpression(value, kind, values, constants);
+        } catch (const GraphLoopExpressionError &error) {
+            throw graphLoopExpressionInvalid(owner, pointer, error.reason());
+        }
+        return;
+    }
+    if (value.is_object()) {
+        for (auto member = value.begin(); member != value.end(); ++member)
+            evaluateExpressions(member.value(), owner, values, constants, member.key() == "extent_scale");
+    } else if (value.is_array()) {
+        for (auto &child : value) evaluateExpressions(child, owner, values, constants);
+    }
+}
+
+// Copy one element's body (step 2), with the element's values (LP-1b): its
+// expressions evaluated, and each resource `substitutions` names -- a carried
+// input's placeholder, another loop's output the body reads -- the value this
+// element receives.
 LoopCopy copyLoopBody(const Json &composed, const std::string &loop, const RenderGraphLoopBody &body,
-                      const GraphLoopElement &element) {
+                      const GraphLoopElement &element, std::int64_t count, const GraphLoopConstants &constants,
+                      const std::map<std::string, std::string> &substitutions) {
     LoopCopy copy;
     copy.element = element;
     copy.prefix = loop + "/" + std::to_string(element.element) + "/";
     const auto &from = body.prefix;
     const auto &to = copy.prefix;
+    const GraphLoopExpressionValues values{element.element, static_cast<std::int64_t>(element.index), count};
+    const auto prepare = [&](Json &declaration) {
+        renameTemplateStrings(declaration, from, to);
+        for (const auto &[placeholder, resource] : substitutions) repointResource(declaration, placeholder, resource);
+        evaluateExpressions(declaration, declaration.value("name", std::string{}), values, constants);
+    };
     for (const auto &[family, pass] : body.passes) {
         auto renamed = pass;
-        renameTemplateStrings(renamed, from, to);
+        prepare(renamed);
         copy.passes.emplace_back(family, std::move(renamed));
     }
     for (const auto &[list, source] : {std::pair{&copy.compute_tasks, &body.compute_tasks},
@@ -829,7 +1011,7 @@ LoopCopy copyLoopBody(const Json &composed, const std::string &loop, const Rende
                                        std::pair{&copy.buffers, &body.buffers}})
         for (const auto &declaration : *source) {
             auto renamed = declaration;
-            renameTemplateStrings(renamed, from, to);
+            prepare(renamed);
             list->push_back(std::move(renamed));
         }
     // The copy's references and history reads are checked under its names,
@@ -849,6 +1031,17 @@ LoopCopy copyLoopBody(const Json &composed, const std::string &loop, const Rende
     };
     for (const auto &[family, pass] : copy.passes) copy.external = copy.external || touchesOutside(pass);
     for (const auto &task : copy.compute_tasks) copy.external = copy.external || touchesOutside(task);
+    for (const auto &[port, resource] : body.outputs) {
+        auto value = renamedTemplateName(resource, from, to);
+        if (const auto found = substitutions.find(value); found != substitutions.end()) value = found->second;
+        copy.outputs.emplace(port, std::move(value));
+    }
+    for (const auto &[family, pass] : copy.passes)
+        for (const auto &resource : declarationWrites(pass))
+            copy.writers[resource].emplace_back(pass.at("name").get<std::string>(), family);
+    for (const auto &task : copy.compute_tasks)
+        for (const auto &resource : declarationWrites(task))
+            copy.writers[resource].emplace_back(task.at("name").get<std::string>(), std::string{});
     return copy;
 }
 
@@ -865,6 +1058,64 @@ void chainCopies(const LoopCopy &earlier, LoopCopy &later) {
             appendOrder(task, "after", earlier_task.at("name").get<std::string>());
 }
 
+// A declaration of a copy that names `resource` waits on what wrote it.
+void waitOnWriters(LoopCopy &copy, const std::string &resource, const std::vector<NamedDeclaration> &writers) {
+    const auto wait = [&](Json &declaration, const std::string &family) {
+        if (!declarationResources(declaration).contains(resource)) return;
+        for (const auto &[writer, writer_family] : writers)
+            if (mayOrderAgainst(family, writer_family, writer_family.empty()))
+                appendOrder(declaration, "after", writer);
+    };
+    for (auto &[family, pass] : copy.passes) wait(pass, family);
+    for (auto &task : copy.compute_tasks) wait(task, {});
+}
+
+// LP-1b: the value of a loop's output `port`: the last element's (no
+// `element`), or one element's. Empty when no element has it: a loop with no
+// element that ran, unless `port` is a carry's `from` (then the carried value
+// passes through), or an element no copy has. A value whose resource is empty
+// is not a render resource (a scalar output) and is left to the values.
+struct LoopValue {
+    std::string resource;
+    std::vector<NamedDeclaration> writers;
+};
+
+std::optional<LoopValue> loopOutputValue(const LoopPlan &plan, const std::string &port,
+                                         std::optional<std::int64_t> element) {
+    std::optional<std::size_t> chosen;
+    if (element) {
+        for (std::size_t i = 0; i < plan.copies.size(); ++i)
+            if (plan.copies[i].element.element == *element) chosen = i;
+        if (!chosen) return std::nullopt;
+    } else if (!plan.copies.empty()) {
+        chosen = plan.copies.size() - 1;
+    }
+    if (!chosen) {
+        for (const auto &pair : plan.loop->shape.carry) {
+            if (pair.from != port) continue;
+            const auto found = plan.carried_first.find(pair.to);
+            if (found == plan.carried_first.end()) return LoopValue{};
+            const auto writers = plan.carried_first_writers.find(found->second);
+            return LoopValue{found->second, writers != plan.carried_first_writers.end()
+                                                ? writers->second : std::vector<NamedDeclaration>{}};
+        }
+        return std::nullopt;
+    }
+    const auto &copy = plan.copies[*chosen];
+    const auto output = copy.outputs.find(port);
+    if (output == copy.outputs.end()) return LoopValue{};
+    LoopValue value{output->second, {}};
+    // What wrote it: this element, or -- a value an element passed through --
+    // the latest element before it that did, or what wrote the first value.
+    for (auto i = *chosen + 1; i-- > 0 && value.writers.empty();)
+        if (const auto found = plan.copies[i].writers.find(value.resource); found != plan.copies[i].writers.end())
+            value.writers = found->second;
+    if (value.writers.empty())
+        if (const auto found = plan.carried_first_writers.find(value.resource); found != plan.carried_first_writers.end())
+            value.writers = found->second;
+    return value;
+}
+
 // Insert a run into a list of declarations right before the first one that
 // depends on the loop, or at the end.
 void insertBeforeDependent(Json &list, std::vector<Json> run, const std::function<bool(const Json &)> &depends) {
@@ -877,11 +1128,19 @@ void insertBeforeDependent(Json &list, std::vector<Json> run, const std::functio
     for (std::size_t i = 0; i < run.size(); ++i)
         list.insert(list.begin() + static_cast<Json::difference_type>(position + i), std::move(run[i]));
 }
+
+// A copy of a consumer: its name and, when it is a loop body's, its element.
+struct ConsumerCopy {
+    std::string name;
+    std::optional<GraphLoopElement> element;
+    std::int64_t count = 0;
+};
 } // namespace
 
 RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRenderGraphDocument &lowered) {
     RenderGraphLoopResolution resolution;
     if (lowered.loops.empty()) return resolution;
+    const auto constants = composedConstants(composed);
     std::set<std::string> loop_ids;
     for (const auto &loop : lowered.loops) loop_ids.insert(loop.shape.node);
     // Who reads each loop's output: a graph pass or task by name, or a node of
@@ -889,22 +1148,24 @@ RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRe
     std::map<std::string, std::vector<const RenderGraphLoopOutputRead *>> reads_by_loop;
     for (const auto &read : lowered.loop_output_reads) reads_by_loop[read.loop].push_back(&read);
     // The copies of each template name, once made.
-    std::map<std::string, std::vector<std::string>> copied_names;
-    const auto consumerNames = [&](const std::string &consumer) {
+    std::map<std::string, std::vector<ConsumerCopy>> copied_names;
+    const auto consumerCopies = [&](const std::string &consumer) {
         const auto found = copied_names.find(consumer);
-        return found != copied_names.end() ? found->second : std::vector<std::string>{consumer};
+        return found != copied_names.end() ? found->second : std::vector<ConsumerCopy>{{consumer, std::nullopt, 0}};
     };
 
     // Step 1: the elements, and the limits.
     std::vector<LoopPlan> plans(lowered.loops.size());
+    std::map<std::string, std::size_t> plan_index;
     std::size_t graph_nodes = lowered.graph_node_count;
     for (std::size_t i = 0; i < lowered.loops.size(); ++i) {
         const auto &loop = lowered.loops[i];
         auto &plan = plans[i];
         plan.loop = &loop;
-        // LP-1b: a count written as an expression is evaluated here (with the
-        // composed config's constants); LP-Vb: a view axis's length.
-        plan.elements = graphLoopElements(loop.shape, loop.shape.range_count);
+        plan_index.emplace(loop.shape.node, i);
+        // LP-1b: a count written as an expression, with the composed
+        // config's constants; LP-Vb: a view axis's length.
+        plan.elements = graphLoopElements(loop.shape, graphLoopCount(loop.shape, constants), constants);
         for (const auto &element : plan.elements) {
             const auto &body = loop.branches.at(element.branch);
             if (!body) continue;
@@ -925,16 +1186,91 @@ RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRe
         resolution.loops.push_back(std::move(report));
     }
 
+    // LP-1b: the value a reader gets from a loop's output: `p` the last
+    // element's, `p[]` the element its edge names, evaluated with the
+    // receiving element's values when the receiver is a loop. Refused by name
+    // when there is no such value.
+    const auto readValue = [&](const RenderGraphLoopOutputRead &read,
+                               const GraphLoopExpressionValues &receiver) -> std::optional<LoopValue> {
+        const auto &plan = plans.at(plan_index.at(read.loop));
+        std::optional<std::int64_t> element;
+        if (read.element.is_number_integer()) {
+            element = read.element.get<std::int64_t>();
+        } else if (!read.element.is_null()) {
+            try {
+                element = evaluateGraphLoopExpression(read.element, GraphLoopExpressionKind::integer,
+                                                      read.receiver_loop ? receiver : GraphLoopExpressionValues{},
+                                                      constants).get<std::int64_t>();
+            } catch (const GraphLoopExpressionError &error) {
+                throw graphLoopExpressionInvalid(read.receiver, read.element.value("$pointer", std::string{}),
+                                                 error.reason());
+            }
+        }
+        auto value = loopOutputValue(plan, read.port, element);
+        if (!value) {
+            if (element)
+                throw GraphRegistryError("graph.loop_element_unknown@1",
+                    {{"node", read.receiver}, {"port", read.input}, {"element", *element}});
+            throw GraphRegistryError("graph.loop_output_empty@1", {{"node", read.loop}, {"port", read.port}});
+        }
+        if (value->resource.empty()) return std::nullopt;
+        return value;
+    };
+    const auto inLoopBody = [&](const std::string &consumer) {
+        return std::any_of(loop_ids.begin(), loop_ids.end(),
+                           [&](const std::string &loop) { return consumer.starts_with(loop + "/$"); });
+    };
+
     for (const auto index : loopDependencyOrder(lowered)) {
         auto &plan = plans[index];
         const auto &loop = *plan.loop;
         const auto &id = loop.shape.node;
-        // Step 2: a copy per element that has a body.
+        const auto count = static_cast<std::int64_t>(plan.elements.size());
+        // LP-1b: what this loop's bodies read of other loops' outputs. Each
+        // copy resolves them for its own element as it is made, so what it
+        // passes on (a carried value, an output) is a resource, never a
+        // placeholder.
+        std::vector<const RenderGraphLoopOutputRead *> body_reads;
+        for (const auto &read : lowered.loop_output_reads)
+            if (read.consumer.starts_with(id + "/$")) body_reads.push_back(&read);
+        // LP-1b: the first value of each carried input: the loop's edge, or
+        // the last element of the loop the edge reads (expanded before this
+        // one), which the elements that read it wait on.
+        for (const auto &[to, input] : loop.carried) {
+            if (input.loop.empty()) {
+                plan.carried_first.emplace(to, input.resource);
+                continue;
+            }
+            const auto &source = plans.at(plan_index.at(input.loop));
+            const auto value = loopOutputValue(source, input.port, std::nullopt);
+            if (!value) throw GraphRegistryError("graph.loop_output_empty@1", {{"node", input.loop}, {"port", input.port}});
+            plan.carried_first.emplace(to, value->resource);
+            if (!value->writers.empty()) plan.carried_first_writers.emplace(value->resource, value->writers);
+        }
+        auto carried = plan.carried_first;
+        // Step 2: a copy per element that has a body. An element with no body
+        // passes the carried values on.
         for (const auto &element : plan.elements) {
             const auto &body = loop.branches.at(element.branch);
             if (!body) continue;
-            plan.copies.push_back(copyLoopBody(composed, id, *body, element));
+            std::map<std::string, std::string> substitutions;
+            for (const auto &[to, value] : carried) substitutions.emplace(graphLoopCarryResource(id, to), value);
+            std::vector<LoopValue> waits;
+            const GraphLoopExpressionValues values{element.element, static_cast<std::int64_t>(element.index), count};
+            for (const auto *read : body_reads) {
+                if (!read->consumer.starts_with(body->prefix)) continue;
+                auto value = readValue(*read, values);
+                if (!value) continue;
+                substitutions.insert_or_assign(read->resource, value->resource);
+                waits.push_back(std::move(*value));
+            }
+            plan.copies.push_back(copyLoopBody(composed, id, *body, element, count, constants, substitutions));
             auto &copy = plan.copies.back();
+            for (const auto &pair : loop.shape.carry)
+                if (const auto found = copy.outputs.find(pair.from); found != copy.outputs.end())
+                    carried[pair.to] = found->second;
+            for (const auto &[resource, writers] : plan.carried_first_writers) waitOnWriters(copy, resource, writers);
+            for (const auto &value : waits) waitOnWriters(copy, value.resource, value.writers);
             const auto origin = [&](const Json &declaration) {
                 const auto name = declaration.at("name").get<std::string>();
                 return std::pair{name, RenderLoopOrigin{id, element.element, name.substr(copy.prefix.size())}};
@@ -945,7 +1281,7 @@ RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRe
             for (const auto &buffer : copy.buffers) resolution.resources.insert(origin(buffer));
             const auto record = [&](const Json &declaration) {
                 const auto name = declaration.at("name").get<std::string>();
-                copied_names[body->prefix + name.substr(copy.prefix.size())].push_back(name);
+                copied_names[body->prefix + name.substr(copy.prefix.size())].push_back({name, element, count});
             };
             for (const auto &[family, pass] : copy.passes) record(pass);
             for (const auto &task : copy.compute_tasks) record(task);
@@ -1018,7 +1354,7 @@ RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRe
         // the first of these so the canonical order agrees with the edges.
         std::set<std::string> dependents(loop.shape.before.begin(), loop.shape.before.end());
         for (const auto *read : reads_by_loop[id])
-            for (const auto &name : consumerNames(read->consumer)) dependents.insert(name);
+            for (const auto &consumer : consumerCopies(read->consumer)) dependents.insert(consumer.name);
         const auto depends = [&](const Json &declaration) {
             if (!declaration.is_object()) return false;
             if (dependents.contains(declaration.value("name", std::string{}))) return true;
@@ -1096,35 +1432,21 @@ RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRe
         }
     }
 
-    // Every reader of a loop output reads the last element that has a body,
-    // and waits on what that copy writes it with.
+    // Every other reader of a loop output -- a graph pass or task outside the
+    // loops -- reads its value and waits on what writes it: `p` the last
+    // element's, `p[]` (LP-1b) the element its edge names.
     auto declarations = composedDeclarations(composed);
     for (const auto &read : lowered.loop_output_reads) {
-        const auto plan = std::find_if(plans.begin(), plans.end(),
-                                       [&](const LoopPlan &candidate) { return candidate.loop->shape.node == read.loop; });
-        if (plan == plans.end()) continue;
-        if (plan->copies.empty())
-            throw GraphRegistryError("graph.loop_output_empty@1", {{"node", read.loop}, {"port", read.port}});
-        const auto &last = plan->copies.back();
-        const auto &body = *plan->loop->branches.at(last.element.branch);
-        const auto output = body.outputs.find(read.port);
-        if (output == body.outputs.end()) continue;
-        const auto resource = renamedTemplateName(output->second, body.prefix, last.prefix);
-        std::vector<std::pair<std::string, std::string>> writers; // (name, family)
-        for (const auto &[name, origin] : resolution.passes) {
-            if (!name.starts_with(last.prefix)) continue;
-            const auto found = declarations.find(name);
-            if (found == declarations.end()) continue;
-            if (declarationWrites(*found->second.declaration).contains(resource))
-                writers.emplace_back(name, found->second.family);
-        }
-        for (const auto &consumer : consumerNames(read.consumer)) {
-            const auto found = declarations.find(consumer);
+        if (!plan_index.contains(read.loop) || inLoopBody(read.consumer)) continue;
+        for (const auto &consumer : consumerCopies(read.consumer)) {
+            const auto value = readValue(read, {});
+            if (!value) continue;
+            const auto found = declarations.find(consumer.name);
             if (found == declarations.end()) continue;
             auto &declaration = *found->second.declaration;
-            if (read.resource != resource) repointResource(declaration, read.resource, resource);
-            for (const auto &[writer, writer_family] : writers)
-                if (writer != consumer && mayOrderAgainst(found->second.family, writer_family, writer_family.empty()))
+            if (read.resource != value->resource) repointResource(declaration, read.resource, value->resource);
+            for (const auto &[writer, writer_family] : value->writers)
+                if (writer != consumer.name && mayOrderAgainst(found->second.family, writer_family, writer_family.empty()))
                     appendOrder(declaration, "after", writer);
         }
     }

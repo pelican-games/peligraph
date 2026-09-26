@@ -1,5 +1,6 @@
 #include "graphpartition.hpp"
 #include "shaderresourceport.hpp"
+#include "graphloopexpression.hpp"
 
 #include <stdexcept>
 #include <algorithm>
@@ -47,6 +48,208 @@ void validateAttributeSource(const Json &node, bool owned) {
     index("primitive");
     if (morph) index("morph_target");
     if (deformed) index("deformed_node");
+}
+
+// LP-1b: a loop body's value nodes run once per element. The values
+// partition is evaluated apart from the render composition, so the elements
+// are taken from the loop's form alone: a count, where or when that needs a
+// composed target's constant is refused as not_static (the render side sees
+// the same elements, being given the same form).
+//
+// Each element that has a body gets a copy of its branch template's value
+// nodes (`<loop>/$<branch>/x` -> `<loop>/<element>/x`, `$upload/...` sinks
+// with them); a carried input reads the loop's edge in the first copy and the
+// previous copy's `from` in the rest. The templates leave the partition.
+// Every edge that reads a loop's output is then re-pointed: `p` at the last
+// copy's, `p[]` at the copy its edge's element names (graph.loop_element_unknown@1
+// {node, port, element} when there is none).
+struct LoopValueCopy {
+    GraphLoopElement element;
+    // Body output port -> the endpoint this element's value is.
+    std::map<std::string, Json> outputs;
+};
+
+struct LoopValueCopies {
+    std::int64_t count = 0;
+    std::vector<LoopValueCopy> copies;
+    std::map<std::string, Json> carried_first;
+};
+
+std::string renamedLoopValueName(const std::string &text, const std::string &from, const std::string &to) {
+    static const std::string upload = "$upload/";
+    if (text.starts_with(from)) return to + text.substr(from.size());
+    if (text.starts_with(upload + from)) return upload + to + text.substr(upload.size() + from.size());
+    return text;
+}
+
+void renameLoopValueStrings(Json &value, const std::string &from, const std::string &to) {
+    if (value.is_string()) {
+        value = renamedLoopValueName(value.get<std::string>(), from, to);
+        return;
+    }
+    if (value.is_array() || value.is_object())
+        for (auto &child : value) renameLoopValueStrings(child, from, to);
+}
+
+void expandLoopValues(ExpandedGraphDocument &values, const ExpandedGraphDocument &graph) {
+    std::map<std::string, LoopValueCopies> tables;
+    // The element each copy was made for, by node id.
+    std::map<std::string, std::pair<std::string, const LoopValueCopy *>> copy_of;
+    std::map<std::string, std::vector<std::string>> copy_ids;
+    Json kept = Json::array();
+    std::map<std::string, std::vector<const Json *>> templates; // loop -> template nodes
+    for (const auto &node : values.nodes) {
+        const auto id = node.at("id").get<std::string>();
+        const auto origin = values.origins.find(id);
+        if (origin != values.origins.end() && !origin->second.loop.empty() && origin->second.loop_branch)
+            templates[origin->second.loop].push_back(&node);
+    }
+    if (templates.empty()) return;
+    Json added = Json::array();
+    for (const auto &[loop, nodes] : templates) {
+        const auto &expansion = graph.loops.at(loop);
+        auto &table = tables[loop];
+        table.count = 0;
+        const auto elements = graphLoopElements(expansion.shape, graphLoopCount(expansion.shape, {}), {});
+        table.count = static_cast<std::int64_t>(elements.size());
+        std::map<std::string, Json> carried;
+        for (const auto &pair : expansion.shape.carry)
+            if (const auto found = expansion.inputs.find(pair.to); found != expansion.inputs.end()) {
+                auto endpoint = *found;
+                endpoint.erase(graphLoopCarryMarker);
+                carried.emplace(pair.to, std::move(endpoint));
+            }
+        table.carried_first = carried;
+        for (const auto &element : elements) {
+            const auto &branch = expansion.branches.at(element.branch);
+            if (!branch) continue;
+            const auto &from = branch->prefix;
+            const auto to = loop + "/" + std::to_string(element.element) + "/";
+            // The value an endpoint is in this element: a carried input
+            // resolved, a template name renamed.
+            const auto localEndpoint = [&](Json endpoint) {
+                if (const auto carry = endpoint.find(graphLoopCarryMarker);
+                    carry != endpoint.end() && carry->at("loop") == loop)
+                    return carried.at(carry->at("input").get<std::string>());
+                renameLoopValueStrings(endpoint.at("node"), from, to);
+                return endpoint;
+            };
+            table.copies.push_back({element, {}});
+            auto &copy = table.copies.back();
+            for (const auto *source : nodes) {
+                const auto id = source->at("id").get<std::string>();
+                const auto &origin = values.origins.at(id);
+                if (origin.loop_branch != element.branch) continue;
+                auto node = *source;
+                node["id"] = renamedLoopValueName(id, from, to);
+                if (node.contains("parameters")) renameLoopValueStrings(node["parameters"], from, to);
+                for (auto &[port, endpoint] : node["inputs"].items()) {
+                    (void)port;
+                    endpoint = localEndpoint(endpoint);
+                }
+                const auto copy_id = node.at("id").get<std::string>();
+                auto copy_origin = origin;
+                copy_origin.instance_path = to;
+                values.origins.insert_or_assign(copy_id, std::move(copy_origin));
+                if (const auto scopes = values.node_scopes.find(id); scopes != values.node_scopes.end())
+                    values.node_scopes.insert_or_assign(copy_id, scopes->second);
+                copy_ids[loop].push_back(copy_id);
+                added.push_back(std::move(node));
+            }
+            for (const auto &[port, endpoint] : branch->outputs.items()) copy.outputs.emplace(port, localEndpoint(endpoint));
+            for (const auto &pair : expansion.shape.carry)
+                if (const auto found = copy.outputs.find(pair.from); found != copy.outputs.end())
+                    carried.insert_or_assign(pair.to, found->second);
+        }
+    }
+    for (auto &node : values.nodes) {
+        const auto id = node.at("id").get<std::string>();
+        const auto origin = values.origins.find(id);
+        if (origin != values.origins.end() && templates.contains(origin->second.loop) && origin->second.loop_branch)
+            continue;
+        kept.push_back(std::move(node));
+    }
+    for (auto &node : added) kept.push_back(std::move(node));
+    values.nodes = std::move(kept);
+    for (const auto &[loop, table] : tables)
+        for (const auto &copy : table.copies)
+            for (const auto &id : copy_ids[loop])
+                if (id.starts_with(loop + "/" + std::to_string(copy.element.element) + "/") ||
+                    id.starts_with("$upload/" + loop + "/" + std::to_string(copy.element.element) + "/"))
+                    copy_of.insert_or_assign(id, std::pair{loop, &copy});
+    // An edge that reads a loop's output reads the element's value.
+    const auto repoint = [&](Json &endpoint, const std::string &consumer) {
+        for (int guard = 0; guard < 8; ++guard) {
+            const auto marker = endpoint.find(graphLoopOutputMarker);
+            if (marker == endpoint.end()) return;
+            const auto loop = marker->at("loop").get<std::string>();
+            const auto port = marker->at("port").get<std::string>();
+            const auto table = tables.find(loop);
+            const auto element_value = marker->value("element", Json{});
+            if (table == tables.end()) {
+                // No value node in the loop's body: its output is what the
+                // body passes through, the same in every element.
+                endpoint.erase(marker);
+                continue;
+            }
+            const LoopValueCopy *chosen = nullptr;
+            if (element_value.is_null()) {
+                if (!table->second.copies.empty()) chosen = &table->second.copies.back();
+            } else {
+                std::int64_t element = 0;
+                if (!isGraphLoopExpression(element_value)) {
+                    element = element_value.get<std::int64_t>();
+                } else {
+                    GraphLoopExpressionValues variables;
+                    const auto receiver = marker->value("receiver", std::string{});
+                    if (const auto found = copy_of.find(consumer);
+                        marker->value("receiver_loop", false) && found != copy_of.end() && found->second.first == receiver)
+                        variables = {found->second.second->element.element,
+                                     static_cast<std::int64_t>(found->second.second->element.index),
+                                     tables.at(receiver).count};
+                    try {
+                        element = evaluateGraphLoopExpression(element_value, GraphLoopExpressionKind::integer,
+                                                              variables, {}).get<std::int64_t>();
+                    } catch (const GraphLoopExpressionError &error) {
+                        throw graphLoopExpressionInvalid(receiver, element_value.value("$pointer", std::string{}),
+                                                         error.reason());
+                    }
+                }
+                for (const auto &copy : table->second.copies)
+                    if (copy.element.element == element) chosen = &copy;
+                if (chosen == nullptr)
+                    throw GraphRegistryError("graph.loop_element_unknown@1",
+                        {{"node", marker->value("receiver", std::string{})},
+                         {"port", marker->value("input", std::string{})}, {"element", element}});
+            }
+            if (chosen == nullptr) {
+                const auto &shape = graph.loops.at(loop).shape;
+                const auto carry = std::find_if(shape.carry.begin(), shape.carry.end(),
+                                                [&](const GraphLoopCarry &pair) { return pair.from == port; });
+                if (carry == shape.carry.end() || !table->second.carried_first.contains(carry->to))
+                    throw GraphRegistryError("graph.loop_output_empty@1", {{"node", loop}, {"port", port}});
+                endpoint = table->second.carried_first.at(carry->to);
+                continue;
+            }
+            const auto output = chosen->outputs.find(port);
+            if (output == chosen->outputs.end()) {
+                endpoint.erase(marker);
+                return;
+            }
+            endpoint = output->second;
+        }
+    };
+    for (auto &node : values.nodes) {
+        const auto id = node.at("id").get<std::string>();
+        for (auto &[port, endpoint] : node["inputs"].items()) {
+            (void)port;
+            repoint(endpoint, id);
+        }
+    }
+    for (auto &[port, endpoint] : values.outputs.items()) {
+        (void)port;
+        repoint(endpoint, {});
+    }
 }
 }
 
@@ -155,6 +358,7 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document,
         result.values.output_scopes.emplace(output, input.scopes);
         result.values.instance_inputs.emplace(key, input);
     }
+    expandLoopValues(result.values, graph);
     for (const auto &[port, endpoint] : graph.outputs.items()) {
         const auto type = output_types.at(port).constructor;
         const auto producer = domains.at(endpoint.at("node").get<std::string>());

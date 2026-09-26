@@ -29,6 +29,12 @@ class GraphRegistryError : public std::runtime_error {
     const nlohmann::json &detail() const noexcept { return detail_; }
 };
 
+// LP-1b: graph.loop_expression_invalid@1 {node, pointer, reason}. `pointer`
+// is the expression's JSON pointer in the authoring document; `reason` is one
+// of the graphloopexpression.hpp reasons.
+GraphRegistryError graphLoopExpressionInvalid(const std::string &node, const std::string &pointer,
+                                              std::string_view reason);
+
 struct GraphNodeOrigin {
     std::string instance_path;
     std::string definition;
@@ -56,12 +62,26 @@ struct GraphLoopExpansion {
     GraphLoopShape shape;
     // One entry per branch; empty for `"body": null`.
     std::vector<std::optional<GraphLoopBodyTemplate>> branches;
+    // LP-1b: the loop's input edges, resolved as the templates received them
+    // (a carried input carries graphLoopCarryMarker).
+    nlohmann::json inputs = nlohmann::json::object();
 };
 // An endpoint that reads a loop's output carries this member beside `node` and
 // `port`: {"loop": "<loop>", "port": "<output>"}. The endpoint itself points
 // into the first non-null branch's template (that is what its type is checked
 // against); the resolution stage re-points it at the last element's copy.
+// LP-1b: an edge that reads one element of `p[]` adds
+//   "element":  the edge's element (an integer or an expression object that
+//               carries its document pointer as "$pointer"),
+//   "receiver": the node the edge enters, "input": the port it enters,
+//   "receiver_loop": true when the receiver is a graph.loop (its `element`
+//               variable is the receiver's element).
 inline constexpr const char *graphLoopOutputMarker = "$loop_output";
+// LP-1b: a body's input that `carry` feeds carries this member:
+// {"loop": "<loop>", "input": "<to>"}. The endpoint itself is the loop's input
+// edge, which is what the first element reads (and what its type is checked
+// against); every later element reads the previous element's `from`.
+inline constexpr const char *graphLoopCarryMarker = "$loop_carry";
 // Where one instance input port takes its value from. A connected port leaves
 // no node of its own behind in the expansion -- the consumer inside the
 // definition points straight at the outer producer -- so the answer is read
@@ -113,7 +133,9 @@ ExpandedGraphDocument expandGraphDocument(const nlohmann::json &document);
 // op in the same list may have changed the body). `ops` is an array of
 //   {"op":"add_node","node":{...}}
 //   {"op":"remove_node","node":"<id>"}
-//   {"op":"set_input","node":"<id>","port":"<port>","source":{"node","port"}|null}
+//   {"op":"set_input","node":"<id>","port":"<port>","source":{"node","port"[,"element"]}|null}
+//       (LP-1b: `element`, an integer or {"$expr": ...}, names one element of a
+//       graph.loop's `p[]` output)
 //   {"op":"set_node_parameters","node":"<id>","parameters":{...}}
 //   {"op":"set_node_label","node":"<id>","label":"<text>"}   ("" clears)
 //   {"op":"set_layout","layout":{...}|null}                  (null clears)

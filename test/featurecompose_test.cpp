@@ -5681,22 +5681,19 @@ TEST_CASE("LP-1a loop refusals are named", "[render-feature][graph-composition][
         expect(loop_graph(parameters), "graph.loop_order_unsupported@1",
                {{"node", "steps"}, {"order", {{"by", "element"}, {"direction", "sideways"}}}});
     }
-    SECTION("what arrives with loop expressions") {
-        auto carry = lp1aRange(1);
-        carry["carry"] = Json::array({{{"from", "image"}, {"to", "image"}}});
-        expect(loop_graph(carry), "graph.loop_feature_pending@1", {{"node", "steps"}, {"feature", "carry"}});
+    SECTION("what LP-1a held back is no longer refused as pending (LP-1b)") {
         auto expression = lp1aRange(1);
         expression["over"]["range"]["count"] = {{"$expr", "2 + 2"}};
-        expect(loop_graph(expression), "graph.loop_feature_pending@1", {{"node", "steps"}, {"feature", "expression"}});
+        REQUIRE_NOTHROW(partitionGraphDocument(loop_graph(expression)));
         auto when = lp1aRange(1);
         when["branches"] = Json::array({{{"when", {{"element", {{"$expr", "count - 1"}}}}}, {"body", "paint"}},
                                         {{"body", "paint"}}});
-        expect(loop_graph(when), "graph.loop_feature_pending@1", {{"node", "steps"}, {"feature", "expression"}});
-        expect(loop_graph(lp1aRange(1), nullptr, Json::object(), {"image[]"}), "graph.loop_feature_pending@1",
-               {{"node", "steps"}, {"feature", "element_output"}});
+        REQUIRE_NOTHROW(partitionGraphDocument(loop_graph(when)));
+        REQUIRE_NOTHROW(partitionGraphDocument(loop_graph(lp1aRange(1), nullptr, Json::object(), {"image[]"})));
+        // An element is named only of a loop's p[].
         auto document = lp1aGraph(Json::array({lp1aLit(), lp1aLoop("steps", lp1aRange(1, "accumulate"),
             {{"target", {{"node", "lit"}, {"port", "resource"}, {"element", {{"$expr", "element"}}}}}})}));
-        expect(document, "graph.loop_feature_pending@1", {{"node", "steps"}, {"feature", "per_iteration_input"}});
+        CHECK_THROWS_AS(partitionGraphDocument(document), std::invalid_argument);
     }
     SECTION("a loop of compute tasks takes no place among passes") {
         Json compute_body{{"nodes", Json::array({
@@ -5780,7 +5777,9 @@ TEST_CASE("LP-1a loop refusals are named", "[render-feature][graph-composition][
             {{"target", {{"node", "lit"}, {"port", "resource"}}}})}), {{"broken", body}});
         const auto [code, fields] = lp0aRefusal(document);
         CHECK(code == "graph.target_ref_unknown@1");
-        CHECK(fields == Json{{"node", "steps/0/missing"}, {"name", "no_such_target"}});
+        // LP-1b: and where the copy came from, as the frame plan says it.
+        CHECK(fields == Json{{"node", "steps/0/missing"}, {"name", "no_such_target"},
+                             {"loop_origin", {{"loop", "steps"}, {"element", 0}, {"node", "missing"}}}});
     }
 }
 
@@ -5811,6 +5810,504 @@ TEST_CASE("LP-1a recompile time up to the expansion limit", "[.][lp1a-timing]") 
                   << compose_ms / repeats << " ms, plan " << plan_ms / repeats << " ms\n";
     }
     SUCCEED();
+}
+
+namespace {
+// LP-1b: a sampled read port, a pass that reads `source` and draws into
+// `color`, and a body that does that into an image of its own and outputs it
+// as `out` -- the shape of a blur step or a bloom down step.
+nlohmann::json lp1bReadPort() {
+    return {{"kind", "image"}, {"type", lp0aSceneColorType()}, {"access", "read"},
+            {"sampling", {{"filter", "nearest"}, {"address", "clamp_to_edge"}}}};
+}
+
+nlohmann::json lp1bStep(const std::string &id, const nlohmann::json &source, const nlohmann::json &color,
+                        const nlohmann::json &extra = nlohmann::json::object()) {
+    auto pass = lp1aFullscreen(id, color, extra);
+    pass["parameters"]["ports"]["source"] = lp1bReadPort();
+    pass["inputs"]["source"] = source;
+    return pass;
+}
+
+nlohmann::json lp1bChainBody(const nlohmann::json &extent_scale = 1.0, const nlohmann::json &defines = nullptr) {
+    using Json = nlohmann::json;
+    auto image = lp0bImage("image");
+    image["parameters"]["extent_scale"] = extent_scale;
+    auto step = lp1bStep("step", {{"node", "source"}, {"port", "value"}}, {{"node", "image"}, {"port", "resource"}});
+    if (!defines.is_null()) step["parameters"]["shader"]["defines"] = defines;
+    return Json{{"nodes", Json::array({{{"id", "source"}, {"op", "graph.input"}}, image, step})},
+                {"outputs", {{"out", {{"node", "step"}, {"port", "color"}}}}}};
+}
+
+// `seed` draws `seed_image`: the first value a chain starts from.
+nlohmann::json lp1bSeed() {
+    return nlohmann::json::array({lp0bImage("seed_image"),
+                                  lp1aFullscreen("seed", {{"node", "seed_image"}, {"port", "resource"}})});
+}
+
+// `chain`: `count` copies of chain_body, each reading the previous one's out.
+nlohmann::json lp1bChainLoop(std::int64_t count, const nlohmann::json &outputs = nlohmann::json::array({"out"})) {
+    using Json = nlohmann::json;
+    auto parameters = lp1aRange(count, "chain_body");
+    parameters["carry"] = Json::array({{{"from", "out"}, {"to", "source"}}});
+    return lp1aLoop("chain", parameters, {{"source", {{"node", "seed"}, {"port", "color"}}}}, outputs);
+}
+
+nlohmann::json lp1bChainGraph(const nlohmann::json &loop, const nlohmann::json &definitions,
+                              const nlohmann::json &extra = nlohmann::json::array()) {
+    auto nodes = lp1bSeed();
+    nodes.push_back(loop);
+    for (const auto &node : extra) nodes.push_back(node);
+    return lp1aGraph(nodes, definitions);
+}
+
+const nlohmann::json &lp1bTarget(const nlohmann::json &config, const std::string &name) {
+    for (const auto &target : config.at("render_targets"))
+        if (target.value("name", std::string{}) == name) return target;
+    FAIL("no render target " << name);
+    static const nlohmann::json none;
+    return none;
+}
+
+const nlohmann::json &lp1bTask(const nlohmann::json &config, const std::string &name) {
+    for (const auto &task : config.at("compute_tasks"))
+        if (task.value("name", std::string{}) == name) return task;
+    FAIL("no compute task " << name);
+    static const nlohmann::json none;
+    return none;
+}
+
+std::string lp1bSource(const nlohmann::json &config, const std::string &pass) {
+    return passByName(config, pass).at("resource_ports").at("source").at("resource").get<std::string>();
+}
+
+bool lp1bContains(const nlohmann::json &list, const std::string &name) {
+    return std::find(list.begin(), list.end(), name) != list.end();
+}
+} // namespace
+
+TEST_CASE("LP-1b expressions give each element its own extent and shader defines",
+          "[render-feature][graph-composition][lp1b]") {
+    using Json = nlohmann::json;
+    const Json definitions{{"chain_body", lp1bChainBody({{"$expr", "1 / pow2(element + 1)"}},
+                                                        Json::array({{{"$format", "STEP={element}"}}, "FIXED=1"}))}};
+    const auto composed = lp0aCompose(lp1bChainGraph(lp1bChainLoop(3), definitions));
+    const auto &config = composed.config;
+    const std::array<double, 3> scales{0.5, 0.25, 0.125};
+    for (int element = 0; element < 3; ++element) {
+        const auto prefix = "chain/" + std::to_string(element) + "/";
+        INFO(prefix);
+        CHECK(lp1bTarget(config, prefix + "image").at("extent_scale") == scales[element]);
+        CHECK(passByName(config, prefix + "step").at("shader").at("defines") ==
+              Json::array({"STEP=" + std::to_string(element), "FIXED=1"}));
+    }
+    // Nothing of an expression is left for the runtime to read.
+    CHECK(config.dump().find("$expr") == std::string::npos);
+    CHECK(config.dump().find("$format") == std::string::npos);
+    CHECK(config.dump().find("$pointer") == std::string::npos);
+    // The per-element passes compile and plan like any other.
+    const auto plan = lp1aPlanJson(composed);
+    REQUIRE(lp1aPlanNode(plan, "chain/2/step") != nullptr);
+
+    SECTION("the count and a branch's when read expressions") {
+        auto loop = lp1bChainLoop(0);
+        loop["parameters"]["over"]["range"]["count"] = {{"$expr", "max(2, 1) * 2 - 1"}};
+        loop["parameters"]["branches"] = Json::array({{{"when", {{"element", {{"$expr", "count - 1"}}}}}, {"body", nullptr}},
+                                                      {{"body", "chain_body"}}});
+        const auto counted = lp0aCompose(lp1bChainGraph(loop, definitions));
+        CHECK(lp1aNamesUnder(counted.config, "chain/") == std::vector<std::string>{"chain/0/step", "chain/1/step"});
+        CHECK(lp1aPlanJson(counted).at("loops").at(0).at("elements") ==
+              Json::array({{{"element", 0}, {"index", 0}, {"branch", 1}},
+                           {{"element", 1}, {"index", 1}, {"branch", 1}},
+                           {{"element", 2}, {"index", 2}, {"branch", 0}}}));
+        // `where` reads the element; a real literal is refused where an
+        // integer is required.
+        loop["parameters"]["where"] = {{"element_not_in", Json::array({{{"$expr", "3 % 2"}}})}};
+        // Without element 1 there are two elements, so `count - 1` names none.
+        const auto filtered = lp0aCompose(lp1bChainGraph(loop, definitions));
+        CHECK(lp1aNamesUnder(filtered.config, "chain/") == std::vector<std::string>{"chain/0/step", "chain/2/step"});
+    }
+    SECTION("reals are exact fractions until the end") {
+        const Json exact{{"chain_body", lp1bChainBody({{"$expr", "(1 / 3) * 3 - 0.5 + min(0.25, 1) - 0.25"}})}};
+        const auto thirds = lp0aCompose(lp1bChainGraph(lp1bChainLoop(1), exact));
+        CHECK(lp1bTarget(thirds.config, "chain/0/image").at("extent_scale") == 0.5);
+    }
+}
+
+TEST_CASE("LP-1b expression refusals are named with the node, the pointer and the reason",
+          "[render-feature][graph-composition][lp1b]") {
+    using Json = nlohmann::json;
+    // chain_body's nodes are [source, image, step]; the root's are
+    // [seed_image, seed, chain].
+    const auto withExtent = [](const Json &extent) {
+        return lp1bChainGraph(lp1bChainLoop(3), {{"chain_body", lp1bChainBody(extent)}});
+    };
+    const auto withCount = [](const Json &count) {
+        auto loop = lp1bChainLoop(0);
+        loop["parameters"]["over"]["range"]["count"] = count;
+        return lp1bChainGraph(loop, {{"chain_body", lp1bChainBody()}});
+    };
+    const auto invalid = [](const std::string &node, const std::string &pointer, const std::string &reason) {
+        return Json{{"node", node}, {"pointer", pointer}, {"reason", reason}};
+    };
+    // A refusal of one element's copy says where it came from.
+    const auto ofCopy = [](Json fields, std::int64_t element, const std::string &node) {
+        fields["loop_origin"] = {{"loop", "chain"}, {"element", element}, {"node", node}};
+        return fields;
+    };
+    const std::string extent_pointer = "/definitions/chain_body/nodes/1/parameters/extent_scale";
+    const std::string count_pointer = "/nodes/2/parameters/over/range/count";
+    const auto expectEdit = [&](const Json &document, const Json &fields) {
+        const auto [code, actual] = lp1aEditRefusal(document);
+        CHECK(code == "graph.loop_expression_invalid@1");
+        CHECK(actual == fields);
+    };
+    const auto expectCompose = [&](const Json &document, const Json &fields) {
+        REQUIRE_NOTHROW(partitionGraphDocument(document));
+        const auto [code, actual] = lp0aRefusal(document);
+        CHECK(code == "graph.loop_expression_invalid@1");
+        CHECK(actual == fields);
+    };
+    SECTION("syntax") {
+        expectEdit(withExtent({{"$expr", "1 +"}}), invalid("image", extent_pointer, "syntax"));
+        expectEdit(withExtent({{"$expr", "sqrt(4)"}}), invalid("image", extent_pointer, "syntax"));
+        expectEdit(withExtent({{"$expr", 1}}), invalid("image", extent_pointer, "syntax"));
+        expectEdit(withExtent({{"$expr", "1"}, {"extra", 2}}), invalid("image", extent_pointer, "syntax"));
+    }
+    SECTION("too long, or nested too deep") {
+        std::string sum = "1";
+        while (sum.size() <= 256) sum += "+1";
+        expectEdit(withExtent({{"$expr", sum}}), invalid("image", extent_pointer, "too_long"));
+        const auto nested = [](int depth) { return std::string(depth, '(') + "1" + std::string(depth, ')'); };
+        REQUIRE_NOTHROW(partitionGraphDocument(withExtent({{"$expr", nested(16)}})));
+        expectEdit(withExtent({{"$expr", nested(17)}}), invalid("image", extent_pointer, "too_long"));
+    }
+    SECTION("variables the place does not have") {
+        expectEdit(withExtent({{"$expr", "elements"}}), invalid("image", extent_pointer, "unknown_variable"));
+        expectEdit(withCount({{"$expr", "element + 1"}}), invalid("chain", count_pointer, "unknown_variable"));
+        auto where = lp1bChainLoop(3);
+        where["parameters"]["where"] = {{"element", {{"$expr", "index"}}}};
+        expectEdit(lp1bChainGraph(where, {{"chain_body", lp1bChainBody()}}),
+                   invalid("chain", "/nodes/2/parameters/where/element", "unknown_variable"));
+        where["parameters"]["where"] = {{"element_in", Json::array({0, {{"$expr", "count"}}})}};
+        expectEdit(lp1bChainGraph(where, {{"chain_body", lp1bChainBody()}}),
+                   invalid("chain", "/nodes/2/parameters/where/element_in/1", "unknown_variable"));
+    }
+    SECTION("an integer place") {
+        expectEdit(withCount({{"$expr", "1.5"}}), invalid("chain", count_pointer, "not_integer"));
+        const Json defines = Json::array({{{"$format", "STEP={element / 2.0}"}}});
+        expectEdit(lp1bChainGraph(lp1bChainLoop(3), {{"chain_body", lp1bChainBody(1.0, defines)}}),
+                   invalid("step", "/definitions/chain_body/nodes/2/parameters/shader/defines/0", "not_integer"));
+        expectCompose(withExtent({{"$expr", "pow2(element) % 1.5"}}),
+                      ofCopy(invalid("chain/0/image", extent_pointer, "not_integer"), 0, "image"));
+    }
+    SECTION("places decision 5 does not list") {
+        auto limited = lp1bChainLoop(3);
+        limited["parameters"]["limit"] = {{"$expr", "1"}};
+        expectEdit(lp1bChainGraph(limited, {{"chain_body", lp1bChainBody()}}),
+                   invalid("chain", "/nodes/2/parameters/limit", "field_not_allowed"));
+        auto formatted = lp1bChainBody();
+        formatted["nodes"][1]["parameters"]["format"] = {{"$format", "R{element}"}};
+        expectEdit(lp1bChainGraph(lp1bChainLoop(3), {{"chain_body", formatted}}),
+                   invalid("image", "/definitions/chain_body/nodes/1/parameters/format", "field_not_allowed"));
+        expectEdit(withExtent({{"$format", "{element}"}}), invalid("image", extent_pointer, "field_not_allowed"));
+        // Outside a loop body nothing takes an expression.
+        auto root = lp1bChainGraph(lp1bChainLoop(3), {{"chain_body", lp1bChainBody()}});
+        root["nodes"][0]["parameters"]["extent_scale"] = {{"$expr", "1"}};
+        expectEdit(root, invalid("seed_image", "/nodes/0/parameters/extent_scale", "field_not_allowed"));
+    }
+    SECTION("what only the composed graph can say") {
+        expectCompose(withExtent({{"$expr", "1 / (element - 1)"}}),
+                      ofCopy(invalid("chain/1/image", extent_pointer, "division_by_zero"), 1, "image"));
+        expectCompose(withCount({{"$expr", "pow2(62) + pow2(62)"}}), invalid("chain", count_pointer, "overflow"));
+        expectCompose(withCount({{"$expr", "pow2(63)"}}), invalid("chain", count_pointer, "overflow"));
+        expectCompose(withCount({{"$expr", "mip_levels_of(\"no_such_target\")"}}),
+                      invalid("chain", count_pointer, "not_static"));
+        // A mip chain that follows the extent is known only at run time.
+        auto full = withCount({{"$expr", "mip_levels_of(\"full_chain\")"}});
+        full["rendering"]["render_targets"] = Json::array({{{"name", "full_chain"}, {"extent_scale", 1.0},
+            {"format", "R16G16B16A16_SFLOAT"}, {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+            {"usage", {"STORAGE", "SAMPLED"}}, {"mip_levels", "full"}}});
+        expectCompose(full, invalid("chain", count_pointer, "not_static"));
+        // The preset's targets answer: lit_color has one layer and one mip.
+        const auto one = lp0aCompose(withCount({{"$expr", "layers_of(\"lit_color\") * mip_levels_of(\"lit_color\") + 1"}}));
+        CHECK(lp1aNamesUnder(one.config, "chain/").size() == 2);
+    }
+}
+
+TEST_CASE("LP-1b carry hands each element's output to the next element's input",
+          "[render-feature][graph-composition][lp1b]") {
+    using Json = nlohmann::json;
+    const Json definitions{{"chain_body", lp1bChainBody()}};
+    const Json show = Json::array({lp0bImage("shown"), lp1bStep("show", {{"node", "chain"}, {"port", "out"}},
+                                                                 {{"node", "shown"}, {"port", "resource"}})});
+    const auto composed = lp0aCompose(lp1bChainGraph(lp1bChainLoop(4), definitions, show));
+    const auto &config = composed.config;
+    CHECK(lp1bSource(config, "chain/0/step") == "seed_image");
+    for (int element = 1; element < 4; ++element) {
+        const auto name = "chain/" + std::to_string(element) + "/step";
+        const auto previous = "chain/" + std::to_string(element - 1) + "/";
+        INFO(name);
+        CHECK(lp1bSource(config, name) == previous + "image");
+        CHECK(passByName(config, name).at("input") == Json::array({previous + "image"}));
+        CHECK(lp0bListed(passByName(config, name).at("after"), previous + "step"));
+    }
+    // The loop's output is the last element's.
+    CHECK(lp1bSource(config, "show") == "chain/3/image");
+    CHECK(lp0bListed(passByName(config, "show").at("after"), "chain/3/step"));
+    // The frame plan reads and writes the chain in order.
+    const auto plan = lp1aPlanJson(composed);
+    for (int element = 1; element < 4; ++element) {
+        const auto *node = lp1aPlanNode(plan, "chain/" + std::to_string(element) + "/step");
+        REQUIRE(node != nullptr);
+        CHECK(lp1bContains(node->at("reads"), "chain/" + std::to_string(element - 1) + "/image"));
+        CHECK(lp1bContains(node->at("writes"), "chain/" + std::to_string(element) + "/image"));
+    }
+    const auto order = lp0bPlanOrder(composed);
+    CHECK(lp0bIndex(order, "seed") < lp0bIndex(order, "chain/0/step"));
+    for (int element = 1; element < 4; ++element)
+        CHECK(lp0bIndex(order, "chain/" + std::to_string(element - 1) + "/step") <
+              lp0bIndex(order, "chain/" + std::to_string(element) + "/step"));
+    CHECK(lp0bIndex(order, "chain/3/step") < lp0bIndex(order, "show"));
+    REQUIRE_NOTHROW(compileComposition(composed));
+
+    SECTION("an element with no body passes the value on") {
+        auto loop = lp1bChainLoop(4);
+        loop["parameters"]["branches"] = Json::array({{{"when", {{"element_in", {1, 3}}}}, {"body", nullptr}},
+                                                      {{"body", "chain_body"}}});
+        const auto skipped = lp0aCompose(lp1bChainGraph(loop, definitions, show));
+        CHECK(lp1aNamesUnder(skipped.config, "chain/") == std::vector<std::string>{"chain/0/step", "chain/2/step"});
+        CHECK(lp1bSource(skipped.config, "chain/2/step") == "chain/0/image");
+        CHECK(lp1bSource(skipped.config, "show") == "chain/2/image");
+    }
+    SECTION("with no element, the loop's input comes out") {
+        const auto empty = lp0aCompose(lp1bChainGraph(lp1bChainLoop(0), definitions, show));
+        CHECK(lp1aNamesUnder(empty.config, "chain/").empty());
+        CHECK(lp1bSource(empty.config, "show") == "seed_image");
+        REQUIRE_NOTHROW(compileComposition(empty));
+    }
+    SECTION("a carry whose ends are of different types is refused") {
+        // The body never reads `source`, so only the carry compares the
+        // image `out` with the buffer the loop's edge gives `source`.
+        Json odd{{"nodes", Json::array({{{"id", "source"}, {"op", "graph.input"}}, lp0bImage("image"),
+                                        lp1aFullscreen("fill", {{"node", "image"}, {"port", "resource"}})})},
+                 {"outputs", {{"out", {{"node", "fill"}, {"port", "color"}}}}}};
+        auto loop = lp1bChainLoop(2);
+        loop["inputs"]["source"] = {{"node", "data"}, {"port", "resource"}};
+        const Json data{{"id", "data"}, {"op", "render.buffer"}, {"parameters", {{"element", "float"}, {"size", 16}}},
+                        {"outputs", {"resource"}}};
+        const auto [code, fields] = lp1aEditRefusal(lp1bChainGraph(loop, {{"chain_body", odd}}, Json::array({data})));
+        CHECK(code == "graph.loop_carry_type_mismatch@1");
+        CHECK(fields == Json{{"node", "chain"}, {"from", "out"}, {"to", "source"}});
+    }
+    SECTION("the carry's shape is checked when edited") {
+        for (const auto &carry : {Json::array({{{"from", "nowhere"}, {"to", "source"}}}),
+                                  Json::array({{{"from", "out"}, {"to", "nothing"}}}),
+                                  Json::array({{{"from", "out"}}}),
+                                  Json::array({{{"from", "out"}, {"to", "source"}}, {{"from", "out"}, {"to", "source"}}})}) {
+            auto loop = lp1bChainLoop(2);
+            loop["parameters"]["carry"] = carry;
+            INFO(carry.dump());
+            CHECK_THROWS_AS(partitionGraphDocument(lp1bChainGraph(loop, definitions)), std::invalid_argument);
+        }
+        // A carried input starts from the loop's edge.
+        auto unfed = lp1bChainLoop(2);
+        unfed["inputs"] = Json::object();
+        CHECK_THROWS_AS(partitionGraphDocument(lp1bChainGraph(unfed, definitions)), std::invalid_argument);
+    }
+}
+
+namespace {
+// LP-1b: the bloom shape. `down` halves four times, each element reading the
+// previous one's image (carry) and publishing its own (`out[]`). `up` runs
+// three times from the smallest, reads what it carries (first `down`'s last
+// image) and draws into `down`'s image of the same element, which it names
+// with a per-element input.
+nlohmann::json lp1bBloomDocument(const nlohmann::json &target_element = {{"$expr", "element"}},
+                                 const nlohmann::json &extra = nlohmann::json::array()) {
+    using Json = nlohmann::json;
+    Json up_body{{"nodes", Json::array({{{"id", "source"}, {"op", "graph.input"}},
+                                        {{"id", "target"}, {"op", "graph.input"}},
+                                        lp1bStep("blend", {{"node", "source"}, {"port", "value"}},
+                                                 {{"node", "target"}, {"port", "value"}}, {{"color_load_op", "Load"}})})},
+                 {"outputs", {{"out", {{"node", "blend"}, {"port", "color"}}}}}};
+    auto down = lp1bChainLoop(4, Json::array({"out", "out[]"}));
+    down["id"] = "down";
+    auto up_parameters = lp1aRange(3, "up_body");
+    up_parameters["order"] = {{"by", "element"}, {"direction", "descending"}};
+    up_parameters["carry"] = Json::array({{{"from", "out"}, {"to", "source"}}});
+    const auto up = lp1aLoop("up", up_parameters,
+                             {{"source", {{"node", "down"}, {"port", "out"}}},
+                              {"target", {{"node", "down"}, {"port", "out[]"}, {"element", target_element}}}},
+                             Json::array({"out"}));
+    auto nodes = lp1bSeed();
+    nodes.push_back(down);
+    nodes.push_back(up);
+    for (const auto &node : extra) nodes.push_back(node);
+    return lp1aGraph(nodes, {{"chain_body", lp1bChainBody({{"$expr", "1 / pow2(element + 1)"}})}, {"up_body", up_body}});
+}
+} // namespace
+
+TEST_CASE("LP-1b a per-element input reads another loop's element, as bloom's up steps read its down steps",
+          "[render-feature][graph-composition][lp1b]") {
+    using Json = nlohmann::json;
+    const auto composed = lp0aCompose(lp1bBloomDocument());
+    const auto &config = composed.config;
+    CHECK(lp1aNamesUnder(config, "up/") == std::vector<std::string>{"up/2/blend", "up/1/blend", "up/0/blend"});
+    for (int element = 0; element < 3; ++element) {
+        const auto name = "up/" + std::to_string(element) + "/blend";
+        const auto own = "down/" + std::to_string(element) + "/image";
+        const auto below = "down/" + std::to_string(element + 1) + "/image";
+        INFO(name);
+        // It draws into the down step of its own element, and reads the one
+        // below: the first up step reads down's last, the others what the
+        // up step before them drew.
+        CHECK(passByName(config, name).at("output").at("color") == Json::array({own}));
+        CHECK(lp1bSource(config, name) == below);
+        CHECK(lp0bListed(passByName(config, name).at("after"), "down/" + std::to_string(element) + "/step"));
+    }
+    CHECK(lp0bListed(passByName(config, "up/2/blend").at("after"), "down/3/step"));
+    CHECK(lp0bListed(passByName(config, "up/1/blend").at("after"), "up/2/blend"));
+    const auto plan = lp1aPlanJson(composed);
+    for (int element = 0; element < 3; ++element) {
+        const auto *node = lp1aPlanNode(plan, "up/" + std::to_string(element) + "/blend");
+        REQUIRE(node != nullptr);
+        CHECK(lp1bContains(node->at("reads"), "down/" + std::to_string(element + 1) + "/image"));
+        CHECK(lp1bContains(node->at("writes"), "down/" + std::to_string(element) + "/image"));
+        CHECK(node->at("loop_origin") == Json{{"loop", "up"}, {"element", element}, {"node", "blend"}});
+    }
+    const auto order = lp0bPlanOrder(composed);
+    CHECK(lp0bIndex(order, "down/3/step") < lp0bIndex(order, "up/2/blend"));
+    CHECK(lp0bIndex(order, "up/2/blend") < lp0bIndex(order, "up/1/blend"));
+    CHECK(lp0bIndex(order, "up/1/blend") < lp0bIndex(order, "up/0/blend"));
+    REQUIRE_NOTHROW(compileComposition(composed));
+
+    SECTION("an element no copy has is refused by name") {
+        const auto [code, fields] = lp0aRefusal(lp1bBloomDocument({{"$expr", "element + 2"}}));
+        CHECK(code == "graph.loop_element_unknown@1");
+        CHECK(fields == Json{{"node", "up"}, {"port", "target"}, {"element", 4}});
+    }
+    SECTION("a node that is no loop reads a constant element") {
+        const Json peek = Json::array({lp0bImage("shown"),
+            lp1bStep("peek", {{"node", "down"}, {"port", "out[]"}, {"element", 1}}, {{"node", "shown"}, {"port", "resource"}})});
+        const auto read = lp0aCompose(lp1bBloomDocument({{"$expr", "element"}}, peek));
+        CHECK(lp1bSource(read.config, "peek") == "down/1/image");
+        CHECK(lp0bListed(passByName(read.config, "peek").at("after"), "down/1/step"));
+        auto variable = peek;
+        variable[1]["inputs"]["source"]["element"] = {{"$expr", "element"}};
+        const auto [code, fields] = lp1aEditRefusal(lp1bBloomDocument({{"$expr", "element"}}, variable));
+        CHECK(code == "graph.loop_expression_invalid@1");
+        CHECK(fields == Json{{"node", "peek"}, {"pointer", "/nodes/5/inputs/source/element"}, {"reason", "unknown_variable"}});
+        auto whole = peek;
+        whole[1]["inputs"]["source"].erase("element");
+        CHECK_THROWS_AS(partitionGraphDocument(lp1bBloomDocument({{"$expr", "element"}}, whole)), std::invalid_argument);
+    }
+    SECTION("an edit sets a per-element edge") {
+        auto document = lp1bBloomDocument();
+        const Json source{{"node", "down"}, {"port", "out[]"}, {"element", {{"$expr", "element"}}}};
+        auto without = document;
+        without["nodes"][3]["inputs"].erase("target");
+        const auto edited = editGraphDocument(without, Json::array({Json{{"op", "set_input"}, {"node", "up"},
+            {"port", "target"}, {"source", source}}}));
+        CHECK(edited.at("nodes").at(3).at("inputs").at("target") == source);
+    }
+}
+
+TEST_CASE("LP-1b mip_levels_of counts a compute chain down one image's mips",
+          "[render-feature][graph-composition][lp1b]") {
+    using Json = nlohmann::json;
+    const auto type = lp0aSceneColorType();
+    const auto port = [&](const char *access, const char *binding, const Json &mip) {
+        return Json{{"kind", "image"}, {"type", type}, {"access", access}, {"binding", binding},
+                    {"subresource", {{"mip", mip}, {"layer", 0}}}};
+    };
+    const Json body{{"nodes", Json::array({
+        {{"id", "color"}, {"op", "render.target_ref"}, {"parameters", {{"name", "chain_color"}, {"type", type}}},
+         {"outputs", {"resource"}}},
+        {{"id", "filter"}, {"op", "render.compute"},
+         {"parameters", {{"shader", "engine://ray_deform"},
+                         {"ports", {{"source", port("read", "sampled", {{"$expr", "element"}})},
+                                    {"filtered", port("write", "storage", {{"$expr", "element + 1"}})}}}}},
+         {"inputs", {{"source", {{"node", "color"}, {"port", "resource"}}},
+                     {"filtered", {{"node", "color"}, {"port", "resource"}}}}},
+         {"outputs", {"filtered"}}}})},
+        {"outputs", Json::object()}};
+    auto parameters = lp1aRange(0, "mip_step");
+    parameters["over"]["range"]["count"] = {{"$expr", "mip_levels_of(\"chain_color\") - 1"}};
+    auto document = lp1aGraph(Json::array({lp1aLoop("mips", parameters)}), {{"mip_step", body}});
+    document["rendering"]["render_targets"] = Json::array({{{"name", "chain_color"}, {"extent_scale", 1.0},
+        {"format", "R16G16B16A16_SFLOAT"}, {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+        {"usage", {"STORAGE", "SAMPLED", "COLOR_ATTACHMENT"}}, {"mip_levels", 5}}});
+    const auto composed = lp0aCompose(document);
+    const auto &config = composed.config;
+    for (int element = 0; element < 4; ++element) {
+        const auto name = "mips/" + std::to_string(element) + "/filter";
+        INFO(name);
+        const auto &task = lp1bTask(config, name);
+        CHECK(task.at("resource_ports").at("source").at("subresource") == Json{{"mip", element}, {"layer", 0}});
+        CHECK(task.at("resource_ports").at("filtered").at("subresource") == Json{{"mip", element + 1}, {"layer", 0}});
+        CHECK(task.at("resource_ports").at("source").at("resource") == "chain_color");
+        // One image, so each element waits on the one before.
+        if (element > 0)
+            CHECK(lp1bContains(task.at("after"), "mips/" + std::to_string(element - 1) + "/filter"));
+    }
+    CHECK(std::none_of(config.at("compute_tasks").begin(), config.at("compute_tasks").end(),
+                       [](const Json &task) { return task.value("name", std::string{}) == "mips/4/filter"; }));
+    REQUIRE(composed.graph_loops.size() == 1);
+    CHECK(composed.graph_loops.front().count == 4);
+}
+
+TEST_CASE("LP-1b a loop body's value nodes run once per element",
+          "[render-feature][graph-composition][lp1b]") {
+    using Json = nlohmann::json;
+    // `double` adds the loop's `gain` to itself and uploads it to a buffer of
+    // its own; a compute pass reads the buffer.
+    const Json body{{"nodes", Json::array({
+        {{"id", "gain"}, {"op", "graph.input"}},
+        {{"id", "twice"}, {"op", "value.add"},
+         {"inputs", {{"a", {{"node", "gain"}, {"port", "value"}}}, {"b", {{"node", "gain"}, {"port", "value"}}}}},
+         {"outputs", {"value"}}},
+        {{"id", "uniform"}, {"op", "render.buffer"}, {"parameters", {{"element", "float"}}},
+         {"inputs", {{"value", {{"node", "twice"}, {"port", "value"}}}}}, {"outputs", {"resource"}}}})},
+        {"outputs", {{"doubled", {{"node", "twice"}, {"port", "value"}}}}}};
+    auto parameters = lp1aRange(3, "double");
+    parameters["carry"] = Json::array({{{"from", "doubled"}, {"to", "gain"}}});
+    const Json document{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", {{"double", body}}},
+        {"nodes", Json::array({
+            {{"id", "start"}, {"op", "value.constant"}, {"parameters", {{"value", 1.0}}}, {"outputs", {"value"}}},
+            lp1aLoop("steps", parameters, {{"gain", {{"node", "start"}, {"port", "value"}}}}, Json::array({"doubled", "doubled[]"})),
+            {{"id", "last"}, {"op", "value.add"},
+             {"inputs", {{"a", {{"node", "steps"}, {"port", "doubled"}}},
+                         {"b", {{"node", "steps"}, {"port", "doubled[]"}, {"element", 0}}}}},
+             {"outputs", {"value"}}}})},
+        {"outputs", Json::object()}};
+    const auto values = partitionGraphDocument(document).values;
+    std::map<std::string, Json> nodes;
+    for (const auto &node : values.nodes) nodes.emplace(node.at("id").get<std::string>(), node);
+    // The template is gone; each element has its own node and upload, and
+    // each reads the element before it.
+    for (const auto &[id, node] : nodes) CHECK(id.find("/$") == std::string::npos);
+    CHECK(nodes.at("steps/0/twice").at("inputs").at("a") == Json{{"node", "start"}, {"port", "value"}});
+    CHECK(nodes.at("steps/1/twice").at("inputs").at("a") == Json{{"node", "steps/0/twice"}, {"port", "value"}});
+    CHECK(nodes.at("steps/2/twice").at("inputs").at("b") == Json{{"node", "steps/1/twice"}, {"port", "value"}});
+    for (int element = 0; element < 3; ++element) {
+        const auto upload = "$upload/steps/" + std::to_string(element) + "/uniform";
+        REQUIRE(nodes.contains(upload));
+        CHECK(nodes.at(upload).at("parameters").at("target") == "steps/" + std::to_string(element) + "/uniform");
+        CHECK(nodes.at(upload).at("inputs").at("value") ==
+              Json{{"node", "steps/" + std::to_string(element) + "/twice"}, {"port", "value"}});
+    }
+    // `p` is the last element's, `p[]` the named one's.
+    CHECK(nodes.at("last").at("inputs").at("a") == Json{{"node", "steps/2/twice"}, {"port", "value"}});
+    CHECK(nodes.at("last").at("inputs").at("b") == Json{{"node", "steps/0/twice"}, {"port", "value"}});
+
+    SECTION("a count only the composed targets know is refused for a body with values") {
+        auto counted = document;
+        counted["nodes"][1]["parameters"]["over"]["range"]["count"] = {{"$expr", "mip_levels_of(\"lit_color\")"}};
+        const auto [code, fields] = lp1aEditRefusal(counted);
+        CHECK(code == "graph.loop_expression_invalid@1");
+        CHECK(fields == Json{{"node", "steps"}, {"pointer", "/nodes/1/parameters/over/range/count"}, {"reason", "not_static"}});
+    }
 }
 
 } // namespace Pelican

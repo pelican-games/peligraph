@@ -1,5 +1,6 @@
 #include "graphcomposition.hpp"
 #include "featurecompose.hpp"
+#include "graphloopexpression.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -26,20 +27,23 @@ void object(const Json &value, const char *description) {
 
 // --- graph.loop (LP-1a). The form, the tier and the elements.
 
-GraphRegistryError loopFeaturePending(const std::string &node, const char *feature) {
-    // What LP-1b adds: expressions, carry, per-iteration inputs and the
-    // per-element outputs `p[]`. Until then each is refused by name, so an
-    // author (or Studio) learns the loop is fine and the feature is not there
-    // yet, rather than reading a shape error.
-    return GraphRegistryError("graph.loop_feature_pending@1", {{"node", node}, {"feature", feature}});
+using Pointer = Json::json_pointer;
+
+// LP-1b: an expression in a place of the loop's own parameters. `scope` is
+// what it may read; a refusal names the loop and the document pointer.
+void checkLoopExpression(const std::string &node, const Json &value, GraphLoopExpressionKind kind,
+                         const GraphLoopExpressionScope &scope, const std::string &pointer) {
+    try {
+        checkGraphLoopExpression(value, kind, scope);
+    } catch (const GraphLoopExpressionError &error) {
+        throw graphLoopExpressionInvalid(node, pointer, error.reason());
+    }
 }
 
-bool isLoopExpression(const Json &value) {
-    return value.is_object() && (value.contains("$expr") || value.contains("$format"));
-}
-
-std::int64_t loopInteger(const std::string &node, const Json &value, const char *what) {
-    if (isLoopExpression(value)) throw loopFeaturePending(node, "expression");
+std::int64_t loopInteger(const std::string &node, const Json &value, const char *what, const std::string &pointer) {
+    // Only the places decision 5 lists take an expression.
+    if (isGraphLoopExpression(value))
+        throw graphLoopExpressionInvalid(node, pointer, graphLoopExpressionFieldNotAllowed);
     if (!value.is_number_integer())
         throw std::invalid_argument(std::string{"graph.loop "} + what + " must be an integer literal: " + node);
     if (value.is_number_unsigned() &&
@@ -48,7 +52,19 @@ std::int64_t loopInteger(const std::string &node, const Json &value, const char 
     return value.get<std::int64_t>();
 }
 
-GraphLoopCondition loopCondition(const std::string &node, const Json &value, const char *what) {
+// A `where` / `when` value: an integer literal, or an integer expression that
+// reads what `scope` allows.
+Json loopConditionValue(const std::string &node, const Json &value, const char *what,
+                        const GraphLoopExpressionScope &scope, const std::string &pointer) {
+    if (isGraphLoopExpression(value)) {
+        checkLoopExpression(node, value, GraphLoopExpressionKind::integer, scope, pointer);
+        return value;
+    }
+    return loopInteger(node, value, what, pointer);
+}
+
+GraphLoopCondition loopCondition(const std::string &node, const Json &value, const char *what,
+                                 const GraphLoopExpressionScope &scope, const Pointer &pointer) {
     if (!value.is_object() || value.size() != 1)
         throw std::invalid_argument(std::string{"graph.loop "} + what +
             " must be {\"element\": n}, {\"element_in\": [...]} or {\"element_not_in\": [...]}: " + node);
@@ -60,18 +76,54 @@ GraphLoopCondition loopCondition(const std::string &node, const Json &value, con
     const auto &operand = first.value();
     if (key == "element") {
         condition.kind = GraphLoopCondition::Kind::element;
-        condition.values.push_back(loopInteger(node, operand, what));
+        const auto at = (pointer / key).to_string();
+        condition.values.push_back(loopConditionValue(node, operand, what, scope, at));
+        condition.pointers.push_back(at);
         return condition;
     }
     if (key != "element_in" && key != "element_not_in")
         throw std::invalid_argument(std::string{"graph.loop "} + what + " does not know the test " + key + ": " + node);
     condition.kind = key == "element_in" ? GraphLoopCondition::Kind::element_in
                                          : GraphLoopCondition::Kind::element_not_in;
-    if (isLoopExpression(operand)) throw loopFeaturePending(node, "expression");
+    if (isGraphLoopExpression(operand))
+        throw graphLoopExpressionInvalid(node, (pointer / key).to_string(), graphLoopExpressionFieldNotAllowed);
     if (!operand.is_array())
         throw std::invalid_argument(std::string{"graph.loop "} + what + " " + key + " must be an array: " + node);
-    for (const auto &entry : operand) condition.values.push_back(loopInteger(node, entry, what));
+    for (std::size_t index = 0; index < operand.size(); ++index) {
+        const auto at = (pointer / key / index).to_string();
+        condition.values.push_back(loopConditionValue(node, operand.at(index), what, scope, at));
+        condition.pointers.push_back(at);
+    }
     return condition;
+}
+
+// One value of a condition, for one element.
+std::int64_t loopConditionOperand(const std::string &node, const GraphLoopCondition &condition, std::size_t index,
+                                  const GraphLoopExpressionValues &values, const GraphLoopConstants &constants) {
+    const auto &value = condition.values.at(index);
+    if (!isGraphLoopExpression(value)) return value.get<std::int64_t>();
+    try {
+        return evaluateGraphLoopExpression(value, GraphLoopExpressionKind::integer, values, constants).get<std::int64_t>();
+    } catch (const GraphLoopExpressionError &error) {
+        throw graphLoopExpressionInvalid(node, condition.pointers.at(index), error.reason());
+    }
+}
+
+bool loopConditionMatches(const std::string &node, const GraphLoopCondition &condition,
+                          const GraphLoopExpressionValues &values, const GraphLoopConstants &constants) {
+    const auto element = *values.element;
+    const auto any = [&] {
+        for (std::size_t index = 0; index < condition.values.size(); ++index)
+            if (loopConditionOperand(node, condition, index, values, constants) == element) return true;
+        return false;
+    };
+    switch (condition.kind) {
+    case GraphLoopCondition::Kind::always: return true;
+    case GraphLoopCondition::Kind::element:
+    case GraphLoopCondition::Kind::element_in: return any();
+    case GraphLoopCondition::Kind::element_not_in: return !any();
+    }
+    return false;
 }
 
 std::vector<std::string> loopNames(const std::string &node, const Json &parameters, const char *key) {
@@ -89,24 +141,16 @@ std::vector<std::string> loopNames(const std::string &node, const Json &paramete
 }
 } // namespace
 
-bool GraphLoopCondition::matches(std::int64_t element) const {
-    switch (kind) {
-    case Kind::always: return true;
-    case Kind::element: return element == values.front();
-    case Kind::element_in: return std::find(values.begin(), values.end(), element) != values.end();
-    case Kind::element_not_in: return std::find(values.begin(), values.end(), element) == values.end();
-    }
-    return false;
-}
-
 std::string graphLoopTierName(GraphLoopTier tier) {
     return tier == GraphLoopTier::expand ? "expand" : "draw_loop";
 }
 
-GraphLoopShape parseGraphLoopShape(const Json &node) {
+GraphLoopShape parseGraphLoopShape(const Json &node, const std::string &pointer) {
     GraphLoopShape shape;
     shape.node = identifier(node.at("id"));
+    shape.pointer = pointer;
     const auto &id = shape.node;
+    const auto parameters_pointer = Pointer{pointer} / "parameters";
     const auto found = node.find("parameters");
     if (found == node.end() || !found->is_object())
         throw std::invalid_argument("graph.loop requires a parameters object: " + id);
@@ -129,12 +173,18 @@ GraphLoopShape parseGraphLoopShape(const Json &node) {
         if (!declaration.is_object() || declaration.size() != 1 || !declaration.contains("count"))
             throw std::invalid_argument("graph.loop range takes exactly {\"count\": n}: " + id);
         const auto &count = declaration.at("count");
-        if (count.is_object() && count.contains("node") && count.contains("port") && !isLoopExpression(count)) {
+        const auto count_pointer = (parameters_pointer / "over" / "range" / "count").to_string();
+        if (count.is_object() && count.contains("node") && count.contains("port") && !isGraphLoopExpression(count)) {
             // A count read from the graph's values changes per frame: the
             // expand stage cannot build it when the graph is recompiled.
             shape.per_frame_count = true;
+        } else if (isGraphLoopExpression(count)) {
+            // LP-1b: composition-time constants only; the elements do not
+            // exist yet, so neither does any variable.
+            checkLoopExpression(id, count, GraphLoopExpressionKind::integer, {}, count_pointer);
+            shape.range_count_expression = count;
         } else {
-            shape.range_count = loopInteger(id, count, "range count");
+            shape.range_count = loopInteger(id, count, "range count", count_pointer);
             if (shape.range_count < 0 || shape.range_count > graphLoopRangeCountBound)
                 throw std::invalid_argument("graph.loop range count must be 0.." +
                                             std::to_string(graphLoopRangeCountBound) + ": " + id);
@@ -146,8 +196,10 @@ GraphLoopShape parseGraphLoopShape(const Json &node) {
     } else {
         shape.set = GraphLoopSet::unknown;
     }
+    // `where` runs before the order: it sees the element and nothing the order
+    // or the limit decides.
     if (const auto where = parameters.find("where"); where != parameters.end())
-        shape.where = loopCondition(id, *where, "where");
+        shape.where = loopCondition(id, *where, "where", {true, false, false}, parameters_pointer / "where");
     if (const auto order = parameters.find("order"); order != parameters.end()) {
         const auto refused = [&] {
             return GraphRegistryError("graph.loop_order_unsupported@1", {{"node", id}, {"order", *order}});
@@ -162,7 +214,7 @@ GraphLoopShape parseGraphLoopShape(const Json &node) {
         shape.descending = direction == "descending";
     }
     if (const auto limit = parameters.find("limit"); limit != parameters.end()) {
-        shape.limit = loopInteger(id, *limit, "limit");
+        shape.limit = loopInteger(id, *limit, "limit", (parameters_pointer / "limit").to_string());
         if (*shape.limit < 0) throw std::invalid_argument("graph.loop limit must not be negative: " + id);
     }
     // branches: tested top to bottom; the last is the else.
@@ -180,7 +232,8 @@ GraphLoopShape parseGraphLoopShape(const Json &node) {
         }
         GraphLoopBranch branch;
         if (const auto when = entry.find("when"); when != entry.end())
-            branch.when = loopCondition(id, *when, "when");
+            branch.when = loopCondition(id, *when, "when", {true, true, true},
+                                        parameters_pointer / "branches" / index / "when");
         else if (index + 1 != branches->size())
             throw std::invalid_argument("graph.loop: only the last branch may omit when: " + id);
         if (!entry.at("body").is_null()) branch.body = identifier(entry.at("body"));
@@ -190,7 +243,20 @@ GraphLoopShape parseGraphLoopShape(const Json &node) {
         throw GraphRegistryError("graph.loop_branch_else_missing@1", {{"node", id}});
     if (const auto carry = parameters.find("carry"); carry != parameters.end()) {
         if (!carry->is_array()) throw std::invalid_argument("graph.loop carry must be an array: " + id);
-        if (!carry->empty()) throw loopFeaturePending(id, "carry");
+        std::set<std::string> targets;
+        for (const auto &entry : *carry) {
+            const auto name = [&](const char *key) {
+                const auto found = entry.is_object() ? entry.find(key) : entry.end();
+                if (!entry.is_object() || entry.size() != 2 || found == entry.end() || !found->is_string() ||
+                    found->get_ref<const std::string &>().empty())
+                    throw std::invalid_argument("graph.loop carry entries are {\"from\": <output>, \"to\": <input>}: " + id);
+                return found->get<std::string>();
+            };
+            GraphLoopCarry pair{name("from"), name("to")};
+            if (!targets.insert(pair.to).second)
+                throw std::invalid_argument("graph.loop carries into " + pair.to + " twice: " + id);
+            shape.carry.push_back(std::move(pair));
+        }
     }
     if (const auto tier = parameters.find("tier"); tier != parameters.end()) {
         if (*tier == "expand") shape.tier = GraphLoopTier::expand;
@@ -244,22 +310,52 @@ GraphLoopTier classifyGraphLoopTier(const GraphLoopShape &shape,
     return actual;
 }
 
-std::vector<GraphLoopElement> graphLoopElements(const GraphLoopShape &shape, std::int64_t count) {
+std::int64_t graphLoopCount(const GraphLoopShape &shape, const GraphLoopConstants &constants) {
+    if (!shape.range_count_expression) return shape.range_count;
+    std::int64_t count = 0;
+    const auto pointer = (Pointer{shape.pointer} / "parameters" / "over" / "range" / "count").to_string();
+    try {
+        count = evaluateGraphLoopExpression(*shape.range_count_expression, GraphLoopExpressionKind::integer, {},
+                                            constants).get<std::int64_t>();
+    } catch (const GraphLoopExpressionError &error) {
+        throw graphLoopExpressionInvalid(shape.node, pointer, error.reason());
+    }
+    // A range of negative length is empty. One past the bound would only make
+    // the resolution walk it before the iteration limit refuses it.
+    if (count > graphLoopRangeCountBound)
+        throw graphLoopExpressionInvalid(shape.node, pointer, graphLoopExpressionOverflow);
+    return (std::max)(count, std::int64_t{0});
+}
+
+std::vector<GraphLoopElement> graphLoopElements(const GraphLoopShape &shape, std::int64_t count,
+                                                const GraphLoopConstants &constants) {
     std::vector<GraphLoopElement> elements;
     for (std::int64_t step = 0; step < count; ++step) {
         const auto element = shape.descending ? count - 1 - step : step;
-        if (!shape.where.matches(element)) continue;
+        if (!loopConditionMatches(shape.node, shape.where, {element, std::nullopt, std::nullopt}, constants)) continue;
         if (shape.limit && static_cast<std::int64_t>(elements.size()) >= *shape.limit) break;
-        GraphLoopElement entry{element, elements.size(), 0};
-        const auto branch = std::find_if(shape.branches.begin(), shape.branches.end(),
-            [&](const GraphLoopBranch &candidate) { return candidate.when.matches(element); });
-        entry.branch = static_cast<std::size_t>(branch - shape.branches.begin());
-        elements.push_back(entry);
+        elements.push_back({element, elements.size(), 0});
     }
     if (elements.size() > graphLoopIterationLimit)
         throw GraphRegistryError("graph.loop_expansion_limit@1",
             {{"node", shape.node}, {"count", elements.size()}, {"limit", graphLoopIterationLimit}});
+    // A branch's `when` sees where the element landed and how many there are.
+    const auto total = static_cast<std::int64_t>(elements.size());
+    for (auto &entry : elements) {
+        const GraphLoopExpressionValues values{entry.element, static_cast<std::int64_t>(entry.index), total};
+        const auto branch = std::find_if(shape.branches.begin(), shape.branches.end(),
+            [&](const GraphLoopBranch &candidate) {
+                return loopConditionMatches(shape.node, candidate.when, values, constants);
+            });
+        entry.branch = static_cast<std::size_t>(branch - shape.branches.begin());
+    }
     return elements;
+}
+
+GraphRegistryError graphLoopExpressionInvalid(const std::string &node, const std::string &pointer,
+                                              std::string_view reason) {
+    return GraphRegistryError("graph.loop_expression_invalid@1",
+                              {{"node", node}, {"pointer", pointer}, {"reason", std::string{reason}}});
 }
 
 namespace {
@@ -334,6 +430,61 @@ void scopeLocalOrder(Json &node, const std::map<std::string, const Json *> &loca
     }
 }
 
+// LP-1b, decision 5: the places of a body node that take an expression, and
+// of which kind. `path` is the member path from the node (`parameters/...`).
+std::optional<GraphLoopExpressionKind> bodyExpressionPlace(const std::string &op, const std::vector<std::string> &path) {
+    if (!op.starts_with("render.") || path.size() < 2 || path[0] != "parameters") return std::nullopt;
+    if (path.size() == 2 && path[1] == "extent_scale") return GraphLoopExpressionKind::real;
+    if (path.size() == 3 && path[1] == "view_select") return GraphLoopExpressionKind::integer;
+    if (path.size() == 4 && path[1] == "shader" && path[2] == "defines") return GraphLoopExpressionKind::format;
+    if (path.size() == 5 && path[1] == "ports" && path[3] == "subresource" && (path[4] == "mip" || path[4] == "layer"))
+        return GraphLoopExpressionKind::integer;
+    return std::nullopt;
+}
+
+// Every expression in a node's parameters is checked where it stands: in a
+// loop body at a listed place it may read element, index and count;
+// anywhere else -- outside a loop body, or at a place the list does not name
+// -- it is field_not_allowed. A checked expression keeps its document pointer
+// as `$pointer` in the expansion, so a refusal when it is evaluated per
+// element points at what the author wrote.
+void checkNodeExpressions(Json &node, const std::string &id, const Pointer &node_pointer, bool in_loop_body) {
+    const auto parameters = node.find("parameters");
+    if (parameters == node.end()) return;
+    const auto op = node.value("op", std::string{});
+    std::vector<std::string> path{"parameters"};
+    std::function<void(Json &)> walk = [&](Json &value) {
+        if (isGraphLoopExpression(value)) {
+            auto at = node_pointer;
+            for (const auto &token : path) at /= token;
+            const auto pointer = at.to_string();
+            const auto kind = in_loop_body ? bodyExpressionPlace(op, path) : std::nullopt;
+            if (!kind) throw graphLoopExpressionInvalid(id, pointer, graphLoopExpressionFieldNotAllowed);
+            try {
+                checkGraphLoopExpression(value, *kind, {true, true, true});
+            } catch (const GraphLoopExpressionError &error) {
+                throw graphLoopExpressionInvalid(id, pointer, error.reason());
+            }
+            value["$pointer"] = pointer;
+            return;
+        }
+        if (value.is_object()) {
+            for (auto member = value.begin(); member != value.end(); ++member) {
+                path.push_back(member.key());
+                walk(member.value());
+                path.pop_back();
+            }
+        } else if (value.is_array()) {
+            for (std::size_t index = 0; index < value.size(); ++index) {
+                path.push_back(std::to_string(index));
+                walk(value.at(index));
+                path.pop_back();
+            }
+        }
+    };
+    walk(*parameters);
+}
+
 class Expander {
     const Json &definitions;
     std::set<std::string> active_definitions;
@@ -356,10 +507,16 @@ class Expander {
         if (!nodes.is_array()) throw std::invalid_argument("graph nodes must be an array");
         std::map<std::string, const Json *> local;
         std::set<std::string> inputs;
-        for (const auto &node : nodes) {
+        // Where each node stands in the authoring document (LP-1b: the
+        // pointers of expression refusals).
+        std::map<std::string, Pointer> pointers;
+        for (std::size_t index = 0; index < nodes.size(); ++index) {
+            const auto &node = nodes.at(index);
             const auto id = identifier(node.at("id"));
             if (!local.emplace(id, &node).second) throw std::invalid_argument("duplicate graph node: " + id);
             if (node.at("op") == "graph.input") inputs.insert(id);
+            pointers.emplace(id, definition.empty() ? Pointer{"/nodes"} / index
+                                                    : Pointer{"/definitions"} / definition / "nodes" / index);
         }
         for (const auto &[input, endpoint] : arguments.items()) {
             (void)endpoint;
@@ -407,7 +564,39 @@ class Expander {
         }
         std::map<std::string, Json> instances;
         std::set<std::string> active_instances;
-        std::function<Json(const Json &)> resolve;
+        // `each`: the edge names an element, so it reads a loop's `p[]`.
+        std::function<Json(const Json &, bool each)> resolveAny;
+        const auto resolve = [&](const Json &endpoint) { return resolveAny(endpoint, false); };
+        // LP-1b: an edge into `input` of `receiver` that may name an element
+        // of a loop's `p[]` output. Its `element` variable is the receiver's
+        // element when the receiver is a loop; otherwise the edge reads a
+        // constant element.
+        const auto resolveEdge = [&](const Json &endpoint, const std::string &receiver, const std::string &input,
+                                     bool receiver_loop) -> Json {
+            if (!endpoint.is_object() || !endpoint.contains("element")) return resolve(endpoint);
+            auto plain = endpoint;
+            plain.erase("element");
+            auto resolved = resolveAny(plain, true);
+            auto element = endpoint.at("element");
+            const auto pointer = (pointers.at(receiver) / "inputs" / input / "element").to_string();
+            if (isGraphLoopExpression(element)) {
+                const GraphLoopExpressionScope scope{receiver_loop, receiver_loop, receiver_loop};
+                try {
+                    checkGraphLoopExpression(element, GraphLoopExpressionKind::integer, scope);
+                } catch (const GraphLoopExpressionError &error) {
+                    throw graphLoopExpressionInvalid(receiver, pointer, error.reason());
+                }
+                element["$pointer"] = pointer;
+            } else if (!element.is_number_integer()) {
+                throw std::invalid_argument("an edge's element is an integer or {\"$expr\": ...}: " + receiver + "." + input);
+            }
+            auto &marker = resolved[graphLoopOutputMarker];
+            marker["element"] = std::move(element);
+            marker["receiver"] = receiver;
+            marker["input"] = input;
+            marker["receiver_loop"] = receiver_loop;
+            return resolved;
+        };
         std::function<const Json &(const std::string &)> instantiate;
         instantiate = [&](const std::string &id) -> const Json & {
             if (instances.contains(id)) return instances.at(id);
@@ -428,7 +617,8 @@ class Expander {
             Json bound = Json::object();
             const auto authored_inputs = node.value("inputs", Json::object());
             object(authored_inputs, "instance inputs must be an object");
-            for (const auto &[port, endpoint] : authored_inputs.items()) bound[port] = resolve(endpoint);
+            for (const auto &[port, endpoint] : authored_inputs.items())
+                bound[port] = resolveEdge(endpoint, id, port, false);
             if (!active_definitions.insert(ref).second) throw std::invalid_argument("recursive graph definition: " + ref);
             auto outputs = scope(definitions.at(ref), path + id + "/", ref, bound,
                                  node.value("parameters", Json::object()));
@@ -447,16 +637,22 @@ class Expander {
             if (loop_outputs.contains(id)) return loop_outputs.at(id);
             if (!active_loops.insert(id).second) throw std::invalid_argument("cyclic subgraph connection: " + id);
             const auto &node = *local.at(id);
-            auto shape = parseGraphLoopShape(node);
-            // Every input reaches every element with the same value.
-            // LP-1b: an edge with `element` reads a different value per element.
+            auto shape = parseGraphLoopShape(node, pointers.at(id).to_string());
+            // Every input reaches every element with the same value, but for
+            // two (LP-1b): an edge with `element` reads one element of another
+            // loop's `p[]` per element, and a carried input reads the loop's
+            // edge in the first element only.
+            std::set<std::string> carried;
+            for (const auto &pair : shape.carry) carried.insert(pair.to);
             Json bound = Json::object();
             const auto authored_inputs = node.value("inputs", Json::object());
             object(authored_inputs, "graph.loop inputs must be an object");
             for (const auto &[port, endpoint] : authored_inputs.items()) {
                 object(endpoint, "graph.loop input must be an endpoint object");
-                if (endpoint.contains("element")) throw loopFeaturePending(id, "per_iteration_input");
-                bound[port] = resolve(endpoint);
+                if (endpoint.contains("element") && carried.contains(port))
+                    throw std::invalid_argument("a carried input takes one first value, not one per element: " +
+                                                id + "." + port);
+                bound[port] = resolveEdge(endpoint, id, port, true);
             }
             std::vector<GraphLoopBodyTraits> traits;
             std::optional<std::size_t> reference;
@@ -484,7 +680,22 @@ class Expander {
             if (shape.placement && reference &&
                 std::none_of(traits.begin(), traits.end(), [](const auto &body) { return body.graphics; }))
                 throw GraphRegistryError("graph.insert_on_compute@1", {{"node", id}});
-            GraphLoopExpansion expansion{shape, {}};
+            // LP-1b: a carry names a body output and a body input, and the
+            // input's first value is the loop's edge. The types are compared
+            // when the ports are (validateGraphPorts).
+            for (const auto &pair : shape.carry) {
+                if (reference && !boundary.outputs.contains(pair.from))
+                    throw std::invalid_argument("graph.loop carries from " + pair.from +
+                                                ", which its body does not output: " + id);
+                if (reference && !boundary.inputs.contains(pair.to))
+                    throw std::invalid_argument("graph.loop carries into " + pair.to +
+                                                ", which its body does not take: " + id);
+                if (!bound.contains(pair.to))
+                    throw std::invalid_argument("graph.loop carries into " + pair.to +
+                                                ", which has no input edge for its first element: " + id);
+                bound[pair.to][graphLoopCarryMarker] = Json{{"loop", id}, {"input", pair.to}};
+            }
+            GraphLoopExpansion expansion{shape, {}, bound};
             for (std::size_t branch = 0; branch < shape.branches.size(); ++branch) {
                 const auto &body = shape.branches[branch].body;
                 if (!body) {
@@ -497,31 +708,45 @@ class Expander {
                 expansion.branches.emplace_back(GraphLoopBodyTemplate{*body, prefix, std::move(outputs)});
             }
             // The outputs the loop declares are what other nodes may read:
-            // `p`, the value of the last element that has a body.
+            // `p`, the value of the last element that has a body, and (LP-1b)
+            // `p[]`, each element's, read one element at a time.
             const auto declared = node.value("outputs", Json::array());
             if (!declared.is_array()) throw std::invalid_argument("graph.loop outputs must be an array: " + id);
             Json exposed = Json::object();
             for (const auto &entry : declared) {
                 if (!entry.is_string()) throw std::invalid_argument("graph.loop outputs must be port names: " + id);
                 const auto port = entry.get<std::string>();
-                // LP-1b: `p[]`, one value per element.
-                if (port.ends_with("[]")) throw loopFeaturePending(id, "element_output");
-                if (!reference || !boundary.outputs.contains(port))
+                const bool each = port.ends_with("[]");
+                const auto base = each ? port.substr(0, port.size() - 2) : port;
+                if (!reference || !boundary.outputs.contains(base))
                     throw std::invalid_argument("unknown graph loop output: " + id + "." + port);
-                auto endpoint = expansion.branches.at(*reference)->outputs.at(port);
-                endpoint[graphLoopOutputMarker] = Json{{"loop", id}, {"port", port}};
+                auto endpoint = expansion.branches.at(*reference)->outputs.at(base);
+                // An output that passes a carried input through is the loop's
+                // value to its readers, not a carry of theirs.
+                endpoint.erase(graphLoopCarryMarker);
+                Json marker{{"loop", id}, {"port", base}};
+                if (each) marker["element"] = nullptr;
+                endpoint[graphLoopOutputMarker] = std::move(marker);
                 exposed[port] = std::move(endpoint);
             }
             result.loops.insert_or_assign(id, std::move(expansion));
             active_loops.erase(id);
             return loop_outputs.emplace(id, std::move(exposed)).first->second;
         };
-        resolve = [&](const Json &endpoint) -> Json {
+        resolveAny = [&](const Json &endpoint, bool each) -> Json {
+            if (endpoint.is_object() && endpoint.contains("element"))
+                throw std::invalid_argument("only an edge into a node names an element");
             const auto id = identifier(endpoint.at("node"));
             const auto port = identifier(endpoint.at("port"));
             const auto found = local.find(id);
             if (found == local.end()) throw std::invalid_argument("unknown graph source: " + id);
             const auto &node = *found->second;
+            // A loop's `p[]` is read one element at a time, and an element is
+            // named only of a `p[]`.
+            if (each != (node.at("op") == "graph.loop" && port.ends_with("[]")))
+                throw std::invalid_argument(each
+                    ? "an edge names an element only of a graph.loop's p[] output: " + id + "." + port
+                    : "a graph.loop's p[] output is read one element at a time; the edge names it: " + id + "." + port);
             if (node.at("op") == "graph.input") {
                 if (port != "value") throw std::invalid_argument("graph input output port must be value");
                 return arguments.contains(id) ? arguments.at(id)
@@ -563,10 +788,12 @@ class Expander {
             auto expanded = *node;
             expanded["id"] = path + id;
             if (!path.empty()) scopeLocalOrder(expanded, local, path);
+            checkNodeExpressions(expanded, id, pointers.at(id), loop != nullptr);
             const auto authored_inputs = node->value("inputs", Json::object());
             object(authored_inputs, "node inputs must be an object");
             expanded["inputs"] = Json::object();
-            for (const auto &[port, endpoint] : authored_inputs.items()) expanded["inputs"][port] = resolve(endpoint);
+            for (const auto &[port, endpoint] : authored_inputs.items())
+                expanded["inputs"][port] = resolveEdge(endpoint, id, port, false);
             result.nodes.push_back(std::move(expanded));
             result.origins.emplace(path + id, origin(id));
         }
@@ -835,6 +1062,23 @@ std::map<std::string, LogicalType> validateGraphPorts(
             if (input.required && !inputs.contains(port))
                 throw std::invalid_argument("unconnected graph input: " + id + "." + port);
     }
+    // LP-1b: a carried input is read as the loop's edge in the first element
+    // and as `from` in every later one, so the two are the same type. A
+    // partition of the document (rendering, values) holds only its own
+    // nodes; a carry whose ends are elsewhere is compared there.
+    for (const auto &[loop, expansion] : graph.loops)
+        for (const auto &pair : expansion.shape.carry) {
+            const auto first = expansion.inputs.find(pair.to);
+            if (first == expansion.inputs.end() || !nodes.contains(first->at("node").get<std::string>())) continue;
+            for (const auto &branch : expansion.branches) {
+                if (!branch || !branch->outputs.contains(pair.from)) continue;
+                const auto &from = branch->outputs.at(pair.from);
+                if (!nodes.contains(from.at("node").get<std::string>())) continue;
+                if (!(sourceType(from) == sourceType(*first)))
+                    throw GraphRegistryError("graph.loop_carry_type_mismatch@1",
+                        {{"node", loop}, {"from", pair.from}, {"to", pair.to}});
+            }
+        }
     std::map<std::string, LogicalType> outputs;
     for (const auto &[port, endpoint] : graph.outputs.items()) outputs.emplace(port, sourceType(endpoint));
     return outputs;
@@ -1671,8 +1915,11 @@ void applyOperation(Json &candidate, const Json &operation, const std::string &k
                 }
             } else {
                 object(source, "set_input source must be an object or null");
-                if (source.size() != 2 || !source.contains("node") || !source.contains("port"))
-                    throw std::invalid_argument("set_input source requires exactly node and port");
+                // LP-1b: an edge may name one element of a loop's `p[]`; the
+                // expansion checks what it names and its expression.
+                if (source.size() != (source.contains("element") ? 3u : 2u) || !source.contains("node") ||
+                    !source.contains("port"))
+                    throw std::invalid_argument("set_input source requires node and port, and at most element");
                 (void)identifier(source.at("node"));
                 (void)identifier(source.at("port"));
                 node["inputs"][port] = source;

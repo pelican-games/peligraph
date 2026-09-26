@@ -8,6 +8,7 @@ add_library(pelican_project
     frameresolutionwire.cpp
     graphvariantpolicy.cpp
     graphcomposition.cpp
+    graphloopexpression.cpp
     graphmodule.cpp
     graphpartition.cpp
     rendergraphcomposition.cpp

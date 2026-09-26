@@ -307,6 +307,14 @@ carry の型が合わなければ、`graph.loop_carry_type_mismatch@1` で断る
 - 実数の `pow` は持たない。有理数で計算し、最後に 1 回だけ実数にする(浮動小数の丸めを platform に依存させない)。
 - 0 除算・overflow・長さの超過(256 字)・入れ子の超過(16 段)は、`graph.loop_expression_invalid@1` で断る。
 
+**確定した文法と置き場所(LP-1b)**
+
+- BNF は `src/project/graphloopexpression.hpp` の冒頭が正本。`$format` の `{…}` の中は整数式(`{{` `}}` は波括弧)。
+- 式はループの body の中でだけ書ける(root の node や instance の definition では、許可リストの場所でも `field_not_allowed`)。
+- `when` は `element` / `index` / `count`、`where` は `element` だけ、`range.count` は組み直し時の定数だけ。edge の `element` は、受け手がループならその要素、そうでなければ定数だけ。
+- body に value node があるループは、値の partition が合成と別に評価されるため、count / where / when が合成の前に決まらなければならない(決まらなければ `not_static`)。
+- `set_input` の `source` は `{node, port, element?}` を受ける(Studio が回ごとの入力を張るため)。
+
 **組み直し時の定数**
 
 - `mip_levels_of("<target>")`、`layers_of("<target>")` など。
@@ -658,12 +666,12 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `graph.loop_branch_else_missing@1` | 編集・読み込み | `{node}` |
 | `graph.loop_branch_interface@1` | 編集・読み込み | `{node, branch, definition, port}` |
 | `graph.loop_nested@1` | 編集・読み込み | `{node, definition}`(body の definition に `graph.loop` がある。`graph.instance` がある body は `graph.loop_tier_unsupported@1` の `nested`。LP-1a) |
-| `graph.loop_feature_pending@1` | 編集・読み込み | `{node, feature}`(`carry` / `expression` / `per_iteration_input` / `element_output`。LP-1b が入るまでの拒否。LP-1a) |
+| `graph.loop_feature_pending@1` | —(予約。LP-1b の後は出ない) | `{node, feature}` |
 | `graph.loop_tier_unsupported@1` | 編集・組み直し | `{node, reason}` |
 | `graph.loop_tier_mismatch@1` | 組み直し | `{node, tier, actual}` |
 | `graph.loop_order_unsupported@1` | 編集・読み込み | `{node, order}` |
 | `graph.loop_expression_invalid@1` | 編集・読み込み・組み直し | `{node, pointer, reason}`(`syntax` / `unknown_variable` / `not_integer` / `not_static` / `division_by_zero` / `overflow` / `too_long` / `field_not_allowed`) |
-| `graph.loop_carry_type_mismatch@1` | 組み直し | `{node, from, to}` |
+| `graph.loop_carry_type_mismatch@1` | 編集・読み込み(型は形の段で分かる。LP-1b) | `{node, from, to}` |
 | `graph.loop_element_unknown@1` | 組み直し | `{node, port, element}` |
 | `graph.loop_output_empty@1` | 組み直し | `{node, port}` |
 | `graph.loop_expansion_limit@1` | 組み直し | `{node, count, limit}` |
@@ -703,6 +711,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 
 **message と pointer の表**
 
+- 組み直しで、ループの回ごとの node(`<loop>/<element>/<node>`)が名前付きで断られたときは、error_fields に `loop_origin: {loop, element, node}` が付く(LP-1b)。`graph.loop_expression_invalid@1` の `pointer` は常に authoring 文書の JSON pointer。
 - 各 code の JSON pointer と message の形は、実装の WP の報告で表にし、manual に載せる。
 
 ## 11. WP の分け方

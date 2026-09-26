@@ -15134,4 +15134,134 @@ TEST_CASE("LP-1a a graph.loop draws one copy per element, in element order where
 #endif
 }
 
+// LP-1b: a graph.loop whose elements hand their image on (carry). `seed`
+// clears an image; each of `chain`'s four elements samples what the element
+// before it drew (the seed for the first), adds STEP * 16/255 to red and draws
+// that into an image of its own, half the size of the one before. STEP comes
+// from the element's `$format` define (element + 1), the size from its
+// `$expr` extent_scale (1 / 2^(element + 1)). So element e holds
+// 16 * (1 + ... + (e + 1)) in red only if every element ran once, in order,
+// on its predecessor's output, with its own define.
+TEST_CASE("LP-1b a carried chain draws each element over the one before, with its own define and size",
+          "[headless][gpu][lp1b][graph-loop]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(temp_dir / "assets.json",
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
+        using Json = nlohmann::json;
+        const Json type{{"semantic", "pelican.render.color_signal@1"},
+            {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+        const Json color{{"kind", "image"}, {"type", type}, {"access", "write"},
+                         {"attachment", "color"}, {"location", 0}};
+        const Json source{{"kind", "image"}, {"type", type}, {"access", "read"},
+                          {"sampling", {{"filter", "nearest"}, {"address", "clamp_to_edge"}}}};
+        const auto image = [&](const std::string &id, const Json &extent_scale) {
+            return Json{{"id", id}, {"op", "render.image"},
+                        {"parameters", {{"type", type}, {"format", "R8G8B8A8_UNORM"}, {"extent_scale", extent_scale},
+                                        {"usage", {"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"}}}},
+                        {"outputs", {"resource"}}};
+        };
+        const Json step_body{{"nodes", Json::array({
+            {{"id", "source"}, {"op", "graph.input"}},
+            image("image", {{"$expr", "1 / pow2(element + 1)"}}),
+            {{"id", "step"}, {"op", "render.fullscreen"},
+             {"parameters", {{"pass_set", "main_render"},
+                             {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "shaders/lp1b_add"},
+                                         {"defines", Json::array({{{"$format", "STEP={element + 1}"}}})}}},
+                             {"ports", {{"source", source}, {"color", color}}}}},
+             {"inputs", {{"source", {{"node", "source"}, {"port", "value"}}},
+                         {"color", {{"node", "image"}, {"port", "resource"}}}}},
+             {"outputs", {"color"}}}})},
+            {"outputs", {{"out", {{"node", "step"}, {"port", "color"}}}}}};
+        const Json document{{"schema", "pelican.graph"}, {"version", 1},
+            {"definitions", {{"step_body", step_body}}},
+            {"nodes", Json::array({
+                image("seed_image", 1.0),
+                {{"id", "seed"}, {"op", "render.fullscreen"},
+                 {"parameters", {{"pass_set", "main_render"},
+                                 {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "shaders/lp1b_zero"}}},
+                                 {"ports", {{"color", color}}}}},
+                 {"inputs", {{"color", {{"node", "seed_image"}, {"port", "resource"}}}}},
+                 {"outputs", {"color"}}},
+                {{"id", "chain"}, {"op", "graph.loop"},
+                 {"parameters", {{"over", {{"range", {{"count", 4}}}}},
+                                 {"branches", Json::array({{{"body", "step_body"}}})},
+                                 {"carry", Json::array({{{"from", "out"}, {"to", "source"}}})}}},
+                 {"inputs", {{"source", {{"node", "seed"}, {"port", "color"}}}}},
+                 {"outputs", Json::array({"out"})}}})},
+            {"outputs", Json::object()},
+            {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}}}};
+        writeTextFile(temp_dir / "hybrid.json", document.dump(2));
+        std::filesystem::create_directories(temp_dir / "shaders");
+        writeTextFile(temp_dir / "shaders" / "lp1b_add.frag", R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() {
+    vec4 below = pelican_sample_source(inUV);
+    outColor = vec4(below.r + float(STEP) * 16.0 / 255.0, 0.0, 0.0, 1.0);
+}
+)glsl");
+        writeTextFile(temp_dir / "shaders" / "lp1b_zero.frag",
+            "#version 450\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n"
+            "void main() {\n    outColor = vec4(0.0, 0.0, 0.0, 1.0);\n}\n");
+        configureRayQueryTestRuntime(temp_dir);
+
+        auto &renderer = GET_MODULE(Renderer);
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+
+        // get_frame_plan: each element reads the one before.
+        const auto plan = renderer.currentFramePlanJson();
+        REQUIRE(plan.contains("loops"));
+        CHECK(plan.at("loops").at(0).at("count") == 4);
+        std::vector<std::string> order;
+        for (const auto &node : plan.at("nodes")) {
+            const auto name = node.at("name").get<std::string>();
+            if (!name.starts_with("chain/")) continue;
+            order.push_back(name);
+            const auto element = std::stoi(name.substr(6));
+            const auto below = element == 0 ? std::string{"seed_image"}
+                                            : "chain/" + std::to_string(element - 1) + "/image";
+            INFO(name);
+            CHECK(std::find(node.at("reads").begin(), node.at("reads").end(), below) != node.at("reads").end());
+        }
+        CHECK(order == std::vector<std::string>{"chain/0/step", "chain/1/step", "chain/2/step", "chain/3/step"});
+
+        const auto seed = RendererTestAccess::readRenderTarget(renderer, "seed_image", ImageSubresourceRange{});
+        int sum = 0;
+        for (int element = 0; element < 4; ++element) {
+            sum += 16 * (element + 1);
+            const auto name = "chain/" + std::to_string(element) + "/image";
+            INFO(name);
+            const auto read = RendererTestAccess::readRenderTarget(renderer, name, ImageSubresourceRange{});
+            REQUIRE(read.format == vk::Format::eR8G8B8A8Unorm);
+            // Half the size of the element before.
+            const auto expected = static_cast<double>(seed.extent.width) / static_cast<double>(2 << element);
+            CHECK(std::abs(static_cast<double>(read.extent.width) - expected) <= 1.0);
+            std::set<std::uint8_t> reds;
+            for (std::size_t offset = 0; offset + 4 <= read.bytes.size(); offset += 4) reds.insert(read.bytes.at(offset));
+            INFO("reds " << reds.size() << " first " << static_cast<int>(*reds.begin()));
+            REQUIRE(reds.size() == 1);
+            CHECK(static_cast<int>(*reds.begin()) == sum);
+        }
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) std::filesystem::remove_all(temp_dir);
+        TestSupport::skipIfVulkanDeviceUnavailable(error, "Vulkan LP-1b graph.loop fixture unavailable");
+        throw;
+    }
+#else
+    SUCCEED("LP-1b GPU acceptance is compiler-ON only");
+#endif
+}
+
 } // namespace Pelican

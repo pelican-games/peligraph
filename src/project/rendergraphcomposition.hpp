@@ -76,8 +76,26 @@ struct RenderGraphLoopBody {
     // (family, pass) the lowering isolates in target planning.
     std::vector<std::pair<std::string, std::string>> isolated;
     // Body output port -> the resource it names: a template name, or a
-    // resource from outside the body.
+    // resource from outside the body (LP-1b: or a carried input's
+    // placeholder, graphLoopCarryResource).
     std::map<std::string, std::string> outputs;
+};
+
+// LP-1b: the placeholder a body's declarations name a carried input `to` by.
+// Each copy replaces it with the value the element receives: the loop's edge
+// for the first, the previous element's `from` for the rest.
+inline std::string graphLoopCarryResource(const std::string &loop, const std::string &to) {
+    return loop + "/$carry/" + to;
+}
+
+// LP-1b: the first value of a carried input.
+struct RenderGraphLoopCarriedInput {
+    // The resource the loop's edge names.
+    std::string resource;
+    // Set when the edge reads another loop's output `port`: `resource` is then
+    // that loop's template name, and the value is its last element's.
+    std::string loop;
+    std::string port;
 };
 
 // Where a loop with no insert lands in one pass family: right after (or,
@@ -96,17 +114,31 @@ struct RenderGraphLoop {
     std::vector<std::optional<RenderGraphLoopBody>> branches;
     // By pass family; a family missing here is appended to.
     std::map<std::string, RenderGraphLoopPosition> positions;
+    // LP-1b: by `to`, the carried inputs whose values are render resources.
+    std::map<std::string, RenderGraphLoopCarriedInput> carried;
 };
 
 // A graph pass or task -- or a node of another loop's body template -- that
 // reads a loop's output `port`. The lowering spelled the resource the way the
 // first non-null branch's template names it; the resolution stage re-points
 // it at the last element's copy and orders the reader after that copy.
+// LP-1b: a read of one element of `p[]` carries the edge's `element` (an
+// integer, or an expression object with its `$pointer`) and names the
+// resource by a placeholder of its own (`<loop>/$element/<receiver>/<input>`),
+// which each consumer -- each copy, when the consumer is in a loop body --
+// replaces with the element's copy.
 struct RenderGraphLoopOutputRead {
     std::string consumer;
     std::string loop;
     std::string port;
     std::string resource;
+    // Null for `p`.
+    nlohmann::json element;
+    // The node and input port the edge enters, and whether that node is a
+    // graph.loop (whose element the expression reads).
+    std::string receiver;
+    std::string input;
+    bool receiver_loop = false;
 };
 
 // What the lowering leaves for the stage that runs after composition. The
@@ -169,7 +201,9 @@ nlohmann::json lowerRenderGraphDocument(const nlohmann::json &document,
 // places every run of graph passes at its anchor (LP-0b,
 // placeRenderGraphPassRun). A run may name a pass another run places.
 // LP-1a then expands every graph.loop (expandRenderGraphLoops below) and
-// returns what it expanded. Later stages add their work here, on the same
+// returns what it expanded. LP-1b: a refusal there whose `node` is one
+// element's copy of a body node (`<loop>/<element>/<node>`) also carries
+// `loop_origin` {loop, element, node}, the frame plan's shape. Later stages add their work here, on the same
 // entry: LP-0d applies pass_replacements and drops what a variant removed.
 // A target added here without a format_class or role is given both by the
 // composer right after this returns, as every other target is.
@@ -178,27 +212,35 @@ RenderGraphLoopResolution resolveGraphDocumentAfterComposition(nlohmann::json &c
 
 // LP-1a: the expand stage (docs/design_graph_loops.md 5.1, 5.2). For each
 // loop, in dependency order:
-//   1. the elements: where -> order -> limit, each element's branch
-//      (graphLoopElements); graph.loop_expansion_limit@1 past 64 elements, or
-//      past 128 passes and tasks in the whole graph;
+//   1. the elements: the count (LP-1b: an expression is evaluated with the
+//      composed targets' mip_levels_of / layers_of), where -> order -> limit,
+//      each element's branch (graphLoopElements); graph.loop_expansion_limit@1
+//      past 64 elements, or past 128 passes and tasks in the whole graph;
 //   2. a copy of the branch body per element, every template name renamed to
-//      `<loop>/<element>/<node>`; its render.target_ref / history reads are
-//      checked under the copy's names;
+//      `<loop>/<element>/<node>`. LP-1b: every `$expr` / `$format` in it is
+//      evaluated with the element, its index and the count; a carried input
+//      becomes the value the element receives (the loop's edge first, then
+//      the previous element's `from`; an element with no body passes it on).
+//      Its render.target_ref / history reads are checked under the copy's
+//      names;
 //   3. elements that touch a resource from outside their body (a
-//      render.target_ref, a loop input, an outside image or buffer), reads
-//      included, wait on the previous such element with explicit `after`
-//      edges, in element order -- never the name order the run is sorted in;
+//      render.target_ref, a loop input, an outside image or buffer, a carried
+//      value, another loop's element), reads included, wait on the previous
+//      such element with explicit `after` edges, in element order -- never
+//      the name order the run is sorted in;
 //   4. the loop's own `after` / `before` go to every copy;
 //   5. the run is placed: at the loop's insert / canonical_anchor
 //      (placeRenderGraphPassRun), or else right before the first pass that
 //      depends on the loop, or at the end of its family;
 // then `<loop>` in any after / before becomes the loop's copies (nothing for a
-// loop with no copy), and every reader of a loop output is re-pointed at the
-// last element that has a body and ordered after it
-// (graph.loop_output_empty@1 when there is none).
-// LP-1b plugs in at step 1 (a count from an expression) and step 2 (the
-// per-element values of `$expr` / `$format`, carry, per-element inputs and
-// `p[]`); LP-Vb at step 1 (a view axis's length).
+// loop with no copy), and every reader of a loop output is re-pointed and
+// ordered after what writes it: `p` at the last element that has a body
+// (graph.loop_output_empty@1 when there is none, unless `p` is a carry's
+// `from`: then the carried value, the loop's edge when no element ran);
+// LP-1b: `p[]` at the element its edge's `element` names, evaluated per
+// receiving element (graph.loop_element_unknown@1 {node, port, element} --
+// the receiver and its input -- when no element with a body has that value).
+// LP-Vb plugs in at step 1 (a view axis's length).
 RenderGraphLoopResolution expandRenderGraphLoops(nlohmann::json &composed,
     const LoweredRenderGraphDocument &lowered);
 }
