@@ -25763,6 +25763,20 @@ transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復
 | VI-1 | 可変入力と passthrough の engine 側(2026-09-25 利用者と合意): `PELICAN_DECLARE_VARIADIC_INPUTS(first, max)`、並べ方の規則(固定が先・可変は最後に 1 組)と名前付き拒否、可変の組がある pass の buffer 番号の予約、`PELICAN_PASS_TEXTURE_INPUT_COUNT` の define、pass ごとの `shader.defines`、`engine://passthrough`、各 pass の set 1 の宣言を authoring 情報に常に載せる、宣言を消した shader の reload 挙動の実測 | §8b | Q-14f |
 | VI-2 | blank 雛形の `present` を `engine://passthrough` にする(`shaders/present.frag` を書かない)。**GUI session が持つ**(雛形とシナリオの期待値の更新を 1 本で。仕様は GUI session 側、着地の記録は GUI 列の節に) | §8b | VI-1 |
 | VI-3 | Studio のソケット(固定 ○ / 可変の長いソケット、番号でつなぐ、固定化 = shader の書き換え、宣言が消えた線を赤く、passthrough の出す入力の選択)、N-8 / F-7 の「ノードに落とすと足す」接続の撤去。GUI session が持つ | §8b | VI-1 |
+| LP-0a | 共通グラフのループの前提: `render.target_ref`(rendering 節・preset・feature の target を graph から指す)と、展開の解決の段(preset / feature の合成の後) | [design_graph_loops](design_graph_loops.md) §6 | — |
+| LP-0b | graph の pass の挿入位置(feature の `insert` と同じ意味、合成の後、展開列は鎖) | loops §6 | LP-0a |
+| LP-0c | definition の編集 op(add / remove / rename)と参照の検査の拡張 | loops §6 | — |
+| LP-0d | feature の pass の置き換え `pass_replacements` と、変種で外れる feature への依存 | loops §6 | LP-0a |
+| LP-0e | `render.shadow_depth`・`render.snapshot_copy` の graph node | loops §6 | LP-0a |
+| LP-1a | `graph.loop` の芯(形の展開 / 解決の段での展開、`range`、名前と出所、外部資源の直列化、展開名の参照の拒否、上限、報告) | loops §2・§3・§5 | LP-0a〜0c |
+| LP-1b | ループの式(`$expr` / `$format`)、`carry`・回ごとの入力・`p[]` | loops 決定 2・5 | LP-1a |
+| LP-1c | bloom / planar の分解版の出荷と一致の検査 | loops §5.3 | LP-1b、LP-0d |
+| LP-Va | view の軸と `view_select`(provider の座標、scope、scheduler) | loops §7 | — |
+| LP-Vb | `over: view_axis`、cube capture と影の cascade の分解版と一致の検査 | loops §7.3 | LP-Va、LP-1b、LP-0d、LP-0e、LP-3a |
+| LP-2 | draw_loop の engine(pipeline の差し替え、描き方の列、世代の持ち物) | loops §4.2 | — |
+| LP-3a | `render.material_pass` と `draw.*`、draw_loop の分類と受け皿の検査、一体版との一致 | loops §4 | LP-0a、LP-0b、LP-1a、LP-2 |
+| LP-3b | `decompose_material_pass` と報告 RPC(draw_loop 分) | loops §9 | LP-3a |
+| LP-4 | Studio のループ(GUI session) | loops §9 | LP-1b、LP-3b、LP-Va |
 
 着地の順(案): GP-5 → MG-2a → MG-2b → PG-1 → GP-1 →(PG-2 / MG-1 / GP-3 を並行)→ GP-4 → OL-1 → AU-1 → AU-2 → GP-2。WEB-1 は MG-2b の後、別 repo で。(着地済み: GP-5 / GP-5b / PG-1 / MG-2a / GP-1 / PG-2 / GP-3 / PG-2b / MG-2b / OL-1 / AU-1 / MG-1 / AU-2 / GP-4 / GP-2 / MG-1b / AU-3 / GP-2b / MG-3 / MG-3b)
 
