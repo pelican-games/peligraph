@@ -9,6 +9,12 @@ TEST_CASE("golden image cases match expected output",
     GoldenHarness::runGoldenImages();
 }
 
+TEST_CASE(
+    "LP-2 hybrid golden cases draw identically with today's steps spelled out",
+    "[golden][headless][lp2][draw-loop]") {
+    GoldenHarness::runDrawLoopIdentityEquivalence();
+}
+
 #if PELICAN_WITH_RPC
 TEST_CASE(
     "inspector edits unnamed parented runtime objects and changes rendered pixels",

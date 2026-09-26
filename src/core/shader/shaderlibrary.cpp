@@ -763,6 +763,89 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurface(const SurfaceFormatDocumen
 
 const ShaderBundle &ShaderLibrary::get(ShaderBundleId id) const { return bundles.get(id); }
 
+bool ShaderLibrary::runtimeCompilerAvailable() noexcept {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    return true;
+#else
+    return false;
+#endif
+}
+
+SurfaceShaderBundleIds ShaderLibrary::compileWithAdditionalDefines(
+    ShaderBundleId vertex, ShaderBundleId fragment,
+    std::span<const std::string> additional_defines) {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const auto appended = [&](std::vector<std::string> defines) {
+        for (const auto &define : additional_defines) {
+            if (std::find(defines.begin(), defines.end(), define) ==
+                defines.end()) {
+                defines.push_back(define);
+            }
+        }
+        return defines;
+    };
+    if (const auto unit = unit_by_bundle.find(fragment);
+        unit != unit_by_bundle.end()) {
+        const auto &reload = reload_units.at(unit->second);
+        if (const auto *surface =
+                std::get_if<SurfaceReloadRecipe>(&reload.recipe);
+            surface != nullptr && reload.bundle_ids.size() == 2 &&
+            reload.bundle_ids[0] == vertex &&
+            reload.bundle_ids[1] == fragment) {
+            const auto document =
+                surface->embedded_surface
+                    ? *surface->embedded_surface
+                    : parseSurfaceFormat(
+                          readBinaryFile(surface->path.string()),
+                          surface->source_name);
+            return loadFromSurface(
+                document, surface->source_name, surface->pass,
+                appended(surface->defines),
+                surface->material_output_schema);
+        }
+    }
+    const auto compile_file = [&](ShaderBundleId id) {
+        const auto &bundle = bundles.get(id);
+        if (bundle.source_path.empty() ||
+            lowerExtension(bundle.source_path) == ".spv") {
+            throw std::runtime_error(
+                "shader '" + bundle.diagnostic_uri +
+                "' has no GLSL source to compile defines into");
+        }
+        auto defines = bundle.defines;
+        auto virtual_includes = bundle.virtual_includes;
+        auto diagnostic_uri = bundle.diagnostic_uri;
+        if (const auto unit = unit_by_bundle.find(id);
+            unit != unit_by_bundle.end()) {
+            if (const auto *file = std::get_if<FileReloadRecipe>(
+                    &reload_units.at(unit->second).recipe)) {
+                defines = file->defines;
+                virtual_includes = file->virtual_includes;
+                diagnostic_uri = file->diagnostic_uri;
+            }
+        }
+        return loadFromFileForStage(
+            bundle.source_path, bundle.expected_stage,
+            appended(std::move(defines)),
+            std::move(virtual_includes), std::move(diagnostic_uri));
+    };
+    const auto compiled_vertex = compile_file(vertex);
+    try {
+        return {compiled_vertex, compile_file(fragment)};
+    } catch (...) {
+        retireRegistrations({compiled_vertex});
+        throw;
+    }
+#else
+    (void)vertex;
+    (void)fragment;
+    (void)additional_defines;
+    throw std::runtime_error(
+        "Runtime shader compiler is disabled; material defines cannot "
+        "be compiled");
+#endif
+}
+
 PreparedShaderReload
 ShaderLibrary::prepareUnits(const std::set<std::size_t> &units,
                             std::vector<watch::AssetKey> changed_keys,

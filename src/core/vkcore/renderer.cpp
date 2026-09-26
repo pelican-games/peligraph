@@ -1575,6 +1575,8 @@ struct FrameGraphExecutionRequest {
     std::span<const LogicalFrameNodeInvocation>
         authored_schedule{};
     nlohmann::json *trace_out = nullptr;
+    // LP-2: the draw-step table of the generation this frame records.
+    const MaterialDrawLoopTable *material_draw_loops = nullptr;
 };
 
 void executePlannedFrameGraph(
@@ -2587,6 +2589,8 @@ void executeRenderingPasses(
         default_snapshot.view_projection_jittered,
         views[request.view_index].first_person_view,
         per_view_sort ? request.view_index : 0u};
+    material_renderer_dependencies.draw_loops =
+        request.material_draw_loops;
     const FullscreenPassRendererDependencies fullscreen_pass_renderer_dependencies{request.modules.fullscreen_pass_container,
                                                                                   request.modules.frame_resources};
     std::optional<UiRendererDependencies> ui_renderer_dependencies;
@@ -6150,6 +6154,10 @@ void Renderer::LogicalFrameRecorder::recordOneExecution(
             .logical_view_count = logical_view_count,
             .authored_schedule = authored_schedule,
             .trace_out = node_trace_ptr,
+            .material_draw_loops =
+                runtime_generation != nullptr
+                    ? runtime_generation->material_draw_loops.get()
+                    : nullptr,
         },
         view_family_states, per_view_sort);
     if (external_depth_submission_active) {

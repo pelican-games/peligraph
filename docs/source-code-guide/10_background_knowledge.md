@@ -363,7 +363,7 @@ Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取�
 
 同じイメージでも、シェーダからの触り方によって descriptor type が変わります。読み取りサンプリングは `COMBINED_IMAGE_SAMPLER`(イメージとサンプラを 1 つの descriptor に束ねる)、計算シェーダからの書き込みは `STORAGE_IMAGE`、そしてイメージとサンプラを別々の descriptor(`SAMPLED_IMAGE` + `SAMPLER`)に分ける形の 3 通りが基本です。分離型は「同じ画像を複数のサンプラで引く」「サンプラだけ差し替える」ときに効き、bindless なテクスチャ配列とサンプラ配列を独立に組める代わりに binding が 1 本増えます。**仕様上の位置**は "Descriptor Types" 節(`VK_DESCRIPTOR_TYPE_*` の列挙)です。
 
-**使用場所**: [MaterialContainer::registerMaterial()](../../src/core/material/materialcontainer.cpp#L794)(`split_custom_samplers` のとき `eSampledImage` + `eSampler` の 2 binding へ割る) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1022)
+**使用場所**: [MaterialContainer::registerMaterial()](../../src/core/material/materialcontainer.cpp#L795)(`split_custom_samplers` のとき `eSampledImage` + `eSampler` の 2 binding へ割る) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1022)
 
 ### pNext チェーンと vulkan-hpp の StructureChain / unlink
 
@@ -445,7 +445,7 @@ TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE`
 
 GPU に投入したコマンドバッファは、対応する fence が signal されるまで「まだ実行中かもしれない」ものです。そのコマンドバッファが参照している資源(バッファ・イメージ・acceleration structure・SBT・descriptor set)は、その間は破棄も上書きもできません。CPU が先へ進むために同じ資源を N セット用意して添字で回すのが in-flight frame で、この N はスワップチェーンのイメージ枚数とは**別の数**です。破棄を「fence 完了後」まで遅らせる仕組み(遅延解放キュー)と、フレームが掴んだ資源を型を消して握っておく仕組み(lease)を組むのが定型になります。
 
-**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L4912) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
+**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L4916) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
 
 ## 10.2 glTF / 3D アセット形式の仕様
 
@@ -621,7 +621,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「途中で失敗したら、それまでの副作用を取り消す」を例外安全に書く定型です。ローカルなガード型のデストラクタに巻き戻し処理を書き、正常系の最後で「もう巻き戻さない」印(commit / dismiss と呼ばれることが多い)を立ててガードを無効化します。こうすると、途中のどの `throw` からでも巻き戻しが走り、成功経路でだけ走りません(`std::scope_exit` / `scope_fail` は C++ 標準ライブラリ拡張の同種の道具です)。ガードに「そもそも何もしていない」状態を表す番兵(世代番号が 0、ハンドルが無効など)を持たせて、staging 前に抜けたときに巻き戻しを飛ばす形もよく使われます。
 
-**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3070) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3097) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)(`catch (...)` で確保済みの範囲を返す)
+**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3074) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3101) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)(`catch (...)` で確保済みの範囲を返す)
 
 ### double-checked locking と acquire / release
 
@@ -1198,9 +1198,9 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 **小さな例**: UI のスライダを 1 フレームに 60 回動かすとします。`value` のパラメータなら毎回そのまま適用してよく、`rebuild` のパラメータなら操作が終わるまで適用を遅らせるのが正解です。分類が無いと、どちらも同じ扱いになり、前者は不必要に重く、後者は 1 秒間に 60 回の再構築になります。
 
-**使用場所**: [`GraphOperationEvaluation`](../../src/project/graphcomposition.hpp#L148) / [`GraphParameterChange`](../../src/project/graphcomposition.hpp#L152) / 状態無しで `replay` を評価しようとしたときの拒否 [`graph.evaluation_requires_state@1` の送出](../../src/core/userpublic/valuegraph.cpp#L50)
+**使用場所**: [`GraphOperationEvaluation`](../../src/project/graphcomposition.hpp#L189) / [`GraphParameterChange`](../../src/project/graphcomposition.hpp#L193) / 状態無しで `replay` を評価しようとしたときの拒否 [`graph.evaluation_requires_state@1` の送出](../../src/core/userpublic/valuegraph.cpp#L50)
 
-**このコードベースでの注意**: 分類はノードごとに**強い方へ引き上げられます**(§9.24「per-node の評価分類は `max()` でしか動かない」)。また費用側の既定は op ごとの 1 値ですが、パラメータ単位の表(`parameter_changes`)も持てます([宣言](../../src/project/graphcomposition.hpp#L160))。
+**このコードベースでの注意**: 分類はノードごとに**強い方へ引き上げられます**(§9.24「per-node の評価分類は `max()` でしか動かない」)。また費用側の既定は op ごとの 1 値ですが、パラメータ単位の表(`parameter_changes`)も持てます([宣言](../../src/project/graphcomposition.hpp#L201))。
 
 ### 排他 create を「決定」の primitive にする(O_EXCL / hard link)
 

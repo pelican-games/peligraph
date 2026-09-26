@@ -15,6 +15,7 @@
 #include "../vkcore/rendertarget.hpp"
 #include "../vkcore/util.hpp"
 #include "../watch/reloadservice.hpp"
+#include "materialdrawlooptable.hpp"
 #include "materialgenerationplanner.hpp"
 #include "materiallimits.hpp"
 #include "standardmaterialresource.hpp"
@@ -1166,6 +1167,12 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
             texture_materials[binding.texture].insert(material_id);
         }
         if (texture_reload_handler) texture_reload_handler->materialRegistered(material_id);
+        // LP-2: a material registered while generations are alive is
+        // judged by their draw-loop rules now, not at the next publication.
+        if (!registering_variant_records) {
+            MaterialDrawLoopTable::materialRegisteredInLiveTables(
+                material_id);
+        }
     } catch (...) {
         for (auto it = texture_materials.begin(); it != texture_materials.end();) {
             it->second.erase(material_id);
@@ -1173,6 +1180,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
             else ++it;
         }
         (void)materials.extract(material_id);
+        MaterialDrawLoopTable::materialReleasedFromLiveTables(material_id);
         throw;
     }
     return material_id;
@@ -1221,18 +1229,28 @@ void MaterialContainer::registerMaterialVariants(
     }
 
     try {
-        for (auto &registration : registrations) {
-            inheritFromBase(registration.material,
-                            inherited_appearance);
-            const auto resource =
-                registerMaterial(std::move(registration.material));
-            created.emplace_back(registration.name, resource);
-            next.at(registration.name) = resource;
+        {
+            registering_variant_records = true;
+            struct ResetFlag {
+                bool &flag;
+                ~ResetFlag() { flag = false; }
+            } reset_flag{registering_variant_records};
+            for (auto &registration : registrations) {
+                inheritFromBase(registration.material,
+                                inherited_appearance);
+                const auto resource =
+                    registerMaterial(std::move(registration.material));
+                created.emplace_back(registration.name, resource);
+                next.at(registration.name) = resource;
+            }
         }
 
         auto &base_info = materials.get(base);
         base_info.variants.swap(next);
         attached = true;
+        // LP-2: the base now has these variants; its draw-loop steps may
+        // name them.
+        MaterialDrawLoopTable::materialRegisteredInLiveTables(base);
 
         const auto prewarm =
             [&](const CompiledRenderingPass &rendering_pass) {
@@ -1267,6 +1285,12 @@ void MaterialContainer::registerMaterialVariants(
     } catch (...) {
         if (attached && materials.contains(base)) {
             materials.get(base).variants.swap(next);
+            // LP-2: tables that already took the new variants judge the
+            // base again as it was.
+            try {
+                MaterialDrawLoopTable::materialRegisteredInLiveTables(base);
+            } catch (...) {
+            }
         }
         std::vector<GlobalMaterialId> resources;
         resources.reserve(created.size());
@@ -1358,6 +1382,8 @@ ReleaseReport MaterialContainer::releaseModelResources(
                     if (found->second.empty()) texture_materials.erase(found);
                 }
                 auto value = materials.extract(material, !deferred);
+                MaterialDrawLoopTable::materialReleasedFromLiveTables(
+                    material);
                 if (value) {
                     if (deferred) retired.material_ids.push_back(material);
                     retired.materials.push_back(std::move(*value));
@@ -2312,6 +2338,175 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
                  .get()},
             {});
     }
+}
+
+MaterialContainer::MaterialDrawBinding
+MaterialContainer::bindMaterialDraw(
+    vk::CommandBuffer cmd_buf, const PassDefinition &pass,
+    GlobalMaterialId material_id,
+    std::optional<PipelineHandle> pipeline_override,
+    MaterialDrawBindState &bound,
+    RenderPassViewInvocation invocation) const {
+    const auto &material = materials.get(material_id);
+    auto &pipeline_factory = GET_MODULE(PipelineFactory);
+    const auto pipeline =
+        pipeline_override.value_or(material.pipeline);
+    MaterialDrawBinding binding{
+        .layout = pipeline_factory.layout(pipeline),
+        .pipeline = pipeline,
+        .descriptor_set = material.descset.get(),
+    };
+    if (!bound.pipeline || *bound.pipeline != pipeline) {
+        cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics,
+                             pipeline_factory.pipeline(pipeline));
+        binding.pipeline_bound = true;
+    }
+    if (!bound.pipeline ||
+        bound.descriptor_set != binding.descriptor_set) {
+        cmd_buf.bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics, binding.layout,
+            imageDescriptorSetNumber, {binding.descriptor_set}, {});
+        binding.descriptor_set_bound = true;
+    }
+    bound.pipeline = pipeline;
+    bound.descriptor_set = binding.descriptor_set;
+
+    if (const auto *screen_inputs =
+            ensureScreenInputDescriptor(material_id, pass)) {
+        const auto parity = GET_MODULE(RenderTargetContainer).historyFrameIndex();
+        std::size_t variant = 0;
+        if (screen_inputs->variants.size() > 1) {
+            if (invocation.logical_view_count !=
+                    screen_inputs->variants.size() ||
+                invocation.view_index >=
+                screen_inputs->variants.size()) {
+                throw std::runtime_error(
+                    "material screen-input descriptor invocation does not "
+                    "match its layered inputs");
+            }
+            variant = invocation.view_index;
+        }
+        cmd_buf.bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics, binding.layout,
+            PELICAN_SET_PASS_INPUT,
+            {screen_inputs->variants[variant]
+                 .descsets[parity]
+                 .get()},
+            {});
+    }
+    return binding;
+}
+
+std::vector<GlobalMaterialId>
+MaterialContainer::drawLoopMaterials() const {
+    std::unordered_set<GlobalMaterialId, GlobalMaterialId::Hash>
+        variant_records;
+    materials.forEach([&](GlobalMaterialId,
+                          const InternalMaterialInfo &material) {
+        for (const auto &[name, record] : material.variants) {
+            (void)name;
+            variant_records.insert(record);
+        }
+    });
+    std::vector<GlobalMaterialId> result;
+    materials.forEach([&](GlobalMaterialId id,
+                          const InternalMaterialInfo &) {
+        if (!variant_records.contains(id)) result.push_back(id);
+    });
+    std::sort(result.begin(), result.end(),
+              [](GlobalMaterialId left, GlobalMaterialId right) {
+                  return left.value < right.value;
+              });
+    return result;
+}
+
+MaterialDrawSubject MaterialContainer::drawLoopSubject(
+    GlobalMaterialId material_id) const {
+    const auto &material = materials.get(material_id);
+    MaterialDrawSubject subject{
+        .key = materialDrawSubjectKey(
+            material.name, material.source_document,
+            material.source_asset,
+            material.source_material_index),
+        .name = material.name,
+        .tags = material.tags,
+        .route = material.route,
+        .contract = material.shader_contract,
+        .skinned = material.skinned,
+    };
+    for (const auto &[name, record] : material.variants) {
+        (void)record;
+        subject.variants.push_back(name);
+    }
+    return subject;
+}
+
+PipelineHandle MaterialContainer::materialPipeline(
+    GlobalMaterialId material) const {
+    return materials.get(material).pipeline;
+}
+
+GraphicsPipelineDesc materialDrawOverridePipelineDesc(
+    GraphicsPipelineDesc desc, const MaterialInfo &material,
+    const MaterialDrawRenderStateOverride &render_state,
+    const MaterialPipelineRenderingContract &rendering) {
+    MaterialInfo state;
+    state.render_state = applyMaterialDrawRenderStateOverride(
+        material.render_state, render_state);
+    state.output_schema = material.output_schema;
+    state.vat = material.vat;
+    desc.depth_test = state.render_state.depth_test;
+    desc.depth_write = state.render_state.depth_write;
+    desc.depth_compare =
+        toVkCompare(state.render_state.depth_compare);
+    desc.cull_mode = toVkCull(state.render_state.cull);
+    if (!render_state.blend) return desc;
+
+    const GraphicsPipelineDesc defaults{};
+    desc.blend = false;
+    desc.src_color_blend_factor = defaults.src_color_blend_factor;
+    desc.dst_color_blend_factor = defaults.dst_color_blend_factor;
+    desc.src_alpha_blend_factor = defaults.src_alpha_blend_factor;
+    desc.dst_alpha_blend_factor = defaults.dst_alpha_blend_factor;
+    if (state.render_state.blend == SurfaceBlendMode::blend) {
+        desc.blend = true;
+        desc.src_color_blend_factor = vk::BlendFactor::eSrcAlpha;
+        desc.dst_color_blend_factor = vk::BlendFactor::eOneMinusSrcAlpha;
+        desc.src_alpha_blend_factor = vk::BlendFactor::eOne;
+        desc.dst_alpha_blend_factor = vk::BlendFactor::eOneMinusSrcAlpha;
+    } else if (state.render_state.blend == SurfaceBlendMode::additive) {
+        desc.blend = true;
+        desc.src_color_blend_factor = vk::BlendFactor::eSrcAlpha;
+        desc.dst_color_blend_factor = vk::BlendFactor::eOne;
+        desc.src_alpha_blend_factor = vk::BlendFactor::eOne;
+        desc.dst_alpha_blend_factor = vk::BlendFactor::eOne;
+    }
+    if (!desc.color_attachment_states.empty()) {
+        desc.color_attachment_states =
+            resolveMaterialColorAttachmentStates(state, rendering);
+    }
+    return desc;
+}
+
+GraphicsPipelineDesc MaterialContainer::drawOverridePipelineDesc(
+    GlobalMaterialId base,
+    const MaterialDrawRenderStateOverride &render_state) const {
+    const auto &material = materials.get(base);
+    MaterialInfo state;
+    state.render_state = material.render_state;
+    state.output_schema = material.output_schema;
+    state.vat = material.vat;
+    return materialDrawOverridePipelineDesc(
+        GET_MODULE(PipelineFactory).graphicsDesc(material.pipeline), state,
+        render_state,
+        MaterialPipelineRenderingContract{
+            .color_formats = material.pipeline_color_formats,
+            .depth_format = material.pipeline_depth_format,
+            .rasterization_samples =
+                material.pipeline_rasterization_samples,
+            .local_read = material.pipeline_local_read,
+            .output_states = material.pipeline_output_states,
+        });
 }
 
 void MaterialContainer::rebindScreenInputs(

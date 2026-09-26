@@ -1893,6 +1893,7 @@ if(MSVC)
 endif()
 target_sources(pelican_test_headless_render_test PRIVATE
     headless_native_scope_test.cpp
+    headless_material_draw_loop_test.cpp
 )
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_headless_render_test PRIVATE pelican_shaderc)

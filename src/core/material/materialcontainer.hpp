@@ -14,6 +14,7 @@
 #include "../vkcore/image.hpp"
 #include "material.hpp"
 #include "../model/modelresourcerelease.hpp"
+#include "../../project/materialdrawloop.hpp"
 #include <array>
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -243,6 +244,9 @@ DECLARE_MODULE(MaterialContainer) {
     std::unique_ptr<MaterialValuesReloadHandler> material_values_reload_handler;
     mutable std::uint64_t next_screen_input_binding_revision = 1;
     std::uint64_t next_ray_material_generation = 1;
+    // LP-2: set while registerMaterialVariants registers the variant
+    // records, which are no draw-loop subjects of their own.
+    bool registering_variant_records = false;
     bool fail_material_release_for_testing = false;
     bool fail_texture_release_for_testing = false;
     // Declared last and explicitly closed at destructor entry. Deferred slot
@@ -445,6 +449,41 @@ DECLARE_MODULE(MaterialContainer) {
                       const PassDefinition &pass, GlobalMaterialId material,
                       GlobalMaterialId prev_material_id,
                       RenderPassViewInvocation invocation = {}) const;
+    // LP-2: what a material pass last bound, by the effective pipeline and
+    // descriptor set rather than by the material that asked for them. Two
+    // steps of one range can share a material and still differ in pipeline.
+    struct MaterialDrawBindState {
+        std::optional<PipelineHandle> pipeline;
+        vk::DescriptorSet descriptor_set;
+    };
+    struct MaterialDrawBinding {
+        vk::PipelineLayout layout;
+        PipelineHandle pipeline;
+        vk::DescriptorSet descriptor_set;
+        bool pipeline_bound = false;
+        bool descriptor_set_bound = false;
+    };
+    // Binds `material`'s descriptor set and screen inputs with `pipeline`
+    // (nullopt: the material's own), skipping what `bound` already holds.
+    // With the material's own pipeline this issues exactly what
+    // bindResource() issues.
+    MaterialDrawBinding bindMaterialDraw(
+        vk::CommandBuffer cmd_buf, const PassDefinition &pass,
+        GlobalMaterialId material,
+        std::optional<PipelineHandle> pipeline,
+        MaterialDrawBindState &bound,
+        RenderPassViewInvocation invocation = {}) const;
+    // LP-2: the registered materials a draw-loop rule is asked about: every
+    // material except the records registered for named variants.
+    std::vector<GlobalMaterialId> drawLoopMaterials() const;
+    MaterialDrawSubject drawLoopSubject(GlobalMaterialId material) const;
+    PipelineHandle materialPipeline(GlobalMaterialId material) const;
+    // The base material's live pipeline description with the render state
+    // overridden (blend factors, cull, depth), as makeMaterialPipelineDesc
+    // would have written it for that state.
+    GraphicsPipelineDesc drawOverridePipelineDesc(
+        GlobalMaterialId base,
+        const MaterialDrawRenderStateOverride &render_state) const;
     void rebindScreenInputs(const RenderTargetImageViewResolver &rt_views) const;
     vk::PipelineLayout getPipelineLayout() const;
     vk::PipelineLayout pipelineLayout(GlobalMaterialId material) const;

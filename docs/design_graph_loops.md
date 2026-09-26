@@ -398,7 +398,8 @@ carry の型が合わなければ、`graph.loop_carry_type_mismatch@1` で断る
    - 描き方の列と差し替え表は、`RendererRuntimeGeneration` が持つ。
    - 組み直しの候補の世代で作り、拒否されたら捨てる。世代と一緒に解放する。
    - material が後から増えたとき(glTF の読み込み・spawn)は、live の世代の分岐を評価して足す。候補の世代があれば、候補でも評価する。
-   - surface の reload(`prepareSurfaceMaterialReload`)の prepare と commit でも、分岐と差し替えを作り直す。
+   - surface の reload と、組み直しで base の pipeline がその場で作り直されるときは、差し替えの pipeline も base の新しい記述に**追従**させる(表そのものは組み直さない。surface の reload は binding と render state の変更をもともと断るため。LP-2)。
+   - material の照合の鍵(§14 の 2): project の material は `<material 文書>#<名前>`、glTF は `<asset>#material[<index>]`(名前を見ないので重複名・空名でも一意)、それ以外は登録名(LP-2)。
 4. **queue は変えない**
    - range は、今どおり material 単位で切れる。
    - `where` は、今の tag filter と同じ安定 id で共有する。
@@ -672,6 +673,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `graph.loop_phase_crossing@1` | 組み直し | `{node, material}` |
 | `graph.loop_override_interface@1` | 組み直し | `{node, material, binding}` |
 | `graph.loop_override_needs_compiler@1` | 組み直し | `{node}` |
+| `graph.loop_override_compile_limit@1` | 組み直し | `{node, count, limit}`(define の差し替えの compile は世代あたり 16。1 件約 200 ms。LP-2) |
 | `graph.definition_role@1` | 編集・読み込み | `{definition, node}` |
 | `graph.definition_referenced@1` | 編集 | `{definition, referenced_by}` |
 | `graph.definition_duplicate@1` | 編集 | `{definition}`(LP-0c) |

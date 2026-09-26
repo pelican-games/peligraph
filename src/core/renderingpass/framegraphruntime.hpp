@@ -30,6 +30,8 @@
 
 namespace Pelican {
 namespace ValueGraph { class Graph; }
+class MaterialDrawLoopTable;
+struct MaterialDrawLoopRules;
 
 class PreparedVulkanNativeScopeGraph;
 
@@ -127,6 +129,12 @@ struct RendererRuntimeGeneration {
                        RenderingPassId::Hash>
         programs;
     std::shared_ptr<const WindowOutputGeneration> window_output;
+    // LP-2: this generation's draw-step table and the override pipelines it
+    // owns. Built when the generation is prepared, amended when a material
+    // is registered while it is alive, and released with it. Never null in
+    // a prepared generation; the table is mutable while the generation is
+    // not.
+    std::shared_ptr<MaterialDrawLoopTable> material_draw_loops;
 
     const CompiledRenderProgram *find(
         RenderingPassId rendering_pass_id) const noexcept;
@@ -208,6 +216,13 @@ class PreparedRendererRuntimeGeneration {
     }
 };
 
+// LP-2: draw-loop rules a caller supplies for a generation being prepared,
+// on top of the ones its programs' compiled render pipelines carry. Null or
+// empty: none.
+using MaterialDrawLoopRuleSource =
+    std::function<std::shared_ptr<const MaterialDrawLoopRules>(
+        const RendererRuntimeGeneration &candidate)>;
+
 DECLARE_MODULE(FrameGraphRuntimeContainer) {
     struct StagedPublication {
         PreparedRendererRuntimeGeneration prepared;
@@ -224,11 +239,16 @@ DECLARE_MODULE(FrameGraphRuntimeContainer) {
     std::shared_ptr<RendererRuntimePublication>
         publication;
     mutable std::mutex publication_mutex;
+    MaterialDrawLoopRuleSource material_draw_loop_rule_source;
     std::optional<StagedPublication> staged_publication;
 
   public:
     FrameGraphRuntimeContainer();
     ~FrameGraphRuntimeContainer();
+
+    // LP-2: every generation prepared from now on also evaluates the rules
+    // this returns. Rules of the same pass name replace the pipeline's own.
+    void setMaterialDrawLoopRuleSource(MaterialDrawLoopRuleSource source);
 
     PreparedRendererRuntimeGeneration prepareGeneration(
         std::vector<RenderPipelineProgramPreparation> programs,

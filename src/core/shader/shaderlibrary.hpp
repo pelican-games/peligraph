@@ -281,6 +281,17 @@ DECLARE_MODULE(ShaderLibrary) {
         const LoweredMaterial &material,
         std::vector<std::string> additional_defines = {});
     const ShaderBundle &get(ShaderBundleId id) const;
+    // LP-2: whether this build can compile GLSL at run time.
+    static bool runtimeCompilerAvailable() noexcept;
+    // LP-2: compiles a material's vertex and fragment shader again with
+    // `additional_defines` appended to the defines they were built with, as
+    // two new bundles. A surface pair is recompiled from its surface recipe
+    // and gets its own reload unit on the same source, so a surface reload
+    // rebuilds it too. The caller owns the result and releases it with
+    // retireRegistrations().
+    SurfaceShaderBundleIds compileWithAdditionalDefines(
+        ShaderBundleId vertex, ShaderBundleId fragment,
+        std::span<const std::string> additional_defines);
 
     bool reload(ShaderBundleId id);
     bool handlesReload(const watch::AssetKey &key) const;

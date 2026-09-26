@@ -3,6 +3,7 @@
 #include "../renderingpass/computetask.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../material/materialcontainer.hpp"
+#include "../material/materialdrawlooptable.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "shadowdepthpasscontainer.hpp"
@@ -71,7 +72,9 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                          const PassDefinition &pass,
                          const MaterialRendererDependencies &dependencies,
                          std::optional<MaterialRange> material_range,
-                         RenderPassViewInvocation invocation) {
+                         RenderPassViewInvocation invocation,
+                         std::vector<MaterialDrawRecord> *draw_record_sink) {
+    (void)pass_id;
     auto &instance_container = dependencies.instance_container;
     const auto &vert_buf_container = dependencies.vert_buf_container;
     const auto &material_container = dependencies.material_container;
@@ -267,23 +270,24 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
             *gpu_device_draw_limit);
     }
 
-    GlobalMaterialId current_material_id = invalidMaterialId();
-    uint32_t material_index = 0;
-    for (const auto &draw_call : draw_calls) {
-        const auto draw_index = material_index++;
-        if (!material_container.isRenderRequired(pass, draw_call.material)) {
-            continue;
-        }
-
-        if (!selectedByMaterialRange(draw_index)) {
-            continue;
-        }
-
-        material_container.bindResource(cmd_buf, pass_id, pass, draw_call.material,
-                                        current_material_id, invocation);
-        const auto pipeline_layout =
-            material_container.pipelineLayout(
-                pass, draw_call.material);
+    // LP-2: the last bound pipeline and descriptor set, by what was bound
+    // rather than by the material that asked. A range drawn twice with an
+    // override and then the material shares the material but not the
+    // pipeline, and the second draw must bind the material's own again.
+    MaterialContainer::MaterialDrawBindState bound;
+    const auto *draw_loops =
+        dependencies.draw_loops != nullptr &&
+                !dependencies.draw_loops->empty()
+            ? dependencies.draw_loops
+            : nullptr;
+    const auto draw_step =
+        [&](const DrawIndirectInfo &draw_call,
+            GlobalMaterialId effective_material,
+            std::optional<PipelineHandle> pipeline) {
+        const auto binding = material_container.bindMaterialDraw(
+            cmd_buf, pass, effective_material, pipeline, bound,
+            invocation);
+        const auto pipeline_layout = binding.layout;
         vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
         dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout, pass.ray_query_acceleration_structure);
         instance_container.bindMaterialInstanceResources(cmd_buf, pipeline_layout,
@@ -292,14 +296,36 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         cmd_buf.pushConstants(pipeline_layout,
                               vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
                               sizeof(engine_push), &engine_push);
+        if (effective_material.value < 0) {
+            throw std::runtime_error(
+                "material pass resolved an invalid GPU material index");
+        }
         const MaterialIndexPushConstant material_push{
-            material_container.materialGpuIndexForPass(
-                pass, draw_call.material),
+            static_cast<std::uint32_t>(effective_material.value),
             draw_call.source_material_index};
         cmd_buf.pushConstants(pipeline_layout,
                               vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
                               PELICAN_PUSH_ENGINE_BYTES, sizeof(material_push), &material_push);
-        current_material_id = draw_call.material;
+        if (draw_record_sink != nullptr) {
+            draw_record_sink->push_back(MaterialDrawRecord{
+                .pass = pass.name,
+                .material = draw_call.material.value,
+                .effective_material = effective_material.value,
+                .pipeline = binding.pipeline.value,
+                .descriptor_set = reinterpret_cast<std::uint64_t>(
+                    static_cast<VkDescriptorSet>(
+                        binding.descriptor_set)),
+                .pipeline_bound = binding.pipeline_bound,
+                .descriptor_set_bound =
+                    binding.descriptor_set_bound,
+                .gpu_material_index = material_push.material_index,
+                .source_material_index =
+                    material_push.source_material_index,
+                .offset = draw_call.offset,
+                .draw_count = draw_call.draw_count,
+                .gpu_draw = use_gpu_draws,
+            });
+        }
         if (use_gpu_draws) {
             auto command_offset =
                 gpu_draw_source
@@ -363,12 +389,70 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                 draw_call.draw_count,
                 draw_call.stride);
         }
+    };
+
+    // A range is the consecutive draws of one material. Its steps are
+    // drawn in order, each over the whole range. Without a table entry the
+    // range has one step, the pass's effective material, and the loop
+    // below issues exactly the commands it issued before draw steps.
+    const auto draw_count = draw_calls.size();
+    for (std::size_t range_begin = 0; range_begin < draw_count;) {
+        const auto material = draw_calls[range_begin].material;
+        auto range_end = range_begin + 1;
+        while (range_end < draw_count &&
+               draw_calls[range_end].material == material) {
+            ++range_end;
+        }
+        const auto *steps =
+            draw_loops != nullptr
+                ? draw_loops->find(pass.name, material)
+                : nullptr;
+        const auto step_count = steps != nullptr ? steps->size() : 1;
+        for (std::size_t step = 0; step < step_count; ++step) {
+            for (auto index = range_begin; index < range_end; ++index) {
+                const auto &draw_call = draw_calls[index];
+                if (!material_container.isRenderRequired(
+                        pass, draw_call.material)) {
+                    continue;
+                }
+                if (!selectedByMaterialRange(
+                        static_cast<std::uint32_t>(index))) {
+                    continue;
+                }
+                if (steps == nullptr) {
+                    draw_step(draw_call,
+                              material_container.resolveMaterialForPass(
+                                  pass, draw_call.material),
+                              std::nullopt);
+                } else {
+                    const auto &resolved = (*steps)[step];
+                    draw_step(draw_call, resolved.material,
+                              resolved.pipeline);
+                }
+            }
+        }
+        range_begin = range_end;
     }
+}
+
+void recordQueueDraw(std::vector<MaterialDrawRecord> *sink,
+                     std::string_view kind,
+                     const DrawIndirectInfo &draw_call) {
+    if (sink == nullptr) return;
+    sink->push_back(MaterialDrawRecord{
+        .kind = std::string{kind},
+        .material = draw_call.material.value,
+        .effective_material = draw_call.material.value,
+        .source_material_index = draw_call.source_material_index,
+        .offset = draw_call.offset,
+        .draw_count = draw_call.draw_count,
+    });
 }
 
 void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                             const ShadowDepthPassContainer &shadow_depth_pass_container,
-                            const MaterialRendererDependencies &dependencies) {
+                            const MaterialRendererDependencies &dependencies,
+                            std::vector<MaterialDrawRecord> *draw_record_sink) {
     auto &instance_container = dependencies.instance_container;
     const auto &vert_buf_container = dependencies.vert_buf_container;
 
@@ -392,6 +476,7 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
             dependencies.view_projection;
         cmd_buf.pushConstants(pipeline_layout, vk::ShaderStageFlagBits::eVertex, 0,
                               sizeof(push_constant), &push_constant);
+        recordQueueDraw(draw_record_sink, "shadow_depth", draw_call);
         cmd_buf.drawIndexedIndirect(indirect_buf->buffer.get(),
                                     indirect_offset_bias + draw_call.offset,
                                     draw_call.draw_count,
@@ -401,7 +486,8 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
 
 void renderVelocityDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
                          const VelocityPassContainer &velocity_pass_container,
-                         const MaterialRendererDependencies &dependencies) {
+                         const MaterialRendererDependencies &dependencies,
+                         std::vector<MaterialDrawRecord> *draw_record_sink) {
     auto &instances = dependencies.instance_container;
     const auto source = resolveDrawSource(dependencies);
     const auto *indirect = source.indirect_buf;
@@ -415,6 +501,7 @@ void renderVelocityDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         dependencies.frame_resources.bindGraphics(cmd_buf, layout,
             velocity_pass_container.accelerationStructure(pass_id));
         instances.bindDeformation(cmd_buf, layout, draw_call.skinned);
+        recordQueueDraw(draw_record_sink, "velocity", draw_call);
         cmd_buf.drawIndexedIndirect(indirect->buffer.get(),
                                     indirect_offset_bias + draw_call.offset,
                                     draw_call.draw_count, draw_call.stride);
@@ -429,7 +516,7 @@ void MaterialRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id,
                               const MaterialRendererDependencies &dependencies,
                               RenderPassViewInvocation invocation) const {
     renderMaterialDraws(cmd_buf, pass_id, pass, dependencies, std::nullopt,
-                        invocation);
+                        invocation, draw_record_sink);
 }
 
 void MaterialRenderer::renderWithMaterialRange(vk::CommandBuffer cmd_buf, PassId pass_id,
@@ -439,26 +526,28 @@ void MaterialRenderer::renderWithMaterialRange(vk::CommandBuffer cmd_buf, PassId
                                                RenderPassViewInvocation invocation) const {
     if (material_count == 0) {
         renderMaterialDraws(cmd_buf, pass_id, pass, dependencies, std::nullopt,
-                            invocation);
+                            invocation, draw_record_sink);
         return;
     }
 
     renderMaterialDraws(cmd_buf, pass_id, pass, dependencies,
                         MaterialRange{material_start, material_count},
-                        invocation);
+                        invocation, draw_record_sink);
 }
 
 void MaterialRenderer::renderShadowDepth(vk::CommandBuffer cmd_buf, PassId pass_id,
                                          const ShadowDepthPassContainer &shadow_depth_pass_container,
                                          const MaterialRendererDependencies &dependencies) const {
-    renderShadowDepthDraws(cmd_buf, pass_id, shadow_depth_pass_container, dependencies);
+    renderShadowDepthDraws(cmd_buf, pass_id, shadow_depth_pass_container, dependencies,
+                           draw_record_sink);
 }
 
 void MaterialRenderer::renderVelocity(
     vk::CommandBuffer cmd_buf, PassId pass_id,
     const VelocityPassContainer &velocity_pass_container,
     const MaterialRendererDependencies &dependencies) const {
-    renderVelocityDraws(cmd_buf, pass_id, velocity_pass_container, dependencies);
+    renderVelocityDraws(cmd_buf, pass_id, velocity_pass_container, dependencies,
+                        draw_record_sink);
 }
 
 } // namespace Pelican

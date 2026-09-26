@@ -21,6 +21,9 @@
 #include "../src/core/loader/scene.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/material/materialcontainer.hpp"
+#include "../src/core/material/materialdrawlooptable.hpp"
+#include "../src/core/renderer/materialrender.hpp"
+#include "../src/project/materialdrawloop.hpp"
 #include "../src/core/material/projectmaterialasset.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/gltf.hpp"
@@ -99,6 +102,7 @@
 #include <numeric>
 #include <optional>
 #include <picosha2.h>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -6856,9 +6860,97 @@ std::vector<std::uint32_t> readFrameGraphUint32Buffer(
     return values;
 }
 
+// LP-2: what one renderCase issued in its material passes, and, when asked,
+// the generation's draw-step table filled with today's drawing spelled out
+// for every material pass.
+struct DrawLoopProbe {
+    bool install_identity_steps = false;
+    std::vector<MaterialDrawRecord> records;
+    std::size_t table_hits = 0;
+    std::size_t material_draws = 0;
+    bool table_filled = false;
+    std::vector<std::byte> queue_bytes;
+};
+DrawLoopProbe *active_draw_loop_probe = nullptr;
+
+// One step per material in every material pass: the pass's variant when it
+// names one, the material itself otherwise -- what each pass draws when it
+// has no rule.
+std::shared_ptr<const MaterialDrawLoopRules> identityDrawLoopRules(
+    const RendererRuntimeGeneration &candidate) {
+    auto rules = std::make_shared<MaterialDrawLoopRules>();
+    for (const auto rendering_pass_id : candidate.rendering_pass_ids) {
+        const auto *program = candidate.find(rendering_pass_id);
+        if (program == nullptr) continue;
+        for (const auto &compiled : program->rendering_pass.passes) {
+            const auto &pass = compiled.definition;
+            if (!pass.isMaterial()) continue;
+            const auto variant = pass.materialInfo().material_variant;
+            rules->passes.insert_or_assign(
+                pass.name,
+                MaterialDrawLoopPassRule{
+                    .node = "identity",
+                    .rule = [variant](const MaterialDrawSubject &subject)
+                        -> std::optional<MaterialDrawStepList> {
+                        if (!variant) {
+                            return MaterialDrawStepList{
+                                MaterialDrawStep::material()};
+                        }
+                        if (!std::binary_search(subject.variants.begin(),
+                                                subject.variants.end(),
+                                                *variant)) {
+                            return std::nullopt;
+                        }
+                        return MaterialDrawStepList{
+                            MaterialDrawStep::named(*variant)};
+                    },
+                });
+        }
+    }
+    return rules;
+}
+
+void beginDrawLoopProbe() {
+    if (active_draw_loop_probe == nullptr) return;
+    if (active_draw_loop_probe->install_identity_steps) {
+        GET_MODULE(FrameGraphRuntimeContainer)
+            .setMaterialDrawLoopRuleSource(identityDrawLoopRules);
+    }
+    GET_MODULE(MaterialRenderer)
+        .recordMaterialDrawsForTesting(
+            &active_draw_loop_probe->records);
+}
+
+void endDrawLoopProbe() {
+    if (active_draw_loop_probe == nullptr) return;
+    auto &probe = *active_draw_loop_probe;
+    GET_MODULE(MaterialRenderer).recordMaterialDrawsForTesting(nullptr);
+    const auto snapshot =
+        GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+    const auto *table =
+        snapshot != nullptr ? snapshot->material_draw_loops.get()
+                            : nullptr;
+    probe.table_filled = table != nullptr && !table->empty();
+    for (const auto &record : probe.records) {
+        if (record.kind != "material") continue;
+        ++probe.material_draws;
+        if (table != nullptr &&
+            table->find(record.pass,
+                        GlobalMaterialId{record.material}) != nullptr) {
+            ++probe.table_hits;
+        }
+    }
+    const auto bytes =
+        PolygonInstanceTestAccess::compiledDrawQueue(
+            GET_MODULE(PolygonInstanceContainer))
+            .indirectBytes();
+    probe.queue_bytes.assign(bytes.begin(), bytes.end());
+}
+
 RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
                         bool gpu_timing = true) {
     FastModuleContainer modules;
+    beginDrawLoopProbe();
     const auto temp_dir = makeTempProjectDir(golden_case.name);
     if (golden_case.mode == "stem_fullscreen") {
         writeStemProject(temp_dir);
@@ -7364,6 +7456,7 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
                             0),
             };
     }
+    endDrawLoopProbe();
     const auto pixels = render_target.readbackLastFrameRGBA8();
     const auto device_properties = GET_MODULE(VulkanManageCore).getPhysDevice().getProperties();
     const auto sprite_status = FastModuleContainer::isInitialized<SpriteScene>()
@@ -12572,6 +12665,90 @@ std::string canonicalTraceLineForCase(
     const std::string &trace,
     const std::string &case_name);
 std::string loadTextFile(const std::filesystem::path &path);
+
+namespace {
+
+// Descriptor sets and pipelines are compared by where they first appear:
+// two runs build them in separate device objects, so the raw handles differ
+// while the sequence of binds must not.
+std::vector<MaterialDrawRecord> normalizedDrawRecords(
+    std::vector<MaterialDrawRecord> records) {
+    std::map<std::uint64_t, std::uint64_t> sets;
+    std::map<int, int> pipelines;
+    for (auto &record : records) {
+        record.descriptor_set =
+            sets.try_emplace(record.descriptor_set, sets.size())
+                .first->second;
+        record.pipeline =
+            pipelines
+                .try_emplace(record.pipeline,
+                             static_cast<int>(pipelines.size()))
+                .first->second;
+    }
+    return records;
+}
+
+struct DrawLoopProbeScope {
+    explicit DrawLoopProbeScope(DrawLoopProbe &probe) {
+        active_draw_loop_probe = &probe;
+    }
+    ~DrawLoopProbeScope() { active_draw_loop_probe = nullptr; }
+    DrawLoopProbeScope(const DrawLoopProbeScope &) = delete;
+    DrawLoopProbeScope &operator=(const DrawLoopProbeScope &) = delete;
+};
+
+} // namespace
+
+// LP-2 acceptance 1: every golden case built on the hybrid preset renders
+// the same pixels, issues the same material-pass binds and draws, and
+// compiles the same draw queue bytes whether its generation has no
+// draw-step table or a table that spells out today's drawing for every
+// material of every material pass.
+void GoldenHarness::runDrawLoopIdentityEquivalence() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const std::set<std::string> hybrid_modes{
+        "shadow_b_layer_engine", "shadow_b_layer_off",
+        "shadow_b_layer_project", "usd0c_openpbr_material",
+#if PELICAN_WITH_VAT
+        "vat_playback",
+#endif
+    };
+    std::size_t compared = 0;
+    for (const auto &golden_case : loadGoldenInventoryCases()) {
+        if (!hybrid_modes.contains(golden_case.mode)) continue;
+        CAPTURE(golden_case.name);
+        DrawLoopProbe today;
+        RenderedCase baseline = [&] {
+            DrawLoopProbeScope scope{today};
+            return renderCase(golden_case);
+        }();
+        DrawLoopProbe spelled_out{.install_identity_steps = true};
+        RenderedCase explicit_steps = [&] {
+            DrawLoopProbeScope scope{spelled_out};
+            return renderCase(golden_case);
+        }();
+
+        REQUIRE_FALSE(today.records.empty());
+        REQUIRE_FALSE(today.table_filled);
+        REQUIRE(today.table_hits == 0);
+        REQUIRE(spelled_out.table_filled);
+        // Every draw of the spelled-out run came through a table entry.
+        REQUIRE(spelled_out.material_draws > 0);
+        REQUIRE(spelled_out.table_hits == spelled_out.material_draws);
+        REQUIRE(normalizedDrawRecords(today.records) ==
+                normalizedDrawRecords(spelled_out.records));
+        const bool same_queue_bytes =
+            today.queue_bytes == spelled_out.queue_bytes;
+        REQUIRE(same_queue_bytes);
+        REQUIRE_FALSE(today.queue_bytes.empty());
+        REQUIRE(baseline.image.width == explicit_steps.image.width);
+        REQUIRE(baseline.image.height == explicit_steps.image.height);
+        REQUIRE(baseline.image.pixels == explicit_steps.image.pixels);
+        ++compared;
+    }
+    REQUIRE(compared == hybrid_modes.size());
+}
 
 void GoldenHarness::runGoldenImages() {
     setupLogger();

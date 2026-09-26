@@ -24,7 +24,7 @@ Runtime object
 | render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2935) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1526) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L55) |
 | asset manifest | [`parse/generate/verify`](../../src/project/assetsmanifest.hpp#L60) | [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L11) |
-| material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L160) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L343) |
+| material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L160) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L347) |
 
 新形式を追加するときは、まず`src/project`へGPU非依存の受理/拒否規則を置き、次に`src/core`で実体化するのが既存パターンです。
 
@@ -225,7 +225,7 @@ sceneは実装を追う価値の高い、純粋層とruntime層の典型です�
 >
 > **何をする所か**: `parent` エッジをたどって親子関係の循環を検出し、循環に参加しているobject名を並べたメッセージでthrowします。
 >
-> **素朴に読むと**: `auto &&self` を引数に取って `self(self, i)` で再帰する書き方が回りくどく見えます。generic lambda(引数型が `auto` のラムダ)は本体を書いている時点で自分の型が確定していないので、キャプチャ経由で自分を呼べません。`std::function<void(size_t)>` にすれば書けますが、型消去とヒープ確保が入り、純粋パーサ層にわざわざ間接呼び出しを増やすことになります。自分を第1引数で受け取ればキャプチャは参照のままで、インライン化も効きます(これを不要にする C++23 の deducing this は使えません — `pelican_project` は C++20 ビルドです、[src/project/CMakeLists.txt](../../src/project/CMakeLists.txt#L25))。もっと本質的なのは `state` が `0/1/2` の3値である点です。「訪問済み」を1値でしか持たないと、複数の子が同じ親を指す形(親リンクは森なので普通に起きます)で2度目の到達を循環と誤報するか、区別を諦めて毎回スタックを線形探索する羽目になります。1=いま辿っているスタック上、2=走査済みで安全、を分けて初めて `state[parent] == 1` だけが循環になります。さらに `stack` を別に持つのは「循環がある」ではなく `NodeA -> NodeB -> NodeC -> NodeA` と**実際の名前の並び**をエラーに載せるためで、scene作者に対する診断の質がこの構造の目的です。エッジの向きが子→親である点も、`std::find` で循環の始点を拾える前提になっています。
+> **素朴に読むと**: `auto &&self` を引数に取って `self(self, i)` で再帰する書き方が回りくどく見えます。generic lambda(引数型が `auto` のラムダ)は本体を書いている時点で自分の型が確定していないので、キャプチャ経由で自分を呼べません。`std::function<void(size_t)>` にすれば書けますが、型消去とヒープ確保が入り、純粋パーサ層にわざわざ間接呼び出しを増やすことになります。自分を第1引数で受け取ればキャプチャは参照のままで、インライン化も効きます(これを不要にする C++23 の deducing this は使えません — `pelican_project` は C++20 ビルドです、[src/project/CMakeLists.txt](../../src/project/CMakeLists.txt#L26))。もっと本質的なのは `state` が `0/1/2` の3値である点です。「訪問済み」を1値でしか持たないと、複数の子が同じ親を指す形(親リンクは森なので普通に起きます)で2度目の到達を循環と誤報するか、区別を諦めて毎回スタックを線形探索する羽目になります。1=いま辿っているスタック上、2=走査済みで安全、を分けて初めて `state[parent] == 1` だけが循環になります。さらに `stack` を別に持つのは「循環がある」ではなく `NodeA -> NodeB -> NodeC -> NodeA` と**実際の名前の並び**をエラーに載せるためで、scene作者に対する診断の質がこの構造の目的です。エッジの向きが子→親である点も、`std::find` で循環の始点を拾える前提になっています。
 >
 > **骨子**:
 > ```text
@@ -424,7 +424,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 > ctest wp380c_... : dumpbin /symbols で「入っていないこと」を検査
 > ```
 >
-> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L2191) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L87)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
+> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L2192) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L87)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
 >
 > **不変条件**: setterの定義をヘッダへ書かない（inlineでも）。test-onlyのTUを `pelican_core` のソースへ足さない。`default_fault_injector_for_testing` の既定値をnullptr以外にしない。
 
@@ -488,7 +488,7 @@ tinygltf Model
 → ModelTemplate
 ```
 
-執筆基準時点から要素が増えています。VRM semanticデコード（[`vrmsemantic.hpp`](../../src/core/model/vrmsemantic.hpp) — humanoid bone / expression / lookAt / firstPerson、WP111）、morph target（[`morphtarget.hpp`](../../src/core/model/morphtarget.hpp)、WP121）、skeletal animation（[`skeletalanimation.hpp`](../../src/core/model/skeletalanimation.hpp)）、KTX2テクスチャ（[`loader/ktx2.hpp`](../../src/core/loader/ktx2.hpp)、BC5/BC7 fixtureあり）、atlas asset（[`asset/atlasasset.hpp`](../../src/core/asset/atlasasset.hpp) + [`renderer/atlasassetresource.hpp`](../../src/core/renderer/atlasassetresource.hpp)）です。モデルのhot reload（HR2-G、WP110）に伴い、世代管理は [`MaterialContainer::releaseModelResources()`](../../src/core/material/materialcontainer.hpp#L332) が担います。この API は `[[nodiscard]]` で、返り値の [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36) は固定容量 8 の `ReleaseError`（`{stage, code, index}`。`index` は実 ID）と、9 件目以降を数える `overflow_count` だけを持ち、報告のために確保しません。[`releaseModelResources()` の本体](../../src/core/material/materialcontainer.cpp#L1295) は material も texture も resource 1 件ずつ try で囲むので、1 件の失敗で後続の返却が止まりません。同期経路は失敗を例外（`ModelResourceReleaseException`）に載せて運び、[`releaseErrorStatus()`](../../src/core/loader/scene.cpp#L250) が stage 名の列（溢れた分は `overflow:N`）へ畳んで [`PreCommitFailure::release_errors`](../../src/core/loader/sceneload.hpp#L142) に入れます。呼び元へ report を返せない destructor / deferred release / retirement queue / teardown の各経路は [`ReleaseErrorSink::record()`](../../src/core/model/modelresourcerelease.cpp#L11)（log + `release_errors` / `overflow_count` の累積カウンタ。[`status()`](../../src/core/model/modelresourcerelease.cpp#L28) で読めます）へ渡します（WP380d）。
+執筆基準時点から要素が増えています。VRM semanticデコード（[`vrmsemantic.hpp`](../../src/core/model/vrmsemantic.hpp) — humanoid bone / expression / lookAt / firstPerson、WP111）、morph target（[`morphtarget.hpp`](../../src/core/model/morphtarget.hpp)、WP121）、skeletal animation（[`skeletalanimation.hpp`](../../src/core/model/skeletalanimation.hpp)）、KTX2テクスチャ（[`loader/ktx2.hpp`](../../src/core/loader/ktx2.hpp)、BC5/BC7 fixtureあり）、atlas asset（[`asset/atlasasset.hpp`](../../src/core/asset/atlasasset.hpp) + [`renderer/atlasassetresource.hpp`](../../src/core/renderer/atlasassetresource.hpp)）です。モデルのhot reload（HR2-G、WP110）に伴い、世代管理は [`MaterialContainer::releaseModelResources()`](../../src/core/material/materialcontainer.hpp#L336) が担います。この API は `[[nodiscard]]` で、返り値の [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36) は固定容量 8 の `ReleaseError`（`{stage, code, index}`。`index` は実 ID）と、9 件目以降を数える `overflow_count` だけを持ち、報告のために確保しません。[`releaseModelResources()` の本体](../../src/core/material/materialcontainer.cpp#L1319) は material も texture も resource 1 件ずつ try で囲むので、1 件の失敗で後続の返却が止まりません。同期経路は失敗を例外（`ModelResourceReleaseException`）に載せて運び、[`releaseErrorStatus()`](../../src/core/loader/scene.cpp#L250) が stage 名の列（溢れた分は `overflow:N`）へ畳んで [`PreCommitFailure::release_errors`](../../src/core/loader/sceneload.hpp#L142) に入れます。呼び元へ report を返せない destructor / deferred release / retirement queue / teardown の各経路は [`ReleaseErrorSink::record()`](../../src/core/model/modelresourcerelease.cpp#L11)（log + `release_errors` / `overflow_count` の累積カウンタ。[`status()`](../../src/core/model/modelresourcerelease.cpp#L28) で読めます）へ渡します（WP380d）。
 
 失敗したときに**誰が解放するか**も、この API の一部です（WP380a-fix）。`ModelAssetContainer` は §3.5 の 3 のとおり participant ではなく warm cache なので、scene load が失敗しても cache は戻りません。ただし「戻さない」と「作りかけを残す」は別です。[constructor](../../src/core/asset/model.cpp#L513) は宣言を1件ずつ commit していき、途中で投げたときに二段で GPU 資源を返します — 内側の catch が**その1件**（[`releaseModelGpuResources(model, false)`](../../src/core/asset/model.cpp#L837)）、外側の catch が**それまでに登録済みの全件**（[`impl_->releaseAllModels()`](../../src/core/asset/model.cpp#L562)）です。どちらも report が空でなければ `ModelResourceReleaseException` に載せ替えて投げ直します。加えて `Impl` の [destructor](../../src/core/asset/model.cpp#L420) と、公開前の reload candidate を持つ [`ModelPayload` の destructor](../../src/core/asset/model.cpp#L359) が `ReleaseErrorSink` 経由で同じ解放を行います。**公開されなかった `ModelAssetContainer` は cache になりません**（moduleとして `__ready()` が立たない。§2.2）ので、部分状態を再利用するより資源を戻すほうが正しい、という選択です。
 
@@ -631,7 +631,7 @@ instances.publishModelInstance(std::move(staged_instance));
 |---|---|---|---|
 | `pelican.project` | 1 | [`projectformat.cpp`](../../src/project/projectformat.cpp#L237) | `project.json`。`engine_min_version` と `requires`（§3.2） |
 | `pelican.scene` | 1〜2 | [`sceneformat.cpp`](../../src/project/sceneformat.cpp#L268) | 保存は元の版を維持。prefabはv2が前提。永続IDは両版で受理 |
-| `pelican.graph` | 1 | [`graphcomposition.cpp`](../../src/project/graphcomposition.cpp#L174) | 共通グラフ。`definitions` / `nodes` / `outputs`（§3.15） |
+| `pelican.graph` | 1 | [`graphcomposition.cpp`](../../src/project/graphcomposition.cpp#L683) | 共通グラフ。`definitions` / `nodes` / `outputs`（§3.15） |
 | `pelican.render_feature` | 1 | [`featurecompose.cpp`](../../src/project/featurecompose.cpp#L2935) | 本節「render feature」 |
 | `pelican.render_pipeline` | 1 | [`renderpipeline.cpp`](../../src/project/renderpipeline.cpp#L836) | preset（`hybrid_v1` など） |
 | `pelican.render_component` | 1 | [`rendercomponent.hpp`](../../src/project/rendercomponent.hpp#L16) | export / import される描画部品（§3.16） |
@@ -716,7 +716,7 @@ sceneと違い、feature合成は「純粋層で済ませてからruntimeへ渡�
 
 [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744) はmaterial v1とoptional surface catalogの整合性を検証します。[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) はfront matter風の宣言部とshader codeを分け、parameter/texture/screen inputを構造化します。
 
-これらはruntime接続済みです（WP116〜117, 122）。純粋層はparseと [`lowerMaterial()`](../../src/project/materiallowering.hpp#L160)（OpenPBR写像は [`openpbrmapping.hpp`](../../src/project/openpbrmapping.hpp)）まで、core層はsurface compile（[`surfacecompiler.cpp`](../../src/core/shader/surfacecompiler.cpp)）とvalues SSBO登録（[`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L343)）を担います。hot reloadは `MaterialValuesReloadHandler` / `TextureReloadHandler`（[src/core/material/](../../src/core/material)）です。
+これらはruntime接続済みです（WP116〜117, 122）。純粋層はparseと [`lowerMaterial()`](../../src/project/materiallowering.hpp#L160)（OpenPBR写像は [`openpbrmapping.hpp`](../../src/project/openpbrmapping.hpp)）まで、core層はsurface compile（[`surfacecompiler.cpp`](../../src/core/shader/surfacecompiler.cpp)）とvalues SSBO登録（[`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L347)）を担います。hot reloadは `MaterialValuesReloadHandler` / `TextureReloadHandler`（[src/core/material/](../../src/core/material)）です。
 
 material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](../../src/project/materialformat.hpp#L45) の `usd_path`、[`modeltemplate.cpp`](../../src/core/model/modeltemplate.cpp#L99) で重複/未解決を検証）。これはU-USDレーン（WP119/124）の観測境界です。
 
@@ -735,7 +735,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 > layout.size = alignUp(offset, 16)
 > ```
 >
-> **手がかり**: 割り付けは**宣言順**で、名前順でもサイズ順でもありません(テスト名がそのまま [`surface values use declaration-order std140 offsets`](../../test/materiallowering_test.cpp#L46)「surface values use declaration-order std140 offsets」)。上限 `materialCustomValueCapacity = 256`([`materiallowering.hpp` 内](../../src/project/materiallowering.hpp#L16))はGPU側の `MaterialGpuData::custom_values` と同じ値で、[`material.hpp` 内](../../src/core/material/material.hpp#L113) の `static_assert` が両者を結び付けています。超過時に `surface.params.back()` の名前を添えてthrowするのは、どのパラメータで溢れたかを作者に返すためですが、**溢れた位置ではなく末尾の名前**である点は割り切りです([その throw](../../src/project/materiallowering.cpp#L449))。
+> **手がかり**: 割り付けは**宣言順**で、名前順でもサイズ順でもありません(テスト名がそのまま [`surface values use declaration-order std140 offsets`](../../test/materiallowering_test.cpp#L49)「surface values use declaration-order std140 offsets」)。上限 `materialCustomValueCapacity = 256`([`materiallowering.hpp` 内](../../src/project/materiallowering.hpp#L16))はGPU側の `MaterialGpuData::custom_values` と同じ値で、[`material.hpp` 内](../../src/core/material/material.hpp#L113) の `static_assert` が両者を結び付けています。超過時に `surface.params.back()` の名前を添えてthrowするのは、どのパラメータで溢れたかを作者に返すためですが、**溢れた位置ではなく末尾の名前**である点は割り切りです([その throw](../../src/project/materiallowering.cpp#L449))。
 >
 > **不変条件**: `size` と `alignment` を1つの値へ畳まない。割り付けは宣言順。構造体全体のサイズは16バイト境界へ切り上げる。
 
@@ -758,7 +758,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 > すべて既定 -> {compatible, openpbr_base_v1} -> automaticRoute が deferred_geometry
 > ```
 >
-> **手がかり**: `reason` 文字列(`coat_weight_nonzero` など)がそのまま診断に出るので、G-bufferにチャネルを足したときは**この一覧から対応する条件を消す**、という対応関係になっています。逆に条件を足し忘れたままG-bufferを変えると、deferredに流れたmaterialが静かに違う見た目になります。不適格になったOpenPBR materialが実際にどこへ落ちるかは `automaticRoute()` の続きで、engine提供のOpenPBR surfaceはいずれも `pelican_lighting_v1` を実装しているため `forward_opaque` / `automatic_custom_lighting` になります([route の決定](../../src/project/materiallowering.cpp#L256))。判定の入口は [`evaluateDeferredEligibility()`](../../src/project/materiallowering.cpp#L413) で、OpenPBR surface以外は `standard_pbr_v1` の別条件を通ります。テストは [`materiallowering_test.cpp` 内](../../test/materiallowering_test.cpp#L240)「OpenPBR base subset routes deferred while extended lobes stay forward」。
+> **手がかり**: `reason` 文字列(`coat_weight_nonzero` など)がそのまま診断に出るので、G-bufferにチャネルを足したときは**この一覧から対応する条件を消す**、という対応関係になっています。逆に条件を足し忘れたままG-bufferを変えると、deferredに流れたmaterialが静かに違う見た目になります。不適格になったOpenPBR materialが実際にどこへ落ちるかは `automaticRoute()` の続きで、engine提供のOpenPBR surfaceはいずれも `pelican_lighting_v1` を実装しているため `forward_opaque` / `automatic_custom_lighting` になります([route の決定](../../src/project/materiallowering.cpp#L256))。判定の入口は [`evaluateDeferredEligibility()`](../../src/project/materiallowering.cpp#L413) で、OpenPBR surface以外は `standard_pbr_v1` の別条件を通ります。テストは [`materiallowering_test.cpp` 内](../../test/materiallowering_test.cpp#L243)「OpenPBR base subset routes deferred while extended lobes stay forward」。
 >
 > **不変条件**: 既定値の一覧とG-bufferのチャネル構成は対で動かす。`reason` 文字列は診断の一部なので条件と1対1に保つ。判定は既定からの逸脱の有無であって、値の妥当性検査ではない。
 
@@ -1113,7 +1113,7 @@ P-2a-4b までは、`rendering` 相当の中身を最上位に直接書く **leg
 
 **包む関数はもうありません。** P-2a-4b では `wrapLegacyRenderingConfig()` が5キーを付けて legacy 設定を `rendering` へ入れる唯一の場所でしたが、読み手が graph root しか受けなくなったので MG-2b で撤去されました。雛形の [`rendering_config_json`](../../src/project/projecttemplate.cpp#L200) と [`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L229) は graph root の全文を直接書いています(blank の `present` の fragment は VI-2 から `engine://passthrough` で、雛形は shader を書きません)。
 
-**`rendering` 節には `buffers` / `compute_tasks` を書けません。** graph root の lowering（[`lowerRenderGraphDocument()`](../../src/project/rendergraphcomposition.cpp#L348)）が、この2つを graph node（`render.buffer` / `render.compute`）の接続から作るため、節にあれば `render graph derives field from connections: <key>` で拒否します。この規則は MG-2b より前からあります。legacy root には lowering が無かったので根に書けましたが、legacy root が無くなったことでその書き方も無くなりました。テストで根に宣言していたものは task feature へ移されています。エディタの「root scope で compute_tasks / buffers を編集する」経路はこれで到達不能になり、後の掃除の WP（台帳の MG-3）に回っています。
+**`rendering` 節には `buffers` / `compute_tasks` を書けません。** graph root の lowering（[`lowerRenderGraphDocument()`](../../src/project/rendergraphcomposition.cpp#L540)）が、この2つを graph node（`render.buffer` / `render.compute`）の接続から作るため、節にあれば `render graph derives field from connections: <key>` で拒否します。この規則は MG-2b より前からあります。legacy root には lowering が無かったので根に書けましたが、legacy root が無くなったことでその書き方も無くなりました。テストで根に宣言していたものは task feature へ移されています。エディタの「root scope で compute_tasks / buffers を編集する」経路はこれで到達不能になり、後の掃除の WP（台帳の MG-3）に回っています。
 
 編集側の唯一の書き手は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L654) で、graph root 自身の5キー（`schema` / `version` / `definitions` / `nodes` / `outputs`）と editor の `layout` は根へ、それ以外は `rendering.<key>` へ書きます。この関数はJSONを組み直さず、元のバイト列の中で該当メンバの範囲を差し替えます（[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288)）。理由は digest がファイル全体のバイト列に対して取られるためで、詳細は[第6章](06_rendering_vulkan_shader.md)にあります。
 
@@ -1129,34 +1129,34 @@ P-2a-4b までは、`rendering` 相当の中身を最上位に直接書く **leg
 - `definitions` — 名前付きの部分グラフ。中に `graph.input`（境界ポート）を置けます。
 - `graph.instance` — 定義を根へ1個体として置くノード。`definition` と `owner`（`{scene, object}`）を持ちます。
 
-この2つの構造用opは置ける側が決まっていて、`graph.instance` を定義の中へ入れると `graph.nested_instance@1`、`graph.input` を根へ置くと `graph.input_scope@1` で拒否されます（[`editGraphDocument()` 内](../../src/project/graphcomposition.cpp#L1045)）。
+この2つの構造用opは置ける側が決まっていて、`graph.instance` を定義の中へ入れると `graph.nested_instance@1`、`graph.input` を根へ置くと `graph.input_scope@1` で拒否されます（[`editGraphDocument()` 内](../../src/project/graphcomposition.cpp#L1586)）。
 
 ### 展開 — `expandGraphDocument()`
 
-[`expandGraphDocument()`](../../src/project/graphcomposition.hpp#L76) が instance を実体化し、[`ExpandedGraphDocument`](../../src/project/graphcomposition.hpp#L62) を返します。ここで大事なのは**元の文書が正本のまま**という点で、展開後のIDや由来（`origins`）は導出物であって書き戻されません。
+[`expandGraphDocument()`](../../src/project/graphcomposition.hpp#L108) が instance を実体化し、[`ExpandedGraphDocument`](../../src/project/graphcomposition.hpp#L92) を返します。ここで大事なのは**元の文書が正本のまま**という点で、展開後のIDや由来（`origins`）は導出物であって書き戻されません。
 
-instance の入力ポートがどこから値を取るかは `edge > parameters > default` の順で決まり、結果は [`GraphInstanceInput`](../../src/project/graphcomposition.hpp#L44) に記録されます。edge で繋がれたポートは**展開後にノードを残しません**（定義の中の消費側が外の生産者を直接指す）ので、この由来は「展開中の authoring 文書」からしか読めません。
+instance の入力ポートがどこから値を取るかは `edge > parameters > default` の順で決まり、結果は [`GraphInstanceInput`](../../src/project/graphcomposition.hpp#L74) に記録されます。edge で繋がれたポートは**展開後にノードを残しません**（定義の中の消費側が外の生産者を直接指す）ので、この由来は「展開中の authoring 文書」からしか読めません。
 
 ### 編集 — `editGraphDocument()`
 
-[`editGraphDocument()`](../../src/project/graphcomposition.hpp#L126) は op の並びを1本の候補文書へ順に適用し、**最後に1回だけ展開**します。途中で1つでも落ちれば候補ごと捨てられ、呼び手の文書は無傷です。受け付ける op は5種で、**宣言の上のコメントがその5種と8つの名前付き拒否を列挙しています**（`40099e3f` で `set_node_label` と残りの拒否名が追記され、コメントと実装が揃いました）。
+[`editGraphDocument()`](../../src/project/graphcomposition.hpp#L167) は op の並びを1本の候補文書へ順に適用し、**最後に1回だけ展開**します。途中で1つでも落ちれば候補ごと捨てられ、呼び手の文書は無傷です。受け付ける op は5種で、**宣言の上のコメントがその5種と8つの名前付き拒否を列挙しています**（`40099e3f` で `set_node_label` と残りの拒否名が追記され、コメントと実装が揃いました）。
 
 | op | 実装 | 断り方 |
 |---|---|---|
-| `add_node` | [.cpp](../../src/project/graphcomposition.cpp#L1033) | `graph.node_duplicate@1` / `graph.nested_instance@1` / `graph.input_scope@1` |
-| `remove_node` | [.cpp](../../src/project/graphcomposition.cpp#L1070) | `graph.output_referenced@1`（出力や他ノードがまだ指している） |
-| `set_input` | [.cpp](../../src/project/graphcomposition.cpp#L1101) | `source` は `{node, port}` ちょうど2キー、または `null`（切断） |
-| `set_node_parameters` | [.cpp](../../src/project/graphcomposition.cpp#L1135) | 空オブジェクトは `parameters` キーごと削除 |
-| `set_node_label` | [.cpp](../../src/project/graphcomposition.cpp#L1148) | 人が付ける表示名。識別子ではないので、消すのは空文字列で表す |
-| `set_layout` | [.cpp](../../src/project/graphcomposition.cpp#L1178) | scope の editor 用 `layout`(node 位置 / reroute / tie)を丸ごと置換。`null` で消す。名指した node / 辺が無い、座標が非有限、未知 key は `graph.layout_invalid@1`。layout だけの op 列は再 compose しない(N-6) |
+| `add_node` | [.cpp](../../src/project/graphcomposition.cpp#L1574) | `graph.node_duplicate@1` / `graph.nested_instance@1` / `graph.input_scope@1` |
+| `remove_node` | [.cpp](../../src/project/graphcomposition.cpp#L1615) | `graph.output_referenced@1`（出力や他ノードがまだ指している） |
+| `set_input` | [.cpp](../../src/project/graphcomposition.cpp#L1646) | `source` は `{node, port}` ちょうど2キー、または `null`（切断） |
+| `set_node_parameters` | [.cpp](../../src/project/graphcomposition.cpp#L1681) | 空オブジェクトは `parameters` キーごと削除 |
+| `set_node_label` | [.cpp](../../src/project/graphcomposition.cpp#L1694) | 人が付ける表示名。識別子ではないので、消すのは空文字列で表す |
+| `set_layout` | [.cpp](../../src/project/graphcomposition.cpp#L680) | scope の editor 用 `layout`(node 位置 / reroute / tie)を丸ごと置換。`null` で消す。名指した node / 辺が無い、座標が非有限、未知 key は `graph.layout_invalid@1`。layout だけの op 列は再 compose しない(N-6) |
 
-各opは任意で **`scope`** を取ります。省略（または根の名前）なら根の `nodes`、定義名なら `definitions.<名前>.nodes` を編集対象にします（[`resolveEditScope()`](../../src/project/graphcomposition.cpp#L387)）。scope は op ごとに解決し直します —— 同じ並びの前のopが定義の中身を変えている可能性があるからです。定義の中に居る id を根から触ろうとすると `graph.definition_immutable@1` です。
+各opは任意で **`scope`** を取ります。省略（または根の名前）なら根の `nodes`、定義名なら `definitions.<名前>.nodes` を編集対象にします（[`resolveEditScope()`](../../src/project/graphcomposition.cpp#L898)）。scope は op ごとに解決し直します —— 同じ並びの前のopが定義の中身を変えている可能性があるからです。定義の中に居る id を根から触ろうとすると `graph.definition_immutable@1` です。
 
-[`editGraphInstances()`](../../src/project/graphcomposition.hpp#L132)（instance の着脱）は、自分で文書を触らず**上のopへ翻訳してから** `editGraphDocument()` を呼びます。2つの入口が「何が妥当な編集か」で食い違えないようにするためです。
+[`editGraphInstances()`](../../src/project/graphcomposition.hpp#L173)（instance の着脱）は、自分で文書を触らず**上のopへ翻訳してから** `editGraphDocument()` を呼びます。2つの入口が「何が妥当な編集か」で食い違えないようにするためです。
 
 ### 分割 — `partitionGraphDocument()`
 
-[`partitionGraphDocument()`](../../src/project/graphpartition.hpp#L28) は文書全体を検証してから、[`GraphExecutionPartitions`](../../src/project/graphpartition.hpp#L7) の3つへ分けます。どのopがどの領域かは、opを登録したモジュールが宣言します（[`GraphExecutionDomain`](../../src/project/graphcomposition.hpp#L144)）。CPUのスカラopを1つ足しても、分割側に新しいop名を教える必要はありません。
+[`partitionGraphDocument()`](../../src/project/graphpartition.hpp#L28) は文書全体を検証してから、[`GraphExecutionPartitions`](../../src/project/graphpartition.hpp#L7) の3つへ分けます。どのopがどの領域かは、opを登録したモジュールが宣言します（[`GraphExecutionDomain`](../../src/project/graphcomposition.hpp#L185)）。CPUのスカラopを1つ足しても、分割側に新しいop名を教える必要はありません。
 
 ```text
 values     … CPUのスカラ評価（value.* / audio.* / render.scalar）
@@ -1164,7 +1164,7 @@ rendering  … 描画資源とパス（render.*）
 animation  … 姿勢（pose.*）。同じフレームの values より 1 段 前 に走る
 ```
 
-**`animation` が values の1段前に走るのに、animationのノードは values のスカラを読みます。** 矛盾しないのは、animation フェーズが values 分割を**自分の `EvaluationState` で自分で評価し直す**からです（[`evaluateLowered()` の呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L368)）。runtime で値を手渡しているのではなく、分割のときに「animationノードが必要とするスカラ」へ専用の出力名が付いており、animation 側はその名前で自分の評価結果から拾います。名前は [`graphAnimationScalarOutput()`](../../src/project/graphpartition.cpp#L168) が決める **`$pose/<node>/<port>`** で、両側がこの1関数を呼びます。2つの状態は同じ入力で1フレームに1回ずつ進むので、どちらも相手のクロックを進めません（[コメントの規範](../../src/core/ecs/predefined/animationsystem.cpp#L355)）。流れは values → animation の一方向で、逆はありません。同じ仕組みで instance 入力ポートの値も **`$value/<instance path>/<port>`**（[`graphInstanceInputOutput()`](../../src/project/graphpartition.cpp#L172)）として出力に現れます —— edge で繋がれたポートは自分のノードを持たないので、展開が出力として名付けて初めて「描いたフレームが何を使ったか」を観測できるためです。
+**`animation` が values の1段前に走るのに、animationのノードは values のスカラを読みます。** 矛盾しないのは、animation フェーズが values 分割を**自分の `EvaluationState` で自分で評価し直す**からです（[`evaluateLowered()` の呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L368)）。runtime で値を手渡しているのではなく、分割のときに「animationノードが必要とするスカラ」へ専用の出力名が付いており、animation 側はその名前で自分の評価結果から拾います。名前は [`graphAnimationScalarOutput()`](../../src/project/graphpartition.cpp#L170) が決める **`$pose/<node>/<port>`** で、両側がこの1関数を呼びます。2つの状態は同じ入力で1フレームに1回ずつ進むので、どちらも相手のクロックを進めません（[コメントの規範](../../src/core/ecs/predefined/animationsystem.cpp#L355)）。流れは values → animation の一方向で、逆はありません。同じ仕組みで instance 入力ポートの値も **`$value/<instance path>/<port>`**（[`graphInstanceInputOutput()`](../../src/project/graphpartition.cpp#L174)）として出力に現れます —— edge で繋がれたポートは自分のノードを持たないので、展開が出力として名付けて初めて「描いたフレームが何を使ったか」を観測できるためです。
 
 ### lowered IR と評価器（`ValueGraph`）
 

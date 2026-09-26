@@ -2,6 +2,7 @@ target_sources(pelican_core PRIVATE
     material.cpp
     materialcontainer.cpp
     materialdescriptorbuilder.cpp
+    materialdrawlooptable.cpp
     materialgenerationplanner.cpp
     materialshaderconfig.cpp
     materialtexturestore.cpp

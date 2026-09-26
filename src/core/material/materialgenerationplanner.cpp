@@ -1,4 +1,5 @@
 #include "materialgenerationplanner.hpp"
+#include "materialdrawlooptable.hpp"
 #include "materiallimits.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
@@ -1245,6 +1246,13 @@ MaterialGenerationPlanner::prepareReload(
         if (!inserted) entry->second = entry->second && allowed;
     });
     std::vector<MetadataUpdate> metadata_updates;
+    // LP-2: what a base pipeline this plan rebuilds is rebuilt for, so the
+    // draw-loop overrides derived from it follow.
+    struct OverriddenBase {
+        MaterialInfo material;
+        MaterialPipelineRenderingContract rendering;
+    };
+    std::unordered_map<std::uint64_t, OverriddenBase> overridden_bases;
     auto &pipeline_factory =
         GET_MODULE(PipelineFactory);
 
@@ -1441,6 +1449,10 @@ MaterialGenerationPlanner::prepareReload(
                     .desc = std::move(
                         candidate_pipeline_desc),
                 });
+                overridden_bases.try_emplace(
+                    material.pipeline.value,
+                    OverriddenBase{validation_info,
+                                   candidate_rendering});
             }
 
             // accumulate
@@ -1473,6 +1485,54 @@ MaterialGenerationPlanner::prepareReload(
                 });
             }
         });
+
+    // LP-2: a draw-loop override is the base pipeline with another render
+    // state (and, for defines, its own shader pair). When the base is
+    // rebuilt in place for this generation, every live table's override of
+    // it is rebuilt from the base's candidate description, and an
+    // override's own fragment takes the base fragment's new physical
+    // defines. Otherwise the rebuild would pair the new shaders with the
+    // override's old resource interface and ray-query frame set.
+    MaterialDrawLoopTable::forEachLive([&](MaterialDrawLoopTable &table) {
+        table.forEachOverride([&](const MaterialDrawLoopTable::OverridePipeline
+                                      &entry) {
+            const auto base_desc =
+                pipeline_factory.graphicsDesc(entry.base_pipeline);
+            if (entry.define_bundles && base_desc.frag) {
+                const auto shader = std::find_if(
+                    plan.shader_overrides.begin(),
+                    plan.shader_overrides.end(),
+                    [&](const auto &candidate) {
+                        return candidate.fragment == *base_desc.frag;
+                    });
+                if (shader != plan.shader_overrides.end()) {
+                    auto follow = *shader;
+                    follow.fragment = entry.define_bundles->fragment;
+                    append_shader_override(std::move(follow));
+                }
+            }
+            const auto base_override = std::find_if(
+                plan.pipeline_overrides.begin(),
+                plan.pipeline_overrides.end(),
+                [&](const auto &candidate) {
+                    return candidate.handle == entry.base_pipeline;
+                });
+            if (base_override == plan.pipeline_overrides.end()) return;
+            const auto &base = overridden_bases.at(
+                entry.base_pipeline.value);
+            auto desc = materialDrawOverridePipelineDesc(
+                base_override->desc, base.material, entry.render_state,
+                base.rendering);
+            if (entry.define_bundles) {
+                desc.vert = entry.define_bundles->vertex;
+                desc.frag = entry.define_bundles->fragment;
+            }
+            append_pipeline_override({
+                .handle = entry.pipeline,
+                .desc = std::move(desc),
+            });
+        });
+    });
 
     // commit
     const auto overridden_pipelines =

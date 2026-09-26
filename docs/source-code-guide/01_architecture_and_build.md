@@ -53,7 +53,7 @@ flowchart TD
 
 ### `pelican_schema_leaf` と `pelican_schema_core_adapter`
 
-宣言は [`src/schema/CMakeLists.txt`](../../src/schema/CMakeLists.txt#L1) です。依存は `nlohmann_json` だけの STATIC ライブラリで、[`src/schema/schema.hpp`](../../src/schema/schema.hpp#L16) の `Pelican::Schema` 名前空間だけを持ちます。`FieldType` / [`FieldPresence`](../../src/schema/schema.hpp#L110) / [`Node`](../../src/schema/schema.hpp#L127) が、descriptor が core から project / Studio 側へ渡るときの**プロジェクト所有の再帰 wire モデル**です（`Node` 直前のコメントが規範）。ここでいう wire モデルとは、**層やプロセスの境界を越えて受け渡すためだけに定義した表現**のことです（配線の上を流れる形、という含み）。core 側の `SchemaNode` をそのまま渡さず、境界の手前で必ずこの型へ変換するので、core の内部型が project / Studio 側の型に染み出しません。`pelican_project` は PUBLIC にリンクします（[`target_link_libraries(pelican_project PUBLIC nlohmann_json pelican_schema_leaf PRIVATE picosha2)`](../../src/project/CMakeLists.txt#L75)）。
+宣言は [`src/schema/CMakeLists.txt`](../../src/schema/CMakeLists.txt#L1) です。依存は `nlohmann_json` だけの STATIC ライブラリで、[`src/schema/schema.hpp`](../../src/schema/schema.hpp#L16) の `Pelican::Schema` 名前空間だけを持ちます。`FieldType` / [`FieldPresence`](../../src/schema/schema.hpp#L110) / [`Node`](../../src/schema/schema.hpp#L127) が、descriptor が core から project / Studio 側へ渡るときの**プロジェクト所有の再帰 wire モデル**です（`Node` 直前のコメントが規範）。ここでいう wire モデルとは、**層やプロセスの境界を越えて受け渡すためだけに定義した表現**のことです（配線の上を流れる形、という含み）。core 側の `SchemaNode` をそのまま渡さず、境界の手前で必ずこの型へ変換するので、core の内部型が project / Studio 側の型に染み出しません。`pelican_project` は PUBLIC にリンクします（[`target_link_libraries(pelican_project PUBLIC nlohmann_json pelican_schema_leaf PRIVATE picosha2)`](../../src/project/CMakeLists.txt#L76)）。
 
 core 側からこの葉を使うための橋が [`pelican_schema_core_adapter`](../../src/core/communication/CMakeLists.txt#L1) で、`schemavocabularyadapter` 1 対だけを持つ別 STATIC ターゲットです。`pelican_core` へは PRIVATE にリンクされ（[同 L20](../../src/core/communication/CMakeLists.txt#L20)）、この 1 ターゲットだけが `/we4061 /we4062`（GCC/Clang では `-Wswitch-enum -Werror=switch-enum`）で **enum の網羅を error に上げて**います。ここでいう網羅とは、`switch` が対象 enum の全列挙子を `case` で明示的に書いているか、という意味です（MSVC の C4061 は `default` があっても未記述の列挙子を、C4062 は `default` が無い場合を指摘します）。語彙の追加が黙って落ちないようにするための局所設定です。
 
@@ -163,12 +163,12 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 | [`userpublic/`](../../src/core/userpublic) | ゲームコード向け公開APIとECS実体テンプレート | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L284)、[`GameObjects`](../../src/core/userpublic/gameobjects.hpp#L31) |
 | [`os/`](../../src/core/os) | GLFW window、生入力、Action map | [`InputStateCore`](../../src/core/os/inputstate.hpp#L252)、[`InputActionMap`](../../src/core/os/actionmap.hpp#L65) |
 | [`renderingpass/`](../../src/core/renderingpass) | 描画宣言のパース、検証、frame graph、compute task、RT | [`PassDefinition`](../../src/core/renderingpass/renderingpass.hpp#L463)、[`FramePlan`](../../src/core/renderingpass/frameplanner.hpp#L161) |
-| [`renderer/`](../../src/core/renderer) | material/fullscreen/UI/debug/shadowの実描画。frameresources / projectionjitter / temporal / sprite* / velocitypasscontainer / shadowdepthpasscontainer / atlasassetresource が追加 | [`MaterialRenderer`](../../src/core/renderer/materialrender.hpp#L39)、[`Camera`](../../src/core/renderer/camera.hpp#L20) |
+| [`renderer/`](../../src/core/renderer) | material/fullscreen/UI/debug/shadowの実描画。frameresources / projectionjitter / temporal / sprite* / velocitypasscontainer / shadowdepthpasscontainer / atlasassetresource が追加 | [`MaterialRenderer`](../../src/core/renderer/materialrender.hpp#L69)、[`Camera`](../../src/core/renderer/camera.hpp#L20) |
 | [`render_algorithms/`](../../src/core/render_algorithms) | 差し替え可能な標準render algorithm（cube capture / planar reflection）のViewFamily provider。`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF` で丸ごと外れる | [`registerStandardRenderAlgorithmProviders()`](../../src/core/render_algorithms/standardrenderalgorithms.hpp#L9) |
 | [`vkcore/`](../../src/core/vkcore) | Vulkan instance/device、FrameTarget、command、layout、renderer編成 | [`VulkanManageCore`](../../src/core/vkcore/core.hpp#L36)、[`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254) |
 | [`shader/`](../../src/core/shader) | compile、SPIR-V reflection、module、pipeline cache/hot reload | [`ShaderLibrary`](../../src/core/shader/shaderlibrary.hpp#L126)、[`PipelineFactory`](../../src/core/shader/pipelinefactory.hpp#L251) |
 | [`model/`](../../src/core/model) | glTF/VATロードと頂点バッファ | [`GltfLoader`](../../src/core/model/gltf.hpp#L62)、[`VertBufContainer`](../../src/core/model/vertbufcontainer.hpp#L52) |
-| [`material/`](../../src/core/material) | texture/material/pipeline/descriptor | [`MaterialContainer`](../../src/core/material/materialcontainer.hpp#L83) |
+| [`material/`](../../src/core/material) | texture/material/pipeline/descriptor | [`MaterialContainer`](../../src/core/material/materialcontainer.hpp#L84) |
 | [`asset/`](../../src/core/asset) | asset JSONからmodel templateを登録 | [`ModelAssetContainer`](../../src/core/asset/model.hpp#L24) |
 | [`fullscreenpass/`](../../src/core/fullscreenpass) | fullscreen pipelineと入力descriptor | [`FullscreenPassContainer`](../../src/core/fullscreenpass/fullscreenpasscontainer.hpp#L95) |
 | [`light/`](../../src/core/light) | scene lightとlight UBO | [`LightContainer`](../../src/core/light/lightcontainer.hpp#L29) |
@@ -210,7 +210,7 @@ v0（共通グラフ・姿勢グラフ・package）で増えた入口は次の�
 | 場所 | 内容 |
 |---|---|
 | [`project/graphmodule.hpp`](../../src/project/graphmodule.hpp#L44) | [`GraphModuleManifest`](../../src/project/graphmodule.hpp#L35) と `GraphModuleRegistry`。共通グラフの語彙（型・op・sink）の登録口（§1.5） |
-| [`project/graphcomposition.hpp`](../../src/project/graphcomposition.hpp#L62) | `pelican.graph` 文書の展開（`ExpandedGraphDocument`）と [`editGraphDocument()`](../../src/project/graphcomposition.hpp#L126)（[第3章 §3.15](03_project_and_loading.md)） |
+| [`project/graphcomposition.hpp`](../../src/project/graphcomposition.hpp#L92) | `pelican.graph` 文書の展開（`ExpandedGraphDocument`）と [`editGraphDocument()`](../../src/project/graphcomposition.hpp#L167)（[第3章 §3.15](03_project_and_loading.md)） |
 | [`project/graphpartition.hpp`](../../src/project/graphpartition.hpp#L7) | 検証してから `values` / `rendering` / `animation` の3実行領域へ分割 |
 | [`project/posegraphmodule.hpp`](../../src/project/posegraphmodule.hpp#L22) | `pelican.pose` module の登録と、clip 再生パラメータ既定値の唯一の置き場（[第5章](05_gameplay_and_services.md)） |
 | [`project/renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L36) | authored な `rendering` key の在処を決める唯一の場所（[第3章 §3.14](03_project_and_loading.md)） |
@@ -234,7 +234,7 @@ v0（共通グラフ・姿勢グラフ・package）で増えた入口は次の�
                       project（純粋パース・検証）
 ```
 
-実装上は、`GET_MODULE()` を使うサービスロケータが多いため、C++のコンストラクタ引数だけを見ても依存が全部は分かりません。サービスロケータとは、**必要な相手を引数で渡してもらう（DI）のではなく、共通の取得口から自分で引いてくる**方式のことです。Pelicanの取得口は `GET_MODULE(T)` ひとつで、鍵は文字列名ではなく型 `T`、実体は型ごとの `static std::optional<T>` を初回アクセス時に構築するだけの薄い機構です（[第9章 §9.1](09_black_magic_and_gotchas.md)）。DIコンテナのような登録表・スコープ・差し替え機構は持ちません。たとえば [`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L3132) は一行ですが、そこから設定、Vulkan、render target、shader、pipelineなどが遅延生成されます。
+実装上は、`GET_MODULE()` を使うサービスロケータが多いため、C++のコンストラクタ引数だけを見ても依存が全部は分かりません。サービスロケータとは、**必要な相手を引数で渡してもらう（DI）のではなく、共通の取得口から自分で引いてくる**方式のことです。Pelicanの取得口は `GET_MODULE(T)` ひとつで、鍵は文字列名ではなく型 `T`、実体は型ごとの `static std::optional<T>` を初回アクセス時に構築するだけの薄い機構です（[第9章 §9.1](09_black_magic_and_gotchas.md)）。DIコンテナのような登録表・スコープ・差し替え機構は持ちません。たとえば [`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L3136) は一行ですが、そこから設定、Vulkan、render target、shader、pipelineなどが遅延生成されます。
 
 新しい描画コードでは依存を明示する `XxxDependencies` 構造体が増えています。例は [`RenderPassExecutorDependencies`](../../src/core/vkcore/render_pass_executor.hpp#L16)、[`RenderPassDispatchDependencies`](../../src/core/vkcore/render_pass_dispatch.hpp#L29)、[`RenderingPassConfigRegistrationDependencies`](../../src/core/renderingpass/renderingpassconfigregistration.hpp#L65) です。これはグローバル取得を局所化し、純粋テストをしやすくする境界です。
 
@@ -245,7 +245,7 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 | 形式 | 例 | 目的 |
 |---|---|---|
 | 仮想基底 | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L102) | windowed/headless/XRの実装差し替え |
-| 依存構造体 | [`MaterialRendererDependencies`](../../src/core/renderer/materialrender.hpp#L22) | 呼び出しに必要な協力オブジェクトを明示 |
+| 依存構造体 | [`MaterialRendererDependencies`](../../src/core/renderer/materialrender.hpp#L26) | 呼び出しに必要な協力オブジェクトを明示 |
 | Concept/duck typing | [`HasBatchProcess`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L77)、[`HasGameSystemUpdate`](../../src/core/userpublic/details/system/registerer.hpp#L38) | メソッド形だけをcompile時に要求 |
 | `std::variant` | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L326)、[`phys::Shape`](../../src/core/phys/physquery.hpp#L43) | 閉じた型集合を安全に分岐 |
 | 関数コールバック | [`RenderFeatureComposeDependencies`](../../src/project/featurecompose.hpp#L15)、[`RpcServer::MethodHandler`](../../src/core/communication/rpcserver.hpp#L57) | I/Oやdispatchだけを注入 |
@@ -271,7 +271,7 @@ registryの各行が持つキーのうち、この節で効くのは2つです�
 | `PELICAN_WITH_VAT` | VAT parser/player、VAT shaderをリンク | GLBにVAT extrasがあれば明示エラー、playerはstub |
 | `PELICAN_WITH_EXR` | tinyexrでEXRロード | EXR指定時に明示エラー |
 | `PELICAN_WITH_RPC` | stdio RPC server | [`rpcserver_stub.cpp`](../../src/core/communication/rpcserver_stub.cpp#L1) |
-| [`PELICAN_WITH_ANIMATION`](../../cmake/pelican_feature_registry.cmake#L149) | skeletal animation評価器と `pelican.pose` graph module | `src/core/animation` の実装が外れて [`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L1) だけになり、`pelican_project` から [`posegraphmodule.cpp` が外れます](../../src/project/CMakeLists.txt#L71)。帰結は4つ（下の段落） |
+| [`PELICAN_WITH_ANIMATION`](../../cmake/pelican_feature_registry.cmake#L149) | skeletal animation評価器と `pelican.pose` graph module | `src/core/animation` の実装が外れて [`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L1) だけになり、`pelican_project` から [`posegraphmodule.cpp` が外れます](../../src/project/CMakeLists.txt#L72)。帰結は4つ（下の段落） |
 | `PELICAN_WITH_SEQPLAYER` | transform sequence parser/player | [`seqplayer_stub.cpp`](../../src/core/playback/seqplayer_stub.cpp#L1) |
 | `PELICAN_WITH_IMGUI` | 開発者UI（ImGui）をリンク | imguiモジュールなし |
 | `PELICAN_WITH_PHYSICS` | 物理クエリサービスとcollider world | [`physicsservice_stub.cpp`](../../src/core/phys/physicsservice_stub.cpp)、colliderを持つobjectは scene load の prepare でも editor の `add_component` / `spawn` でも `physics.module_unavailable@1`（[`resolvedObjectFeatureRefusal()`](../../src/core/loader/resolvedscene.cpp#L78)。下の 4 と同じ検査） |

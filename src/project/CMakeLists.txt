@@ -20,6 +20,7 @@ add_library(pelican_project
     lightingdata.cpp
     logicalrendergraph.cpp
     logicalrendertype.cpp
+    materialdrawloop.cpp
     materialscreeninput.cpp
     materialoutput.cpp
     materiallowering.cpp

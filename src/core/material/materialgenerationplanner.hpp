@@ -51,6 +51,14 @@ resolveMaterialColorAttachmentStates(
 void validateMaterialCapabilities(
     const MaterialInfo &info,
     const MaterialPipelineRenderingContract &rendering);
+// LP-2: a material pipeline description with a draw-loop override's render
+// state applied, as makeMaterialPipelineDesc would have written it for that
+// state. `material` supplies the base render state, output schema and VAT;
+// `rendering` the contract the color attachment states are resolved for.
+GraphicsPipelineDesc materialDrawOverridePipelineDesc(
+    GraphicsPipelineDesc base_desc, const MaterialInfo &material,
+    const MaterialDrawRenderStateOverride &render_state,
+    const MaterialPipelineRenderingContract &rendering);
 
 // Every pass of a render generation that would draw this material route.
 std::vector<MaterialPassRenderingBinding>

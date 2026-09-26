@@ -117,7 +117,7 @@ sequenceDiagram
 
 [`FastModuleContainer::get<T>()`](../../src/core/container.hpp#L149) はoptionalが空なら`emplace()`し、破棄関数をstaticな`cleaners`へ積みます。従って、**最初に`GET_MODULE(T)`を呼んだ瞬間がTのconstructor実行時点**です。
 
-例として [`Renderer` のconstructor](../../src/core/vkcore/renderer.cpp#L3132) は [`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L412) を呼ぶだけに見えますが、その内部で次のmoduleが連鎖的に生成されます。ただし現在は、[`Renderer::prepareRuntimeModules()`](../../src/core/vkcore/renderer.hpp#L267) と [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L259) により「render前に依存を全解決してから、以後の新規module生成を禁止する（module graphを凍結する）」方式へ変わっています。
+例として [`Renderer` のconstructor](../../src/core/vkcore/renderer.cpp#L3136) は [`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L412) を呼ぶだけに見えますが、その内部で次のmoduleが連鎖的に生成されます。ただし現在は、[`Renderer::prepareRuntimeModules()`](../../src/core/vkcore/renderer.hpp#L267) と [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L259) により「render前に依存を全解決してから、以後の新規module生成を禁止する（module graphを凍結する）」方式へ変わっています。
 
 ```text
 Renderer
@@ -409,9 +409,9 @@ ECSCore::update()
 | 走る場所 | 誰が | 何のために | 使う state |
 |---|---|---|---|
 | `update_game`（animation） | [`AnimationSystem::updatePoseGraphs()`](../../src/core/ecs/predefined/animationsystem.cpp#L253) | animation 分割の node が今フレーム消費するスカラを集める | [`poseGraphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L153) |
-| `render()` | [`Renderer` の publish](../../src/core/vkcore/renderer.cpp#L5777) | rendering 分割の sink（バッファ、音声、RT値）へ実際に書く | [`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L149) |
+| `render()` | [`Renderer` の publish](../../src/core/vkcore/renderer.cpp#L5781) | rendering 分割の sink（バッファ、音声、RT値）へ実際に書く | [`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L149) |
 
-**2回評価するのに state を分けているのが要点**です。`value.trigger_clock` のような「前回の評価が何をしたか」に依存する op は state を進めるので、1つの state を共有させると1フレームで2回進んでしまいます。だから `SceneLoader` は同じ文書に対して2つの `EvaluationState` を持ち、グラフ世代の切り替えでも両方を一緒に移送します（片方だけ置いていくと、描画側は走り続けたまま姿勢側のクロックだけが巻き戻ります）。順序は固定で、animation 分割は values 分割の1段後ろに置かれます（[分割の順序](../../src/project/graphpartition.hpp#L10) / [段の定義](../../src/project/graphcomposition.hpp#L141)）。ただし animation 側が描画側の評価結果を受け取っているわけではありません —— animation フェーズは**自分の state で values 分割を自分で評価し直します**（[`evaluateLowered()` の呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L368)）。2つの state が「同じ入力で1フレームに1回ずつ進む」ので、姿勢側と描画側は互いのクロックを進めないまま同じ数値を読みます（[コメントの規範](../../src/core/ecs/predefined/animationsystem.cpp#L355)）。
+**2回評価するのに state を分けているのが要点**です。`value.trigger_clock` のような「前回の評価が何をしたか」に依存する op は state を進めるので、1つの state を共有させると1フレームで2回進んでしまいます。だから `SceneLoader` は同じ文書に対して2つの `EvaluationState` を持ち、グラフ世代の切り替えでも両方を一緒に移送します（片方だけ置いていくと、描画側は走り続けたまま姿勢側のクロックだけが巻き戻ります）。順序は固定で、animation 分割は values 分割の1段後ろに置かれます（[分割の順序](../../src/project/graphpartition.hpp#L10) / [段の定義](../../src/project/graphcomposition.hpp#L182)）。ただし animation 側が描画側の評価結果を受け取っているわけではありません —— animation フェーズは**自分の state で values 分割を自分で評価し直します**（[`evaluateLowered()` の呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L368)）。2つの state が「同じ入力で1フレームに1回ずつ進む」ので、姿勢側と描画側は互いのクロックを進めないまま同じ数値を読みます（[コメントの規範](../../src/core/ecs/predefined/animationsystem.cpp#L355)）。
 
 描画側の評価結果は、描いたその場で [`publishGraphValues()`](../../src/core/loader/scenegraphruntime.cpp#L144) がスナップショットとして置いていきます。読み手が自分でもう一度評価すると**クロックが進みイベントが消費される**ので、値を持ち出せるのはこの1点だけです。詳細は[第3章 §3.5](03_project_and_loading.md)。
 
@@ -502,7 +502,7 @@ ECSCore::update()
 
 ## 2.8 描画フレーム
 
-状態更新後に [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L6364) が呼ばれます（windowedでは [`renderFlatFrameWithOptionalCapture()`](../../src/core/appflow/loop.cpp#L329) 経由）。WP128以降、`render()`は1-viewのアダプタで、実体は [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4912) です。
+状態更新後に [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L6372) が呼ばれます（windowedでは [`renderFlatFrameWithOptionalCapture()`](../../src/core/appflow/loop.cpp#L329) 経由）。WP128以降、`render()`は1-viewのアダプタで、実体は [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4916) です。
 
 1. `DeletionQueue.beginFrame()`で安全になった旧GPU資源を解放。
 2. view数変化・`set_time`・camera不連続を検知してtemporal historyをリセット。
@@ -519,7 +519,7 @@ flat画面では`render()`がactive Cameraを1-view providerとして渡しま�
 - 形式の不正、GPU初期化失敗、Component不正は基本的に`std::runtime_error`でfail-fastです。
 - `PelicanCore::run()`がruntime全体の最終catchです。
 - job workerの例外は [`JobSystem` が例外を退避する箇所](../../src/core/job_system.cpp#L51) で`exception_ptr`に保持し、main threadの`wait()`で再throwします。
-- shader hot reload失敗だけは旧shader/pipelineを維持してwarningにします（[`ShaderLibrary::prepareReload()`](../../src/core/shader/shaderlibrary.cpp#L1072)、[`PipelineFactory::rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1878)）。
+- shader hot reload失敗だけは旧shader/pipelineを維持してwarningにします（[`ShaderLibrary::prepareReload()`](../../src/core/shader/shaderlibrary.cpp#L1155)、[`PipelineFactory::rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1878)）。
 - teardownは例外を外へ出しません。
 
 この違いは「初回構築に失敗した不完全なruntimeは続けないが、稼働中の編集失敗では最後の正常版を守る」という方針です。

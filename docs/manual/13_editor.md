@@ -157,7 +157,7 @@ Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 
 - **Undo**: coalesce key を付けないので、Undo 1 回で Add 1 回が戻ります。
 - **Inspector の編集の途中で押した Add Object は待ちます(✅Q-7)**: Inspector の値の編集が進行中(commit の途中を含む)に
   押すと、spawn は 1 本だけ待ち、Inspector の手が空いた時点で、その編集が残した scene revision の上に送られます
-  ([`InspectorModel::spawnObject()`](../../src/devstudio/model/inspectormodel.cpp#L2661))。待っている間は status bar(8 秒)と
+  ([`InspectorModel::spawnObject()`](../../src/devstudio/model/inspectormodel.cpp#L2708))。待っている間は status bar(8 秒)と
   Outliner の下の 1 行(`pelican.outlinerNotice`)に `Adding <名前> after the current edit.` が出ます
   ([Add Object の結果を status bar と Outliner に出す所](../../src/devstudio/view/mainwindow.cpp#L1312))。既に 1 本待っているときに
   押した 2 本目は、置き換えずに断ります。同じ 2 か所に
@@ -181,7 +181,7 @@ asset が `id [status]` で並びます。
 `pelican.inspectorVector.<component>.<field>.<列>`(例: `pelican.inspectorVector.transform.scale.2`)、数 1 つは
 `pelican.inspectorNumeric.<component>.<field>` です([数値欄の名前の付け方](../../src/devstudio/view/inspectorwidget.cpp#L1794))。
 G-5 より前は、どの vector も最初の列が同じ名前でした。シナリオは欄が有効になるのを待って打ち、Return で commit し、
-欄がその値を持つまで待ちます([シナリオの README](../../test/studio_scenarios/README.md#L379))。
+欄がその値を持つまで待ちます([シナリオの README](../../test/studio_scenarios/README.md#L384))。
 
 **回転は角度で入れます(✅T-1)。**`transform.rotation` は X / Y / Z の 3 欄(度、小数 2 桁、自動化面の名前は
 `pelican.inspectorEuler.transform.rotation.0` 〜 `.2`)で見せて編集します([回転の欄を作る所](../../src/devstudio/view/inspectorwidget.cpp#L1845))。
@@ -253,7 +253,7 @@ Outliner の行の右クリックの menu の先頭に **Duplicate** と **Delet
   もう無い object は `<名前> is no longer in the scene.` です。
 - **Inspector の編集が進行中(commit の途中を含む)のときは断ります。**待たせずに
   `Finish the edit in progress first, then <操作> again.` を同じ 2 か所に出します
-  ([進行中なら断る所](../../src/devstudio/model/inspectormodel.cpp#L2693))。進行中の編集が同じ object を変えているかも
+  ([進行中なら断る所](../../src/devstudio/model/inspectormodel.cpp#L2740))。進行中の編集が同じ object を変えているかも
   しれないためで、1 本だけ待たせる Add Object(✅Q-7)とは扱いが違います。
 - rename・複数選択の一括操作・scene をまたぐ移動はありません。
 
@@ -530,7 +530,7 @@ replay と `--strict-assets` の engine は今までどおり断ります([越�
 
 - **いつ効くか**: RPC は frame 境界で処理されるので、handler の中で即時に準備・commit し、新しい shader は次の frame の
   `render_start` で使われます(fullscreen pass の入力もそこで bind し直します)。preview 中なら先に preview を中止します。
-- **何を読み直すか**: SPIR-V の sha256 が公開中と違う unit だけです([`ShaderLibrary::prepareReloadChanged()`](../../src/core/shader/shaderlibrary.cpp#L1133))。
+- **何を読み直すか**: SPIR-V の sha256 が公開中と違う unit だけです([`ShaderLibrary::prepareReloadChanged()`](../../src/core/shader/shaderlibrary.cpp#L1216))。
   ただし前回の読み直しが失敗した unit は、中身が変わっていなくても 1 回公開し直します(それで失敗の記録が消えます)。
   判定のために compile はするので、呼ぶたびに全 unit を compile し直します(cache が効くので軽い。大きな project での時間は未測定)。
 - Studio は shader file の保存を見て自分でこれを呼びます(§13.5「Studio のノードキャンバス」の「shader を外のエディタで保存すると画面が変わる」)。
@@ -696,7 +696,7 @@ Frame Plan の status 行に `The preview graph refused it: <code>: <message>` �
 
 `defines` が配列でないときは `pass_shader_define` は付かず、message は `Pass shader.defines must be an array: <pass>` です(編集 RPC でこの形を確かめた test は無く、code は未確認)。
 
-**各 pass の set 1 の宣言を `get_frame_plan` で読む(✅VI-1 / VI-1b)。**`get_frame_plan` の `nodes[]` のうち fullscreen / raster pass の node には **`pass_inputs`** が付き、その pass が今描いている pipeline の shader の set 1 の宣言を、pass が渡しているかどうかに関わらず全部返します(Studio がソケットを宣言から描くためのもの。[組み立て](../../src/core/vkcore/renderer.cpp#L3947))。
+**各 pass の set 1 の宣言を `get_frame_plan` で読む(✅VI-1 / VI-1b)。**`get_frame_plan` の `nodes[]` のうち fullscreen / raster pass の node には **`pass_inputs`** が付き、その pass が今描いている pipeline の shader の set 1 の宣言を、pass が渡しているかどうかに関わらず全部返します(Studio がソケットを宣言から描くためのもの。[組み立て](../../src/core/vkcore/renderer.cpp#L3951))。
 
 | 鍵 | 中身 |
 |---|---|
@@ -745,7 +745,7 @@ G-buffer の target を HDR / SDR のどちらの format にするかを決め�
 route を受ける pass が無い候補は、この code で断られ、文書は変わりません。**前の世代がその route を使っていたかどうかは
 問いません** —— G-4 の前は、最初から forward の pass だけにする編集が commit を通り、次の起動で落ちていました。足りない
 material を route ごとに全部集めて 1 回で断ります
-([`MaterialGenerationPlanner::requireEveryMaterialServed()`](../../src/core/material/materialgenerationplanner.cpp#L779))。
+([`MaterialGenerationPlanner::requireEveryMaterialServed()`](../../src/core/material/materialgenerationplanner.cpp#L780))。
 `error` の直下に、他の拒否と同じく `ticket`・`participant` と並んで次の field が付きます。
 
 | field | 中身 |
@@ -1014,7 +1014,7 @@ engine 内部の例外名は
 
 - 編集: `edit_graph_document{base_source_digest, ops[]}` と `edit_graph_instances{base_source_digest, attach[], detach[]}`。
   後者は owner 付き root instance の装着・取り外し専用で、**中では同じ `editGraphDocument()` の ops に翻訳されます**
-  ([翻訳](../../src/project/graphcomposition.cpp#L1210))。検証を 2 度書かないための構造です。
+  ([翻訳](../../src/project/graphcomposition.cpp#L1756))。検証を 2 度書かないための構造です。
 - 読み: `get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `get_graph_node_values`(§13.5 の読み取り表)。
 
 #### `ops[]` と `scope`
@@ -1029,10 +1029,10 @@ engine 内部の例外名は
 | `set_node_label` | `node`, `label`(string) | 人が付けた表示名。識別子ではないので、**空文字が「消す」**です(専用の op は作られていません) |
 | `set_layout` | `layout`(object か `null`) | その scope の editor 用の置き場所(`nodes{id: {x, y}}` / `reroutes[]{edge{node, port}, points[]}` / `ties[]{x, y, edges[]}`、N-8 からは `frame_plan{<graph>: {nodes, reroutes, ties, groups}}` も。こちらは形だけ検査)を丸ごと置換。**再 compose しない**(bytes だけ変わる)。名指した node / 辺が無ければ `graph.layout_invalid@1`(N-6) |
 
-**全 op が任意の `scope` を取ります**([解決](../../src/project/graphcomposition.cpp#L387))。既定は `"root"`(root 文書の `nodes`)、
+**全 op が任意の `scope` を取ります**([解決](../../src/project/graphcomposition.cpp#L898))。既定は `"root"`(root 文書の `nodes`)、
 definition 名を書くとその `definitions[<名前>].nodes` が対象です。**`root` は root scope の予約語**なので、
 `root` という名前の definition は指せません。op は**順に**候補文書へ当たり、**最後に 1 回だけ展開**されます
-([適用ループ](../../src/project/graphcomposition.cpp#L1189)、[最後の 1 回の展開](../../src/project/graphcomposition.cpp#L1206))。つまり `ops` は**全部通るか、文書ごと拒否か**のどちらかで、
+([適用ループ](../../src/project/graphcomposition.cpp#L1735)、[最後の 1 回の展開](../../src/project/graphcomposition.cpp#L1752))。つまり `ops` は**全部通るか、文書ごと拒否か**のどちらかで、
 途中まで書かれた文書は残りません。
 
 #### 名前付きの拒否
@@ -1040,16 +1040,16 @@ definition 名を書くとその `definitions[<名前>].nodes` が対象です�
 | code | いつ |
 |---|---|
 | `graph.node_duplicate@1` | 同じ scope に同じ id を追加した |
-| `graph.node_missing@1` | 無い node を指した(正は throw 箇所 [graphcomposition.cpp:373](../../src/project/graphcomposition.cpp#L379)。[宣言コメントの名前付きの失敗の一覧](../../src/project/graphcomposition.hpp#L103)も `40099e3f` 以降は 8 つ全部を挙げていて、この表と一致します) |
+| `graph.node_missing@1` | 無い node を指した(正は throw 箇所 [graphcomposition.cpp:373](../../src/project/graphcomposition.cpp#L890)。[宣言コメントの名前付きの失敗の一覧](../../src/project/graphcomposition.hpp#L135)も `40099e3f` 以降は 8 つ全部を挙げていて、この表と一致します) |
 | `graph.input_unknown@1` | instance の definition が宣言していない port を `set_input` / `set_node_parameters` した |
 | `graph.output_referenced@1` | 他ノードの入力、またはその scope の `outputs` が指しているノードを削除した |
 | `graph.input_referenced@1` | **instance がまだ値を供給している `graph.input`** を definition の中から削除した |
 | `graph.nested_instance@1` | definition の中に `graph.instance` を足した(instance は root に立つもの) |
 | `graph.input_scope@1` | root に `graph.input` を足した(境界 port は definition の中のもの) |
-| `graph.definition_immutable@1` | id に `/` を含むノード(instance path 越しの指定)を **どの op でも**指した(`{reason: "instance_path"}`)。root scope の op が definition の中にいるノードを名指したときも同じ code で、`{definition}` が「どの scope を開けばよいか」を返します([`locateNode()`](../../src/project/graphcomposition.cpp#L365)) |
+| `graph.definition_immutable@1` | id に `/` を含むノード(instance path 越しの指定)を **どの op でも**指した(`{reason: "instance_path"}`)。root scope の op が definition の中にいるノードを名指したときも同じ code で、`{definition}` が「どの scope を開けばよいか」を返します([`locateNode()`](../../src/project/graphcomposition.cpp#L876)) |
 
 `graph.input_referenced@1` が要るのは、**その値が編集中の body の外にある**からです —— definition を開いている
-キャンバスからは、その port に値を入れている instance が見えません([走査](../../src/project/graphcomposition.cpp#L487))。
+キャンバスからは、その port に値を入れている instance が見えません([走査](../../src/project/graphcomposition.cpp#L1010))。
 op の形が壊れているだけのもの(`ops` が配列でない、`source` の鍵が違う、未知の `op` 名)は名前付きにならず、
 `invalid_graph_document` として理由の文字列で返ります。
 
@@ -1782,7 +1782,7 @@ debounce の間)は、notice が **「Saving the graph change...」** になり�
 チャネルは**逐次**で、命令の実行中に次の行が来たら `automation.busy@1` で断ります
 ([判定](../../src/devstudio/automation/automationserver.cpp#L102))。認証はありません(flag を付けたときだけ開く口です)。
 
-**命令は 20 個**です([一覧](../../src/devstudio/automation/automationcommands.cpp#L1928)):
+**命令は 20 個**です([一覧](../../src/devstudio/automation/automationcommands.cpp#L1946)):
 `list` / `click` / `double_click` / `drag` / `wheel` / `move` / `press` / `release` / `key` / `type` / `text` /
 `action` / `menu_list` / `view_state` / `wait` / `wait_engine` / `rpc` /
 `open_project` / `screenshot` / `quit`。`rpc` は `EmbeddedViewport` 経由で engine へ送り、応答をそのまま返します。
@@ -1795,7 +1795,7 @@ debounce の間)は、notice が **「Saving the graph change...」** になり�
 前に古い engine へ未保存の編集を問います(G-5)。その往復の間も古い engine は editor RPC に答えるので、以前の `wait_engine` は
 その engine で通り、次の step が止まった engine に当たって `automation.engine_not_ready@1` で落ちていました。今は
 **再起動は頼まれた時点で始まったと数え**、そこから新しい engine の process が最初の `get_status` に答えるまで、`wait_engine` は
-通りません([wait_engine の判定](../../src/devstudio/automation/automationcommands.cpp#L1686)、
+通りません([wait_engine の判定](../../src/devstudio/automation/automationcommands.cpp#L1704)、
 [再起動待ちを立てる所](../../src/devstudio/view/mainwindow.cpp#L911))。Cancel などで再起動が見送られれば、すぐ今の engine で
 通ります。再起動を待っている間に Studio が送る editor RPC は古い engine に届き(未保存の問いと Save はそこへ届く必要が
 あるため)、engine が止まった後は既存の 1 行 `The engine viewport is not ready for editor RPC requests.` で断られます。
@@ -1842,7 +1842,7 @@ driver の stdout / stderr は、cp932 の console で出せない文字があ�
 
 **回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L984)(Python 3.11以上、標準ライブラリだけ)が Studio を
 `--automation --project --tab` で起動し、step を順に送り、`report.json` を書きます。ctest からは
-`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3183)) —— **実物の窓が要るので
+`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3184)) —— **実物の窓が要るので
 `QT_QPA_PLATFORM=offscreen` は掛けません**。fixture の project は temp に 2 つ複製されるので、シナリオは
 文書を書き換えてよく、「ディスクから読み直す」も試せます([複製](../../test/run_studio_scenario.cmake#L30))。
 CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが見つかった`AUTO`）が必要です。
@@ -2008,10 +2008,10 @@ desktop の grab に戻ります。見えているかは、撮る範囲の 5×5 
 どちらで撮ったかは応答の **`capture`**(`print_window` / `screen`)に出ます。着地時に別の窓の重なりで 2 本のシナリオが
 赤になったための変更です。
 `screenshot` の応答は `path` / `mode` / `capture` / `width` / `height`(と、上の場合だけ `desktop_obstructed`)に加えて **`distinct_colors`**(絵に含まれる色の数)を返します
-(✅F-2、[screenshot の distinct_colors](../../src/devstudio/automation/automationcommands.cpp#L1905))。消去されただけの viewport は 1 色なので、
+(✅F-2、[screenshot の distinct_colors](../../src/devstudio/automation/automationcommands.cpp#L1923))。消去されただけの viewport は 1 色なので、
 `result` step で `distinct_colors` を読めば「engine が何か描いたか」を PNG を開かずに判定できます。
 **`"pixels": [[x, y], ...]`**(✅F-4)を付けると、応答にその各点の色が `"#rrggbb"` の配列 `pixels` で返ります
-([screenshot の pixels の読み取り](../../src/devstudio/automation/automationcommands.cpp#L1912))。x / y は絵の幅・高さに
+([screenshot の pixels の読み取り](../../src/devstudio/automation/automationcommands.cpp#L1930))。x / y は絵の幅・高さに
 対する 0〜1 の割合なので、窓の大きさを知らずに書けます。配列でない・2 要素でない・範囲外なら `automation.bad_request@1` です。
 `result` step の `remember` で 1 点の色を覚え、別の点を `value_of` と `op`(`eq` / `ne`)で比べれば「同じ縞の下も同じ色、隣の縞は違う色」の
 ように、output transform がどんな色にしても絵の形を判定できます。

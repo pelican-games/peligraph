@@ -16,6 +16,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <set>
@@ -446,6 +447,8 @@ struct RenderCompilerProgramSelection {
         default;
 };
 
+struct MaterialDrawLoopRules;
+
 // Immutable after publication.  It deliberately contains neither the
 // normalized authoring JSON nor GPU/container state.  Runtime owners publish
 // it through shared_ptr<const CompiledRenderPipeline>; JSON is reconstructed
@@ -487,6 +490,10 @@ struct CompiledRenderPipeline {
     std::vector<RenderPipelineDiagnostic> diagnostics;
     std::vector<RenderPassProvenance> pass_provenance;
     std::vector<RenderResourceProvenance> resource_provenance;
+    // LP-2: the draw-loop rules of this pipeline's material passes (LP-3a
+    // fills them from graph.loop). A generation built from it evaluates
+    // them for every registered material (materialdrawloop.hpp).
+    std::shared_ptr<const MaterialDrawLoopRules> material_draw_loops;
     // LP-1a: get_frame_plan's `loops[]` (absent when the graph has no loop).
     std::vector<RenderGraphLoopReport> graph_loops;
     bool used_features = false;

@@ -1,5 +1,6 @@
 #include "../src/project/materiallowering.hpp"
 #include "../src/project/gltfmateriallowering.hpp"
+#include "../src/project/materialdrawloop.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -9,7 +10,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -757,6 +760,110 @@ TEST_CASE("G-4 glTF core materials take the forward routes under the forward def
                           "PELICAN_GBUFFER_MODEL_OPENPBR_BASE_V1") ==
                 lowered.defines.end());
     }
+}
+
+// LP-2: the draw-step refusals that need no GPU, and the matching key.
+namespace {
+
+MaterialDrawSubject drawLoopSubject(MaterialRouteClass route) {
+    return MaterialDrawSubject{
+        .key = "materials/a.material.json#a",
+        .name = "a",
+        .route = route,
+        .variants = {"outline", "silhouette"},
+    };
+}
+
+std::string refusalOf(const std::function<void()> &call) {
+    try {
+        call();
+    } catch (const std::runtime_error &error) {
+        return error.what();
+    }
+    return {};
+}
+
+} // namespace
+
+TEST_CASE("LP-2 draw steps are refused by name without a GPU",
+          "[material-lowering][lp2][draw-loop]") {
+    const auto opaque =
+        drawLoopSubject(MaterialRouteClass::deferred_geometry);
+    const auto transparent =
+        drawLoopSubject(MaterialRouteClass::forward_transparent);
+    MaterialDrawRenderStateOverride blend;
+    blend.blend = SurfaceBlendMode::blend;
+    MaterialDrawRenderStateOverride solid;
+    solid.blend = SurfaceBlendMode::opaque;
+    MaterialDrawRenderStateOverride cull_front;
+    cull_front.cull = SurfaceCullMode::front;
+
+    // Accepted: the material, an existing variant, a same-phase override.
+    CHECK_NOTHROW(validateMaterialDrawStep(MaterialDrawStep::material(),
+                                           opaque, "loop", false));
+    CHECK_NOTHROW(validateMaterialDrawStep(
+        MaterialDrawStep::named("outline"), opaque, "loop", false));
+    CHECK_NOTHROW(validateMaterialDrawStep(
+        MaterialDrawStep::overridden(cull_front), opaque, "loop", false));
+    CHECK_NOTHROW(validateMaterialDrawStep(
+        MaterialDrawStep::overridden(solid), opaque, "loop", false));
+    CHECK_NOTHROW(validateMaterialDrawStep(
+        MaterialDrawStep::overridden(blend), transparent, "loop", false));
+    CHECK_NOTHROW(validateMaterialDrawStep(
+        MaterialDrawStep::overridden({}, {"TINT"}), opaque, "loop", true));
+
+    CHECK(refusalOf([&] {
+              validateMaterialDrawStep(MaterialDrawStep::overridden(blend),
+                                       opaque, "loop", true);
+          }) == R"(graph.loop_phase_crossing@1: {"material":"materials/a.material.json#a","node":"loop"})");
+    CHECK(refusalOf([&] {
+              validateMaterialDrawStep(MaterialDrawStep::overridden(solid),
+                                       transparent, "loop", true);
+          }) == R"(graph.loop_phase_crossing@1: {"material":"materials/a.material.json#a","node":"loop"})");
+    CHECK(refusalOf([&] {
+              validateMaterialDrawStep(MaterialDrawStep::named("glow"),
+                                       opaque, "loop", true);
+          }) == R"(graph.loop_variant_missing@1: {"material":"materials/a.material.json#a","node":"loop","variant":"glow"})");
+    // A build without the runtime compiler cannot honor defines.
+    CHECK(refusalOf([&] {
+              validateMaterialDrawStep(
+                  MaterialDrawStep::overridden(cull_front, {"TINT"}),
+                  opaque, "loop", false);
+          }) == R"(graph.loop_override_needs_compiler@1: {"node":"loop"})");
+    CHECK(isMaterialDrawLoopRefusalCode(materialDrawOverrideInterfaceCode));
+    CHECK(isMaterialDrawLoopRefusalCode(
+        materialDrawOverrideCompileLimitCode));
+}
+
+TEST_CASE("LP-2 materials are matched by document name or glTF index",
+          "[material-lowering][lp2][draw-loop]") {
+    CHECK(materialDrawSubjectKey("hero", "materials/hero.material.json",
+                                 "materials/hero.material.json",
+                                 std::nullopt) ==
+          "materials/hero.material.json#hero");
+    // glTF names repeat or are empty; the index does not.
+    CHECK(materialDrawSubjectKey("Mat", "", "models/a.glb", 0u) ==
+          "models/a.glb#material[0]");
+    CHECK(materialDrawSubjectKey("Mat", "", "models/a.glb", 1u) ==
+          "models/a.glb#material[1]");
+    CHECK(materialDrawSubjectKey("material[3]", "", "models/a.glb", 3u) ==
+          "models/a.glb#material[3]");
+    CHECK(materialDrawSubjectKey("engine_default", "", "", std::nullopt) ==
+          "engine_default");
+
+    MaterialDrawRenderStateOverride cull_front;
+    cull_front.cull = SurfaceCullMode::front;
+    CHECK(materialDrawOverrideKey(
+              MaterialDrawStep::overridden(cull_front, {"B", "A", "B"})) ==
+          materialDrawOverrideKey(
+              MaterialDrawStep::overridden(cull_front, {"A", "B"})));
+    CHECK(materialDrawOverrideKey(MaterialDrawStep::overridden(cull_front)) !=
+          materialDrawOverrideKey(MaterialDrawStep::overridden({})));
+    const auto state = applyMaterialDrawRenderStateOverride(
+        SurfaceRenderState{}, cull_front);
+    CHECK(state.cull == SurfaceCullMode::front);
+    CHECK(state.blend == SurfaceBlendMode::opaque);
+    CHECK(state.depth_write);
 }
 
 } // namespace Pelican

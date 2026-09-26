@@ -2110,7 +2110,7 @@ rendering 文書の root に `material_route_default` を置くと、automatic �
   `render feature cannot declare material_route_default`)。値が `"auto"` / `"forward"` 以外なら
   `rendering config material_route_default must be "auto" or "forward"` です
   ([`readMaterialRouteDefault()`](../../src/project/renderpipeline.cpp#L654))。合成した config には残りません。
-- **engine は起動時に 1 回だけ読みます**(renderer を作るとき。[起動時の snapshot](../../src/core/vkcore/renderer.cpp#L3136))。
+- **engine は起動時に 1 回だけ読みます**(renderer を作るとき。[起動時の snapshot](../../src/core/vkcore/renderer.cpp#L3140))。
   起動後に文書を書き換えても、編集 RPC で変えても、engine を起動し直すまで効きません。編集 RPC は `restart_required: true` を返し、
   Studio はそれを受けて engine を再起動します([第13章](13_editor.md) §13.5)。renderer を持たない構成(loader や tool の test)では
   `"auto"` と読みます。
@@ -2126,10 +2126,10 @@ rendering 文書の root に `material_route_default` を置くと、automatic �
 shader 契約を受ける pass が要ります。material pass が 1 つも無い pipeline(RT だけの graph など)は material を描かないので
 この検査はしません。ただし**編集や reload で入れ替える候補の pipeline が material pass を 1 つも持たないときは、公開中の世代が
 描いていた route を落としてはいけません**(同じ `material_route_unserved@1` で断ります。まだ何も公開していなければ通ります)
-([2 つの規則を当てる requireEveryMaterialServed](../../src/core/material/materialgenerationplanner.cpp#L779))。G-4 の直後はこの
+([2 つの規則を当てる requireEveryMaterialServed](../../src/core/material/materialgenerationplanner.cpp#L780))。G-4 の直後はこの
 2 本目が抜けていて、material pass を全部外す候補が通っていました(G-4 の後の修正 `5ca18ee1` で戻しました)。
 受け皿が無いと load は `material_route_unserved@1` の fatal で止まり、文は route と shader 契約・material の
-名前と出所(組込は `(engine built-in)`)・直し方の hint を言います([load 時の fatal の文](../../src/core/material/materialgenerationplanner.cpp#L249))。
+名前と出所(組込は `(engine built-in)`)・直し方の hint を言います([load 時の fatal の文](../../src/core/material/materialgenerationplanner.cpp#L250))。
 たとえば forward の pass だけの pipeline を `"auto"` のまま起動すると、
 `material_route_unserved@1: rendering config '<参照>' has no material pass for route 'deferred_geometry' (gbuffer_v1), needed by '<名前>' ...
 Hint: set material_route_default to "forward" on the rendering config root, or add a deferred_geometry_v1 material pass`
@@ -2331,11 +2331,11 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `render_config_section_unlocated`(RPC の拒否コード) | `pelican.graph` root なのに `rendering` 節が無い(あるいは object でない)文書を authoring RPC が編集しようとした。**黙って root にキーを作らない**([renderconfigeditor.cpp:887](../../src/core/communication/renderconfigeditor.cpp#L1228)。§6.16) |
 | `render_config.section_unlocated@1` | 同じ理由で `--feature-overlay` の適用先が見つからない([renderfeatureoverlay.cpp:142](../../src/project/renderfeatureoverlay.cpp#L144)) |
 | `graph.operation_unregistered@1` `{node, op}` | ノードの `op` をどの module も登録していない。綴り間違いのほか、**`PELICAN_WITH_ANIMATION=OFF` の build で `pose.*` を書いた**ときもこれ([graphmodule.cpp:257](../../src/project/graphmodule.cpp#L257)。§6.17) |
-| `graph.operation_unexecutable@1` `{backend, op, node}` | op は登録されているのに、それを実行する backend がこの build に無い。rendering 側は `backend: "pelican.render"` で、lowering できる 6 op 以外を rendering 区画に置いたときに出ます([rendergraphcomposition.cpp:58](../../src/project/rendergraphcomposition.cpp#L77))。姿勢側・値側にも同名の拒否があります([posegraph.cpp:91](../../src/core/animation/posegraph.cpp#L91) / [valuegraph.cpp:289](../../src/core/userpublic/valuegraph.cpp#L455)) |
-| `graph.node_duplicate@1` / `graph.node_missing@1` / `graph.input_unknown@1` / `graph.input_referenced@1` / `graph.output_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1` / `graph.definition_immutable@1` / `graph.layout_invalid@1` | `edit_graph_document` の **9 つ**の名前付き拒否(重複 id / 不在 node / 不明な入力 port / まだ供給されている `graph.input` の削除 / まだ参照されている node の削除 / definition の中の `graph.instance` / root の `graph.input` / 編集できない scope)。正は [`editGraphDocument()` の宣言コメント](../../src/project/graphcomposition.hpp#L126)(9 つ全部を列挙しています。9 つ目 `graph.layout_invalid@1` は N-6 の `set_layout`)と throw 箇所([graphcomposition.cpp:363](../../src/project/graphcomposition.cpp#L365) 〜 [:534](../../src/project/graphcomposition.cpp#L1087))。一覧は [第13章](13_editor.md) |
+| `graph.operation_unexecutable@1` `{backend, op, node}` | op は登録されているのに、それを実行する backend がこの build に無い。rendering 側は `backend: "pelican.render"` で、lowering できる 6 op 以外を rendering 区画に置いたときに出ます([rendergraphcomposition.cpp:58](../../src/project/rendergraphcomposition.cpp#L148))。姿勢側・値側にも同名の拒否があります([posegraph.cpp:91](../../src/core/animation/posegraph.cpp#L91) / [valuegraph.cpp:289](../../src/core/userpublic/valuegraph.cpp#L455)) |
+| `graph.node_duplicate@1` / `graph.node_missing@1` / `graph.input_unknown@1` / `graph.input_referenced@1` / `graph.output_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1` / `graph.definition_immutable@1` / `graph.layout_invalid@1` | `edit_graph_document` の **9 つ**の名前付き拒否(重複 id / 不在 node / 不明な入力 port / まだ供給されている `graph.input` の削除 / まだ参照されている node の削除 / definition の中の `graph.instance` / root の `graph.input` / 編集できない scope)。正は [`editGraphDocument()` の宣言コメント](../../src/project/graphcomposition.hpp#L167)(9 つ全部を列挙しています。9 つ目 `graph.layout_invalid@1` は N-6 の `set_layout`)と throw 箇所([graphcomposition.cpp:363](../../src/project/graphcomposition.cpp#L876) 〜 [:534](../../src/project/graphcomposition.cpp#L1632))。一覧は [第13章](13_editor.md) |
 | `graph.override_shadowed@1` `{parameter}` | edge が供給している入力に `setGraphParameter` で実行時の上書きをかけた。**黙って消えない**([scenegraphruntime.cpp:123](../../src/core/loader/scenegraphruntime.cpp#L129)。§6.17) |
-| `unconnected graph input: <node>.<port>` / `unconnected subgraph input: <名前>` | 必須入力に edge も `parameters` も `default` も無い([graphcomposition.cpp:323](../../src/project/graphcomposition.cpp#L325)、[:59](../../src/project/graphcomposition.cpp#L61)) |
-| `unknown graph definition: <名前>` / `recursive graph definition: <名前>` / `cyclic subgraph connection: <id>` | `graph.instance.definition` の綴り違い / 定義の再帰 / インスタンス同士の循環([graphcomposition.cpp:93](../../src/project/graphcomposition.cpp#L95) / [:108](../../src/project/graphcomposition.cpp#L110) / [:90](../../src/project/graphcomposition.cpp#L92)) |
+| `unconnected graph input: <node>.<port>` / `unconnected subgraph input: <名前>` | 必須入力に edge も `parameters` も `default` も無い([graphcomposition.cpp:323](../../src/project/graphcomposition.cpp#L836)、[:59](../../src/project/graphcomposition.cpp#L382)) |
+| `unknown graph definition: <名前>` / `recursive graph definition: <名前>` / `cyclic subgraph connection: <id>` | `graph.instance.definition` の綴り違い / 定義の再帰 / インスタンス同士の循環([graphcomposition.cpp:93](../../src/project/graphcomposition.cpp#L417) / [:108](../../src/project/graphcomposition.cpp#L432) / [:90](../../src/project/graphcomposition.cpp#L414)) |
 
 ## 6.12 OpenXR ステレオレンダリング(✅WP125〜138 / WP203a〜c実装済み)
 
@@ -2734,7 +2734,7 @@ rendering config のファイルは **`pelican.graph` root** です。最上位�
 }
 ```
 
-**規則は 1 つだけです**: `schema` / `version` / `definitions` / `nodes` / `outputs`(と `layout`)は共通グラフが所有し、**それ以外の rendering config のキーは全部 `rendering` 節に属します**。エンジンは composer の入口でこの文書を平らな rendering config へ lower してからパスを組みます([lowerRenderGraphDocument()](../../src/project/rendergraphcomposition.cpp#L348))。`rendering` 節は、旧い legacy root(下)を最上位に置いたときと同じ意味で読まれます。
+**規則は 1 つだけです**: `schema` / `version` / `definitions` / `nodes` / `outputs`(と `layout`)は共通グラフが所有し、**それ以外の rendering config のキーは全部 `rendering` 節に属します**。エンジンは composer の入口でこの文書を平らな rendering config へ lower してからパスを組みます([lowerRenderGraphDocument()](../../src/project/rendergraphcomposition.cpp#L540))。`rendering` 節は、旧い legacy root(下)を最上位に置いたときと同じ意味で読まれます。
 
 - **旧い legacy root は読めません(MG-2b)。**§6.2 の表のキーを最上位に直接並べた形は、起動時の読み込み([読み込みで legacy root を断る所](../../src/core/renderingpass/renderingpassconfigloader.cpp#L24))、`--feature-overlay` の重ね合わせ、レイトレの設定の読み出し、Studio / RPC の編集文書のどれもが `render_config.legacy_root@1` で断ります([`RenderConfigLegacyRoot`](../../src/project/renderconfigdocument.hpp#L37))。v0 は形式ごとに版を 1 つだけ持ち、旧い形は変換せず書き直す方針です。直すには、旧いファイル全体を `rendering` の値にして上の 5 キーを足します(`{"schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {}, "rendering": <旧い root>}`)。MG-2b は出荷の legacy root 5 本(`animgraph_demo` / `sprite_demo` / `vrm_xr_demo` / `raytracing_demo` / `pathtrace_demo`)をこの手で包みました。
 - `buffers` と `compute_tasks` は **グラフが所有します**。lowering は `render.buffer` / `render.compute` などのノードの接続からこの 2 つを作るので、`rendering` 節に書くと `render graph derives field from connections: buffers` のように名前付きで拒否します。buffer と compute task は graph node か task feature で書きます。
@@ -2770,11 +2770,11 @@ op は **module** が登録します。登録済み module はエンジンに最
 
 ### op の契約 — `domain` / `evaluation` / `change`
 
-どの op も、ポートの型のほかに 3 つの分類を宣言します(それぞれ別の enum です: [domain](../../src/project/graphcomposition.hpp#L144) / [evaluation](../../src/project/graphcomposition.hpp#L148) / [change](../../src/project/graphcomposition.hpp#L152))。
+どの op も、ポートの型のほかに 3 つの分類を宣言します(それぞれ別の enum です: [domain](../../src/project/graphcomposition.hpp#L185) / [evaluation](../../src/project/graphcomposition.hpp#L189) / [change](../../src/project/graphcomposition.hpp#L193))。
 
 | 分類 | 値 | 意味 |
 |---|---|---|
-| `domain` | `values` / `rendering` / `animation` | **どの実行段が評価するか**。`animation` は同じフレームの中で `values` より **1 段早く**走ります。だから **姿勢の op は「今フレームのスカラー」を読めて、逆向きは無い**(一方向)([graphcomposition.hpp:102](../../src/project/graphcomposition.hpp#L139)) |
+| `domain` | `values` / `rendering` / `animation` | **どの実行段が評価するか**。`animation` は同じフレームの中で `values` より **1 段早く**走ります。だから **姿勢の op は「今フレームのスカラー」を読めて、逆向きは無い**(一方向)([graphcomposition.hpp:102](../../src/project/graphcomposition.hpp#L180)) |
 | `evaluation` | `direct` / `replay` / `baked` / `recorded` | **評価をまたいで結果がどう作られるか**。`direct` は毎回同じ入力から同じ出力。`replay` は状態を持ち、「ここまでの経過」が要る(時計、ステートマシン、root motion の抽出) |
 | `change` | `value` / `recompile` / `rebuild` | **ノードの `parameters` を変えたときの代償**。`value` は値が変わるだけ、`rebuild` はノードを作り直す |
 
@@ -2812,7 +2812,7 @@ op は **module** が登録します。登録済み module はエンジンに最
 
 ### `definitions` と `graph.instance`
 
-`definitions` は **名前 → 部分グラフ文書**(`{nodes, outputs}`)の辞書です。部分グラフの入力口は `graph.input` という特別なノードで、`default` を書けます。root の `nodes` に置いた **`graph.instance`** がそれを 1 つ実体化します([graphcomposition.cpp:88](../../src/project/graphcomposition.cpp#L90))。
+`definitions` は **名前 → 部分グラフ文書**(`{nodes, outputs}`)の辞書です。部分グラフの入力口は `graph.input` という特別なノードで、`default` を書けます。root の `nodes` に置いた **`graph.instance`** がそれを 1 つ実体化します([graphcomposition.cpp:88](../../src/project/graphcomposition.cpp#L412))。
 
 ```json
 {"id": "hero_walk_run", "op": "graph.instance", "definition": "walk_run",
@@ -2822,7 +2822,7 @@ op は **module** が登録します。登録済み module はエンジンに最
 ```
 
 - 展開後のノード id は **`<instance id>/<定義内の id>`**(上なら `hero_walk_run/mix`)。エラーメッセージにはこの展開後の名前が出ます。
-- `owner` は **`scene` と `object` のちょうど 2 キー**で、`object` は **正の整数の authoring object id** です。この id は `scene.json` には書かれておらず、**宣言順に振られる通し番号**です(既定では 1 始まりですが、**文書内のシーンをまたいで連番**なので 2 つ目のシーンの先頭は 1 ではありません — [第4章](04_scene_ecs.md) §4.1。[graphcomposition.cpp:100](../../src/project/graphcomposition.cpp#L102))。**並べ替えると指す個体が変わります** —— 永続 id は v0 の穴として記録されています。存在しない id は **inactive**(装着が効かないだけで、ロードは止まりません)。ただし**無音ではなく**、そのシーンで初めて解決できなかった scope をまとめた `LOG_WARNING` が 1 回出ます([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L66)。[第4章](04_scene_ecs.md) §4.1)。存在する別の個体を指すと装着の解決が名前付きで失敗します。
+- `owner` は **`scene` と `object` のちょうど 2 キー**で、`object` は **正の整数の authoring object id** です。この id は `scene.json` には書かれておらず、**宣言順に振られる通し番号**です(既定では 1 始まりですが、**文書内のシーンをまたいで連番**なので 2 つ目のシーンの先頭は 1 ではありません — [第4章](04_scene_ecs.md) §4.1。[graphcomposition.cpp:100](../../src/project/graphcomposition.cpp#L424))。**並べ替えると指す個体が変わります** —— 永続 id は v0 の穴として記録されています。存在しない id は **inactive**(装着が効かないだけで、ロードは止まりません)。ただし**無音ではなく**、そのシーンで初めて解決できなかった scope をまとめた `LOG_WARNING` が 1 回出ます([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L66)。[第4章](04_scene_ecs.md) §4.1)。存在する別の個体を指すと装着の解決が名前付きで失敗します。
 - `definition` の綴り違いは `unknown graph definition`、定義の再帰は `recursive graph definition`、インスタンス同士の循環は `cyclic subgraph connection` です。
 - `definitions` の中のノードと、インスタンス経路越しのノードは **`edit_graph_document` では編集できません**(`graph.definition_immutable@1`)。[第13章](13_editor.md) を参照してください。
 
@@ -2837,7 +2837,7 @@ instance の入力ポート 1 本ごとに、値がどこから来ているか�
 | `default` | 定義側の `graph.input` ノードの **`default`** |
 | `override` | 実行時の上書き(`RenderContext::setValueGraphParameter` = `ctx.render().setValueGraphParameter` / RPC) |
 
-**優先順位は `edge > parameters > default`** です([graphcomposition.cpp:48](../../src/project/graphcomposition.cpp#L50))。以前の「edge と `parameters` の二重指定は拒否」は P-1 で**優先順に緩められました** —— 上の posegraph_demo の実物が、edge を張ったうえで `parameters.weight: 0.0` を残しているのはそのためです。**`parameters` は「接続を外したときに戻る値」**なので、消さずに残すのが正しい形です(そして `default` を持たない入力も外せるようになりました)。
+**優先順位は `edge > parameters > default`** です([graphcomposition.cpp:48](../../src/project/graphcomposition.cpp#L371))。以前の「edge と `parameters` の二重指定は拒否」は P-1 で**優先順に緩められました** —— 上の posegraph_demo の実物が、edge を張ったうえで `parameters.weight: 0.0` を残しているのはそのためです。**`parameters` は「接続を外したときに戻る値」**なので、消さずに残すのが正しい形です(そして `default` を持たない入力も外せるようになりました)。
 
 実行時の `override` は 4 つ目の mode として由来に出ます。ただし **edge が供給しているポートを上書きしようとすると `graph.override_shadowed@1`** になります —— 展開が `value.parameter` ノードを作っていないので上書きの着地点が無く、**黙って消えるのではなく名前で断ります**([scenegraphruntime.cpp:123](../../src/core/loader/scenegraphruntime.cpp#L129))。
 

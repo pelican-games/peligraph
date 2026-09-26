@@ -1,5 +1,7 @@
 #include "framegraphruntime.hpp"
 #include "frameexecutionadapter.hpp"
+#include "../material/materialdrawlooptable.hpp"
+#include "../../project/materialdrawloop.hpp"
 #include "../../project/viewselect.hpp"
 #include <algorithm>
 #include <limits>
@@ -284,6 +286,42 @@ FrameGraphRuntimeContainer::~FrameGraphRuntimeContainer() {
     staged_publication.reset();
 }
 
+namespace {
+
+// The rules every program's compiled pipeline carries, then the caller's
+// source; a later pass name replaces an earlier one. Null when there are
+// none, which leaves every material pass drawing as it always has.
+std::shared_ptr<const MaterialDrawLoopRules> collectMaterialDrawLoopRules(
+    const RendererRuntimeGeneration &candidate,
+    const MaterialDrawLoopRuleSource &source) {
+    auto merged = std::make_shared<MaterialDrawLoopRules>();
+    for (const auto rendering_pass_id : candidate.rendering_pass_ids) {
+        const auto *program = candidate.find(rendering_pass_id);
+        if (program == nullptr ||
+            program->frame_graph.render_pipeline == nullptr ||
+            program->frame_graph.render_pipeline
+                    ->material_draw_loops == nullptr) {
+            continue;
+        }
+        for (const auto &[pass, rule] :
+             program->frame_graph.render_pipeline
+                 ->material_draw_loops->passes) {
+            merged->passes.insert_or_assign(pass, rule);
+        }
+    }
+    if (source) {
+        if (const auto supplied = source(candidate)) {
+            for (const auto &[pass, rule] : supplied->passes) {
+                merged->passes.insert_or_assign(pass, rule);
+            }
+        }
+    }
+    if (merged->empty()) return nullptr;
+    return merged;
+}
+
+} // namespace
+
 PreparedRendererRuntimeGeneration
 FrameGraphRuntimeContainer::prepareGeneration(
     std::vector<RenderPipelineProgramPreparation> programs,
@@ -552,9 +590,24 @@ FrameGraphRuntimeContainer::prepareGeneration(
             std::move(stable_order);
     }
 
+    // LP-2: the candidate owns its draw-step table from the start, so a
+    // refused candidate releases the override pipelines it built.
+    candidate->material_draw_loops =
+        std::make_shared<MaterialDrawLoopTable>(
+            candidate->generation);
+    if (auto rules = collectMaterialDrawLoopRules(
+            *candidate, material_draw_loop_rule_source)) {
+        candidate->material_draw_loops->install(std::move(rules));
+    }
+
     return PreparedRendererRuntimeGeneration{
         base_generation, std::move(candidate),
         std::move(prepared_ids)};
+}
+
+void FrameGraphRuntimeContainer::setMaterialDrawLoopRuleSource(
+    MaterialDrawLoopRuleSource source) {
+    material_draw_loop_rule_source = std::move(source);
 }
 
 void FrameGraphRuntimeContainer::publishPreparedGeneration(
