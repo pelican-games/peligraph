@@ -175,7 +175,8 @@ void preflightRenderGraphVariants(
                                      runtime_shader_compiler_enabled);
     } catch (const std::exception &error) {
         throw GraphVariantCompositionError{
-            RenderPipelineGraphVariant::preview, error.what()};
+            RenderPipelineGraphVariant::preview, error.what(),
+            std::current_exception()};
     }
 #if PELICAN_WITH_OPENXR
     if (xr_active) {
@@ -188,7 +189,8 @@ void preflightRenderGraphVariants(
                 runtime_shader_compiler_enabled);
         } catch (const std::exception &error) {
             throw GraphVariantCompositionError{
-                RenderPipelineGraphVariant::xr, error.what()};
+                RenderPipelineGraphVariant::xr, error.what(),
+                std::current_exception()};
         }
     }
 #else

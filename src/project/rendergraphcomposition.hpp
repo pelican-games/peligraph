@@ -155,6 +155,36 @@ struct LoweredRenderGraphDocument {
     // Passes and compute tasks the lowering made outside any loop: the
     // graph-wide expansion limit counts them with the loops' copies.
     std::size_t graph_node_count = 0;
+    // LP-0d: their names (each is its node's id), appended or placed. A
+    // feature instance's pass_replacements may name one of these or a loop.
+    std::set<std::string> graph_declarations;
+};
+
+// LP-0d: one entry of a feature instance's `pass_replacements`
+// ({"<pass or compute task of the feature>": "<graph node id or graph.loop id>"}).
+struct RenderFeaturePassReplacement {
+    // The feature's name (its envelope's `name`).
+    std::string feature;
+    std::string pass;
+    std::string node;
+};
+
+// LP-0d: what composition hands the resolution stage about the features.
+struct RenderGraphFeatureContext {
+    // The pass_replacements of the features that were composed.
+    std::vector<RenderFeaturePassReplacement> replacements;
+    // Pass / compute task name -> the feature that declared it (an
+    // integration's passes count as its provider's).
+    std::map<std::string, std::string> feature_passes;
+    // The composed surface_resources declarations ({contract, resource,
+    // producer, ...}); a replaced producer is re-pointed here.
+    nlohmann::json *surface_resource_contracts = nullptr;
+    // What the graph variant excluded: pass / compute task name and render
+    // target / buffer name -> the excluded feature, and the pass_replacements
+    // the excluded features' instances named.
+    std::map<std::string, std::string> excluded_passes;
+    std::map<std::string, std::string> excluded_resources;
+    std::vector<RenderFeaturePassReplacement> excluded_replacements;
 };
 
 // LP-1a: what the resolution stage expanded. The frame plan reports `loops`
@@ -166,6 +196,8 @@ struct RenderGraphLoopResolution {
     std::map<std::string, RenderLoopOrigin> passes;
     // Render targets and buffers a loop added, by name.
     std::map<std::string, RenderLoopOrigin> resources;
+    // LP-0d: the graph nodes the variant made inactive, in the order found.
+    std::vector<RenderGraphDeactivatedNode> deactivated;
 };
 
 // LP-0b: places one run in the composed config (see RenderGraphPassRun). The
@@ -203,12 +235,46 @@ nlohmann::json lowerRenderGraphDocument(const nlohmann::json &document,
 // LP-1a then expands every graph.loop (expandRenderGraphLoops below) and
 // returns what it expanded. LP-1b: a refusal there whose `node` is one
 // element's copy of a body node (`<loop>/<element>/<node>`) also carries
-// `loop_origin` {loop, element, node}, the frame plan's shape. Later stages add their work here, on the same
-// entry: LP-0d applies pass_replacements and drops what a variant removed.
+// `loop_origin` {loop, element, node}, the frame plan's shape.
+//
+// LP-0d, before all of the above: a graph node that depends on a feature the
+// variant excluded (features.excluded_*) is made inactive -- it is not
+// declared, its references are not checked, and every after / before naming
+// it is dropped, as for a node of an inactive scope -- and reported in
+// `deactivated` (see RenderGraphDeactivatedNode for when). A loop made
+// inactive takes whoever reads its outputs with it.
+// LP-0d, after the expansion: every pass_replacements entry is applied
+// (applyRenderFeaturePassReplacements below).
 // A target added here without a format_class or role is given both by the
 // composer right after this returns, as every other target is.
 RenderGraphLoopResolution resolveGraphDocumentAfterComposition(nlohmann::json &composed,
-    const LoweredRenderGraphDocument &lowered);
+    const LoweredRenderGraphDocument &lowered, const RenderGraphFeatureContext &features = {});
+
+// LP-0d: takes each replaced feature pass or compute task out of the composed
+// config and puts the graph node (or the loop's expanded passes and tasks,
+// in their declared order) in its place. For each replacement node, over
+// every entry that names it:
+//   - the pass must be one of the feature's own passes or tasks, or
+//     render_feature.pass_replacement_unknown@1 {feature, pass}; the node a
+//     graph pass / task or a graph.loop, or graph.node_missing@1
+//     {node, feature, pass};
+//   - what the replaced passes wrote, the node must write (a loop: any of its
+//     copies), or it is refused as the surface_resources producer check
+//     refuses a producer that "no longer writes resource" it;
+//   - the node's passes of the replaced pass's family (its tasks, for a
+//     task) move to where the first replaced one stood; with none there,
+//     graph.insert_family_mismatch@1 {node, anchor: pass}, or a refusal when
+//     it has no pass (task) at all;
+//   - every after / before naming a replaced pass names the node instead:
+//     `after` its last pass or task the holder may order against, `before`
+//     its first; the replaced passes' own after / before go to the first /
+//     last of the node's that took their place; snapshot_after,
+//     frame_node_order (the node's passes and tasks, in order) and
+//     surface_resources producers (the node's last pass that writes the
+//     contract's resource) follow; the replaced names leave target_planning.
+// `loop_passes` are the expanded copies (RenderGraphLoopResolution::passes).
+void applyRenderFeaturePassReplacements(nlohmann::json &composed, const LoweredRenderGraphDocument &lowered,
+    const std::map<std::string, RenderLoopOrigin> &loop_passes, const RenderGraphFeatureContext &features);
 
 // LP-1a: the expand stage (docs/design_graph_loops.md 5.1, 5.2). For each
 // loop, in dependency order:

@@ -138,6 +138,9 @@ nlohmann::json loadFeatureJson(std::string_view ref,
 struct FeatureInstance {
     std::string ref;
     nlohmann::json parameters = nlohmann::json::object();
+    // LP-0d: {"<pass or compute task of the feature>": "<graph node or
+    // graph.loop id>"}, in the order of the pass names.
+    std::vector<std::pair<std::string, std::string>> pass_replacements;
 };
 
 std::vector<FeatureInstance> parseFeatureInstances(const nlohmann::json &config) {
@@ -161,7 +164,7 @@ std::vector<FeatureInstance> parseFeatureInstances(const nlohmann::json &config)
                 "rendering config features entries must be strings or {ref, parameters} objects");
         }
         for (auto field = entry.begin(); field != entry.end(); ++field) {
-            if (field.key() != "ref" && field.key() != "parameters") {
+            if (field.key() != "ref" && field.key() != "parameters" && field.key() != "pass_replacements") {
                 throw std::runtime_error("render feature instance has unknown field: " + field.key());
             }
         }
@@ -170,7 +173,23 @@ std::vector<FeatureInstance> parseFeatureInstances(const nlohmann::json &config)
         if (!parameters.is_object()) {
             throw std::runtime_error("render feature instance parameters must be an object: " + ref);
         }
-        instances.push_back(FeatureInstance{ref, parameters});
+        FeatureInstance instance{ref, parameters, {}};
+        if (const auto replacements = entry.find("pass_replacements"); replacements != entry.end()) {
+            if (!replacements->is_object()) {
+                throw std::runtime_error(
+                    "render feature instance pass_replacements must be an object of pass names to graph node ids: " +
+                    ref);
+            }
+            for (auto replacement = replacements->begin(); replacement != replacements->end(); ++replacement) {
+                if (replacement.key().empty() || !replacement.value().is_string() ||
+                    replacement.value().get_ref<const std::string &>().empty()) {
+                    throw std::runtime_error(
+                        "render feature instance pass_replacements must map a pass name to a graph node id: " + ref);
+                }
+                instance.pass_replacements.emplace_back(replacement.key(), replacement.value().get<std::string>());
+            }
+        }
+        instances.push_back(std::move(instance));
     }
     return instances;
 }
@@ -3018,6 +3037,8 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     std::optional<nlohmann::json> projection_jitter;
     nlohmann::json surface_resource_contracts =
         nlohmann::json::array();
+    // LP-0d: what the graph's resolution stage needs to know of the features.
+    RenderGraphFeatureContext graph_features;
     bool hdr_enabled = false;
     loaded_features.reserve(feature_instances.size());
     for (const auto &instance : feature_instances) {
@@ -3026,8 +3047,29 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         if (dependencies.include_feature &&
             !dependencies.include_feature(feature_name, feature)) {
             appendUnique(excluded_feature_names, feature_name);
+            // LP-0d: a graph node that depends on what this feature declares
+            // is made inactive with it.
+            const auto keep = [&](std::map<std::string, std::string> &names, const nlohmann::json &list,
+                                  bool feature_pass) {
+                if (!list.is_array()) return;
+                for (const auto &entry : list) {
+                    const auto *declaration = &entry;
+                    if (feature_pass && entry.is_object() && entry.contains("pass")) declaration = &entry.at("pass");
+                    if (declaration->is_object() && declaration->contains("name") &&
+                        declaration->at("name").is_string())
+                        names.try_emplace(declaration->at("name").get<std::string>(), feature_name);
+                }
+            };
+            keep(graph_features.excluded_passes, feature.value("passes", nlohmann::json::array()), true);
+            keep(graph_features.excluded_passes, feature.value("compute_tasks", nlohmann::json::array()), false);
+            keep(graph_features.excluded_resources, feature.value("render_targets", nlohmann::json::array()), false);
+            keep(graph_features.excluded_resources, feature.value("buffers", nlohmann::json::array()), false);
+            for (const auto &[pass, node] : instance.pass_replacements)
+                graph_features.excluded_replacements.push_back({feature_name, pass, node});
             continue;
         }
+        for (const auto &[pass, node] : instance.pass_replacements)
+            graph_features.replacements.push_back({feature_name, pass, node});
         if (dependencies.validate_feature) {
             dependencies.validate_feature(feature_name, feature);
         }
@@ -3398,8 +3440,26 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     // Every target the rendering section, the preset, the features and the
     // snapshots declare now exists; pass order is not settled yet.
     std::vector<RenderGraphLoopReport> graph_loops;
+    std::vector<RenderGraphDeactivatedNode> deactivated_graph_nodes;
+    // LP-0d: pass_replacements name a graph node, so they need a graph.
+    if (!common_graph && !graph_features.replacements.empty()) {
+        const auto &replacement = graph_features.replacements.front();
+        throw GraphRegistryError("graph.node_missing@1", {{"node", replacement.node},
+                                                          {"feature", replacement.feature},
+                                                          {"pass", replacement.pass}});
+    }
     if (common_graph) {
-        auto loop_resolution = resolveGraphDocumentAfterComposition(composed, lowered_graph);
+        // LP-0d: which feature declared each pass and task (an integration's
+        // are its provider's), and the surface resources a replacement may
+        // take over.
+        for (const auto &provenance : pass_provenance) {
+            if (provenance.source != RenderPipelineProvenanceSource::feature) continue;
+            graph_features.feature_passes.emplace(
+                provenance.name, provenance.provider_feature.substr(0, provenance.provider_feature.find('/')));
+        }
+        graph_features.surface_resource_contracts = &surface_resource_contracts;
+        auto loop_resolution = resolveGraphDocumentAfterComposition(composed, lowered_graph, graph_features);
+        deactivated_graph_nodes = std::move(loop_resolution.deactivated);
         // LP-1a: a loop's copies of a render.image are declared here, after
         // the format classes and roles above were settled; they take theirs
         // the same way.
@@ -3468,6 +3528,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     result.resource_provenance =
         std::move(resource_provenance);
     result.graph_loops = std::move(graph_loops);
+    result.deactivated_graph_nodes = std::move(deactivated_graph_nodes);
     result.used_features = !feature_instances.empty();
     return result;
 }

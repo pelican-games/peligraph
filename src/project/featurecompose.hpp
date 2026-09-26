@@ -60,6 +60,9 @@ struct RenderFeatureComposeResult {
     // LP-1a: every graph.loop of a pelican.graph root, as the resolution
     // stage expanded it (get_frame_plan's `loops[]`).
     std::vector<RenderGraphLoopReport> graph_loops;
+    // LP-0d: the graph nodes this composition made inactive because they
+    // depend on a feature include_feature left out (a graph variant's).
+    std::vector<RenderGraphDeactivatedNode> deactivated_graph_nodes;
     bool used_features = false;
 };
 

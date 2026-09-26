@@ -403,6 +403,8 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         } else (body != nullptr ? body->compute_tasks : config["compute_tasks"]).push_back(std::move(parameters));
     }
     lowered.graph_node_count = graph_pass_order.size() + config["compute_tasks"].size();
+    lowered.graph_declarations.insert(graph_pass_order.begin(), graph_pass_order.end());
+    for (const auto &task : config["compute_tasks"]) lowered.graph_declarations.insert(task.at("name").get<std::string>());
     // LP-1b: the first value of each carried input that is a render resource
     // (a scalar carry is the values partition's).
     for (const auto &[id, expansion] : graph.loops) {
@@ -694,7 +696,35 @@ std::optional<RenderLoopOrigin> loopCopyOrigin(const std::string &name, const st
 }
 } // namespace
 
-RenderGraphLoopResolution resolveGraphDocumentAfterComposition(Json &composed, const LoweredRenderGraphDocument &lowered) {
+namespace {
+// LP-0d: defined with the replacements below.
+LoweredRenderGraphDocument withoutExcludedDependents(Json &composed, const LoweredRenderGraphDocument &lowered,
+                                                     const RenderGraphFeatureContext &features,
+                                                     std::vector<RenderGraphDeactivatedNode> &deactivated);
+RenderGraphLoopResolution resolveActiveGraph(Json &composed, const LoweredRenderGraphDocument &lowered);
+} // namespace
+
+RenderGraphLoopResolution resolveGraphDocumentAfterComposition(Json &composed, const LoweredRenderGraphDocument &lowered,
+                                                               const RenderGraphFeatureContext &features) {
+    // LP-0d: what a variant excluded takes the graph nodes that depend on it
+    // along, before anything checks their references.
+    std::vector<RenderGraphDeactivatedNode> deactivated;
+    const auto active = withoutExcludedDependents(composed, lowered, features, deactivated);
+    auto resolution = resolveActiveGraph(composed, active);
+    resolution.deactivated = std::move(deactivated);
+    // LP-0d: a replacement whose node the variant made inactive is not
+    // applied; the feature keeps its own pass in that variant.
+    auto replacing = features;
+    std::erase_if(replacing.replacements, [&](const RenderFeaturePassReplacement &replacement) {
+        return std::any_of(resolution.deactivated.begin(), resolution.deactivated.end(),
+                           [&](const RenderGraphDeactivatedNode &node) { return node.node == replacement.node; });
+    });
+    applyRenderFeaturePassReplacements(composed, active, resolution.passes, replacing);
+    return resolution;
+}
+
+namespace {
+RenderGraphLoopResolution resolveActiveGraph(Json &composed, const LoweredRenderGraphDocument &lowered) {
     for (const auto &reference : lowered.target_refs) checkTargetReference(composed, reference);
     for (const auto &read : lowered.history_reads) checkHistoryRead(composed, read);
     // LP-0b: place each run once its anchor exists. A run may be anchored at
@@ -731,6 +761,7 @@ RenderGraphLoopResolution resolveGraphDocumentAfterComposition(Json &composed, c
         throw GraphRegistryError(error.code(), std::move(extended));
     }
 }
+} // namespace
 
 namespace {
 // --- LP-1a: the expand stage.
@@ -1451,5 +1482,451 @@ RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRe
         }
     }
     return resolution;
+}
+
+namespace {
+// --- LP-0d: what a variant excluded, and pass_replacements.
+
+void dropOrderNames(Json &declaration, const std::set<std::string> &names) {
+    for (const auto *key : {"after", "before"}) {
+        const auto list = declaration.find(key);
+        if (list == declaration.end() || !list->is_array()) continue;
+        list->erase(std::remove_if(list->begin(), list->end(), [&](const Json &name) {
+            return name.is_string() && names.contains(name.get<std::string>());
+        }), list->end());
+    }
+}
+
+// Every pass of every family, then every compute task, in declared order.
+void forEachComposedDeclaration(Json &composed, const std::function<void(Json &, const std::string &)> &visit) {
+    if (const auto families = composed.find("rendering_passes"); families != composed.end() && families->is_array())
+        for (auto &family : *families) {
+            const auto name = family.value("name", std::string{});
+            if (const auto passes = family.find("passes"); passes != family.end() && passes->is_array())
+                for (auto &pass : *passes)
+                    if (pass.is_object()) visit(pass, name);
+        }
+    if (const auto tasks = composed.find("compute_tasks"); tasks != composed.end() && tasks->is_array())
+        for (auto &task : *tasks)
+            if (task.is_object()) visit(task, {});
+}
+
+void eraseDeclarations(Json &composed, const std::set<std::string> &names) {
+    const auto named = [&](const Json &declaration) {
+        return declaration.is_object() && names.contains(declaration.value("name", std::string{}));
+    };
+    if (const auto families = composed.find("rendering_passes"); families != composed.end() && families->is_array())
+        for (auto &family : *families)
+            if (const auto passes = family.find("passes"); passes != family.end() && passes->is_array())
+                passes->erase(std::remove_if(passes->begin(), passes->end(), named), passes->end());
+    if (const auto tasks = composed.find("compute_tasks"); tasks != composed.end() && tasks->is_array())
+        tasks->erase(std::remove_if(tasks->begin(), tasks->end(), named), tasks->end());
+}
+
+// A name that leaves the config leaves target_planning's nodes with it.
+void forgetPlanningNodes(Json &composed, const std::set<std::string> &names) {
+    const auto planning = composed.find("target_planning");
+    if (planning == composed.end() || !planning->is_object()) return;
+    const auto graphs = planning->find("graphs");
+    if (graphs == planning->end() || !graphs->is_object()) return;
+    for (auto &graph : *graphs) {
+        const auto nodes = graph.find("nodes");
+        if (nodes == graph.end() || !nodes->is_object()) continue;
+        for (const auto &name : names) nodes->erase(name);
+    }
+}
+
+using NameReplacement = std::function<std::optional<std::vector<std::string>>(const std::string &graph,
+                                                                              const std::string &name)>;
+
+// frame_node_order's lists: a name `replace` maps is replaced by what it maps
+// to (a name already listed is not listed twice); mapped to nothing, it leaves.
+void rewriteFrameNodeOrder(Json &composed, const NameReplacement &replace) {
+    const auto order = composed.find("frame_node_order");
+    if (order == composed.end() || !order->is_object()) return;
+    for (auto &[graph, names] : order->items()) {
+        if (!names.is_array()) continue;
+        std::set<std::string> listed;
+        for (const auto &name : names)
+            if (name.is_string()) listed.insert(name.get<std::string>());
+        Json rewritten = Json::array();
+        std::set<std::string> written;
+        for (const auto &name : names) {
+            if (!name.is_string()) {
+                rewritten.push_back(name);
+                continue;
+            }
+            const auto replacement = replace(graph, name.get<std::string>());
+            if (!replacement) {
+                if (written.insert(name.get<std::string>()).second) rewritten.push_back(name);
+                continue;
+            }
+            for (const auto &entry : *replacement)
+                if (!listed.contains(entry) && written.insert(entry).second) rewritten.push_back(entry);
+        }
+        names = std::move(rewritten);
+    }
+}
+
+LoweredRenderGraphDocument withoutExcludedDependents(Json &composed, const LoweredRenderGraphDocument &lowered,
+                                                     const RenderGraphFeatureContext &features,
+                                                     std::vector<RenderGraphDeactivatedNode> &deactivated) {
+    auto active = lowered;
+    if (features.excluded_passes.empty() && features.excluded_resources.empty() &&
+        features.excluded_replacements.empty())
+        return active;
+    std::set<std::string> inactive;
+    const auto deactivate = [&](const std::string &node, const std::string &feature, const char *reason) {
+        if (!inactive.insert(node).second) return false;
+        deactivated.push_back({node, feature, reason});
+        return true;
+    };
+    const auto excludedPass = [&](const std::string &name) -> const std::string * {
+        const auto found = features.excluded_passes.find(name);
+        return found != features.excluded_passes.end() ? &found->second : nullptr;
+    };
+    const auto excludedResource = [&](const std::string &name) -> const std::string * {
+        const auto found = features.excluded_resources.find(name);
+        return found != features.excluded_resources.end() ? &found->second : nullptr;
+    };
+    const auto replacedExcluded = [&](const std::string &node) -> const std::string * {
+        for (const auto &replacement : features.excluded_replacements)
+            if (replacement.node == node) return &replacement.feature;
+        return nullptr;
+    };
+    const auto resourceOf = [&](const Json &declaration) -> const std::string * {
+        for (const auto &resource : declarationResources(declaration))
+            if (const auto *feature = excludedResource(resource)) return feature;
+        return nullptr;
+    };
+    const auto orderOf = [&](const Json &declaration) -> const std::string * {
+        for (const auto *key : {"after", "before"})
+            for (const auto &name : orderNames(declaration, key))
+                if (const auto *feature = excludedPass(name)) return feature;
+        return nullptr;
+    };
+    // Why a graph pass or task goes: it replaces a pass of the feature, its
+    // anchor is one, it names a target of the feature, an edge names a pass
+    // of it -- the first that holds.
+    const auto judge = [&](const std::string &name, const Json &declaration, const std::string *anchor_feature) {
+        if (const auto *feature = replacedExcluded(name)) deactivate(name, *feature, "pass_replacement");
+        else if (anchor_feature != nullptr) deactivate(name, *anchor_feature, "insert");
+        else if (const auto *feature = resourceOf(declaration)) deactivate(name, *feature, "target_ref");
+        else if (const auto *feature = orderOf(declaration)) deactivate(name, *feature, "order");
+    };
+    forEachComposedDeclaration(composed, [&](Json &declaration, const std::string &) {
+        const auto name = declaration.value("name", std::string{});
+        if (lowered.graph_declarations.contains(name)) judge(name, declaration, nullptr);
+    });
+    for (const auto &run : lowered.placed_runs)
+        for (const auto &pass : run.passes)
+            judge(pass.at("name").get<std::string>(), pass, excludedPass(run.anchor));
+    for (const auto &loop : lowered.loops) {
+        const auto &id = loop.shape.node;
+        const std::string *resource = nullptr;
+        const std::string *order = nullptr;
+        for (const auto &branch : loop.branches) {
+            if (!branch) continue;
+            for (const auto &reference : branch->target_refs)
+                if (resource == nullptr) resource = excludedResource(reference.name);
+            for (const auto &[family, pass] : branch->passes) {
+                if (resource == nullptr) resource = resourceOf(pass);
+                if (order == nullptr) order = orderOf(pass);
+            }
+            for (const auto &task : branch->compute_tasks) {
+                if (resource == nullptr) resource = resourceOf(task);
+                if (order == nullptr) order = orderOf(task);
+            }
+        }
+        for (const auto &[to, input] : loop.carried)
+            if (resource == nullptr) resource = excludedResource(input.resource);
+        for (const auto *names : {&loop.shape.after, &loop.shape.before})
+            for (const auto &name : *names)
+                if (order == nullptr) order = excludedPass(name);
+        const auto *anchor = loop.shape.placement ? excludedPass(loop.shape.placement->anchor) : nullptr;
+        if (const auto *feature = replacedExcluded(id)) deactivate(id, *feature, "pass_replacement");
+        else if (anchor != nullptr) deactivate(id, *anchor, "insert");
+        else if (resource != nullptr) deactivate(id, *resource, "target_ref");
+        else if (order != nullptr) deactivate(id, *order, "order");
+    }
+    // A loop made inactive has no output: whoever reads one, or carries from
+    // one, goes too.
+    std::set<std::string> loop_ids;
+    for (const auto &loop : lowered.loops) loop_ids.insert(loop.shape.node);
+    const auto loopOfBody = [&](const std::string &consumer) -> std::optional<std::string> {
+        for (const auto &id : loop_ids)
+            if (consumer.starts_with(id + "/$")) return id;
+        return std::nullopt;
+    };
+    const auto featureOf = [&](const std::string &node) {
+        for (const auto &entry : deactivated)
+            if (entry.node == node) return entry.feature;
+        return std::string{};
+    };
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (const auto &read : lowered.loop_output_reads) {
+            if (!inactive.contains(read.loop)) continue;
+            changed = deactivate(loopOfBody(read.consumer).value_or(read.consumer), featureOf(read.loop),
+                                 "loop_output") || changed;
+        }
+        for (const auto &loop : lowered.loops)
+            for (const auto &[to, input] : loop.carried)
+                if (!input.loop.empty() && inactive.contains(input.loop))
+                    changed = deactivate(loop.shape.node, featureOf(input.loop), "loop_output") || changed;
+        // A place next to a pass made inactive is gone with it.
+        for (const auto &run : lowered.placed_runs) {
+            if (!inactive.contains(run.anchor)) continue;
+            for (const auto &pass : run.passes)
+                changed = deactivate(pass.at("name").get<std::string>(), featureOf(run.anchor), "insert") || changed;
+        }
+        for (const auto &loop : lowered.loops)
+            if (loop.shape.placement && inactive.contains(loop.shape.placement->anchor))
+                changed = deactivate(loop.shape.node, featureOf(loop.shape.placement->anchor), "insert") || changed;
+    }
+
+    // What is left: no inactive node, no check of a reference to an excluded
+    // target, and no edge to what is gone.
+    std::set<std::string> gone = inactive;
+    for (const auto &[name, feature] : features.excluded_passes) gone.insert(name);
+    std::size_t removed = 0;
+    for (const auto &name : inactive)
+        if (lowered.graph_declarations.contains(name)) ++removed;
+    eraseDeclarations(composed, inactive);
+    forgetPlanningNodes(composed, inactive);
+    rewriteFrameNodeOrder(composed, [&](const std::string &, const std::string &name) {
+        return inactive.contains(name) ? std::optional<std::vector<std::string>>{std::vector<std::string>{}}
+                                       : std::nullopt;
+    });
+    forEachComposedDeclaration(composed, [&](Json &declaration, const std::string &) {
+        dropOrderNames(declaration, gone);
+    });
+    for (auto &run : active.placed_runs) {
+        run.passes.erase(std::remove_if(run.passes.begin(), run.passes.end(), [&](const Json &pass) {
+            return inactive.contains(pass.at("name").get<std::string>());
+        }), run.passes.end());
+        for (auto &pass : run.passes) dropOrderNames(pass, gone);
+        if (!run.passes.empty()) run.node = run.passes.front().at("name").get<std::string>();
+    }
+    std::erase_if(active.placed_runs, [](const RenderGraphPassRun &run) { return run.passes.empty(); });
+    std::erase_if(active.loops, [&](const RenderGraphLoop &loop) { return inactive.contains(loop.shape.node); });
+    for (auto &loop : active.loops) {
+        for (auto *names : {&loop.shape.after, &loop.shape.before})
+            std::erase_if(*names, [&](const std::string &name) { return gone.contains(name); });
+        for (auto &branch : loop.branches) {
+            if (!branch) continue;
+            for (auto &[family, pass] : branch->passes) dropOrderNames(pass, gone);
+            for (auto &task : branch->compute_tasks) dropOrderNames(task, gone);
+        }
+    }
+    std::erase_if(active.loop_output_reads, [&](const RenderGraphLoopOutputRead &read) {
+        const auto body = loopOfBody(read.consumer);
+        return inactive.contains(read.loop) || inactive.contains(read.consumer) || (body && inactive.contains(*body));
+    });
+    std::erase_if(active.target_refs, [&](const RenderGraphTargetReference &reference) {
+        return excludedResource(reference.name) != nullptr;
+    });
+    std::erase_if(active.history_reads, [&](const RenderGraphHistoryRead &read) {
+        return inactive.contains(read.node) || excludedResource(read.target) != nullptr;
+    });
+    for (const auto &name : inactive) active.graph_declarations.erase(name);
+    active.graph_node_count -= std::min(removed, active.graph_node_count);
+    return active;
+}
+} // namespace
+
+void applyRenderFeaturePassReplacements(Json &composed, const LoweredRenderGraphDocument &lowered,
+                                        const std::map<std::string, RenderLoopOrigin> &loop_passes,
+                                        const RenderGraphFeatureContext &features) {
+    if (features.replacements.empty()) return;
+    std::set<std::string> loop_ids;
+    for (const auto &loop : lowered.loops) loop_ids.insert(loop.shape.node);
+    // One node may take the place of several passes (planar's mip chain):
+    // each node once, over every entry that names it, in the order named.
+    std::vector<std::string> nodes;
+    std::map<std::string, std::vector<const RenderFeaturePassReplacement *>> entries_of;
+    for (const auto &replacement : features.replacements) {
+        if (!entries_of.contains(replacement.node)) nodes.push_back(replacement.node);
+        entries_of[replacement.node].push_back(&replacement);
+    }
+    // What a declaration writes: its attachments, its writes, a copy's
+    // destination.
+    const auto writesOf = [](const Json &declaration) {
+        auto writes = declarationWrites(declaration);
+        if (const auto destination = declaration.find("destination");
+            destination != declaration.end() && destination->is_string())
+            writes.insert(destination->get<std::string>());
+        return writes;
+    };
+    for (const auto &node : nodes) {
+        const auto &entries = entries_of.at(node);
+        auto declarations = composedDeclarations(composed);
+        for (const auto *entry : entries) {
+            const auto owner = features.feature_passes.find(entry->pass);
+            if (owner == features.feature_passes.end() || owner->second != entry->feature ||
+                !declarations.contains(entry->pass))
+                throw GraphRegistryError("render_feature.pass_replacement_unknown@1",
+                                         {{"feature", entry->feature}, {"pass", entry->pass}});
+        }
+        const bool loop = loop_ids.contains(node);
+        if (!loop && !lowered.graph_declarations.contains(node))
+            throw GraphRegistryError("graph.node_missing@1", {{"node", node},
+                                                              {"feature", entries.front()->feature},
+                                                              {"pass", entries.front()->pass}});
+        const auto isMember = [&](const std::string &name) {
+            if (!loop) return name == node;
+            const auto found = loop_passes.find(name);
+            return found != loop_passes.end() && found->second.loop == node;
+        };
+        // The node's passes and tasks in declared order: family by family,
+        // then the tasks (declared after every pass).
+        std::vector<NamedDeclaration> members;
+        forEachComposedDeclaration(composed, [&](Json &declaration, const std::string &family) {
+            const auto name = declaration.value("name", std::string{});
+            if (isMember(name)) members.emplace_back(name, family);
+        });
+        std::set<std::string> member_names;
+        std::set<std::string> written;
+        for (const auto &[name, family] : members) {
+            member_names.insert(name);
+            const auto writes = writesOf(*declarations.at(name).declaration);
+            written.insert(writes.begin(), writes.end());
+        }
+        std::set<std::string> replaced;
+        std::map<std::string, Json> replaced_declarations;
+        std::map<std::string, std::string> replaced_family;
+        std::map<std::string, std::vector<std::string>> replaced_by_family; // "" for tasks
+        for (const auto *entry : entries) {
+            const auto &found = declarations.at(entry->pass);
+            for (const auto &resource : writesOf(*found.declaration))
+                if (!written.contains(resource))
+                    throw std::runtime_error("render feature '" + entry->feature + "' pass_replacements['" +
+                                             entry->pass + "']: '" + node + "' no longer writes resource '" +
+                                             resource + "'");
+            replaced.insert(entry->pass);
+            replaced_declarations.emplace(entry->pass, *found.declaration);
+            replaced_family.emplace(entry->pass, found.family);
+            replaced_by_family[found.family].push_back(entry->pass);
+        }
+        // The node's passes (tasks) of each replaced family move to where the
+        // first replaced one stood, and the replaced ones leave.
+        std::map<std::string, std::vector<std::string>> moving_by_family;
+        for (const auto &[family, passes] : replaced_by_family) {
+            auto &moving = moving_by_family[family];
+            for (const auto &[name, member_family] : members)
+                if (member_family == family) moving.push_back(name);
+            if (moving.empty()) {
+                const bool has_pass = std::any_of(members.begin(), members.end(),
+                                                  [](const NamedDeclaration &member) { return !member.second.empty(); });
+                if (!family.empty() && has_pass)
+                    throw GraphRegistryError("graph.insert_family_mismatch@1",
+                                             {{"node", node}, {"anchor", passes.front()}});
+                throw std::runtime_error("render feature '" + entries.front()->feature + "' pass_replacements['" +
+                                         passes.front() + "']: '" + node + "' has no " +
+                                         (family.empty() ? "compute task" : "pass") + " to take its place");
+            }
+            Json *list = nullptr;
+            if (family.empty()) {
+                list = &composed.at("compute_tasks");
+            } else {
+                for (auto &candidate : composed.at("rendering_passes"))
+                    if (candidate.value("name", std::string{}) == family) list = &candidate.at("passes");
+            }
+            const auto moves = [&](const std::string &name) {
+                return std::find(moving.begin(), moving.end(), name) != moving.end();
+            };
+            std::vector<Json> moved;
+            for (const auto &declaration : *list)
+                if (moves(declaration.value("name", std::string{}))) moved.push_back(declaration);
+            Json rebuilt = Json::array();
+            bool placed = false;
+            for (auto &declaration : *list) {
+                const auto name = declaration.value("name", std::string{});
+                if (replaced.contains(name)) {
+                    if (!placed)
+                        for (auto &member : moved) rebuilt.push_back(std::move(member));
+                    placed = true;
+                    continue;
+                }
+                if (moves(name)) continue;
+                rebuilt.push_back(std::move(declaration));
+            }
+            *list = std::move(rebuilt);
+        }
+        // Every name of a replaced pass now names the node: `after` its last
+        // pass or task the holder may order against, `before` its first.
+        const auto orderable = [&](const std::string &holder_family) {
+            std::vector<std::string> names;
+            for (const auto &[name, family] : members)
+                if (mayOrderAgainst(holder_family, family, family.empty())) names.push_back(name);
+            return names;
+        };
+        forEachComposedDeclaration(composed, [&](Json &declaration, const std::string &family) {
+            const auto holder = declaration.value("name", std::string{});
+            // A pass of the node itself stands where the replaced one stood,
+            // so it keeps no edge to it.
+            const bool member = member_names.contains(holder);
+            const auto candidates = orderable(family);
+            for (const auto *key : {"after", "before"}) {
+                const auto list = declaration.find(key);
+                if (list == declaration.end() || !list->is_array()) continue;
+                Json rewritten = Json::array();
+                for (const auto &item : *list) {
+                    if (!item.is_string() || !replaced.contains(item.get<std::string>())) {
+                        rewritten.push_back(item);
+                        continue;
+                    }
+                    if (member || candidates.empty()) continue;
+                    const auto &name = std::string_view{key} == "after" ? candidates.back() : candidates.front();
+                    if (name != holder && std::find(rewritten.begin(), rewritten.end(), name) == rewritten.end())
+                        rewritten.push_back(name);
+                }
+                *list = std::move(rewritten);
+            }
+            if (const auto snapshot = declaration.find("snapshot_after");
+                snapshot != declaration.end() && snapshot->is_string() &&
+                replaced.contains(snapshot->get<std::string>()) && !candidates.empty())
+                *snapshot = candidates.back();
+        });
+        // The replaced passes' own edges go to the node's passes that took
+        // their place: `after` to the first, `before` to the last.
+        declarations = composedDeclarations(composed);
+        for (const auto &[pass, declaration] : replaced_declarations) {
+            const auto &moving = moving_by_family.at(replaced_family.at(pass));
+            for (const auto *key : {"after", "before"}) {
+                auto &target =
+                    *declarations.at(std::string_view{key} == "after" ? moving.front() : moving.back()).declaration;
+                for (const auto &name : orderNames(declaration, key))
+                    if (!replaced.contains(name) && !member_names.contains(name)) appendOrder(target, key, name);
+            }
+        }
+        rewriteFrameNodeOrder(composed, [&](const std::string &graph, const std::string &name) {
+            if (!replaced.contains(name)) return std::optional<std::vector<std::string>>{};
+            std::vector<std::string> names;
+            for (const auto &[member, family] : members)
+                if (family.empty() || family == graph) names.push_back(member);
+            return std::optional<std::vector<std::string>>{std::move(names)};
+        });
+        forgetPlanningNodes(composed, replaced);
+        // A surface resource the replaced pass produced is produced by the
+        // node's last pass that writes it.
+        if (features.surface_resource_contracts != nullptr && features.surface_resource_contracts->is_array())
+            for (auto &contract : *features.surface_resource_contracts) {
+                if (!contract.is_object() || !contract.contains("producer") || !contract.at("producer").is_string() ||
+                    !replaced.contains(contract.at("producer").get<std::string>()))
+                    continue;
+                const auto resource = contract.value("resource", std::string{});
+                std::string producer;
+                for (const auto &[name, family] : members)
+                    if (!family.empty() && writesOf(*declarations.at(name).declaration).contains(resource))
+                        producer = name;
+                if (producer.empty())
+                    throw std::runtime_error("surface_resources contract '" +
+                                             contract.value("contract", std::string{}) + "' producer '" +
+                                             contract.at("producer").get<std::string>() + "' is replaced by '" +
+                                             node + "', which no longer writes resource '" + resource + "'");
+                contract["producer"] = producer;
+            }
+    }
 }
 }

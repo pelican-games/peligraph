@@ -6310,4 +6310,340 @@ TEST_CASE("LP-1b a loop body's value nodes run once per element",
     }
 }
 
+
+namespace {
+// LP-0d: shadow_directional over the hybrid preset (cascade_count 3), its
+// shadow_depth replaced by what the graph draws into the same target. Until
+// LP-0e brings render.shadow_depth, the stand-in is a render.raster in the
+// $shadow/directional view family with a depth attachment to shadow_map
+// through a render.target_ref.
+nlohmann::json lp0dDepthType() {
+    return {{"semantic", "pelican.render.depth@1"},
+            {"arguments", {{"representation", "device"}, {"space", "projection"}, {"topology", "two_d_array"}}}};
+}
+
+nlohmann::json lp0dShadowRef() {
+    return {{"id", "shadow"}, {"op", "render.target_ref"},
+            {"parameters", {{"name", "shadow_map"}, {"type", lp0dDepthType()}}}, {"outputs", {"resource"}}};
+}
+
+nlohmann::json lp0dRaster(const std::string &id, const nlohmann::json &depth_source,
+                          const nlohmann::json &extra = nlohmann::json::object()) {
+    using Json = nlohmann::json;
+    Json parameters{{"pass_set", "main_render"},
+                    {"shader", {{"vertex", "engine://shadow_depth"}}},
+                    {"view_family", "$shadow/directional"},
+                    {"draw", {{"vertex_count", 3}}},
+                    {"ports", {{"depth", {{"kind", "image"}, {"type", lp0dDepthType()}, {"access", "write"},
+                                          {"attachment", "depth"}}}}}};
+    for (const auto &[key, value] : extra.items()) parameters[key] = value;
+    return Json{{"id", id}, {"op", "render.raster"}, {"parameters", std::move(parameters)},
+                {"inputs", {{"depth", depth_source}}}, {"outputs", {"depth"}}};
+}
+
+// A loop body that draws the depth its `target` input is given.
+nlohmann::json lp0dCascadeBody() {
+    using Json = nlohmann::json;
+    return Json{{"nodes", Json::array({{{"id", "target"}, {"op", "graph.input"}},
+                                       lp0dRaster("depth", {{"node", "target"}, {"port", "value"}})})},
+                {"outputs", Json::object()}};
+}
+
+nlohmann::json lp0dShadowFeature(const nlohmann::json &replacements) {
+    auto feature = nlohmann::json{{"ref", "engine://features/shadow_directional.json"},
+                                  {"parameters", nlohmann::json::parse(R"({"cascade_count": 3})")}};
+    if (!replacements.is_null()) feature["pass_replacements"] = replacements;
+    return feature;
+}
+
+nlohmann::json lp0dGraph(nlohmann::json nodes, const nlohmann::json &replacements,
+                         nlohmann::json definitions = nlohmann::json::object()) {
+    using Json = nlohmann::json;
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", std::move(definitions)},
+                {"nodes", std::move(nodes)}, {"outputs", Json::object()},
+                {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+                               {"features", Json::array({lp0dShadowFeature(replacements)})}}}};
+}
+
+// `probe` is placed after shadow_depth, `early` before it.
+nlohmann::json lp0dNeighbours() {
+    using Json = nlohmann::json;
+    return Json::array({lp1aLit(), lp0bImage("probe_image"),
+                        lp0bPass("probe", "lit", "probe_image", {{"insert", {{"after", "shadow_depth"}}}}),
+                        lp0bImage("early_image"),
+                        lp0bPass("early", "lit", "early_image", {{"insert", {{"before", "shadow_depth"}}}})});
+}
+
+const nlohmann::json &lp0dContract(const nlohmann::json &contracts, std::string_view name) {
+    for (const auto &contract : contracts)
+        if (contract.at("contract").get<std::string>() == name) return contract;
+    throw std::runtime_error("no surface resource contract " + std::string{name});
+}
+} // namespace
+
+TEST_CASE("LP-0d pass_replacements puts a graph pass where the feature's pass stood",
+          "[render-feature][graph-composition][lp0d]") {
+    using Json = nlohmann::json;
+    auto nodes = lp0dNeighbours();
+    nodes.push_back(lp0dShadowRef());
+    nodes.push_back(lp0dRaster("cascade_depth", {{"node", "shadow"}, {"port", "resource"}}));
+    // The same graph without the replacement: shadow_depth draws, and the
+    // graph pass is appended with the other scene passes.
+    const auto kept = lp0aCompose(lp0dGraph(nodes, nullptr));
+    const auto composed = lp0aCompose(lp0dGraph(nodes, {{"shadow_depth", "cascade_depth"}}));
+    const auto &config = composed.config;
+
+    // shadow_depth leaves the frame plan; cascade_depth stands where it stood.
+    auto expected = lp0bDeclared(kept.config);
+    expected.erase(std::find(expected.begin(), expected.end(), "cascade_depth"));
+    *std::find(expected.begin(), expected.end(), "shadow_depth") = "cascade_depth";
+    CHECK(lp0bDeclared(config) == expected);
+    const auto order = lp0bPlanOrder(composed);
+    CHECK(std::find(order.begin(), order.end(), "shadow_depth") == order.end());
+    const auto kept_order = lp0bPlanOrder(kept);
+    CHECK(lp0bIndex(order, "cascade_depth") < lp0bIndex(order, "forward_opaque"));
+    CHECK(lp0bIndex(kept_order, "shadow_depth") < lp0bIndex(kept_order, "forward_opaque"));
+
+    // What named shadow_depth names the replacement.
+    CHECK(lp0bListed(passByName(config, "probe").at("after"), "cascade_depth"));
+    CHECK(lp0bListed(passByName(config, "early").at("before"), "cascade_depth"));
+    CHECK(config.dump().find("\"shadow_depth\"") == std::string::npos);
+
+    // The surface resource's producer follows; the provider keeps the
+    // feature's cascade_count and its target.
+    const auto &contract = lp0dContract(composed.surface_resource_contracts, "directional_shadow");
+    CHECK(contract.at("producer") == "cascade_depth");
+    CHECK(contract.at("resource") == "shadow_map");
+    CHECK(contract.at("provider_feature") == "shadow_directional");
+    CHECK(lp0dContract(kept.surface_resource_contracts, "directional_shadow").at("producer") == "shadow_depth");
+    const auto instance = std::find_if(composed.feature_instances.begin(), composed.feature_instances.end(),
+        [](const Json &entry) { return entry.at("feature") == "shadow_directional"; });
+    REQUIRE(instance != composed.feature_instances.end());
+    CHECK(instance->at("parameters").at("cascade_count") == 3);
+    // The instance's pass_replacements is authoring, not a resolved field.
+    CHECK_FALSE(instance->contains("pass_replacements"));
+    const auto compiled = compileComposition(composed);
+    const auto compiled_contract = std::find_if(compiled.surface_resource_contracts.begin(),
+        compiled.surface_resource_contracts.end(),
+        [](const auto &entry) { return entry.contract.name == "directional_shadow"; });
+    REQUIRE(compiled_contract != compiled.surface_resource_contracts.end());
+    CHECK(compiled_contract->producer == "cascade_depth");
+    CHECK(compiled_contract->resource == "shadow_map");
+    const auto shadow_target = std::find_if(config.at("render_targets").begin(), config.at("render_targets").end(),
+        [](const Json &target) { return target.at("name") == "shadow_map"; });
+    REQUIRE(shadow_target != config.at("render_targets").end());
+    CHECK(shadow_target->at("layers") == 3);
+}
+
+TEST_CASE("LP-0d a graph.loop replaces a pass with its expansion, ordered by its first and last copy",
+          "[render-feature][graph-composition][lp0d]") {
+    using Json = nlohmann::json;
+    auto nodes = lp0dNeighbours();
+    nodes.push_back(lp0dShadowRef());
+    nodes.push_back(lp1aLoop("cascades", lp1aRange(3, "cascade"), {{"target", {{"node", "shadow"}, {"port", "resource"}}}}));
+    const Json definitions{{"cascade", lp0dCascadeBody()}};
+    const auto kept = lp0aCompose(lp0dGraph(nodes, nullptr, definitions));
+    const auto composed = lp0aCompose(lp0dGraph(nodes, {{"shadow_depth", "cascades"}}, definitions));
+    const auto &config = composed.config;
+    const std::vector<std::string> copies{"cascades/0/depth", "cascades/1/depth", "cascades/2/depth"};
+
+    // The copies, in element order, stand where shadow_depth stood.
+    const auto declared = lp0bDeclared(config);
+    // Where shadow_depth stands when the copies are declared elsewhere.
+    auto kept_declared = lp0bDeclared(kept.config);
+    std::erase_if(kept_declared, [](const std::string &name) { return name.starts_with("cascades/"); });
+    const auto slot = lp0bIndex(kept_declared, "shadow_depth");
+    CHECK(std::find(declared.begin(), declared.end(), "shadow_depth") == declared.end());
+    for (std::size_t element = 0; element < copies.size(); ++element)
+        CHECK(lp0bIndex(declared, copies[element]) == slot + static_cast<std::ptrdiff_t>(element));
+    // Each copy draws the one target, so each waits on the one before.
+    CHECK(lp0bListed(passByName(config, copies[1]).at("after"), copies[0]));
+    CHECK(lp0bListed(passByName(config, copies[2]).at("after"), copies[1]));
+
+    // After shadow_depth is after the last copy, before it before the first.
+    const auto &probe_after = passByName(config, "probe").at("after");
+    CHECK(lp0bListed(probe_after, copies.back()));
+    CHECK_FALSE(lp0bListed(probe_after, copies.front()));
+    const auto &early_before = passByName(config, "early").at("before");
+    CHECK(lp0bListed(early_before, copies.front()));
+    CHECK_FALSE(lp0bListed(early_before, copies.back()));
+    CHECK(lp0dContract(composed.surface_resource_contracts, "directional_shadow").at("producer") == copies.back());
+
+    const auto order = lp0bPlanOrder(composed);
+    CHECK(lp0bIndex(order, copies[0]) < lp0bIndex(order, copies[1]));
+    CHECK(lp0bIndex(order, copies[1]) < lp0bIndex(order, copies[2]));
+    CHECK(lp0bIndex(order, copies[2]) < lp0bIndex(order, "probe"));
+    CHECK(lp0bIndex(order, "early") < lp0bIndex(order, copies[0]));
+    REQUIRE_NOTHROW(compileComposition(composed));
+}
+
+TEST_CASE("LP-0d pass_replacements refusals", "[render-feature][graph-composition][lp0d]") {
+    using Json = nlohmann::json;
+    const Json nodes = Json::array({lp0dShadowRef(),
+                                    lp0dRaster("cascade_depth", {{"node", "shadow"}, {"port", "resource"}}),
+                                    lp1aLit(), lp0bImage("elsewhere_image"),
+                                    lp0bPass("elsewhere", "lit", "elsewhere_image", Json::object())});
+
+    SECTION("a replacement that does not write what the pass wrote is refused as a producer that no longer writes it") {
+        try {
+            (void)lp0aCompose(lp0dGraph(nodes, {{"shadow_depth", "elsewhere"}}));
+            FAIL("the replacement was not refused");
+        } catch (const GraphRegistryError &error) {
+            FAIL(std::string{"refused by name: "} + error.what());
+        } catch (const std::runtime_error &error) {
+            const std::string message = error.what();
+            INFO(message);
+            CHECK(message.find("pass_replacements['shadow_depth']") != std::string::npos);
+            CHECK(message.find("'elsewhere' no longer writes resource 'shadow_map'") != std::string::npos);
+        }
+    }
+    SECTION("a pass the feature does not declare is refused by name") {
+        for (const std::string pass : {"no_such_pass", "deferred_lighting"}) {
+            INFO(pass);
+            const auto [code, fields] = lp0aRefusal(lp0dGraph(nodes, {{pass, "cascade_depth"}}));
+            CHECK(code == "render_feature.pass_replacement_unknown@1");
+            CHECK(fields == Json{{"feature", "shadow_directional"}, {"pass", pass}});
+        }
+    }
+    SECTION("a replacement that is no graph pass, task or loop is refused by name") {
+        for (const std::string node : {"no_such_node", "shadow", "forward_opaque"}) {
+            INFO(node);
+            const auto [code, fields] = lp0aRefusal(lp0dGraph(nodes, {{"shadow_depth", node}}));
+            CHECK(code == "graph.node_missing@1");
+            CHECK(fields == Json{{"node", node}, {"feature", "shadow_directional"}, {"pass", "shadow_depth"}});
+        }
+        // A rendering config that is no graph has no node to name.
+        const Json native{{"features", Json::array({lp0dShadowFeature({{"shadow_depth", "cascade_depth"}})})},
+                          {"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}};
+        try {
+            (void)lp0aCompose(native);
+            FAIL("the native config was not refused");
+        } catch (const GraphRegistryError &error) {
+            CHECK(error.code() == "graph.node_missing@1");
+        }
+    }
+    SECTION("the shape is checked") {
+        for (const auto &replacements : {Json::array({"shadow_depth"}), Json{{"shadow_depth", 3}},
+                                         Json{{"shadow_depth", ""}}, Json{{"", "cascade_depth"}}}) {
+            INFO(replacements.dump());
+            CHECK_THROWS_AS(lp0aCompose(lp0dGraph(nodes, replacements)), std::runtime_error);
+        }
+    }
+}
+
+namespace {
+// LP-0d: the LP-0a graph (`blit` copies lit_color, `paint` writes bloom's
+// threshold target through a render.target_ref) with `paint` replacing
+// bloom's HighLuminanceExtraction, `glow` placed after bloom's last pass,
+// `trail` placed after `glow`, and `early` ordered before `glow`. Bloom here
+// keeps a history target, which the preview variant excludes.
+nlohmann::json lp0dBloomVariantGraph() {
+    using Json = nlohmann::json;
+    auto document = lp0aTargetRefGraph();
+    document["rendering"]["features"] = Json::array({{{"ref", "engine://features/bloom.json"},
+        {"pass_replacements", {{"HighLuminanceExtraction", "paint"}}}}});
+    document["nodes"].push_back(lp0bImage("glow_image"));
+    document["nodes"].push_back(lp0bPass("glow", "lit", "glow_image", {{"insert", {{"after", "FinalBloomComposite"}}}}));
+    document["nodes"].push_back(lp0bImage("trail_image"));
+    document["nodes"].push_back(lp0bPass("trail", "lit", "trail_image", {{"insert", {{"after", "glow"}}}}));
+    document["nodes"].push_back(lp0bImage("early_image"));
+    document["nodes"].push_back(lp0bPass("early", "lit", "early_image", {{"before", Json::array({"glow"})}}));
+    return document;
+}
+
+std::string lp0dHistoryBloom(std::string_view ref) {
+    auto document = nlohmann::json::parse(loadEngineFeature(ref));
+    if (ref == "engine://features/bloom.json") document["render_targets"][0]["history"] = true;
+    return document.dump();
+}
+
+ResolvedRenderPipeline lp0dResolve(const nlohmann::json &document, RenderPipelineGraphVariant variant) {
+    return resolveRenderPipeline(RenderPipelineRequest{document, "LP-0d variant"},
+                                 RenderEnvironmentCapabilities{true, variant},
+                                 RenderPipelineResolveDependencies{.load_feature_json = lp0dHistoryBloom,
+                                                                   .load_pipeline_json = lp0dHistoryBloom});
+}
+
+bool lp0dDeclares(const nlohmann::json &config, std::string_view name) {
+    for (const auto &family : config.at("rendering_passes"))
+        for (const auto &pass : family.at("passes"))
+            if (pass.value("name", std::string{}) == name) return true;
+    return false;
+}
+} // namespace
+
+TEST_CASE("LP-0d a graph node that depends on a feature the variant excluded is made inactive with it",
+          "[render-feature][graph-composition][graph-variant][preview][lp0d]") {
+    using Json = nlohmann::json;
+    const auto document = lp0dBloomVariantGraph();
+
+    // Flat keeps bloom: paint stands where HighLuminanceExtraction stood.
+    const auto flat = lp0dResolve(document, RenderPipelineGraphVariant::flat);
+    CHECK(flat.excluded_feature_names.empty());
+    CHECK(flat.deactivated_graph_nodes.empty());
+    for (const auto *name : {"blit", "paint", "glow", "trail", "early"}) CHECK(lp0dDeclares(flat.normalized_config, name));
+    CHECK_FALSE(lp0dDeclares(flat.normalized_config, "HighLuminanceExtraction"));
+
+    // Preview excludes bloom, and the recompose passes: what depends on bloom
+    // is inactive, the rest stays.
+    const auto preview = lp0dResolve(document, RenderPipelineGraphVariant::preview);
+    CHECK(preview.excluded_feature_names == std::vector<std::string>{"bloom"});
+    // `trail` goes with the pass it was placed after; `early` stays, and its
+    // edge to `glow` leaves.
+    CHECK(preview.deactivated_graph_nodes == std::vector<RenderGraphDeactivatedNode>{
+        {"paint", "bloom", "pass_replacement"}, {"glow", "bloom", "insert"}, {"trail", "bloom", "insert"}});
+    const auto &config = preview.normalized_config;
+    for (const auto *name : {"paint", "glow", "trail", "HighLuminanceExtraction"})
+        CHECK_FALSE(lp0dDeclares(config, name));
+    CHECK(lp0dDeclares(config, "blit"));
+    CHECK(lp0dDeclares(config, "early"));
+    CHECK(config.dump().find("\"glow\"") == std::string::npos);
+    for (const auto &[node, detail] : {std::pair{"paint", "preview:pass_replacement:bloom"},
+                                       std::pair{"glow", "preview:insert:bloom"},
+                                       std::pair{"trail", "preview:insert:bloom"}}) {
+        INFO(node);
+        CHECK(std::any_of(preview.diagnostics.begin(), preview.diagnostics.end(), [&](const auto &diagnostic) {
+            return diagnostic.kind == RenderPipelineDiagnosticKind::graph_node_deactivated &&
+                   diagnostic.subject == node && diagnostic.detail == detail;
+        }));
+    }
+    REQUIRE_NOTHROW(compileRenderPipeline(preview));
+
+    SECTION("a node that reaches bloom only through a render.target_ref") {
+        auto plain = lp0aTargetRefGraph();
+        const auto resolved = lp0dResolve(plain, RenderPipelineGraphVariant::preview);
+        CHECK(resolved.deactivated_graph_nodes ==
+              std::vector<RenderGraphDeactivatedNode>{{"paint", "bloom", "target_ref"}});
+        CHECK_FALSE(lp0dDeclares(resolved.normalized_config, "paint"));
+        CHECK(lp0dDeclares(resolved.normalized_config, "blit"));
+    }
+    SECTION("loops: one that draws into bloom's target, one placed by a bloom pass, whoever reads it") {
+        auto placed = lp1aRange(2);
+        placed["insert"] = {{"after", "FinalBloomComposite"}};
+        auto later = lp1aRange(2);
+        later["after"] = Json::array({"acc"});
+        auto reads = lp0bPass("reads", "lit", "read_image", {{"canonical_anchor", "post_ldr"}});
+        // `reads` samples the last image `steps` painted.
+        reads["inputs"]["source"] = {{"node", "steps"}, {"port", "image"}};
+        const auto looped = lp1aGraph(Json::array({
+            {{"id", "threshold"}, {"op", "render.target_ref"},
+             {"parameters", {{"name", "Bloom_Threshold_RT"}, {"type", lp0aSceneColorType()}}},
+             {"outputs", {"resource"}}},
+            lp1aLoop("acc", lp1aRange(2, "accumulate"), {{"target", {{"node", "threshold"}, {"port", "resource"}}}}),
+            lp1aLoop("steps", placed, Json::object(), Json::array({"image"})),
+            lp1aLoop("later", later),
+            lp0bImage("read_image"), reads, lp1aLit()}));
+        const auto flat_looped = lp0dResolve(looped, RenderPipelineGraphVariant::flat);
+        CHECK(flat_looped.deactivated_graph_nodes.empty());
+        const auto resolved = lp0dResolve(looped, RenderPipelineGraphVariant::preview);
+        CHECK(resolved.deactivated_graph_nodes == std::vector<RenderGraphDeactivatedNode>{
+            {"acc", "bloom", "target_ref"}, {"steps", "bloom", "insert"}, {"reads", "bloom", "loop_output"}});
+        CHECK(lp1aNamesUnder(resolved.normalized_config, "acc/").empty());
+        CHECK(lp1aNamesUnder(resolved.normalized_config, "steps/").empty());
+        CHECK_FALSE(lp0dDeclares(resolved.normalized_config, "reads"));
+        CHECK(lp1aNamesUnder(resolved.normalized_config, "later/").size() == 2);
+        REQUIRE_NOTHROW(compileRenderPipeline(resolved));
+    }
+}
+
 } // namespace Pelican

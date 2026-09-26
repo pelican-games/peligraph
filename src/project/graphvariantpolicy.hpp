@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <map>
 #include <nlohmann/json_fwd.hpp>
@@ -220,18 +221,27 @@ void validateGraphVariantConfig(
 // G-6: a candidate that one graph variant could not compose, raised by an
 // edit preflight that composes every variant the engine registered. The
 // message is the composer's own; the variant says which program refused it.
+// LP-0d: `cause` is the composer's exception itself, so a named refusal (a
+// GraphRegistryError) keeps its code and fields.
 class GraphVariantCompositionError : public std::runtime_error {
   public:
     GraphVariantCompositionError(RenderPipelineGraphVariant variant,
-                                 const std::string &message)
-        : std::runtime_error{message}, variant_{variant} {}
+                                 const std::string &message,
+                                 std::exception_ptr cause = nullptr)
+        : std::runtime_error{message}, variant_{variant},
+          cause_{std::move(cause)} {}
 
     [[nodiscard]] RenderPipelineGraphVariant variant() const noexcept {
         return variant_;
     }
 
+    [[nodiscard]] const std::exception_ptr &cause() const noexcept {
+        return cause_;
+    }
+
   private:
     RenderPipelineGraphVariant variant_;
+    std::exception_ptr cause_;
 };
 
 } // namespace Pelican

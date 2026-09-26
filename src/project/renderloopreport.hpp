@@ -41,4 +41,22 @@ struct RenderGraphLoopReport {
     bool operator==(const RenderGraphLoopReport &) const = default;
 };
 
+// LP-0d: a graph node a graph variant made inactive because it depends on a
+// feature the variant excluded. `reason` is one of
+//   target_ref        -- it reads or writes a target of that feature through a
+//                        render.target_ref,
+//   insert            -- its insert names a pass of it, or a graph pass made
+//                        inactive,
+//   order             -- its after / before names a pass of it,
+//   pass_replacement  -- it replaces a pass of it (pass_replacements),
+//   loop_output       -- it reads an output of (or carries from) a loop that
+//                        was made inactive; `feature` is that loop's.
+struct RenderGraphDeactivatedNode {
+    std::string node;
+    std::string feature;
+    std::string reason;
+
+    bool operator==(const RenderGraphDeactivatedNode &) const = default;
+};
+
 } // namespace Pelican

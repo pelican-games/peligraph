@@ -107,7 +107,9 @@ struct RenderConfigEditorDependencies {
     // it) before the edit takes a ticket. A variant that cannot compose it
     // throws GraphVariantCompositionError; the edit is refused as
     // render_pipeline_preflight_failed with that `variant`, and no document
-    // changes. Reading the context never calls it. Unset: no variant is
+    // changes. LP-0d: a named refusal (a GraphRegistryError, or a carried
+    // "<code>: <fields>" one) keeps its own code and fields instead, with
+    // `variant` beside them. Reading the context never calls it. Unset: no variant is
     // composed here, and the runtime's apply is the only check.
     std::function<void(const RenderConfigCandidateDocumentSet &)>
         preflight_graph_variants;

@@ -217,6 +217,9 @@ enum class RenderPipelineDiagnosticKind {
     graph_variant_selected,
     feature_excluded,
     pipeline_preset_resolved,
+    // LP-0d: subject is the graph node, detail
+    // "<variant>:<reason>:<excluded feature>" (RenderGraphDeactivatedNode).
+    graph_node_deactivated,
 };
 
 struct RenderPipelineDiagnostic {
@@ -328,6 +331,9 @@ struct ResolvedRenderPipeline {
     std::vector<RenderResourceProvenance> resource_provenance;
     // LP-1a: every graph.loop of the composed graph (empty when it has none).
     std::vector<RenderGraphLoopReport> graph_loops;
+    // LP-0d: the graph nodes this variant made inactive because they depend
+    // on a feature it excluded (also in `diagnostics`).
+    std::vector<RenderGraphDeactivatedNode> deactivated_graph_nodes;
     bool used_features = false;
 };
 
@@ -496,6 +502,8 @@ struct CompiledRenderPipeline {
     std::shared_ptr<const MaterialDrawLoopRules> material_draw_loops;
     // LP-1a: get_frame_plan's `loops[]` (absent when the graph has no loop).
     std::vector<RenderGraphLoopReport> graph_loops;
+    // LP-0d: the graph nodes this variant made inactive.
+    std::vector<RenderGraphDeactivatedNode> deactivated_graph_nodes;
     bool used_features = false;
 };
 

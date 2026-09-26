@@ -7679,6 +7679,135 @@ TEST_CASE("G-6 xr composes an edit only in an engine that started it",
 #endif
 }
 
+namespace {
+// LP-0d: a graph preview refuses by name but flat composes. Bloom here keeps
+// a history target, so preview leaves it out; the loop's count reads bloom's
+// threshold target, which preview then has none of.
+constexpr std::string_view lp0dPreviewRefusedGraph = R"json({
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {
+    "paint": {
+      "nodes": [
+        {"id": "image", "op": "render.image",
+         "parameters": {"type": {"semantic": "pelican.render.color_signal@1",
+                                 "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}},
+                        "format": "R16G16B16A16_SFLOAT", "extent_scale": 1.0,
+                        "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+         "outputs": ["resource"]},
+        {"id": "fill", "op": "render.fullscreen",
+         "parameters": {"pass_set": "main_render",
+                        "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"},
+                        "ports": {"color": {"kind": "image",
+                                            "type": {"semantic": "pelican.render.color_signal@1",
+                                                     "arguments": {"reference": "scene", "transfer": "linear",
+                                                                   "range": "extended"}},
+                                            "access": "write", "attachment": "color", "location": 0}}},
+         "inputs": {"color": {"node": "image", "port": "resource"}},
+         "outputs": ["color"]}
+      ],
+      "outputs": {"image": {"node": "fill", "port": "color"}}
+    }
+  },
+  "nodes": [
+    {"id": "steps", "op": "graph.loop",
+     "parameters": {"over": {"range": {"count": {"$expr": "layers_of(\"Bloom_Threshold_RT\")"}}},
+                    "branches": [{"body": "paint"}]},
+     "inputs": {}, "outputs": []}
+  ],
+  "outputs": {},
+  "rendering": {
+    "pipeline": {"preset": "engine://render_pipelines/hybrid_v1.json"},
+    "features": ["engine://features/bloom.json"]
+  }
+})json";
+
+std::string lp0dHistoryBloom(std::string_view ref) {
+    if (!ref.starts_with("engine://")) throw std::runtime_error("expected an engine reference");
+    auto document = Json::parse(engineResourceOrThrow(ref.substr(9)));
+    if (ref == "engine://features/bloom.json") document["render_targets"][0]["history"] = true;
+    return document.dump();
+}
+
+// An edit preflight that refuses every candidate the way `refuse` does, as
+// the preview graph.
+std::function<void(const RenderConfigCandidateDocumentSet &)> lp0dPreviewRefuses(
+    std::function<void()> refuse) {
+    return [refuse = std::move(refuse)](const RenderConfigCandidateDocumentSet &) {
+        try {
+            refuse();
+        } catch (const std::exception &error) {
+            throw GraphVariantCompositionError{RenderPipelineGraphVariant::preview, error.what(),
+                                               std::current_exception()};
+        }
+    };
+}
+} // namespace
+
+TEST_CASE("LP-0d a graph variant's named refusal keeps its code, with the variant beside its fields",
+          "[render-config-editor][g6][preflight][preview][lp0d]") {
+    SECTION("the engine's preflight hands the composer's refusal on") {
+        const std::string document{lp0dPreviewRefusedGraph};
+        try {
+            preflightRenderGraphVariants(document, lp0dHistoryBloom, true, false);
+            FAIL("preview composed the graph");
+        } catch (const GraphVariantCompositionError &error) {
+            CHECK(error.variant() == RenderPipelineGraphVariant::preview);
+            REQUIRE(error.cause());
+            try {
+                std::rethrow_exception(error.cause());
+            } catch (const GraphRegistryError &refusal) {
+                CHECK(refusal.code() == "graph.loop_expression_invalid@1");
+                CHECK(refusal.detail().at("node") == "steps");
+                CHECK(refusal.detail().at("reason") == "not_static");
+            }
+        }
+    }
+
+    G6Harness harness{false};
+    const auto refused = [&](std::function<void()> refuse) {
+        harness.service = makeProjectService(harness.project, harness.resolver, harness.runtime,
+                                             lp0dPreviewRefuses(std::move(refuse)));
+        const auto root_before = readBytes(harness.project.render_config);
+        auto result = harness.targets(addOp(sceneTarget("lit_color")));
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "rejected");
+        CHECK_FALSE(result.contains("ticket"));
+        CHECK(readBytes(harness.project.render_config) == root_before);
+        return result.at("error");
+    };
+
+    SECTION("a GraphRegistryError keeps its code and fields") {
+        const auto error = refused([] {
+            throw GraphRegistryError("graph.loop_expression_invalid@1",
+                                     {{"node", "steps"}, {"pointer", "/nodes/0/parameters/over/range/count"},
+                                      {"reason", "not_static"}});
+        });
+        CHECK(error.at("code") == "graph.loop_expression_invalid@1");
+        CHECK(error.at("variant") == "preview");
+        CHECK(error.at("node") == "steps");
+        CHECK(error.at("pointer") == "/nodes/0/parameters/over/range/count");
+        CHECK(error.at("reason") == "not_static");
+        CHECK(error.at("message").get<std::string>().starts_with("graph.loop_expression_invalid@1 "));
+    }
+    SECTION("a refusal carried as \"<code>: <fields>\" keeps its code and fields") {
+        const auto error = refused([] {
+            throw std::runtime_error("graph.view_select_runtime_axis@1: "
+                                     "{\"axis\":\"light\",\"family\":\"$shadow/spot\",\"pass\":\"spot_depth\"}");
+        });
+        CHECK(error.at("code") == "graph.view_select_runtime_axis@1");
+        CHECK(error.at("variant") == "preview");
+        CHECK(error.at("pass") == "spot_depth");
+        CHECK(error.at("axis") == "light");
+    }
+    SECTION("any other refusal stays render_pipeline_preflight_failed") {
+        const auto error = refused([] { throw std::runtime_error("preview graph rejects it"); });
+        CHECK(error.at("code") == "render_pipeline_preflight_failed");
+        CHECK(error.at("variant") == "preview");
+        CHECK(error.at("message") == "preview graph rejects it");
+    }
+}
+
 #if PELICAN_WITH_RPC
 TEST_CASE("LP-0a an edit names a target composition decides, and recomposing refuses an unknown one by name",
           "[render-config-editor][graph-document][lp0a]") {

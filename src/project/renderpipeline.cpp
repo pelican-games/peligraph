@@ -1307,6 +1307,8 @@ ResolvedRenderPipeline resolveRenderPipeline(
     result.resource_provenance =
         std::move(composed.resource_provenance);
     result.graph_loops = std::move(composed.graph_loops);
+    result.deactivated_graph_nodes =
+        std::move(composed.deactivated_graph_nodes);
     result.used_features = composed.used_features;
     result.graph_variant_policy = graph_variant_policy;
     result.graph_variant_feature_decisions =
@@ -1380,6 +1382,15 @@ ResolvedRenderPipeline resolveRenderPipeline(
                 (decision.depends_on.empty()
                      ? std::string{}
                      : ":" + decision.depends_on),
+        });
+    }
+    for (const auto &node : result.deactivated_graph_nodes) {
+        result.diagnostics.push_back(RenderPipelineDiagnostic{
+            RenderPipelineDiagnosticKind::graph_node_deactivated,
+            node.node,
+            std::string{renderPipelineGraphVariantName(
+                result.graph_variant_policy.variant)} +
+                ":" + node.reason + ":" + node.feature,
         });
     }
     return result;
@@ -2315,6 +2326,7 @@ CompiledRenderPipeline compileRenderPipeline(
     result.pass_provenance = pipeline.pass_provenance;
     result.resource_provenance = pipeline.resource_provenance;
     result.graph_loops = pipeline.graph_loops;
+    result.deactivated_graph_nodes = pipeline.deactivated_graph_nodes;
     synchronizeRenderPipelineProvenance(
         pipeline.normalized_config,
         result.pass_provenance,

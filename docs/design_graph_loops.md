@@ -509,7 +509,7 @@ v0 では feature の JSON はループに書き換えない。一体版は、�
 | **definition の編集 op** | `add_definition` / `remove_definition` / `rename_definition`(逆 op を作れる形)。参照されている definition を消すと `graph.definition_referenced@1`。`graph.input_referenced@1` / `graph.input_unknown@1` の対象に、`graph.loop` の `inputs`・`carry`・`branches[].body` を足す | branch の body になる definition を、Studio とエージェントが作れるようにするため。`edit_graph_document` の op の列は今も 1 つの候補に順に当てて最後にまとめて確定するので、「ループの `inputs` に 1 つ足す」と「全分岐の definition に `graph.input` を 1 つ足す」は、既存の列 1 回で送れる(新しい op は作らない)。ただし `graph.loop` の構造の検査(分岐の入出力の一致など)は、op ごとではなく**列の最後に 1 回**だけ行う。途中の op で分岐どうしの入出力が一時的に食い違っても断らない。`graph.definition_referenced@1`・`graph.input_unknown@1`・`graph.input_referenced@1` も列の最後に検査する(LP-0c)。`remove_definition` の逆 op の本体は、Studio が `get_graph_instances` の `definitions` から事前に読む(`base_source_digest` の CAS で一致が保証される)。definition の名前 `"root"` は op の `scope` と紛れるので断る |
 | **feature の pass の置き換え** | feature の instance の設定に `pass_replacements: {"<feature の pass / task 名>": "<graph の node か loop の id>"}` を足す。置き換えた pass は feature から外れる。`surface_resources.producer` などの名前の参照は、置き換え先へ写す。置き換え先が同じ資源を書かなければ、今の `producer … no longer writes` と同じく断る。置き換えた名前を他から参照すると、置き換え先に写す | 分解版が一体版の pass を置き換えられない。feature を残すと pass が二重になり、外すと provider が cascade 数と target を失う |
 | **graph で書く pass の種類** | `render.shadow_depth`・`render.snapshot_copy` を足す(pass の JSON の同名の type と同じ意味)。`render.material_pass` は LP-3a | cube の 8 pass と影の pass を graph で書くため |
-| **変種で外れる feature への依存** | preview / XR の変種で feature が外れたとき、その feature の target を `render.target_ref` で指す node と、その pass を `insert` で指す node は、同じ変種で非活性にする。これも今の依存の伝わり方と同じく、報告に出す | 依存が伝わらないと、変種の組み直し全体が落ちる |
+| **変種で外れる feature への依存** | preview / XR の変種で feature が外れたとき、その feature の target を `render.target_ref` で指す node と、その pass を `insert` で指す node は、同じ変種で非活性にする。これも今の依存の伝わり方と同じく、報告に出す | 依存が伝わらないと、変種の組み直し全体が落ちる。LP-0d で、`after` / `before` で外れた feature の pass を指す node、非活性の loop の出力を読む node と carry する loop、非活性の pass を anchor にする run も非活性にした。報告は `deactivated_graph_nodes` と diagnostics の kind `graph_node_deactivated`(detail `<variant>:<reason>:<feature>`)。変種の preflight の graph の拒否は、graph の code のまま `variant` を添えて返す |
 
 ## 7. view の軸を選ぶ(cascade と cube の 6 面)
 
@@ -698,6 +698,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `graph.view_select_runtime_axis@1` | 組み直し | `{pass, family, axis}` |
 | `graph.view_select_needs_target_plan@1` | 組み直し | `{pass}` |
 | `render_feature.pass_replacement_unknown@1` | 組み直し | `{feature, pass}` |
+| `graph.node_missing@1`(置き換え先) | 組み直し | `{node, feature, pass}`(LP-0d) |
 
 **既存の code に寄せるもの**
 

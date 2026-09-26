@@ -969,6 +969,20 @@ std::optional<OrderedJson> RenderConfigEditorService::preflightGraphVariants(
     } catch (const GraphVariantCompositionError &error) {
         details["variant"] =
             std::string{renderPipelineGraphVariantName(error.variant())};
+        // LP-0d: a named refusal keeps its code and fields, `variant` beside
+        // them, as the same refusal on the main path does.
+        if (auto refusal = splitCodedRefusalMessage(error.what());
+            refusal && isCarriedRefusalCode(refusal->code)) {
+            for (const auto &[key, value] : refusal->fields.items())
+                if (!details.contains(key)) details[key] = value;
+            return rejection(refusal->code, carriedRefusalMessage(*refusal),
+                             std::move(details));
+        }
+        if (auto refusal = graphRefusalOf(error.cause())) {
+            for (const auto &[key, value] : refusal->second.items())
+                if (!details.contains(key)) details[key] = value;
+            return rejection(refusal->first, error.what(), std::move(details));
+        }
         return preflightRejection(error, std::move(details));
     }
     return std::nullopt;

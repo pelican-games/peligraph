@@ -41,7 +41,9 @@ void validateFeatureEntry(const nlohmann::json &entry,
             "' features entries must be strings or {ref, parameters} objects");
     }
     for (auto field = entry.begin(); field != entry.end(); ++field) {
-        if (field.key() != "ref" && field.key() != "parameters") {
+        // LP-0d: pass_replacements is checked where the instance is composed.
+        if (field.key() != "ref" && field.key() != "parameters" &&
+            field.key() != "pass_replacements") {
             throw std::runtime_error(
                 "render feature overlay '" + std::string{reference} +
                 "' feature instance has unknown key '" + field.key() + "'");
