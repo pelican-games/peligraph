@@ -497,7 +497,7 @@ v0 では feature の JSON はループに書き換えない。一体版は、�
 |---|---|---|
 | **既存の target の参照** `render.target_ref {name}` | rendering 節・preset・feature が宣言した target を、graph から指す。解決は §5.1 の解決の段で行う。所有はしない(作らず、aliasing と history は元の宣言に従う)。`X@history` を読むことはできるが、history の target に書くことは断る。無い名前は `graph.target_ref_unknown@1` | 分解版が `lit_color`・G-buffer・`scene_depth`・feature の target を読み書きするため |
 | **graph の pass の挿入位置** | graph の render node と `graph.loop` に、feature の pass と同じ `insert`(`{after｜before: "<pass 名>"}`、`canonical_anchor`)を足す。解決の段で、feature の合成の後に入れる。展開した列は、先頭の 1 本を anchor に入れ、残りを鎖でつなぐ。compute の body には `insert` を書けない(compute task は常に pass の後に宣言されるため。`graph.insert_on_compute@1`)。anchor と `pass_set` の family が違えば `graph.insert_family_mismatch@1` | 今は末尾に足されるだけで、分解版が一体版と同じ場所に入れない |
-| **definition の編集 op** | `add_definition` / `remove_definition` / `rename_definition`(逆 op を作れる形)。参照されている definition を消すと `graph.definition_referenced@1`。`graph.input_referenced@1` / `graph.input_unknown@1` の対象に、`graph.loop` の `inputs`・`carry`・`branches[].body` を足す | branch の body になる definition を、Studio とエージェントが作れるようにするため |
+| **definition の編集 op** | `add_definition` / `remove_definition` / `rename_definition`(逆 op を作れる形)。参照されている definition を消すと `graph.definition_referenced@1`。`graph.input_referenced@1` / `graph.input_unknown@1` の対象に、`graph.loop` の `inputs`・`carry`・`branches[].body` を足す | branch の body になる definition を、Studio とエージェントが作れるようにするため。`edit_graph_document` の op の列は今も 1 つの候補に順に当てて最後にまとめて確定するので、「ループの `inputs` に 1 つ足す」と「全分岐の definition に `graph.input` を 1 つ足す」は、既存の列 1 回で送れる(新しい op は作らない)。ただし `graph.loop` の構造の検査(分岐の入出力の一致など)は、op ごとではなく**列の最後に 1 回**だけ行う。途中の op で分岐どうしの入出力が一時的に食い違っても断らない |
 | **feature の pass の置き換え** | feature の instance の設定に `pass_replacements: {"<feature の pass / task 名>": "<graph の node か loop の id>"}` を足す。置き換えた pass は feature から外れる。`surface_resources.producer` などの名前の参照は、置き換え先へ写す。置き換え先が同じ資源を書かなければ、今の `producer … no longer writes` と同じく断る。置き換えた名前を他から参照すると、置き換え先に写す | 分解版が一体版の pass を置き換えられない。feature を残すと pass が二重になり、外すと provider が cascade 数と target を失う |
 | **graph で書く pass の種類** | `render.shadow_depth`・`render.snapshot_copy` を足す(pass の JSON の同名の type と同じ意味)。`render.material_pass` は LP-3a | cube の 8 pass と影の pass を graph で書くため |
 | **変種で外れる feature への依存** | preview / XR の変種で feature が外れたとき、その feature の target を `render.target_ref` で指す node と、その pass を `insert` で指す node は、同じ変種で非活性にする。これも今の依存の伝わり方と同じく、報告に出す | 依存が伝わらないと、変種の組み直し全体が落ちる |
@@ -633,6 +633,8 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 - 逆の操作は v0 では持たない(Studio の undo と git が担う)。
 
 **Studio(GUI session)**
+
+- Studio は `graph.loop` を、Blender のループゾーンのように枠として見せる(2026-09-26、利用者と GUI session で決定)。枠の中に body の definition の node を並べて直接編集し、外から枠へ線を引くとループの入力と definition の入力を足してつなぐ。carry は戻り矢印、分岐は枠の上端のタブ(else だけならタブ無し)、展開後の列と material ごとの分岐表は読むだけの表示。保存形式は上のまま(body は definition 名)で、見せ方は Studio の持ち物。
 
 - loop node に、段の印・理由・`tier` の固定の欄を付ける。
 - 分岐表を編集できるようにする(definition の作成を含む)。
