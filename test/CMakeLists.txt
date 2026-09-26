@@ -3600,3 +3600,25 @@ file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/gpu_lease_timeouts.json
   "    ${pelican_gpu_intrinsic_json}\n"
   "  }\n"
   "}\n")
+
+# TI-1: a Debug CRT assert, debug-iterator check or abort() in a test must end
+# the process with the report on stderr, never wait at a dialog while the test
+# holds the GPU lease. The probe gets no CRT setup of its own, so this test
+# also shows that the bulk step below reaches the test executables.
+if(WIN32)
+  add_executable(pelican_test_crt_report_probe crt_report_probe.cpp)
+  set_target_properties(pelican_test_crt_report_probe PROPERTIES CXX_STANDARD 20)
+  add_test(
+    NAME crt_report_to_stderr
+    COMMAND ${CMAKE_COMMAND}
+      "-DPROBE=$<TARGET_FILE:pelican_test_crt_report_probe>"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_crt_report_probe.cmake
+  )
+  set_tests_properties(crt_report_to_stderr PROPERTIES
+    TIMEOUT 240
+    SKIP_REGULAR_EXPRESSION "CRT_PROBE_SKIPPED")
+endif()
+
+# Keep this last: it links the CRT routing into every executable defined above.
+include(${CMAKE_CURRENT_SOURCE_DIR}/crt_report_to_stderr.cmake)
+pelican_route_test_crt_reports_to_stderr()
