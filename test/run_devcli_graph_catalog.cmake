@@ -107,7 +107,7 @@ foreach(expected IN ITEMS value.input value.constant value.parameter value.morph
                           value.curve value.playback event.playback
                           ${expected_audio_operations}
                           render.scalar render.buffer render.attribute render.image
-                          render.compute render.fullscreen render.raster
+                          render.target_ref render.compute render.fullscreen render.raster
                           ui.value ui.visible)
   if(NOT expected IN_LIST seen_operations)
     message(FATAL_ERROR "catalog is missing operation ${expected}")

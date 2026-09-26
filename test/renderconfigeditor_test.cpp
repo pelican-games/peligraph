@@ -404,7 +404,9 @@ struct ActualCpuRenderRuntime {
             prepared = prepare(documents.rootDocument().bytes,
                                load_document);
         } catch (const std::exception &error) {
-            return {.error = error.what()};
+            // As the renderer does: the text, and what it was read from.
+            return {.error = error.what(),
+                    .exception = std::current_exception()};
         }
         if (fail_before_source_commit) {
             return {.error = "injected preflight failure"};
@@ -7621,5 +7623,46 @@ TEST_CASE("G-6 xr composes an edit only in an engine that started it",
                     "render-targets.json") == fragment_before);
 #endif
 }
+
+#if PELICAN_WITH_RPC
+TEST_CASE("LP-0a an edit names a target composition decides, and recomposing refuses an unknown one by name",
+          "[render-config-editor][graph-document][lp0a]") {
+    TemporaryConfig source{emptyHybridConfig()};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    auto service = makeService(source, runtime);
+    const Json type{{"semantic", "pelican.render.color_signal@1"},
+                    {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    const auto add = [&](const char *name) {
+        return service->editGraphDocument(
+            {{"base_source_digest", service->getGraphInstances(Json::object()).at("source_digest").at("hex")},
+             {"ops", Json::array({{{"op", "add_node"},
+                 {"node", {{"id", "lit"}, {"op", "render.target_ref"},
+                           {"parameters", {{"name", name}, {"type", type}}}, {"outputs", {"resource"}}}}}})}});
+    };
+    const auto before = readBytes(source.path);
+    // The edit itself checks only the node's shape.
+    const auto accepted = add("no_such_target");
+    REQUIRE(accepted.at("status") == "accepted");
+    service->commitPending();
+    const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("status") == "rejected");
+    const auto &error = result.at("error");
+    CHECK(error.at("code") == "graph.target_ref_unknown@1");
+    CHECK(error.at("node") == "lit");
+    CHECK(error.at("name") == "no_such_target");
+    CHECK(error.at("ticket") == accepted.at("ticket"));
+    CHECK_THAT(error.at("message").get<std::string>(),
+               Catch::Matchers::StartsWith("graph.target_ref_unknown@1 "));
+    CHECK(readBytes(source.path) == before);
+    // A name the preset declares commits.
+    const auto known = add("lit_color");
+    REQUIRE(known.at("status") == "accepted");
+    service->commitPending();
+    CHECK(service->getResult({{"ticket", known.at("ticket")}}).at("committed") == true);
+    CHECK(Json::parse(readBytes(source.path)).at("nodes").at(0).at("parameters").at("name") == "lit_color");
+}
+#endif
 
 } // namespace Pelican

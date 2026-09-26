@@ -68,6 +68,30 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
         auto declaration = parameters;
         declaration["kind"] = "image";
         contract.outputs.emplace("resource", resourceType(registry, declaration));
+    } else if (op == "render.target_ref") {
+        // LP-0a: a target declared outside the graph. Only its shape is known
+        // here; whether the rendering section, the preset or a feature declares
+        // it is decided after composition (graph.target_ref_unknown@1), so an
+        // edit may name a target a feature added later will supply.
+        if (!parameters.is_object()) throw std::invalid_argument("render node parameters must be an object");
+        for (const auto &[key, value] : parameters.items()) {
+            (void)value;
+            if (key != "name" && key != "type")
+                throw std::invalid_argument("render.target_ref accepts only name and type: " + key);
+        }
+        const auto name = parameters.find("name");
+        if (name == parameters.end() || !name->is_string() || name->get_ref<const std::string &>().empty())
+            throw std::invalid_argument("render.target_ref requires a target name: " + nodeId(node));
+        // The previous frame is read through a port's `history`, never by name.
+        if (name->get_ref<const std::string &>().find('@') != std::string::npos)
+            throw std::invalid_argument("render.target_ref name is a target name; read its history with a "
+                                        "port's history: " + nodeId(node));
+        if (!parameters.contains("type"))
+            throw std::invalid_argument("render.target_ref requires an image type: " + nodeId(node));
+        auto declaration = parameters;
+        declaration.erase("name");
+        declaration["kind"] = "image";
+        contract.outputs.emplace("resource", resourceType(registry, declaration));
     } else if (op == "render.compute" || op == "render.fullscreen" || op == "render.raster") {
         const auto &ports = parameters.at("ports");
         if (!ports.is_object()) throw std::invalid_argument("render ports must be an object");
@@ -77,6 +101,16 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
             const auto access = declaration.at("access").get<std::string>();
             if (access != "read" && access != "write" && access != "read_write")
                 throw std::invalid_argument("unknown compute port access: " + access);
+            // LP-0a: `history` reads the image as the previous frame left it.
+            // Nothing writes a previous frame, so a writing port is refused.
+            if (const auto history = declaration.find("history"); history != declaration.end()) {
+                if (!history->is_boolean())
+                    throw std::invalid_argument("render port history must be a boolean: " + port);
+                if (history->get<bool>() && declaration.value("kind", std::string{"buffer"}) != "image")
+                    throw std::invalid_argument("render port history applies to images: " + port);
+                if (history->get<bool>() && (access != "read" || declaration.contains("attachment")))
+                    throw GraphRegistryError("graph.history_write@1", {{"node", nodeId(node)}, {"port", port}});
+            }
             if (access != "read") contract.outputs.emplace(port, type);
         }
     } else {
@@ -352,6 +386,7 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
             {"render.scalar", declared({{"value", required}}, {}, GraphExecutionDomain::values,
                 GraphOperationEvaluation::direct, GraphParameterChange::rebuild)},
             render("render.buffer"), render("render.attribute"), render("render.image"),
+            render("render.target_ref"),
             render("render.compute"), render("render.fullscreen"), render("render.raster"),
         },
         {"render.scalar"}});

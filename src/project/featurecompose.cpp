@@ -2927,8 +2927,12 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     }
 
     const bool common_graph = config.value("schema", std::string{}) == "pelican.graph";
-    auto native_config = common_graph
-        ? lowerRenderGraphDocument(config, dependencies.inactive_graph_scopes) : config;
+    // LP-0a: the graph is lowered before the preset and the features are
+    // composed, and resolved after them (resolveGraphDocumentAfterComposition).
+    auto lowered_graph = common_graph
+        ? lowerRenderGraphDocumentForComposition(config, dependencies.inactive_graph_scopes)
+        : LoweredRenderGraphDocument{config, {}, {}};
+    auto native_config = std::move(lowered_graph.config);
     auto graph_buffers = nlohmann::json::array();
     auto graph_tasks = nlohmann::json::array();
     auto graph_targets = nlohmann::json::array();
@@ -3366,6 +3370,11 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     }
     retargetSwapchainAliases(composed);
     materializeSnapshots(composed);
+    // Every target the rendering section, the preset, the features and the
+    // snapshots declare now exists; pass order is not settled yet.
+    if (common_graph) {
+        resolveGraphDocumentAfterComposition(composed, lowered_graph);
+    }
     for (auto &pass_set : ensureArray(composed, "rendering_passes")) {
         enforceCanonicalOrder(pass_set.at("passes"));
     }

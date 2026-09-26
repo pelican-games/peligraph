@@ -2,7 +2,9 @@
 #include "graphpartition.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
+#include <map>
 
 #include <stdexcept>
 #include <set>
@@ -18,9 +20,10 @@ void forbid(const Json &parameters, std::initializer_list<const char *> fields) 
 }
 }
 
-Json lowerRenderGraphDocument(const Json &document,
+LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &document,
     const std::set<std::string> &inactive_scopes, const GraphModuleRegistry &modules) {
     const auto graph = partitionGraphDocument(document, modules).rendering;
+    LoweredRenderGraphDocument lowered;
     auto config = document.value("rendering", Json::object());
     // Existing global settings, presets and image passes can coexist during
     // migration, but buffer/compute declarations have one authoring owner.
@@ -41,6 +44,9 @@ Json lowerRenderGraphDocument(const Json &document,
         const auto &node = *nodes.at(id);
         if (node.at("op") == "render.buffer" || node.at("op") == "render.attribute" ||
             node.at("op") == "render.image") return id;
+        // LP-0a: a reference owns nothing; the port uses the target's own name.
+        if (node.at("op") == "render.target_ref")
+            return node.at("parameters").at("name").get<std::string>();
         if (!resolving.insert(id).second)
             throw std::invalid_argument("cyclic render resource connection: " + id);
         auto resource = resourceName(node.at("inputs").at(endpoint.at("port").get<std::string>()));
@@ -53,7 +59,7 @@ Json lowerRenderGraphDocument(const Json &document,
         // A contract can be registered without a backend that runs it. Say so
         // by name instead of lowering an unknown operation as if it were a pass.
         static const std::set<std::string> lowerable{"render.buffer", "render.attribute",
-            "render.image", "render.compute", "render.fullscreen", "render.raster"};
+            "render.image", "render.target_ref", "render.compute", "render.fullscreen", "render.raster"};
         if (!lowerable.contains(node.at("op").get<std::string>()))
             throw GraphRegistryError("graph.operation_unexecutable@1",
                 {{"node", id}, {"op", node.at("op").get<std::string>()},
@@ -80,6 +86,13 @@ Json lowerRenderGraphDocument(const Json &document,
             parameters.erase("count");
             parameters["name"] = id;
             config["buffers"].push_back(std::move(parameters));
+            continue;
+        }
+        if (node.at("op") == "render.target_ref") {
+            // No declaration: the target, its aliasing and its history stay
+            // with whoever declared it. Whether it exists is known only after
+            // composition (resolveGraphDocumentAfterComposition).
+            lowered.target_refs.push_back({id, parameters.at("name").get<std::string>(), parameters.at("type")});
             continue;
         }
         if (node.at("op") == "render.image") {
@@ -137,14 +150,23 @@ Json lowerRenderGraphDocument(const Json &document,
             for (const auto &[key, value] : declaration.items())
                 if (key != "element" && key != "domain" && key != "access" && key != "kind" && key != "type" &&
                     key != "binding" && key != "view" && key != "sampling" && key != "subresource" &&
+                    key != "history" &&
                     !(graphics && (key == "attachment" || key == "location")))
                     throw std::invalid_argument("unknown render port setting: " + key);
             const auto &endpoint = node.at("inputs").at(port);
             const auto producer = endpoint.at("node").get<std::string>();
-            const auto resource = resourceName(endpoint);
-            if (nodes.at(producer)->at("op") != "render.buffer" &&
+            // The port contract admits `history` only on an image read
+            // (graph.history_write@1), so this reads the previous frame and
+            // waits for no pass of this one.
+            const bool history = declaration.value("history", false);
+            const auto target = resourceName(endpoint);
+            const auto resource = history ? target + "@history" : target;
+            if (history) lowered.history_reads.push_back({id, port, target});
+            if (!history &&
+                nodes.at(producer)->at("op") != "render.buffer" &&
                 nodes.at(producer)->at("op") != "render.attribute" &&
                 nodes.at(producer)->at("op") != "render.image" &&
+                nodes.at(producer)->at("op") != "render.target_ref" &&
                 std::find(after.begin(), after.end(), producer) == after.end())
                 after.push_back(producer);
             const auto access = declaration.at("access").get<std::string>();
@@ -177,6 +199,7 @@ Json lowerRenderGraphDocument(const Json &document,
             if (access != "read") writes.insert(resource);
             auto binding = declaration;
             binding.erase("type");
+            binding.erase("history");
             binding["resource"] = resource;
             binding["kind"] = declaration.value("kind", std::string{"buffer"});
             binding["access"] = declaration.value("binding",
@@ -214,6 +237,76 @@ Json lowerRenderGraphDocument(const Json &document,
             (*found)["passes"].push_back(std::move(parameters));
         } else config["compute_tasks"].push_back(std::move(parameters));
     }
-    return config;
+    lowered.config = std::move(config);
+    return lowered;
+}
+
+Json lowerRenderGraphDocument(const Json &document,
+    const std::set<std::string> &inactive_scopes, const GraphModuleRegistry &modules) {
+    return lowerRenderGraphDocumentForComposition(document, inactive_scopes, modules).config;
+}
+
+namespace {
+// A composed target's image in the terms of a logical image type. An absent
+// field is what the target parser defaults it to; an absent format (a target
+// the color resolver fills in later) says nothing about the kind.
+std::string composedTargetKind(const Json &target) {
+    const auto format = target.value("format", std::string{});
+    if (format.empty()) return {};
+    return format.front() == 'D' ? "depth" : "color";
+}
+
+std::string composedTargetTopology(const Json &target) {
+    if (target.value("dimension", std::string{"2d"}) == "cube") return "cube";
+    const auto layers = target.find("layers");
+    if (layers != target.end() && layers->is_number_unsigned() && layers->get<std::uint64_t>() > 1)
+        return "two_d_array";
+    return "two_d";
+}
+}
+
+void resolveGraphDocumentAfterComposition(Json &composed, const LoweredRenderGraphDocument &lowered) {
+    std::map<std::string, const Json *> targets;
+    if (const auto found = composed.find("render_targets"); found != composed.end() && found->is_array())
+        for (const auto &target : *found)
+            if (target.is_object() && target.contains("name") && target.at("name").is_string())
+                targets.emplace(target.at("name").get<std::string>(), &target);
+    for (const auto &reference : lowered.target_refs) {
+        const auto found = targets.find(reference.name);
+        if (found == targets.end())
+            throw GraphRegistryError("graph.target_ref_unknown@1",
+                {{"node", reference.node}, {"name", reference.name}});
+        // The declared type is only what connections are matched by; the
+        // target's own declaration decides its image. The two may not say
+        // different things. legacy_opaque_image states nothing to compare.
+        const auto semantic = reference.type.at("semantic").get<std::string>();
+        const auto declared_kind = semantic == "pelican.render.color_signal@1" ? std::string{"color"}
+            : semantic == "pelican.render.depth@1" ? std::string{"depth"} : std::string{};
+        if (declared_kind.empty()) continue;
+        const auto mismatch = [&](const char *field, const std::string &declared, const std::string &actual) {
+            throw GraphRegistryError("graph.target_ref_type_mismatch@1",
+                {{"node", reference.node}, {"name", reference.name}, {"field", field},
+                 {"declared", declared}, {"actual", actual}});
+        };
+        const auto actual_kind = composedTargetKind(*found->second);
+        if (!actual_kind.empty() && actual_kind != declared_kind)
+            mismatch("kind", declared_kind, actual_kind);
+        const auto &arguments = reference.type.value("arguments", Json::object());
+        const auto declared_topology = arguments.value("topology", std::string{"two_d"});
+        const auto actual_topology = composedTargetTopology(*found->second);
+        if (declared_topology != actual_topology)
+            mismatch("topology", declared_topology, actual_topology);
+    }
+    // A history read of a target that keeps none would read nothing. The
+    // runtime refuses it too, but only by text and only after every pass is
+    // compiled; the graph names the node and port here.
+    for (const auto &read : lowered.history_reads) {
+        const auto found = targets.find(read.target);
+        if (found != targets.end() && !found->second->value("history", false))
+            throw GraphRegistryError("graph.history_unavailable@1",
+                {{"node", read.node}, {"port", read.port}, {"target", read.target}});
+    }
+    // LP-0b (insert anchors), LP-1a (graph.loop expansion) and LP-0d
+    // (pass_replacements, variant removals) continue here.
 }
 }

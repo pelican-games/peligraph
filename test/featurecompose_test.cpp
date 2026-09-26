@@ -30,6 +30,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #ifndef PELICAN_TEST_SOURCE_DIR
@@ -4787,6 +4788,246 @@ TEST_CASE("common graphics ports retain shaders and order attachment consumers",
         invalid_count["nodes"][2]["parameters"]["draw"]["vertex_count"] = 2;
         REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{invalid_count}, {}));
         verify();
+    }
+}
+
+namespace {
+// LP-0a: a graph over the hybrid preset with bloom. `lit` refers to the
+// preset's lit_color, `copy` is an image the graph owns, and `blit` copies the
+// one into the other with engine://passthrough. `paint` writes bloom's
+// threshold target through the reference `threshold`.
+nlohmann::json lp0aSceneColorType() {
+    return {{"semantic", "pelican.render.color_signal@1"},
+            {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+}
+
+nlohmann::json lp0aTargetRefGraph() {
+    using Json = nlohmann::json;
+    const auto type = lp0aSceneColorType();
+    const Json read{{"kind", "image"}, {"type", type}, {"access", "read"}};
+    const Json color{{"kind", "image"}, {"type", type}, {"access", "write"},
+                     {"attachment", "color"}, {"location", 0}};
+    const Json shader{{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}};
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", Json::object()},
+        {"nodes", Json::array({
+            {{"id", "lit"}, {"op", "render.target_ref"},
+             {"parameters", {{"name", "lit_color"}, {"type", type}}}, {"outputs", {"resource"}}},
+            {{"id", "copy"}, {"op", "render.image"},
+             {"parameters", {{"type", type}, {"format", "R16G16B16A16_SFLOAT"}, {"extent_scale", 1.0},
+                             {"usage", {"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"}}}},
+             {"outputs", {"resource"}}},
+            {{"id", "blit"}, {"op", "render.fullscreen"},
+             {"parameters", {{"pass_set", "main_render"}, {"shader", shader},
+                             {"ports", {{"source", read}, {"color", color}}}}},
+             {"inputs", {{"source", {{"node", "lit"}, {"port", "resource"}}},
+                         {"color", {{"node", "copy"}, {"port", "resource"}}}}},
+             {"outputs", {"color"}}},
+            {{"id", "threshold"}, {"op", "render.target_ref"},
+             {"parameters", {{"name", "Bloom_Threshold_RT"}, {"type", type}}}, {"outputs", {"resource"}}},
+            {{"id", "paint"}, {"op", "render.fullscreen"},
+             {"parameters", {{"pass_set", "main_render"}, {"shader", shader},
+                             {"ports", {{"color", color}}}}},
+             {"inputs", {{"color", {{"node", "threshold"}, {"port", "resource"}}}}},
+             {"outputs", {"color"}}},
+        })},
+        {"outputs", Json::object()},
+        {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+                       {"features", Json::array({"engine://features/bloom.json"})}}}};
+}
+
+RenderFeatureComposeResult lp0aCompose(const nlohmann::json &document) {
+    return composeRenderFeatureConfig(document, RenderFeatureComposeDependencies{loadEngineFeature, true});
+}
+
+// The code and fields of the graph refusal that composing `document` raises.
+std::pair<std::string, nlohmann::json> lp0aRefusal(const nlohmann::json &document) {
+    try {
+        (void)lp0aCompose(document);
+    } catch (const GraphRegistryError &error) {
+        return {error.code(), error.detail()};
+    }
+    FAIL("composition was not refused by name");
+    return {};
+}
+} // namespace
+
+TEST_CASE("LP-0a render.target_ref reads and writes targets declared outside the graph",
+          "[render-feature][graph-composition][lp0a]") {
+    using Json = nlohmann::json;
+    const auto document = lp0aTargetRefGraph();
+
+    SECTION("a reference lowers to the target's own name and adds no target") {
+        const auto composed = lp0aCompose(document);
+        const auto &config = composed.config;
+        const auto &blit = passByName(config, "blit");
+        CHECK(blit.at("input") == Json::array({"lit_color"}));
+        CHECK(blit.at("resource_ports").at("source").at("resource") == "lit_color");
+        CHECK(blit.at("output").at("color") == Json::array({"copy"}));
+        CHECK(passByName(config, "paint").at("output").at("color") == Json::array({"Bloom_Threshold_RT"}));
+        // Connected straight to a reference, the pass waits for no graph node.
+        INFO(blit.dump());
+        for (const auto &name : blit.value("after", Json::array())) {
+            CHECK(name != "lit");
+            CHECK(name != "copy");
+        }
+        std::size_t lit_targets = 0;
+        for (const auto &target : config.at("render_targets")) {
+            CHECK(target.at("name") != "lit");
+            CHECK(target.at("name") != "threshold");
+            if (target.at("name") == "lit_color") ++lit_targets;
+        }
+        CHECK(lit_targets == 1);
+        // The Frame Plan keeps whoever declared a referenced target as its source.
+        const auto compiled = compileComposition(composed);
+        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(config);
+        const auto graph = std::find_if(graphs.begin(), graphs.end(),
+            [](const auto &candidate) { return candidate.name == "main_render"; });
+        REQUIRE(graph != graphs.end());
+        const auto plan = planFrameGraph(*graph);
+        const auto plan_json = framePlanToJson(plan, &compiled);
+        const auto source = [&](std::string_view name) {
+            for (const auto &resource : plan_json.at("resources"))
+                if (resource.at("name").get<std::string>() == name) return resource.at("source").get<std::string>();
+            FAIL("no frame plan resource " + std::string{name});
+            return std::string{};
+        };
+        CHECK(source("lit_color") == "engine");
+        CHECK(source("Bloom_Threshold_RT") == "feature:bloom");
+        const auto order = framePlanOrder(plan);
+        const auto position = [&](std::string_view name) {
+            return std::find(order.begin(), order.end(), name) - order.begin();
+        };
+        // The copy reads lit_color after the preset's last write of it.
+        CHECK(position("forward_transparent") < position("blit"));
+    }
+
+    SECTION("an unknown name is refused after composition, not when edited") {
+        auto unknown = document;
+        unknown["nodes"][0]["parameters"]["name"] = "no_such_target";
+        // Editing and loading check only the shape.
+        REQUIRE_NOTHROW(partitionGraphDocument(unknown));
+        const auto [code, fields] = lp0aRefusal(unknown);
+        CHECK(code == "graph.target_ref_unknown@1");
+        CHECK(fields == Json{{"node", "lit"}, {"name", "no_such_target"}});
+        // Bloom's targets exist only because bloom is composed.
+        auto without_bloom = document;
+        without_bloom["rendering"]["features"] = Json::array();
+        const auto [bloom_code, bloom_fields] = lp0aRefusal(without_bloom);
+        CHECK(bloom_code == "graph.target_ref_unknown@1");
+        CHECK(bloom_fields == Json{{"node", "threshold"}, {"name", "Bloom_Threshold_RT"}});
+    }
+
+    SECTION("the shape is checked when edited") {
+        const Json buffer_type{{"semantic", "pelican.render.storage_buffer@1"},
+                               {"arguments", {{"element", "float"}}}};
+        for (const auto &parameters : {Json{{"name", ""}, {"type", lp0aSceneColorType()}},
+                                       Json{{"type", lp0aSceneColorType()}},
+                                       Json{{"name", "lit_color@history"}, {"type", lp0aSceneColorType()}},
+                                       Json{{"name", "lit_color"}},
+                                       Json{{"name", "lit_color"}, {"type", lp0aSceneColorType()},
+                                            {"format", "D32_SFLOAT"}},
+                                       Json{{"name", "lit_color"}, {"type", buffer_type}}}) {
+            INFO(parameters.dump());
+            auto invalid = document;
+            invalid["nodes"][0]["parameters"] = parameters;
+            CHECK_THROWS(partitionGraphDocument(invalid));
+        }
+    }
+
+    SECTION("a declared type that contradicts the target is refused by name") {
+        const Json depth{{"semantic", "pelican.render.depth@1"},
+                         {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+        auto mismatched = document;
+        mismatched["nodes"][0]["parameters"]["type"] = depth;
+        mismatched["nodes"][2]["parameters"]["ports"]["source"]["type"] = depth;
+        REQUIRE_NOTHROW(partitionGraphDocument(mismatched));
+        auto [code, fields] = lp0aRefusal(mismatched);
+        CHECK(code == "graph.target_ref_type_mismatch@1");
+        CHECK(fields == Json{{"node", "lit"}, {"name", "lit_color"}, {"field", "kind"},
+                             {"declared", "depth"}, {"actual", "color"}});
+        auto cube = lp0aSceneColorType();
+        cube["arguments"]["topology"] = "cube";
+        mismatched = document;
+        mismatched["nodes"][0]["parameters"]["type"] = cube;
+        mismatched["nodes"][2]["parameters"]["ports"]["source"]["type"] = cube;
+        std::tie(code, fields) = lp0aRefusal(mismatched);
+        CHECK(code == "graph.target_ref_type_mismatch@1");
+        CHECK(fields == Json{{"node", "lit"}, {"name", "lit_color"}, {"field", "topology"},
+                             {"declared", "cube"}, {"actual", "two_d"}});
+        // A depth reference to a depth target passes.
+        auto depth_ref = document;
+        depth_ref["nodes"][0]["parameters"] = {{"name", "scene_depth"}, {"type", depth}};
+        depth_ref["nodes"][2]["parameters"]["ports"]["source"]["type"] = depth;
+        const auto composed = lp0aCompose(depth_ref);
+        CHECK(passByName(composed.config, "blit").at("input") == Json::array({"scene_depth"}));
+    }
+}
+
+TEST_CASE("LP-0a a port reads a target's history and never writes it",
+          "[render-feature][graph-composition][lp0a]") {
+    using Json = nlohmann::json;
+    const auto type = lp0aSceneColorType();
+    const Json target_base{{"extent_scale", 1.0}, {"format", "R16G16B16A16_SFLOAT"},
+                           {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+                           {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}};
+    auto trail = target_base;
+    trail["name"] = "trail";
+    trail["history"] = true;
+    auto plain = target_base;
+    plain["name"] = "plain";
+    auto resolved = target_base;
+    resolved["name"] = "resolved";
+    // The rendering section declares the targets; the graph refers to them.
+    Json document{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", Json::object()},
+        {"nodes", Json::array({
+            {{"id", "previous"}, {"op", "render.target_ref"},
+             {"parameters", {{"name", "trail"}, {"type", type}}}, {"outputs", {"resource"}}},
+            {{"id", "out"}, {"op", "render.target_ref"},
+             {"parameters", {{"name", "resolved"}, {"type", type}}}, {"outputs", {"resource"}}},
+            {{"id", "resolve"}, {"op", "render.fullscreen"},
+             {"parameters", {{"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
+                 {"ports", {{"source", {{"kind", "image"}, {"type", type}, {"access", "read"}, {"history", true}}},
+                            {"color", {{"kind", "image"}, {"type", type}, {"access", "write"},
+                                       {"attachment", "color"}, {"location", 0}}}}}}},
+             {"inputs", {{"source", {{"node", "previous"}, {"port", "resource"}}},
+                         {"color", {{"node", "out"}, {"port", "resource"}}}}},
+             {"outputs", {"color"}}}})},
+        {"outputs", Json::object()},
+        {"rendering", {{"render_targets", Json::array({trail, plain, resolved})},
+                       {"rendering_passes", Json::array()}}}};
+
+    SECTION("the read names the history resource") {
+        const auto composed = lp0aCompose(document);
+        const auto &pass = passByName(composed.config, "resolve");
+        CHECK(pass.at("input") == Json::array({"trail@history"}));
+        CHECK(pass.at("resource_ports").at("source").at("resource") == "trail@history");
+        CHECK_FALSE(pass.at("resource_ports").at("source").contains("history"));
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
+    SECTION("a target without history is refused by name") {
+        auto without = document;
+        without["nodes"][0]["parameters"]["name"] = "plain";
+        const auto [code, fields] = lp0aRefusal(without);
+        CHECK(code == "graph.history_unavailable@1");
+        CHECK(fields == Json{{"node", "resolve"}, {"port", "source"}, {"target", "plain"}});
+    }
+    SECTION("a port that writes history is refused when edited") {
+        auto writing = document;
+        writing["nodes"][2]["parameters"]["ports"]["color"]["history"] = true;
+        try {
+            (void)partitionGraphDocument(writing);
+            FAIL("a history write was accepted");
+        } catch (const GraphRegistryError &error) {
+            CHECK(error.code() == "graph.history_write@1");
+            CHECK(error.detail() == Json{{"node", "resolve"}, {"port", "color"}});
+        }
+        writing = document;
+        writing["nodes"][2]["parameters"]["ports"]["source"]["access"] = "read_write";
+        writing["nodes"][2]["outputs"] = {"color", "source"};
+        CHECK_THROWS_AS(partitionGraphDocument(writing), GraphRegistryError);
+        writing = document;
+        writing["nodes"][2]["parameters"]["ports"]["source"]["history"] = "yes";
+        CHECK_THROWS(partitionGraphDocument(writing));
     }
 }
 

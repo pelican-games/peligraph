@@ -67,6 +67,21 @@ bool isCarriedRefusalCode(std::string_view code) {
            code == renderConfigLegacyTransactionDirCode;
 }
 
+// LP-0a: a graph refusal that only composing the candidate can raise (a
+// render.target_ref naming no composed target, graph.target_ref_unknown@1)
+// keeps its code and fields, as the same refusal does when an edit raises it.
+std::optional<std::pair<std::string, Json>> graphRefusalOf(
+    const std::exception_ptr &error) {
+    if (!error) return std::nullopt;
+    try {
+        std::rethrow_exception(error);
+    } catch (const GraphRegistryError &refusal) {
+        return std::pair{refusal.code(), refusal.detail()};
+    } catch (...) {
+    }
+    return std::nullopt;
+}
+
 // Q-14e: the fields a typed render_pipeline_preflight_failed refusal carries,
 // added beside the ones a call site already has. Every refusal with that code
 // that is built from an exception goes through here, whichever way the
@@ -3651,6 +3666,15 @@ void RenderConfigEditorService::completeCommitTransaction(
                     }
                     finish(rejection(refusal->code,
                                      carriedRefusalMessage(*refusal),
+                                     std::move(details)));
+                    return;
+                }
+                if (auto refusal = graphRefusalOf(applied.exception)) {
+                    for (const auto &[key, value] :
+                         refusal->second.items()) {
+                        if (!details.contains(key)) details[key] = value;
+                    }
+                    finish(rejection(refusal->first, applied.error,
                                      std::move(details)));
                     return;
                 }

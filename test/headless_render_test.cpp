@@ -14823,4 +14823,136 @@ TEST_CASE(
 #endif
 }
 
+// LP-0a: render.target_ref reads the hybrid preset's lit_color into an image
+// the graph owns, and writes a target a project feature declares. Both are
+// read back from the GPU.
+TEST_CASE("LP-0a a graph pass reads the preset's lit_color and writes a feature's target by reference",
+          "[headless][gpu][lp0a][graph-target-ref]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(temp_dir / "assets.json",
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
+        using Json = nlohmann::json;
+        std::filesystem::create_directories(temp_dir / "features");
+        writeTextFile(temp_dir / "features" / "lp0a_probe.json", Json{
+            {"schema", "pelican.render_feature"}, {"version", 1}, {"name", "lp0a_probe"},
+            {"render_targets", Json::array({{{"name", "lp0a_probe_rt"}, {"extent_scale", 1.0},
+                {"format", "R8G8B8A8_UNORM"}, {"format_class", "explicit(R8G8B8A8_UNORM)"},
+                {"usage", {"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"}}}})}}.dump(2));
+        const Json type{{"semantic", "pelican.render.color_signal@1"},
+            {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+        const Json color{{"kind", "image"}, {"type", type}, {"access", "write"},
+                         {"attachment", "color"}, {"location", 0}};
+        const Json shader{{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}};
+        const Json document{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", Json::object()},
+            {"nodes", Json::array({
+                {{"id", "lit"}, {"op", "render.target_ref"},
+                 {"parameters", {{"name", "lit_color"}, {"type", type}}}, {"outputs", {"resource"}}},
+                {{"id", "copy"}, {"op", "render.image"},
+                 {"parameters", {{"type", type}, {"format", "R16G16B16A16_SFLOAT"}, {"extent_scale", 1.0},
+                                 {"usage", {"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"}}}},
+                 {"outputs", {"resource"}}},
+                // An empty headless frame leaves lit_color one value, so a pass
+                // declared ahead of the copy draws a gradient into it first,
+                // through the same reference.
+                {{"id", "fill"}, {"op", "render.fullscreen"},
+                 {"parameters", {{"pass_set", "main_render"}, {"shader", shader}, {"ports", {{"color", color}}}}},
+                 {"inputs", {{"color", {{"node", "lit"}, {"port", "resource"}}}}},
+                 {"outputs", {"color"}}},
+                {{"id", "take"}, {"op", "render.fullscreen"},
+                 {"parameters", {{"pass_set", "main_render"},
+                     {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "shaders/lp0a_copy"}}},
+                     {"ports", {{"source", {{"kind", "image"}, {"type", type}, {"access", "read"},
+                                            {"sampling", {{"filter", "nearest"}, {"address", "clamp_to_edge"}}}}},
+                                {"color", color}}}}},
+                 {"inputs", {{"source", {{"node", "lit"}, {"port", "resource"}}},
+                             {"color", {{"node", "copy"}, {"port", "resource"}}}}},
+                 {"outputs", {"color"}}},
+                {{"id", "probe"}, {"op", "render.target_ref"},
+                 {"parameters", {{"name", "lp0a_probe_rt"}, {"type", type}}}, {"outputs", {"resource"}}},
+                // No input: engine://passthrough draws its UV gradient.
+                {{"id", "paint"}, {"op", "render.fullscreen"},
+                 {"parameters", {{"pass_set", "main_render"}, {"shader", shader}, {"ports", {{"color", color}}}}},
+                 {"inputs", {{"color", {{"node", "probe"}, {"port", "resource"}}}}},
+                 {"outputs", {"color"}}}})},
+            {"outputs", Json::object()},
+            {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+                           {"features", Json::array({"project://features/lp0a_probe.json"})}}}};
+        writeTextFile(temp_dir / "hybrid.json", document.dump(2));
+        std::filesystem::create_directories(temp_dir / "shaders");
+        writeTextFile(temp_dir / "shaders" / "lp0a_copy.frag", R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = pelican_sample_source(inUV);
+}
+)glsl");
+        configureRayQueryTestRuntime(temp_dir);
+
+        auto &renderer = GET_MODULE(Renderer);
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+
+        // The Frame Plan says the preset and the feature declared the targets.
+        const auto plan = renderer.currentFramePlanJson();
+        const auto source = [&](std::string_view name) {
+            for (const auto &resource : plan.at("resources"))
+                if (resource.at("name").get<std::string>() == name) return resource.at("source").get<std::string>();
+            return std::string{"<absent>"};
+        };
+        CHECK(source("lit_color") == "engine");
+        CHECK(source("lp0a_probe_rt") == "feature:lp0a_probe");
+        CHECK(source("lit") == "<absent>");
+
+        const auto lit = RendererTestAccess::readRenderTarget(renderer, "lit_color", ImageSubresourceRange{});
+        const auto copy = RendererTestAccess::readRenderTarget(renderer, "copy", ImageSubresourceRange{});
+        REQUIRE(lit.format == vk::Format::eR16G16B16A16Sfloat);
+        REQUIRE(copy.format == lit.format);
+        REQUIRE(copy.extent == lit.extent);
+        REQUIRE(copy.bytes.size() == lit.bytes.size());
+        constexpr std::size_t texel = 8;
+        std::set<std::vector<std::uint8_t>> distinct;
+        for (std::size_t offset = 0; offset + texel <= lit.bytes.size(); offset += texel)
+            distinct.emplace(lit.bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                             lit.bytes.begin() + static_cast<std::ptrdiff_t>(offset + texel));
+        INFO("distinct lit_color texels: " << distinct.size());
+        REQUIRE(distinct.size() > 1);
+        // The copy holds exactly what lit_color held when it was read.
+        CHECK(copy.bytes == lit.bytes);
+
+        const auto probe = RendererTestAccess::readRenderTarget(renderer, "lp0a_probe_rt", ImageSubresourceRange{});
+        REQUIRE(probe.format == vk::Format::eR8G8B8A8Unorm);
+        const auto pixel = [&](std::uint32_t x, std::uint32_t y) {
+            const auto offset = (static_cast<std::size_t>(y) * probe.extent.width + x) * 4u;
+            return std::array{probe.bytes.at(offset), probe.bytes.at(offset + 1),
+                              probe.bytes.at(offset + 2), probe.bytes.at(offset + 3)};
+        };
+        const auto last = probe.extent.width - 1;
+        // The gradient: red follows x, green follows y, blue is one half.
+        CHECK(pixel(0, 0)[0] < 16);
+        CHECK(pixel(last, 0)[0] > 239);
+        CHECK(pixel(0, probe.extent.height - 1)[1] != pixel(0, 0)[1]);
+        CHECK(pixel(last / 2, 0)[2] >= 126);
+        CHECK(pixel(last / 2, 0)[2] <= 129);
+        CHECK(pixel(last / 2, 0)[3] == 255);
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) std::filesystem::remove_all(temp_dir);
+        TestSupport::skipIfVulkanDeviceUnavailable(error, "Vulkan LP-0a target reference fixture unavailable");
+        throw;
+    }
+#else
+    SUCCEED("LP-0a GPU acceptance is compiler-ON only");
+#endif
+}
+
 } // namespace Pelican
