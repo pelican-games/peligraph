@@ -224,9 +224,14 @@ void placeRenderGraphPassRun(nlohmann::json &composed, const RenderGraphPassRun 
 // the original document; generated resource names and shader bindings are not saved.
 // Operations come from registered modules; a rendering operation this backend
 // cannot lower is rejected by name, not lowered as if it were a pass.
+// LP-1e: a render node or loop body pass with no `pass_set` joins
+// `default_pass_family` -- the composed config's first pass family, which
+// composeRenderFeatureConfig works out (defaultGraphPassFamily); `main` only
+// when the config has none.
 LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const nlohmann::json &document,
     const std::set<std::string> &inactive_scopes = {},
-    const GraphModuleRegistry &modules = builtinGraphModuleRegistry());
+    const GraphModuleRegistry &modules = builtinGraphModuleRegistry(),
+    const std::string &default_pass_family = "main");
 // The config alone: a pass that waits for an anchor (placed_runs) is not in it.
 nlohmann::json lowerRenderGraphDocument(const nlohmann::json &document,
     const std::set<std::string> &inactive_scopes = {},

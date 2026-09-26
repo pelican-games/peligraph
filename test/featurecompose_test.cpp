@@ -8,6 +8,7 @@
 #include "lp1c_decompose_support.hpp"
 #include "../src/project/materialdrawloop.hpp"
 #include "../src/project/materialpassdecompose.hpp"
+#include "../src/project/projecttemplate.hpp"
 #include "../src/project/renderfeatureoverlay.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/project/passshapepolicy.hpp"
@@ -7826,6 +7827,135 @@ TEST_CASE("LP-3b get_frame_plan pages a draw_loop's elements",
     CHECK_THROWS_AS(parseDrawLoopElementPage({{"loop_elements", {{"node", "x"}, {"offset", -1}}}}), std::invalid_argument);
     CHECK_THROWS_AS(parseDrawLoopElementPage({{"loop_elements", {{"limit", 2}}}}), std::invalid_argument);
     CHECK_THROWS_AS(parseDrawLoopElementPage({{"loop_elements", {{"node", "x"}, {"page", 1}}}}), std::invalid_argument);
+}
+
+namespace {
+// LP-1e: the rendering config a new blank project is made with, as
+// `project init --template blank` and Studio's New Project write it.
+nlohmann::json lp1eBlankRenderingConfig() {
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_lp1e_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    std::ifstream file(root / "passes" / "main_rendering_config.json");
+    REQUIRE(file.good());
+    auto config = nlohmann::json::parse(file);
+    file.close();
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+    return config;
+}
+
+// Every name in `names` is declared after `after` (when given) and before the
+// family's first canonical anchor, and so before output_transform.
+void lp1eAmongScenePasses(const std::vector<std::string> &declared, const std::vector<std::string> &names,
+                          std::string_view after = {}) {
+    const auto first_anchor = lp0bIndex(declared, "__anchor_sprite");
+    for (std::ptrdiff_t i = 0; i < first_anchor; ++i)
+        CHECK_FALSE(declared[static_cast<std::size_t>(i)].starts_with("__anchor_"));
+    for (const auto &name : names) {
+        INFO(name);
+        CHECK(lp0bIndex(declared, name) < first_anchor);
+        CHECK(lp0bIndex(declared, name) < lp0bIndex(declared, "output_transform"));
+        if (!after.empty()) CHECK(lp0bIndex(declared, name) > lp0bIndex(declared, after));
+    }
+}
+
+const std::vector<std::string> lp1eCopies{"steps/0/fill", "steps/1/fill"};
+} // namespace
+
+TEST_CASE("LP-1e an unplaced graph pass and an unplaced loop join a blank project's scene passes",
+          "[render-feature][graph-composition][lp1e]") {
+    using Json = nlohmann::json;
+    auto document = lp1eBlankRenderingConfig();
+    REQUIRE(document.at("rendering").at("rendering_passes").at(0).at("name") == "main_render");
+    document["definitions"]["paint"] = lp1aPaintBody();
+    SECTION("a fullscreen pass and a loop") {
+        document["nodes"] = Json::array({lp0bImage("blit_image"),
+                                         lp1aFullscreen("blit", {{"node", "blit_image"}, {"port", "resource"}}),
+                                         lp1aLoop("steps", lp1aRange(2))});
+        const auto composed = lp0aCompose(document);
+        const auto declared = lp0bDeclared(composed.config);
+        lp1eAmongScenePasses(declared, {"present", "blit", "steps/0/fill", "steps/1/fill"});
+        // The graph's own order: the loop stands by the graph pass it ranks
+        // after (ids, with no edge between them).
+        CHECK(lp0bIndex(declared, "blit") < lp0bIndex(declared, "steps/0/fill"));
+        CHECK(lp0bIndex(declared, "steps/0/fill") + 1 == lp0bIndex(declared, "steps/1/fill"));
+        const auto order = lp0bPlanOrder(composed);
+        for (const auto *name : {"blit", "steps/0/fill", "steps/1/fill"})
+            CHECK(lp0bIndex(order, name) < lp0bIndex(order, "output_transform"));
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
+    SECTION("a loop alone") {
+        document["nodes"] = Json::array({lp1aLoop("steps", lp1aRange(2))});
+        const auto composed = lp0aCompose(document);
+        const auto declared = lp0bDeclared(composed.config);
+        lp1eAmongScenePasses(declared, lp1eCopies);
+        CHECK(lp0bIndex(declared, "steps/0/fill") + 1 == lp0bIndex(declared, "steps/1/fill"));
+        const auto order = lp0bPlanOrder(composed);
+        for (const auto &name : lp1eCopies)
+            CHECK(lp0bIndex(order, name) < lp0bIndex(order, "output_transform"));
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
+    SECTION("a pass and a loop with no pass_set join the config's first family") {
+        auto blit = lp1aFullscreen("blit", {{"node", "blit_image"}, {"port", "resource"}});
+        blit["parameters"].erase("pass_set");
+        auto body = lp1aPaintBody();
+        for (auto &node : body["nodes"]) node["parameters"].erase("pass_set");
+        document["definitions"]["paint"] = body;
+        document["nodes"] = Json::array({lp0bImage("blit_image"), blit, lp1aLoop("steps", lp1aRange(2))});
+        const auto composed = lp0aCompose(document);
+        std::vector<std::string> families;
+        for (const auto &family : composed.config.at("rendering_passes"))
+            families.push_back(family.at("name").get<std::string>());
+        CHECK(families == std::vector<std::string>{"main_render"});
+        const auto declared = lp0bDeclared(composed.config);
+        lp1eAmongScenePasses(declared, {"present", "blit", "steps/0/fill", "steps/1/fill"});
+        const auto order = lp0bPlanOrder(composed);
+        for (const auto *name : {"blit", "steps/0/fill", "steps/1/fill"})
+            CHECK(lp0bIndex(order, name) < lp0bIndex(order, "output_transform"));
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
+}
+
+TEST_CASE("LP-1e an unplaced graph pass and an unplaced loop land after the hybrid scene passes, before sprite",
+          "[render-feature][graph-composition][lp1e]") {
+    using Json = nlohmann::json;
+    SECTION("a fullscreen pass and a loop") {
+        const auto composed = lp0aCompose(lp1aGraph(Json::array({
+            lp0bImage("blit_image"), lp1aFullscreen("blit", {{"node", "blit_image"}, {"port", "resource"}}),
+            lp1aLoop("steps", lp1aRange(2))})));
+        const auto declared = lp0bDeclared(composed.config);
+        lp1eAmongScenePasses(declared, {"blit", "steps/0/fill", "steps/1/fill"}, "forward_transparent");
+        const auto order = lp0bPlanOrder(composed);
+        for (const auto *name : {"blit", "steps/0/fill", "steps/1/fill"}) {
+            CHECK(lp0bIndex(order, name) > lp0bIndex(order, "forward_transparent"));
+            CHECK(lp0bIndex(order, name) < lp0bIndex(order, "__anchor_sprite"));
+        }
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
+    SECTION("a loop alone") {
+        const auto composed = lp0aCompose(lp1aGraph(Json::array({lp1aLoop("steps", lp1aRange(2))})));
+        const auto declared = lp0bDeclared(composed.config);
+        lp1eAmongScenePasses(declared, lp1eCopies, "forward_transparent");
+        CHECK(lp0bIndex(declared, "steps/1/fill") + 1 == lp0bIndex(declared, "__anchor_sprite"));
+        const auto order = lp0bPlanOrder(composed);
+        for (const auto &name : lp1eCopies)
+            CHECK(lp0bIndex(order, name) < lp0bIndex(order, "__anchor_sprite"));
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
+    SECTION("a loop that waits on a feature's pass stands after it") {
+        // An after naming a pass past the first anchor keeps the copies
+        // after that pass, not among the scene passes.
+        auto parameters = lp1aRange(2);
+        parameters["after"] = {"HighLuminanceExtraction"};
+        const auto composed = lp0aCompose(lp1aGraph(Json::array({lp1aLoop("steps", parameters)})));
+        const auto declared = lp0bDeclared(composed.config);
+        for (const auto &name : lp1eCopies) {
+            CHECK(lp0bIndex(declared, name) > lp0bIndex(declared, "HighLuminanceExtraction"));
+            CHECK(lp0bIndex(declared, name) < lp0bIndex(declared, "output_transform"));
+        }
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
 }
 
 } // namespace Pelican

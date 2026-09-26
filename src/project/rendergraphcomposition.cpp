@@ -129,7 +129,8 @@ Json lowerRenderPassKindNode(const Json &node, Json parameters,
 }
 
 LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &document,
-    const std::set<std::string> &inactive_scopes, const GraphModuleRegistry &modules) {
+    const std::set<std::string> &inactive_scopes, const GraphModuleRegistry &modules,
+    const std::string &default_pass_family) {
     const auto graph = partitionGraphDocument(document, modules).rendering;
     LoweredRenderGraphDocument lowered;
     auto config = document.value("rendering", Json::object());
@@ -259,7 +260,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
     // A lowered graphics pass joins a loop body, waits for its anchor, or is
     // appended to its family (LP-3a: a render.material_pass the same way).
     const auto landGraphicsPass = [&](const std::string &id, Json parameters, RenderGraphLoopBody *body) {
-        const auto family = parameters.value("pass_set", std::string{"main"});
+        const auto family = parameters.value("pass_set", default_pass_family);
         parameters.erase("pass_set");
         if (!graph.node_scopes.at(id).empty()) {
             if (body != nullptr) body->isolated.emplace_back(family, id);
@@ -1387,6 +1388,38 @@ void insertBeforeDependent(Json &list, std::vector<Json> run, const std::functio
         list.insert(list.begin() + static_cast<Json::difference_type>(position + i), std::move(run[i]));
 }
 
+// LP-1e: a loop's run of passes with no place of its own (no insert, no
+// canonical_anchor) and no graph pass to stand by joins the family's scene
+// passes, as an unplaced graph pass does (canonicalizePasses): before the
+// family's first canonical anchor -- so before output_transform too. It still
+// stands after the last pass it waits on (an after of a copy, a before naming
+// a copy or the loop) and before the first pass that waits on it.
+void insertAmongScenePasses(Json &list, std::vector<Json> run, const std::string &loop,
+                            const std::function<bool(const Json &)> &depends) {
+    std::set<std::string> names{loop};
+    std::set<std::string> waited;
+    for (const auto &pass : run) {
+        names.insert(pass.at("name").get<std::string>());
+        for (const auto &name : orderNames(pass, "after")) waited.insert(name);
+    }
+    auto scene_end = list.size();
+    auto dependent = list.size();
+    std::size_t floor = 0;
+    for (std::size_t i = 0; i < list.size(); ++i) {
+        const auto &pass = list.at(i);
+        const auto type = pass.value("type", std::string{});
+        if (scene_end == list.size() && (type == "canonical_anchor" || type == "output_transform")) scene_end = i;
+        const auto before = orderNames(pass, "before");
+        if (waited.contains(pass.value("name", std::string{})) ||
+            std::any_of(before.begin(), before.end(), [&](const std::string &name) { return names.contains(name); }))
+            floor = i + 1;
+        if (dependent == list.size() && depends(pass)) dependent = i;
+    }
+    const auto position = std::min(dependent, std::max(scene_end, floor));
+    for (std::size_t i = 0; i < run.size(); ++i)
+        list.insert(list.begin() + static_cast<Json::difference_type>(position + i), std::move(run[i]));
+}
+
 // A copy of a consumer: its name and, when it is a loop body's, its element.
 struct ConsumerCopy {
     std::string name;
@@ -1641,7 +1674,7 @@ RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRe
             }
             auto &list = (*found)["passes"];
             // Next to the graph pass the lowering's order puts it by; with
-            // none, before the first pass that waits on it, or at the end.
+            // none, among the scene's passes (LP-1e).
             if (const auto position = loop.positions.find(family); position != loop.positions.end()) {
                 const auto neighbour = std::find_if(list.begin(), list.end(), [&](const Json &pass) {
                     return pass.value("name", std::string{}) == position->second.pass;
@@ -1653,7 +1686,7 @@ RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRe
                     continue;
                 }
             }
-            insertBeforeDependent(list, std::move(passes), depends);
+            insertAmongScenePasses(list, std::move(passes), id, depends);
         }
     }
 

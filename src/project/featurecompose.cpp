@@ -2951,6 +2951,39 @@ std::vector<std::string> renderFeatureRequiredCapabilities(
     return capabilities;
 }
 
+namespace {
+// LP-1e: the pass family a graph's render node or loop body pass joins when it
+// names no `pass_set`: the composed config's first family. A preset's
+// families come first there (the rendering section's own and the graph's are
+// merged after them), then the rendering section's; `main` only when there
+// is none. A preset that does not resolve is refused by the composition
+// itself, with its own message; here it only says nothing.
+std::string defaultGraphPassFamily(const nlohmann::json &document, const RenderPipelinePresetLoader &load_preset) {
+    const auto first = [](const nlohmann::json &config) -> std::optional<std::string> {
+        const auto families = config.find("rendering_passes");
+        if (families == config.end() || !families->is_array() || families->empty() ||
+            !families->front().is_object())
+            return std::nullopt;
+        const auto name = families->front().find("name");
+        if (name == families->front().end() || !name->is_string()) return std::nullopt;
+        return name->get<std::string>();
+    };
+    const auto rendering = document.value("rendering", nlohmann::json::object());
+    if (!rendering.is_object()) return "main";
+    if (rendering.contains("pipeline")) {
+        auto authored = rendering;
+        authored.erase("rendering_passes");
+        authored.erase("render_targets");
+        try {
+            if (const auto family = first(resolveRenderPipelinePreset(authored, load_preset).config)) return *family;
+        } catch (const std::exception &) {
+        }
+    }
+    if (const auto family = first(rendering)) return *family;
+    return "main";
+}
+} // namespace
+
 RenderFeatureComposeResult composeRenderFeatureConfig(
     const nlohmann::json &config,
     const RenderFeatureComposeDependencies &dependencies) {
@@ -2961,8 +2994,12 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     const bool common_graph = config.value("schema", std::string{}) == "pelican.graph";
     // LP-0a: the graph is lowered before the preset and the features are
     // composed, and resolved after them (resolveGraphDocumentAfterComposition).
+    const RenderPipelinePresetLoader load_preset =
+        dependencies.load_pipeline_json ? dependencies.load_pipeline_json : dependencies.load_feature_json;
     auto lowered_graph = common_graph
-        ? lowerRenderGraphDocumentForComposition(config, dependencies.inactive_graph_scopes)
+        ? lowerRenderGraphDocumentForComposition(config, dependencies.inactive_graph_scopes,
+                                                 builtinGraphModuleRegistry(),
+                                                 defaultGraphPassFamily(config, load_preset))
         : LoweredRenderGraphDocument{config, {}, {}, {}, {}, {}, 0};
     auto native_config = std::move(lowered_graph.config);
     auto graph_buffers = nlohmann::json::array();
@@ -2983,10 +3020,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
             native_config.erase("rendering_passes");
         }
     }
-    const auto preset_resolution = resolveRenderPipelinePreset(
-        native_config, dependencies.load_pipeline_json
-                    ? dependencies.load_pipeline_json
-                    : dependencies.load_feature_json);
+    const auto preset_resolution = resolveRenderPipelinePreset(native_config, load_preset);
     auto resolved_config = preset_resolution.config;
     // Preset roots accept settings and feature references, not concrete resource
     // declarations. Add the common graph's declarations after preset expansion.
