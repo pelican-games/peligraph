@@ -85,6 +85,10 @@ class FullscreenPassWidget final : public QWidget {
     // built again from that context once, and the second refusal offers
     // Reload.
     void setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> digest);
+    // RU-1. An Undo or Redo of a render edit put documents back: the context
+    // is read again and the pass being edited is loaded from it -- the form
+    // shows what the document holds now, not the draft.
+    void documentRestored();
 };
 
 } // namespace PelicanStudio

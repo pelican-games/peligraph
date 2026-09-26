@@ -62,6 +62,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <tuple>
 #include <map>
 #include <utility>
 #include <fstream>
@@ -382,6 +383,8 @@ struct FramePlanWidget::Impl {
     QLabel *status = nullptr;
     QLineEdit *filter = nullptr;
     QPushButton *refresh = nullptr;
+    // RU-1: the row Undo / Redo join, after Refresh.
+    QHBoxLayout *toolbar_row = nullptr;
     QComboBox *target = nullptr;
     QSpinBox *depth = nullptr;
     QLabel *zoom_status = nullptr;
@@ -588,6 +591,7 @@ struct FramePlanWidget::Impl {
                          [this] { requestGpuTiming(); });
 
         auto *toolbar = new QHBoxLayout;
+        toolbar_row = toolbar;
         refresh = new QPushButton(owner.tr("Refresh"), &owner);
         refresh->setObjectName(QStringLiteral("pelican.framePlanRefresh"));
         refresh->setToolTip(owner.tr(
@@ -4179,6 +4183,36 @@ void FramePlanWidget::setPassInsertAction(
 
 void FramePlanWidget::setTaskInsertAction(std::function<void()> action) {
     impl_->task_insert_action = std::move(action);
+}
+
+void FramePlanWidget::setRenderHistoryActions(QAction *undo, QAction *redo) {
+    // The keys: the actions' own, taken while this panel holds the focus.
+    addAction(undo);
+    addAction(redo);
+    // The buttons: after Refresh, each firing its action and following its
+    // enabled state and its tooltip (the item the next press is about).
+    int index = impl_->toolbar_row->indexOf(impl_->refresh) + 1;
+    for (const auto &entry :
+         {std::tuple{undo, tr("Undo"), QStringLiteral("pelican.framePlan.undoButton")},
+          std::tuple{redo, tr("Redo"), QStringLiteral("pelican.framePlan.redoButton")}}) {
+        QAction *action = std::get<0>(entry);
+        auto *button = new QPushButton(std::get<1>(entry), this);
+        button->setObjectName(std::get<2>(entry));
+        impl_->toolbar_row->insertWidget(index++, button);
+        const auto follow = [button, action] {
+            button->setEnabled(action->isEnabled());
+            button->setToolTip(action->toolTip());
+        };
+        follow();
+        connect(action, &QAction::changed, button, follow);
+        connect(button, &QPushButton::clicked, action, &QAction::trigger);
+    }
+}
+
+void FramePlanWidget::showRenderHistoryLine(const QString &line) {
+    if (line.isEmpty()) return;
+    impl_->status->setStyleSheet({});
+    impl_->showStatus(line);
 }
 
 void FramePlanWidget::setRenderConfigDigest(

@@ -16,6 +16,8 @@ add_library(pelican_studio_inspector_model STATIC
     graphattachmentmodel.hpp
     graphcanvasmodel.cpp
     graphcanvasmodel.hpp
+    renderedithistory.cpp
+    renderedithistory.hpp
 )
 
 set_target_properties(pelican_studio_inspector_model PROPERTIES CXX_STANDARD 20)

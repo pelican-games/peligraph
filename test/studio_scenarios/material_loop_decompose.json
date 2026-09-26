@@ -136,7 +136,7 @@
       "timeout_ms": 30000
     },
     {
-      "label": "it says there is no undo yet",
+      "label": "it says Undo takes it back",
       "expect": "result",
       "command": {
         "cmd": "text",
@@ -144,7 +144,7 @@
       },
       "path": "text",
       "op": "contains",
-      "value": "cannot be undone yet"
+      "value": "Undo takes it back"
     },
     {
       "label": "Decompose",

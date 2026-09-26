@@ -2086,6 +2086,9 @@ struct RenderFeaturesWidget::Impl {
 
     RenderFeaturesWidget &owner;
     EmbeddedViewport &viewport;
+    // RU-1: the render history's Undo / Redo, handed to each editor opened.
+    QList<QAction *> history_actions;
+    void adoptHistoryActions(QWidget *editor) const { editor->addActions(history_actions); }
     // Q-10: get_render_features' source_reference, the rendering document
     // itself. The Task Editor refuses a task declared there by name.
     QString root_reference;
@@ -2231,6 +2234,7 @@ struct RenderFeaturesWidget::Impl {
         actions->addWidget(fork_preset);
         QObject::connect(fork_preset, &QPushButton::clicked, &owner, [this] {
             auto *dialog = new PresetEditDialog(viewport, &owner, [this] { requestRefresh(); });
+            adoptHistoryActions(dialog);
             dialog->show();
         });
         auto *region_replacements = new QPushButton(owner.tr("Regions"), &owner);
@@ -2241,6 +2245,7 @@ struct RenderFeaturesWidget::Impl {
                 requestRefresh();
                 emit owner.renderConfigCommitted();
             }, PresetEditDialog::Mode::Region);
+            adoptHistoryActions(dialog);
             dialog->show();
         });
         auto *scene_as = new QPushButton(owner.tr("Scene AS"), &owner);
@@ -2248,12 +2253,14 @@ struct RenderFeaturesWidget::Impl {
         actions->addWidget(callable_records);
         QObject::connect(callable_records, &QPushButton::clicked, &owner, [this] {
             auto *dialog = new CallableRecordsDialog(viewport, &owner);
+            adoptHistoryActions(dialog);
             dialog->show();
         });
         scene_as->setObjectName(QStringLiteral("pelican.renderFeatures.sceneAccelerationStructures"));
         actions->addWidget(scene_as);
         QObject::connect(scene_as, &QPushButton::clicked, &owner, [this] {
             auto *dialog = new SceneAccelerationStructuresDialog(viewport, &owner);
+            adoptHistoryActions(dialog);
             dialog->show();
         });
         actions->addStretch();
@@ -2974,6 +2981,7 @@ void RenderFeaturesWidget::editComputeTaskConnection(const QString &name, const 
     dialog->setViewAxesProvider(impl_->task_view_axes);
     // Q-15: the Task Editor follows the other panels' commits too.
     dialog->setRenderConfigDigest(impl_->digest_hub);
+    impl_->adoptHistoryActions(dialog);
     dialog->show();
 }
 
@@ -2982,6 +2990,7 @@ void RenderFeaturesWidget::editFrameNodeOrder(const QString &graph, const QStrin
         impl_->requestRefresh();
         emit renderConfigCommitted();
     });
+    impl_->adoptHistoryActions(dialog);
     dialog->show();
 }
 
@@ -2997,6 +3006,11 @@ void RenderFeaturesWidget::setRenderConfigDigest(
         impl_->digest_hub->subscribe(this, [impl = impl_.get()](const std::string &moved) {
             impl->documentMoved(moved);
         });
+}
+
+void RenderFeaturesWidget::setRenderHistoryActions(const QList<QAction *> &actions) {
+    impl_->history_actions = actions;
+    addActions(actions);
 }
 
 void RenderFeaturesWidget::setGraphNodeOpenAction(GraphNodeOpenAction action) {

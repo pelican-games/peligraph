@@ -450,13 +450,13 @@ void MainWindow::createWorkspace() {
     // that edits it: a commit in any of them -- a node's placement included --
     // is news to the others, which read their context again rather than send
     // the revision they read before it.
-    {
-        auto digest = std::make_shared<RenderConfigDigest>();
-        frame_plan_->setRenderConfigDigest(digest);
-        fullscreen_pass_->setRenderConfigDigest(digest);
-        graph_canvas_->setRenderConfigDigest(digest);
-        render_features_->setRenderConfigDigest(digest);
-    }
+    render_digest_ = std::make_shared<RenderConfigDigest>();
+    frame_plan_->setRenderConfigDigest(render_digest_);
+    fullscreen_pass_->setRenderConfigDigest(render_digest_);
+    graph_canvas_->setRenderConfigDigest(render_digest_);
+    render_features_->setRenderConfigDigest(render_digest_);
+    // RU-1: and one history of their edits.
+    createRenderHistory(pass_editor_scroll);
     frame_plan_->setLayoutCapability(FramePlanLayoutCapability{
         .read = [this] { return graph_canvas_->scene().layoutMember("frame_plan"); },
         .write = [this](const nlohmann::json &frame_plan, QString *reason) {
@@ -578,6 +578,9 @@ void MainWindow::createWorkspace() {
             });
     connect(viewport_, &EmbeddedViewport::engineRpcBecameUnavailable, this,
             [this](const QString &) {
+                // RU-1: what the history had in flight went with the engine;
+                // the history stays (its documents are on disk).
+                if (render_history_) render_history_->abandonInFlight();
                 if (pending_navigation_ != Navigation::None) {
                     cancelNavigation(tr("The engine disconnected. The project remains open."));
                 }
@@ -599,6 +602,21 @@ void MainWindow::createWorkspace() {
             [this](qint64 request_id, const QByteArray &result_json) {
                 if (migration_panel_->acceptRpcResult(request_id, result_json))
                     return;
+                // RU-1: the render history's own reads, restores and polls,
+                // and the replies to the edits it follows.
+                if (render_history_ && render_history_->waitingFor(request_id)) {
+                    nlohmann::json result;
+                    try {
+                        result = nlohmann::json::parse(
+                            result_json.constData(),
+                            result_json.constData() + result_json.size());
+                    } catch (const std::exception &error) {
+                        render_history_->receiveFailure(request_id, error.what());
+                        return;
+                    }
+                    render_history_->receiveResult(request_id, result);
+                    return;
+                }
                 if (request_id != 0 && request_id == navigation_revision_request_) {
                     navigation_revision_request_ = 0;
                     try {
@@ -622,6 +640,10 @@ void MainWindow::createWorkspace() {
             [this](qint64 request_id, const QString &message) {
                 if (migration_panel_->acceptRpcFailure(request_id, message))
                     return;
+                if (render_history_ && render_history_->waitingFor(request_id)) {
+                    render_history_->receiveFailure(request_id, message.toStdString());
+                    return;
+                }
                 if (request_id != 0 && request_id == navigation_revision_request_) {
                     cancelNavigation(tr("Could not check unsaved changes: %1").arg(message));
                     return;
@@ -652,6 +674,109 @@ void MainWindow::createWorkspace() {
     });
     inspector_->setSceneEditCompletedAction(
         [this](const SceneEditOutcome &outcome) { sceneEditCompleted(outcome); });
+}
+
+void MainWindow::createRenderHistory(QWidget *pass_editor) {
+    render_history_.emplace(RenderEditHistory::Transport{
+        .request = [this](const std::string &method, const nlohmann::json &params,
+                          std::string *error) -> std::int64_t {
+            const auto object =
+                QJsonDocument::fromJson(QByteArray::fromStdString(params.dump())).object();
+            QString message;
+            const qint64 id =
+                viewport_->requestRpc(QString::fromStdString(method), object, &message);
+            if (id == 0 && error != nullptr) *error = message.toStdString();
+            return id;
+        },
+        .schedule = [this](int milliseconds, std::function<void()> task) {
+            QTimer::singleShot(milliseconds, this, std::move(task));
+        },
+    });
+    render_history_->changed = [this] { renderHistoryChanged(); };
+    render_history_->restored = [this](const nlohmann::json &commit, bool restart) {
+        renderDocumentsRestored(commit, restart);
+    };
+    // Every request any panel sends passes here; the history hears only the
+    // render edits (and asks for the documents before each is written).
+    const auto json_of = [](const QJsonObject &params) {
+        return nlohmann::json::parse(
+            QJsonDocument(params).toJson(QJsonDocument::Compact).toStdString());
+    };
+    viewport_->setRpcObserver(EmbeddedViewport::RpcObserver{
+        .before = [this, json_of](const QString &method, const QJsonObject &params) {
+            const auto name = method.toStdString();
+            if (!render_history_ || !RenderEditHistory::followsMethod(name)) return;
+            render_history_->beforeRequest(name, json_of(params));
+        },
+        .sent = [this](qint64 id, const QString &method, const QJsonObject &) {
+            const auto name = method.toStdString();
+            if (!render_history_ || !RenderEditHistory::followsMethod(name)) return;
+            render_history_->requestSent(id, name, nlohmann::json::object());
+        },
+    });
+
+    render_undo_action_ = new QAction(tr("Undo Render Edit"), this);
+    render_undo_action_->setObjectName(QStringLiteral("pelican.edit.undoRenderEdit"));
+    render_undo_action_->setShortcut(QKeySequence::Undo);
+    render_redo_action_ = new QAction(tr("Redo Render Edit"), this);
+    render_redo_action_->setObjectName(QStringLiteral("pelican.edit.redoRenderEdit"));
+    render_redo_action_->setShortcuts(
+        {QKeySequence{Qt::CTRL | Qt::Key_Y}, QKeySequence{Qt::CTRL | Qt::SHIFT | Qt::Key_Z}});
+    // The keys belong to the panel that holds the focus: these panels and
+    // what is inside them. A text field inside takes Ctrl+Z for its own text
+    // first (it claims the key before any shortcut); the Graph tab and the
+    // Inspector are not among them and keep their own Undo.
+    for (QAction *action : {render_undo_action_, render_redo_action_})
+        action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    connect(render_undo_action_, &QAction::triggered, this,
+            [this] { render_history_->undo(); });
+    connect(render_redo_action_, &QAction::triggered, this,
+            [this] { render_history_->redo(); });
+    frame_plan_->setRenderHistoryActions(render_undo_action_, render_redo_action_);
+    pass_editor->addAction(render_undo_action_);
+    pass_editor->addAction(render_redo_action_);
+    render_features_->setRenderHistoryActions({render_undo_action_, render_redo_action_});
+    renderHistoryChanged();
+}
+
+void MainWindow::renderHistoryChanged() {
+    if (!render_history_ || render_undo_action_ == nullptr) return;
+    const auto &history = *render_history_;
+    render_undo_action_->setEnabled(history.canUndo());
+    render_redo_action_->setEnabled(history.canRedo());
+    const auto undo_label = QString::fromStdString(history.undoLabel());
+    const auto redo_label = QString::fromStdString(history.redoLabel());
+    const bool barrier = !history.undoStack().empty() && history.undoStack().back().barrier;
+    render_undo_action_->setToolTip(
+        undo_label.isEmpty() ? tr("Nothing to undo")
+        : barrier ? tr("Cannot undo past \"%1\": it created or removed files").arg(undo_label)
+                  : tr("Undo %1").arg(undo_label));
+    render_redo_action_->setToolTip(redo_label.isEmpty() ? tr("Nothing to redo")
+                                                         : tr("Redo %1").arg(redo_label));
+    if (history.lineSerial() != shown_render_history_line_) {
+        shown_render_history_line_ = history.lineSerial();
+        const auto line = QString::fromStdString(history.line());
+        frame_plan_->showRenderHistoryLine(line);
+        if (!line.isEmpty()) statusBar()->showMessage(line, 8000);
+    }
+}
+
+void MainWindow::renderDocumentsRestored(const nlohmann::json &commit,
+                                         bool restart_required) {
+    // Every panel that edits the rendering document reads it again: the ones
+    // that hold the root's digest are told through it, and the Frame Plan and
+    // the Pass Editor also for a restore that left the root as it was (a
+    // preset's pass).
+    if (commit.contains("source_digest") && commit.at("source_digest").is_object())
+        render_digest_->publish(
+            commit.at("source_digest").value("hex", std::string{}), nullptr);
+    frame_plan_->refresh();
+    frame_plan_->refreshAuthoringContext();
+    fullscreen_pass_->documentRestored();
+    // G-4: the edit taken back was a setting the engine reads at start.
+    if (restart_required)
+        requestEngineRestart(
+            tr("Restarting the engine to apply the material route setting..."));
 }
 
 void MainWindow::updateModalTransformPolling() {
@@ -751,6 +876,15 @@ void MainWindow::createMenus() {
     QAction *exit_action = file_menu->addAction(tr("E&xit"));
     exit_action->setObjectName(QStringLiteral("pelican.file.exit"));
     connect(exit_action, &QAction::triggered, this, &QWidget::close);
+
+    // RU-1. Undo / Redo of the render edits. The entries carry Ctrl+Z and
+    // Ctrl+Y for the menu to show; the keys themselves are taken only while
+    // a render panel holds the focus (the Graph tab and the Inspector keep
+    // their own).
+    QMenu *edit_menu = menuBar()->addMenu(tr("&Edit"));
+    edit_menu->setObjectName(QStringLiteral("pelican.editMenu"));
+    edit_menu->addAction(render_undo_action_);
+    edit_menu->addAction(render_redo_action_);
 
     QMenu *view_menu = menuBar()->addMenu(tr("&View"));
     view_menu->setObjectName(QStringLiteral("pelican.viewMenu"));
@@ -1099,6 +1233,8 @@ void MainWindow::openProjectNow(const QString &path) {
         pending_created_selection_.reset();
         pending_outliner_edit_.reset();
         endGizmoSessionForProjectSwitch(opened_project.projectRoot());
+        // RU-1: nothing in the render history is about the next project.
+        if (render_history_) render_history_->clear();
         project_model_ = std::move(opened_project);
         tool_layout_presets_.emplace(
             application_config_directory_,
@@ -1182,6 +1318,7 @@ void MainWindow::leaveCurrentProject(
     pending_created_selection_.reset();
     pending_outliner_edit_.reset();
     endGizmoSessionForProjectSwitch(next_project_root);
+    if (render_history_) render_history_->clear();
     selection_model_.bindProject(nullptr);
     project_model_.reset();
     tool_layout_presets_.reset();

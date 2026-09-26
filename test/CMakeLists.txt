@@ -377,6 +377,9 @@ endif()
 if(TARGET pelican_studio_inspector_model)
   pelican_define_test(devstudio_graphattachment_test pelican_studio_inspector_model)
   pelican_define_test(devstudio_graphcanvas_test pelican_studio_inspector_model)
+  # RU-1: the render edit history over a list of what was sent -- no Qt, no
+  # engine; the test answers each request as the engine does.
+  pelican_define_test(devstudio_render_history_test pelican_studio_inspector_model)
   target_compile_definitions(pelican_test_devstudio_graphcanvas_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   pelican_define_test(devstudio_inspector_test
@@ -715,6 +718,29 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
   )
   add_dependencies(pelican_test_devstudio_outliner_edit_test
+    pelican_test_process_fixture_child)
+
+  # RU-1: Ctrl+Z by where the keyboard is -- the render history in the Frame
+  # Plan and the Pass Editor, the graph's in the Graph tab, the scene's in the
+  # Inspector -- on the real window over the real RPC transport.
+  pelican_define_test(devstudio_render_undo_keys_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+  target_compile_definitions(pelican_test_devstudio_render_undo_keys_test PRIVATE
+    PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
+  )
+  add_dependencies(pelican_test_devstudio_render_undo_keys_test
     pelican_test_process_fixture_child)
 
   # F-2: File > New Project... -- the dialog writes the picked template

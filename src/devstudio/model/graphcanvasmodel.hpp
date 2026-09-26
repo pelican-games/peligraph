@@ -844,10 +844,9 @@ class GraphCanvasModel {
     // for none (the end of the pass family). Either way an `insert` goes.
     bool setLoopAnchor(const std::string &id, const std::string &anchor);
     // The canonical anchors a loop can be placed at, in the frame's order.
+    // A loop with none expands after the scene passes, before the first
+    // anchor (LP-1e): Studio does not give one on its own.
     [[nodiscard]] static const std::vector<std::string> &loopAnchors();
-    // The anchor a loop takes when a pass is first put in its body and it has
-    // no place yet: after the main scene passes, before tonemapping.
-    static constexpr std::string_view defaultLoopAnchor = "post_main";
 
     // Decision 4: the branch table. The last branch is the else, which is
     // never removed, moved or given a condition.

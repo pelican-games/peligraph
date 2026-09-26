@@ -11424,13 +11424,14 @@ TEST_CASE("LP-4e Decompose into loop confirms, sends the digests its pass lives 
     fixture.widget.decomposeMaterialPass(QString::fromStdString(fixture.graph),
                                          QStringLiteral("wp343_mixed_a"));
     QApplication::processEvents();
-    // Nothing goes before the question is answered, and it says there is no
-    // undo yet.
+    // Nothing goes before the question is answered, and it says Undo takes
+    // it back (RU-1).
     CHECK(fixture.recorder.submits == 0);
     auto *prompt = fixture.widget.findChild<QMessageBox *>(
         QStringLiteral("pelican.framePlan.decomposeConfirm"));
     REQUIRE(prompt != nullptr);
-    CHECK(prompt->text().contains(QStringLiteral("cannot be undone yet")));
+    CHECK(prompt->text().contains(QStringLiteral("Undo takes it back")));
+    CHECK_FALSE(prompt->text().contains(QStringLiteral("cannot be undone")));
     auto *accept = prompt->findChild<QPushButton *>(
         QStringLiteral("pelican.framePlan.decomposeConfirm.ok"));
     REQUIRE(accept != nullptr);

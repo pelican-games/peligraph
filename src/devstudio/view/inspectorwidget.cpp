@@ -8,6 +8,7 @@
 #include "../viewport/embeddedviewport.hpp"
 
 #include <QAbstractItemView>
+#include <QAction>
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
@@ -25,6 +26,7 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -48,6 +50,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -295,6 +298,25 @@ struct InspectorWidget::Impl {
             synchronize();
             dispatchRequests();
         });
+        // RU-1: Ctrl+Z / Ctrl+Y here are the scene's Undo / Redo, as the
+        // buttons are; the render panels have their own history, and a text
+        // field keeps the keys for its own text.
+        for (auto [button, name, keys] :
+             {std::tuple{undo_button, "pelican.inspector.undo",
+                         QList<QKeySequence>{QKeySequence::Undo}},
+              std::tuple{redo_button, "pelican.inspector.redo",
+                         QList<QKeySequence>{QKeySequence{Qt::CTRL | Qt::Key_Y},
+                                             QKeySequence{Qt::CTRL | Qt::SHIFT | Qt::Key_Z}}}}) {
+            auto *action = new QAction(button->text(), &owner);
+            action->setObjectName(QString::fromLatin1(name));
+            action->setShortcuts(keys);
+            action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+            owner.addAction(action);
+            QPushButton *target = button;
+            QObject::connect(action, &QAction::triggered, target, [target] {
+                if (target->isEnabled()) target->click();
+            });
+        }
         QObject::connect(cancel_preview_button, &QPushButton::clicked, &owner,
                          [this] {
                              model.abortActivePreview();

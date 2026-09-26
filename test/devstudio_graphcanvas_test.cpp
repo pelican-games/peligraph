@@ -1223,7 +1223,7 @@ TEST_CASE("LP-4c Add loop sends the new body and the loop in one list",
               Json::array({{{"body", "paint"}}}));
         CHECK(ops[0].at("node").at("outputs") == Json::array({"image"}));
     }
-    SECTION("the first pass put in the new body gives the loop a place, in the same list") {
+    SECTION("RU-1: the first pass put in the new body leaves the loop unplaced (LP-1e)") {
         REQUIRE(h.client.model.addLoop({}, "loop_body"));
         h.commit();
         REQUIRE(h.client.model.enterInstance("loop"));
@@ -1232,25 +1232,28 @@ TEST_CASE("LP-4c Add loop sends the new body and the loop in one list",
         // drawing the engine's passthrough into it.
         REQUIRE(h.client.model.addNode("render.fullscreen"));
         h.commit();
-        REQUIRE(h.last_ops.size() == 3);
+        // The image and the pass, and nothing about the loop: the engine
+        // expands an unplaced loop after the scene passes (LP-1e).
+        REQUIRE(h.last_ops.size() == 2);
         CHECK(h.last_ops[0].at("node").at("op") == "render.image");
         CHECK(h.last_ops[1].at("node").at("op") == "render.fullscreen");
         CHECK(h.last_ops[1].at("node").at("inputs").at("color").at("node") ==
               h.last_ops[0].at("node").at("id"));
-        CHECK(h.last_ops[2].at("op") == "set_node_parameters");
-        CHECK(h.last_ops[2].at("node") == "loop");
-        CHECK(h.last_ops[2].at("parameters").at("canonical_anchor") == "post_main");
+        // Nor a family: a pass that names none joins the first one.
+        CHECK_FALSE(h.last_ops[1].at("node").at("parameters").contains("pass_set"));
         CHECK(h.document.at("definitions").at("loop_body").at("nodes").size() == 2);
-        // A second pass leaves the place the loop has.
+        // A second pass is the same two nodes.
         REQUIRE(h.client.model.addNode("render.fullscreen"));
         h.commit();
         CHECK(h.last_ops.size() == 2);
-        // The Place field moves it; an empty choice takes it away.
+        // The Place field is still there: it places the loop, and an empty
+        // choice takes the place away.
         REQUIRE(h.client.model.selectScope(""));
         const auto read = h.client.model.loop("loop");
         REQUIRE(read);
         CHECK(read->body_draws);
-        CHECK(read->anchor == "post_main");
+        CHECK(read->anchor.empty());
+        CHECK_FALSE(h.document.at("nodes").back().at("parameters").contains("canonical_anchor"));
         REQUIRE(h.client.model.setLoopAnchor("loop", "post_ldr"));
         h.commit();
         CHECK(h.document.at("nodes").back().at("parameters").at("canonical_anchor") == "post_ldr");

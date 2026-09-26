@@ -9,6 +9,7 @@
 #include <memory>
 #include <vector>
 
+class QAction;
 class QByteArray;
 class QString;
 
@@ -54,6 +55,9 @@ class RenderFeaturesWidget final : public QWidget {
     // that edit it: the panel refreshes when another panel's commit moved
     // the document, and sends an edit refused for that once more.
     void setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> digest);
+    // RU-1. The render edit history's Undo / Redo: their keys work in this
+    // panel and in every editor it opens (the Task Editor among them).
+    void setRenderHistoryActions(const QList<QAction *> &actions);
 
   signals:
     void renderConfigCommitted();

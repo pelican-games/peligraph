@@ -4,6 +4,7 @@
 #include "toollayoutpreset.hpp"
 #include "../model/gizmomodel.hpp"
 #include "../model/project.hpp"
+#include "../model/renderedithistory.hpp"
 #include "../model/selection.hpp"
 #include "../viewport/enginelogbuffer.hpp"
 
@@ -17,6 +18,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -45,6 +47,7 @@ class FullscreenPassWidget;
 class InspectorWidget;
 class OutlinerTree;
 class ProjectMigrationWidget;
+class RenderConfigDigest;
 class RenderFeaturesWidget;
 enum class AddObjectKind : std::uint8_t;
 struct SceneEditOutcome;
@@ -161,8 +164,20 @@ class MainWindow : public QMainWindow {
     };
     std::optional<OutlinerEdit> pending_outliner_edit_;
     QMenu *outliner_menu_ = nullptr;
+    // RU-1. The one history of render edits, shared by the Frame Plan, the
+    // Pass Editor, the Task Editor and Render Features, and its two actions:
+    // on the Frame Plan's toolbar, in the Edit menu, and Ctrl+Z / Ctrl+Y
+    // while one of those panels holds the focus.
+    std::shared_ptr<RenderConfigDigest> render_digest_;
+    std::optional<RenderEditHistory> render_history_;
+    QAction *render_undo_action_ = nullptr;
+    QAction *render_redo_action_ = nullptr;
+    std::uint64_t shown_render_history_line_ = 0;
 
     void createWorkspace();
+    void createRenderHistory(QWidget *pass_editor);
+    void renderHistoryChanged();
+    void renderDocumentsRestored(const nlohmann::json &commit, bool restart_required);
     void createMenus();
     // View > Theme. One entry per theme in the table, each carrying the
     // objectName a scenario triggers (`pelican.view.theme.<name>`).

@@ -11,6 +11,7 @@
 #include <functional>
 #include <memory>
 
+class QAction;
 class QByteArray;
 class QHideEvent;
 class QShowEvent;
@@ -85,6 +86,12 @@ class FramePlanWidget final : public QWidget {
     // that edits it: this panel says what it read and committed, and reads its
     // context again when another panel's commit moved the document.
     void setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> digest);
+    // RU-1. The render edit history's Undo / Redo (the main window owns the
+    // history): Undo and Redo buttons on the toolbar, and the actions' keys
+    // while this panel holds the focus. showRenderHistoryLine puts the
+    // history's one line on the status row.
+    void setRenderHistoryActions(QAction *undo, QAction *redo);
+    void showRenderHistoryLine(const QString &line);
     void setProjectRoot(const std::filesystem::path &project_root);
     void setShaderSourceOpenAction(ShaderSourceOpenAction action);
     // F-3. A get_status result: its shader reload failures become marks on

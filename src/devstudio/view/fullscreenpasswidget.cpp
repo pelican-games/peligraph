@@ -3314,6 +3314,12 @@ struct FullscreenPassWidget::Impl {
         populateRoleCandidates();
         editing_preset_pass.reset();
         load_edit_requested = false;
+        // RU-1: after a preset pass was edited here, the form is a new pass's
+        // again -- its name typed, its position chosen -- as New pass makes it.
+        name->setReadOnly(false);
+        position->setEnabled(true);
+        raster_state->setEnabled(true);
+        save->setText(owner.tr("Save"));
         requested_insert_after = after_pass.toStdString();
         (void)graph_name;
         clearDraft();
@@ -3636,6 +3642,11 @@ void FullscreenPassWidget::editPresetPassConnection(const QString &graph, const 
 void FullscreenPassWidget::insertAuthoredPassAfter(const QString &graph,
                                                    const QString &after_pass) {
     impl_->beginAuthoredPassInsert(graph, after_pass);
+}
+
+void FullscreenPassWidget::documentRestored() {
+    if (!impl_->authoring_available) return;
+    impl_->requestAuthoringContext(false);
 }
 
 void FullscreenPassWidget::setFixSocketsAction(

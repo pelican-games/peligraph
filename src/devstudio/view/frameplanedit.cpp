@@ -1576,8 +1576,8 @@ FramePlanEditRequest framePlanDecomposeRequest(const FramePlanAuthoring &authori
 
 std::string framePlanDecomposeConfirmation(const std::string &pass) {
     return "This rewrites " + pass +
-           " as graph nodes and a loop over its materials. It cannot be undone yet "
-           "(RD-1 brings Undo for it).\n\nWith the loop, each kind of material can be "
+           " as graph nodes and a loop over its materials. Undo takes it back "
+           "(Undo on the Frame Plan, or Ctrl+Z there).\n\nWith the loop, each kind of material can be "
            "drawn its own way: another variant, another render state, or not at all.";
 }
 

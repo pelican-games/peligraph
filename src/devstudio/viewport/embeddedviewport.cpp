@@ -588,7 +588,10 @@ qint64 EmbeddedViewport::requestRpc(const QString &method,
         }
         return 0;
     }
-    return process_.requestRpc(method, params, error);
+    if (rpc_observer_.before) rpc_observer_.before(method, params);
+    const qint64 request_id = process_.requestRpc(method, params, error);
+    if (rpc_observer_.sent) rpc_observer_.sent(request_id, method, params);
+    return request_id;
 }
 
 qint64 EmbeddedViewport::requestMigrationRpc(const QString &method,

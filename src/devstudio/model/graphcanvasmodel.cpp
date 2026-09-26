@@ -1973,32 +1973,20 @@ Json GraphCanvasModel::addNodeOps(const std::string &op, const std::string &defi
                                               {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED",
                                                                      "TRANSFER_SRC"})}}},
                           {"outputs", Json::array({"resource"})}}}});
+        // RU-1 (LP-1e): no pass_set. A graph pass that names none joins the
+        // first family of the composed frame, which is where the scene is
+        // drawn; naming main_render put it nowhere in a pipeline without one.
         node["parameters"] = Json{
-            {"pass_set", "main_render"},
             {"shader", Json{{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
             {"ports", Json{{"color", Json{{"kind", "image"}, {"type", type}, {"access", "write"},
                                           {"attachment", "color"}, {"location", 0}}}}}};
         node["inputs"] = Json{{"color", Json{{"node", image}, {"port", "resource"}}}};
         node["outputs"] = Json::array({"color"});
         ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", std::move(node)}});
-        // A body node takes its place among the passes from the loop that
-        // runs it, and a loop whose body draws nothing cannot hold one
-        // (graph.insert_on_compute@1). The first pass put in such a body
-        // gives each loop running it a place in the same list; without one
-        // the copies would land after the family's output_transform.
-        if (!root)
-            for (const auto &loop : nodes_) {
-                if (!isLoop(loop)) continue;
-                const auto bodies = loopBranchBodies(loop);
-                if (std::ranges::find(bodies, currentScope()) == bodies.end()) continue;
-                auto parameters = loop.value("parameters", Json::object());
-                if (parameters.contains("insert") || parameters.contains("canonical_anchor"))
-                    continue;
-                parameters["canonical_anchor"] = std::string{defaultLoopAnchor};
-                ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", "root"},
-                                   {"node", text(loop, "id")},
-                                   {"parameters", std::move(parameters)}});
-            }
+        // RU-1 (LP-1e): the loop running this body is not given a place. A
+        // loop with none expands after the scene passes, before the first
+        // anchor, which is where post_main used to put it; the Loop fields'
+        // Place still moves it.
         return ops;
     }
     if (op == kMaterialPass) {

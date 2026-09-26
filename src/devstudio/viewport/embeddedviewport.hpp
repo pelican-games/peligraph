@@ -12,6 +12,7 @@
 #include <QStringList>
 #include <QWidget>
 
+#include <functional>
 #include <optional>
 
 class QLabel;
@@ -47,6 +48,18 @@ class EmbeddedViewport final : public QWidget {
                       QString *error = nullptr);
     qint64 requestRpc(const QString &method, const QJsonObject &params,
                       QString *error = nullptr);
+    // RU-1. Told about every editor request around its sending: `before`
+    // runs before the request is written (a request it sends itself lands
+    // ahead of it on the wire), `sent` after, with the id its reply comes
+    // back under (0: it was not sent). The render edit history rides here,
+    // so every panel's edit is seen without any panel knowing.
+    struct RpcObserver {
+        std::function<void(const QString &method, const QJsonObject &params)> before;
+        std::function<void(qint64 id, const QString &method,
+                           const QJsonObject &params)>
+            sent;
+    };
+    void setRpcObserver(RpcObserver observer) { rpc_observer_ = std::move(observer); }
     bool rpcReady() const noexcept { return rpc_ready_; }
     // Q-9. A restart has been asked for and has not begun: G-5 is still asking
     // whether the scene has unsaved edits, and that question -- and a Save --
@@ -161,6 +174,7 @@ class EmbeddedViewport final : public QWidget {
     QSize last_requested_extent_;
     QString project_root_;
     QSet<qint64> pending_pick_requests_;
+    RpcObserver rpc_observer_;
     const SelectionModel *selection_model_ = nullptr;
 
     EngineProcessLaunch launchCommand() const;
