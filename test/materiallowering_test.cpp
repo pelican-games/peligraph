@@ -823,7 +823,7 @@ TEST_CASE("LP-2 draw steps are refused by name without a GPU",
     CHECK(refusalOf([&] {
               validateMaterialDrawStep(MaterialDrawStep::named("glow"),
                                        opaque, "loop", true);
-          }) == R"(graph.loop_variant_missing@1: {"material":"materials/a.material.json#a","node":"loop","variant":"glow"})");
+          }) == R"(graph.loop_variant_missing@1: {"material":"materials/a.material.json#a","material_variant":"glow","node":"loop"})");
     // A build without the runtime compiler cannot honor defines.
     CHECK(refusalOf([&] {
               validateMaterialDrawStep(

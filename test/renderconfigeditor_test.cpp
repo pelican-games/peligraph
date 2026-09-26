@@ -7313,7 +7313,7 @@ TEST_CASE("LP-2 a draw-loop refusal the renderer raises comes back as a named re
         Case{materialDrawPhaseCrossingCode,
              Json{{"node", "opaque_draws"}, {"material", "box"}}},
         Case{materialDrawVariantMissingCode,
-             Json{{"node", "opaque_draws"}, {"material", "box"}, {"variant", "outline"}}},
+             Json{{"node", "opaque_draws"}, {"material", "box"}, {"material_variant", "outline"}}},
         Case{materialDrawOverrideInterfaceCode,
              Json{{"node", "opaque_draws"}, {"material", "box"}, {"binding", "set 1 binding 0"}}},
         Case{materialDrawOverrideNeedsCompilerCode, Json{{"node", "opaque_draws"}}},

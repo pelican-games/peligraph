@@ -2782,7 +2782,7 @@ op は **module** が登録します。登録済み module はエンジンに最
 
 `evaluation` はノード単位で **強い方へ上げられます**(引き下げは採られません)。実物は `pose.clip_sample` で、`root_motion: "extract"` を書いたノードだけが `direct` → `replay` に上がります([posegraphmodule.cpp:179](../../src/project/posegraphmodule.cpp#L179))。v0 で実際に現れるのは `direct` と `replay` の 2 つだけで、`baked` / `recorded` を宣言する同梱 op はありません。
 
-`ports` は `declared`(op が固定のポート一覧を持つ)か `parameter_dependent`(ノード自身の書きぶりから決まる)です。catalog が `parameter_dependent` と書く条件は「factory を持ち、**かつ宣言コントラクトの `inputs` / `outputs` が両方とも空**」で([graphmodule.cpp:123](../../src/project/graphmodule.cpp#L388))、これに当たるのは **`render.*` の 8 本だけ**です(`render.buffer` / `attribute` / `image` / `compute` / `fullscreen` / `raster` と、LP 系の `render.target_ref` / `render.material_pass`)。LP 系のうち `render.shadow_depth` / `render.snapshot_copy` と `draw.*` の 3 本は socket が固定なので `declared` です。`pose.state_machine` は包む文書に従ってポートが増えますが、`pose` 出力を宣言しているので catalog の `ports` は **`declared`** です —— 増えた入力ポートは解決後にしか見えません。Studio のキャンバスもこのフィールドで分岐します([graphcanvasmodel.cpp:434](../../src/devstudio/model/graphcanvasmodel.cpp#L1366))。
+`ports` は `declared`(op が固定のポート一覧を持つ)か `parameter_dependent`(ノード自身の書きぶりから決まる)です。catalog が `parameter_dependent` と書く条件は「factory を持ち、**かつ宣言コントラクトの `inputs` / `outputs` が両方とも空**」で([graphmodule.cpp:123](../../src/project/graphmodule.cpp#L388))、これに当たるのは **`render.*` の 8 本だけ**です(`render.buffer` / `attribute` / `image` / `compute` / `fullscreen` / `raster` と、LP 系の `render.target_ref` / `render.material_pass`)。LP 系のうち `render.shadow_depth` / `render.snapshot_copy` と `draw.*` の 3 本は socket が固定なので `declared` です。`pose.state_machine` は包む文書に従ってポートが増えますが、`pose` 出力を宣言しているので catalog の `ports` は **`declared`** です —— 増えた入力ポートは解決後にしか見えません。Studio のキャンバスもこのフィールドで分岐します([graphcanvasmodel.cpp:434](../../src/devstudio/model/graphcanvasmodel.cpp#L1364))。
 
 ### op 一覧
 
@@ -3122,7 +3122,7 @@ draw_loop は 1 つの `render.material_pass` の中で動くループです。�
 | node | parameters | 描き方 |
 |---|---|---|
 | `draw.material` | なし | 今と同じ(その material 自身の pipeline) |
-| `draw.variant` | `variant`(必須) | 名前付き variant で描く。variant を持たない material に当たると `graph.loop_variant_missing@1` `{node, material, variant}` |
+| `draw.variant` | `variant`(必須) | 名前付き variant で描く。variant を持たない material に当たると `graph.loop_variant_missing@1` `{node, material, material_variant}` |
 | `draw.override` | `render_state`(`blend`: `opaque`/`blend`/`additive`、`cull`: `none`/`front`/`back`、`depth_test`、`depth_write`、`depth_compare`)と `defines`(文字列配列)。少なくとも 1 つを書く | 同じ material を、render state と define を替えた pipeline で描く |
 
 - `draw.*` を置いた definition はループの body 専用で、`graph.instance` から使うと `graph.definition_role@1` `{definition, node}`。ループの外に `draw.*` を置くことも断られます。`draw.override` で `depth_test: false` と `depth_write: true` を同時に書くと断られます([`checkDrawStepParameters()`](../../src/project/graphmodule.cpp#L154))。
@@ -3201,7 +3201,7 @@ feature の instance は object 形で `pass_replacements` を持てます。値
 | `graph.loop_contract_unsupported@1` | 編集 | `{node, contract}` |
 | `graph.loop_draws_unconnected@1` | 編集 | `{node, count}` |
 | `graph.definition_role@1` | 編集 | `{definition, node}` |
-| `graph.loop_variant_missing@1` | 組み直し(世代の準備) | `{node, material, variant}` |
+| `graph.loop_variant_missing@1` | 組み直し(世代の準備) | `{node, material, material_variant}`(error の最上位の `variant` は graph の変種だけを指すので、material の変種は `material_variant`) |
 | `graph.loop_phase_crossing@1` | 組み直し(世代の準備) | `{node, material}` |
 | `graph.loop_override_interface@1` | 組み直し(世代の準備) | `{node, material, binding}` |
 | `graph.loop_override_needs_compiler@1` | 組み直し(世代の準備) | `{node}` |

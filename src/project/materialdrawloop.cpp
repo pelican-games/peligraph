@@ -46,7 +46,7 @@ void validateMaterialDrawStep(const MaterialDrawStep &step,
                 materialDrawVariantMissingCode,
                 {{"node", node},
                  {"material", subject.key},
-                 {"variant", step.variant}});
+                 {"material_variant", step.variant}});
         }
         return;
     case MaterialDrawStepKind::override_pipeline:

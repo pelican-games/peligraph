@@ -684,7 +684,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `graph.loop_expansion_limit@1` | 組み直し | `{node, count, limit}` |
 | `graph.loop_expansion_referenced@1` | 編集・読み込み | `{name, pointer}` |
 | `graph.loop_contract_unsupported@1` | 編集・読み込み | `{node, contract}` |
-| `graph.loop_variant_missing@1` | 組み直し | `{node, material, variant}` |
+| `graph.loop_variant_missing@1` | 組み直し | `{node, material, material_variant}` |
 | `graph.loop_phase_crossing@1` | 組み直し | `{node, material}` |
 | `graph.loop_override_interface@1` | 組み直し | `{node, material, binding}` |
 | `graph.loop_override_needs_compiler@1` | 組み直し | `{node}` |
