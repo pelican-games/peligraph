@@ -108,6 +108,85 @@ std::optional<std::vector<std::int64_t>> integerList(const Json &values) {
     return result;
 }
 
+// LP-4e. The draw steps of a draw_loop body (design 4.1).
+bool isDrawStep(std::string_view op) {
+    return op == "draw.material" || op == "draw.variant" || op == "draw.override";
+}
+
+bool isDrawItemsLoop(const Json &node) {
+    if (!isLoop(node)) return false;
+    const auto parameters = node.find("parameters");
+    if (parameters == node.end() || !parameters->is_object()) return false;
+    const auto over = parameters->find("over");
+    return over != parameters->end() && over->is_object() && over->contains("draw_items");
+}
+
+std::optional<std::vector<std::string>> stringList(const Json &values) {
+    std::vector<std::string> result;
+    if (!values.is_array()) return std::nullopt;
+    for (const auto &value : values) {
+        if (!value.is_string()) return std::nullopt;
+        result.push_back(value.get<std::string>());
+    }
+    return result;
+}
+
+// {"include": [...], "exclude": [...], "require_all": [...]}, or nothing for
+// a shape the fields cannot show.
+std::optional<GraphCanvasTagFilter> readTagFilter(const Json &value) {
+    if (!value.is_object()) return std::nullopt;
+    GraphCanvasTagFilter filter;
+    for (const auto &[key, list] : value.items()) {
+        auto *target = key == "include"       ? &filter.include
+                       : key == "exclude"     ? &filter.exclude
+                       : key == "require_all" ? &filter.require_all
+                                              : nullptr;
+        auto values = stringList(list);
+        if (target == nullptr || !values) return std::nullopt;
+        *target = std::move(*values);
+    }
+    return filter;
+}
+
+Json tagFilterJson(const GraphCanvasTagFilter &filter) {
+    Json value = Json::object();
+    if (!filter.include.empty()) value["include"] = filter.include;
+    if (!filter.exclude.empty()) value["exclude"] = filter.exclude;
+    if (!filter.require_all.empty()) value["require_all"] = filter.require_all;
+    return value;
+}
+
+// A draw_loop `when`, or nothing when it holds a key (or an operand) the
+// table has no form for -- has_variant naming a variant, say.
+std::optional<GraphCanvasDrawWhen> readDrawWhen(const Json &when) {
+    if (!when.is_object() || when.empty()) return std::nullopt;
+    GraphCanvasDrawWhen read;
+    for (const auto &[key, operand] : when.items()) {
+        if ((key == "material" || key == "contract") && operand.is_string()) {
+            (key == "material" ? read.material : read.contract) = operand.get<std::string>();
+        } else if (key == "tags") {
+            auto tags = readTagFilter(operand);
+            if (!tags) return std::nullopt;
+            read.tags = std::move(*tags);
+        } else if ((key == "skinned" || key == "has_variant") && operand.is_boolean()) {
+            (key == "skinned" ? read.skinned : read.has_variant) = operand.get<bool>();
+        } else {
+            return std::nullopt;
+        }
+    }
+    return read;
+}
+
+Json drawWhenJson(const GraphCanvasDrawWhen &when) {
+    Json value = Json::object();
+    if (when.material) value["material"] = *when.material;
+    if (when.tags) value["tags"] = tagFilterJson(*when.tags);
+    if (when.contract) value["contract"] = *when.contract;
+    if (when.skinned) value["skinned"] = *when.skinned;
+    if (when.has_variant) value["has_variant"] = *when.has_variant;
+    return value;
+}
+
 // A branch's condition, read into the table's terms.
 GraphCanvasLoopBranch readLoopBranch(const Json &branch) {
     GraphCanvasLoopBranch read;
@@ -121,6 +200,12 @@ GraphCanvasLoopBranch readLoopBranch(const Json &branch) {
     const auto when = branch.find("when");
     if (when == branch.end()) return read;
     read.when = "other";
+    // LP-4e: a draw_loop's condition names the material's attributes.
+    if (auto draw = readDrawWhen(*when)) {
+        read.when = "draw";
+        read.draw_when = std::move(*draw);
+        return read;
+    }
     if (!when->is_object() || when->size() != 1) return read;
     const auto first = when->begin();
     const std::string key = first.key();
@@ -153,6 +238,10 @@ constexpr auto kGraphInputType = "pelican.value.scalar@1";
 // LP-4c: the one parameter-dependent operation the palette offers, seeded
 // whole by addNodeOps.
 constexpr std::string_view kFullscreenTemplate = "render.fullscreen";
+
+// LP-4e: what a draw step hands on and a material pass's `draws` takes.
+constexpr std::string_view kDrawStreamType = "pelican.render.draw_stream@1";
+constexpr std::string_view kMaterialPass = "render.material_pass";
 
 void collectUiNodes(const Json &node, const std::string &parent,
                     std::vector<GraphCanvasUiNode> &out) {
@@ -432,6 +521,53 @@ void GraphCanvasModel::requestLoopReports() {
     read(RequestKind::Loops, "get_frame_plan", Json::object());
 }
 
+void GraphCanvasModel::requestNextLoopPage() {
+    if (!connected_ || !loop_page_node_.empty()) return;
+    for (const auto &[node, report] : loop_reports_.items()) {
+        if (loop_pages_done_.contains(node)) continue;
+        if (text(report, "tier") != "draw_loop") continue;
+        const auto held = report.value("elements", Json::array()).size();
+        const auto total = report.contains("total") && report.at("total").is_number_unsigned()
+                               ? report.at("total").get<std::size_t>()
+                               : held;
+        if (held >= total) {
+            loop_pages_done_.insert(node);
+            continue;
+        }
+        // The largest page the engine gives, from the first material not
+        // held yet.
+        loop_page_node_ = node;
+        read(RequestKind::LoopPage, "get_frame_plan",
+             Json{{"loop_elements", Json{{"node", node}, {"offset", held}, {"limit", 4096}}}});
+        return;
+    }
+}
+
+void GraphCanvasModel::receiveLoopPage(const Json &plan) {
+    const auto node = std::exchange(loop_page_node_, {});
+    const auto held = loop_reports_.find(node);
+    const auto loops = plan.find("loops");
+    bool added = false;
+    if (held != loop_reports_.end() && loops != plan.end() && loops->is_array())
+        for (const auto &loop : *loops) {
+            if (!loop.is_object() || text(loop, "node") != node) continue;
+            auto &elements = (*held)["elements"];
+            if (!elements.is_array()) elements = Json::array();
+            // The page is the one asked for only if it starts where the held
+            // list ends; a plan that moved in between is not spliced in.
+            if (loop.value("offset", std::size_t{0}) != elements.size()) break;
+            for (const auto &element : loop.value("elements", Json::array())) {
+                elements.push_back(element);
+                added = true;
+            }
+            if (loop.contains("total")) (*held)["total"] = loop.at("total");
+            break;
+        }
+    // A page that brought nothing ends that loop's reading.
+    if (!added) loop_pages_done_.insert(node);
+    requestNextLoopPage();
+}
+
 const Json *GraphCanvasModel::loopReport(std::string_view id) const {
     const auto found = loop_reports_.find(std::string{id});
     return found == loop_reports_.end() ? nullptr : &*found;
@@ -511,6 +647,11 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
         // LP-4c: the loop report only adds marks to what the document
         // already draws. Without it the canvas says "loop" and nothing else.
         if (kind == RequestKind::Loops) return;
+        if (kind == RequestKind::LoopPage) {
+            loop_pages_done_.insert(std::exchange(loop_page_node_, {}));
+            requestNextLoopPage();
+            return;
+        }
         if (kind == RequestKind::Catalog) catalog_requested_ = false;
         // The canvas keeps standing: a report that did not arrive removes an
         // overlay, never the graph the document already described.
@@ -558,6 +699,13 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             const auto response = Json::parse(json);
             if (response.contains("error")) {
                 if (pending.kind == RequestKind::Loops) return;
+                if (pending.kind == RequestKind::LoopPage) {
+                    // The loop keeps the materials it has; the next loop
+                    // is asked for its own.
+                    loop_pages_done_.insert(std::exchange(loop_page_node_, {}));
+                    requestNextLoopPage();
+                    return;
+                }
                 if (pending.kind == RequestKind::Catalog) catalog_requested_ = false;
                 failure_ = {InspectorNoticeKind::Error, diagnostic(response)};
                 ++report_revision_;
@@ -573,6 +721,15 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                             reports[text(loop, "node")] = loop;
                 loop_reports_ = std::move(reports);
                 loop_reports_received_ = true;
+                // LP-4e: a fresh report starts every loop's pages over.
+                loop_pages_done_.clear();
+                loop_page_node_.clear();
+                requestNextLoopPage();
+                ++report_revision_;
+                return;
+            }
+            if (pending.kind == RequestKind::LoopPage) {
+                receiveLoopPage(response);
                 ++report_revision_;
                 return;
             }
@@ -619,6 +776,11 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             ++report_revision_;
         } catch (const std::exception &error) {
             if (pending.kind == RequestKind::Loops) return;
+            if (pending.kind == RequestKind::LoopPage) {
+                loop_pages_done_.insert(std::exchange(loop_page_node_, {}));
+                requestNextLoopPage();
+                return;
+            }
             if (pending.kind == RequestKind::Catalog) catalog_requested_ = false;
             failure_ = {InspectorNoticeKind::Error, error.what()};
             ++report_revision_;
@@ -933,7 +1095,11 @@ std::optional<std::size_t> GraphCanvasModel::branchForElement(std::string_view l
         const auto elements = report->find("elements");
         if (elements != report->end() && elements->is_array())
             for (const auto &entry : *elements)
-                if (entry.is_object() && entry.value("element", std::int64_t{-1}) == element &&
+                // LP-4e: a draw_loop's element is a material's key, never
+                // an integer; value() would throw on it.
+                if (entry.is_object() && entry.contains("element") &&
+                    entry.at("element").is_number_integer() &&
+                    entry.at("element").get<std::int64_t>() == element &&
                     entry.contains("branch") && entry.at("branch").is_number_integer() &&
                     entry.at("branch").get<std::int64_t>() >= 0)
                     return static_cast<std::size_t>(entry.at("branch").get<std::int64_t>());
@@ -948,7 +1114,7 @@ std::optional<std::size_t> GraphCanvasModel::branchForElement(std::string_view l
     for (std::size_t index = 0; index < branches.size(); ++index) {
         const auto read = readLoopBranch(branches[index]);
         if (read.when == "else") return index;
-        if (read.when == "other") return std::nullopt;
+        if (read.when == "other" || read.when == "draw") return std::nullopt;
         const bool listed = std::ranges::find(read.values, element) != read.values.end();
         if ((read.when == "element" || read.when == "element_in") == listed) return index;
     }
@@ -1105,6 +1271,8 @@ std::string GraphCanvasModel::definitionOutputType(std::string_view definition,
     if (op == "graph.instance")
         return definitionOutputType(text(*node, "definition"), producer_port,
                                     depth - 1);
+    // LP-4e: parameter_dependent, but always the same one output.
+    if (isDrawStep(op)) return std::string{kDrawStreamType};
     const auto *contract = operation(op);
     if (contract == nullptr) return {};
     for (const auto &output : contract->value("outputs", Json::array()))
@@ -1208,6 +1376,28 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
             if (!port_body.empty())
                 for (auto &port : definitionInputs(definitions_.at(port_body)))
                     add_port(std::move(port), false);
+        } else if (drawn.op == kMaterialPass || isDrawStep(drawn.op)) {
+            // LP-4e: parameter_dependent, but the engine's contract is short
+            // enough to restate: a material pass's sockets follow its
+            // contract (its attachments, then depth, then the draws a
+            // draw_loop hands it); a draw step follows the one on `after`.
+            // The parameters are fields, never ports.
+            const auto socket = [&](std::string name, bool required, std::string type) {
+                GraphCanvasPort port;
+                port.port = std::move(name);
+                port.declared = true;
+                port.required = required;
+                port.type = std::move(type);
+                ports.push_back(std::move(port));
+            };
+            if (drawn.op == kMaterialPass) {
+                for (auto &name : materialPassColorSockets(drawn.parameters))
+                    socket(std::move(name), true, {});
+                socket("depth", true, {});
+                socket("draws", false, std::string{kDrawStreamType});
+            } else {
+                socket("after", false, std::string{kDrawStreamType});
+            }
         } else if (declared) {
             for (const auto &input : contract->value("inputs", Json::array())) {
                 GraphCanvasPort port;
@@ -1298,6 +1488,11 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
                         drawn_output.type = definitionOutputType(port_body, base, 8);
                     drawn.outputs.push_back(std::move(drawn_output));
                 }
+        } else if (isDrawStep(drawn.op)) {
+            // LP-4e: a draw step hands the list on.
+            drawn.outputs.push_back(GraphCanvasOutput{"draws", std::string{kDrawStreamType}});
+        } else if (drawn.op == kMaterialPass) {
+            // No output port: what it wrote is read through a target_ref.
         } else if (drawn.op == "graph.input") {
             // The structural boundary port. Its single output is the scalar
             // the expansion produces, which no catalog entry can say.
@@ -1806,6 +2001,86 @@ Json GraphCanvasModel::addNodeOps(const std::string &op, const std::string &defi
             }
         return ops;
     }
+    if (op == kMaterialPass) {
+        // LP-4e. A material pass is a contract and its attachments: it
+        // arrives with the contract the palette's combo chose (the
+        // `definition` argument), writing images of its own -- one per
+        // socket, and a depth -- added in the same list, as a fullscreen
+        // pass's is. Its draws are left unconnected: today's drawing.
+        if (!root || operation(op) == nullptr) return Json::array();
+        const auto contract = definition.empty() ? materialPassContracts().front() : definition;
+        if (std::ranges::find(materialPassContracts(), contract) == materialPassContracts().end())
+            return Json::array();
+        Json parameters{{"material_contract", contract}, {"pass_set", "main_render"}};
+        const Json color_type{{"semantic", "pelican.render.color_signal@1"},
+                              {"arguments", Json{{"reference", "scene"}, {"transfer", "linear"},
+                                                 {"range", "extended"}}}};
+        const auto image = [&](const std::string &socket, const Json &type,
+                               const char *format, const char *attachment_usage) {
+            const auto image_id = id + "__" + socket;
+            ops.push_back(Json{{"op", "add_node"}, {"scope", scope},
+                {"node", Json{{"id", image_id}, {"op", "render.image"},
+                              {"parameters", Json{{"type", type}, {"format", format},
+                                                  {"extent_scale", 1.0},
+                                                  {"usage", Json::array({attachment_usage,
+                                                                         "SAMPLED"})}}},
+                              {"outputs", Json::array({"resource"})}}}});
+            return Json{{"node", image_id}, {"port", "resource"}};
+        };
+        Json inputs = Json::object();
+        for (const auto &socket : materialPassColorSockets(parameters)) {
+            // What the G-buffer's lighting reads back as data keeps its
+            // precision; a colour is eight bits a channel.
+            const bool wide = socket == "color" || socket == "normal" || socket == "worldpos";
+            inputs[socket] = image(socket, color_type,
+                                   wide ? "R16G16B16A16_SFLOAT" : "R8G8B8A8_UNORM",
+                                   "COLOR_ATTACHMENT");
+        }
+        inputs["depth"] = image("depth",
+                                Json{{"semantic", "pelican.render.depth@1"},
+                                     {"arguments", Json{{"representation", "device"},
+                                                        {"space", "projection"}}}},
+                                "D32_SFLOAT", "DEPTH_STENCIL_ATTACHMENT");
+        node["parameters"] = std::move(parameters);
+        node["inputs"] = std::move(inputs);
+        node["outputs"] = Json::array();
+        ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", std::move(node)}});
+        return ops;
+    }
+    if (isDrawStep(op)) {
+        // LP-4e, decision 4. A draw step stands in a draw_loop body only. It
+        // arrives at the head of the body's list -- drawn first, the step
+        // that makes `draws` still last -- so the body keeps one list.
+        if (root || !drawBodyScope(currentScope()) || operation(op) == nullptr)
+            return Json::array();
+        Json parameters = Json::object();
+        // Something to draw differently, so the step is one the engine
+        // takes: the proposed variant, or both faces.
+        if (op == "draw.variant") parameters["variant"] = suggestDrawVariant();
+        if (op == "draw.override") parameters["render_state"] = Json{{"cull", "none"}};
+        node["parameters"] = std::move(parameters);
+        node["outputs"] = Json::array({"draws"});
+        ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", node}});
+        // The head: from the step `draws` names, back along `after`.
+        const auto &body = definitions_.at(currentScope());
+        const auto outputs = body.value("outputs", Json::object());
+        const auto draws = outputs.is_object() ? outputs.find("draws") : outputs.end();
+        std::string head = draws != outputs.end() && draws->is_object() ? text(*draws, "node") : "";
+        std::set<std::string> seen;
+        while (!head.empty() && seen.insert(head).second) {
+            const auto *step = findNode(currentScope(), head);
+            if (step == nullptr) break;
+            const auto after = step->value("inputs", Json::object()).value("after", Json{});
+            if (!after.is_object() || text(after, "node").empty()) break;
+            head = text(after, "node");
+        }
+        const auto *head_node = head.empty() ? nullptr : findNode(currentScope(), head);
+        if (head_node != nullptr && isDrawStep(text(*head_node, "op")))
+            ops.push_back(Json{{"op", "set_input"}, {"scope", scope}, {"node", head},
+                               {"port", "after"},
+                               {"source", Json{{"node", id}, {"port", "draws"}}}});
+        return ops;
+    }
     const auto *contract = operation(op);
     if (contract == nullptr || text(*contract, "ports") != "declared") return Json::array();
     auto outputs = Json::array();
@@ -1904,6 +2179,13 @@ std::optional<GraphCanvasLoop> GraphCanvasModel::loop(std::string_view id) const
     loop.id = std::string{id};
     const auto parameters = loopParameters(id);
     const auto over = parameters.value("over", Json::object());
+    // LP-4e: over the draws of one material pass.
+    if (over.is_object())
+        if (const auto draw_items = over.find("draw_items");
+            draw_items != over.end() && draw_items->is_object()) {
+            loop.draw_items = true;
+            loop.contract = text(*draw_items, "contract");
+        }
     const auto range = over.is_object() ? over.value("range", Json::object()) : Json::object();
     const auto count = range.is_object() ? range.find("count") : range.end();
     if (range.is_object() && count != range.end()) {
@@ -1922,7 +2204,10 @@ std::optional<GraphCanvasLoop> GraphCanvasModel::loop(std::string_view id) const
         loop.limit = limit->get<std::int64_t>();
     loop.tier = text(parameters, "tier");
     const auto where = parameters.find("where");
-    if (where != parameters.end() && where->is_object() && where->size() == 1) {
+    if (loop.draw_items && where != parameters.end() && where->is_object()) {
+        if (const auto tags = where->find("tags"); tags != where->end())
+            if (auto filter = readTagFilter(*tags)) loop.where_tags = std::move(*filter);
+    } else if (where != parameters.end() && where->is_object() && where->size() == 1) {
         const auto first = where->begin();
         if (first.key() == "element_in" || first.key() == "element_not_in")
             if (auto values = integerList(first.value())) {
@@ -1962,17 +2247,38 @@ std::optional<GraphCanvasLoop> GraphCanvasModel::loop(std::string_view id) const
             loop.body_draws = loop.body_draws || op == "render.fullscreen" || op == "render.raster";
         }
     }
+    // LP-4e: the material pass the loop's draws feed.
+    for (const auto &candidate : nodes_) {
+        if (!candidate.is_object() || text(candidate, "op") != kMaterialPass) continue;
+        const auto draws = candidate.value("inputs", Json::object()).value("draws", Json{});
+        if (draws.is_object() && text(draws, "node") == id) {
+            loop.pass = text(candidate, "id");
+            break;
+        }
+    }
     if (const auto *report = loopReport(id)) {
         loop.reported = true;
         loop.reported_tier = text(*report, "tier");
         loop.reported_count = report->value("count", std::int64_t{0});
-        for (const auto &element : report->value("elements", Json::array())) {
+        if (loop.pass.empty()) loop.pass = text(*report, "pass");
+        const auto elements = report->value("elements", Json::array());
+        for (const auto &element : elements) {
             if (!element.is_object()) continue;
+            const auto found = element.find("element");
+            if (found == element.end()) continue;
+            // A draw_loop's element is a material's matching key.
+            if (found->is_string()) loop.materials.push_back(found->get<std::string>());
             const auto branch = element.value("branch", std::int64_t{-1});
             if (branch < 0 || static_cast<std::size_t>(branch) >= loop.branches.size()) continue;
-            loop.branches[static_cast<std::size_t>(branch)].matched.push_back(
-                element.value("element", std::int64_t{0}));
+            auto &taken = loop.branches[static_cast<std::size_t>(branch)];
+            if (found->is_string())
+                taken.matched_materials.push_back(found->get<std::string>());
+            else if (found->is_number_integer())
+                taken.matched.push_back(found->get<std::int64_t>());
         }
+        loop.reported_total = report->contains("total") && report->at("total").is_number_unsigned()
+                                  ? report->at("total").get<std::size_t>()
+                                  : elements.size();
         for (const auto &branch : report->value("unmatched_branches", Json::array()))
             if (branch.is_number_integer() && branch.get<std::int64_t>() >= 0 &&
                 static_cast<std::size_t>(branch.get<std::int64_t>()) < loop.branches.size())
@@ -2143,6 +2449,14 @@ bool GraphCanvasModel::addLoopBranch(const std::string &id) {
     // a condition (element 0) that is an integer the table can edit.
     const auto &last = branches.back();
     Json added{{"when", Json{{"element", 0}}}};
+    // LP-4e: a draw_loop's elements are materials. The new branch catches
+    // the first material the report names; before a report, the materials
+    // that have a variant -- a condition the engine takes as it is.
+    if (const auto *node = findNode({}, id); node != nullptr && isDrawItemsLoop(*node)) {
+        const auto materials = loopMaterials(id);
+        added["when"] = materials.empty() ? Json{{"has_variant", true}}
+                                          : Json{{"material", materials.front()}};
+    }
     added["body"] = last.is_object() && last.contains("body") ? last.at("body") : Json{};
     branches.insert(branches.end() - 1, std::move(added));
     parameters["branches"] = std::move(branches);
@@ -2378,7 +2692,13 @@ std::vector<GraphCanvasCatalogEntry> GraphCanvasModel::paletteOperations(
         // from a name alone: the palette does not pretend otherwise. LP-4c
         // makes one exception, render.fullscreen, which arrives whole: the
         // engine's passthrough drawing into an image of its own (addNodeOps).
-        if (text(declaration, "ports") != "declared" && op != kFullscreenTemplate) continue;
+        // LP-4e: and two more families, each on its own side: a material
+        // pass in the root, which arrives with its attachments, and the draw
+        // steps in a body a draw_loop runs.
+        const bool seeded = op == kFullscreenTemplate ||
+                            (op == kMaterialPass && currentScope().empty()) ||
+                            (isDrawStep(op) && drawBodyScope(currentScope()));
+        if (text(declaration, "ports") != "declared" && !seeded) continue;
         GraphCanvasCatalogEntry entry{op, text(declaration, "domain"),
                                       text(declaration, "evaluation"),
                                       declaration.value("sink", false), false};
@@ -2433,6 +2753,150 @@ InspectorNotice GraphCanvasModel::notice() const {
                 values_instance_ +
                     " is not published: no drawn generation has left node values."};
     return {};
+}
+
+// --- LP-4e: the draw_loop stage, render.material_pass and draw.*.
+
+const std::vector<std::string> &GraphCanvasModel::materialPassContracts() {
+    // renderpipeline.cpp's materialPassContractFromName, less the legacy one:
+    // a draw_loop does not run over it (graph.loop_contract_unsupported@1).
+    static const std::vector<std::string> contracts{
+        "forward_opaque_v1", "deferred_geometry_v1", "forward_transparent_v1"};
+    return contracts;
+}
+
+const std::vector<std::string> &GraphCanvasModel::materialShaderContracts() {
+    // What a draw_loop's `when.contract` compares (graphcomposition.cpp).
+    static const std::vector<std::string> contracts{
+        "gbuffer_v1", "forward_scene_color_v1", "legacy_gbuffer_v1"};
+    return contracts;
+}
+
+std::vector<std::string> GraphCanvasModel::materialPassColorSockets(const Json &parameters) {
+    std::vector<std::string> sockets;
+    if (!parameters.is_object()) return sockets;
+    if (const auto outputs = parameters.find("material_outputs"); outputs != parameters.end()) {
+        // {schema: pelican.material_outputs, outputs: [{name, ...}]}
+        if (outputs->is_object())
+            for (const auto &output : outputs->value("outputs", Json::array()))
+                if (output.is_object() && !text(output, "name").empty())
+                    sockets.push_back(text(output, "name"));
+        return sockets;
+    }
+    const auto contract = text(parameters, "material_contract");
+    if (contract == "forward_opaque_v1" || contract == "forward_transparent_v1") return {"color"};
+    if (contract == "deferred_geometry_v1" || contract == "legacy_gbuffer_v1")
+        return {"albedo", "normal", "material", "worldpos", "emissive"};
+    return sockets;
+}
+
+bool GraphCanvasModel::drawBodyScope(std::string_view scope) const {
+    if (scope.empty()) return false;
+    const auto found = definitions_.find(std::string{scope});
+    if (found == definitions_.end() || !found->is_object()) return false;
+    for (const auto &loop : nodes_) {
+        if (!isDrawItemsLoop(loop)) continue;
+        const auto bodies = loopBranchBodies(loop);
+        if (std::ranges::find(bodies, scope) != bodies.end()) return true;
+    }
+    for (const auto &node : found->value("nodes", Json::array()))
+        if (node.is_object() && isDrawStep(text(node, "op"))) return true;
+    return false;
+}
+
+bool GraphCanvasModel::setLoopWhereTags(const std::string &id, const GraphCanvasTagFilter &tags) {
+    auto parameters = loopParameters(id);
+    if (tags.empty()) parameters.erase("where");
+    else parameters["where"] = Json{{"tags", tagFilterJson(tags)}};
+    return setLoopParameters(id, std::move(parameters));
+}
+
+bool GraphCanvasModel::setLoopBranchDrawWhen(const std::string &id, std::size_t branch,
+                                             const GraphCanvasDrawWhen &when) {
+    // An empty condition is the else, which only the last row is; a tag
+    // test with no tag in it tests nothing.
+    if (when.empty() || (when.tags && when.tags->empty())) return false;
+    if (when.material && when.material->empty()) return false;
+    if (when.contract && std::ranges::find(materialShaderContracts(), *when.contract) ==
+                             materialShaderContracts().end())
+        return false;
+    auto parameters = loopParameters(id);
+    auto branches = parameters.value("branches", Json::array());
+    if (!branches.is_array() || branch + 1 >= branches.size()) return false;
+    auto &row = branches[branch];
+    if (!row.is_object()) return false;
+    row["when"] = drawWhenJson(when);
+    parameters["branches"] = std::move(branches);
+    return setLoopParameters(id, std::move(parameters));
+}
+
+std::vector<std::string> GraphCanvasModel::loopMaterials(std::string_view id) const {
+    std::vector<std::string> materials;
+    const auto *report = loopReport(id);
+    if (report == nullptr) return materials;
+    for (const auto &element : report->value("elements", Json::array()))
+        if (element.is_object() && element.contains("element") && element.at("element").is_string()) {
+            auto key = element.at("element").get<std::string>();
+            if (std::ranges::find(materials, key) == materials.end())
+                materials.push_back(std::move(key));
+        }
+    return materials;
+}
+
+bool GraphCanvasModel::setDrawVariant(const std::string &node, const std::string &variant) {
+    const auto *found = findNode(currentScope(), node);
+    if (found == nullptr || text(*found, "op") != "draw.variant" || variant.empty()) return false;
+    if (text(nodeParameters(node), "variant") == variant) return false;
+    return setNodeParameter(node, "variant", variant);
+}
+
+bool GraphCanvasModel::setDrawOverride(const std::string &node, const Json &render_state,
+                                       const std::vector<std::string> &defines) {
+    if (!canEdit()) return false;
+    const auto *found = findNode(currentScope(), node);
+    if (found == nullptr || text(*found, "op") != "draw.override") return false;
+    if (!render_state.is_object()) return false;
+    // An override that replaces nothing is refused by the engine: the step
+    // would draw exactly what draw.material draws.
+    if (render_state.empty() && defines.empty()) return false;
+    if (std::ranges::any_of(defines, [](const std::string &define) { return define.empty(); }))
+        return false;
+    auto parameters = nodeParameters(node);
+    if (render_state.empty()) parameters.erase("render_state");
+    else parameters["render_state"] = render_state;
+    if (defines.empty()) parameters.erase("defines");
+    else parameters["defines"] = defines;
+    if (parameters == nodeParameters(node)) return false;
+    return submitOps(Json::array({Json{
+        {"op", "set_node_parameters"}, {"scope", scopeToken()}, {"node", node},
+        {"parameters", std::move(parameters)}}}));
+}
+
+bool GraphCanvasModel::setMaterialPassContract(const std::string &node, const std::string &contract) {
+    const auto *found = findNode(currentScope(), node);
+    if (found == nullptr || text(*found, "op") != kMaterialPass) return false;
+    if (std::ranges::find(materialPassContracts(), contract) == materialPassContracts().end())
+        return false;
+    if (text(nodeParameters(node), "material_contract") == contract) return false;
+    return setNodeParameter(node, "material_contract", contract);
+}
+
+std::string GraphCanvasModel::suggestDrawVariant() const {
+    const auto &scope = currentScope();
+    for (const auto &loop : nodes_) {
+        if (!isDrawItemsLoop(loop)) continue;
+        const auto bodies = loopBranchBodies(loop);
+        if (std::ranges::find(bodies, scope) == bodies.end()) continue;
+        const auto id = text(loop, "id");
+        for (const auto &pass : nodes_) {
+            if (!pass.is_object() || text(pass, "op") != kMaterialPass) continue;
+            const auto draws = pass.value("inputs", Json::object()).value("draws", Json{});
+            if (!draws.is_object() || text(draws, "node") != id) continue;
+            const auto variant = text(pass.value("parameters", Json::object()), "material_variant");
+            if (!variant.empty()) return variant;
+        }
+    }
+    return "variant";
 }
 
 } // namespace PelicanStudio

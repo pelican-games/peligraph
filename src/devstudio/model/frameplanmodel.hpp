@@ -205,6 +205,9 @@ struct FramePlanLoopElement {
     std::int64_t element = 0;
     std::size_t index = 0;
     std::size_t branch = 0;
+    // LP-4e: a draw_loop's element is a material, named by its matching key
+    // (`<document>#<name>`, `<asset>#material[<index>]`); `element` is then 0.
+    std::string key;
 
     bool operator==(const FramePlanLoopElement &) const = default;
 };
@@ -217,6 +220,17 @@ struct FramePlanLoop {
     std::size_t count = 0;
     std::vector<FramePlanLoopElement> elements;
     std::vector<std::size_t> unmatched_branches;
+    // LP-4e: a draw_loop names the render.material_pass it draws in, and its
+    // elements come a page at a time (LP-3b): `total` materials, of which
+    // `elements` are the ones from `offset`. An expand loop has no page and
+    // no `total` (0): elementCount() counts its elements then.
+    std::string pass;
+    std::size_t total = 0;
+    std::size_t offset = 0;
+
+    [[nodiscard]] std::size_t elementCount() const noexcept {
+        return total > elements.size() ? total : elements.size();
+    }
 
     bool operator==(const FramePlanLoop &) const = default;
 };

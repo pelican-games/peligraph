@@ -338,6 +338,11 @@ void MainWindow::createWorkspace() {
         [this](const QString &graph, const QString &pass) {
             frame_plan_->fixSockets(graph, pass);
         });
+    // LP-4e: and its Decompose into loop is the Frame Plan's too.
+    fullscreen_pass_->setDecomposeAction(
+        [this](const QString &graph, const QString &pass) {
+            frame_plan_->decomposeMaterialPass(graph, pass);
+        });
     fullscreen_pass_->setNewRenderTargetAction([this](const QString &name) {
         frame_plan_->openNewRenderTarget(name);
     });
@@ -408,6 +413,14 @@ void MainWindow::createWorkspace() {
             docks_[FramePlanDock]->raise();
             return true;
         });
+    // LP-4e: a decomposed material pass is edited as its loop, so the Graph
+    // tab comes to the front with that loop selected.
+    frame_plan_->setLoopDecomposedAction([this, render_tabs](const QString &loop) {
+        render_tabs->setCurrentWidget(graph_canvas_);
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        graph_canvas_->revealNodeWhenPresent(loop);
+    });
     render_features_->setGraphNodeOpenAction(open_graph_node);
     inspector_->setRayGroupAction([this, render_tabs](const QString &group) {
         docks_[FramePlanDock]->show();

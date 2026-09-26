@@ -60,6 +60,16 @@ GraphCanvasReadCapability graphCanvasReadCapability(EmbeddedViewport &viewport) 
             return viewport.requestRpc(QStringLiteral("get_frame_plan"),
                                        QJsonObject{}, error);
         },
+        .requestLoopElements = [&viewport](const QString &node, qint64 offset, qint64 limit,
+                                           QString *error) {
+            return viewport.requestRpc(
+                QStringLiteral("get_frame_plan"),
+                QJsonObject{{QStringLiteral("loop_elements"),
+                             QJsonObject{{QStringLiteral("node"), node},
+                                         {QStringLiteral("offset"), offset},
+                                         {QStringLiteral("limit"), limit}}}},
+                error);
+        },
         .requestSetTime = [&viewport](double time, QString *error) {
             return viewport.requestRpc(
                 QStringLiteral("set_time"),

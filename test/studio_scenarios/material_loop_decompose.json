@@ -1,0 +1,448 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "material_loop_decompose",
+  "description": "LP-4e: a forward material pass the project's root declares is decomposed into a loop from the Frame Plan (Decompose into loop..., confirmed), which rewrites it as a render.material_pass and a draw_loop over its materials. The Graph tab comes to the front with the loop selected, and the viewport is the same picture as before. A branch for the box's material that draws nothing takes the box off the screen, and the frame plan says that material took that branch.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "the frame plan has the forward pass",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#forward_opaque",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "before: the box in the middle, the background in a corner",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "box",
+      "retry_ms": 60000
+    },
+    {
+      "label": "read the background",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[1]",
+      "remember": "background"
+    },
+    {
+      "label": "the box is on screen: its colour is not the background's",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "background"
+    },
+    {
+      "label": "and how many colours the picture has",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before.png"
+      },
+      "path": "distinct_colors",
+      "remember": "colors_before"
+    },
+    {
+      "label": "the root declares the pass itself",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[0].editable_root_pass",
+      "value": true,
+      "retry_ms": 60000
+    },
+    {
+      "label": "pick the forward pass",
+      "cmd": "click",
+      "name": "pelican.framePlanLogicalView::node#forward_opaque"
+    },
+    {
+      "label": "Decompose into loop..., fired by name on the pass picked",
+      "cmd": "action",
+      "name": "pelican.framePlan.decomposeIntoLoop"
+    },
+    {
+      "label": "the confirmation is on screen",
+      "cmd": "wait",
+      "name": "pelican.framePlan.decomposeConfirm",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "it says there is no undo yet",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.framePlan.decomposeConfirm"
+      },
+      "path": "text",
+      "op": "contains",
+      "value": "cannot be undone yet"
+    },
+    {
+      "label": "Decompose",
+      "cmd": "click",
+      "name": "pelican.framePlan.decomposeConfirm.ok"
+    },
+    {
+      "label": "the root graph holds the loop",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[2].id",
+      "value": "forward_opaque_draws",
+      "retry_ms": 120000
+    },
+    {
+      "label": "and the pass as a render.material_pass",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].op",
+      "value": "render.material_pass"
+    },
+    {
+      "label": "the Graph tab is in front with the loop drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#forward_opaque_draws",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "and the material pass",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#forward_opaque",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the loop is the one selected: its fields are shown",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.summary",
+      "contains": "forward_opaque_draws",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the frame plan runs the loop inside the pass",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].tier",
+      "value": "draw_loop",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the fields read the report: draw_loop",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.summary",
+      "contains": "draw_loop",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "a draw_loop shows its contract",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.contract",
+      "contains": "forward_opaque_v1",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and no count",
+      "expect": "visible",
+      "name": "pelican.graphCanvasLoop.count",
+      "value": false
+    },
+    {
+      "label": "after the decompose, the same picture: the box",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/decomposed.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "value_of": "box",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and the background",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/decomposed.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[1]",
+      "value_of": "background"
+    },
+    {
+      "label": "and as many colours",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/decomposed.png"
+      },
+      "path": "distinct_colors",
+      "value_of": "colors_before"
+    },
+    {
+      "label": "a picture of the Graph tab after the decompose",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "decomposed_graph.png"
+    },
+    {
+      "label": "Add branch: a branch in front of the else",
+      "cmd": "click",
+      "name": "pelican.graphCanvasLoop.addBranch"
+    },
+    {
+      "label": "the loop has two branches",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[2].parameters.branches.$len",
+      "value": 2,
+      "retry_ms": 120000
+    },
+    {
+      "label": "the new one is for the first material the frame plan names",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[2].parameters.branches[0].when.material",
+      "value": "pelican.builtin.transparent"
+    },
+    {
+      "label": "the branch row offers the materials, once the edit is read back",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.branch0.material",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "pick the box's material: no key is typed",
+      "cmd": "select",
+      "name": "pelican.graphCanvasLoop.branch0.material",
+      "text": "materials/g1_flat.material.json#g1_flat"
+    },
+    {
+      "label": "the branch is for the box's material",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[2].parameters.branches[0].when.material",
+      "value": "materials/g1_flat.material.json#g1_flat",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the row is editable again once the edit is read back",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.branch0.body",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "and it draws nothing",
+      "cmd": "select",
+      "name": "pelican.graphCanvasLoop.branch0.body",
+      "text": "(nothing)"
+    },
+    {
+      "label": "the branch runs no body",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[2].parameters.branches[0].body",
+      "value": null,
+      "retry_ms": 120000
+    },
+    {
+      "label": "the box is gone: the middle is the background",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/nothing.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "value_of": "background",
+      "retry_ms": 120000
+    },
+    {
+      "label": "and nothing else is on screen",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/nothing.png"
+      },
+      "path": "distinct_colors",
+      "value": 1
+    },
+    {
+      "label": "the frame plan: the box's material took branch 0",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].elements[2].element",
+      "value": "materials/g1_flat.material.json#g1_flat",
+      "retry_ms": 60000
+    },
+    {
+      "label": "branch 0",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].elements[2].branch",
+      "value": 0,
+      "retry_ms": 60000
+    },
+    {
+      "label": "the built-in material it was made for first now takes the else",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].elements[0].branch",
+      "value": 1
+    },
+    {
+      "label": "the branch table lists the box's material on branch 0",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.branch0.matched",
+      "contains": "materials/g1_flat.material.json#g1_flat",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "a picture of the Graph tab with the branch",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "branch_graph.png"
+    },
+    {
+      "label": "the Frame Plan tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "read the frame plan again",
+      "cmd": "click",
+      "name": "pelican.framePlanRefresh"
+    },
+    {
+      "label": "the material pass says a loop draws in it",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_draw_loop#forward_opaque",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "a picture of the Frame Plan with the loop line",
+      "expect": "screenshot",
+      "name": "pelican.framePlan",
+      "path": "decomposed_frame_plan.png"
+    }
+  ]
+}

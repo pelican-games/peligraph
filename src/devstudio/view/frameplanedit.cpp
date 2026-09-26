@@ -1506,6 +1506,142 @@ std::string framePlanLoopOriginLine(const FramePlanLoopOrigin &origin) {
            " · body node " + origin.node;
 }
 
+// --- LP-4e: Decompose into loop.
+
+const FramePlanLoop *framePlanDrawLoopOf(const FramePlanModel &model, const std::string &pass) {
+    const auto found = std::ranges::find_if(model.loops, [&](const FramePlanLoop &loop) {
+        return loop.tier == "draw_loop" && !loop.pass.empty() && loop.pass == pass;
+    });
+    return found == model.loops.end() ? nullptr : &*found;
+}
+
+std::string framePlanDrawLoopLine(const FramePlanModel &model, const std::string &pass) {
+    const auto *loop = framePlanDrawLoopOf(model, pass);
+    if (loop == nullptr) return {};
+    const auto count = loop->elementCount();
+    return "loop: " + loop->node + " (" + std::to_string(count) +
+           (count == 1 ? " material)" : " materials)");
+}
+
+std::string framePlanDecomposeRefusal(const FramePlanAuthoring &authoring,
+                                      const FramePlanModel *model, const std::string &graph,
+                                      const std::string &pass) {
+    if (model != nullptr)
+        if (const auto *loop = framePlanDrawLoopOf(*model, pass))
+            return pass + " is already a render.material_pass of the graph; its loop " +
+                   loop->node + " is edited in the Graph tab.";
+    if (!authoring.received)
+        return "The render authoring context has not arrived yet: " + pass +
+               " cannot be decomposed until it does.";
+    const auto *row = authoring.find(graph, pass);
+    // Nothing the context lists: the engine is the one that knows (a
+    // render.material_pass it already is, a name it does not declare).
+    if (row == nullptr) return {};
+    const auto type = row->declaration.value("type", std::string{});
+    if (!type.empty() && type != "material")
+        return pass + " is a " + type + " pass; only a material pass decomposes into a loop.";
+    if (row->provenance_source == "feature" || row->feature)
+        return pass + " is a pass of a feature" +
+               (row->provider_reference.empty() ? std::string{}
+                                                : " (" + row->provider_reference + ")") +
+               ": a feature's pass is replaced through its pass_replacements, not decomposed.";
+    if (row->root) return {};
+    if (!authoring.direct && !authoring.preset_forked)
+        return pass + " is a pass of the engine preset" +
+               (authoring.preset_name.empty() ? std::string{} : " " + authoring.preset_name) +
+               ": fork the preset into the project first (Features tab, Fork), then "
+               "decompose the pass there.";
+    if (row->preset) return {};
+    return passRefusal(authoring, *row);
+}
+
+FramePlanEditRequest framePlanDecomposeRequest(const FramePlanAuthoring &authoring,
+                                               const FramePlanModel *model,
+                                               const std::string &graph,
+                                               const std::string &pass) {
+    if (auto refusal = framePlanDecomposeRefusal(authoring, model, graph, pass); !refusal.empty())
+        return refuse(std::move(refusal));
+    FramePlanEditRequest request;
+    request.method = "decompose_material_pass";
+    request.params = Json{{"base_source_digest", authoring.source_digest}, {"pass", pass}};
+    // A pass of the project's preset lives in the preset: its digest goes
+    // too. A pass the direct root declares -- or one the context does not
+    // list, which the engine then names -- goes with the root's alone.
+    const auto *row = authoring.find(graph, pass);
+    if (row != nullptr && !row->root && row->preset && !authoring.direct)
+        request.params["base_preset_digest"] = authoring.preset_digest;
+    request.notice = "Decomposed " + pass + " into a loop; the Graph tab shows it.";
+    return request;
+}
+
+std::string framePlanDecomposeConfirmation(const std::string &pass) {
+    return "This rewrites " + pass +
+           " as graph nodes and a loop over its materials. It cannot be undone yet "
+           "(RD-1 brings Undo for it).\n\nWith the loop, each kind of material can be "
+           "drawn its own way: another variant, another render state, or not at all.";
+}
+
+namespace {
+
+// A refusal's fields: beside its code, or relayed under error_fields.
+Json refusalFields(const Json &error) {
+    if (const auto relayed = error.find("error_fields");
+        relayed != error.end() && relayed->is_object())
+        return *relayed;
+    return error;
+}
+
+} // namespace
+
+std::string framePlanDecomposeRejection(const Json &error) {
+    if (!error.is_object()) return "The engine refused to decompose the pass.";
+    const auto code = textOr(error, "code");
+    const auto fields = refusalFields(error);
+    const auto pass = textOr(fields, "pass").empty() ? std::string{"The pass"}
+                                                     : textOr(fields, "pass");
+    const auto suffix = " (" + code + ").";
+    if (code == "material_pass_not_decomposable") {
+        const auto reason = textOr(fields, "reason");
+        if (reason == "not_found")
+            return "Neither the rendering config nor its preset declares a pass named " + pass +
+                   suffix;
+        if (reason == "graph_pass")
+            return pass + " is already a render.material_pass of the graph: edit its loop "
+                          "in the Graph tab" + suffix;
+        if (reason == "feature_pass")
+            return pass + " is a pass of the feature " + textOr(fields, "feature") +
+                   ": a feature's pass is replaced through its pass_replacements, not "
+                   "decomposed" + suffix;
+        if (reason == "not_material")
+            return pass + " is a " + textOr(fields, "type") +
+                   " pass; only a material pass decomposes into a loop" + suffix;
+        if (reason == "contract_unsupported")
+            return pass + " draws with " + textOr(fields, "contract") +
+                   ", which no draw_loop runs over" + suffix;
+        if (reason == "field_unsupported")
+            return pass + " sets " + textOr(fields, "field") +
+                   ", which a render.material_pass cannot carry: remove it first" + suffix;
+        if (reason == "attachment_unsupported")
+            return "The graph cannot name " + pass + "'s " + textOr(fields, "socket") +
+                   " attachment (a subresource, no depth, or more colours than the "
+                   "contract's sockets)" + suffix;
+        return pass + " cannot be decomposed: " + reason + suffix;
+    }
+    if (code == "project_preset_required")
+        return pass + " is a pass of the engine preset " + textOr(fields, "preset") +
+               ": fork the preset into the project first (Features tab, Fork), then "
+               "decompose the pass there" + suffix;
+    if (code == "graph.node_duplicate@1")
+        return "The graph already has a node named " + textOr(fields, "node") +
+               ", which decomposing would add: rename it first" + suffix;
+    return renderAuthoringRefusalLine(error);
+}
+
+std::string framePlanDecomposedLoop(const Json &response) {
+    const auto decomposed = objectOr(response, "decomposed");
+    return textOr(decomposed, "loop");
+}
+
 std::string renderAuthoringRefusalLine(const Json &error) {
     const auto code = textOr(error, "code");
     const auto message = textOr(error, "message");

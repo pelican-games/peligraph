@@ -60,6 +60,10 @@ class FullscreenPassWidget final : public QWidget {
     // has a variadic group: the Frame Plan rewrites the shader.
     void setFixSocketsAction(
         std::function<void(const QString &graph, const QString &pass)> action);
+    // LP-4e. "Decompose into loop..." under a material pass's contract: the
+    // Frame Plan's entry, on the pass being edited.
+    void setDecomposeAction(
+        std::function<void(const QString &graph, const QString &pass)> action);
     void setShaderSourceOpenAction(
         std::function<bool(const std::filesystem::path &)> action);
     // F-5. A shader reload the engine refused: its log goes under the form

@@ -44,6 +44,9 @@ struct FramePlanEditCapability {
     // Pass Editor adds a fullscreen one with.
     std::function<qint64(const QJsonObject &params, QString *error)>
         addAuthoredPass;
+    // LP-4e: "Decompose into loop" rewrites a material pass as graph nodes.
+    std::function<qint64(const QJsonObject &params, QString *error)>
+        decomposeMaterialPass;
     std::function<qint64(const QString &ticket, QString *error)>
         requestEditResult;
     std::function<void(QObject *context, ResultHandler handler)> result;

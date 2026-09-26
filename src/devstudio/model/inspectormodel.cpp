@@ -770,7 +770,7 @@ struct GraphLoopRefusalText {
     std::string_view code;
     std::string_view sentence;
 };
-constexpr std::array<GraphLoopRefusalText, 24> GraphLoopRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 25> GraphLoopRefusalTexts{{
     {"graph.loop_branch_else_missing@1",
      "Loop {node} has no else: its last branch must have no condition"},
     {"graph.loop_branch_interface@1",
@@ -800,12 +800,38 @@ constexpr std::array<GraphLoopRefusalText, 24> GraphLoopRefusalTexts{{
      "Loop {node} changes shader defines, which needs the runtime shader compiler"},
     {"graph.loop_override_compile_limit@1",
      "Loop {node} needs {count} shader compiles; the limit is {limit}"},
-    {"graph.definition_role@1", "Definition {definition} holds {node}, which a body of its kind cannot"},
+    // LP-4e: node is the graph.instance that tried to run a draw body.
+    {"graph.definition_role@1",
+     "Definition {definition} holds draw steps, so only a draw_loop runs it; "
+     "the instance {node} cannot"},
+    {"graph.loop_draws_unconnected@1",
+     "The draws of loop {node} reach {count} inputs: they must feed the draws of exactly "
+     "one render.material_pass"},
     {"graph.definition_referenced@1", "Definition {definition} is still used by {referenced_by}"},
     {"graph.definition_duplicate@1", "A definition named {definition} already exists"},
     {"graph.definition_missing@1", "There is no definition named {definition}"},
     {"graph.definition_immutable@1",
      "{node} is made by an instance or a loop; edit it in its definition"},
+}};
+
+// LP-4e: graph.loop_tier_unsupported@1 says why in `reason`; the draw_loop
+// reasons each have a sentence that says what to change. Any other reason
+// reads as the code's own sentence.
+struct GraphLoopTierReasonText {
+    std::string_view reason;
+    std::string_view sentence;
+};
+constexpr std::array<GraphLoopTierReasonText, 4> GraphLoopTierReasonTexts{{
+    {"carry_in_draw_loop",
+     "Loop {node} draws inside one material pass, where no material hands a value to the "
+     "next: remove its carry"},
+    {"limit_in_draw_loop", "Loop {node} draws every material of its pass: remove its limit"},
+    {"resource_in_draw_body",
+     "A body of loop {node} makes a resource, which a draw_loop body cannot: it holds draw "
+     "steps only"},
+    {"mixed_body",
+     "The bodies of loop {node} mix draw steps with passes: a body holds draw steps only "
+     "(draw_loop) or passes only (expand)"},
 }};
 
 // The fields after a code in a message: "<code> {...}" (how a GraphRegistryError
@@ -879,7 +905,12 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error) {
     }
     if (entry == nullptr) return {};
     std::string sentence;
-    const std::string_view pattern = entry->sentence;
+    std::string_view pattern = entry->sentence;
+    if (entry->code == "graph.loop_tier_unsupported@1") {
+        const auto reason = graphRefusalFieldText(fields, "reason");
+        for (const auto &candidate : GraphLoopTierReasonTexts)
+            if (candidate.reason == reason) pattern = candidate.sentence;
+    }
     for (std::size_t index = 0; index < pattern.size();) {
         const auto open = pattern.find('{', index);
         if (open == std::string_view::npos) {

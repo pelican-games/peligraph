@@ -39,7 +39,9 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QPainter>
 #include <QPushButton>
 #include <QShowEvent>
@@ -434,6 +436,16 @@ struct FramePlanWidget::Impl {
     std::function<void(const QString &)> task_edit_action;
     FramePlanWidget::GraphNodeOpenAction graph_node_open_action;
     FramePlanWidget::GraphLoopNodeOpenAction graph_loop_node_open_action;
+    // LP-4e: who hears that a decompose committed, and the loop it made.
+    std::function<void(const QString &loop)> loop_decomposed_action;
+    std::string decomposed_loop;
+    // The confirmation in front of a decompose, while it is open.
+    QPointer<QMessageBox> decompose_prompt;
+    // LP-4e, decision 5: the draw_loop materials read past the plan's first
+    // page ("Read more" in the details), by loop; cleared by a new plan.
+    std::map<std::string, std::vector<FramePlanLoopElement>, std::less<>> loop_more;
+    qint64 pending_loop_page_request = 0;
+    std::string loop_page_node;
     std::function<void(const QString &, const QStringList &)> task_connection_action;
     std::function<void(const QString &, const QString &, const QStringList &)> pass_connection_action;
     std::function<void(const QString &, const QStringList &, quint64)> node_order_action;
@@ -966,6 +978,28 @@ struct FramePlanWidget::Impl {
         logical_scene->openInGraphOffered =
             [this](const FramePlanNodeKey &node) {
                 return graphNodeOf(node) != nullptr || loopOriginOf(node) != nullptr;
+            };
+        // LP-4e: a material pass becomes a loop over its materials. Named
+        // like the others; acts on the node right-clicked (or picked).
+        auto *decompose_entry = new QAction(
+            QStringLiteral("Decompose into loop..."), &owner);
+        decompose_entry->setObjectName(
+            QStringLiteral("pelican.framePlan.decomposeIntoLoop"));
+        owner.addAction(decompose_entry);
+        QObject::connect(decompose_entry, &QAction::triggered, &owner, [this] {
+            const auto node = logical_scene->insertAnchor();
+            if (!node) {
+                showStatus(owner.tr("Select the material pass to decompose first."));
+                return;
+            }
+            decompose(node->graph, node->name);
+        });
+        logical_scene->setDecomposeAction(decompose_entry);
+        logical_scene->decomposeOffered =
+            [this](const FramePlanNodeKey &node) -> std::optional<std::string> {
+                if (!decomposeAbout(node)) return std::nullopt;
+                return framePlanDecomposeRefusal(authoring, model ? &*model : nullptr,
+                                                 node.graph, node.name);
             };
         // F-1: named like the insert entries, and offered on a right-click
         // over open canvas and on the toolbar.
@@ -1624,7 +1658,9 @@ struct FramePlanWidget::Impl {
             : request.method == "remove_compute_task" ? edit.removeComputeTask
             : request.method == "edit_render_targets" ? edit.editRenderTargets
             : request.method == "add_authored_pass"   ? edit.addAuthoredPass
-                                                      : nullptr;
+            : request.method == "decompose_material_pass"
+                ? edit.decomposeMaterialPass
+                : nullptr;
         if (!sender) {
             showStatus(owner.tr("Canvas editing is unavailable: %1").arg(method));
             return false;
@@ -2092,6 +2128,9 @@ struct FramePlanWidget::Impl {
                 return;
             }
             pending_ticket = text(response.at("ticket").get<std::string>());
+            // LP-4e: what the decompose made is named here, not in the commit.
+            if (submitted_method == "decompose_material_pass")
+                decomposed_loop = framePlanDecomposedLoop(response);
             showStatus(owner.tr("accepted; waiting for the engine..."));
             QTimer::singleShot(0, &owner, [this] { requestTicketResult(); });
         } catch (const std::exception &error) {
@@ -2161,6 +2200,12 @@ struct FramePlanWidget::Impl {
             showStatus(commit_notice.isEmpty()
                            ? owner.tr("Canvas change committed.")
                            : commit_notice);
+            // LP-4e: the loop it made is shown where it is edited.
+            if (submitted_method == "decompose_material_pass") {
+                const auto loop = std::exchange(decomposed_loop, {});
+                if (!loop.empty() && loop_decomposed_action)
+                    loop_decomposed_action(text(loop));
+            }
         } catch (const std::exception &error) {
             pending_ticket.clear();
             const QString message = QString::fromUtf8(error.what());
@@ -2511,6 +2556,10 @@ struct FramePlanWidget::Impl {
     // keeps the line it always had.
     QString rejectionText(const Json &response) const {
         const auto error = response.find("error");
+        // LP-4e: a decompose refusal reads by its code and reason.
+        if (error != response.end() && error->is_object() &&
+            submitted_method == "decompose_material_pass")
+            return text(framePlanDecomposeRejection(*error));
         if (error != response.end() && error->is_object() &&
             (submitted_method == "edit_render_targets" ||
              error->value("code", std::string{}).starts_with("render_target_")))
@@ -2617,6 +2666,107 @@ struct FramePlanWidget::Impl {
         const auto found = std::ranges::find(model->nodes, node.name, &FramePlanNode::name);
         return found != model->nodes.end() && found->loop_origin ? &*found->loop_origin
                                                                  : nullptr;
+    }
+
+    // --- LP-4e: Decompose into loop.
+
+    // Whether the entry is about this node at all: a material pass of the
+    // plan, or one a draw_loop already draws in (offered disabled, with its
+    // reason). Not a task, an anchor, a fullscreen pass or a loop's copy.
+    bool decomposeAbout(const FramePlanNodeKey &node) const {
+        if (!model || node.graph != model->graph) return false;
+        const auto found = std::ranges::find(model->nodes, node.name, &FramePlanNode::name);
+        if (found == model->nodes.end() || found->loop_origin) return false;
+        if (framePlanDrawLoopOf(*model, node.name) != nullptr) return true;
+        const auto *row = authoring.find(node.graph, node.name);
+        return row != nullptr && row->declaration.value("type", std::string{}) == "material";
+    }
+
+    // Build, confirm, send. The request is built again when Decompose is
+    // pressed, from the context as it is then.
+    void decompose(const std::string &graph, const std::string &pass) {
+        const auto build = [this, graph, pass] {
+            return framePlanDecomposeRequest(authoring, model ? &*model : nullptr, graph, pass);
+        };
+        const auto request = build();
+        if (!request.sendable()) {
+            const QString reason = text(request.refusal);
+            status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+            showStatus(oneLine(reason), reason);
+            return;
+        }
+        if (pending_edit_request != 0 || !pending_ticket.isEmpty()) {
+            showStatus(owner.tr("Wait for the current change to finish."));
+            return;
+        }
+        if (decompose_prompt) {
+            decompose_prompt->raise();
+            return;
+        }
+        auto *prompt = new QMessageBox(QMessageBox::Warning, owner.tr("Decompose into loop"),
+                                       text(framePlanDecomposeConfirmation(pass)),
+                                       QMessageBox::NoButton, &owner);
+        prompt->setObjectName(QStringLiteral("pelican.framePlan.decomposeConfirm"));
+        // Named, so a scenario answers the way a person does.
+        auto *accept = prompt->addButton(owner.tr("Decompose"), QMessageBox::AcceptRole);
+        accept->setObjectName(QStringLiteral("pelican.framePlan.decomposeConfirm.ok"));
+        auto *cancel = prompt->addButton(QMessageBox::Cancel);
+        cancel->setObjectName(QStringLiteral("pelican.framePlan.decomposeConfirm.cancel"));
+        prompt->setDefaultButton(cancel);
+        prompt->setEscapeButton(cancel);
+        prompt->setAttribute(Qt::WA_DeleteOnClose);
+        decompose_prompt = prompt;
+        QObject::connect(prompt, &QMessageBox::buttonClicked, &owner,
+                         [this, accept, build, pass](QAbstractButton *button) {
+                             if (button != accept) {
+                                 showStatus(owner.tr("%1 is left as it is.").arg(text(pass)));
+                                 return;
+                             }
+                             submitBuilt(build);
+                         });
+        prompt->open();
+    }
+
+    // Decision 5: the materials of a draw_loop past the plan's first page, a
+    // page at a time, for the details' "Read more".
+    void requestLoopMaterials(const std::string &loop) {
+        if (!model || pending_loop_page_request != 0) return;
+        const auto found = std::ranges::find(model->loops, loop, &FramePlanLoop::node);
+        if (found == model->loops.end()) return;
+        const auto held = found->offset + found->elements.size() + loop_more[loop].size();
+        QString error;
+        pending_loop_page_request = viewport.requestRpc(
+            QStringLiteral("get_frame_plan"),
+            QJsonObject{{QStringLiteral("loop_elements"),
+                         QJsonObject{{QStringLiteral("node"), text(loop)},
+                                     {QStringLiteral("offset"), static_cast<qint64>(held)},
+                                     {QStringLiteral("limit"), 256}}}},
+            &error);
+        if (pending_loop_page_request == 0) {
+            showStatus(oneLine(error), error);
+            return;
+        }
+        loop_page_node = loop;
+    }
+
+    void receiveLoopMaterials(const QByteArray &result_json) {
+        const auto loop = std::exchange(loop_page_node, {});
+        try {
+            const auto page = buildFramePlanModel(result_json.toStdString());
+            const auto found = std::ranges::find(page.loops, loop, &FramePlanLoop::node);
+            if (!model || found == page.loops.end()) return;
+            const auto held = std::ranges::find(model->loops, loop, &FramePlanLoop::node);
+            if (held == model->loops.end()) return;
+            auto &more = loop_more[loop];
+            // Spliced only where the held list ends: a plan that moved in
+            // between would put materials in the wrong place.
+            if (found->offset != held->offset + held->elements.size() + more.size()) return;
+            more.insert(more.end(), found->elements.begin(), found->elements.end());
+            populateLogicalDetails();
+        } catch (const std::exception &error) {
+            const QString message = QString::fromUtf8(error.what());
+            showStatus(oneLine(message), message);
+        }
     }
 
     void openInGraph(const std::optional<FramePlanNodeKey> &node) {
@@ -2780,6 +2930,11 @@ struct FramePlanWidget::Impl {
             consumeGpuTimingResult(result_json);
             return;
         }
+        if (request_id != 0 && request_id == pending_loop_page_request) {
+            pending_loop_page_request = 0;
+            receiveLoopMaterials(result_json);
+            return;
+        }
         if (request_id != pending_request) {
             return;
         }
@@ -2889,6 +3044,12 @@ struct FramePlanWidget::Impl {
             });
             return;
         }
+        if (request_id != 0 && request_id == pending_loop_page_request) {
+            pending_loop_page_request = 0;
+            loop_page_node.clear();
+            showStatus(oneLine(message), message);
+            return;
+        }
         if (request_id != pending_request) {
             return;
         }
@@ -2934,6 +3095,8 @@ struct FramePlanWidget::Impl {
         materials->clear();
         raw_json->clear();
         raw_json_stale = true;
+        // LP-4e: pages read for the plan before this one say nothing now.
+        loop_more.clear();
         const bool whole_frame = wholeFrameSelected();
         const std::optional<FramePlanNodeKey> selected_target =
             target->currentIndex() < 0 || whole_frame
@@ -3240,6 +3403,11 @@ struct FramePlanWidget::Impl {
             if (node.loop_origin)
                 addFact(facts, owner.tr("Loop origin"),
                         text(framePlanLoopOriginLine(*node.loop_origin)));
+            // LP-4e, decision 5: the draw_loop that draws inside this pass,
+            // its materials by the branch each took.
+            if (model)
+                if (const auto *loop = framePlanDrawLoopOf(*model, node.name))
+                    addDrawLoopMaterials(tree, item, *loop);
             // LP-4a: the views of the family the node runs for.
             if (!node.view_select.empty())
                 addFact(facts, owner.tr("View select"),
@@ -3400,6 +3568,45 @@ struct FramePlanWidget::Impl {
         }
         logical_details->header()->setSectionResizeMode(
             1, QHeaderView::ResizeToContents);
+    }
+
+    // LP-4e, decision 5. "Draw loop <id>": one group per branch with the
+    // materials that took it, and "Read more" while the plan holds fewer
+    // materials than it says there are.
+    void addDrawLoopMaterials(QTreeWidget *tree, QTreeWidgetItem *item,
+                              const FramePlanLoop &loop) {
+        std::vector<FramePlanLoopElement> elements{loop.elements.begin(),
+                                                   loop.elements.end()};
+        if (const auto more = loop_more.find(loop.node); more != loop_more.end())
+            elements.insert(elements.end(), more->second.begin(), more->second.end());
+        const auto total = std::max(loop.elementCount(), elements.size());
+        auto *group = groupItem(item, owner.tr("Draw loop %1").arg(text(loop.node)), total);
+        std::map<std::size_t, std::vector<std::string>> by_branch;
+        for (const auto &element : elements)
+            by_branch[element.branch].push_back(
+                element.key.empty() ? std::to_string(element.element) : element.key);
+        for (const auto branch : loop.unmatched_branches) by_branch.try_emplace(branch);
+        for (const auto &[branch, keys] : by_branch) {
+            auto *row = groupItem(group, owner.tr("Branch %1").arg(branch), keys.size());
+            if (keys.empty()) {
+                addFact(row, owner.tr("Materials"),
+                        owner.tr("none: no material takes this branch"));
+                continue;
+            }
+            for (const auto &key : keys) addFact(row, owner.tr("Material"), text(key));
+        }
+        if (elements.size() < total) {
+            auto *more = new QTreeWidgetItem(group);
+            more->setText(1, owner.tr("%1 of %2 shown")
+                                 .arg(static_cast<qulonglong>(elements.size()))
+                                 .arg(static_cast<qulonglong>(total)));
+            auto *read_more = new QPushButton(owner.tr("Read more"), tree);
+            read_more->setObjectName(QStringLiteral("pelican.framePlan.loopMaterialsMore"));
+            read_more->setEnabled(pending_loop_page_request == 0);
+            QObject::connect(read_more, &QPushButton::clicked, &owner,
+                             [this, node = loop.node] { requestLoopMaterials(node); });
+            tree->setItemWidget(more, 2, read_more);
+        }
     }
 
     void populatePasses() {
@@ -3934,6 +4141,14 @@ void FramePlanWidget::setGraphNodeOpenAction(GraphNodeOpenAction action) {
 
 void FramePlanWidget::setGraphLoopNodeOpenAction(GraphLoopNodeOpenAction action) {
     impl_->graph_loop_node_open_action = std::move(action);
+}
+
+void FramePlanWidget::decomposeMaterialPass(const QString &graph, const QString &pass) {
+    impl_->decompose(graph.toStdString(), pass.toStdString());
+}
+
+void FramePlanWidget::setLoopDecomposedAction(std::function<void(const QString &loop)> action) {
+    impl_->loop_decomposed_action = std::move(action);
 }
 
 void FramePlanWidget::setTaskEditAction(std::function<void(const QString &)> action) {

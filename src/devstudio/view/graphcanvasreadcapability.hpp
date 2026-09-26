@@ -50,6 +50,10 @@ struct GraphCanvasReadCapability {
     // expanded and which branch each took. The canvas reads nothing else of
     // the plan, and asks only when the document holds a loop.
     std::function<qint64(QString *error)> requestFramePlan;
+    // LP-4e: one more page of a draw_loop's materials (get_frame_plan
+    // {loop_elements: {node, offset, limit}}); loops[] is again all it reads.
+    std::function<qint64(const QString &node, qint64 offset, qint64 limit, QString *error)>
+        requestLoopElements;
     // The scrub, as two explicit writes. Nothing else on this canvas moves the
     // engine's clock or asks it to draw.
     std::function<qint64(double time, QString *error)> requestSetTime;

@@ -2452,6 +2452,20 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
     CHECK(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment").isHidden() == (pass_type == "material"));
     CHECK(required<QPlainTextEdit>(form, "pelican.fullscreenPass.draw").isHidden() == (pass_type == "material"));
     CHECK(required<QPlainTextEdit>(form, "pelican.fullscreenPass.materialRouting").isHidden() == (feature_owned || pass_type != "material"));
+    // LP-4e: a material pass offers Decompose into loop, which is the Frame
+    // Plan's, on the pass being edited.
+    {
+        QStringList decomposed;
+        form.setDecomposeAction([&](const QString &graph, const QString &pass) {
+            decomposed << graph + QStringLiteral("/") + pass;
+        });
+        auto &decompose = required<QPushButton>(form, "pelican.fullscreenPass.decomposeIntoLoop");
+        CHECK(decompose.isHidden() == (pass_type != "material"));
+        if (pass_type == "material") {
+            decompose.click();
+            CHECK(decomposed == QStringList{QStringLiteral("edit_graph/material_pass")});
+        }
+    }
     CHECK_FALSE(required<QGroupBox>(form, "pelican.fullscreenPass.targets").isHidden());
     auto &query = required<QCheckBox>(form, "pelican.fullscreenPass.rayQuery");
     auto &scene = required<QLineEdit>(form, "pelican.fullscreenPass.rayQueryScene");

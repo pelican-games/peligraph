@@ -2167,6 +2167,8 @@ struct GraphCanvasWidget::Impl {
     // LP-4c: the Loop fields for a selected root loop (decisions 3, 4), and,
     // inside a loop's body, the branch it shows and whether it is shared.
     GraphCanvasLoopFields *loop_fields = nullptr;
+    // LP-4e: a material pass's contract, a draw step's variant or override.
+    GraphCanvasDrawFields *draw_fields = nullptr;
     QComboBox *loop_branch = nullptr;
     QLabel *shared_mark = nullptr;
     QAction *add_loop_action = nullptr;
@@ -2446,6 +2448,8 @@ struct GraphCanvasWidget::Impl {
             },
             side);
         side_layout->addWidget(loop_fields);
+        draw_fields = new GraphCanvasDrawFields(model, [this] { dispatch(); }, side);
+        side_layout->addWidget(draw_fields);
         details = new QTreeWidget(side);
         details->setObjectName(QStringLiteral("pelican.graphCanvasDetails"));
         details->setColumnCount(2);
@@ -2622,6 +2626,35 @@ struct GraphCanvasWidget::Impl {
                              static_cast<std::size_t>(result_json.size())));
         followDocument();
         dispatch();
+        revealPending();
+    }
+
+    // LP-4e: a root node another panel made, shown once it is here.
+    std::string pending_reveal;
+    bool revealPending() {
+        if (pending_reveal.empty()) return false;
+        const auto nodes = model.nodes({});
+        if (std::ranges::none_of(nodes, [&](const GraphCanvasNode &drawn) {
+                return drawn.id == pending_reveal;
+            }))
+            return false;
+        const auto id = std::exchange(pending_reveal, {});
+        model.selectScope({});
+        scene->repopulate();
+        scene->selectNode(id);
+        syncScopeControls();
+        syncValueControls();
+        showDetails();
+        dispatch();
+        for (QGraphicsItem *item : scene->items()) {
+            if (item->data(NodeGraphItemKindRole).toString() !=
+                    QLatin1String{GraphCanvasNodeItem} ||
+                item->data(NodeGraphNameRole).toString().toStdString() != id)
+                continue;
+            canvas->centerOn(item);
+            break;
+        }
+        return true;
     }
 
     // Q-13. Whatever revision the tab now holds, the other panels hear of;
@@ -2673,7 +2706,15 @@ struct GraphCanvasWidget::Impl {
                     qtext(request.params.value("instance", std::string{})), &error);
             else if (request.method == "get_status" && graph.requestStatus)
                 transport = graph.requestStatus(&error);
-            else if (request.method == "get_frame_plan" && graph.requestFramePlan)
+            else if (request.method == "get_frame_plan" && request.params.contains("loop_elements")) {
+                // LP-4e: a page of a draw_loop's materials.
+                if (graph.requestLoopElements) {
+                    const auto &page = request.params.at("loop_elements");
+                    transport = graph.requestLoopElements(
+                        qtext(page.value("node", std::string{})),
+                        page.value("offset", qint64{0}), page.value("limit", qint64{256}), &error);
+                }
+            } else if (request.method == "get_frame_plan" && graph.requestFramePlan)
                 transport = graph.requestFramePlan(&error);
             else if (request.method == "set_time" && graph.requestSetTime)
                 transport = graph.requestSetTime(
@@ -2992,6 +3033,15 @@ struct GraphCanvasWidget::Impl {
         new_name->setToolTip(QObject::tr("The name of the new, empty body definition"));
         new_name->hide();
         layout->addWidget(new_name);
+        // LP-4e: a material pass arrives with the contract picked here, which
+        // decides its sockets.
+        auto *contracts = new QComboBox(&dialog);
+        contracts->setObjectName(QStringLiteral("pelican.graphCanvasPaletteContract"));
+        for (const auto &contract : GraphCanvasModel::materialPassContracts())
+            contracts->addItem(qtext(contract), qtext(contract));
+        contracts->setToolTip(QObject::tr("The material contract of the new pass"));
+        contracts->hide();
+        layout->addWidget(contracts);
         const QString new_definition_data = QStringLiteral("\x1f" "new");
         auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
                                                  QDialogButtonBox::Cancel,
@@ -3029,6 +3079,7 @@ struct GraphCanvasWidget::Impl {
             definitions->setVisible(loop || op == QLatin1String{"graph.instance"});
             new_name->setVisible(loop && definitions->currentData().toString() ==
                                              new_definition_data);
+            contracts->setVisible(op == QLatin1String{"render.material_pass"});
         };
         QObject::connect(definitions, &QComboBox::currentIndexChanged, &dialog,
                          [&] { syncDefinition(); });
@@ -3055,6 +3106,11 @@ struct GraphCanvasWidget::Impl {
             scene->addLoop({}, name.empty() ? model.suggestDefinitionName() : name);
             return;
         }
+        // LP-4e: a material pass's second argument is its contract.
+        if (op == "render.material_pass") {
+            scene->addFromPalette(op, contracts->currentData().toString().toStdString());
+            return;
+        }
         scene->addFromPalette(op, definitions->currentData().toString().toStdString());
     }
 
@@ -3069,6 +3125,7 @@ struct GraphCanvasWidget::Impl {
             syncUiNodeRow(nullptr);
             syncAudioRow(nullptr);
             loop_fields->showLoop({});
+            draw_fields->showNode(nullptr);
             return;
         }
         const auto nodes = model.nodes();
@@ -3078,6 +3135,7 @@ struct GraphCanvasWidget::Impl {
             syncUiNodeRow(nullptr);
             syncAudioRow(nullptr);
             loop_fields->showLoop({});
+            draw_fields->showNode(nullptr);
             return;
         }
         label_edit->setText(qtext(found->label));
@@ -3085,6 +3143,8 @@ struct GraphCanvasWidget::Impl {
         syncAudioRow(&*found);
         // LP-4c: a loop's parameters are its fields, not rows of JSON.
         loop_fields->showLoop(found->loop ? found->id : std::string{});
+        // LP-4e: and so are a material pass's and a draw step's.
+        draw_fields->showNode(&*found);
         const auto row = [this](const QString &field, const QString &value) {
             auto *item = new QTreeWidgetItem(details);
             item->setText(0, field);
@@ -3406,6 +3466,19 @@ bool openGraphNodeInTabs(QTabWidget &tabs, GraphCanvasWidget &graph,
     // The tab first, so the view the node is centred in is the one on screen.
     tabs.setCurrentWidget(&graph);
     return graph.revealGraphNode(scope, node, instance);
+}
+
+void GraphCanvasWidget::revealNodeWhenPresent(const QString &node) {
+    impl_->pending_reveal = node.toStdString();
+    if (impl_->revealPending()) return;
+    // The document in hand predates the edit: read it again, now or when
+    // what is in flight lands.
+    if (impl_->model.canRefresh()) {
+        impl_->model.refresh();
+        impl_->dispatch();
+    } else {
+        impl_->document_reread = true;
+    }
 }
 
 void GraphCanvasWidget::setConnected(bool connected) {

@@ -3342,3 +3342,154 @@ TEST_CASE("LP-4c the Loop fields and Add loop go out through the capability",
     CHECK(added[1].at("node").at("parameters").at("branches") ==
           Json::array({{{"body", "loop_body"}}}));
 }
+
+TEST_CASE("LP-4e a draw_loop's Loop fields: the rows it takes, the rows it does not, and a "
+          "branch's material",
+          "[devstudio][graph-canvas][scene][lp4e]") {
+    (void)application();
+    const Json color{{"semantic", "pelican.render.color_signal@1"},
+                     {"arguments", {{"reference", "scene"}, {"transfer", "linear"},
+                                    {"range", "extended"}}}};
+    const Json depth{{"semantic", "pelican.render.depth@1"},
+                     {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+    // decompose_material_pass's forward pass, one branch for one material
+    // that draws nothing, then the else.
+    Json document{
+        {"definitions", {{"forward_opaque_draw",
+            {{"nodes", Json::array({{{"id", "step"}, {"op", "draw.material"},
+                                     {"parameters", Json::object()}, {"outputs", {"draws"}}}})},
+             {"outputs", {{"draws", {{"node", "step"}, {"port", "draws"}}}}}}}}},
+        {"nodes", Json::array({
+            {{"id", "scene_color_ref"}, {"op", "render.target_ref"},
+             {"parameters", {{"name", "scene_color"}, {"type", color}}}, {"outputs", {"resource"}}},
+            {{"id", "scene_depth_ref"}, {"op", "render.target_ref"},
+             {"parameters", {{"name", "scene_depth"}, {"type", depth}}}, {"outputs", {"resource"}}},
+            {{"id", "forward_opaque_draws"}, {"op", "graph.loop"},
+             {"parameters", {{"over", {{"draw_items", {{"contract", "forward_opaque_v1"}}}}},
+                             {"order", {{"by", "phase_default"}}},
+                             {"where", {{"tags", {{"exclude", {"decal"}}}}}},
+                             {"branches", Json::array({
+                                 {{"when", {{"material", "project://m.material.json#metal"}}},
+                                  {"body", nullptr}},
+                                 {{"body", "forward_opaque_draw"}}})}}},
+             {"outputs", {"draws"}}},
+            {{"id", "forward_opaque"}, {"op", "render.material_pass"},
+             {"parameters", {{"material_contract", "forward_opaque_v1"}, {"pass_set", "main_render"}}},
+             {"inputs", {{"color", {{"node", "scene_color_ref"}, {"port", "resource"}}},
+                         {"depth", {{"node", "scene_depth_ref"}, {"port", "resource"}}},
+                         {"draws", {{"node", "forward_opaque_draws"}, {"port", "draws"}}}}},
+             {"outputs", Json::array()}}})}};
+    Json catalog = visualCatalog();
+    for (const char *op : {"render.target_ref", "render.material_pass", "draw.material",
+                           "draw.variant", "draw.override"})
+        catalog["modules"][1]["operations"].push_back(
+            {{"op", op}, {"domain", "rendering"}, {"evaluation", "direct"}, {"sink", false},
+             {"ports", "parameter_dependent"}});
+    RecordedCapability transport;
+    auto capability = transport.capability();
+    capability.requestFramePlan = [&transport](QString *) {
+        transport.calls.push_back({QStringLiteral("get_frame_plan")});
+        return transport.next++;
+    };
+    PelicanStudio::GraphCanvasWidget widget{capability};
+    widget.resize(1100, 700);
+    widget.show();
+    QCoreApplication::processEvents();
+    const auto answerRpc = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        REQUIRE(transport.deliver);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    answerRpc(QStringLiteral("get_graph_instances"), context(document));
+    answerRpc(QStringLiteral("get_graph_catalog"), catalog);
+    answerRpc(QStringLiteral("get_frame_plan"),
+              Json{{"loops", Json::array({{{"node", "forward_opaque_draws"}, {"tier", "draw_loop"},
+                                           {"pass", "forward_opaque"}, {"count", 2},
+                                           {"elements", Json::array({
+                                               {{"element", "project://m.material.json#metal"},
+                                                {"index", 0}, {"branch", 0}},
+                                               {{"element", "project://m.material.json#glass"},
+                                                {"index", 1}, {"branch", 1}}})},
+                                           {"unmatched_branches", Json::array()},
+                                           {"total", 2}, {"offset", 0}, {"limit", 256}}})}});
+
+    widget.scene().selectNode("forward_opaque_draws");
+    QCoreApplication::processEvents();
+    const auto shown = [&](const char *name) {
+        auto *field = widget.findChild<QWidget *>(QString::fromLatin1(name));
+        REQUIRE(field != nullptr);
+        return field->isVisibleTo(&widget);
+    };
+    // The rows it does not take: the count, the order, the limit, the place
+    // and an element `where`; the outputs and the carry.
+    CHECK_FALSE(shown("pelican.graphCanvasLoop.count"));
+    CHECK_FALSE(shown("pelican.graphCanvasLoop.order"));
+    CHECK_FALSE(shown("pelican.graphCanvasLoop.limit"));
+    CHECK_FALSE(shown("pelican.graphCanvasLoop.place"));
+    CHECK_FALSE(shown("pelican.graphCanvasLoop.whereKind"));
+    CHECK(widget.findChild<QWidget *>(QStringLiteral("pelican.graphCanvasLoop.output.draws")) == nullptr);
+    CHECK(widget.findChild<QWidget *>(QStringLiteral("pelican.graphCanvasLoop.addCarry")) == nullptr);
+    // The rows it does: its contract (read only) and a tag `where`.
+    CHECK(shown("pelican.graphCanvasLoop.contract"));
+    auto *contract = widget.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasLoop.contract"));
+    CHECK(contract->text() == QStringLiteral("forward_opaque_v1 (the pass forward_opaque)"));
+    auto *exclude = widget.findChild<QLineEdit *>(QStringLiteral("pelican.graphCanvasLoop.whereTagsExclude"));
+    REQUIRE(exclude != nullptr);
+    CHECK(exclude->isVisibleTo(&widget));
+    CHECK(exclude->text() == QStringLiteral("decal"));
+    // The branch table: the material is a choice of the materials the report
+    // names, and each branch lists the materials it took.
+    auto *material = widget.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasLoop.branch0.material"));
+    REQUIRE(material != nullptr);
+    CHECK(material->currentText() == QStringLiteral("project://m.material.json#metal"));
+    CHECK(material->findText(QStringLiteral("project://m.material.json#glass")) >= 0);
+    CHECK(widget.findChild<QWidget *>(QStringLiteral("pelican.graphCanvasLoop.branch0.values")) == nullptr);
+    auto *matched = widget.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasLoop.branch1.matched"));
+    REQUIRE(matched != nullptr);
+    CHECK(matched->text() == QStringLiteral("materials: project://m.material.json#glass"));
+
+    // One field, one edit: the tags, and a branch's material.
+    exclude->setText(QStringLiteral("decal, sky"));
+    Q_EMIT exclude->returnPressed();
+    QCoreApplication::processEvents();
+    REQUIRE(transport.countOf(QStringLiteral("edit_graph_document")) == 1);
+    auto sent = Json::parse(transport.calls.back().body.toStdString());
+    REQUIRE(sent.size() == 1);
+    CHECK(sent[0].at("parameters").at("where") == Json{{"tags", {{"exclude", {"decal", "sky"}}}}});
+}
+
+TEST_CASE("LP-4e the Graph tab selects the loop a decompose made once a document holds it",
+          "[devstudio][graph-canvas][scene][lp4e]") {
+    (void)application();
+    const Json before{{"definitions", Json::object()}, {"nodes", Json::array()}};
+    Json after{{"definitions", Json::object()},
+               {"nodes", Json::array({{{"id", "forward_opaque_draws"}, {"op", "graph.loop"},
+                                       {"parameters", {{"over", {{"draw_items", {{"contract", "forward_opaque_v1"}}}}},
+                                                       {"branches", Json::array({{{"body", nullptr}}})}}},
+                                       {"outputs", {"draws"}}}})}};
+    RecordedCapability transport;
+    PelicanStudio::GraphCanvasWidget widget{transport.capability()};
+    widget.show();
+    QCoreApplication::processEvents();
+    const auto answerRpc = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    answerRpc(QStringLiteral("get_graph_instances"), context(before));
+    answerRpc(QStringLiteral("get_graph_catalog"), visualCatalog());
+    // The document in hand predates the edit: it is read again, and the loop
+    // is picked when the new one arrives.
+    widget.revealNodeWhenPresent(QStringLiteral("forward_opaque_draws"));
+    QCoreApplication::processEvents();
+    REQUIRE(transport.countOf(QStringLiteral("get_graph_instances")) == 2);
+    CHECK_FALSE(widget.scene().selectedNode().has_value());
+    auto moved = context(after);
+    moved["source_digest"] = {{"hex", "source-b"}};
+    answerRpc(QStringLiteral("get_graph_instances"), moved);
+    REQUIRE(widget.scene().selectedNode().has_value());
+    CHECK(*widget.scene().selectedNode() == "forward_opaque_draws");
+}

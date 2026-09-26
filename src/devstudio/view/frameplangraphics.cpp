@@ -1157,6 +1157,9 @@ struct NodeBodyLayout {
     // LP-4a: "view: cascade 2", above the bands; empty for a node without
     // view_select.
     QString view_line;
+    // LP-4e: "loop: <id> (N materials)" for a material pass a draw_loop draws
+    // in, under the view line.
+    QString loop_line;
     // VI-3a: the rows of the variadic group (its members and its drop end),
     // as [first, last] indices into `inputs`.
     std::optional<std::pair<std::size_t, std::size_t>> variadic_rows;
@@ -1205,6 +1208,7 @@ NodeBodyLayout nodeBodyLayout(const FramePlanModel &model,
     // LP-4b: named by the engine's labels where it gives them (face 2 (+Y)).
     layout.view_line =
         qtext(framePlanViewSelectLine(node.view_select, node.view_axes));
+    layout.loop_line = qtext(framePlanDrawLoopLine(model, node.name));
     // Sorted, not in declaration order: WP318 fixes that the scene ignores the
     // order of every input array, and a row's y position is scene geometry.
     std::vector<std::string> written{node.writes.begin(), node.writes.end()};
@@ -1264,12 +1268,17 @@ NodeBodyLayout nodeBodyLayout(const FramePlanModel &model,
         layout.width = std::max<qreal>(
             layout.width,
             row_metrics.horizontalAdvance(layout.view_line) + 28.0);
+    if (!layout.loop_line.isEmpty())
+        layout.width = std::max<qreal>(
+            layout.width,
+            row_metrics.horizontalAdvance(layout.loop_line) + 28.0);
     layout.width = std::min(layout.width, FramePlanNodeMaximumWidth);
 
     const auto rows = static_cast<qreal>(layout.outputs.size() +
                                          layout.inputs.size() +
                                          layout.bands.size() +
-                                         (layout.view_line.isEmpty() ? 0 : 1));
+                                         (layout.view_line.isEmpty() ? 0 : 1) +
+                                         (layout.loop_line.isEmpty() ? 0 : 1));
     // The GPU-timing line keeps its own row: it is published for every node,
     // including an anchor that has no resource of its own.
     layout.height = FramePlanHeaderHeight + FramePlanSectionPadding +
@@ -1524,6 +1533,24 @@ void addNodeBody(QGraphicsPathItem &item, const FramePlanNode &node,
                                               : qtext(node.view_family),
                      layout.view_line.mid(6)));
         tag(view, FramePlanViewSelectItem);
+        cursor_y += FramePlanSocketRowHeight;
+    }
+    // LP-4e: the loop that draws inside this material pass, and how many
+    // materials it walks. The branches are in the details.
+    if (!layout.loop_line.isEmpty()) {
+        const QString shown = row_metrics.elidedText(
+            layout.loop_line, Qt::ElideMiddle, layout.width - 28.0);
+        auto *loop = new QGraphicsSimpleTextItem(shown, &item);
+        loop->setFont(row_font);
+        loop->setBrush(QColor{QStringLiteral("#c9b9e8")});
+        loop->setPos(14.0, cursor_y + (FramePlanSocketRowHeight -
+                                       row_metrics.height()) /
+                                          2.0);
+        loop->setToolTip(
+            QStringLiteral("%1 draws each material the way a branch of this loop "
+                           "says; the details list the materials per branch.")
+                .arg(node_name));
+        tag(loop, FramePlanDrawLoopItem);
         cursor_y += FramePlanSocketRowHeight;
     }
     // N-8: the retypeable fields. They are drawn before the sockets because
@@ -4044,6 +4071,19 @@ void FramePlanGraphicsScene::contextMenuEvent(
             menu.addAction(open_in_graph_action_);
             menu.addSeparator();
         }
+        // LP-4e: a material pass can become a loop; one that cannot says why.
+        if (decompose_action_ != nullptr && decomposeOffered)
+            if (const auto reason = decomposeOffered(clicked)) {
+                decompose_action_->setEnabled(reason->empty());
+                decompose_action_->setToolTip(
+                    reason->empty()
+                        ? QStringLiteral("Rewrite this pass as a loop over its materials, "
+                                         "each drawn the way its branch says")
+                        : qtext(*reason));
+                menu.addAction(decompose_action_);
+                menu.setToolTipsVisible(true);
+                menu.addSeparator();
+            }
         // VI-3b: a variadic group can be fixed; sockets Fix sockets wrote
         // can be made variadic again.
         bool socket_entries = false;
@@ -4892,6 +4932,10 @@ void FramePlanGraphicsScene::setMaterialPassAction(QAction *action) {
 
 void FramePlanGraphicsScene::setOpenInGraphAction(QAction *action) {
     open_in_graph_action_ = action;
+}
+
+void FramePlanGraphicsScene::setDecomposeAction(QAction *action) {
+    decompose_action_ = action;
 }
 
 void FramePlanGraphicsScene::applyResourcePick() {

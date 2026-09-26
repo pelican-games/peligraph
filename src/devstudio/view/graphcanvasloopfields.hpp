@@ -12,9 +12,12 @@
 
 class QCheckBox;
 class QComboBox;
+class QFormLayout;
 class QGridLayout;
+class QLayout;
 class QLabel;
 class QLineEdit;
+class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
 class QToolButton;
@@ -47,6 +50,9 @@ class GraphCanvasLoopFields final : public QWidget {
     // "1, 4" / "1 4" -> {1, 4}. Nothing when a piece is not an integer.
     static std::optional<std::vector<std::int64_t>> parseIntegers(const QString &text);
     static QString integersText(const std::vector<std::int64_t> &values);
+    // LP-4e: "metal, glass" / "metal glass" -> {"metal", "glass"}.
+    static std::vector<std::string> parseNames(const QString &text);
+    static QString namesText(const std::vector<std::string> &names);
 
   private:
     void rebuild(const GraphCanvasLoop &loop);
@@ -58,6 +64,12 @@ class GraphCanvasLoopFields final : public QWidget {
     void commitCarry();
     void commitOutputs();
     void commitBranchWhen(std::size_t branch);
+    // LP-4e: a draw_loop's `where` tags, and one branch's material
+    // condition read off its row.
+    void commitWhereTags();
+    void commitDrawWhen(std::size_t branch);
+    void addDrawBranchRow(QGridLayout &grid, const GraphCanvasLoop &loop, std::size_t index,
+                          int row, bool editable);
 
     GraphCanvasModel &model_;
     std::function<void()> submitted_;
@@ -78,6 +90,17 @@ class GraphCanvasLoopFields final : public QWidget {
     QComboBox *place_ = nullptr;
     QComboBox *where_kind_ = nullptr;
     QLineEdit *where_values_ = nullptr;
+    // LP-4e: the rows only a draw_loop has, and the form they share with the
+    // rows it does not take (count, order, limit, place, element where).
+    QFormLayout *form_ = nullptr;
+    QLayout *count_row_ = nullptr;
+    QLayout *limit_row_ = nullptr;
+    QLayout *where_row_ = nullptr;
+    QLabel *contract_ = nullptr;
+    QWidget *tags_row_ = nullptr;
+    QLineEdit *tags_include_ = nullptr;
+    QLineEdit *tags_exclude_ = nullptr;
+    QLineEdit *tags_require_all_ = nullptr;
     QWidget *rows_ = nullptr;
     QVBoxLayout *rows_layout_ = nullptr;
     // The rows of the carry list, the outputs and the branch table, rebuilt
@@ -92,8 +115,52 @@ class GraphCanvasLoopFields final : public QWidget {
         QComboBox *when = nullptr;
         QLineEdit *values = nullptr;
         QComboBox *body = nullptr;
+        // LP-4e: a draw_loop branch's condition, one field per attribute.
+        QComboBox *material = nullptr;
+        QLineEdit *tags = nullptr;
+        QComboBox *contract = nullptr;
+        QComboBox *skinned = nullptr;
+        QComboBox *has_variant = nullptr;
     };
     std::vector<BranchRow> branch_rows_;
+};
+
+// LP-4e, decisions 2 and 4: the fields of the selected render.material_pass
+// (its contract) or draw step (draw.variant's variant; draw.override's render
+// state and defines), beside the Graph tab's canvas. Named
+// `pelican.graphCanvasDraw.<field>`; each change is one gesture, and
+// `submitted` is called after it.
+class GraphCanvasDrawFields final : public QWidget {
+  public:
+    GraphCanvasDrawFields(GraphCanvasModel &model, std::function<void()> submitted,
+                          QWidget *parent = nullptr);
+
+    // The node to show, or null to hide the fields.
+    void showNode(const GraphCanvasNode *node);
+
+    // "A=1\nB" -> {"A=1", "B"}: one define a line, blank lines dropped.
+    static std::vector<std::string> parseDefines(const QString &text);
+
+  private:
+    void after(bool submitted);
+    void commitOverride();
+
+    GraphCanvasModel &model_;
+    std::function<void()> submitted_;
+    std::string node_;
+    std::string op_;
+    QLabel *heading_ = nullptr;
+    QComboBox *contract_ = nullptr;
+    QComboBox *variant_ = nullptr;
+    QComboBox *cull_ = nullptr;
+    QComboBox *depth_test_ = nullptr;
+    QComboBox *depth_write_ = nullptr;
+    QComboBox *blend_ = nullptr;
+    QPlainTextEdit *defines_ = nullptr;
+    QPushButton *apply_defines_ = nullptr;
+    QWidget *contract_row_ = nullptr;
+    QWidget *variant_row_ = nullptr;
+    QWidget *override_rows_ = nullptr;
 };
 
 } // namespace PelicanStudio

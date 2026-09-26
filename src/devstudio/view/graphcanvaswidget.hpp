@@ -490,6 +490,11 @@ class GraphCanvasWidget final : public QWidget {
     // branch, entered through the loop, with the node selected. False, with
     // nothing changed, when the document holds no such loop, branch or node.
     bool revealLoopOrigin(const QString &loop, qint64 element, const QString &node);
+    // LP-4e. Show a root node another panel's edit just made (Decompose into
+    // loop's graph.loop): the document is read again, and the node is
+    // selected as soon as a document that holds it arrives -- at once when
+    // the one in hand already does.
+    void revealNodeWhenPresent(const QString &node);
     // The same ingestion boundary the production RPC callback uses.
     void receiveResult(qint64 request_id, const QByteArray &result_json);
     void receiveFailure(qint64 request_id, const QString &message);

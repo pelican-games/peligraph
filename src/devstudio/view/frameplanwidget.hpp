@@ -61,6 +61,12 @@ class FramePlanWidget final : public QWidget {
     using GraphLoopNodeOpenAction = std::function<bool(
         const QString &loop, qint64 element, const QString &node)>;
     void setGraphLoopNodeOpenAction(GraphLoopNodeOpenAction action);
+    // LP-4e. "Decompose into loop..." on a material pass -- the Frame Plan's
+    // entry and the Pass Editor's button both come here: the confirmation,
+    // then decompose_material_pass. Once it commits, `action` hears the loop
+    // it made, which the Graph tab then shows.
+    void decomposeMaterialPass(const QString &graph, const QString &pass);
+    void setLoopDecomposedAction(std::function<void(const QString &loop)> action);
     void setPresetPassEditAction(std::function<void(const QString &, const QString &)> action);
     // N-8. What the canvas is allowed to change, and where its placement is
     // kept. Without these the canvas is exactly the read-only projection it was

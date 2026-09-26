@@ -528,6 +528,48 @@ std::string renderAuthoringRefusalLine(const nlohmann::json &error);
 // "loop steps · element 2 · body node fill".
 std::string framePlanLoopOriginLine(const FramePlanLoopOrigin &origin);
 
+// --- LP-4e: Decompose into loop (LP-3b's decompose_material_pass).
+
+// The draw_loop that draws inside `pass` (loops[] names its pass), or null.
+const FramePlanLoop *framePlanDrawLoopOf(const FramePlanModel &model,
+                                         const std::string &pass);
+
+// The line under a material pass's heading when a draw_loop draws in it:
+// "loop: forward_opaque_draws (3 materials)". Empty otherwise.
+std::string framePlanDrawLoopLine(const FramePlanModel &model, const std::string &pass);
+
+// Why `pass` cannot be decomposed, as the one line the menu entry's tooltip
+// shows (and the status line, if it is fired by name anyway); empty when the
+// request can go. What the authoring context and the plan tell is said here:
+// a pass that is not a material pass, one a feature provides, one of an engine
+// preset not forked yet, one a draw_loop already draws in. What they do not
+// tell is left to the engine, whose refusal reads as
+// framePlanDecomposeRejection.
+std::string framePlanDecomposeRefusal(const FramePlanAuthoring &authoring,
+                                      const FramePlanModel *model,
+                                      const std::string &graph, const std::string &pass);
+
+// decompose_material_pass {base_source_digest, base_preset_digest?, pass}: a
+// pass the direct root declares names the root's digest alone; a pass of the
+// project's (forked) preset names the preset's digest too.
+FramePlanEditRequest framePlanDecomposeRequest(const FramePlanAuthoring &authoring,
+                                               const FramePlanModel *model,
+                                               const std::string &graph,
+                                               const std::string &pass);
+
+// The confirmation the request waits for: the rewrite has no undo until RD-1.
+std::string framePlanDecomposeConfirmation(const std::string &pass);
+
+// One sentence for each refusal decompose_material_pass answers with:
+// material_pass_not_decomposable by its reason, project_preset_required, and
+// the graph's own (a node or definition of that name already there). Anything
+// else reads as renderAuthoringRefusalLine.
+std::string framePlanDecomposeRejection(const nlohmann::json &error);
+
+// The graph.loop an accepted decompose_material_pass made (decomposed.loop),
+// or empty.
+std::string framePlanDecomposedLoop(const nlohmann::json &response);
+
 // --- LP-4a: view_select (LP-Va).
 
 // The line under a node's heading when the node runs only for some views of

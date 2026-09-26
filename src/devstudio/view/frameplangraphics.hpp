@@ -158,6 +158,9 @@ inline constexpr auto FramePlanSocketFixItem = "node_socket_fix";
 // only for some views of its family (view_select). Not a band: nothing on it
 // is retyped here.
 inline constexpr auto FramePlanViewSelectItem = "node_view_select";
+// LP-4e: the "loop: forward_opaque_draws (3 materials)" line under the heading
+// of a material pass a draw_loop draws in.
+inline constexpr auto FramePlanDrawLoopItem = "node_draw_loop";
 
 // A node's height follows its resource count rather than a constant, so the
 // numbers the scene draws with are published for the scene test to name.
@@ -343,6 +346,13 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     // entry is named, like the insert ones, and acts on insertAnchor().
     void setOpenInGraphAction(QAction *action);
     std::function<bool(const FramePlanNodeKey &)> openInGraphOffered;
+    // LP-4e: "Decompose into loop..." on a right-click over a material pass.
+    // `decomposeOffered` answers nothing for a node the entry is not about
+    // (it is left out), an empty line for one it can decompose, and the
+    // reason for one it cannot (the entry is shown disabled, the reason as
+    // its tooltip). Named like the others; acts on insertAnchor().
+    void setDecomposeAction(QAction *action);
+    std::function<std::optional<std::string>(const FramePlanNodeKey &)> decomposeOffered;
     // LP-4b: "View" on a node's right-click, for a node whose family has
     // view axes (view_axes): per axis, All views and each value as radio
     // entries, the node's view_select checked; an axis decided each frame is
@@ -501,6 +511,7 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     QAction *render_target_action_ = nullptr;
     QAction *material_pass_action_ = nullptr;
     QAction *open_in_graph_action_ = nullptr;
+    QAction *decompose_action_ = nullptr;
     QAction *fix_sockets_action_ = nullptr;
     QAction *variadic_sockets_action_ = nullptr;
     // F-1: the resource node the user clicked. Delete acts on it.

@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -179,18 +180,54 @@ struct GraphCanvasCatalogEntry {
     bool operator==(const GraphCanvasCatalogEntry &) const = default;
 };
 
+// LP-4e. A material's tags as a draw_loop's `where` and a branch's `when`
+// test them ({"tags": {include, exclude, require_all}}); empty lists are left
+// out of the document.
+struct GraphCanvasTagFilter {
+    std::vector<std::string> include;
+    std::vector<std::string> exclude;
+    std::vector<std::string> require_all;
+
+    [[nodiscard]] bool empty() const noexcept {
+        return include.empty() && exclude.empty() && require_all.empty();
+    }
+    bool operator==(const GraphCanvasTagFilter &) const = default;
+};
+
+// LP-4e. A draw_loop branch's condition: any of the material's attributes,
+// all of them to hold (AND). An empty condition is the else.
+struct GraphCanvasDrawWhen {
+    // The material's matching key (`<document>#<name>`, `<asset>#material[i]`).
+    std::optional<std::string> material;
+    std::optional<GraphCanvasTagFilter> tags;
+    // The material's shader contract: gbuffer_v1, forward_scene_color_v1 or
+    // legacy_gbuffer_v1.
+    std::optional<std::string> contract;
+    std::optional<bool> skinned;
+    std::optional<bool> has_variant;
+
+    [[nodiscard]] bool empty() const noexcept {
+        return !material && !tags && !contract && !skinned && !has_variant;
+    }
+    bool operator==(const GraphCanvasDrawWhen &) const = default;
+};
+
 // LP-4c. One branch of a graph.loop as the branch table shows it.
 struct GraphCanvasLoopBranch {
     // "else" (no `when`), "element", "element_in", "element_not_in", or
     // "other" for a condition the table has no form for (an expression).
+    // LP-4e: "draw" for a draw_loop's condition, read into `draw_when`.
     std::string when = "else";
     std::vector<std::int64_t> values;
+    GraphCanvasDrawWhen draw_when;
     // The definition the branch runs; empty with `nothing` for `"body": null`.
     std::string body;
     bool nothing = false;
     // From get_frame_plan's loops[]: the elements that took this branch, and
     // whether none did (`unmatched_branches`). Empty without a report.
     std::vector<std::int64_t> matched;
+    // LP-4e: a draw_loop's elements are materials, by their matching key.
+    std::vector<std::string> matched_materials;
     bool unmatched = false;
 };
 
@@ -237,6 +274,21 @@ struct GraphCanvasLoop {
     bool reported = false;
     std::string reported_tier;
     std::int64_t reported_count = 0;
+
+    // LP-4e: a loop over the draws of one material pass (over.draw_items):
+    // one element per material, drawn inside that pass (draw_loop). Its
+    // contract is the pass's, read only; its `where` tests tags; it takes no
+    // count, order, limit or carry.
+    bool draw_items = false;
+    std::string contract;
+    GraphCanvasTagFilter where_tags;
+    // The render.material_pass whose `draws` this loop's output feeds, from
+    // the document (or the report's `pass`).
+    std::string pass;
+    // Every material the report names, all pages read (the branch table's
+    // `material` choices), and how many the report says there are.
+    std::vector<std::string> materials;
+    std::size_t reported_total = 0;
 };
 
 // LP-4c, decision 9: where a refused edit points. A loop refused by name
@@ -307,6 +359,9 @@ class GraphCanvasModel {
         Result,
         // LP-4c: get_frame_plan, for its loops[] only.
         Loops,
+        // LP-4e: get_frame_plan {loop_elements}, one more page of a
+        // draw_loop's materials.
+        LoopPage,
     };
     struct PendingRequest {
         std::uint64_t id = 0;
@@ -435,6 +490,13 @@ class GraphCanvasModel {
     nlohmann::json loop_reports_ = nlohmann::json::object();
     bool loop_reports_received_ = false;
     void requestLoopReports();
+    // LP-4e: a draw_loop's report holds its first page of materials. The
+    // rest are asked for a page at a time, one loop after another, until each
+    // holds its `total` (or a page brings nothing new).
+    std::string loop_page_node_;
+    std::set<std::string, std::less<>> loop_pages_done_;
+    void requestNextLoopPage();
+    void receiveLoopPage(const nlohmann::json &plan);
     const nlohmann::json *loopReport(std::string_view id) const;
     // Decision 9: what the last refusal pointed at.
     std::vector<GraphCanvasRefusalMark> refusal_marks_;
@@ -843,6 +905,48 @@ class GraphCanvasModel {
     // the branch that element ran, entered through the loop. False when the
     // loop, the branch or the node is not in the document.
     bool enterLoopOrigin(std::string_view loop, std::int64_t element, std::string_view node);
+
+    // --- LP-4e: the draw_loop stage, render.material_pass and draw.*.
+
+    // The material contracts a render.material_pass is given (the palette's
+    // combo), and a material's shader contracts (a draw_loop branch's
+    // `contract`), in the order the combos list them.
+    [[nodiscard]] static const std::vector<std::string> &materialPassContracts();
+    [[nodiscard]] static const std::vector<std::string> &materialShaderContracts();
+    // render.material_pass's attachment sockets, in location order: one per
+    // material_outputs output when it declares them, else `color` for a
+    // forward contract and the five G-buffer ones for a deferred one. Empty
+    // for a contract the table does not know. (graphmodule.cpp's
+    // renderMaterialPassColorPorts, restated: Studio does not link the graph
+    // module's registry.)
+    [[nodiscard]] static std::vector<std::string>
+    materialPassColorSockets(const nlohmann::json &parameters);
+    // A draw_loop body's nodes are draw.* only: the palette offers them in a
+    // definition a draw_loop runs, or one that already holds a draw step.
+    [[nodiscard]] bool drawBodyScope(std::string_view scope) const;
+
+    // Decision 3: the draw_loop's own fields. `where` tests tags; an empty
+    // filter removes it.
+    bool setLoopWhereTags(const std::string &id, const GraphCanvasTagFilter &tags);
+    // A branch's condition as a draw_loop reads it (AND of what is set). An
+    // empty condition is refused: only the last row is the else.
+    bool setLoopBranchDrawWhen(const std::string &id, std::size_t branch,
+                               const GraphCanvasDrawWhen &when);
+    // Every material a draw_loop's report named, all pages read. Empty
+    // without a report.
+    [[nodiscard]] std::vector<std::string> loopMaterials(std::string_view id) const;
+
+    // Decision 4: a draw step's parameters, each one gesture.
+    bool setDrawVariant(const std::string &node, const std::string &variant);
+    // render_state: cull / depth_test / depth_write / blend / depth_compare,
+    // an absent key keeping the material's own; defines one per entry. Both
+    // empty is not an override, and is refused.
+    bool setDrawOverride(const std::string &node, const nlohmann::json &render_state,
+                         const std::vector<std::string> &defines);
+    bool setMaterialPassContract(const std::string &node, const std::string &contract);
+    // The variant a new draw.variant is given: the material_variant of the
+    // pass the scope's loop draws in, when it names one, else "variant".
+    [[nodiscard]] std::string suggestDrawVariant() const;
 };
 
 } // namespace PelicanStudio

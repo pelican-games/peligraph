@@ -9,6 +9,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSignalBlocker>
@@ -60,11 +61,30 @@ QString signature(const GraphCanvasLoop &loop, const std::vector<std::string> &c
                       GraphCanvasLoopFields::integersText(loop.where_values),
                       qtext(loop.body), QString::number(loop.reported ? loop.reported_count : -1),
                       editable ? QStringLiteral("e") : QStringLiteral("r")};
-    for (const auto &branch : loop.branches)
+    for (const auto &branch : loop.branches) {
         parts << qtext(branch.when) << GraphCanvasLoopFields::integersText(branch.values)
               << qtext(branch.body) << (branch.nothing ? QStringLiteral("0") : QStringLiteral("1"))
               << GraphCanvasLoopFields::integersText(branch.matched)
               << (branch.unmatched ? QStringLiteral("u") : QString{});
+        // LP-4e: a draw_loop branch's condition and the materials it took.
+        const auto &draw = branch.draw_when;
+        parts << qtext(draw.material.value_or("\x1e")) << qtext(draw.contract.value_or("\x1e"))
+              << (draw.skinned ? (*draw.skinned ? QStringLiteral("s1") : QStringLiteral("s0"))
+                               : QString{})
+              << (draw.has_variant ? (*draw.has_variant ? QStringLiteral("v1") : QStringLiteral("v0"))
+                                   : QString{});
+        if (draw.tags)
+            parts << GraphCanvasLoopFields::namesText(draw.tags->include)
+                  << GraphCanvasLoopFields::namesText(draw.tags->exclude)
+                  << GraphCanvasLoopFields::namesText(draw.tags->require_all);
+        for (const auto &material : branch.matched_materials) parts << qtext(material);
+    }
+    parts << (loop.draw_items ? QStringLiteral("draw_items") : QString{}) << qtext(loop.contract)
+          << GraphCanvasLoopFields::namesText(loop.where_tags.include)
+          << GraphCanvasLoopFields::namesText(loop.where_tags.exclude)
+          << GraphCanvasLoopFields::namesText(loop.where_tags.require_all) << qtext(loop.pass)
+          << QString::number(loop.reported_total);
+    for (const auto &material : loop.materials) parts << qtext(material);
     for (const auto &carry : loop.carry)
         parts << qtext(carry.from) << qtext(carry.to)
               << (carry.to_unbound ? QStringLiteral("!") : QString{});
@@ -93,6 +113,22 @@ std::optional<std::vector<std::int64_t>> GraphCanvasLoopFields::parseIntegers(co
 QString GraphCanvasLoopFields::integersText(const std::vector<std::int64_t> &values) {
     QStringList pieces;
     for (const auto value : values) pieces << QString::number(value);
+    return pieces.join(QStringLiteral(", "));
+}
+
+std::vector<std::string> GraphCanvasLoopFields::parseNames(const QString &text) {
+    std::vector<std::string> names;
+    for (const auto &piece :
+         text.split(QRegularExpression{QStringLiteral("[,\\s]+")}, Qt::SkipEmptyParts)) {
+        auto name = piece.toStdString();
+        if (std::ranges::find(names, name) == names.end()) names.push_back(std::move(name));
+    }
+    return names;
+}
+
+QString GraphCanvasLoopFields::namesText(const std::vector<std::string> &names) {
+    QStringList pieces;
+    for (const auto &name : names) pieces << qtext(name);
     return pieces.join(QStringLiteral(", "));
 }
 
@@ -152,6 +188,7 @@ GraphCanvasLoopFields::GraphCanvasLoopFields(
     count_expression_toggle_->setToolTip(tr("Write the count as an expression"));
     count_row->addWidget(count_expression_toggle_);
     form->addRow(caption(tr("Count")), count_row);
+    count_row_ = count_row;
     connect(count_, &QSpinBox::editingFinished, this, [this] { commitCount(); });
     connect(count_expression_, &QLineEdit::returnPressed, this, [this] { commitCount(); });
     connect(count_expression_toggle_, &QToolButton::toggled, this, [this](bool expression) {
@@ -182,6 +219,7 @@ GraphCanvasLoopFields::GraphCanvasLoopFields(
     limit_->setKeyboardTracking(false);
     limit_row->addWidget(limit_, 1);
     form->addRow(caption(tr("Limit")), limit_row);
+    limit_row_ = limit_row;
     connect(limit_enabled_, &QCheckBox::toggled, this, [this] { commitLimit(); });
     connect(limit_, &QSpinBox::editingFinished, this, [this] { commitLimit(); });
 
@@ -224,8 +262,39 @@ GraphCanvasLoopFields::GraphCanvasLoopFields(
     where_values_->setPlaceholderText(tr("1, 4"));
     where_row->addWidget(where_values_, 1);
     form->addRow(caption(tr("Where")), where_row);
+    where_row_ = where_row;
     connect(where_kind_, &QComboBox::currentIndexChanged, this, [this] { commitWhere(); });
     connect(where_values_, &QLineEdit::returnPressed, this, [this] { commitWhere(); });
+
+    // LP-4e, decision 3: a draw_loop runs over the materials of one pass. Its
+    // contract is the pass's (read only here: it is decided by the pass the
+    // draws feed); its `where` tests the materials' tags.
+    contract_ = new QLabel(this);
+    contract_->setObjectName(fieldName(QStringLiteral("contract")));
+    contract_->setFont(studioSmallFont());
+    contract_->setToolTip(tr("The material contract of the pass this loop draws in."));
+    form->addRow(caption(tr("Contract")), contract_);
+    tags_row_ = new QWidget(this);
+    auto *tags_layout = new QHBoxLayout(tags_row_);
+    tags_layout->setContentsMargins(0, 0, 0, 0);
+    const auto tags_field = [this, tags_layout](const char *name, const QString &placeholder,
+                                                const QString &tip) {
+        auto *field = new QLineEdit(tags_row_);
+        field->setObjectName(fieldName(QString::fromLatin1(name)));
+        field->setPlaceholderText(placeholder);
+        field->setToolTip(tip);
+        tags_layout->addWidget(field, 1);
+        connect(field, &QLineEdit::returnPressed, this, [this] { commitWhereTags(); });
+        return field;
+    };
+    tags_include_ = tags_field("whereTagsInclude", tr("any of"),
+                               tr("Materials with any of these tags (commas between); empty: every material"));
+    tags_exclude_ = tags_field("whereTagsExclude", tr("none of"),
+                               tr("Leave out materials with any of these tags"));
+    tags_require_all_ = tags_field("whereTagsRequireAll", tr("all of"),
+                                   tr("Only materials with every one of these tags"));
+    form->addRow(caption(tr("Tags")), tags_row_);
+    form_ = form;
     layout->addLayout(form);
 
     rows_ = new QWidget(this);
@@ -340,6 +409,27 @@ void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop) {
              count_, count_expression_, count_expression_toggle_, order_, limit_enabled_,
              tier_, where_kind_})
         field->setEnabled(editable);
+    // LP-4e: a draw_loop takes no count, order, limit, place or element
+    // `where` (the engine refuses a limit or a carry there, and its order is
+    // the phase's); it has a contract and a tag `where` instead.
+    const bool draw = loop.draw_items;
+    form_->setRowVisible(count_row_, !draw);
+    form_->setRowVisible(order_, !draw);
+    form_->setRowVisible(limit_row_, !draw);
+    form_->setRowVisible(place_, !draw);
+    form_->setRowVisible(where_row_, !draw);
+    form_->setRowVisible(contract_, draw);
+    form_->setRowVisible(tags_row_, draw);
+    if (draw) {
+        contract_->setText(loop.pass.empty()
+                               ? qtext(loop.contract)
+                               : tr("%1 (the pass %2)").arg(qtext(loop.contract), qtext(loop.pass)));
+        tags_include_->setText(namesText(loop.where_tags.include));
+        tags_exclude_->setText(namesText(loop.where_tags.exclude));
+        tags_require_all_->setText(namesText(loop.where_tags.require_all));
+        for (QLineEdit *field : {tags_include_, tags_exclude_, tags_require_all_})
+            field->setEnabled(editable);
+    }
 
     clearRows();
     const auto heading = [this](const QString &text) {
@@ -351,8 +441,8 @@ void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop) {
     };
 
     // Outputs: p (the last element's) and p[] (every element's), for each
-    // output of the body.
-    if (!loop.body_outputs.empty()) {
+    // output of the body. LP-4e: a draw_loop's one output is its draws.
+    if (!loop.body_outputs.empty() && !draw) {
         heading(tr("Outputs"));
         auto *grid = new QGridLayout;
         int row = 0;
@@ -375,8 +465,9 @@ void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop) {
         rows_layout_->addLayout(grid);
     }
 
-    // Carry: an output of one element handed to an input of the next.
-    if (!loop.body_outputs.empty() && !loop.body_inputs.empty()) {
+    // Carry: an output of one element handed to an input of the next. Not in
+    // a draw_loop: no material hands a value to the next.
+    if (!loop.body_outputs.empty() && !loop.body_inputs.empty() && !draw) {
         heading(tr("Carry"));
         for (std::size_t index = 0; index < loop.carry.size(); ++index) {
             const auto &carry = loop.carry[index];
@@ -445,12 +536,16 @@ void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop) {
     for (std::size_t index = 0; index < loop.branches.size(); ++index) {
         const auto &branch = loop.branches[index];
         const bool last = index + 1 == loop.branches.size();
-        const int row = static_cast<int>(index) * 2;
+        // A draw_loop branch takes a line more: its condition's fields.
+        const int row = static_cast<int>(index) * (draw ? 3 : 2);
         BranchRow drawn;
         if (last) {
             auto *label = new QLabel(tr("else"), rows_);
             label->setObjectName(branchFieldName(index, "when"));
             grid->addWidget(label, row, 0, 1, 2);
+        } else if (draw) {
+            // LP-4e: the condition sits on its own line under the body.
+            drawn.when = nullptr;
         } else {
             drawn.when = new QComboBox(rows_);
             drawn.when->setObjectName(branchFieldName(index, "when"));
@@ -524,26 +619,36 @@ void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop) {
             connect(remove, &QPushButton::clicked, this,
                     [this, index] { after(model_.removeLoopBranch(loop_, index)); });
         }
+        branch_rows_.push_back(drawn);
+        // LP-4e: a draw_loop branch's condition, one field per attribute.
+        if (draw && !last) addDrawBranchRow(*grid, loop, index, row + 1, editable);
         // Which elements took the branch, from the report.
         auto *matched = new QLabel(rows_);
         matched->setObjectName(branchFieldName(index, "matched"));
         matched->setFont(studioSmallFont());
+        matched->setWordWrap(true);
+        const bool none = draw ? branch.matched_materials.empty() : branch.matched.empty();
         if (!loop.reported) {
-            matched->setText(tr("elements: not reported yet"));
-        } else if (branch.unmatched || branch.matched.empty()) {
-            matched->setText(tr("no element takes this branch"));
+            matched->setText(draw ? tr("materials: not reported yet")
+                                  : tr("elements: not reported yet"));
+        } else if (branch.unmatched || none) {
+            matched->setText(draw ? tr("no material takes this branch")
+                                  : tr("no element takes this branch"));
             matched->setStyleSheet(QStringLiteral("color: #c0392b;"));
+        } else if (draw) {
+            matched->setText(tr("materials: %1").arg(namesText(branch.matched_materials)));
         } else {
             matched->setText(tr("elements: %1").arg(integersText(branch.matched)));
         }
-        grid->addWidget(matched, row + 1, 0, 1, 6);
-        branch_rows_.push_back(drawn);
+        grid->addWidget(matched, row + (draw && !last ? 2 : 1), 0, 1, 6);
     }
     rows_layout_->addLayout(grid);
     auto *add_branch = new QPushButton(tr("Add branch"), rows_);
     add_branch->setObjectName(fieldName(QStringLiteral("addBranch")));
     add_branch->setEnabled(editable);
-    add_branch->setToolTip(tr("A branch in front of the else, for element 0 to begin with."));
+    add_branch->setToolTip(draw ? tr("A branch in front of the else, for the first material to "
+                                     "begin with.")
+                                : tr("A branch in front of the else, for element 0 to begin with."));
     rows_layout_->addWidget(add_branch);
     connect(add_branch, &QPushButton::clicked, this,
             [this] { after(model_.addLoopBranch(loop_)); });
@@ -608,6 +713,339 @@ void GraphCanvasLoopFields::commitOutputs() {
     for (const auto &[port, box] : output_boxes_)
         if (box->isChecked()) outputs.push_back(port);
     after(model_.setLoopOutputs(loop_, outputs));
+}
+
+namespace {
+
+// The any / yes / no of a check the condition may leave out.
+constexpr const char *AnyYesNo[] = {"(any)", "yes", "no"};
+
+void fillAnyYesNo(QComboBox &combo, const std::optional<bool> &value) {
+    for (const char *label : AnyYesNo) combo.addItem(QString::fromLatin1(label));
+    combo.setCurrentIndex(!value ? 0 : (*value ? 1 : 2));
+}
+
+std::optional<bool> readAnyYesNo(const QComboBox &combo) {
+    if (combo.currentIndex() <= 0) return std::nullopt;
+    return combo.currentIndex() == 1;
+}
+
+} // namespace
+
+void GraphCanvasLoopFields::addDrawBranchRow(QGridLayout &grid, const GraphCanvasLoop &loop,
+                                             std::size_t index, int row, bool editable) {
+    auto &drawn = branch_rows_[index];
+    const auto &when = loop.branches[index].draw_when;
+    auto *line = new QHBoxLayout;
+    const auto label = [this, line](const QString &text) {
+        auto *caption = new QLabel(text, rows_);
+        caption->setFont(studioSmallFont());
+        line->addWidget(caption);
+    };
+    // material = <key>: the materials the report names, all pages read.
+    label(tr("material"));
+    drawn.material = new QComboBox(rows_);
+    drawn.material->setObjectName(branchFieldName(index, "material"));
+    drawn.material->addItem(tr("(any)"), QString{});
+    for (const auto &material : loop.materials)
+        drawn.material->addItem(qtext(material), qtext(material));
+    // A key the report does not name (yet) stays, as the document spells it.
+    if (when.material && drawn.material->findData(qtext(*when.material)) < 0)
+        drawn.material->addItem(qtext(*when.material), qtext(*when.material));
+    drawn.material->setCurrentIndex(
+        when.material ? drawn.material->findData(qtext(*when.material)) : 0);
+    drawn.material->setToolTip(tr("The material this branch is for, by its matching key"));
+    line->addWidget(drawn.material, 2);
+    label(tr("tags"));
+    drawn.tags = new QLineEdit(when.tags ? namesText(when.tags->include) : QString{}, rows_);
+    drawn.tags->setObjectName(branchFieldName(index, "tags"));
+    drawn.tags->setPlaceholderText(tr("any of"));
+    drawn.tags->setToolTip(tr("Materials with any of these tags (commas between)"));
+    line->addWidget(drawn.tags, 1);
+    label(tr("contract"));
+    drawn.contract = new QComboBox(rows_);
+    drawn.contract->setObjectName(branchFieldName(index, "contract"));
+    drawn.contract->addItem(tr("(any)"), QString{});
+    for (const auto &contract : GraphCanvasModel::materialShaderContracts())
+        drawn.contract->addItem(qtext(contract), qtext(contract));
+    drawn.contract->setCurrentIndex(
+        when.contract ? std::max(0, drawn.contract->findData(qtext(*when.contract))) : 0);
+    line->addWidget(drawn.contract);
+    label(tr("skinned"));
+    drawn.skinned = new QComboBox(rows_);
+    drawn.skinned->setObjectName(branchFieldName(index, "skinned"));
+    fillAnyYesNo(*drawn.skinned, when.skinned);
+    line->addWidget(drawn.skinned);
+    label(tr("has variant"));
+    drawn.has_variant = new QComboBox(rows_);
+    drawn.has_variant->setObjectName(branchFieldName(index, "hasVariant"));
+    fillAnyYesNo(*drawn.has_variant, when.has_variant);
+    line->addWidget(drawn.has_variant);
+    for (QWidget *field : std::initializer_list<QWidget *>{
+             drawn.material, drawn.tags, drawn.contract, drawn.skinned, drawn.has_variant})
+        field->setEnabled(editable);
+    grid.addLayout(line, row, 0, 1, 6);
+    for (QComboBox *combo : {drawn.material, drawn.contract, drawn.skinned, drawn.has_variant})
+        connect(combo, &QComboBox::currentIndexChanged, this,
+                [this, index] { commitDrawWhen(index); });
+    connect(drawn.tags, &QLineEdit::returnPressed, this, [this, index] { commitDrawWhen(index); });
+}
+
+void GraphCanvasLoopFields::commitDrawWhen(std::size_t branch) {
+    if (!current_ || loop_.empty() || branch >= branch_rows_.size()) return;
+    const auto &row = branch_rows_[branch];
+    if (row.material == nullptr) return;
+    GraphCanvasDrawWhen when;
+    if (const auto material = row.material->currentData().toString(); !material.isEmpty())
+        when.material = material.toStdString();
+    // The tags a person types are the include list; an exclude or
+    // require_all the document already holds is kept as it is.
+    auto tags = branch < current_->branches.size() && current_->branches[branch].draw_when.tags
+                    ? *current_->branches[branch].draw_when.tags
+                    : GraphCanvasTagFilter{};
+    tags.include = parseNames(row.tags->text());
+    if (!tags.empty()) when.tags = std::move(tags);
+    if (const auto contract = row.contract->currentData().toString(); !contract.isEmpty())
+        when.contract = contract.toStdString();
+    when.skinned = readAnyYesNo(*row.skinned);
+    when.has_variant = readAnyYesNo(*row.has_variant);
+    if (when.empty()) {
+        // Nothing left to test would make this row a second else.
+        row.material->setToolTip(tr("Pick what this branch is for: only the last row has no "
+                                    "condition."));
+        return;
+    }
+    after(model_.setLoopBranchDrawWhen(loop_, branch, when));
+}
+
+void GraphCanvasLoopFields::commitWhereTags() {
+    if (!current_ || loop_.empty() || !current_->draw_items) return;
+    GraphCanvasTagFilter tags;
+    tags.include = parseNames(tags_include_->text());
+    tags.exclude = parseNames(tags_exclude_->text());
+    tags.require_all = parseNames(tags_require_all_->text());
+    if (tags == current_->where_tags) return;
+    after(model_.setLoopWhereTags(loop_, tags));
+}
+
+// --- LP-4e: the draw step and material pass fields.
+
+namespace {
+
+// A render_state key draw.override takes (graphmodule.cpp) with its values;
+// "(material's)" leaves the key out, so the material's own state stays.
+QComboBox *stateCombo(QWidget *parent, const QString &name, const std::vector<const char *> &values,
+                      const QString &tip) {
+    auto *combo = new QComboBox(parent);
+    combo->setObjectName(name);
+    combo->addItem(QObject::tr("(material's)"), QString{});
+    for (const char *value : values) combo->addItem(QString::fromLatin1(value), QString::fromLatin1(value));
+    combo->setToolTip(tip);
+    return combo;
+}
+
+QString drawFieldName(const char *field) {
+    return QStringLiteral("pelican.graphCanvasDraw.") + QString::fromLatin1(field);
+}
+
+} // namespace
+
+std::vector<std::string> GraphCanvasDrawFields::parseDefines(const QString &text) {
+    std::vector<std::string> defines;
+    for (const auto &line : text.split(QLatin1Char{'\n'})) {
+        const auto define = line.trimmed();
+        if (!define.isEmpty()) defines.push_back(define.toStdString());
+    }
+    return defines;
+}
+
+GraphCanvasDrawFields::GraphCanvasDrawFields(GraphCanvasModel &model, std::function<void()> submitted,
+                                             QWidget *parent)
+    : QWidget{parent}, model_{model}, submitted_{std::move(submitted)} {
+    setObjectName(QStringLiteral("pelican.graphCanvasDraw"));
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 4, 0, 4);
+    heading_ = new QLabel(this);
+    heading_->setFont(studioSmallFont());
+    heading_->setWordWrap(true);
+    layout->addWidget(heading_);
+    const auto caption = [this](const QString &text, QWidget *parent) {
+        auto *label = new QLabel(text, parent);
+        label->setFont(studioSmallFont());
+        return label;
+    };
+
+    // render.material_pass: the contract decides its sockets.
+    contract_row_ = new QWidget(this);
+    auto *contract_form = new QFormLayout(contract_row_);
+    contract_form->setContentsMargins(0, 0, 0, 0);
+    contract_ = new QComboBox(contract_row_);
+    contract_->setObjectName(drawFieldName("contract"));
+    for (const auto &contract : GraphCanvasModel::materialPassContracts())
+        contract_->addItem(qtext(contract), qtext(contract));
+    contract_->setToolTip(tr("The materials this pass draws; its sockets follow it."));
+    contract_form->addRow(caption(tr("Contract"), contract_row_), contract_);
+    layout->addWidget(contract_row_);
+    connect(contract_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (index < 0 || node_.empty()) return;
+        after(model_.setMaterialPassContract(node_, contract_->itemData(index).toString().toStdString()));
+    });
+
+    // draw.variant: the named variant each material draws with.
+    variant_row_ = new QWidget(this);
+    auto *variant_form = new QFormLayout(variant_row_);
+    variant_form->setContentsMargins(0, 0, 0, 0);
+    variant_ = new QComboBox(variant_row_);
+    variant_->setObjectName(drawFieldName("variant"));
+    variant_->setEditable(true);
+    variant_->setInsertPolicy(QComboBox::NoInsert);
+    variant_->setToolTip(tr("The variant each material of this branch draws with; a material "
+                            "without it is refused (graph.loop_variant_missing@1)."));
+    variant_form->addRow(caption(tr("Variant"), variant_row_), variant_);
+    layout->addWidget(variant_row_);
+    const auto commit_variant = [this] {
+        if (node_.empty()) return;
+        after(model_.setDrawVariant(node_, variant_->currentText().trimmed().toStdString()));
+    };
+    connect(variant_, &QComboBox::activated, this, commit_variant);
+    connect(variant_->lineEdit(), &QLineEdit::returnPressed, this, commit_variant);
+
+    // draw.override: the render state it replaces, and its defines.
+    override_rows_ = new QWidget(this);
+    auto *override_form = new QFormLayout(override_rows_);
+    override_form->setContentsMargins(0, 0, 0, 0);
+    cull_ = stateCombo(override_rows_, drawFieldName("cull"), {"none", "front", "back"},
+                       tr("Which faces are not drawn"));
+    depth_test_ = stateCombo(override_rows_, drawFieldName("depthTest"), {"on", "off"},
+                             tr("Whether the draw tests depth"));
+    depth_write_ = stateCombo(override_rows_, drawFieldName("depthWrite"), {"on", "off"},
+                              tr("Whether the draw writes depth (not with the test off)"));
+    blend_ = stateCombo(override_rows_, drawFieldName("blend"), {"opaque", "blend", "additive"},
+                        tr("How the draw's colour meets what is there"));
+    override_form->addRow(caption(tr("Cull"), override_rows_), cull_);
+    override_form->addRow(caption(tr("Depth test"), override_rows_), depth_test_);
+    override_form->addRow(caption(tr("Depth write"), override_rows_), depth_write_);
+    override_form->addRow(caption(tr("Blend"), override_rows_), blend_);
+    defines_ = new QPlainTextEdit(override_rows_);
+    defines_->setObjectName(drawFieldName("defines"));
+    defines_->setMaximumHeight(70);
+    defines_->setPlaceholderText(tr("One define a line: NAME or NAME=VALUE"));
+    defines_->setToolTip(tr("Shader defines the draw adds; they need the runtime shader compiler."));
+    override_form->addRow(caption(tr("Defines"), override_rows_), defines_);
+    apply_defines_ = new QPushButton(tr("Apply defines"), override_rows_);
+    apply_defines_->setObjectName(drawFieldName("applyDefines"));
+    override_form->addRow(QString{}, apply_defines_);
+    layout->addWidget(override_rows_);
+    for (QComboBox *combo : {cull_, depth_test_, depth_write_, blend_})
+        connect(combo, &QComboBox::currentIndexChanged, this, [this] { commitOverride(); });
+    connect(apply_defines_, &QPushButton::clicked, this, [this] { commitOverride(); });
+    hide();
+}
+
+void GraphCanvasDrawFields::after(bool submitted) {
+    if (submitted && submitted_) submitted_();
+}
+
+void GraphCanvasDrawFields::showNode(const GraphCanvasNode *node) {
+    const bool shown = node != nullptr && (node->op == "render.material_pass" ||
+                                           node->op == "draw.variant" || node->op == "draw.override");
+    if (!shown) {
+        node_.clear();
+        op_.clear();
+        hide();
+        return;
+    }
+    const bool same = node_ == node->id && op_ == node->op;
+    node_ = node->id;
+    op_ = node->op;
+    const bool editable = model_.canEdit();
+    const auto &parameters = node->parameters;
+    const auto string = [&](const nlohmann::json &object, const char *key) {
+        const auto found = object.is_object() ? object.find(key) : object.end();
+        return object.is_object() && found != object.end() && found->is_string()
+                   ? qtext(found->get<std::string>())
+                   : QString{};
+    };
+    contract_row_->setVisible(op_ == "render.material_pass");
+    variant_row_->setVisible(op_ == "draw.variant");
+    override_rows_->setVisible(op_ == "draw.override");
+    if (op_ == "render.material_pass") {
+        heading_->setText(tr("Material pass %1").arg(qtext(node_)));
+        const QSignalBlocker block{contract_};
+        const auto contract = string(parameters, "material_contract");
+        if (contract_->findData(contract) < 0 && !contract.isEmpty())
+            contract_->addItem(contract, contract);
+        contract_->setCurrentIndex(contract_->findData(contract));
+        contract_->setEnabled(editable);
+    } else if (op_ == "draw.variant") {
+        heading_->setText(tr("Draw %1 with a named variant").arg(qtext(node_)));
+        if (!(same && variant_->lineEdit()->hasFocus())) {
+            const QSignalBlocker block{variant_};
+            variant_->clear();
+            const auto suggested = qtext(model_.suggestDrawVariant());
+            if (suggested != QLatin1String{"variant"}) variant_->addItem(suggested);
+            const auto current = string(parameters, "variant");
+            if (variant_->findText(current) < 0) variant_->addItem(current);
+            variant_->setCurrentIndex(variant_->findText(current));
+            variant_->setEditText(current);
+        }
+        variant_->setEnabled(editable);
+    } else {
+        heading_->setText(tr("Draw %1 with another render state").arg(qtext(node_)));
+        const auto state = parameters.is_object() ? parameters.value("render_state", nlohmann::json::object())
+                                                  : nlohmann::json::object();
+        const auto pick = [&](QComboBox *combo, const char *key, bool boolean) {
+            const QSignalBlocker block{combo};
+            QString value;
+            if (state.is_object() && state.contains(key)) {
+                const auto &stored = state.at(key);
+                value = boolean ? (stored.is_boolean() ? (stored.get<bool>() ? QStringLiteral("on")
+                                                                              : QStringLiteral("off"))
+                                                       : QString{})
+                                : (stored.is_string() ? qtext(stored.get<std::string>()) : QString{});
+            }
+            combo->setCurrentIndex(std::max(0, combo->findData(value)));
+            combo->setEnabled(editable);
+        };
+        pick(cull_, "cull", false);
+        pick(depth_test_, "depth_test", true);
+        pick(depth_write_, "depth_write", true);
+        pick(blend_, "blend", false);
+        if (!(same && defines_->hasFocus())) {
+            QStringList lines;
+            if (parameters.is_object())
+                for (const auto &define : parameters.value("defines", nlohmann::json::array()))
+                    if (define.is_string()) lines << qtext(define.get<std::string>());
+            const QSignalBlocker block{defines_};
+            defines_->setPlainText(lines.join(QLatin1Char{'\n'}));
+        }
+        defines_->setEnabled(editable);
+        apply_defines_->setEnabled(editable);
+    }
+    show();
+}
+
+void GraphCanvasDrawFields::commitOverride() {
+    if (node_.empty() || op_ != "draw.override") return;
+    nlohmann::json state = nlohmann::json::object();
+    const auto put = [&](QComboBox *combo, const char *key, bool boolean) {
+        const auto value = combo->currentData().toString();
+        if (value.isEmpty()) return;
+        if (boolean) state[key] = value == QLatin1String{"on"};
+        else state[key] = value.toStdString();
+    };
+    put(cull_, "cull", false);
+    put(depth_test_, "depth_test", true);
+    put(depth_write_, "depth_write", true);
+    put(blend_, "blend", false);
+    const auto defines = parseDefines(defines_->toPlainText());
+    if (state.empty() && defines.empty()) {
+        // The engine refuses an override that replaces nothing.
+        cull_->setToolTip(tr("An override replaces at least one render state or adds a define; "
+                             "draw.material draws the material as it is."));
+        return;
+    }
+    after(model_.setDrawOverride(node_, state, defines));
 }
 
 void GraphCanvasLoopFields::commitBranchWhen(std::size_t branch) {

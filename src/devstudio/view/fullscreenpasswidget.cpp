@@ -205,6 +205,9 @@ struct FullscreenPassWidget::Impl {
     // variadic group; the Frame Plan does the rewrite.
     QPushButton *fix_sockets = nullptr;
     std::function<void(const QString &graph, const QString &pass)> fix_sockets_action;
+    // LP-4e: a material pass becomes a loop over its materials.
+    QPushButton *decompose = nullptr;
+    std::function<void(const QString &graph, const QString &pass)> decompose_action;
     // F-5: what a shader reload failure put in the log, so a later commit
     // takes down that log and not an authoring rejection shown since.
     QString reload_log_text;
@@ -488,6 +491,17 @@ struct FullscreenPassWidget::Impl {
         for (const auto *contract : {"legacy_gbuffer_v1", "deferred_geometry_v1", "forward_opaque_v1", "forward_transparent_v1"})
             material_contract->addItem(QString::fromLatin1(contract), QString::fromLatin1(contract));
         form->addRow(owner.tr("Contract"), material_contract);
+        decompose = new QPushButton(owner.tr("Decompose into loop..."), &owner);
+        decompose->setObjectName(QStringLiteral("pelican.fullscreenPass.decomposeIntoLoop"));
+        decompose->setToolTip(owner.tr(
+            "Rewrite this pass as a loop over its materials, each drawn the way its "
+            "branch says (the Frame Plan's Decompose into loop, on this pass)."));
+        QObject::connect(decompose, &QPushButton::clicked, &owner, [this] {
+            if (editing_preset_pass && decompose_action)
+                decompose_action(text(editing_preset_pass->first),
+                                 text(editing_preset_pass->second));
+        });
+        form->addRow(QString{}, decompose);
         material_settings = new QPlainTextEdit(&owner);
         material_settings->setObjectName("pelican.fullscreenPass.materialSettings");
         material_settings->setMaximumHeight(140);
@@ -500,6 +514,7 @@ struct FullscreenPassWidget::Impl {
         form->addRow(owner.tr("Routing"), material_routing);
         for (auto *field : std::array<QWidget *, 3>{material_contract, material_settings, material_routing})
             form->setRowVisible(field, false);
+        form->setRowVisible(decompose, false);
         layout->addLayout(form);
 
         targets = new QGroupBox(owner.tr("Targets"), &owner);
@@ -1660,6 +1675,7 @@ struct FullscreenPassWidget::Impl {
         for (auto *field : std::array<QWidget *, 3>{material_contract, material_settings, material_routing})
             form->setRowVisible(field, editingMaterialPass());
         form->setRowVisible(material_routing, editingMaterialPass() && editsPresetRouting());
+        form->setRowVisible(decompose, editingMaterialPass());
         targets->setVisible(true);
         validation->setVisible(true);
     }
@@ -3625,6 +3641,11 @@ void FullscreenPassWidget::insertAuthoredPassAfter(const QString &graph,
 void FullscreenPassWidget::setFixSocketsAction(
     std::function<void(const QString &graph, const QString &pass)> action) {
     impl_->fix_sockets_action = std::move(action);
+}
+
+void FullscreenPassWidget::setDecomposeAction(
+    std::function<void(const QString &graph, const QString &pass)> action) {
+    impl_->decompose_action = std::move(action);
 }
 
 void FullscreenPassWidget::setProjectRoot(

@@ -249,16 +249,26 @@ std::vector<FramePlanLoop> optionalLoops(const Json &root) {
                     context + ".elements[" + std::to_string(at) + "]";
                 if (!entry.is_object()) throw invalid(element_context + " must be an object");
                 const auto element = entry.find("element");
-                if (element == entry.end() || !element->is_number_integer())
-                    throw invalid(element_context + ".element must be an integer");
+                // LP-4e: a draw_loop's element is a material's matching key.
+                const bool material = element != entry.end() && element->is_string() &&
+                                      !element->get_ref<const std::string &>().empty();
+                if (element == entry.end() || (!element->is_number_integer() && !material))
+                    throw invalid(element_context +
+                                  ".element must be an integer or a material key");
                 loop.elements.push_back(FramePlanLoopElement{
-                    element->get<std::int64_t>(),
+                    material ? std::int64_t{0} : element->get<std::int64_t>(),
                     static_cast<std::size_t>(unsignedInteger(
                         entry.value("index", Json{0}), element_context + ".index")),
                     static_cast<std::size_t>(unsignedInteger(
-                        entry.value("branch", Json{0}), element_context + ".branch"))});
+                        entry.value("branch", Json{0}), element_context + ".branch")),
+                    material ? element->get<std::string>() : std::string{}});
             }
         }
+        loop.pass = optionalStringField(value, "pass", context);
+        loop.offset = static_cast<std::size_t>(
+            unsignedInteger(value.value("offset", Json(0)), context + ".offset"));
+        loop.total = static_cast<std::size_t>(
+            unsignedInteger(value.value("total", Json(0)), context + ".total"));
         if (const auto unmatched = value.find("unmatched_branches");
             unmatched != value.end() && !unmatched->is_null()) {
             if (!unmatched->is_array())

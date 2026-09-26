@@ -1573,3 +1573,348 @@ TEST_CASE("LP-4c a descent into a loop opens its chosen branch, and a copy's ori
     twice.open();
     CHECK(twice.client.model.definitionUseCount("paint") == 2);
 }
+
+// --- LP-4e: the draw_loop stage, render.material_pass and draw.*.
+
+namespace {
+
+using PelicanStudio::GraphCanvasDrawWhen;
+using PelicanStudio::GraphCanvasTagFilter;
+
+Json lp4eDepthType() {
+    return {{"semantic", "pelican.render.depth@1"},
+            {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+}
+
+// What decompose_material_pass (LP-3b) leaves of a forward pass: its
+// attachments through target_refs, a draw_loop over its materials whose one
+// (else) branch draws each as it was, and the pass itself, reading the
+// loop's draws.
+Json lp4eDocument() {
+    return Json{{"schema", "pelican.graph"}, {"version", 1},
+        {"definitions", {{"forward_opaque_draw",
+            {{"nodes", Json::array({{{"id", "step"}, {"op", "draw.material"},
+                                     {"parameters", Json::object()}, {"outputs", {"draws"}}}})},
+             {"outputs", {{"draws", {{"node", "step"}, {"port", "draws"}}}}}}}}},
+        {"nodes", Json::array({
+            {{"id", "scene_color_ref"}, {"op", "render.target_ref"},
+             {"parameters", {{"name", "scene_color"}, {"type", lp4cColorType()}}},
+             {"outputs", {"resource"}}},
+            {{"id", "scene_depth_ref"}, {"op", "render.target_ref"},
+             {"parameters", {{"name", "scene_depth"}, {"type", lp4eDepthType()}}},
+             {"outputs", {"resource"}}},
+            {{"id", "forward_opaque_draws"}, {"op", "graph.loop"},
+             {"parameters", {{"over", {{"draw_items", {{"contract", "forward_opaque_v1"}}}}},
+                             {"order", {{"by", "phase_default"}}},
+                             {"branches", Json::array({{{"body", "forward_opaque_draw"}}})}}},
+             {"outputs", {"draws"}}},
+            {{"id", "forward_opaque"}, {"op", "render.material_pass"},
+             {"parameters", {{"material_contract", "forward_opaque_v1"}, {"pass_set", "main_render"},
+                             {"insert", {{"before", "present"}, {"declared", true}}}}},
+             {"inputs", {{"color", {{"node", "scene_color_ref"}, {"port", "resource"}}},
+                         {"depth", {{"node", "scene_depth_ref"}, {"port", "resource"}}},
+                         {"draws", {{"node", "forward_opaque_draws"}, {"port", "draws"}}}}},
+             {"outputs", Json::array()}}})},
+        {"outputs", Json::object()}};
+}
+
+// The catalog with the material pass and the draw steps, parameter_dependent
+// as the engine publishes every render operation.
+Json lp4eCatalog() {
+    auto reply = lp4cCatalog();
+    auto &render = reply["modules"][1]["operations"];
+    for (const char *op : {"render.material_pass", "draw.material", "draw.variant", "draw.override"})
+        render.push_back({{"op", op}, {"domain", "rendering"}, {"evaluation", "direct"},
+                          {"sink", false}, {"ports", "parameter_dependent"}});
+    return reply;
+}
+
+std::string lp4eMaterial(std::size_t index) {
+    return "project://materials/m" + std::to_string(index) + ".material.json#m" +
+           std::to_string(index);
+}
+
+// get_frame_plan's draw_loop entry: `total` materials, of which the page
+// holds [offset, offset + held), all on the else.
+Json lp4eFramePlan(std::size_t total, std::size_t offset, std::size_t held) {
+    auto elements = Json::array();
+    for (std::size_t index = offset; index < offset + held && index < total; ++index)
+        elements.push_back({{"element", lp4eMaterial(index)}, {"index", index}, {"branch", 0}});
+    return {{"schema", "pelican.frame_plan"}, {"version", 1},
+            {"loops", Json::array({{{"node", "forward_opaque_draws"}, {"tier", "draw_loop"},
+                                    {"pass", "forward_opaque"}, {"count", total},
+                                    {"elements", elements}, {"unmatched_branches", Json::array()},
+                                    {"total", total}, {"offset", offset}, {"limit", 256}}})}};
+}
+
+struct DrawLoopHarness : LoopHarness {
+    DrawLoopHarness() {
+        document = lp4eDocument();
+        client.catalog_reply = lp4eCatalog();
+    }
+    Json loopParameters(const Json &ops) {
+        REQUIRE(ops.size() == 1);
+        REQUIRE(ops[0].at("op") == "set_node_parameters");
+        CHECK(ops[0].at("scope") == "root");
+        CHECK(ops[0].at("node") == "forward_opaque_draws");
+        return ops[0].at("parameters");
+    }
+};
+
+std::vector<std::string> portNames(const GraphCanvasNode &node) {
+    std::vector<std::string> names;
+    for (const auto &port : node.inputs) names.push_back(port.port);
+    return names;
+}
+
+bool offered(const GraphCanvasModel &model, const std::string &op) {
+    return std::ranges::any_of(model.paletteOperations(), [&](const auto &entry) {
+        return entry.op == op;
+    });
+}
+
+} // namespace
+
+TEST_CASE("LP-4e a material pass's sockets come from its contract, and the palette places one",
+          "[studio][graph-canvas][lp4e]") {
+    REQUIRE_NOTHROW(Pelican::editGraphDocument(lp4eDocument(), Json::array()));
+    DrawLoopHarness h;
+    // A G-buffer pass beside the forward one, with nothing connected.
+    auto deferred = lp4eDocument();
+    deferred["nodes"].push_back({{"id", "gbuffer"}, {"op", "render.material_pass"},
+                                 {"parameters", {{"material_contract", "deferred_geometry_v1"}}},
+                                 {"outputs", Json::array()}});
+    h.document = deferred;
+    h.open();
+
+    const auto forward = h.client.node("forward_opaque");
+    // The contract's sockets, then depth, then the draws a draw_loop hands
+    // it; the parameters are not ports.
+    CHECK(portNames(forward) == std::vector<std::string>{"color", "depth", "draws"});
+    CHECK(port(forward, "color").required);
+    CHECK(port(forward, "color").connected);
+    CHECK(port(forward, "color").source_node == "scene_color_ref");
+    CHECK(port(forward, "depth").required);
+    CHECK_FALSE(port(forward, "draws").required);
+    CHECK(port(forward, "draws").type == "pelican.render.draw_stream@1");
+    CHECK(port(forward, "draws").source_node == "forward_opaque_draws");
+    CHECK(forward.outputs.empty());
+    CHECK(portNames(h.client.node("gbuffer")) ==
+          std::vector<std::string>{"albedo", "normal", "material", "worldpos", "emissive", "depth",
+                                   "draws"});
+    CHECK(GraphCanvasModel::materialPassColorSockets(
+              {{"material_outputs", {{"schema", "pelican.material_outputs"},
+                                     {"outputs", Json::array({{{"name", "tint"}}, {{"name", "mask"}}})}}}}) ==
+          std::vector<std::string>{"tint", "mask"});
+    // A draw step follows the one on `after` and hands the list on.
+    REQUIRE(h.client.model.selectScope("forward_opaque_draw"));
+    const auto step = h.client.node("step");
+    CHECK(portNames(step) == std::vector<std::string>{"after"});
+    REQUIRE(step.outputs.size() == 1);
+    CHECK(step.outputs[0].port == "draws");
+    CHECK(step.outputs[0].type == "pelican.render.draw_stream@1");
+
+    // The palette offers the material pass in the root, and the draw steps
+    // in a body a draw_loop runs -- each on its own side only.
+    CHECK(offered(h.client.model, "draw.material"));
+    CHECK(offered(h.client.model, "draw.variant"));
+    CHECK(offered(h.client.model, "draw.override"));
+    CHECK_FALSE(offered(h.client.model, "render.material_pass"));
+    REQUIRE(h.client.model.selectScope({}));
+    CHECK(offered(h.client.model, "render.material_pass"));
+    CHECK_FALSE(offered(h.client.model, "draw.material"));
+
+    SECTION("a G-buffer pass arrives writing an image per socket and a depth") {
+        REQUIRE(h.client.model.addNode("render.material_pass", "deferred_geometry_v1"));
+        h.commit();
+        REQUIRE(h.last_ops.size() == 7);
+        const auto &pass = h.last_ops.back().at("node");
+        CHECK(pass.at("op") == "render.material_pass");
+        CHECK(pass.at("parameters") ==
+              Json{{"material_contract", "deferred_geometry_v1"}, {"pass_set", "main_render"}});
+        CHECK(pass.at("inputs").size() == 6);
+        CHECK(pass.at("inputs").at("worldpos") ==
+              Json{{"node", pass.at("id").get<std::string>() + "__worldpos"}, {"port", "resource"}});
+        const auto &depth = h.last_ops[5].at("node");
+        CHECK(depth.at("parameters").at("format") == "D32_SFLOAT");
+        CHECK(depth.at("parameters").at("type") == lp4eDepthType());
+        CHECK(portNames(h.client.node(pass.at("id").get<std::string>())).front() == "albedo");
+    }
+    SECTION("the palette's contract decides the sockets, and changing it is one field") {
+        REQUIRE(h.client.model.setMaterialPassContract("gbuffer", "forward_transparent_v1"));
+        const auto ops = h.refuse();
+        REQUIRE(ops.size() == 1);
+        CHECK(ops[0].at("parameters").at("material_contract") == "forward_transparent_v1");
+        CHECK_FALSE(h.client.model.setMaterialPassContract("gbuffer", "legacy_gbuffer_v1"));
+    }
+}
+
+TEST_CASE("LP-4e a draw step arrives at the head of its body's list and its fields are one "
+          "gesture each",
+          "[studio][graph-canvas][lp4e]") {
+    DrawLoopHarness h;
+    h.open();
+    REQUIRE(h.client.model.selectScope("forward_opaque_draw"));
+    // Nothing drawn differently would be refused: an override arrives
+    // drawing both faces.
+    REQUIRE(h.client.model.addNode("draw.override"));
+    h.commit();
+    REQUIRE(h.last_ops.size() == 2);
+    CHECK(h.last_ops[0].at("node").at("parameters") == Json{{"render_state", {{"cull", "none"}}}});
+    const auto added = h.last_ops[0].at("node").at("id").get<std::string>();
+    // Drawn first: the step that makes `draws` now follows it.
+    CHECK(h.last_ops[1] == Json{{"op", "set_input"}, {"scope", "forward_opaque_draw"},
+                                {"node", "step"}, {"port", "after"},
+                                {"source", {{"node", added}, {"port", "draws"}}}});
+    CHECK(h.document.at("definitions").at("forward_opaque_draw").at("outputs").at("draws") ==
+          Json{{"node", "step"}, {"port", "draws"}});
+
+    REQUIRE(h.client.model.setDrawOverride(added, {{"cull", "front"}, {"depth_write", false}},
+                                           {"MASKED", "LEVEL=2"}));
+    auto ops = h.refuse();
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].at("parameters") ==
+          Json{{"render_state", {{"cull", "front"}, {"depth_write", false}}},
+               {"defines", {"MASKED", "LEVEL=2"}}});
+    // An override of nothing is not sent.
+    CHECK_FALSE(h.client.model.setDrawOverride(added, Json::object(), {}));
+
+    // A named variant: the pass's material_variant is proposed, else "variant".
+    CHECK(h.client.model.suggestDrawVariant() == "variant");
+    REQUIRE(h.client.model.addNode("draw.variant"));
+    h.commit();
+    const auto variant = h.last_ops[0].at("node").at("id").get<std::string>();
+    CHECK(h.last_ops[0].at("node").at("parameters") == Json{{"variant", "variant"}});
+    REQUIRE(h.client.model.setDrawVariant(variant, "shadow"));
+    ops = h.refuse();
+    CHECK(ops[0].at("parameters") == Json{{"variant", "shadow"}});
+    CHECK_FALSE(h.client.model.setDrawVariant(variant, ""));
+}
+
+TEST_CASE("LP-4e a draw_loop's fields: tags where, material branches, and every page of "
+          "materials",
+          "[studio][graph-canvas][lp4e]") {
+    DrawLoopHarness h;
+    h.open();
+    const auto read = h.client.model.loop("forward_opaque_draws");
+    REQUIRE(read);
+    CHECK(read->draw_items);
+    CHECK(read->contract == "forward_opaque_v1");
+    CHECK(read->pass == "forward_opaque");
+    REQUIRE(read->branches.size() == 1);
+    CHECK(read->branches[0].when == "else");
+    CHECK(read->body_outputs == std::vector<std::string>{"draws"});
+
+    // The report holds the first 256 of 300 materials; the rest are asked for
+    // from where the page ends, and nothing more once all are held.
+    h.report(lp4eFramePlan(300, 0, 256));
+    auto page = h.client.take("get_frame_plan");
+    CHECK(page.params == Json{{"loop_elements", {{"node", "forward_opaque_draws"},
+                                                 {"offset", 256}, {"limit", 4096}}}});
+    h.client.reply(page, lp4eFramePlan(300, 256, 4096));
+    CHECK(h.client.model.takeRpcRequests().empty());
+    const auto materials = h.client.model.loopMaterials("forward_opaque_draws");
+    REQUIRE(materials.size() == 300);
+    CHECK(materials.front() == lp4eMaterial(0));
+    CHECK(materials.back() == lp4eMaterial(299));
+    const auto reported = h.client.model.loop("forward_opaque_draws");
+    CHECK(reported->reported_total == 300);
+    CHECK(reported->branches[0].matched_materials.size() == 300);
+    CHECK(h.client.node("forward_opaque_draws").badge == "↻ draw_loop ×300");
+
+    SECTION("where: the tags, without an empty list") {
+        REQUIRE(h.client.model.setLoopWhereTags("forward_opaque_draws", {{"metal"}, {}, {"hero"}}));
+        const auto parameters = h.loopParameters(h.refuse());
+        CHECK(parameters.at("where") ==
+              Json{{"tags", {{"include", {"metal"}}, {"require_all", {"hero"}}}}});
+        CHECK(parameters.at("order") == Json{{"by", "phase_default"}});
+    }
+    SECTION("a new branch is for the first material the report names") {
+        REQUIRE(h.client.model.addLoopBranch("forward_opaque_draws"));
+        const auto parameters = h.loopParameters(h.refuse());
+        CHECK(parameters.at("branches") ==
+              Json::array({{{"when", {{"material", lp4eMaterial(0)}}}, {"body", "forward_opaque_draw"}},
+                           {{"body", "forward_opaque_draw"}}}));
+    }
+    SECTION("each attribute of a branch's condition, and all of them ANDed") {
+        auto branched = lp4eDocument();
+        branched["nodes"][2]["parameters"]["branches"] =
+            Json::array({{{"when", {{"material", lp4eMaterial(1)}}}, {"body", nullptr}},
+                         {{"body", "forward_opaque_draw"}}});
+        DrawLoopHarness b;
+        b.document = branched;
+        b.open();
+        const auto table = b.client.model.loop("forward_opaque_draws");
+        REQUIRE(table->branches.size() == 2);
+        CHECK(table->branches[0].when == "draw");
+        CHECK(table->branches[0].draw_when.material == lp4eMaterial(1));
+        CHECK(table->branches[0].nothing);
+        const auto when = [&](const GraphCanvasDrawWhen &condition) {
+            REQUIRE(b.client.model.setLoopBranchDrawWhen("forward_opaque_draws", 0, condition));
+            return b.loopParameters(b.refuse()).at("branches").at(0).at("when");
+        };
+        GraphCanvasDrawWhen material;
+        material.material = lp4eMaterial(7);
+        CHECK(when(material) == Json{{"material", lp4eMaterial(7)}});
+        GraphCanvasDrawWhen tags;
+        tags.tags = GraphCanvasTagFilter{{"glass"}, {"decal"}, {}};
+        CHECK(when(tags) == Json{{"tags", {{"include", {"glass"}}, {"exclude", {"decal"}}}}});
+        GraphCanvasDrawWhen contract;
+        contract.contract = "gbuffer_v1";
+        CHECK(when(contract) == Json{{"contract", "gbuffer_v1"}});
+        GraphCanvasDrawWhen skinned;
+        skinned.skinned = false;
+        CHECK(when(skinned) == Json{{"skinned", false}});
+        GraphCanvasDrawWhen variant;
+        variant.has_variant = true;
+        CHECK(when(variant) == Json{{"has_variant", true}});
+        GraphCanvasDrawWhen all = material;
+        all.skinned = true;
+        all.has_variant = false;
+        CHECK(when(all) == Json{{"material", lp4eMaterial(7)}, {"skinned", true}, {"has_variant", false}});
+        // Nothing to test is the else, which only the last row is.
+        CHECK_FALSE(b.client.model.setLoopBranchDrawWhen("forward_opaque_draws", 0, {}));
+        GraphCanvasDrawWhen unknown;
+        unknown.contract = "forward_opaque_v1";
+        CHECK_FALSE(b.client.model.setLoopBranchDrawWhen("forward_opaque_draws", 0, unknown));
+        CHECK_FALSE(b.client.model.setLoopBranchDrawWhen("forward_opaque_draws", 1, material));
+    }
+}
+
+TEST_CASE("LP-4e a draw_loop's refusals read as sentences that say what to change",
+          "[studio][graph-canvas][lp4e]") {
+    const auto sentence = [](Json error) {
+        return PelicanStudio::graphLoopRefusalDescription(error);
+    };
+    CHECK(sentence({{"code", "graph.loop_tier_unsupported@1"}, {"node", "draws"},
+                    {"reason", "carry_in_draw_loop"}}) ==
+          "Loop draws draws inside one material pass, where no material hands a value to the "
+          "next: remove its carry (graph.loop_tier_unsupported@1).");
+    CHECK(sentence({{"code", "graph.loop_tier_unsupported@1"}, {"node", "draws"},
+                    {"reason", "limit_in_draw_loop"}}) ==
+          "Loop draws draws every material of its pass: remove its limit "
+          "(graph.loop_tier_unsupported@1).");
+    CHECK(sentence({{"code", "graph.loop_tier_unsupported@1"}, {"node", "draws"},
+                    {"reason", "resource_in_draw_body"}}) ==
+          "A body of loop draws makes a resource, which a draw_loop body cannot: it holds draw "
+          "steps only (graph.loop_tier_unsupported@1).");
+    CHECK(sentence({{"code", "graph.loop_tier_unsupported@1"}, {"node", "draws"},
+                    {"reason", "mixed_body"}}) ==
+          "The bodies of loop draws mix draw steps with passes: a body holds draw steps only "
+          "(draw_loop) or passes only (expand) (graph.loop_tier_unsupported@1).");
+    // Another reason keeps the code's own sentence.
+    CHECK(sentence({{"code", "graph.loop_tier_unsupported@1"}, {"node", "steps"},
+                    {"reason", "nested"}}) ==
+          "Loop steps has no stage it can run in (nested) (graph.loop_tier_unsupported@1).");
+    CHECK(sentence({{"code", "graph.loop_draws_unconnected@1"}, {"node", "draws"}, {"count", 0}}) ==
+          "The draws of loop draws reach 0 inputs: they must feed the draws of exactly one "
+          "render.material_pass (graph.loop_draws_unconnected@1).");
+    CHECK(sentence({{"code", "graph.definition_role@1"}, {"definition", "forward_opaque_draw"},
+                    {"node", "misuse"}}) ==
+          "Definition forward_opaque_draw holds draw steps, so only a draw_loop runs it; the "
+          "instance misuse cannot (graph.definition_role@1).");
+    CHECK(sentence({{"code", "graph.loop_contract_unsupported@1"}, {"node", "draws"},
+                    {"contract", "legacy_gbuffer_v1"}}) ==
+          "Loop draws draws with legacy_gbuffer_v1, which its stage does not take "
+          "(graph.loop_contract_unsupported@1).");
+}

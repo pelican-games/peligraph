@@ -100,6 +100,7 @@ TEST_CASE("Studio RPC preserves record values or refuses lossy integer transport
 #include <QLineEdit>
 #include <QCompleter>
 #include <QAbstractItemModel>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QSpinBox>
 #include <QSignalSpy>
@@ -109,6 +110,7 @@ TEST_CASE("Studio RPC preserves record values or refuses lossy integer transport
 #include <QTimer>
 #include <QTabWidget>
 #include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -6871,6 +6873,7 @@ struct FramePlanEditRecorder {
         capability.removeComputeTask = record("remove_compute_task");
         capability.editRenderTargets = record("edit_render_targets");
         capability.addAuthoredPass = record("add_authored_pass");
+        capability.decomposeMaterialPass = record("decompose_material_pass");
         capability.requestEditResult = [this](const QString &, QString *) {
             ticket_id = next_id++;
             return ticket_id;
@@ -11363,5 +11366,271 @@ TEST_CASE("LP-4c a loop's or a definition's refusal reads as its sentence, "
     CHECK(renderAuthoringRefusalLine({{"code", "graph.definition_duplicate@1"},
                                       {"definition", "loop_body"}}) ==
           "A definition named loop_body already exists (graph.definition_duplicate@1).");
+}
+
+// --- LP-4e: Decompose into loop, and a draw_loop on its material pass.
+
+namespace {
+
+// The WP343 context with `wp343_mixed_a` declared as a material pass. `how`:
+// "forked" (a pass of the project's preset), "direct" (the root declares it)
+// or "engine" (a pass of an engine preset nobody forked).
+void lp4eMaterialPassContext(Json &context, const std::string &how) {
+    auto &pass = context["graphs"][0]["passes"][0];
+    REQUIRE(pass.at("name") == "wp343_mixed_a");
+    pass["declaration"]["type"] = "material";
+    pass["declaration"]["material_contract"] = "forward_opaque_v1";
+    if (how == "direct") {
+        context.erase("pipeline_preset");
+        context["config_kind"] = "direct";
+        pass["editable_preset_pass"] = false;
+        pass["editable_root_pass"] = true;
+        pass["root_declaration"] = pass.at("declaration");
+        pass["provenance"]["source"] = "project";
+    } else if (how == "engine") {
+        context["pipeline_preset"]["reference"] = "engine://presets/hybrid_v1.json";
+        context["pipeline_preset"]["name"] = "hybrid_v1";
+        pass["editable_preset_pass"] = false;
+    }
+}
+
+Json lp4eDecomposeSent(const FramePlanEditRecorder &recorder) {
+    return Json::parse(QJsonDocument(recorder.params).toJson().toStdString());
+}
+
+} // namespace
+
+TEST_CASE("LP-4e Decompose into loop confirms, sends the digests its pass lives under, and "
+          "shows the loop it made",
+          "[devstudio][frame-plan][lp4e][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    // A pass of the project's preset goes with the preset's digest too; one
+    // the direct root declares, with the root's digest alone.
+    const std::string how = GENERATE(std::string{"forked"}, std::string{"direct"});
+    CAPTURE(how);
+    fixture.tweak_context = [&](Json &context) { lp4eMaterialPassContext(context, how); };
+    fixture.open();
+    QStringList decomposed;
+    fixture.widget.setLoopDecomposedAction(
+        [&](const QString &loop) { decomposed << loop; });
+    const FramePlanNodeKey pass{fixture.graph, "wp343_mixed_a"};
+    // The entry is offered on the material pass and on nothing else.
+    auto &scene = fixture.logical();
+    REQUIRE(scene.decomposeOffered);
+    CHECK(scene.decomposeOffered(pass) == std::optional<std::string>{std::string{}});
+    CHECK_FALSE(scene.decomposeOffered({fixture.graph, "wp343_mixed_d"}).has_value());
+
+    fixture.widget.decomposeMaterialPass(QString::fromStdString(fixture.graph),
+                                         QStringLiteral("wp343_mixed_a"));
+    QApplication::processEvents();
+    // Nothing goes before the question is answered, and it says there is no
+    // undo yet.
+    CHECK(fixture.recorder.submits == 0);
+    auto *prompt = fixture.widget.findChild<QMessageBox *>(
+        QStringLiteral("pelican.framePlan.decomposeConfirm"));
+    REQUIRE(prompt != nullptr);
+    CHECK(prompt->text().contains(QStringLiteral("cannot be undone yet")));
+    auto *accept = prompt->findChild<QPushButton *>(
+        QStringLiteral("pelican.framePlan.decomposeConfirm.ok"));
+    REQUIRE(accept != nullptr);
+    accept->click();
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.submits == 1);
+    CHECK(fixture.recorder.method == QStringLiteral("decompose_material_pass"));
+    Json expected{{"base_source_digest", RootDigest}, {"pass", "wp343_mixed_a"}};
+    if (how == "forked") expected["base_preset_digest"] = PresetDigest;
+    CHECK(lp4eDecomposeSent(fixture.recorder) == expected);
+
+    // Accepted with what it made, then committed: the loop is handed on.
+    fixture.recorder.result(
+        fixture.recorder.submit_id,
+        QByteArray::fromStdString(
+            Json{{"status", "accepted"}, {"ticket", "t-1"},
+                 {"decomposed", {{"pass", "wp343_mixed_a"}, {"loop", "wp343_mixed_a_draws"},
+                                 {"definition", "wp343_mixed_a_draw"}}}}
+                .dump()));
+    QApplication::processEvents();
+    CHECK(decomposed.isEmpty());
+    REQUIRE(fixture.recorder.ticket_id != 0);
+    fixture.recorder.result(
+        fixture.recorder.ticket_id,
+        QByteArray::fromStdString(Json{{"status", "committed"}, {"committed", true}}.dump()));
+    QApplication::processEvents();
+    CHECK(decomposed == QStringList{QStringLiteral("wp343_mixed_a_draws")});
+}
+
+TEST_CASE("LP-4e Decompose into loop says why it cannot, before and after it is sent",
+          "[devstudio][frame-plan][lp4e][refusal]") {
+    application();
+    SECTION("Cancel sends nothing") {
+        EditingFixture fixture;
+        fixture.tweak_context = [](Json &context) { lp4eMaterialPassContext(context, "forked"); };
+        fixture.open();
+        fixture.widget.decomposeMaterialPass(QString::fromStdString(fixture.graph),
+                                             QStringLiteral("wp343_mixed_a"));
+        QApplication::processEvents();
+        auto *cancel = fixture.widget.findChild<QPushButton *>(
+            QStringLiteral("pelican.framePlan.decomposeConfirm.cancel"));
+        REQUIRE(cancel != nullptr);
+        cancel->click();
+        QApplication::processEvents();
+        CHECK(fixture.recorder.submits == 0);
+    }
+    SECTION("an engine preset's pass: fork first, nothing sent") {
+        EditingFixture fixture;
+        fixture.tweak_context = [](Json &context) { lp4eMaterialPassContext(context, "engine"); };
+        fixture.open();
+        const FramePlanNodeKey pass{fixture.graph, "wp343_mixed_a"};
+        const auto reason = fixture.logical().decomposeOffered(pass);
+        REQUIRE(reason.has_value());
+        CHECK(*reason ==
+              "wp343_mixed_a is a pass of the engine preset hybrid_v1: fork the preset into the "
+              "project first (Features tab, Fork), then decompose the pass there.");
+        fixture.widget.decomposeMaterialPass(QString::fromStdString(fixture.graph),
+                                             QStringLiteral("wp343_mixed_a"));
+        QApplication::processEvents();
+        CHECK(fixture.widget.findChild<QMessageBox *>(
+                  QStringLiteral("pelican.framePlan.decomposeConfirm")) == nullptr);
+        CHECK(fixture.recorder.submits == 0);
+        CHECK(statusText(fixture.widget).contains(QStringLiteral("fork the preset")));
+    }
+    SECTION("a feature's pass is not decomposed; its reason is the entry's tooltip") {
+        EditingFixture fixture;
+        fixture.tweak_context = [](Json &context) {
+            auto &pass = context["graphs"][0]["passes"][2];
+            REQUIRE(pass.at("name") == "wp343_mixed_c");
+            pass["declaration"]["type"] = "material";
+        };
+        fixture.open();
+        const auto reason = fixture.logical().decomposeOffered({fixture.graph, "wp343_mixed_c"});
+        REQUIRE(reason.has_value());
+        CHECK(*reason == "wp343_mixed_c is a pass of a feature (project://passes/mixed.json): a "
+                         "feature's pass is replaced through its pass_replacements, not decomposed.");
+    }
+    SECTION("the engine's refusals, one sentence per reason") {
+        const auto line = [](Json fields) {
+            fields["code"] = "material_pass_not_decomposable";
+            fields["pass"] = "forward_opaque";
+            return framePlanDecomposeRejection(fields);
+        };
+        CHECK(line({{"reason", "not_found"}}) ==
+              "Neither the rendering config nor its preset declares a pass named forward_opaque "
+              "(material_pass_not_decomposable).");
+        CHECK(line({{"reason", "graph_pass"}}) ==
+              "forward_opaque is already a render.material_pass of the graph: edit its loop in "
+              "the Graph tab (material_pass_not_decomposable).");
+        CHECK(line({{"reason", "feature_pass"}, {"feature", "sky"}}) ==
+              "forward_opaque is a pass of the feature sky: a feature's pass is replaced through "
+              "its pass_replacements, not decomposed (material_pass_not_decomposable).");
+        CHECK(line({{"reason", "not_material"}, {"type", "fullscreen"}}) ==
+              "forward_opaque is a fullscreen pass; only a material pass decomposes into a loop "
+              "(material_pass_not_decomposable).");
+        CHECK(line({{"reason", "contract_unsupported"}, {"contract", "legacy_gbuffer_v1"}}) ==
+              "forward_opaque draws with legacy_gbuffer_v1, which no draw_loop runs over "
+              "(material_pass_not_decomposable).");
+        CHECK(line({{"reason", "field_unsupported"}, {"field", "draw_order"}}) ==
+              "forward_opaque sets draw_order, which a render.material_pass cannot carry: remove "
+              "it first (material_pass_not_decomposable).");
+        CHECK(line({{"reason", "attachment_unsupported"}, {"socket", "depth"}}) ==
+              "The graph cannot name forward_opaque's depth attachment (a subresource, no depth, "
+              "or more colours than the contract's sockets) (material_pass_not_decomposable).");
+        CHECK(framePlanDecomposeRejection({{"code", "project_preset_required"},
+                                           {"pass", "forward_opaque"},
+                                           {"preset", "engine://presets/hybrid_v1.json"}}) ==
+              "forward_opaque is a pass of the engine preset engine://presets/hybrid_v1.json: "
+              "fork the preset into the project first (Features tab, Fork), then decompose the "
+              "pass there (project_preset_required).");
+        CHECK(framePlanDecomposeRejection({{"code", "graph.node_duplicate@1"},
+                                           {"node", "forward_opaque_draws"}, {"scope", "root"}}) ==
+              "The graph already has a node named forward_opaque_draws, which decomposing would "
+              "add: rename it first (graph.node_duplicate@1).");
+        CHECK(framePlanDecomposeRejection({{"code", "graph.definition_duplicate@1"},
+                                           {"definition", "forward_opaque_draw"}}) ==
+              "A definition named forward_opaque_draw already exists (graph.definition_duplicate@1).");
+    }
+    SECTION("a refusal that arrives reads as its sentence on the status line") {
+        EditingFixture fixture;
+        fixture.tweak_context = [](Json &context) { lp4eMaterialPassContext(context, "direct"); };
+        fixture.open();
+        fixture.widget.decomposeMaterialPass(QString::fromStdString(fixture.graph),
+                                             QStringLiteral("wp343_mixed_a"));
+        QApplication::processEvents();
+        auto *accept = fixture.widget.findChild<QPushButton *>(
+            QStringLiteral("pelican.framePlan.decomposeConfirm.ok"));
+        REQUIRE(accept != nullptr);
+        accept->click();
+        QApplication::processEvents();
+        REQUIRE(fixture.recorder.submits == 1);
+        fixture.recorder.result(
+            fixture.recorder.submit_id,
+            QByteArray::fromStdString(
+                Json{{"status", "rejected"},
+                     {"error", {{"code", "material_pass_not_decomposable"},
+                                {"message", "Material pass wp343_mixed_a cannot be decomposed"},
+                                {"pass", "wp343_mixed_a"}, {"reason", "field_unsupported"},
+                                {"field", "draw_order"}}}}
+                    .dump()));
+        QApplication::processEvents();
+        CHECK(statusText(fixture.widget).contains(
+            QStringLiteral("wp343_mixed_a sets draw_order, which a render.material_pass cannot "
+                           "carry")));
+    }
+}
+
+TEST_CASE("LP-4e a material pass a draw_loop draws in says so under its heading, and lists its "
+          "materials by branch",
+          "[devstudio][frame-plan][lp4e]") {
+    application();
+    EditingFixture fixture;
+    fixture.tweak_context = [](Json &context) { lp4eMaterialPassContext(context, "direct"); };
+    // Two materials on branch 0 of 300; the plan's page holds these two.
+    fixture.wire["loops"] = Json::array({{{"node", "wp343_mixed_a_draws"}, {"tier", "draw_loop"},
+                                          {"pass", "wp343_mixed_a"}, {"count", 300},
+                                          {"elements", Json::array({
+                                              {{"element", "project://m.material.json#metal"},
+                                               {"index", 0}, {"branch", 0}},
+                                              {{"element", "asset://box.glb#material[0]"},
+                                               {"index", 1}, {"branch", 1}}})},
+                                          {"unmatched_branches", Json::array({2})},
+                                          {"total", 300}, {"offset", 0}, {"limit", 256}}});
+    const FramePlanModel model = buildFramePlanModel(fixture.wire.dump());
+    REQUIRE(model.loops.size() == 1);
+    CHECK(model.loops[0].pass == "wp343_mixed_a");
+    CHECK(model.loops[0].elements[0].key == "project://m.material.json#metal");
+    CHECK(model.loops[0].elementCount() == 300);
+    CHECK(framePlanDrawLoopLine(model, "wp343_mixed_a") ==
+          "loop: wp343_mixed_a_draws (300 materials)");
+    CHECK(framePlanDrawLoopLine(model, "wp343_mixed_b").empty());
+    fixture.open();
+    auto &scene = fixture.logical();
+    const auto lines = itemsOfKind(scene, FramePlanDrawLoopItem);
+    REQUIRE(lines.size() == 1);
+    CHECK(lines.front()->data(FramePlanNameRole).toString() == QStringLiteral("wp343_mixed_a"));
+    // It is already a graph pass: the entry says so instead of sending.
+    const auto reason = scene.decomposeOffered({fixture.graph, "wp343_mixed_a"});
+    REQUIRE(reason.has_value());
+    CHECK(*reason == "wp343_mixed_a is already a render.material_pass of the graph; its loop "
+                     "wp343_mixed_a_draws is edited in the Graph tab.");
+    // The details list the materials by branch, the empty branch named, and
+    // say how many more there are.
+    QGraphicsItem *selected = nodeItem(scene, "wp343_mixed_a");
+    REQUIRE(selected != nullptr);
+    selected->setSelected(true);
+    QApplication::processEvents();
+    auto *details = fixture.widget.findChild<QTreeWidget *>(
+        QStringLiteral("pelican.framePlanLogicalDetails"));
+    REQUIRE(details != nullptr);
+    QStringList texts;
+    for (QTreeWidgetItemIterator it{details}; *it; ++it)
+        texts << (*it)->text(1) + QStringLiteral(" | ") + (*it)->text(2);
+    const auto joined = texts.join(QLatin1Char{'\n'});
+    CHECK(joined.contains(QStringLiteral("Draw loop wp343_mixed_a_draws (300)")));
+    CHECK(joined.contains(QStringLiteral("Material | project://m.material.json#metal")));
+    CHECK(joined.contains(QStringLiteral("Material | asset://box.glb#material[0]")));
+    CHECK(joined.contains(QStringLiteral("none: no material takes this branch")));
+    CHECK(joined.contains(QStringLiteral("2 of 300 shown")));
+    CHECK(fixture.widget.findChild<QPushButton *>(
+              QStringLiteral("pelican.framePlan.loopMaterialsMore")) != nullptr);
 }
 } // namespace PelicanStudio
