@@ -97,7 +97,8 @@ void registerPunctualShadowViewProviders(RenderViewFamilyProviderRegistry &regis
                 ? std::vector<RenderViewAxisDefinition>{
                       {.name = std::string{renderViewAxisLight}},
                       {.name = std::string{renderViewAxisFace},
-                       .compile_time_length = [](const RenderViewAxisLengthContext &) { return 6u; }}}
+                       .compile_time_length = [](const RenderViewAxisLengthContext &) { return 6u; },
+                       .labels = renderViewAxisFaceLabels()}}
                 : std::vector<RenderViewAxisDefinition>{
                       {.name = std::string{renderViewAxisLight}}},
             .build = [family](const RenderViewFamilies &, const RenderViewFamilyProviderContext &context) {

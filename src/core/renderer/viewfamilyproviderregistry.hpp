@@ -49,7 +49,15 @@ struct RenderViewAxisDefinition {
     std::function<std::uint32_t(
         const RenderViewAxisLengthContext &)>
         compile_time_length;
+    // LP-Va2: display names of the values, label[i] naming value i (Studio
+    // shows them next to view_select; the value stays the integer). Empty
+    // when the values are plain numbers.
+    std::vector<std::string> labels;
 };
+
+// LP-Va2: the labels of a `face` axis, in the cube order every face-axis
+// provider builds its views in (+X, -X, +Y, -Y, +Z, -Z).
+std::vector<std::string> renderViewAxisFaceLabels();
 
 struct RenderViewFamilyProviderDefinition {
     std::string name;
@@ -117,6 +125,24 @@ struct RenderViewAxisLength {
 RenderViewAxisLength renderViewAxisLength(
     std::string_view family_id,
     std::string_view axis,
+    const RenderViewAxisLengthContext &context,
+    const RenderViewFamilyProviderRegistry &providers =
+        renderViewFamilyProviderRegistry());
+
+// LP-Va2: one axis of a family as get_frame_plan reports it.
+struct RenderViewAxisDescription {
+    std::string name;
+    // runtime or compile_time; never unknown (only declared axes are listed).
+    RenderViewAxisLength length;
+    std::vector<std::string> labels;
+};
+
+// LP-Va2: every axis the family's provider declares, in the provider's index
+// order (outermost first), each with its length as the recompile stage sees
+// it. Empty for `$main`, `$reflection/planar` and a family without a
+// provider.
+std::vector<RenderViewAxisDescription> renderViewFamilyAxes(
+    std::string_view family_id,
     const RenderViewAxisLengthContext &context,
     const RenderViewFamilyProviderRegistry &providers =
         renderViewFamilyProviderRegistry());

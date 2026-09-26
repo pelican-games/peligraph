@@ -3596,6 +3596,8 @@ struct ViewSelectShadowObservation {
     std::vector<std::size_t> visible_draws;
     // (pass name, view index) in execution order.
     std::vector<std::pair<std::string, std::uint32_t>> invocations;
+    // LP-Va2: what get_frame_plan answers for the running generation.
+    nlohmann::json frame_plan;
 };
 ViewSelectShadowObservation &viewSelectShadowObservation() {
     static ViewSelectShadowObservation value;
@@ -5867,6 +5869,8 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
                 node.at("name").get<std::string>(),
                 node.at("view_index").get<std::uint32_t>());
         }
+        observed.frame_plan =
+            GET_MODULE(Renderer).currentFramePlanJson();
     }
     if (punctual && mode.ends_with("_on")) {
         for (const auto &[family, target, view_count] : {
@@ -9552,7 +9556,14 @@ void registerLpvaProbeProvider() {
     });
 }
 
-nlohmann::json captureLpvaProbeTrace(std::uint32_t slot) {
+// LP-Va2: what get_frame_plan answers before the first frame and after it.
+struct LpvaProbeFramePlans {
+    nlohmann::json before_frame;
+    nlohmann::json after_frame;
+};
+
+nlohmann::json captureLpvaProbeTrace(
+    std::uint32_t slot, LpvaProbeFramePlans *plans = nullptr) {
     registerLpvaProbeProvider();
     const auto root = makeTempProjectDir(
         "lpva_zero_match_" + std::to_string(slot));
@@ -9624,10 +9635,14 @@ nlohmann::json captureLpvaProbeTrace(std::uint32_t slot) {
             time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
             auto &renderer = GET_MODULE(Renderer);
             RendererTestAccess::setExecutionTracing(renderer, true);
+            if (plans != nullptr)
+                plans->before_frame = renderer.currentFramePlanJson();
             time.advance();
             renderer.render();
             GET_MODULE(VulkanManageCore).waitIdle();
             trace = RendererTestAccess::lastExecutionTrace(renderer);
+            if (plans != nullptr)
+                plans->after_frame = renderer.currentFramePlanJson();
         }
         std::filesystem::remove_all(root);
     } catch (...) {
@@ -9666,6 +9681,37 @@ void requireViewSelectZeroMatchCompletes() {
     const auto present = find_node(unmatched, "present");
     REQUIRE(present.size() == 1);
     CHECK(present.front().value("recorded", true));
+
+    // LP-Va2: get_frame_plan tells the same thing without the test-only
+    // trace. The mark comes from the last published frame: none before
+    // the first frame, and only on the node that matched no view.
+    const auto plan_node = [](const nlohmann::json &plan,
+                              std::string_view name) {
+        for (const auto &node : plan.at("nodes")) {
+            if (node.at("name").get<std::string>() == name) return node;
+        }
+        FAIL("no frame plan node " << name);
+        return nlohmann::json{};
+    };
+    for (const std::uint32_t slot : {0u, 1u}) {
+        INFO("slot " << slot);
+        LpvaProbeFramePlans plans;
+        (void)captureLpvaProbeTrace(slot, &plans);
+        const auto before = plan_node(plans.before_frame, "probe_selected");
+        CHECK_FALSE(before.contains("no_selected_view"));
+        // The probe family declares `slot` with a compile-time length 2.
+        CHECK(before.at("view_axes") ==
+              nlohmann::json::array(
+                  {{{"axis", "slot"}, {"length", 2}, {"runtime", false}}}));
+        const auto after = plan_node(plans.after_frame, "probe_selected");
+        if (slot == 1) {
+            CHECK(after.at("no_selected_view") == true);
+        } else {
+            CHECK_FALSE(after.contains("no_selected_view"));
+        }
+        CHECK_FALSE(plan_node(plans.after_frame, "present")
+                        .contains("no_selected_view"));
+    }
 }
 
 constexpr std::uint32_t wp339RenderExtent = 64;
@@ -11323,6 +11369,35 @@ void GoldenHarness::runViewSelectCascadeShadowEquivalence() {
         std::sort(seen.begin(), seen.end());
         for (std::uint32_t view = 0; view < layers; ++view) {
             REQUIRE(seen[view] == view);
+        }
+
+        // LP-Va2: the running renderer's get_frame_plan gives every
+        // directional shadow pass the family's axes, the cascade length
+        // being the feature's cascade_count (3), and a main pass none.
+        const auto cascade_axes = nlohmann::json::array({
+            {{"axis", "light"}, {"length", nullptr}, {"runtime", true}},
+            {{"axis", "cascade"}, {"length", 3}, {"runtime", false}},
+        });
+        for (const auto *observed : {&feature_observed, &split_observed}) {
+            std::size_t shadow_nodes = 0;
+            std::size_t main_passes = 0;
+            for (const auto &node :
+                 observed->frame_plan.at("nodes")) {
+                INFO(node.dump());
+                if (node.value("view_family", std::string{}) ==
+                    directionalShadowRenderViewFamilyId) {
+                    REQUIRE(node.at("view_axes") == cascade_axes);
+                    ++shadow_nodes;
+                } else if (!node.contains("view_family") &&
+                           node.at("kind") == "render") {
+                    REQUIRE(node.at("view_axes") ==
+                            nlohmann::json::array());
+                    ++main_passes;
+                }
+            }
+            REQUIRE(shadow_nodes ==
+                    (observed == &feature_observed ? 1u : 3u));
+            REQUIRE(main_passes > 0);
         }
     }
 #else

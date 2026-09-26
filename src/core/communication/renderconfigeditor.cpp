@@ -2760,8 +2760,8 @@ namespace {
 void applyEditablePassFields(const Json &params, OrderedJson &pass, OrderedJson *routing_config,
                              const char *method) {
     if (isEditableAuxiliaryPass(pass.at("type").get<std::string>())) {
-        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "output", "shader", "ray_query"}, method);
-        bool changed = false;
+        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "output", "shader", "ray_query", "view_select"}, method);
+        bool changed = params.contains("view_select");
         for (const auto *key : {"output", "shader", "ray_query"}) {
             if (!params.contains(key)) continue;
             changed = true;
@@ -2783,8 +2783,8 @@ void applyEditablePassFields(const Json &params, OrderedJson &pass, OrderedJson 
         }
         if (!changed) throw std::invalid_argument("Auxiliary pass editing requires at least one editable field");
     } else if (pass.at("type") == "raster") {
-        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query"}, method);
-        bool changed = false;
+        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query", "view_select"}, method);
+        bool changed = params.contains("view_select");
         for (const auto *key : {"input", "output", "shader", "draw", "raster_state", "ray_query"}) {
             if (!params.contains(key)) continue;
             changed = true;
@@ -2797,9 +2797,10 @@ void applyEditablePassFields(const Json &params, OrderedJson &pass, OrderedJson 
         (void)parseRasterPassContract(Json(pass), color.is_array() ? color.size() : 1,
             output.contains("depth") && !output.at("depth").is_null(), "edit_preset_pass");
     } else if (pass.at("type") == "material") {
-        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "ray_query", "material_settings", "material_routing"}, method);
+        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "ray_query", "material_settings", "material_routing", "view_select"}, method);
         if (!params.contains("input") && !params.contains("output") && !params.contains("ray_query") &&
-            !params.contains("material_settings") && !params.contains("material_routing"))
+            !params.contains("material_settings") && !params.contains("material_routing") &&
+            !params.contains("view_select"))
             throw std::invalid_argument("Material pass editing requires at least one editable field");
         for (const auto *key : {"input", "output"})
             if (params.contains(key)) pass[key] = params.at(key);
@@ -2819,7 +2820,7 @@ void applyEditablePassFields(const Json &params, OrderedJson &pass, OrderedJson 
             else (*routing_config)["material_routing"] = params.at("material_routing");
         }
     } else {
-        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "ray_query", "uses_light_data", "push_constants", "clear_colors"}, method);
+        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "ray_query", "uses_light_data", "push_constants", "clear_colors", "view_select"}, method);
         for (const auto *key : {"input", "output", "shader"}) {
             if (!params.contains(key)) throw std::invalid_argument(std::string{method} + " requires " + key);
             pass[key] = params.at(key);
@@ -2833,13 +2834,28 @@ void applyEditablePassFields(const Json &params, OrderedJson &pass, OrderedJson 
         }
     }
     if (params.contains("ray_query")) pass["ray_query"] = params.at("ray_query");
+    // LP-Va2: the views of its family the pass runs on, for every pass type.
+    // Omitted keeps the value, null removes the member, and a value is read by
+    // the rule the compiler reads it with (parseRenderViewSelect), so a
+    // malformed one is refused here for the same reason. Whether the axis
+    // exists is the recompile's check (graph.view_select_axis_unknown@1).
+    if (params.contains("view_select")) {
+        const auto &value = params.at("view_select");
+        if (value.is_null()) {
+            pass.erase("view_select");
+        } else {
+            (void)parseRenderViewSelect(Json{{"view_select", value}},
+                std::string{method} + " pass '" + pass.at("name").get<std::string>() + "'");
+            pass["view_select"] = value;
+        }
+    }
 }
 
 } // namespace
 
 OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
     constexpr auto method = "edit_preset_pass";
-    requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query", "material_settings", "material_routing", "uses_light_data", "push_constants", "clear_colors"}, method);
+    requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query", "material_settings", "material_routing", "uses_light_data", "push_constants", "clear_colors", "view_select"}, method);
     (void)parseRasterRayQuery(params);
     const auto base_digest = requireString(params, "base_source_digest", method);
     const bool feature_edit = params.contains("base_feature_digest");

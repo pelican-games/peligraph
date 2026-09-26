@@ -197,6 +197,13 @@ DECLARE_MODULE(Renderer) {
     std::uint64_t last_picking_frame_index = 0;
     std::vector<std::optional<PickingModelInstanceToken>>
         last_picking_model_instances;
+    // LP-Va2: the nodes of the last published logical frame whose
+    // view_select matched none of that frame's views, and the program they
+    // belong to. get_frame_plan copies them as nodes[].no_selected_view.
+    std::vector<std::string> last_no_selected_view_nodes;
+    RenderingPassId last_no_selected_view_rendering_pass_id =
+        invalidRenderingPassId();
+    std::uint64_t last_no_selected_view_runtime_generation = 0;
     std::uint64_t next_ray_scene_generation = 1;
 
     TemporalViewFamilyHistory &activeTemporalHistory();

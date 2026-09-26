@@ -98,6 +98,7 @@
       "order": 4,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": [
         "display"
       ]
@@ -132,6 +133,7 @@
         "display"
       ],
       "reads_history": [],
+      "view_axes": [],
       "writes": [
         "display"
       ]

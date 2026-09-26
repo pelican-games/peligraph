@@ -25,6 +25,7 @@
       "order": 0,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": [
         "current_color"
       ]
@@ -41,6 +42,7 @@
       "reads_history": [
         "temporal_accum"
       ],
+      "view_axes": [],
       "writes": [
         "temporal_accum"
       ]

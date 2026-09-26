@@ -511,7 +511,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | family | 軸 | 長さが決まる時期 |
 |---|---|---|
 | `$shadow/directional` | `light`、`cascade` | `cascade` は組み直し時(`cascade_count`)、`light` は実行時 |
-| `$capture/cube` | `face`(0〜5。表示のラベルは +X, −X, +Y, −Y, +Z, −Z) | 組み直し時(6) |
+| `$capture/cube` | `face`(0〜5。表示のラベルは +X, -X, +Y, -Y, +Z, -Z(ASCII)) | 組み直し時(6) |
 | `$shadow/point` | `light`、`face` | `face` は 6、`light` は実行時 |
 | `$shadow/spot` | `light` | 実行時 |
 
@@ -617,6 +617,12 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 - `v0_freeze.md` の §1.1・§1.3・§5 を更新する。
 
 ## 9. 報告と Studio
+
+**view の軸と選択(LP-Va / LP-Va2)**
+
+- `get_frame_plan` の pass・compute task・snapshot_copy の node に、`view_axes: [{axis, length, runtime, labels?}]`(軸の順は provider の index の順、`length` は今の世代の値、実行時の軸は `null`)を載せる。
+- 直近のフレームで一致する view が 0 個だった node には `no_selected_view: true` を載せる。
+- `edit_preset_pass`(root pass の編集を含む)の置換 payload は `view_select` を受ける(省略で保持、`null` で消す)。
 
 **報告の RPC**
 

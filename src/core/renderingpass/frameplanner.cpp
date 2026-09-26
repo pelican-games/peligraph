@@ -10,6 +10,7 @@
 #include "renderingpassjsonhelpers.hpp"
 #include "../../project/materialscreeninput.hpp"
 #include "../../project/renderconfigsection.hpp"
+#include "../renderer/viewfamilyproviderregistry.hpp"
 #include <algorithm>
 #include <limits>
 #include <optional>
@@ -1600,6 +1601,31 @@ std::vector<size_t> computeLevels(size_t node_count, const PlannerEdges &planner
     return levels;
 }
 
+// LP-Va2: get_frame_plan's nodes[].view_axes. The table is the provider's
+// (renderViewFamilyAxes); this only writes it out.
+nlohmann::json viewAxesJson(
+    std::string_view family_id,
+    const RenderViewAxisLengthContext &context) {
+    auto axes = nlohmann::json::array();
+    for (const auto &axis :
+         renderViewFamilyAxes(family_id, context)) {
+        const bool runtime =
+            axis.length.kind ==
+            RenderViewAxisLengthKind::runtime;
+        auto entry = nlohmann::json{
+            {"axis", axis.name},
+            {"length", runtime ? nlohmann::json(nullptr)
+                               : nlohmann::json(axis.length.length)},
+            {"runtime", runtime},
+        };
+        if (!axis.labels.empty()) {
+            entry["labels"] = axis.labels;
+        }
+        axes.push_back(std::move(entry));
+    }
+    return axes;
+}
+
 } // namespace
 
 std::string framePlanNodeKindName(FramePlanNodeKind kind) {
@@ -1815,6 +1841,13 @@ nlohmann::json framePlanToJson(
             pass_provenance.emplace(entry.name, &entry);
         }
     }
+    // LP-Va2: compile-time axis lengths read the composed pipeline of the
+    // generation this plan belongs to. Without one (a raw plan) the providers
+    // see no feature and answer their defaults.
+    const auto axis_context =
+        render_pipeline != nullptr
+            ? renderViewAxisLengthContext(*render_pipeline)
+            : RenderViewAxisLengthContext{};
     auto nodes_json = nlohmann::json::array();
     for (const auto &node : plan.nodes) {
         auto node_json = nlohmann::json{
@@ -1882,6 +1915,16 @@ nlohmann::json framePlanToJson(
         if (!node.view_select.empty()) {
             node_json["view_select"] =
                 node.view_select;
+        }
+        // LP-Va2: the axes of the node's family, so Studio builds the
+        // view_select field from the engine's table. `[]` for `$main` and a
+        // family without a provider. A snapshot copy is an authored pass too
+        // (the cube capture loop body selects faces on its copies).
+        if (node.kind == FramePlanNodeKind::render ||
+            node.kind == FramePlanNodeKind::compute ||
+            node.kind == FramePlanNodeKind::snapshot_copy) {
+            node_json["view_axes"] =
+                viewAxesJson(node.view_family, axis_context);
         }
         nodes_json.push_back(std::move(node_json));
     }

@@ -4011,6 +4011,24 @@ nlohmann::json Renderer::currentFramePlanJson() const {
         frameExecutionPlanToJson(
             frame_graph->execution_plan);
     result["runtime_generation"] = generation->generation;
+    // LP-Va2: a node whose view_select matched no view in the last published
+    // frame of this program. Absent on a node that ran, and before the
+    // program has published a frame.
+    if (last_no_selected_view_runtime_generation ==
+            generation->generation &&
+        last_no_selected_view_rendering_pass_id ==
+            current_rendering_pass_id) {
+        for (auto &node : result["nodes"]) {
+            const auto name =
+                node.value("name", std::string{});
+            if (std::find(last_no_selected_view_nodes.begin(),
+                          last_no_selected_view_nodes.end(),
+                          name) !=
+                last_no_selected_view_nodes.end()) {
+                node["no_selected_view"] = true;
+            }
+        }
+    }
     // CPU-side runtime settings at query time, not a completed GPU submission.
     // Use registered task definitions: compiled declarations retain initial values.
     // Only an already-created container is queried: this is a read-only
@@ -4931,6 +4949,7 @@ class Renderer::LogicalFrameRecorder {
     void recordExecutions();
     void submitFrame();
     void publishFrame();
+    void retainNoSelectedViewNodes();
     void retainPickingSnapshot();
     void publishExecutionTrace();
     void advanceFrameHistories();
@@ -6208,6 +6227,28 @@ void Renderer::LogicalFrameRecorder::publishFrame() {
     ++renderer.published_logical_frames;
 }
 
+// LP-Va2: which nodes this published frame skipped because their view_select
+// matched no view. The scheduler marks every invocation of such a node, in
+// both the view-family and the per-view schedules (the latter are selected
+// from this one).
+void Renderer::LogicalFrameRecorder::retainNoSelectedViewNodes() {
+    std::vector<std::string> nodes;
+    for (const auto &invocation : logical_frame_schedule) {
+        if (!invocation.no_selected_view) continue;
+        const auto &name =
+            frame_graph.nodes.at(invocation.node_index).name;
+        if (std::find(nodes.begin(), nodes.end(), name) ==
+            nodes.end()) {
+            nodes.push_back(name);
+        }
+    }
+    renderer.last_no_selected_view_nodes = std::move(nodes);
+    renderer.last_no_selected_view_rendering_pass_id =
+        renderer.current_rendering_pass_id;
+    renderer.last_no_selected_view_runtime_generation =
+        runtime_generation->generation;
+}
+
 void Renderer::LogicalFrameRecorder::retainPickingSnapshot() {
     if (picking_pass_active &&
         picking_model_instances_captured) {
@@ -6314,6 +6355,7 @@ void Renderer::renderLogicalFrame(
     recorder.recordExecutions();
     recorder.submitFrame();
     recorder.publishFrame();
+    recorder.retainNoSelectedViewNodes();
     recorder.retainPickingSnapshot();
     recorder.publishExecutionTrace();
     recorder.advanceFrameHistories();

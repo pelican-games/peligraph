@@ -85,6 +85,18 @@
       "order": 0,
       "reads": [],
       "reads_history": [],
+      "view_axes": [
+        {
+          "axis": "light",
+          "length": null,
+          "runtime": true
+        },
+        {
+          "axis": "cascade",
+          "length": 1,
+          "runtime": false
+        }
+      ],
       "view_family": "$shadow/directional",
       "writes": [
         "shadow_map"
@@ -98,6 +110,7 @@
       "order": 1,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": [
         "gbuffer_albedo",
         "gbuffer_normal",
@@ -123,6 +136,7 @@
         "shadow_map"
       ],
       "reads_history": [],
+      "view_axes": [],
       "writes": [
         "lit_color"
       ]

@@ -331,6 +331,7 @@
       "order": 0,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": []
     },
     {
@@ -341,6 +342,7 @@
       "order": 1,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": []
     },
     {
@@ -351,6 +353,7 @@
       "order": 2,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": []
     },
     {
@@ -371,6 +374,7 @@
       "order": 4,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": []
     },
     {
@@ -381,6 +385,7 @@
       "order": 5,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": []
     },
     {
@@ -391,6 +396,7 @@
       "order": 6,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": []
     },
     {
@@ -401,6 +407,7 @@
       "order": 7,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": []
     },
     {
@@ -411,6 +418,7 @@
       "order": 8,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": []
     },
     {
@@ -421,6 +429,7 @@
       "order": 9,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": []
     },
     {
@@ -431,6 +440,7 @@
       "order": 10,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": []
     },
     {
@@ -452,6 +462,7 @@
       "order": 12,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "semantics": "fixed_once_before_transparency",
       "sequential_refraction": false,
       "snapshot_after": "",
@@ -465,6 +476,7 @@
       "order": 13,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": []
     },
     {
@@ -475,6 +487,7 @@
       "order": 14,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": []
     }
   ],

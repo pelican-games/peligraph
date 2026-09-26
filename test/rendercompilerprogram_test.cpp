@@ -1262,6 +1262,91 @@ TEST_CASE("LP-Va view_select refusals are named at recompile time",
                              {"family", "$main"}});
     }
 }
+
+// LP-Va2: get_frame_plan's nodes carry their family's axes, read from the
+// providers against the pipeline the production compiler composed, so the
+// cascade length is the feature's cascade_count and not a fixed number.
+nlohmann::json lpva2FramePlan(std::uint32_t cascade_count) {
+    ProgramInputFixture fixture;
+    fixture.config = Pelican::TestSupport::renderGraphRoot(nlohmann::json{
+        {"pipeline",
+         {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+        {"features",
+         nlohmann::json::array({
+             "engine://features/cube_capture.json",
+             {{"ref", "engine://features/shadow_directional.json"},
+              {"parameters", {{"cascade_count", cascade_count}}}},
+         })},
+    });
+    fixture.backend_context = VulkanRenderCompilerBackendContext{
+        vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
+        VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}};
+    // Both features need the runtime compiler to be admitted; the
+    // compiler-only planning mode compiles no shader.
+    auto input = fixture.input();
+    input.runtime_shader_compiler_enabled = true;
+    const auto output = runRenderCompilerProgram(
+        defaultVulkanRenderCompilerProgram(), input);
+    const auto &variant = output.variants.front();
+    REQUIRE(variant.compiled_pipeline != nullptr);
+    return framePlanToJson(variant.frame_plans.at("main_render"),
+                           variant.compiled_pipeline.get());
+}
+
+nlohmann::json lpva2Node(const nlohmann::json &plan,
+                         std::string_view name) {
+    for (const auto &node : plan.at("nodes")) {
+        if (node.at("name").get<std::string>() == name) return node;
+    }
+    FAIL("no frame plan node " << name);
+    return {};
+}
+
+TEST_CASE("LP-Va2 frame plan nodes carry their family's view axes",
+          "[rendercompiler][view-select][lpva2]") {
+    const auto cube_axes = nlohmann::json::array({
+        {{"axis", "face"},
+         {"length", 6},
+         {"runtime", false},
+         {"labels", {"+X", "-X", "+Y", "-Y", "+Z", "-Z"}}},
+    });
+    for (const std::uint32_t cascades : {3u, 2u}) {
+        INFO("cascade_count " << cascades);
+        const auto plan = lpva2FramePlan(cascades);
+        // Every node of the cube capture feature (its 8 passes, the two
+        // snapshot copies among them) has the face axis.
+        std::size_t cube_nodes = 0;
+        for (const auto &node : plan.at("nodes")) {
+            INFO(node.dump());
+            if (node.value("view_family", std::string{}) ==
+                "$capture/cube") {
+                CHECK(node.at("view_axes") == cube_axes);
+                ++cube_nodes;
+            }
+            // A pass (snapshot copies included) or a compute task always
+            // has the field; anchors and the output transform never.
+            const auto kind = node.at("kind").get<std::string>();
+            CHECK(node.contains("view_axes") ==
+                  (kind == "render" || kind == "compute" ||
+                   kind == "snapshot_copy"));
+        }
+        CHECK(cube_nodes == 8);
+        // Directional shadows: the light (outermost) is known per frame,
+        // the cascade count when the graph is recompiled.
+        CHECK(lpva2Node(plan, "shadow_depth").at("view_axes") ==
+              nlohmann::json::array({
+                  {{"axis", "light"}, {"length", nullptr}, {"runtime", true}},
+                  {{"axis", "cascade"},
+                   {"length", cascades},
+                   {"runtime", false}},
+              }));
+        // The primary family has no axes.
+        const auto main_pass = lpva2Node(plan, "deferred_geometry");
+        CHECK_FALSE(main_pass.contains("view_family"));
+        CHECK(main_pass.at("view_axes") == nlohmann::json::array());
+    }
+}
 #endif
 } // namespace
 } // namespace Pelican

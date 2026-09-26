@@ -7665,6 +7665,170 @@ TEST_CASE("LP-0a an edit names a target composition decides, and recomposing ref
 }
 #endif
 
+// LP-Va2 acceptance 2: the frame plan's cascade length is read from the
+// generation an edit recompiles, not remembered from the first one.
+TEST_CASE("LP-Va2 the cascade axis length follows a cascade_count edit",
+          "[render-config-editor][feature-parameters][view-select][lpva2]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto shadowAxes = [&] {
+        for (const auto &node : runtime.frame_plan.at("nodes")) {
+            if (node.at("name") == "shadow_depth") return node.at("view_axes");
+        }
+        FAIL("the frame plan has no shadow_depth");
+        return Json{};
+    };
+    const auto cascadeAxes = [](std::uint32_t length) {
+        return Json::array({
+            {{"axis", "light"}, {"length", nullptr}, {"runtime", true}},
+            {{"axis", "cascade"}, {"length", length}, {"runtime", false}},
+        });
+    };
+    // animgraph_demo lists shadow_directional with its default (1 cascade).
+    CHECK(shadowAxes() == cascadeAxes(1));
+    for (const std::uint32_t cascades : {3u, 2u}) {
+        INFO("cascade_count " << cascades);
+        const auto features = service->getRenderFeatures(Json::object());
+        const auto &instances = features.at("feature_instances");
+        const auto shadow = std::find_if(instances.begin(), instances.end(), [](const auto &entry) {
+            return entry.at("scope") == "root" &&
+                   entry.at("reference") == "engine://features/shadow_directional.json";
+        });
+        REQUIRE(shadow != instances.end());
+        const auto accepted = service->editRenderFeatures(
+            {{"base_source_digest", features.at("source_digest").at("hex")},
+             {"operations", Json::array({{{"op", "set_parameters"},
+                                          {"scope", "root"},
+                                          {"index", shadow->at("index")},
+                                          {"parameters", {{"cascade_count", cascades}}}}})}});
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        CHECK(shadowAxes() == cascadeAxes(cascades));
+    }
+}
+
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+// LP-Va2: a direct root whose `face_probe` draws into a cube family, so a
+// view_select on it names a real axis.
+Json lpva2CubeRoot() {
+    Json root = f6DirectRoot();
+    auto &rendering = root["rendering"];
+    rendering["render_targets"].push_back(
+        {{"name", "cube_ao"}, {"extent_scale", 1.0}, {"width", 16}, {"height", 16},
+         {"layers", 6}, {"format", "R8_UNORM"},
+         {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}});
+    rendering["rendering_passes"][0]["passes"] = Json::array({
+        {{"name", "face_probe"},
+         {"type", "fullscreen"},
+         {"view_family", "$capture/cube"},
+         {"input", Json::array()},
+         {"output", {{"color", Json::array({"cube_ao"})}, {"depth", nullptr}}},
+         {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}}}},
+        f6Present(),
+    });
+    return root;
+}
+
+// LP-Va2: edit_preset_pass (here on a direct root's pass) takes view_select in
+// its replacement payload: written, read back, removed with null, and a
+// malformed value refused by the same rule the compiler reads it with.
+TEST_CASE("LP-Va2 edit_preset_pass writes and reads back view_select",
+          "[render-config-editor][f6][root-pass-edit][view-select][lpva2]") {
+    TemporaryAnimgraphProject project;
+    writeBytes(project.render_config, lpva2CubeRoot().dump(2) + "\n");
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto declared = lpva2CubeRoot()["rendering"]["rendering_passes"][0]["passes"][0];
+    const auto request = [&](Json view_select) {
+        const auto context = service->getRenderAuthoringContext(Json::object());
+        return Json{{"base_source_digest", context.at("source_digest").at("hex")},
+                    {"graph", "main_render"},
+                    {"pass_name", "face_probe"},
+                    {"input", declared.at("input")},
+                    {"output", declared.at("output")},
+                    {"shader", declared.at("shader")},
+                    {"view_select", std::move(view_select)}};
+    };
+    const auto commit = [&](const Json &edit) {
+        const auto accepted = service->editPresetPass(edit);
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+    };
+    const auto rootPass = [&] {
+        return Json::parse(readBytes(project.render_config))
+            .at("rendering").at("rendering_passes").at(0).at("passes").at(0);
+    };
+    const auto planNode = [&] {
+        for (const auto &node : runtime.frame_plan.at("nodes"))
+            if (node.at("name") == "face_probe") return node;
+        FAIL("the frame plan has no face_probe");
+        return Json{};
+    };
+
+    commit(request({{"face", 2}}));
+    auto expected = declared;
+    expected["view_select"] = {{"face", 2}};
+    CHECK(rootPass() == expected);
+    // Read back the way Studio reads it, and as the recompiled plan has it.
+    {
+        const auto context = service->getRenderAuthoringContext(Json::object());
+        const auto *pass = f6ContextPass(context, "face_probe");
+        REQUIRE(pass != nullptr);
+        CHECK(Json(pass->at("root_declaration")) == expected);
+    }
+    CHECK(planNode().at("view_select") == Json{{"face", 2}});
+
+    // Omitting the member keeps it; the next edit replaces it.
+    {
+        auto keep = request(nullptr);
+        keep.erase("view_select");
+        commit(keep);
+        CHECK(rootPass() == expected);
+    }
+    commit(request({{"face", 5}}));
+    expected["view_select"] = {{"face", 5}};
+    CHECK(rootPass() == expected);
+
+    // A malformed value is refused for the reason the compiler's parse gives,
+    // and nothing is written.
+    const auto before = readBytes(project.render_config);
+    for (const auto &[value, reason] : std::vector<std::pair<Json, std::string>>{
+             {Json::object(), "view_select must be a non-empty object of axis names to non-negative integers"},
+             {Json::array({2}), "view_select must be a non-empty object of axis names to non-negative integers"},
+             {Json{{"face", -1}}, "view_select axis 'face' must be a non-negative 32-bit integer"},
+             {Json{{"face", "2"}}, "view_select axis 'face' must be a non-negative 32-bit integer"},
+             {Json{{"", 0}}, "view_select has an empty axis name"}}) {
+        INFO(value.dump());
+        const auto refused = service->editPresetPass(request(value));
+        INFO(refused.dump());
+        REQUIRE(refused.at("status") == "rejected");
+        CHECK(refused.at("error").at("code") == "render_pipeline_preflight_failed");
+        CHECK_THAT(refused.at("error").at("message").get<std::string>(),
+                   Catch::Matchers::EndsWith(reason));
+        service->commitPending();
+        CHECK(readBytes(project.render_config) == before);
+    }
+
+    // null removes the member: the pass runs every view again.
+    commit(request(nullptr));
+    CHECK(rootPass() == declared);
+    CHECK_FALSE(planNode().contains("view_select"));
+}
+#endif
+
 
 // LP-4a: Studio's Pass Editor and canvas never send view_select (LP-Va) with
 // edit_preset_pass -- the edit takes a fixed field set per pass type -- so a

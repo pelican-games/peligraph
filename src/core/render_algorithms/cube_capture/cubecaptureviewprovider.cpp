@@ -158,7 +158,9 @@ void registerStandardCubeCaptureViewProvider(
                      .compile_time_length =
                          [](const RenderViewAxisLengthContext &) {
                              return 6u;
-                         }},
+                         },
+                     .labels =
+                         renderViewAxisFaceLabels()},
                 },
             .build = buildFamily,
             .validate = validateFamily,

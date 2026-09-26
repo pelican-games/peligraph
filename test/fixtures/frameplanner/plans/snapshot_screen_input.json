@@ -113,6 +113,7 @@
       "order": 4,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": [
         "display"
       ]
@@ -131,6 +132,7 @@
       "semantics": "fixed_once_before_transparency",
       "sequential_refraction": false,
       "snapshot_after": "opaque",
+      "view_axes": [],
       "writes": [
         "opaque_color"
       ]
@@ -145,6 +147,7 @@
         "opaque_color"
       ],
       "reads_history": [],
+      "view_axes": [],
       "writes": [
         "display"
       ]

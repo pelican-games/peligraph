@@ -39,6 +39,7 @@
       "order": 0,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": [
         "rt_a"
       ]
@@ -51,6 +52,7 @@
       "order": 1,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": [
         "rt_b"
       ]
@@ -63,6 +65,7 @@
       "order": 2,
       "reads": [],
       "reads_history": [],
+      "view_axes": [],
       "writes": [
         "rt_c"
       ]
@@ -79,6 +82,7 @@
         "rt_c"
       ],
       "reads_history": [],
+      "view_axes": [],
       "writes": [
         "swapchain"
       ]

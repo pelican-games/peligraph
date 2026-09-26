@@ -158,6 +158,32 @@ RenderViewAxisLengthContext renderViewAxisLengthContext(
     };
 }
 
+namespace {
+
+RenderViewAxisLength declaredAxisLength(
+    const RenderViewAxisDefinition &definition,
+    const RenderViewAxisLengthContext &context) {
+    if (!definition.compile_time_length) {
+        return {
+            .kind =
+                RenderViewAxisLengthKind::runtime,
+        };
+    }
+    return {
+        .kind =
+            RenderViewAxisLengthKind::compile_time,
+        .length =
+            definition.compile_time_length(
+                context),
+    };
+}
+
+} // namespace
+
+std::vector<std::string> renderViewAxisFaceLabels() {
+    return {"+X", "-X", "+Y", "-Y", "+Z", "-Z"};
+}
+
 RenderViewAxisLength renderViewAxisLength(
     std::string_view family_id,
     std::string_view axis,
@@ -170,24 +196,35 @@ RenderViewAxisLength renderViewAxisLength(
     }
     for (const auto &definition :
          provider->axes) {
-        if (definition.name != axis) {
-            continue;
+        if (definition.name == axis) {
+            return declaredAxisLength(
+                definition, context);
         }
-        if (!definition.compile_time_length) {
-            return {
-                .kind =
-                    RenderViewAxisLengthKind::runtime,
-            };
-        }
-        return {
-            .kind =
-                RenderViewAxisLengthKind::compile_time,
-            .length =
-                definition.compile_time_length(
-                    context),
-        };
     }
     return {};
+}
+
+std::vector<RenderViewAxisDescription> renderViewFamilyAxes(
+    std::string_view family_id,
+    const RenderViewAxisLengthContext &context,
+    const RenderViewFamilyProviderRegistry &providers) {
+    std::vector<RenderViewAxisDescription> result;
+    const auto *provider =
+        providers.find(family_id);
+    if (provider == nullptr) {
+        return result;
+    }
+    result.reserve(provider->axes.size());
+    for (const auto &definition :
+         provider->axes) {
+        result.push_back({
+            .name = definition.name,
+            .length = declaredAxisLength(
+                definition, context),
+            .labels = definition.labels,
+        });
+    }
+    return result;
 }
 
 void validateRenderViewSelects(
