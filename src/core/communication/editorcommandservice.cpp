@@ -1373,6 +1373,16 @@ OrderedJson EditorCommandService::decomposeMaterialPass(const Json &params) {
     return render_config_editor_->decomposeMaterialPass(params);
 }
 
+OrderedJson EditorCommandService::getGraphTemplates(const Json &params) const {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->getGraphTemplates(params);
+}
+
+OrderedJson EditorCommandService::applyGraphTemplate(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->applyGraphTemplate(params);
+}
+
 OrderedJson EditorCommandService::getGraphValues(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->getGraphValues(params);
@@ -2351,6 +2361,15 @@ OrderedJson EditorCommandRpcAdapter::editGraphDocument(const Json &params) const
 OrderedJson EditorCommandRpcAdapter::decomposeMaterialPass(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
     return mutable_service_->decomposeMaterialPass(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getGraphTemplates(const Json &params) const {
+    return service_.getGraphTemplates(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::applyGraphTemplate(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
+    return mutable_service_->applyGraphTemplate(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getGraphValues(const Json &params) const {

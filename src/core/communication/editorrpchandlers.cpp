@@ -234,6 +234,12 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("decompose_material_pass", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.decomposeMaterialPass(params); });
     });
+    server.setHandler("get_graph_templates", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getGraphTemplates(params); });
+    });
+    server.setHandler("apply_graph_template", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.applyGraphTemplate(params); });
+    });
     server.setHandler("get_graph_values", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getGraphValues(params); });
     });

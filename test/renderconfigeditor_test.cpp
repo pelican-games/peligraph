@@ -1,6 +1,7 @@
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "lp3a_decompose_support.hpp"
+#include "lp1c_decompose_support.hpp"
 #include "../src/core/communication/editorrpchandlers.hpp"
 #include "../src/core/communication/renderconfigeditor.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
@@ -15,6 +16,7 @@
 #include "../src/core/loader/renderconfigcandidate.hpp"
 #include "../src/project/renderconfigsection.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/core/renderer/viewfamilyproviderregistry.hpp"
 #include "../src/core/renderingpass/previewgraph.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
@@ -319,6 +321,9 @@ struct ActualCpuRenderRuntime {
                             name, document,
                             availabilityEnvironment());
                     },
+                // GT-1: as the renderer composes, a graph.loop over
+                // view_axis is sized by the view family providers.
+                .view_axis_length = renderGraphViewAxisLengthResolver(),
             });
         // Production lowers output-relative targets against the active
         // window extent before frame planning.  Supply the same concrete
@@ -584,7 +589,11 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
     TemporaryAnimgraphProject &project, PathResolver &resolver,
     ActualCpuRenderRuntime &runtime,
     std::function<void(const RenderConfigCandidateDocumentSet &)>
-        preflight_graph_variants = {}) {
+        preflight_graph_variants = {},
+    // GT-1: a document the authoring context reads in place of the one the
+    // resolver has (nullopt: the resolver's). The runtime never sees it.
+    std::function<std::optional<std::string>(std::string_view)>
+        authoring_override = {}) {
     runtime.path_resolver = &resolver;
     // This producer models an already-running animgraph_demo instance. Shader
     // availability has its own ON/OFF gate tests; keep this lifecycle fixture
@@ -620,10 +629,12 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
                     return runtime.apply(std::move(documents), commit);
                 },
             .resolve_authoring_context =
-                [&resolver, &runtime](
+                [&resolver, &runtime, authoring_override](
                     const RenderConfigCandidateDocumentSet &documents) {
                     const auto loader =
-                        [&resolver, &documents](std::string_view reference) {
+                        [&resolver, &documents, &authoring_override](std::string_view reference) {
+                            if (authoring_override)
+                                if (auto bytes = authoring_override(reference)) return *bytes;
                             return loadRenderConfigCandidateText(
                                 documents, resolver, reference);
                         };
@@ -645,6 +656,8 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
                                         name, feature,
                                         runtime.availabilityEnvironment());
                                 },
+                            // As production's authoring context composes.
+                            .view_axis_length = renderGraphViewAxisLengthResolver(),
                         });
                     return ResolvedRenderConfigAuthoringContext{
                         .config = std::move(composition.config),
@@ -9151,6 +9164,379 @@ TEST_CASE("RD-1b restore_render_documents creates and deletes only what a compos
                         std::invalid_argument);
         unchanged();
     }
+}
+
+
+// --- GT-1: get_graph_templates / apply_graph_template (the shipped graph
+// templates, taken into a project in one ticket).
+
+namespace {
+
+const std::vector<std::string> gt1TemplateFiles{
+    "bloom_loop.json", "cube_capture_loop.json", "planar_mip_chain_loop.json", "shadow_cascade_loop.json"};
+
+std::string gt1Reference(const std::string &file) { return "engine://graphs/" + file; }
+
+// animgraph_demo (hybrid_v1 and shadow_directional, sky_ambient, ui), with
+// `extra` added to its rendering section's features.
+struct Gt1Harness {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    ActualCpuRenderRuntime runtime;
+    std::shared_ptr<RenderConfigEditorService> service;
+
+    explicit Gt1Harness(const std::vector<std::string> &extra = {},
+                        std::function<std::optional<std::string>(std::string_view)> authoring_override = {}) {
+        auto root = Json::parse(readBytes(project.render_config));
+        for (const auto &feature : extra) root["rendering"]["features"].push_back(feature);
+        writeBytes(project.render_config, root.dump(2) + "\n");
+        resolver.setup(project.root, false);
+        service = makeProjectService(project, resolver, runtime, {}, std::move(authoring_override));
+    }
+
+    nlohmann::ordered_json context() { return service->getRenderAuthoringContext(Json::object()); }
+    std::string digest() { return context().at("source_digest").at("hex").get<std::string>(); }
+
+    nlohmann::ordered_json apply(const std::string &file) {
+        const auto current = context();
+        Json request{{"base_source_digest", current.at("source_digest").at("hex")}, {"template", gt1Reference(file)}};
+        if (current.contains("pipeline_preset") &&
+            current.at("pipeline_preset").at("reference").get<std::string>().starts_with("project://"))
+            request["base_preset_digest"] = current.at("pipeline_preset").at("source_digest").at("hex");
+        return service->applyGraphTemplate(request);
+    }
+
+    nlohmann::ordered_json commit(const nlohmann::ordered_json &submission) {
+        INFO(submission.dump());
+        REQUIRE(submission.at("status") == "accepted");
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", submission.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        return result;
+    }
+
+    // A refusal, and nothing written or published by it.
+    Json refusal(const nlohmann::ordered_json &answer) {
+        INFO(answer.dump());
+        REQUIRE(answer.at("status") == "rejected");
+        const auto root = readBytes(project.render_config);
+        const auto applies = runtime.apply_calls;
+        service->commitPending();
+        CHECK(readBytes(project.render_config) == root);
+        CHECK(runtime.apply_calls == applies);
+        return Json(answer.at("error"));
+    }
+};
+
+std::vector<std::string> gt1PlanNames(const nlohmann::json &plan) {
+    std::vector<std::string> names;
+    for (const auto &node : plan.at("nodes")) names.push_back(node.at("name").get<std::string>());
+    return names;
+}
+
+const nlohmann::json *gt1Node(const nlohmann::json &root, std::string_view id) {
+    for (const auto &node : root.at("nodes"))
+        if (node.at("id") == std::string{id}) return &node;
+    return nullptr;
+}
+
+} // namespace
+
+TEST_CASE("GT-1 get_graph_templates answers the shipped templates as their files hold them",
+          "[render-config-editor][gt1]") {
+    Gt1Harness harness;
+    const auto answer = Json(harness.service->getGraphTemplates(Json::object()));
+    INFO(answer.dump());
+    REQUIRE(answer.at("templates").size() == gt1TemplateFiles.size());
+    const std::map<std::string, std::string> titles{{"bloom_loop.json", "Bloom loop"},
+                                                    {"cube_capture_loop.json", "Cube capture loop"},
+                                                    {"planar_mip_chain_loop.json", "Planar mip chain loop"},
+                                                    {"shadow_cascade_loop.json", "Shadow cascade loop"}};
+    for (std::size_t index = 0; index < gt1TemplateFiles.size(); ++index) {
+        const auto &file = gt1TemplateFiles[index];
+        INFO(file);
+        const auto &entry = answer.at("templates").at(index);
+        const auto shipped = Json::parse(readBytes(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "src" / "core" /
+                                                   "resources" / "graphs" / file));
+        CHECK(entry.at("reference") == gt1Reference(file));
+        CHECK(entry.at("document") == shipped);
+        CHECK(entry.at("decomposes") == shipped.at("decomposes"));
+        // No template names itself: the title is the file's name.
+        CHECK(entry.at("title") == titles.at(file));
+        CHECK_FALSE(entry.contains("description"));
+    }
+    CHECK_THROWS_AS(harness.service->getGraphTemplates({{"unexpected", 1}}), std::invalid_argument);
+}
+
+// Acceptance 2: bloom_loop into hybrid + bloom, over the RPC the editor
+// serves. The feature leaves, the graph takes its place with the same frame
+// plan as LP-1c's comparison (lp1cComparablePlan), and RD-1's restore undoes it.
+TEST_CASE("GT-1 apply_graph_template takes bloom_loop in place of the bloom feature, and RD-1 undoes it",
+          "[render-config-editor][gt1]") {
+    Gt1Harness harness{{"engine://features/bloom.json"}};
+    const auto plan_before = harness.runtime.frame_plan;
+    REQUIRE(std::ranges::count(gt1PlanNames(plan_before), std::string{"HighLuminanceExtraction"}) == 1);
+    const auto root_before = readBytes(harness.project.render_config);
+
+    const auto scene_document = AuthoringSceneDocument::load(
+        readBytes(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" / "authoring_scene" /
+                  "multi_scene_roundtrip.json"),
+        SceneRevision{1});
+    EditorCommandService commands{EditorCommandServiceDependencies{
+        .document = [&scene_document]() -> const AuthoringSceneDocument & { return scene_document; },
+        .current_scene_id = [] { return std::string{"main"}; },
+        .render_config_editor = harness.service,
+    }};
+    EditorCommandRpcAdapter adapter{commands};
+    std::istringstream input;
+    std::ostringstream output;
+    RpcServer rpc{input, output};
+    configureEditorRpcHandlers(rpc, adapter,
+                               EditorRpcHandlerHooks{.snapshot_imported = [] {}, .save_busy = [] { return false; }});
+    int next_id = 1;
+    const auto call = [&](std::string_view method, Json params) {
+        const auto response = Json::parse(rpc.processLine(
+            Json{{"jsonrpc", "2.0"}, {"id", next_id++}, {"method", method}, {"params", std::move(params)}}.dump()));
+        INFO(response.dump());
+        REQUIRE(response.contains("result"));
+        return response.at("result");
+    };
+
+    const auto templates = call("get_graph_templates", Json::object());
+    REQUIRE(templates.at("templates").at(0).at("reference") == gt1Reference("bloom_loop.json"));
+    const auto bloom = Json::parse(engineResourceOrThrow("graphs/bloom_loop.json"));
+
+    const auto accepted = call("apply_graph_template", {{"base_source_digest", harness.digest()},
+                                                        {"template", gt1Reference("bloom_loop.json")}});
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    CHECK(accepted.at("applied") ==
+          Json{{"template", gt1Reference("bloom_loop.json")},
+               {"feature", "engine://features/bloom.json"},
+               {"feature_documents", {"passes/main.json"}},
+               {"removed_feature", true},
+               {"pass_replacements", Json::object()},
+               {"added_shader_defines", bloom.at("decomposes").at("shader_defines")},
+               {"definitions", {"bloom_down_step", "bloom_up_step"}},
+               {"nodes", {"bloom_lit", "bloom_display", "bloom_threshold_image", "bloom_threshold", "bloom_down",
+                          "bloom_up", "bloom_intensity_value", "bloom_intensity", "bloom_composite"}}});
+    // Nothing is written before the ticket commits.
+    CHECK(readBytes(harness.project.render_config) == root_before);
+    commands.commitPendingEdits();
+    const auto result = call("get_edit_result", {{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("committed") == true);
+    CHECK(result.at("operation") == "apply_graph_template");
+    const auto root_after = readBytes(harness.project.render_config);
+    CHECK(result.at("documents") == Json{{"passes/main.json", renderConfigSourceDigest(root_after)}});
+
+    // One document: the feature left the section, its defines and the graph came in.
+    const auto root = Json::parse(root_after);
+    CHECK(root.at("rendering").at("features") ==
+          Json::array({"engine://features/shadow_directional.json", "engine://features/sky_ambient.json",
+                       "engine://features/ui.json"}));
+    CHECK(root.at("rendering").at("shader_defines") == bloom.at("decomposes").at("shader_defines"));
+    for (const auto &[name, body] : bloom.at("definitions").items()) CHECK(root.at("definitions").at(name) == body);
+    for (const auto &node : bloom.at("nodes")) {
+        const auto *written = gt1Node(root, node.at("id").get<std::string>());
+        REQUIRE(written != nullptr);
+        CHECK(*written == node);
+    }
+    CHECK(root.at("rendering").at("pipeline") == Json::parse(root_before).at("rendering").at("pipeline"));
+
+    // The plan LP-1c's comparison expects: the feature's passes, resources
+    // and barriers, each spelled as the graph spells it.
+    const auto one_piece = TestSupport::lp1cComparablePlan(plan_before, TestSupport::lp1cBloomNames());
+    const auto decomposed = TestSupport::lp1cComparablePlan(harness.runtime.frame_plan, {});
+    REQUIRE(one_piece.at("nodes").size() == decomposed.at("nodes").size());
+    for (std::size_t index = 0; index < one_piece.at("nodes").size(); ++index) {
+        INFO(one_piece.at("nodes").at(index).dump() << "\n" << decomposed.at("nodes").at(index).dump());
+        CHECK(one_piece.at("nodes").at(index) == decomposed.at("nodes").at(index));
+    }
+    CHECK(one_piece.at("levels") == decomposed.at("levels"));
+    CHECK(one_piece.at("barriers") == decomposed.at("barriers"));
+    CHECK(std::ranges::count(gt1PlanNames(harness.runtime.frame_plan), std::string{"HighLuminanceExtraction"}) == 0);
+
+    // RD-1: the document read before, restored over what the commit wrote.
+    const auto restored = call("restore_render_documents",
+                               {{"documents", Json::array({{{"reference", "passes/main.json"},
+                                                            {"base_digest", result.at("documents").at("passes/main.json")},
+                                                            {"content", root_before}}})}});
+    INFO(restored.dump());
+    REQUIRE(restored.at("status") == "accepted");
+    commands.commitPendingEdits();
+    CHECK(call("get_edit_result", {{"ticket", restored.at("ticket")}}).at("committed") == true);
+    CHECK(readBytes(harness.project.render_config) == root_before);
+    CHECK(harness.runtime.frame_plan == plan_before);
+}
+
+// Acceptance 3: shadow_cascade_loop into a project with shadow_directional.
+TEST_CASE("GT-1 apply_graph_template writes shadow_cascade_loop's pass_replacements on the shadow instance",
+          "[render-config-editor][gt1]") {
+    Gt1Harness harness;
+    REQUIRE(std::ranges::count(gt1PlanNames(harness.runtime.frame_plan), std::string{"shadow_depth"}) == 1);
+    const auto accepted = harness.apply("shadow_cascade_loop.json");
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    CHECK(accepted.at("applied").at("removed_feature") == false);
+    CHECK(Json(accepted.at("applied").at("pass_replacements")) == Json{{"shadow_depth", "shadow_cascades"}});
+    CHECK(accepted.at("applied").at("added_shader_defines").empty());
+    const auto result = harness.commit(accepted);
+    CHECK(result.at("operation") == "apply_graph_template");
+
+    const auto root = Json::parse(readBytes(harness.project.render_config));
+    CHECK(root.at("rendering").at("features") ==
+          Json::array({{{"ref", "engine://features/shadow_directional.json"},
+                        {"pass_replacements", {{"shadow_depth", "shadow_cascades"}}}},
+                       "engine://features/sky_ambient.json", "engine://features/ui.json"}));
+    CHECK_FALSE(root.at("rendering").contains("shader_defines"));
+    REQUIRE(gt1Node(root, "shadow_cascades") != nullptr);
+    CHECK(root.at("definitions").contains("shadow_cascade"));
+    // Recomposed: the loop's copy draws the cascade the feature's pass drew.
+    const auto names = gt1PlanNames(harness.runtime.frame_plan);
+    CHECK(std::ranges::count(names, std::string{"shadow_depth"}) == 0);
+    CHECK(std::ranges::count(names, std::string{"shadow_cascades/0/depth"}) == 1);
+
+    // Taken in twice: the names are the project's now.
+    const auto again = harness.refusal(harness.apply("shadow_cascade_loop.json"));
+    CHECK(again.at("code") == "graph.definition_duplicate@1");
+    CHECK(again.at("definition") == "shadow_cascade");
+    CHECK(again.at("template") == gt1Reference("shadow_cascade_loop.json"));
+}
+
+// Acceptance 4: each refusal names what stopped it, and no document changes.
+TEST_CASE("GT-1 apply_graph_template refuses by name and writes nothing",
+          "[render-config-editor][gt1]") {
+    SECTION("the feature is not in the composition") {
+        Gt1Harness harness;
+        const auto error = harness.refusal(harness.apply("bloom_loop.json"));
+        CHECK(error.at("code") == "graph_template_feature_absent");
+        CHECK(error.at("template") == gt1Reference("bloom_loop.json"));
+        CHECK(error.at("feature") == "engine://features/bloom.json");
+    }
+    SECTION("a template the engine does not ship") {
+        Gt1Harness harness;
+        for (const auto *reference : {"engine://graphs/no_such_loop.json", "engine://features/bloom.json",
+                                      "project://graphs/bloom_loop.json"}) {
+            const auto error = harness.refusal(harness.service->applyGraphTemplate(
+                {{"base_source_digest", harness.digest()}, {"template", reference}}));
+            CHECK(error.at("code") == "graph_template_unknown");
+            CHECK(error.at("template") == reference);
+        }
+    }
+    SECTION("a node id the template adds is taken") {
+        // bloom_loop's first node is bloom_lit; the project already has one.
+        Gt1Harness harness{{"engine://features/bloom.json"}};
+        auto root = Json::parse(readBytes(harness.project.render_config));
+        const auto bloom = Json::parse(engineResourceOrThrow("graphs/bloom_loop.json"));
+        root["nodes"].push_back(bloom.at("nodes").at(0));
+        writeBytes(harness.project.render_config, root.dump(2) + "\n");
+        harness.service = makeProjectService(harness.project, harness.resolver, harness.runtime);
+        const auto error = harness.refusal(harness.apply("bloom_loop.json"));
+        CHECK(error.at("code") == "graph.node_duplicate@1");
+        CHECK(error.at("node") == "bloom_lit");
+        CHECK(error.at("scope") == "root");
+        CHECK(error.at("template") == gt1Reference("bloom_loop.json"));
+    }
+    SECTION("the feature is in the engine's preset, not forked") {
+        // A hybrid_v1 that lists bloom itself, as the authoring context reads it.
+        auto preset = Json::parse(engineResourceOrThrow("render_pipelines/hybrid_v1.json"));
+        preset["config"]["features"] = Json::array({"engine://features/bloom.json"});
+        Gt1Harness harness{{}, [bytes = preset.dump(2)](std::string_view reference) -> std::optional<std::string> {
+                               if (reference == "engine://render_pipelines/hybrid_v1.json") return bytes;
+                               return std::nullopt;
+                           }};
+        const auto error = harness.refusal(harness.apply("bloom_loop.json"));
+        CHECK(error.at("code") == "project_preset_required");
+        CHECK(error.at("template") == gt1Reference("bloom_loop.json"));
+        CHECK(error.at("feature") == "engine://features/bloom.json");
+        CHECK(error.at("preset") == "engine://render_pipelines/hybrid_v1.json");
+    }
+    SECTION("a stale root digest") {
+        Gt1Harness harness{{"engine://features/bloom.json"}};
+        const auto error = harness.refusal(harness.service->applyGraphTemplate(
+            {{"base_source_digest", std::string(64, '0')}, {"template", gt1Reference("bloom_loop.json")}}));
+        CHECK(error.at("code") == "external_modification");
+    }
+}
+
+// The forked preset's features: the preset and the root in one ticket, and a
+// stale preset digest refused.
+TEST_CASE("GT-1 apply_graph_template edits a forked preset's feature and the root together",
+          "[render-config-editor][gt1]") {
+    Gt1Harness harness;
+    const auto context = harness.context();
+    harness.commit(harness.service->forkRenderPipeline(
+        {{"base_source_digest", context.at("source_digest").at("hex")},
+         {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+         {"destination_reference", "project://passes/local-pipeline.json"}}));
+    const auto preset_path = harness.project.root / "passes" / "local-pipeline.json";
+    auto preset = Json::parse(readBytes(preset_path));
+    preset["config"]["features"] = Json::array({"engine://features/bloom.json"});
+    writeBytes(preset_path, preset.dump(2));
+    const auto preset_before = readBytes(preset_path);
+    const std::string preset_reference = "project://passes/local-pipeline.json";
+
+    SECTION("a stale preset digest is refused") {
+        const auto current = harness.context();
+        const auto error = harness.refusal(harness.service->applyGraphTemplate(
+            {{"base_source_digest", current.at("source_digest").at("hex")},
+             {"base_preset_digest", std::string(64, '0')},
+             {"template", gt1Reference("bloom_loop.json")}}));
+        CHECK(error.at("code") == "external_modification");
+        CHECK(readBytes(preset_path) == preset_before);
+        // The preset lists the feature, so its digest must be given.
+        CHECK_THROWS_AS(harness.service->applyGraphTemplate({{"base_source_digest", current.at("source_digest").at("hex")},
+                                                             {"template", gt1Reference("bloom_loop.json")}}),
+                        std::invalid_argument);
+    }
+    SECTION("the preset loses the feature and the root gains the graph") {
+        const auto accepted = harness.apply("bloom_loop.json");
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        CHECK(Json(accepted.at("applied").at("feature_documents")) == Json::array({preset_reference}));
+        const auto result = harness.commit(accepted);
+        const auto root_after = readBytes(harness.project.render_config);
+        const auto preset_after = readBytes(preset_path);
+        CHECK(Json(result.at("documents")) == Json{{"passes/main.json", renderConfigSourceDigest(root_after)},
+                                                   {preset_reference, renderConfigSourceDigest(preset_after)}});
+        CHECK(Json::parse(preset_after).at("config").at("features").empty());
+        const auto root = Json::parse(root_after);
+        CHECK(gt1Node(root, "bloom_composite") != nullptr);
+        CHECK(root.at("rendering").at("shader_defines") ==
+              Json::parse(engineResourceOrThrow("graphs/bloom_loop.json")).at("decomposes").at("shader_defines"));
+        CHECK(std::ranges::count(gt1PlanNames(harness.runtime.frame_plan), std::string{"bloom_threshold"}) == 1);
+    }
+}
+
+// The procedure itself (graphtemplate.hpp): pass_replacements already there
+// are kept, a different one is refused, and nothing changes when it throws.
+TEST_CASE("GT-1 the template procedure merges pass_replacements and refuses a conflict",
+          "[render-config-editor][gt1]") {
+    using OJson = nlohmann::ordered_json;
+    const auto cascade = OJson::parse(engineResourceOrThrow("graphs/shadow_cascade_loop.json"));
+    const auto decomposes = readGraphTemplateDecomposes(cascade);
+    const OJson shadow{{"ref", "engine://features/shadow_directional.json"},
+                       {"pass_replacements", {{"shadow_depth", "shadow_cascades"}, {"other_pass", "other_node"}}}};
+    auto features = OJson::array({shadow, "engine://features/ui.json"});
+    CHECK(applyGraphTemplateToFeatures(features, decomposes) == 1);
+    CHECK(features == OJson::array({shadow, "engine://features/ui.json"}));
+
+    auto conflicting = OJson::array({OJson{{"ref", "engine://features/shadow_directional.json"},
+                                           {"pass_replacements", {{"shadow_depth", "mine"}}}}});
+    const auto before = conflicting;
+    try {
+        (void)applyGraphTemplateToFeatures(conflicting, decomposes);
+        FAIL("a conflicting replacement was accepted");
+    } catch (const GraphTemplateError &error) {
+        CHECK(error.code() == "graph_template_pass_replacement_conflict");
+        CHECK(Json(error.fields()) == Json{{"feature", "engine://features/shadow_directional.json"},
+                                           {"pass", "shadow_depth"},
+                                           {"current", "mine"},
+                                           {"requested", "shadow_cascades"}});
+    }
+    CHECK(conflicting == before);
 }
 
 } // namespace Pelican

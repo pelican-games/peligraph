@@ -9,6 +9,7 @@
 #include "../../project/graphcomposition.hpp"
 #include "../../project/graphvariantpolicy.hpp"
 #include "../../project/graphpartition.hpp"
+#include "../../project/graphtemplate.hpp"
 #include "../../project/materialdrawloop.hpp"
 #include "../../project/materialpassdecompose.hpp"
 #include "../../project/renderconfigsection.hpp"
@@ -2610,6 +2611,204 @@ OrderedJson RenderConfigEditorService::decomposeMaterialPass(const Json &params)
         throw;
     } catch (const std::exception &error) {
         return preflightRejection(error);
+    }
+}
+
+namespace {
+
+// GT-1: the engine resource ids of the shipped graph templates
+// ("graphs/<name>.json"), in the registry's order.
+std::vector<std::string> graphTemplateResourceIds() {
+    std::vector<std::string> ids;
+    for (const auto id : registeredEngineResourceIds())
+        if (id.starts_with("graphs/") && id.ends_with(".json")) ids.emplace_back(id);
+    return ids;
+}
+
+// "graphs/shadow_cascade_loop.json" -> "Shadow cascade loop".
+std::string graphTemplateTitleFromFile(std::string_view id) {
+    auto name = std::string{id.substr(id.rfind('/') + 1)};
+    name.resize(name.size() - std::string_view{".json"}.size());
+    std::replace(name.begin(), name.end(), '_', ' ');
+    if (!name.empty() && name.front() >= 'a' && name.front() <= 'z')
+        name.front() = static_cast<char>(name.front() - 'a' + 'A');
+    return name;
+}
+
+} // namespace
+
+OrderedJson RenderConfigEditorService::getGraphTemplates(const Json &params) const {
+    requireOnly(params, {}, "get_graph_templates");
+    auto templates = OrderedJson::array();
+    for (const auto &id : graphTemplateResourceIds()) {
+        auto document = OrderedJson::parse(engineResourceOrThrow(id));
+        OrderedJson entry{{"reference", "engine://" + id}};
+        const auto title = document.find("title");
+        entry["title"] = title != document.end() && title->is_string() ? title->get<std::string>()
+                                                                        : graphTemplateTitleFromFile(id);
+        if (const auto description = document.find("description");
+            description != document.end() && description->is_string())
+            entry["description"] = *description;
+        entry["decomposes"] = document.value("decomposes", OrderedJson::object());
+        entry["document"] = std::move(document);
+        templates.push_back(std::move(entry));
+    }
+    return {{"templates", std::move(templates)}};
+}
+
+OrderedJson RenderConfigEditorService::applyGraphTemplate(const Json &params) {
+    constexpr auto method = "apply_graph_template";
+    requireOnly(params, {"base_source_digest", "base_preset_digest", "template"}, method);
+    const auto base_digest = requireString(params, "base_source_digest", method);
+    if (!isLowerHexDigest(base_digest))
+        throw std::invalid_argument("apply_graph_template base_source_digest must be 64 lowercase hex characters");
+    std::optional<std::string> preset_digest;
+    if (params.contains("base_preset_digest")) {
+        preset_digest = requireString(params, "base_preset_digest", method);
+        if (!isLowerHexDigest(*preset_digest))
+            throw std::invalid_argument("apply_graph_template base_preset_digest must be 64 lowercase hex characters");
+    }
+    const auto reference = requireString(params, "template", method);
+    if (!dependencies_.resolve_authoring_context || !dependencies_.normalize_reference ||
+        !dependencies_.resolve_document_path)
+        return rejection("method_unavailable", "apply_graph_template requires the project document resolver",
+                         {{"method", method}});
+    const auto templates = graphTemplateResourceIds();
+    constexpr std::string_view engine_scheme = "engine://";
+    if (!reference.starts_with(engine_scheme) ||
+        std::find(templates.begin(), templates.end(), reference.substr(engine_scheme.size())) == templates.end())
+        return rejection(std::string{graphTemplateUnknownCode},
+                         "Graph template " + reference + " is not one the engine ships (engine://graphs/<name>.json)",
+                         {{"template", reference}});
+    const auto gate = gateSnapshot();
+    if (auto rejected = checkAuthoringPreconditions(gate, base_digest, method,
+                                                    "render config editing is currently disabled"))
+        return *rejected;
+
+    // A refusal of the template's own steps, with the template it was about.
+    const auto refused = [&](const std::string &code, const std::string &message, OrderedJson fields) {
+        fields["template"] = reference;
+        return rejection(code, message, std::move(fields));
+    };
+    try {
+        const auto graph_template = OrderedJson::parse(engineResourceOrThrow(reference.substr(engine_scheme.size())));
+        GraphTemplateDecomposes decomposes;
+        try {
+            decomposes = readGraphTemplateDecomposes(graph_template);
+        } catch (const GraphTemplateError &error) {
+            return refused(error.code(), error.what(), error.fields());
+        }
+        const auto current = dependencies_.resolve_authoring_context(currentDocumentSet());
+        if (!current.pipeline_preset && preset_digest)
+            throw std::invalid_argument("apply_graph_template: a direct root selects no preset; omit base_preset_digest");
+        std::optional<OrderedJson> preset;
+        if (current.pipeline_preset) {
+            const auto current_preset_digest = current.pipeline_preset_bytes
+                                                   ? renderConfigSourceDigest(*current.pipeline_preset_bytes)
+                                                   : std::string{};
+            if (preset_digest && *preset_digest != current_preset_digest)
+                return rejection("external_modification", "The selected preset changed since it was read",
+                                 {{"method", method},
+                                  {"expected_preset_digest", current_preset_digest},
+                                  {"provided_preset_digest", *preset_digest}});
+            if (current.pipeline_preset_bytes) preset = OrderedJson::parse(*current.pipeline_preset_bytes);
+        }
+
+        // Where the composition reads the feature: the rendering section, and
+        // the preset's config (which must be the project's own to change).
+        auto root = OrderedJson::parse(document_.bytes());
+        const auto section_features = renderingSectionOf(root).value("features", OrderedJson::array());
+        const auto root_instances = countGraphTemplateFeature(section_features, decomposes.feature);
+        std::size_t preset_instances = 0;
+        if (preset && preset->contains("config"))
+            preset_instances = countGraphTemplateFeature(preset->at("config").value("features", OrderedJson::array()),
+                                                         decomposes.feature);
+        if (preset_instances != 0 && !current.pipeline_preset->reference.starts_with("project://"))
+            return refused("project_preset_required",
+                           "Fork the selected preset into the project before taking in a graph template that "
+                           "decomposes one of its features",
+                           {{"feature", decomposes.feature}, {"preset", current.pipeline_preset->reference}});
+        if (root_instances + preset_instances == 0)
+            return refused(std::string{graphTemplateFeatureAbsentCode},
+                           "Graph template " + reference + " decomposes " + decomposes.feature +
+                               ", which neither the rendering section nor the preset lists",
+                           {{"feature", decomposes.feature}});
+        if (preset_instances != 0 && !preset_digest)
+            throw std::invalid_argument(
+                "apply_graph_template requires base_preset_digest when the project preset lists the feature");
+
+        GraphTemplateBody body;
+        try {
+            body = copyGraphTemplateBody(root, graph_template);
+        } catch (const GraphRegistryError &error) {
+            return refused(error.code(), error.what(), OrderedJson::parse(error.detail().dump()));
+        }
+        auto &section = renderingSectionOf(root);
+        std::vector<std::string> added_defines;
+        try {
+            if (root_instances != 0) applyGraphTemplateToFeatures(section.at("features"), decomposes);
+            if (preset_instances != 0) applyGraphTemplateToFeatures(preset->at("config").at("features"), decomposes);
+            added_defines = addGraphTemplateShaderDefines(section, decomposes);
+        } catch (const GraphTemplateError &error) {
+            return refused(error.code(), error.what(), error.fields());
+        }
+
+        // The root, edited member by member so the rest stays as authored.
+        auto candidate = document_.withRootValue("definitions", root.at("definitions").dump(2))
+                             .withRootValue("nodes", root.at("nodes").dump(2));
+        if (!Json::parse(document_.bytes()).contains("outputs"))
+            candidate = candidate.withRootValue("outputs", root.at("outputs").dump(2));
+        if (root_instances != 0) candidate = candidate.withSectionValue("features", section.at("features").dump(2));
+        if (!added_defines.empty())
+            candidate = candidate.withSectionValue("shader_defines", section.at("shader_defines").dump(2));
+
+        auto documents = currentDocumentSet().documents();
+        for (auto &document : documents)
+            if (document.normalized_reference == source_normalized_reference_) document.bytes = candidate.bytes();
+        if (preset_instances != 0) {
+            const auto &preset_reference = current.pipeline_preset->reference;
+            RenderConfigCandidateDocument written{
+                .reference = preset_reference,
+                .normalized_reference = dependencies_.normalize_reference(preset_reference),
+                .path = dependencies_.resolve_document_path(preset_reference),
+                .operation = RenderConfigDocumentOperation::replace,
+                .expected = {RenderConfigDocumentExistence::present, *preset_digest},
+                .bytes = preset->dump(2),
+            };
+            const auto existing = std::find_if(documents.begin(), documents.end(), [&](const auto &entry) {
+                return entry.normalized_reference == written.normalized_reference;
+            });
+            if (existing != documents.end()) *existing = std::move(written);
+            else documents.push_back(std::move(written));
+        }
+        RenderConfigCandidateDocumentSet candidate_set{source_normalized_reference_, std::move(documents)};
+        // Composed as the engine will compose it, then by every variant.
+        auto result = enqueueAuthoredPassTicket(method, gate, base_digest, std::move(candidate),
+                                                std::move(candidate_set), std::string{},
+                                                /*edits_additional_documents=*/preset_instances != 0);
+        if (result.value("status", std::string{}) != "accepted") return result;
+        if (preset_instances != 0) pending_.back().base_preset_digest = preset_digest;
+        OrderedJson replacements = OrderedJson::object();
+        if (!decomposes.remove_feature)
+            for (const auto &[pass, node] : decomposes.pass_replacements) replacements[pass] = node;
+        OrderedJson owners = OrderedJson::array();
+        if (root_instances != 0) owners.push_back(dependencies_.source_reference);
+        if (preset_instances != 0) owners.push_back(current.pipeline_preset->reference);
+        result["applied"] = OrderedJson{{"template", reference},
+                                        {"feature", decomposes.feature},
+                                        {"feature_documents", std::move(owners)},
+                                        {"removed_feature", decomposes.remove_feature},
+                                        {"pass_replacements", std::move(replacements)},
+                                        {"added_shader_defines", added_defines},
+                                        {"definitions", body.definitions},
+                                        {"nodes", body.nodes}};
+        return result;
+    } catch (const RenderConfigSectionUnlocated &error) {
+        return rejection("render_config_section_unlocated", error.what(), {{"method", method}});
+    } catch (const std::invalid_argument &) {
+        throw;
+    } catch (const std::exception &error) {
+        return preflightRejection(error, {{"participant", "pelican.render_pipeline"}, {"method", method}});
     }
 }
 

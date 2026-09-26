@@ -11,6 +11,7 @@ add_library(pelican_project
     graphloopexpression.cpp
     graphmodule.cpp
     graphpartition.cpp
+    graphtemplate.cpp
     rendergraphcomposition.cpp
     gpudrawtiming.cpp
     gltfmateriallowering.cpp

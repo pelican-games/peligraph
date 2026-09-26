@@ -317,6 +317,15 @@ class RenderConfigEditorService {
     // and its body definition (materialpassdecompose.hpp) -- the section or
     // the preset and the graph in one ticket.
     nlohmann::ordered_json decomposeMaterialPass(const nlohmann::json &params);
+    // GT-1: the graph templates the engine ships (engine://graphs/*.json),
+    // each with its decomposes and the document itself.
+    nlohmann::ordered_json getGraphTemplates(const nlohmann::json &params) const;
+    // GT-1: one template taken into the project (graphtemplate.hpp): its
+    // definitions and nodes into the root graph, its feature removed or
+    // given pass_replacements in the rendering section or the forked
+    // preset, its shader_defines added to the rendering section -- one
+    // ticket, composed (with the variants) before it is accepted.
+    nlohmann::ordered_json applyGraphTemplate(const nlohmann::json &params);
     nlohmann::ordered_json getGraphValues(const nlohmann::json &params) const;
     // AG-3a. Every node in one scope of the published document with what the
     // drawn frame's evaluation gave it -- the definition-scope values
