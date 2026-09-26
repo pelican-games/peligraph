@@ -289,8 +289,13 @@ The Outliner's drag is its own press, move and release, not Qt's drag and drop (
 guessing. A button that is on screen but switched off is the ordinary way a
 panel says "not yet": `pelican.graphAttach` is there from the first frame and
 only becomes usable once the Inspector has an owner and the attachment model
-has a digest. A scenario that clicks it early does nothing and fails three
-steps later, naming the wrong thing.
+has a digest. `click` and `double_click` on a switched-off widget (itself, or
+the panel it sits in) are refused with `automation.bad_request@1` and
+`the widget named "…" is disabled`, the way `action` refuses a disabled
+action: Qt drops such a press without a word, so the step that pressed is the
+one that fails, not a step later that looks for what the press would have done.
+To show that a button is off, `wait` or `list` for `"enabled": false`; never
+click it to see nothing happen.
 
 Error codes: `automation.widget_missing@1`, `automation.bad_request@1`,
 `automation.unknown_command@1`, `automation.engine_not_ready@1`,

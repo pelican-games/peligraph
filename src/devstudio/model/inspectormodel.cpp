@@ -899,6 +899,9 @@ struct InspectorModel::Impl {
         std::uint64_t ray_catalog_epoch = 0;
         std::optional<SceneEditKind> scene_edit;
         std::uint64_t scene_edit_subject = 0;
+        // Q-16: for a watch request, how many of this session's own commits
+        // had been seen when it went out.
+        std::uint64_t own_commit_generation = 0;
     };
 
     struct PreviewState {
@@ -947,6 +950,10 @@ struct InspectorModel::Impl {
     std::unordered_set<std::string> editing_widgets;
     std::unordered_map<std::string, Json> staged_operations;
     std::optional<WatchToken> observed_watch;
+    // Q-16: counts the commits this session made itself (edits, undo, redo,
+    // preview commits, saves). A watch answer to a request sent before the latest of
+    // them says nothing about anyone else.
+    std::uint64_t own_commit_generation = 0;
     bool refresh_in_flight = false;
     bool refresh_pending = false;
     bool refresh_pending_sync = false;
@@ -1124,7 +1131,34 @@ struct InspectorModel::Impl {
         watch_request_in_flight = true;
         queue("get_scene_revision", Json::object(),
               {.purpose = purpose,
-               .selection_generation = selection_generation});
+               .selection_generation = selection_generation,
+               .own_commit_generation = own_commit_generation});
+    }
+
+    // Q-16: this session's own commit (an edit, undo, redo, preview commit
+    // or save) reached `revision`. The watch token moves with it, so the
+    // next watch answer that reports that revision is not taken for another
+    // client's edit: reading it again would switch Undo off for the length of
+    // a refresh it does not need.
+    void noteOwnCommit(std::uint64_t revision,
+                       std::optional<std::uint64_t> preview_epoch = std::nullopt) {
+        ++own_commit_generation;
+        if (!observed_watch) return;
+        observed_watch->scene_revision =
+            std::max(observed_watch->scene_revision, revision);
+        if (preview_epoch)
+            observed_watch->preview_epoch =
+                std::max(observed_watch->preview_epoch, *preview_epoch);
+    }
+
+    void noteOwnCommit(const Json &result) {
+        std::optional<std::uint64_t> epoch;
+        // A preview commit names the epoch it left behind.
+        if (const auto found = result.find("preview_epoch"); found != result.end())
+            epoch = unsignedInteger(*found, "preview_epoch");
+        noteOwnCommit(unsignedInteger(result.at("committed_revision"),
+                                      "edit committed_revision"),
+                      epoch);
     }
 
     void requestRefresh(bool synchronize_watch) {
@@ -1873,7 +1907,12 @@ struct InspectorModel::Impl {
         }
         watch_request_in_flight = false;
         const WatchToken current = parseWatchToken(result);
-        if (state.purpose == RequestPurpose::WatchSync) {
+        if (state.own_commit_generation != own_commit_generation) {
+            // Q-16: sent before one of this session's own commits. Whether
+            // the engine answered before or after that commit, the difference
+            // is ours, and the commit already asked for its own refresh. The
+            // next poll judges what anyone else did.
+        } else if (state.purpose == RequestPurpose::WatchSync) {
             const bool revision_changed_during_refresh =
                 snapshot &&
                 snapshot->scene_revision != current.scene_revision;
@@ -1941,6 +1980,9 @@ struct InspectorModel::Impl {
             requiredField(result, "scene_revision", "save_scene result"),
             "save_scene scene_revision");
         observeSceneRevision(revision);
+        // Saving stages the document again under a new revision: that is
+        // this session's own doing as well.
+        noteOwnCommit(revision);
         saved_scene_revision = revision;
         last_save_succeeded = true;
         scene_revision_uncertain = false;
@@ -1956,6 +1998,11 @@ struct InspectorModel::Impl {
             result.contains("committed_revision")) {
             observeSceneRevision(unsignedInteger(result.at("committed_revision"),
                                                   "edit committed_revision"));
+            if (state.purpose == RequestPurpose::EditSubmit ||
+                state.purpose == RequestPurpose::EditPoll ||
+                state.purpose == RequestPurpose::PreviewPoll) {
+                noteOwnCommit(result);
+            }
         }
         if ((state.purpose == RequestPurpose::SceneTree ||
              state.purpose == RequestPurpose::Components ||

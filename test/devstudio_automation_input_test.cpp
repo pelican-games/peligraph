@@ -758,3 +758,55 @@ TEST_CASE("AG-3b: wait answers for whether a thing is usable, not only on screen
               .value(QStringLiteral("enabled"))
               .toBool());
 }
+
+// Q-16: Qt drops a press on a switched-off widget without a word. A click that
+// answered "ok" anyway let a scenario go on as if it had pressed, and fail
+// steps later on what the press never did.
+TEST_CASE("Q-16: click refuses a disabled widget by name",
+          "[devstudio][automation][q16]") {
+    Fixture fixture;
+    int attaches = 0;
+    QObject::connect(fixture.locked, &QPushButton::clicked,
+                     [&attaches] { ++attaches; });
+    const QJsonObject attach{
+        {QStringLiteral("name"), QStringLiteral("pelican.testAttach")}};
+
+    const AutomationReply refused = fixture.run(QStringLiteral("click"), attach);
+    CHECK_FALSE(refused.ok);
+    CHECK(refused.code == QStringLiteral("automation.bad_request@1"));
+    CHECK(refused.message.contains(QStringLiteral("pelican.testAttach")));
+    CHECK(refused.message.contains(QStringLiteral("disabled")));
+    CHECK(attaches == 0);
+    // A double click is the same press twice.
+    CHECK_FALSE(fixture.run(QStringLiteral("double_click"), attach).ok);
+    CHECK(attaches == 0);
+
+    // Switched off by the panel it sits in, not by itself.
+    auto *panel = new QWidget(fixture.window.centralWidget());
+    auto *panel_layout = new QVBoxLayout(panel);
+    auto *inner = new QPushButton(QStringLiteral("Undo"), panel);
+    inner->setObjectName(QStringLiteral("pelican.testInnerUndo"));
+    panel_layout->addWidget(inner);
+    fixture.window.centralWidget()->layout()->addWidget(panel);
+    panel->setEnabled(false);
+    QApplication::processEvents();
+    int undos = 0;
+    QObject::connect(inner, &QPushButton::clicked, [&undos] { ++undos; });
+    const AutomationReply under_off = fixture.run(
+        QStringLiteral("click"),
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("pelican.testInnerUndo")}});
+    CHECK_FALSE(under_off.ok);
+    CHECK(under_off.message.contains(QStringLiteral("pelican.testInnerUndo")));
+    CHECK(undos == 0);
+
+    // The control: the same buttons, switched on, are pressed.
+    fixture.locked->setEnabled(true);
+    panel->setEnabled(true);
+    QApplication::processEvents();
+    fixture.result(QStringLiteral("click"), attach);
+    CHECK(attaches == 1);
+    fixture.result(QStringLiteral("click"),
+                   QJsonObject{{QStringLiteral("name"),
+                                QStringLiteral("pelican.testInnerUndo")}});
+    CHECK(undos == 1);
+}

@@ -479,6 +479,15 @@ bool targetVisible(const Target &target) {
     return target.owner != nullptr && target.owner->isVisible();
 }
 
+// Q-16: whether a press on the target would reach it. QWidget::isEnabled is
+// already false under a switched-off ancestor.
+bool targetEnabled(const Target &target) {
+    if (target.isSceneItem())
+        return target.view->isEnabled() && target.item->isEnabled();
+    const QWidget *widget = target.owner != nullptr ? target.owner : target.widget;
+    return widget->isEnabled() && target.widget->isEnabled();
+}
+
 QRect globalRect(const Target &target) {
     if (target.row)
         return QRect(target.widget->mapToGlobal(target.row->topLeft()), target.row->size());
@@ -910,6 +919,15 @@ AutomationReply commandClick(const AutomationHost &host,
     Target target;
     AutomationReply rejected;
     if (!gestureTarget(host, request, &target, &rejected)) return rejected;
+    // Q-16: a switched-off widget is refused by name, as a disabled action
+    // is. Qt drops the press without a word, so a click that reported
+    // success here left the scenario to fail steps later on its consequence.
+    if (!targetEnabled(target))
+        return AutomationReply::failure(
+            BadRequest,
+            named.isEmpty()
+                ? QStringLiteral("the window under the point is disabled")
+                : QStringLiteral("the widget named \"%1\" is disabled").arg(named));
     bool ok = false;
     const Qt::MouseButton button =
         parseButton(request.value(QStringLiteral("button")), &ok);

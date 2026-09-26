@@ -2354,3 +2354,127 @@ TEST_CASE("OL-1 a refused Outliner edit reads as one sentence",
                                     .message = "unknown field"},
                                    "Cube") == "Cannot duplicate Cube: invalid_params - unknown field");
 }
+
+// Q-16: the Inspector's own commit is not another client's edit. Its watch
+// token moves with the commit, so a watch answer that reports the revision
+// the commit reached does not read the object again -- a read that switched
+// Undo off for its length, long enough for a click to land on it switched off.
+TEST_CASE("Q-16 the Inspector's own commit does not read as an external change",
+          "[devstudio][inspector][refresh][external][q16]") {
+    const auto commitEdit = [](InspectorHarness &harness,
+                               std::uint64_t revision) {
+        const std::string field_key =
+            harness.field("fixture_flags", "enabled").field_key;
+        REQUIRE(harness.model.commitWidgetValue(field_key, false));
+        harness.reply(harness.take("edit"),
+                      {{"status", "accepted"}, {"ticket", "edit:1"}});
+        harness.model.pollPendingOperations();
+        harness.reply(harness.take("get_edit_result"),
+                      {{"status", "committed"}, {"committed_revision", revision}});
+    };
+
+    SECTION("a watch sent while the commit's read is in flight") {
+        InspectorHarness harness;
+        harness.open();
+        commitEdit(harness, 2);
+        const auto tree = harness.take("scene_tree");
+        // The 500 ms watch goes out while the read after the commit runs.
+        harness.model.pollExternalChanges();
+        const auto watch = harness.take("get_scene_revision");
+        harness.reply(tree, sceneTreeResult(2));
+        harness.reply(harness.take("get_components"), componentResult(1.0, 2));
+        // The read is done, and the synchronized watch waits behind the poll.
+        REQUIRE(harness.model.takeRpcRequests().empty());
+        REQUIRE(harness.model.canUndoRedo());
+
+        harness.reply(watch, {{"scene_revision", 2}, {"preview_epoch", 0}});
+        // No second read: Undo stays usable.
+        CHECK(harness.model.canUndoRedo());
+        const auto sync = harness.take("get_scene_revision");
+        harness.reply(sync, {{"scene_revision", 2}, {"preview_epoch", 0}});
+        CHECK(harness.model.takeRpcRequests().empty());
+        CHECK(harness.model.canUndoRedo());
+
+        // The control: another client's edit moves the scene to 3, and that
+        // is read.
+        harness.model.pollExternalChanges();
+        harness.reply(harness.take("get_scene_revision"),
+                      {{"scene_revision", 3}, {"preview_epoch", 0}});
+        CHECK_FALSE(harness.model.canUndoRedo());
+        REQUIRE(harness.take("scene_tree").method == "scene_tree");
+    }
+
+    SECTION("a watch sent before the commit and answered after it") {
+        // The engine may have answered before the commit or after it.
+        const std::uint64_t answered = GENERATE(1U, 2U);
+        INFO("the watch reports revision " << answered);
+        InspectorHarness harness;
+        harness.open();
+        harness.model.pollExternalChanges();
+        const auto watch = harness.take("get_scene_revision");
+        commitEdit(harness, 2);
+        harness.reply(harness.take("scene_tree"), sceneTreeResult(2));
+        harness.reply(harness.take("get_components"), componentResult(1.0, 2));
+        REQUIRE(harness.model.takeRpcRequests().empty());
+        REQUIRE(harness.model.canUndoRedo());
+
+        harness.reply(watch, {{"scene_revision", answered}, {"preview_epoch", 0}});
+        CHECK(harness.model.canUndoRedo());
+        const auto sync = harness.take("get_scene_revision");
+        harness.reply(sync, {{"scene_revision", 2}, {"preview_epoch", 0}});
+        CHECK(harness.model.takeRpcRequests().empty());
+        CHECK(harness.model.canUndoRedo());
+
+        // The next poll still sees another client's edit.
+        harness.model.pollExternalChanges();
+        harness.reply(harness.take("get_scene_revision"),
+                      {{"scene_revision", 3}, {"preview_epoch", 0}});
+        CHECK_FALSE(harness.model.canUndoRedo());
+        REQUIRE(harness.take("scene_tree").method == "scene_tree");
+    }
+
+    SECTION("undo is the Inspector's own commit too") {
+        InspectorHarness harness;
+        harness.open();
+        commitEdit(harness, 2);
+        harness.completeRefresh(1.0, 2);
+        harness.model.undo();
+        harness.reply(harness.take("undo"),
+                      {{"status", "committed"}, {"committed_revision", 3}});
+        const auto tree = harness.take("scene_tree");
+        harness.model.pollExternalChanges();
+        const auto watch = harness.take("get_scene_revision");
+        harness.reply(tree, sceneTreeResult(3));
+        harness.reply(harness.take("get_components"), componentResult(1.0, 3));
+        REQUIRE(harness.model.canUndoRedo());
+        harness.reply(watch, {{"scene_revision", 3}, {"preview_epoch", 0}});
+        CHECK(harness.model.canUndoRedo());
+        REQUIRE(harness.take("get_scene_revision").method == "get_scene_revision");
+    }
+
+    SECTION("a save stages the scene under a revision of its own") {
+        InspectorHarness harness;
+        harness.open();
+        commitEdit(harness, 2);
+        harness.completeRefresh(1.0, 2);
+        REQUIRE(harness.model.saveScene());
+        harness.reply(harness.take("save_scene"),
+                      {{"status", "saved"},
+                       {"scene_revision", 3},
+                       {"scene_hot_reload", false},
+                       {"byte_count", 1234}});
+        REQUIRE(harness.model.canUndoRedo());
+        harness.model.pollExternalChanges();
+        harness.reply(harness.take("get_scene_revision"),
+                      {{"scene_revision", 3}, {"preview_epoch", 0}});
+        CHECK(harness.model.canUndoRedo());
+        CHECK(harness.model.takeRpcRequests().empty());
+
+        // Another client after the save is still read.
+        harness.model.pollExternalChanges();
+        harness.reply(harness.take("get_scene_revision"),
+                      {{"scene_revision", 4}, {"preview_epoch", 0}});
+        CHECK_FALSE(harness.model.canUndoRedo());
+        REQUIRE(harness.take("scene_tree").method == "scene_tree");
+    }
+}
