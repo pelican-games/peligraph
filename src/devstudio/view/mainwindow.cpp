@@ -746,11 +746,17 @@ void MainWindow::renderHistoryChanged() {
     render_redo_action_->setEnabled(history.canRedo());
     const auto undo_label = QString::fromStdString(history.undoLabel());
     const auto redo_label = QString::fromStdString(history.redoLabel());
-    const bool barrier = !history.undoStack().empty() && history.undoStack().back().barrier;
+    // RU-1b: an edit that created or removed files is undone like any other;
+    // Undo stops only where the history says why.
+    const auto *barrier = !history.undoStack().empty() && history.undoStack().back().barrier
+                              ? &history.undoStack().back()
+                              : nullptr;
     render_undo_action_->setToolTip(
         undo_label.isEmpty() ? tr("Nothing to undo")
-        : barrier ? tr("Cannot undo past \"%1\": it created or removed files").arg(undo_label)
-                  : tr("Undo %1").arg(undo_label));
+        : barrier != nullptr
+            ? tr("Cannot undo past \"%1\": %2")
+                  .arg(undo_label, QString::fromStdString(barrier->barrier_reason))
+            : tr("Undo %1").arg(undo_label));
     render_redo_action_->setToolTip(redo_label.isEmpty() ? tr("Nothing to redo")
                                                          : tr("Redo %1").arg(redo_label));
     if (history.lineSerial() != shown_render_history_line_) {

@@ -1470,7 +1470,10 @@ std::string framePlanRenderTargetRejection(const Json &error,
     // LP-0d: a graph variant (preview, XR) that refused the edit says so
     // whatever the code -- its graph refusal keeps the graph's own code now,
     // with `variant` among its fields.
-    if (!textOr(error, "variant").empty()) return renderAuthoringRefusalLine(error);
+    // LP-2: a loop's refusal (a draw-loop one comes back with its own code)
+    // reads as its sentence the same way.
+    if (!textOr(error, "variant").empty() || !graphLoopRefusalDescription(error).empty())
+        return renderAuthoringRefusalLine(error);
     if (code == "render_target_referenced") {
         std::vector<std::string> users;
         if (const auto found = error.find("users");
@@ -1645,7 +1648,9 @@ std::string framePlanDecomposedLoop(const Json &response) {
 std::string renderAuthoringRefusalLine(const Json &error) {
     const auto code = textOr(error, "code");
     const auto message = textOr(error, "message");
-    const auto variant = textOr(error, "variant");
+    // LP-0d: the graph variant that refused it; a draw-loop refusal's own
+    // `variant` (the material variant it looked for) is not one (LP-2).
+    const auto variant = graphRefusalVariant(error);
     std::string line;
     if (!variant.empty()) line = "The " + variant + " graph refused it: ";
     // LP-4a: a view_select refusal reads as its sentence, the code last.

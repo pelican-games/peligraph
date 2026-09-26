@@ -11,5 +11,8 @@ It adds `shaders/ru1_invert.frag`, a fragment that draws `scene_color`
 inverted. The scenario picks it for `present` in the Pass Editor (a change the
 viewport shows), takes it back with Undo and puts it again with Redo; then
 decomposes `forward_opaque` into a loop and takes that back and puts it again;
-and last adds a fullscreen pass, which creates a file and so is where Undo
-stops (RU-1, on RD-1).
+then adds a fullscreen pass, which creates a fragment under
+`passes/authoring/`: Undo deletes it, the same name can be added again, and
+Redo writes it back (RU-1b, on RD-1b). Last, a Pass Editor edit of `present`
+is followed by moving `present` on the Frame Plan, which rewrites the root's
+`layout`; Undo still takes the edit back and keeps the placement.

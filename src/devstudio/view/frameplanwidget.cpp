@@ -2570,10 +2570,13 @@ struct FramePlanWidget::Impl {
             return text(framePlanRenderTargetRejection(*error,
                                                        authoring.preset_name));
         // G-6: a graph variant that refused the edit is named, whatever the
-        // edit was. LP-4a: a view_select refusal reads as its sentence.
+        // edit was. LP-4a: a view_select refusal reads as its sentence;
+        // LP-2: and so does a loop's (the draw-loop ones come back with their
+        // own code, whatever edit hit them).
         if (error != response.end() && error->is_object() &&
             (error->contains("variant") ||
-             !viewSelectRefusalDescription(*error).empty()))
+             !viewSelectRefusalDescription(*error).empty() ||
+             !graphLoopRefusalDescription(*error).empty()))
             return text(renderAuthoringRefusalLine(*error));
         if (error != response.end() && error->is_object() &&
             submitted_method == "add_authored_pass") {

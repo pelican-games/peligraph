@@ -11366,6 +11366,32 @@ TEST_CASE("LP-4c a loop's or a definition's refusal reads as its sentence, "
     CHECK(renderAuthoringRefusalLine({{"code", "graph.definition_duplicate@1"},
                                       {"definition", "loop_body"}}) ==
           "A definition named loop_body already exists (graph.definition_duplicate@1).");
+    // LP-2: a draw-loop refusal comes back with its own code and fields, the
+    // message still "<code>: <fields>". graph.loop_variant_missing@1's own
+    // `variant` is the material variant, not a graph variant; in the preview
+    // graph's preflight the graph variant takes `variant` and the material
+    // variant stays in the message.
+    const Json fields{{"node", "draws"}, {"material", "box"}, {"variant", "outline"}};
+    Json main_graph = fields;
+    main_graph["participant"] = "pelican.render_pipeline";
+    main_graph["code"] = "graph.loop_variant_missing@1";
+    main_graph["message"] = "graph.loop_variant_missing@1: " + fields.dump();
+    CHECK(renderAuthoringRefusalLine(main_graph) ==
+          "Loop draws: material box has no outline variant (graph.loop_variant_missing@1).");
+    CHECK(framePlanRenderTargetRejection(main_graph) == renderAuthoringRefusalLine(main_graph));
+    Json preview = main_graph;
+    preview["variant"] = "preview";
+    CHECK(renderAuthoringRefusalLine(preview) ==
+          "The preview graph refused it: Loop draws: material box has no outline variant "
+          "(graph.loop_variant_missing@1).");
+    // A render target edit that hit one reads as the loop's sentence too.
+    const Json limit_fields{{"node", "draws"}, {"count", 17}, {"limit", 16}};
+    Json limit = limit_fields;
+    limit["code"] = "graph.loop_override_compile_limit@1";
+    limit["message"] = "graph.loop_override_compile_limit@1: " + limit_fields.dump();
+    CHECK(framePlanRenderTargetRejection(limit) ==
+          "Loop draws needs 17 shader compiles; the limit is 16 "
+          "(graph.loop_override_compile_limit@1).");
 }
 
 // --- LP-4e: Decompose into loop, and a draw_loop on its material pass.

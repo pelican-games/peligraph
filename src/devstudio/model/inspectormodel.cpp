@@ -885,15 +885,14 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error) {
             fields = *relayed;
         else
             fields = error;
-        // A refusal with no fields of its own may still quote them. The
-        // members every refusal has are not fields of this one.
-        bool own_fields = false;
-        for (auto member = fields.begin(); member != fields.end(); ++member)
-            own_fields = own_fields || (member.key() != "code" && member.key() != "message" &&
-                                        member.key() != "variant" && member.key() != "ticket");
-        if (!own_fields)
-            if (auto quoted = graphFieldsAfterCode(message, candidate.code))
-                fields = std::move(*quoted);
+        // A refusal may also quote its fields after its code; what it quotes
+        // is its own, and wins over a member beside the code of the same
+        // name. In a graph variant's preflight `variant` beside the code is
+        // the graph variant, and graph.loop_variant_missing@1's own (the
+        // material variant) is only in the message (LP-2).
+        if (auto quoted = graphFieldsAfterCode(message, candidate.code))
+            for (auto member = quoted->begin(); member != quoted->end(); ++member)
+                fields[member.key()] = member.value();
     }
     if (entry == nullptr) {
         for (const auto &candidate : GraphLoopRefusalTexts)
@@ -923,6 +922,20 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error) {
         index = close + 1;
     }
     return sentence + " (" + std::string{entry->code} + ").";
+}
+
+std::string graphRefusalVariant(const nlohmann::json &error) {
+    if (!error.is_object()) return {};
+    const auto member = error.find("variant");
+    if (member == error.end() || !member->is_string()) return {};
+    const auto variant = member->get<std::string>();
+    const auto code = error.value("code", std::string{});
+    const auto message = error.value("message", std::string{});
+    if (!code.empty())
+        if (const auto quoted = graphFieldsAfterCode(message, code);
+            quoted && quoted->contains("variant") && quoted->at("variant") == variant)
+            return {};
+    return variant;
 }
 
 std::string componentUnavailableTag(std::string_view code) {

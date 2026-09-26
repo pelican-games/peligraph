@@ -1921,3 +1921,84 @@ TEST_CASE("LP-4e a draw_loop's refusals read as sentences that say what to chang
           "Loop draws draws with legacy_gbuffer_v1, which its stage does not take "
           "(graph.loop_contract_unsupported@1).");
 }
+
+namespace {
+
+// LP-2 (engine 992225fb): a draw-loop refusal as the render edit service
+// returns it -- its own code, its fields beside ticket and participant, and a
+// message that is still "<code>: <fields JSON>". In a graph variant's
+// preflight `variant` beside the code is the graph variant, and a field of
+// the refusal's own that has the same name stays only in the message.
+Json lp2DrawLoopRefusal(const std::string &code, const Json &fields,
+                        const std::string &graph_variant = {}) {
+    Json error{{"participant", "pelican.render_pipeline"}, {"ticket", "t-lp2"}};
+    if (!graph_variant.empty()) error["variant"] = graph_variant;
+    for (const auto &[key, value] : fields.items())
+        if (!error.contains(key)) error[key] = value;
+    error["code"] = code;
+    error["message"] = code + ": " + fields.dump();
+    return error;
+}
+
+} // namespace
+
+TEST_CASE("LP-2 the draw-loop refusals the engine names read as sentences, a graph variant "
+          "first, and mark the loop",
+          "[studio][graph-canvas][lp2][lp4e]") {
+    const auto sentence = [](const Json &error) {
+        return PelicanStudio::graphLoopRefusalDescription(error);
+    };
+    const Json variant_missing{{"node", "draws"}, {"material", "box"}, {"variant", "outline"}};
+    CHECK(sentence(lp2DrawLoopRefusal("graph.loop_phase_crossing@1",
+                                      {{"node", "draws"}, {"material", "box"}})) ==
+          "Loop draws: material box draws in another phase (graph.loop_phase_crossing@1).");
+    CHECK(sentence(lp2DrawLoopRefusal("graph.loop_variant_missing@1", variant_missing)) ==
+          "Loop draws: material box has no outline variant (graph.loop_variant_missing@1).");
+    CHECK(sentence(lp2DrawLoopRefusal("graph.loop_override_interface@1",
+                                      {{"node", "draws"}, {"material", "box"},
+                                       {"binding", "set 1 binding 0"}})) ==
+          "Loop draws: material box has no binding set 1 binding 0 "
+          "(graph.loop_override_interface@1).");
+    CHECK(sentence(lp2DrawLoopRefusal("graph.loop_override_needs_compiler@1",
+                                      {{"node", "draws"}})) ==
+          "Loop draws changes shader defines, which needs the runtime shader compiler "
+          "(graph.loop_override_needs_compiler@1).");
+    CHECK(sentence(lp2DrawLoopRefusal("graph.loop_override_compile_limit@1",
+                                      {{"node", "draws"}, {"count", 17}, {"limit", 16}})) ==
+          "Loop draws needs 17 shader compiles; the limit is 16 "
+          "(graph.loop_override_compile_limit@1).");
+    // In the preview graph's preflight: the material variant comes from the
+    // message, not from the `variant` the graph variant took.
+    const auto in_preview =
+        lp2DrawLoopRefusal("graph.loop_variant_missing@1", variant_missing, "preview");
+    REQUIRE(in_preview.at("variant") == "preview");
+    CHECK(sentence(in_preview) ==
+          "Loop draws: material box has no outline variant (graph.loop_variant_missing@1).");
+    // The refusal's own `variant` is not a graph variant; the preview's is.
+    CHECK(PelicanStudio::graphRefusalVariant(
+              lp2DrawLoopRefusal("graph.loop_variant_missing@1", variant_missing)).empty());
+    CHECK(PelicanStudio::graphRefusalVariant(in_preview) == "preview");
+    CHECK(PelicanStudio::graphRefusalVariant(lp2DrawLoopRefusal(
+              "graph.loop_phase_crossing@1", {{"node", "draws"}, {"material", "box"}}, "xr")) ==
+          "xr");
+
+    LoopHarness h;
+    h.open();
+    SECTION("the main graph's refusal: the sentence alone, and the loop is marked") {
+        REQUIRE(h.client.model.setLoopCount("steps", 100));
+        h.refuse(lp2DrawLoopRefusal("graph.loop_variant_missing@1",
+                                    {{"node", "steps"}, {"material", "box"}, {"variant", "outline"}}));
+        CHECK(h.client.model.notice().message ==
+              "Loop steps: material box has no outline variant (graph.loop_variant_missing@1).");
+        CHECK(h.client.node("steps").refused);
+    }
+    SECTION("a graph variant's: named first, and the loop is marked the same way") {
+        REQUIRE(h.client.model.setLoopCount("steps", 100));
+        h.refuse(lp2DrawLoopRefusal("graph.loop_override_compile_limit@1",
+                                    {{"node", "steps"}, {"count", 17}, {"limit", 16}}, "preview"));
+        CHECK(h.client.model.notice().message ==
+              "The preview graph refused it: Loop steps needs 17 shader compiles; the limit is 16 "
+              "(graph.loop_override_compile_limit@1).");
+        CHECK(h.client.node("steps").refused);
+    }
+}

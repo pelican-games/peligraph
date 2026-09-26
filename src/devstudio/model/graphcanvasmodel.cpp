@@ -21,10 +21,8 @@ std::string diagnostic(const Json &response) {
     if (error.is_string()) return error.get<std::string>();
     // LP-0d: a graph variant (preview, XR) that refused the edit is named
     // first, whatever the code -- its graph refusal keeps the graph's code.
-    const auto variant_member = error.find("variant");
-    const auto variant = variant_member != error.end() && variant_member->is_string()
-                             ? variant_member->get<std::string>()
-                             : std::string{};
+    // A draw-loop refusal's own `variant` is not one (LP-2).
+    const auto variant = graphRefusalVariant(error);
     const auto prefix =
         variant.empty() ? std::string{} : "The " + variant + " graph refused it: ";
     // LP-4c, decision 9: a loop's or a definition's refusal is a sentence
