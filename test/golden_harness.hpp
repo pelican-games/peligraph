@@ -18,6 +18,7 @@ void runGpuSegmentedOcclusionXr();
 void runGpuSegmentedOcclusionHotReload();
 void runGoldenImages();
 void runDrawLoopIdentityEquivalence();
+void runDrawLoopDecomposedEquivalence();
 void runEditorRuntimeBinding();
 void runLogicalFrameStereo();
 void runLogicalFrameStereoSealedRetirement();

@@ -4,6 +4,8 @@
 #include "../src/core/renderingpass/computetask.hpp"
 #include "../src/project/renderconfigsection.hpp"
 #include "render_graph_root_test_support.hpp"
+#include "lp3a_decompose_support.hpp"
+#include "../src/project/materialdrawloop.hpp"
 #include "../src/project/renderfeatureoverlay.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/core/loader/engineresources.hpp"
@@ -418,6 +420,7 @@ CompiledRenderPipeline compileComposition(
     resolved.resource_provenance =
         composition.resource_provenance;
     resolved.graph_loops = composition.graph_loops;
+    resolved.material_draw_loops = composition.material_draw_loops;
     resolved.used_features = composition.used_features;
     return compileRenderPipeline(resolved);
 }
@@ -5648,9 +5651,12 @@ TEST_CASE("LP-1a loop refusals are named", "[render-feature][graph-composition][
         auto view = lp1aRange(1);
         view["over"] = {{"view_axis", {{"family", "$capture/cube"}, {"axis", "face"}}}};
         expect(loop_graph(view), "graph.loop_tier_unsupported@1", {{"node", "steps"}, {"reason", "set_unsupported"}});
+        // LP-3a: draw_items runs draw.* bodies; a body that makes a
+        // resource has no place in one material pass.
         auto draws = lp1aRange(1);
-        draws["over"] = {{"draw_items", Json::object()}};
-        expect(loop_graph(draws), "graph.loop_tier_unsupported@1", {{"node", "steps"}, {"reason", "set_unsupported"}});
+        draws["over"] = {{"draw_items", {{"contract", "forward_opaque_v1"}}}};
+        expect(loop_graph(draws), "graph.loop_tier_unsupported@1",
+               {{"node", "steps"}, {"reason", "resource_in_draw_body"}});
         auto per_frame = lp1aRange(1);
         per_frame["over"]["range"]["count"] = {{"node", "n"}, {"port", "value"}};
         expect(loop_graph(per_frame), "graph.loop_tier_unsupported@1", {{"node", "steps"}, {"reason", "per_frame_value"}});
@@ -6310,6 +6316,348 @@ TEST_CASE("LP-1b a loop body's value nodes run once per element",
     }
 }
 
+
+namespace {
+// LP-3a: the hybrid preset's material passes written in the graph
+// (test/lp3a_decompose_support.hpp): render.material_pass nodes placed where
+// the preset has them, each drawn by a graph.loop over draw_items whose else
+// branch is draw.material.
+nlohmann::json lp3aHybridRoot(nlohmann::json features) {
+    return TestSupport::renderGraphRoot(nlohmann::json{
+        {"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+        {"features", std::move(features)}});
+}
+
+nlohmann::json lp3aHybridPreset() {
+    return nlohmann::json::parse(engineResourceOrThrow("render_pipelines/hybrid_v1.json")).at("config");
+}
+
+nlohmann::json lp3aDecomposed(const nlohmann::json &root, bool with_loop = true,
+                              std::vector<TestSupport::Lp3aDecomposedPass> passes =
+                                  TestSupport::lp3aHybridMaterialPasses()) {
+    return TestSupport::lp3aDecomposeMaterialPasses(root, lp3aHybridPreset(), passes, with_loop);
+}
+
+// A pass as the frame graph reads it, less the ordering the placement adds
+// (the frame plan order is compared on its own).
+nlohmann::json lp3aPassFields(const nlohmann::json &config, std::string_view name) {
+    auto pass = passByName(config, name);
+    pass.erase("after");
+    pass.erase("before");
+    return pass;
+}
+
+MaterialDrawSubject lp3aSubject(std::string key, std::vector<std::string> tags,
+                                MaterialRouteClass route = MaterialRouteClass::forward_opaque) {
+    MaterialDrawSubject subject;
+    subject.key = std::move(key);
+    subject.name = subject.key;
+    subject.tags = std::move(tags);
+    subject.route = route;
+    subject.contract = route == MaterialRouteClass::deferred_geometry ? MaterialShaderContract::gbuffer_v1
+                                                                      : MaterialShaderContract::forward_scene_color_v1;
+    return subject;
+}
+
+// forward_opaque written in the graph and drawn by its loop, with the loop's
+// parameters laid over the default (null removes one) and more definitions.
+nlohmann::json lp3aForwardLoop(const nlohmann::json &loop_parameters, const nlohmann::json &definitions) {
+    using Json = nlohmann::json;
+    auto document = lp3aDecomposed(lp3aHybridRoot(Json::array()), true,
+                                   {{"forward_opaque", {{"before", "__snapshot_opaque_color"}}}});
+    for (const auto &[name, body] : definitions.items()) document["definitions"][name] = body;
+    for (auto &node : document["nodes"])
+        if (node.at("id") == "forward_opaque_draws")
+            for (const auto &[key, value] : loop_parameters.items()) {
+                if (value.is_null()) node["parameters"].erase(key);
+                else node["parameters"][key] = value;
+            }
+    return document;
+}
+
+// A draw body: the steps chained by `after`, the last one its `draws`.
+nlohmann::json lp3aDrawBody(const nlohmann::json &steps) {
+    using Json = nlohmann::json;
+    Json nodes = Json::array();
+    std::string previous;
+    for (std::size_t index = 0; index < steps.size(); ++index) {
+        const auto &step = steps.at(index);
+        const auto id = "s" + std::to_string(index);
+        Json node{{"id", id}, {"op", step.at("op")}, {"parameters", step.value("parameters", Json::object())},
+                  {"outputs", {"draws"}}};
+        if (!previous.empty()) node["inputs"] = {{"after", {{"node", previous}, {"port", "draws"}}}};
+        nodes.push_back(std::move(node));
+        previous = id;
+    }
+    return Json{{"nodes", std::move(nodes)}, {"outputs", {{"draws", {{"node", previous}, {"port", "draws"}}}}}};
+}
+} // namespace
+
+TEST_CASE("LP-3a the hybrid material passes written in the graph compose as the preset's own",
+          "[render-feature][graph-composition][lp3a]") {
+    using Json = nlohmann::json;
+    for (const auto &features : {Json::array({"engine://features/shadow_directional.json",
+                                              "engine://features/sky_ambient.json"}),
+                                 Json::array({"engine://features/bloom.json"})}) {
+        INFO(features.dump());
+        const auto one_piece = lp0aCompose(lp3aHybridRoot(features));
+        for (const bool with_loop : {true, false}) {
+            INFO(with_loop);
+            const auto decomposed = lp0aCompose(lp3aDecomposed(lp3aHybridRoot(features), with_loop));
+            // The same passes in the same places, planned in the same order.
+            CHECK(lp0bDeclared(decomposed.config) == lp0bDeclared(one_piece.config));
+            CHECK(lp0bPlanOrder(decomposed) == lp0bPlanOrder(one_piece));
+            for (const auto *pass : {"deferred_geometry", "forward_opaque", "forward_transparent"}) {
+                INFO(pass);
+                CHECK(lp3aPassFields(decomposed.config, pass) == lp3aPassFields(one_piece.config, pass));
+            }
+            // A placed material pass is picked by the surface resources like
+            // the preset's own (the LP-0b hole, docs/design_graph_loops.md 14.6).
+            CHECK(decomposed.surface_resource_contracts == one_piece.surface_resource_contracts);
+            if (features.at(0) == "engine://features/shadow_directional.json") {
+                CHECK(passByName(decomposed.config, "forward_opaque").at("surface_resources") ==
+                      Json{{"directional_shadow", "shadow_map"}});
+                CHECK(passByName(decomposed.config, "forward_transparent").at("surface_resources") ==
+                      Json{{"directional_shadow", "shadow_map"}});
+            }
+            REQUIRE_NOTHROW(compileComposition(decomposed));
+            if (!with_loop) {
+                // draws unconnected: today's drawing, no rule, no loop.
+                CHECK(decomposed.material_draw_loops == nullptr);
+                CHECK(decomposed.graph_loops.empty());
+                continue;
+            }
+            REQUIRE(decomposed.material_draw_loops != nullptr);
+            CHECK(decomposed.material_draw_loops->passes.size() == 3);
+            // Every material of each pass's contract is drawn once, itself.
+            const auto &rules = decomposed.material_draw_loops->passes;
+            CHECK(rules.at("forward_opaque").rule(lp3aSubject("a#m", {})) ==
+                  std::optional{MaterialDrawStepList{MaterialDrawStep::material()}});
+            CHECK(rules.at("deferred_geometry").rule(lp3aSubject("a#m", {}, MaterialRouteClass::deferred_geometry)) ==
+                  std::optional{MaterialDrawStepList{MaterialDrawStep::material()}});
+            // Another contract's material is not the loop's: the pass's
+            // default drawing (which draws none of it) stays.
+            CHECK(rules.at("forward_opaque").rule(lp3aSubject("a#m", {}, MaterialRouteClass::deferred_geometry)) ==
+                  std::nullopt);
+            const auto compiled = compileComposition(decomposed);
+            CHECK(compiled.material_draw_loops == decomposed.material_draw_loops);
+            // loops[]: one draw_loop per pass, named by its loop, with the
+            // pass it draws in; the elements are the running generation's.
+            const auto plan = lp1aPlanJson(decomposed);
+            REQUIRE(plan.contains("loops"));
+            CHECK(plan.at("loops") == Json::array({
+                {{"node", "deferred_geometry_draws"}, {"tier", "draw_loop"}, {"count", 0}, {"elements", Json::array()},
+                 {"unmatched_branches", Json::array()}, {"pass", "deferred_geometry"}},
+                {{"node", "forward_opaque_draws"}, {"tier", "draw_loop"}, {"count", 0}, {"elements", Json::array()},
+                 {"unmatched_branches", Json::array()}, {"pass", "forward_opaque"}},
+                {{"node", "forward_transparent_draws"}, {"tier", "draw_loop"}, {"count", 0},
+                 {"elements", Json::array()}, {"unmatched_branches", Json::array()}, {"pass", "forward_transparent"}},
+            }));
+        }
+    }
+}
+
+TEST_CASE("LP-3a a draw_loop's branches choose each material's draw steps",
+          "[render-feature][graph-composition][lp3a]") {
+    using Json = nlohmann::json;
+    // outline materials: a cull-front draw, then the material; one named
+    // material: nothing (a null body); every other: the material.
+    Json where = Json::object();
+    where["tags"] = {{"exclude", {"hidden"}}, {"require_all", {"lit"}}};
+    Json outline_when = Json::object();
+    outline_when["tags"] = {{"include", {"outline"}}};
+    Json loop_parameters = Json::object();
+    loop_parameters["where"] = where;
+    loop_parameters["branches"] = Json::array({
+        Json{{"when", outline_when}, {"body", "twice"}},
+        Json{{"when", {{"material", "m.json#skip"}}}, {"body", nullptr}},
+        Json{{"body", "forward_opaque_draw"}}});
+    const auto document = lp3aForwardLoop(
+        loop_parameters,
+        {{"twice", lp3aDrawBody(Json::array({
+             {{"op", "draw.override"}, {"parameters", {{"render_state", {{"cull", "front"}}}}}},
+             {{"op", "draw.material"}}}))}});
+    const auto composed = lp0aCompose(document);
+    // where's include / exclude is the pass's queue filter; require_all is
+    // the loop's alone.
+    CHECK(passByName(composed.config, "forward_opaque").at("material_filter") == Json{{"exclude", {"hidden"}}});
+    REQUIRE(composed.material_draw_loops != nullptr);
+    const auto &rule = composed.material_draw_loops->passes.at("forward_opaque");
+    CHECK(rule.node == "forward_opaque_draws");
+    CHECK(rule.branch_count == 3);
+    MaterialDrawRenderStateOverride cull_front;
+    cull_front.cull = SurfaceCullMode::front;
+    const MaterialDrawStepList twice{MaterialDrawStep::overridden(cull_front), MaterialDrawStep::material()};
+    const auto outlined = lp3aSubject("m.json#outlined", {"lit", "outline"});
+    const auto skipped = lp3aSubject("m.json#skip", {"lit"});
+    const auto plain = lp3aSubject("asset.glb#material[0]", {"lit"});
+    const auto unlit = lp3aSubject("m.json#unlit", {});
+    const auto hidden = lp3aSubject("m.json#hidden", {"lit", "hidden"});
+    const auto deferred = lp3aSubject("m.json#deferred", {"lit"}, MaterialRouteClass::deferred_geometry);
+    CHECK(rule.rule(outlined) == std::optional{twice});
+    CHECK(rule.rule(skipped) == std::optional{MaterialDrawStepList{}});
+    CHECK(rule.rule(plain) == std::optional{MaterialDrawStepList{MaterialDrawStep::material()}});
+    // In the queue range but outside require_all: drawn nothing.
+    CHECK(rule.rule(unlit) == std::optional{MaterialDrawStepList{}});
+    // Outside the queue filter or the contract: the default drawing, which
+    // the queue or the route leaves out.
+    CHECK(rule.rule(hidden) == std::nullopt);
+    CHECK(rule.rule(deferred) == std::nullopt);
+    REQUIRE(rule.classify(outlined).has_value());
+    CHECK(rule.classify(outlined)->branch == 0);
+    REQUIRE(rule.classify(skipped).has_value());
+    CHECK(rule.classify(skipped)->branch == 1);
+    CHECK(rule.classify(skipped)->served);
+    REQUIRE(rule.classify(plain).has_value());
+    CHECK(rule.classify(plain)->branch == 2);
+    CHECK_FALSE(rule.classify(unlit).has_value());
+
+    // get_frame_plan: the elements are the materials in over and where.
+    Json plan{{"loops", Json::array({{{"node", "forward_opaque_draws"}, {"tier", "draw_loop"}, {"count", 0},
+                                      {"elements", Json::array()}, {"unmatched_branches", Json::array()},
+                                      {"pass", "forward_opaque"}}})}};
+    auto filled = plan;
+    applyMaterialDrawLoopElementsToFramePlanJson(filled, *composed.material_draw_loops,
+                                                 {outlined, unlit, skipped, hidden, plain, deferred});
+    CHECK(filled.at("loops").at(0) == Json{
+        {"node", "forward_opaque_draws"}, {"tier", "draw_loop"}, {"count", 3},
+        {"elements", Json::array({{{"element", "m.json#outlined"}, {"index", 0}, {"branch", 0}},
+                                  {{"element", "m.json#skip"}, {"index", 1}, {"branch", 1}},
+                                  {{"element", "asset.glb#material[0]"}, {"index", 2}, {"branch", 2}}})},
+        {"unmatched_branches", Json::array()}, {"pass", "forward_opaque"}});
+    applyMaterialDrawLoopElementsToFramePlanJson(plan, *composed.material_draw_loops, {plain});
+    CHECK(plan.at("loops").at(0).at("unmatched_branches") == Json::array({0, 1}));
+
+    SECTION("when compares the material's own attributes, every key at once") {
+        GraphLoopDrawCondition when;
+        when.contract = "forward_scene_color_v1";
+        when.skinned = true;
+        when.has_variant_named = "silhouette";
+        auto subject = lp3aSubject("m.json#a", {});
+        CHECK_FALSE(graphLoopDrawConditionMatches(when, subject));
+        subject.skinned = true;
+        CHECK_FALSE(graphLoopDrawConditionMatches(when, subject));
+        subject.variants = {"silhouette"};
+        CHECK(graphLoopDrawConditionMatches(when, subject));
+        when.has_variant = false;
+        CHECK_FALSE(graphLoopDrawConditionMatches(when, subject));
+    }
+    SECTION("the steps of every draw node, and an override's render state") {
+        const auto every = lp3aForwardLoop(
+            {{"branches", Json::array({{{"body", "all"}}})}},
+            {{"all", lp3aDrawBody(Json::array({
+                 {{"op", "draw.variant"}, {"parameters", {{"variant", "silhouette"}}}},
+                 {{"op", "draw.override"},
+                  {"parameters", {{"render_state", {{"blend", "opaque"}, {"depth_write", false},
+                                                    {"depth_compare", "less_equal"}}},
+                                  {"defines", {"LP3A_MARK"}}}}},
+                 {{"op", "draw.material"}}}))}});
+        const auto steps = lp0aCompose(every).material_draw_loops->passes.at("forward_opaque").rule(plain);
+        MaterialDrawRenderStateOverride state;
+        state.blend = SurfaceBlendMode::opaque;
+        state.depth_write = false;
+        state.depth_compare = SurfaceDepthCompare::less_equal;
+        CHECK(steps == std::optional{MaterialDrawStepList{MaterialDrawStep::named("silhouette"),
+                                                          MaterialDrawStep::overridden(state, {"LP3A_MARK"}),
+                                                          MaterialDrawStep::material()}});
+    }
+}
+
+TEST_CASE("LP-3a a draw_loop leaves no material of its over and where unserved",
+          "[render-feature][graph-composition][lp3a]") {
+    // A branch with a body must draw; "body": null is a decision not to
+    // (docs/design_graph_loops.md 4.2.5).
+    GraphDrawLoop loop;
+    loop.loop = "loop";
+    loop.pass = "forward_opaque";
+    loop.contract = MaterialPassContract::forward_opaque_v1;
+    GraphDrawLoop::Branch skipped;
+    skipped.when.tags = GraphLoopTagFilter{{"skip"}, {}, {}};
+    GraphDrawLoop::Branch empty;
+    empty.when.tags = GraphLoopTagFilter{{"empty"}, {}, {}};
+    empty.steps = MaterialDrawStepList{};
+    GraphDrawLoop::Branch drawn;
+    drawn.steps = MaterialDrawStepList{MaterialDrawStep::material()};
+    loop.branches = {skipped, empty, drawn};
+    MaterialDrawLoopRules rules;
+    rules.passes.emplace("forward_opaque", makeGraphDrawLoopPassRule(loop));
+    const std::vector<MaterialDrawSubject> subjects{
+        lp3aSubject("m#skip", {"skip"}), lp3aSubject("m#empty", {"empty"}), lp3aSubject("m#plain", {}),
+        lp3aSubject("m#empty_deferred", {"empty"}, MaterialRouteClass::deferred_geometry)};
+    CHECK(materialDrawLoopUnservedSubjects(rules, subjects) == std::vector<std::size_t>{1});
+    // The generation refuses with today's code, the material under its route.
+    const auto message = materialRouteUnservedMessage(
+        {UnservedMaterialRoute{MaterialRouteClass::forward_opaque, MaterialShaderContract::forward_scene_color_v1,
+                               {describeUnservedMaterial("empty", "m", "m")}}},
+        "project://passes/main.json");
+    const auto refusal = splitCodedRefusalMessage(message);
+    REQUIRE(refusal.has_value());
+    CHECK(refusal->code == "material_route_unserved@1");
+}
+
+TEST_CASE("LP-3a draw_loop refusals are named", "[render-feature][graph-composition][lp3a]") {
+    using Json = nlohmann::json;
+    const auto expect = [](const Json &document, const std::string &code, const Json &fields) {
+        const auto [actual_code, actual_fields] = lp1aEditRefusal(document);
+        CHECK(actual_code == code);
+        CHECK(actual_fields == fields);
+    };
+    SECTION("the phase's own order only") {
+        expect(lp3aForwardLoop({{"order", {{"by", "element"}}}}, Json::object()), "graph.loop_order_unsupported@1",
+               {{"node", "forward_opaque_draws"}, {"order", {{"by", "element"}}}});
+        REQUIRE_NOTHROW(partitionGraphDocument(lp3aForwardLoop({{"order", nullptr}}, Json::object())));
+    }
+    SECTION("no legacy G-buffer pass") {
+        expect(lp3aForwardLoop({{"over", {{"draw_items", {{"contract", "legacy_gbuffer_v1"}}}}}}, Json::object()),
+               "graph.loop_contract_unsupported@1",
+               {{"node", "forward_opaque_draws"}, {"contract", "legacy_gbuffer_v1"}});
+    }
+    SECTION("draws reach exactly one material pass") {
+        auto alone = lp3aForwardLoop(Json::object(), Json::object());
+        for (auto &item : alone["nodes"])
+            if (item.at("id") == "forward_opaque") item["inputs"].erase("draws");
+        expect(alone, "graph.loop_draws_unconnected@1", {{"node", "forward_opaque_draws"}, {"count", 0}});
+        auto twice = lp3aForwardLoop(Json::object(), Json::object());
+        Json copy;
+        for (const auto &item : twice["nodes"])
+            if (item.at("id") == "forward_opaque") copy = item;
+        copy["id"] = "forward_opaque_again";
+        copy["parameters"]["insert"] = {{"after", "forward_opaque"}};
+        twice["nodes"].push_back(std::move(copy));
+        expect(twice, "graph.loop_draws_unconnected@1", {{"node", "forward_opaque_draws"}, {"count", 2}});
+        // Over another contract than the pass's.
+        CHECK_THROWS_AS(partitionGraphDocument(lp3aForwardLoop(
+                            {{"over", {{"draw_items", {{"contract", "forward_transparent_v1"}}}}}}, Json::object())),
+                        std::invalid_argument);
+    }
+    SECTION("a draw body is a loop body only") {
+        auto document = lp3aForwardLoop(Json::object(), Json::object());
+        document["nodes"].push_back({{"id", "misuse"}, {"op", "graph.instance"}, {"definition", "forward_opaque_draw"}});
+        expect(document, "graph.definition_role@1", {{"definition", "forward_opaque_draw"}, {"node", "misuse"}});
+        auto root = lp3aForwardLoop(Json::object(), Json::object());
+        root["nodes"].push_back({{"id", "stray"}, {"op", "draw.material"}, {"parameters", Json::object()},
+                                 {"outputs", {"draws"}}});
+        CHECK_THROWS_AS(partitionGraphDocument(root), std::invalid_argument);
+    }
+    SECTION("what one material pass cannot run") {
+        const auto reason = [&](const Json &parameters, const Json &definitions, const char *expected) {
+            INFO(expected);
+            expect(lp3aForwardLoop(parameters, definitions), "graph.loop_tier_unsupported@1",
+                   {{"node", "forward_opaque_draws"}, {"reason", expected}});
+        };
+        reason({{"carry", Json::array({{{"from", "draws"}, {"to", "after"}}})}}, Json::object(), "carry_in_draw_loop");
+        reason({{"limit", 2}}, Json::object(), "limit_in_draw_loop");
+        auto resource = lp3aDrawBody(Json::array({{{"op", "draw.material"}}}));
+        resource["nodes"].push_back(lp0bImage("scratch"));
+        reason({{"branches", Json::array({{{"body", "resource"}}})}}, {{"resource", resource}}, "resource_in_draw_body");
+        auto mixed = lp3aDrawBody(Json::array({{{"op", "draw.material"}}}));
+        mixed["nodes"].push_back(lp1aLit());
+        reason({{"branches", Json::array({{{"body", "mixed"}}})}}, {{"mixed", mixed}}, "mixed_body");
+        expect(lp3aForwardLoop({{"tier", "expand"}}, Json::object()), "graph.loop_tier_mismatch@1",
+               {{"node", "forward_opaque_draws"}, {"tier", "expand"}, {"actual", "draw_loop"}});
+        REQUIRE_NOTHROW(partitionGraphDocument(lp3aForwardLoop({{"tier", "draw_loop"}}, Json::object())));
+    }
+}
 
 namespace {
 // LP-0d: shadow_directional over the hybrid preset (cascade_count 3), its

@@ -631,6 +631,13 @@ std::vector<SemanticTypeSchema> builtinRenderTypeSchemas() {
         LogicalTypeConstructor::value,
         {},
         {"legacy_untyped"}});
+    // LP-3a: how a draw_loop draws one material, a list of draw steps that
+    // draw.* nodes chain and render.material_pass consumes.
+    registerSchema(SemanticTypeSchema{
+        parseSemanticTypeId("pelican.render.draw_stream@1"),
+        LogicalTypeConstructor::stream,
+        {},
+        {"draw"}});
     return schemas;
 }
 

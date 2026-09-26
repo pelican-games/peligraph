@@ -60,6 +60,9 @@ struct RenderFeatureComposeResult {
     // LP-1a: every graph.loop of a pelican.graph root, as the resolution
     // stage expanded it (get_frame_plan's `loops[]`).
     std::vector<RenderGraphLoopReport> graph_loops;
+    // LP-3a: the draw-step rules the graph's draw_loops give their material
+    // passes (null when there is none).
+    std::shared_ptr<const MaterialDrawLoopRules> material_draw_loops;
     // LP-0d: the graph nodes this composition made inactive because they
     // depend on a feature include_feature left out (a graph variant's).
     std::vector<RenderGraphDeactivatedNode> deactivated_graph_nodes;

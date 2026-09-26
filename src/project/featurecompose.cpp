@@ -3400,6 +3400,25 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
             }
         }
     }
+    // LP-3a: the graph's placed passes join the composed passes before the
+    // surface resources pick their consumers, so a render.material_pass the
+    // graph put at a preset's or a feature's pass is picked as the preset's
+    // own material pass would be (docs/design_graph_loops.md 14.6).
+    // LP-0d: first, a graph node that depends on a feature the variant left
+    // out is made inactive, so it is neither placed nor picked; the stages
+    // after this take the graph without it (active_graph).
+    std::vector<RenderGraphDeactivatedNode> deactivated_graph_nodes;
+    LoweredRenderGraphDocument active_graph;
+    if (common_graph) {
+        active_graph = withoutExcludedGraphDependents(composed, lowered_graph, graph_features, deactivated_graph_nodes);
+        // A replacement whose node the variant made inactive is not applied;
+        // the feature keeps its own pass in that variant.
+        std::erase_if(graph_features.replacements, [&](const RenderFeaturePassReplacement &replacement) {
+            return std::any_of(deactivated_graph_nodes.begin(), deactivated_graph_nodes.end(),
+                               [&](const RenderGraphDeactivatedNode &node) { return node.node == replacement.node; });
+        });
+        placeRenderGraphPassRuns(composed, active_graph);
+    }
     // A feature-owned surface resource selects consumers semantically. Run
     // that selection only after every feature has inserted its passes so the
     // result does not depend on whether a producer such as directional
@@ -3440,7 +3459,6 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     // Every target the rendering section, the preset, the features and the
     // snapshots declare now exists; pass order is not settled yet.
     std::vector<RenderGraphLoopReport> graph_loops;
-    std::vector<RenderGraphDeactivatedNode> deactivated_graph_nodes;
     // LP-0d: pass_replacements name a graph node, so they need a graph.
     if (!common_graph && !graph_features.replacements.empty()) {
         const auto &replacement = graph_features.replacements.front();
@@ -3458,8 +3476,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                 provenance.name, provenance.provider_feature.substr(0, provenance.provider_feature.find('/')));
         }
         graph_features.surface_resource_contracts = &surface_resource_contracts;
-        auto loop_resolution = resolveGraphDocumentAfterComposition(composed, lowered_graph, graph_features);
-        deactivated_graph_nodes = std::move(loop_resolution.deactivated);
+        auto loop_resolution = resolveGraphDocumentAfterComposition(composed, active_graph, graph_features);
         // LP-1a: a loop's copies of a render.image are declared here, after
         // the format classes and roles above were settled; they take theirs
         // the same way.
@@ -3474,7 +3491,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         }
         // Placed graph passes were not in the config the first provenance
         // pass saw; they come from the same authoring as the appended ones.
-        for (const auto &run : lowered_graph.placed_runs) {
+        for (const auto &run : active_graph.placed_runs) {
             for (const auto &pass : run.passes) {
                 pass_provenance.push_back(RenderPassProvenance{
                     .name = requireStringField(pass, "name", "pass"),
@@ -3528,6 +3545,15 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     result.resource_provenance =
         std::move(resource_provenance);
     result.graph_loops = std::move(graph_loops);
+    // LP-3a: each draw_loop becomes the draw-step rule of its material pass.
+    if (!active_graph.draw_loops.empty()) {
+        auto rules = std::make_shared<MaterialDrawLoopRules>();
+        for (auto &loop : active_graph.draw_loops) {
+            auto pass = loop.pass;
+            rules->passes.insert_or_assign(std::move(pass), makeGraphDrawLoopPassRule(std::move(loop)));
+        }
+        result.material_draw_loops = std::move(rules);
+    }
     result.deactivated_graph_nodes = std::move(deactivated_graph_nodes);
     result.used_features = !feature_instances.empty();
     return result;

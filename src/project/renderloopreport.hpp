@@ -37,6 +37,11 @@ struct RenderGraphLoopReport {
     std::vector<RenderGraphLoopElementReport> elements;
     // Branches no element took, by 0-based index.
     std::vector<std::size_t> unmatched_branches;
+    // LP-3a: a draw_loop's render.material_pass. Its elements are the
+    // materials, known only to the running generation: the compiled report
+    // leaves them empty and get_frame_plan fills them in (element: the
+    // material's matching key).
+    std::string pass;
 
     bool operator==(const RenderGraphLoopReport &) const = default;
 };

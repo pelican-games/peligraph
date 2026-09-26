@@ -15,6 +15,12 @@ TEST_CASE(
     GoldenHarness::runDrawLoopIdentityEquivalence();
 }
 
+TEST_CASE(
+    "LP-3a hybrid golden cases draw identically with their material passes written in the graph",
+    "[golden][headless][lp3a][draw-loop]") {
+    GoldenHarness::runDrawLoopDecomposedEquivalence();
+}
+
 #if PELICAN_WITH_RPC
 TEST_CASE(
     "inspector edits unnamed parented runtime objects and changes rendered pixels",

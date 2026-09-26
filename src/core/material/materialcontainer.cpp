@@ -2433,6 +2433,7 @@ MaterialDrawSubject MaterialContainer::drawLoopSubject(
         .route = material.route,
         .contract = material.shader_contract,
         .skinned = material.skinned,
+        .exact_pass = material.exact_pass,
     };
     for (const auto &[name, record] : material.variants) {
         (void)record;

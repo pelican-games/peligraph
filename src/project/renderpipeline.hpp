@@ -304,6 +304,8 @@ struct RenderPipelineResolveDependencies {
     std::set<std::string> inactive_graph_scopes;
 };
 
+struct MaterialDrawLoopRules;
+
 struct ResolvedRenderPipeline {
     nlohmann::json normalized_config = nlohmann::json::object();
     std::vector<std::string> shader_defines;
@@ -331,6 +333,8 @@ struct ResolvedRenderPipeline {
     std::vector<RenderResourceProvenance> resource_provenance;
     // LP-1a: every graph.loop of the composed graph (empty when it has none).
     std::vector<RenderGraphLoopReport> graph_loops;
+    // LP-3a: the graph's draw_loop rules, handed on to the compiled pipeline.
+    std::shared_ptr<const MaterialDrawLoopRules> material_draw_loops;
     // LP-0d: the graph nodes this variant made inactive because they depend
     // on a feature it excluded (also in `diagnostics`).
     std::vector<RenderGraphDeactivatedNode> deactivated_graph_nodes;

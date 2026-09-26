@@ -1,5 +1,7 @@
 #include "graphmodule.hpp"
 #include "featurecompose.hpp"
+#include "materialoutput.hpp"
+#include "renderpipeline.hpp"
 #include "shaderresourceport.hpp"
 #if PELICAN_WITH_ANIMATION
 #include "posegraphmodule.hpp"
@@ -51,13 +53,136 @@ LogicalType resourceType(const LogicalTypeRegistry &registry, const Json &declar
     return result;
 }
 
+// LP-0b: where a graph pass lands among the preset's and the features' passes.
+// Which pass an insert names is known only after composition; the shape is
+// checked here.
+void checkRenderPlacement(const std::string &op, const Json &parameters, const Json &node) {
+    const bool placed = parameters.contains("insert") || parameters.contains("canonical_anchor");
+    // A compute task is always declared after every pass; it has no place
+    // among them to take.
+    if (placed && op == "render.compute")
+        throw GraphRegistryError("graph.insert_on_compute@1", {{"node", nodeId(node)}});
+    if (parameters.contains("insert") && parameters.contains("canonical_anchor"))
+        throw std::invalid_argument("render insert and canonical_anchor exclude each other: " + nodeId(node));
+    if (const auto insert = parameters.find("insert"); insert != parameters.end()) {
+        const auto side = insert->is_object() && insert->size() == 1 ? insert->begin() : insert->end();
+        if (side == insert->end() || (side.key() != "after" && side.key() != "before") ||
+            !side->is_string() || side->get_ref<const std::string &>().empty())
+            throw std::invalid_argument("render insert must be {\"after\" | \"before\": \"<pass>\"}: " +
+                                        nodeId(node));
+    }
+    if (const auto anchor = parameters.find("canonical_anchor"); anchor != parameters.end()) {
+        if (!anchor->is_string())
+            throw std::invalid_argument("render canonical_anchor must be a string: " + nodeId(node));
+        if (!isCanonicalRenderPassAnchor(anchor->get<std::string>()))
+            throw GraphRegistryError("graph.insert_anchor_unknown@1",
+                                     {{"node", nodeId(node)}, {"anchor", anchor->get<std::string>()}});
+    }
+}
+
+// LP-3a: one draw.* node's parameters (a step of a draw_loop body).
+void checkDrawStepParameters(const std::string &op, const Json &parameters, const Json &node) {
+    const auto id = nodeId(node);
+    if (!parameters.is_object()) throw std::invalid_argument("draw node parameters must be an object: " + id);
+    const auto only = [&](std::initializer_list<const char *> keys) {
+        for (const auto &[key, value] : parameters.items()) {
+            (void)value;
+            if (std::none_of(keys.begin(), keys.end(), [&](const char *known) { return key == known; }))
+                throw std::invalid_argument(op + " does not take " + key + ": " + id);
+        }
+    };
+    if (op == "draw.material") {
+        only({});
+        return;
+    }
+    if (op == "draw.variant") {
+        only({"variant"});
+        const auto variant = parameters.find("variant");
+        if (variant == parameters.end() || !variant->is_string() || variant->get_ref<const std::string &>().empty())
+            throw std::invalid_argument("draw.variant requires a variant name: " + id);
+        return;
+    }
+    only({"render_state", "defines"});
+    bool any = false;
+    if (const auto state = parameters.find("render_state"); state != parameters.end()) {
+        if (!state->is_object()) throw std::invalid_argument("draw.override render_state must be an object: " + id);
+        const auto oneOf = [&](const std::string &key, std::initializer_list<const char *> names) {
+            const auto &value = state->at(key);
+            if (!value.is_string() || std::none_of(names.begin(), names.end(),
+                                                    [&](const char *name) { return value == name; }))
+                throw std::invalid_argument("draw.override render_state " + key + " is not known: " + id);
+        };
+        for (const auto &[key, value] : state->items()) {
+            if (key == "blend") oneOf(key, {"opaque", "blend", "additive"});
+            else if (key == "cull") oneOf(key, {"none", "front", "back"});
+            else if (key == "depth_compare")
+                oneOf(key, {"never", "less", "equal", "less_equal", "greater", "not_equal", "greater_equal", "always"});
+            else if (key == "depth_test" || key == "depth_write") {
+                if (!value.is_boolean())
+                    throw std::invalid_argument("draw.override render_state " + key + " must be a boolean: " + id);
+            } else throw std::invalid_argument("draw.override render_state does not take " + key + ": " + id);
+            any = true;
+        }
+        if (state->value("depth_test", true) == false && state->value("depth_write", false) == true)
+            throw std::invalid_argument("draw.override writes depth with depth_test off: " + id);
+    }
+    if (const auto defines = parameters.find("defines"); defines != parameters.end()) {
+        if (!defines->is_array()) throw std::invalid_argument("draw.override defines must be an array: " + id);
+        for (const auto &define : *defines) {
+            if (!define.is_string() || define.get_ref<const std::string &>().empty())
+                throw std::invalid_argument("draw.override defines are nonempty strings: " + id);
+            any = true;
+        }
+    }
+    if (!any) throw std::invalid_argument("draw.override replaces a render state or defines: " + id);
+}
+
 // Render resources and passes declare their own ports, so pelican.render
 // registers a factory rather than a fixed contract.
 GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
                                    const LogicalType &scalar, const Json &node) {
     const auto op = node.at("op").get<std::string>();
-    const auto &parameters = node.at("parameters");
+    // LP-3a: a draw.material has nothing to say, so its parameters may be absent.
+    static const Json no_parameters = Json::object();
+    const auto found_parameters = node.find("parameters");
+    const auto &parameters = found_parameters != node.end() ? *found_parameters : no_parameters;
     GraphOperationContract contract;
+    const auto draw_stream = registry.canonicalize(parseSemanticTypeId("pelican.render.draw_stream@1"));
+    if (op == "draw.material" || op == "draw.variant" || op == "draw.override") {
+        checkDrawStepParameters(op, parameters, node);
+        // Each step follows the one on its `after` edge; the body's `draws`
+        // output is the last.
+        contract.inputs.emplace("after", GraphInputContract{exactLogicalTypePattern(registry, draw_stream), false});
+        contract.outputs.emplace("draws", draw_stream);
+        return contract;
+    }
+    if (op == "render.material_pass") {
+        const auto id = nodeId(node);
+        if (!parameters.is_object()) throw std::invalid_argument("render node parameters must be an object");
+        for (const auto &[key, value] : parameters.items()) {
+            (void)value;
+            if (!isRenderMaterialPassParameter(key))
+                throw std::invalid_argument("render.material_pass does not take " + key + ": " + id);
+        }
+        const auto material_contract = parameters.find("material_contract");
+        if (material_contract == parameters.end() || !material_contract->is_string() ||
+            !materialPassContractFromName(material_contract->get<std::string>()))
+            throw std::invalid_argument("render.material_pass requires a known material_contract: " + id);
+        checkRenderPlacement(op, parameters, node);
+        // An attachment takes any image; the pass checks formats and counts
+        // against the contract when it is compiled, as for the JSON form.
+        LogicalTypePattern image;
+        image.constructor = LogicalTypeConstructor::image;
+        for (const auto &port : renderMaterialPassColorPorts(parameters)) {
+            if (port == "depth" || port == "draws" || !contract.inputs.emplace(port, GraphInputContract{image}).second)
+                throw std::invalid_argument("render.material_pass color socket is named twice: " + port);
+        }
+        contract.inputs.emplace("depth", GraphInputContract{image});
+        // Unconnected: today's drawing (one draw.material per material, or
+        // the pass's material_variant).
+        contract.inputs.emplace("draws", GraphInputContract{exactLogicalTypePattern(registry, draw_stream), false});
+        return contract;
+    }
     if (op == "render.buffer" || op == "render.attribute") {
         if (op == "render.attribute" && !parameters.contains("domain"))
             throw std::invalid_argument("render.attribute requires an attribute domain");
@@ -114,29 +239,7 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
             }
             if (access != "read") contract.outputs.emplace(port, type);
         }
-        // LP-0b: where a graph pass lands among the preset's and the features'
-        // passes. Which pass an insert names is known only after composition.
-        const bool placed = parameters.contains("insert") || parameters.contains("canonical_anchor");
-        // A compute task is always declared after every pass; it has no place
-        // among them to take.
-        if (placed && op == "render.compute")
-            throw GraphRegistryError("graph.insert_on_compute@1", {{"node", nodeId(node)}});
-        if (parameters.contains("insert") && parameters.contains("canonical_anchor"))
-            throw std::invalid_argument("render insert and canonical_anchor exclude each other: " + nodeId(node));
-        if (const auto insert = parameters.find("insert"); insert != parameters.end()) {
-            const auto side = insert->is_object() && insert->size() == 1 ? insert->begin() : insert->end();
-            if (side == insert->end() || (side.key() != "after" && side.key() != "before") ||
-                !side->is_string() || side->get_ref<const std::string &>().empty())
-                throw std::invalid_argument("render insert must be {\"after\" | \"before\": \"<pass>\"}: " +
-                                            nodeId(node));
-        }
-        if (const auto anchor = parameters.find("canonical_anchor"); anchor != parameters.end()) {
-            if (!anchor->is_string())
-                throw std::invalid_argument("render canonical_anchor must be a string: " + nodeId(node));
-            if (!isCanonicalRenderPassAnchor(anchor->get<std::string>()))
-                throw GraphRegistryError("graph.insert_anchor_unknown@1",
-                                         {{"node", nodeId(node)}, {"anchor", anchor->get<std::string>()}});
-        }
+        checkRenderPlacement(op, parameters, node);
     } else {
         throw GraphRegistryError("graph.operation_unregistered@1",
                                  {{"node", nodeId(node)}, {"op", op}});
@@ -401,6 +504,16 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
         };
         return std::pair<const std::string, GraphOperationRegistration>{op, std::move(registration)};
     };
+    // LP-3a: a draw step's ports are fixed, so the catalog declares them; the
+    // factory still checks the parameters.
+    const auto draw_stream = types->canonicalize(parseSemanticTypeId("pelican.render.draw_stream@1"));
+    const auto draw = [&](const char *op) {
+        auto entry = render(op);
+        entry.second.contract.inputs.emplace(
+            "after", GraphInputContract{exactLogicalTypePattern(*types, draw_stream), false});
+        entry.second.contract.outputs.emplace("draws", draw_stream);
+        return entry;
+    };
     registry.registerModule(GraphModuleManifest{
         "pelican.render", 1,
         "GPU buffers, attributes, images, passes and the scalar publication sink.",
@@ -412,6 +525,10 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
             render("render.buffer"), render("render.attribute"), render("render.image"),
             render("render.target_ref"),
             render("render.compute"), render("render.fullscreen"), render("render.raster"),
+            // LP-3a: the material pass, and the steps a draw_loop draws one
+            // material with.
+            render("render.material_pass"),
+            draw("draw.material"), draw("draw.variant"), draw("draw.override"),
         },
         {"render.scalar"}});
     // GP-3. The UI has no build without it, so the module always registers;
@@ -443,6 +560,38 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
 const GraphModuleRegistry &builtinGraphModuleRegistry() {
     static const GraphModuleRegistry registry = makeBuiltinGraphModuleRegistry();
     return registry;
+}
+
+std::vector<std::string> renderMaterialPassColorPorts(const nlohmann::json &parameters) {
+    if (const auto outputs = parameters.find("material_outputs"); outputs != parameters.end()) {
+        std::vector<std::string> ports;
+        try {
+            for (const auto &output : parseMaterialOutputSchema(*outputs, "render.material_pass material_outputs").outputs)
+                ports.push_back(output.name);
+        } catch (const std::runtime_error &error) {
+            throw std::invalid_argument(error.what());
+        }
+        return ports;
+    }
+    const auto contract = materialPassContractFromName(parameters.value("material_contract", std::string{}));
+    if (!contract) throw std::invalid_argument("render.material_pass requires a known material_contract");
+    if (materialPassShaderContract(*contract) == MaterialShaderContract::forward_scene_color_v1) return {"color"};
+    return {"albedo", "normal", "material", "worldpos", "emissive"};
+}
+
+bool isRenderMaterialPassParameter(std::string_view key) {
+    static const std::set<std::string, std::less<>> keys{
+        // The material pass's own fields (passfieldownership.cpp).
+        "material_contract", "material_filter", "material_variant", "material_range", "gpu_draw_source",
+        "material_outputs", "material_output_states", "screen_inputs", "surface_resources", "material_resources",
+        "ray_query",
+        // Its attachments' load, store and clear.
+        "color_load_op", "color_store_op", "depth_load_op", "depth_store_op", "clear_color", "clear_colors",
+        // Any pass's views and region tags.
+        "view_family", "view_select", "region_tags",
+        // Where it lands.
+        "pass_set", "after", "before", "insert", "canonical_anchor"};
+    return keys.contains(key);
 }
 
 } // namespace Pelican

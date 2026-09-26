@@ -2010,14 +2010,19 @@ nlohmann::json framePlanToJson(
                         {"branch", element.branch},
                     });
                 }
-                loops.push_back(nlohmann::json{
+                auto entry = nlohmann::json{
                     {"node", loop.node},
                     {"tier", loop.tier},
                     {"count", loop.count},
                     {"elements", std::move(elements)},
                     {"unmatched_branches",
                      loop.unmatched_branches},
-                });
+                };
+                // LP-3a: a draw_loop names its material pass; its elements
+                // are the running generation's materials, which
+                // applyMaterialDrawLoopElementsToFramePlanJson fills in.
+                if (!loop.pass.empty()) entry["pass"] = loop.pass;
+                loops.push_back(std::move(entry));
             }
             result["loops"] = std::move(loops);
         }

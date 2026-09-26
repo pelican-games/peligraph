@@ -29,6 +29,7 @@
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../fullscreenpass/shaderinputmismatchjson.hpp"
 #include "../material/materialcontainer.hpp"
+#include "../material/materialdrawlooptable.hpp"
 #include "../material/standardmaterialresource.hpp"
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
@@ -4170,6 +4171,19 @@ nlohmann::json Renderer::currentFramePlanJson() const {
                 resolution
                     ->unmatched_exclude);
         }
+    }
+    // LP-3a: a draw_loop's elements are the materials this generation
+    // judges, known only here.
+    if (generation->material_draw_loops != nullptr &&
+        generation->material_draw_loops->rules() != nullptr &&
+        FastModuleContainer::isInitialized<MaterialContainer>()) {
+        const auto &materials = GET_MODULE(MaterialContainer);
+        std::vector<MaterialDrawSubject> subjects;
+        for (const auto material : materials.drawLoopMaterials()) {
+            subjects.push_back(materials.drawLoopSubject(material));
+        }
+        applyMaterialDrawLoopElementsToFramePlanJson(
+            result, *generation->material_draw_loops->rules(), subjects);
     }
     if (generation->gpu_arena != nullptr) {
         nlohmann::json scopes = nlohmann::json::array();

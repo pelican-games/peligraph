@@ -23,6 +23,36 @@ void forbid(const Json &parameters, std::initializer_list<const char *> fields) 
             throw std::invalid_argument(std::string("render graph derives field from connections: ") + field);
 }
 
+// LP-3a: one draw.* node as the step it draws (the contract has checked the
+// parameters).
+MaterialDrawStep drawStepFromNode(const Json &node) {
+    const auto op = node.at("op").get<std::string>();
+    const auto parameters = node.value("parameters", Json::object());
+    if (op == "draw.material") return MaterialDrawStep::material();
+    if (op == "draw.variant") return MaterialDrawStep::named(parameters.at("variant").get<std::string>());
+    MaterialDrawRenderStateOverride state;
+    const auto &render_state = parameters.value("render_state", Json::object());
+    if (const auto blend = render_state.value("blend", std::string{}); !blend.empty())
+        state.blend = blend == "opaque" ? SurfaceBlendMode::opaque
+            : blend == "blend" ? SurfaceBlendMode::blend : SurfaceBlendMode::additive;
+    if (const auto cull = render_state.value("cull", std::string{}); !cull.empty())
+        state.cull = cull == "none" ? SurfaceCullMode::none
+            : cull == "front" ? SurfaceCullMode::front : SurfaceCullMode::back;
+    if (render_state.contains("depth_test")) state.depth_test = render_state.at("depth_test").get<bool>();
+    if (render_state.contains("depth_write")) state.depth_write = render_state.at("depth_write").get<bool>();
+    if (const auto compare = render_state.value("depth_compare", std::string{}); !compare.empty()) {
+        static const std::map<std::string, SurfaceDepthCompare> names{
+            {"never", SurfaceDepthCompare::never}, {"less", SurfaceDepthCompare::less},
+            {"equal", SurfaceDepthCompare::equal}, {"less_equal", SurfaceDepthCompare::less_equal},
+            {"greater", SurfaceDepthCompare::greater}, {"not_equal", SurfaceDepthCompare::not_equal},
+            {"greater_equal", SurfaceDepthCompare::greater_equal}, {"always", SurfaceDepthCompare::always}};
+        state.depth_compare = names.at(compare);
+    }
+    std::vector<std::string> defines;
+    for (const auto &define : parameters.value("defines", Json::array())) defines.push_back(define.get<std::string>());
+    return MaterialDrawStep::overridden(state, std::move(defines));
+}
+
 std::vector<std::string> orderNames(const Json &declaration, const char *key) {
     std::vector<std::string> names;
     const auto found = declaration.find(key);
@@ -87,7 +117,15 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
     // into its body instead of the config; the resolution stage copies the
     // body per element.
     std::map<std::string, std::size_t> loop_index;
+    // LP-3a: a draw_loop expands nothing; its body's draw.* nodes become the
+    // draw steps of the material pass its `draws` reach (draw_loop_passes).
+    std::map<std::string, std::string> draw_loop_passes;
+    const auto drawLoop = [&](const std::string &loop) {
+        const auto found = graph.loops.find(loop);
+        return found != graph.loops.end() && found->second.shape.set == GraphLoopSet::draw_items;
+    };
     for (const auto &[id, expansion] : graph.loops) {
+        if (drawLoop(id)) continue;
         RenderGraphLoop loop{expansion.shape, {}};
         for (const auto &branch : expansion.branches) {
             if (!branch) {
@@ -104,7 +142,8 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
     }
     const auto bodyOf = [&](const std::string &id) -> RenderGraphLoopBody * {
         const auto origin = graph.origins.find(id);
-        if (origin == graph.origins.end() || origin->second.loop.empty() || !origin->second.loop_branch)
+        if (origin == graph.origins.end() || origin->second.loop.empty() || !origin->second.loop_branch ||
+            !loop_index.contains(origin->second.loop))
             return nullptr;
         auto &branch = lowered.loops.at(loop_index.at(origin->second.loop)).branches.at(*origin->second.loop_branch);
         return branch ? &*branch : nullptr;
@@ -183,19 +222,71 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             if (duplicate == lowered.loop_output_reads.end()) lowered.loop_output_reads.push_back(std::move(entry));
         }
     };
+    // A lowered graphics pass joins a loop body, waits for its anchor, or is
+    // appended to its family (LP-3a: a render.material_pass the same way).
+    const auto landGraphicsPass = [&](const std::string &id, Json parameters, RenderGraphLoopBody *body) {
+        const auto family = parameters.value("pass_set", std::string{"main"});
+        parameters.erase("pass_set");
+        if (!graph.node_scopes.at(id).empty()) {
+            if (body != nullptr) body->isolated.emplace_back(family, id);
+            else config["target_planning"]["graphs"][family]["nodes"][id]["isolate"] = true;
+        }
+        if (body != nullptr) {
+            body->passes.emplace_back(family, std::move(parameters));
+            return;
+        }
+        graph_pass_order.push_back(id);
+        graph_pass_family.emplace(id, family);
+        graph_pass_edges.emplace(id, std::pair{parameters.value("after", Json::array()),
+                                               parameters.value("before", Json::array())});
+        // LP-0b: the anchor may be a preset's or a feature's pass, so the
+        // pass waits for the resolution stage instead of joining its family
+        // here. The contract has checked the shape.
+        if (parameters.contains("insert") || parameters.contains("canonical_anchor")) {
+            PendingPlacement pending{id, family, true, {}, {}};
+            if (parameters.contains("insert")) {
+                const auto &insert = parameters.at("insert");
+                pending.after = insert.contains("after");
+                pending.anchor = insert.at(pending.after ? "after" : "before").get<std::string>();
+            } else {
+                pending.anchor = parameters.at("canonical_anchor").get<std::string>();
+            }
+            parameters.erase("insert");
+            parameters.erase("canonical_anchor");
+            pending.pass = std::move(parameters);
+            pending_placements.push_back(std::move(pending));
+            return;
+        }
+        auto &families = config["rendering_passes"];
+        if (families.is_null()) families = Json::array();
+        auto found = std::find_if(families.begin(), families.end(), [&](const Json &candidate) {
+            return candidate.at("name") == family;
+        });
+        if (found == families.end()) {
+            families.push_back({{"name", family}, {"passes", Json::array()}});
+            found = std::prev(families.end());
+        }
+        (*found)["passes"].push_back(std::move(parameters));
+    };
     for (const auto &node : graph.nodes) {
         const auto id = node.at("id").get<std::string>();
         if (inactive(id)) continue;
         auto *const body = bodyOf(id);
+        // LP-3a: a draw_loop body's step. The expander admits a draw.* node
+        // nowhere else; the steps are read off the body below.
+        if (const auto origin = graph.origins.find(id); node.at("op").get<std::string>().starts_with("draw.") &&
+            origin != graph.origins.end() && drawLoop(origin->second.loop))
+            continue;
         // A contract can be registered without a backend that runs it. Say so
         // by name instead of lowering an unknown operation as if it were a pass.
         static const std::set<std::string> lowerable{"render.buffer", "render.attribute",
-            "render.image", "render.target_ref", "render.compute", "render.fullscreen", "render.raster"};
+            "render.image", "render.target_ref", "render.compute", "render.fullscreen", "render.raster",
+            "render.material_pass"};
         if (!lowerable.contains(node.at("op").get<std::string>()))
             throw GraphRegistryError("graph.operation_unexecutable@1",
                 {{"node", id}, {"op", node.at("op").get<std::string>()},
                  {"backend", "pelican.render"}});
-        auto parameters = node.at("parameters");
+        auto parameters = node.value("parameters", Json::object());
         // Ordering is not a data dependency: an active task need not wait for
         // a task that no longer executes. Unknown names still reach validation.
         for (const auto *key : {"after", "before"}) {
@@ -205,6 +296,49 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             order.erase(std::remove_if(order.begin(), order.end(), [&](const Json &name) {
                 return inactive(name.get<std::string>());
             }), order.end());
+        }
+        if (node.at("op") == "render.material_pass") {
+            // LP-3a: the material pass JSON of the rendering section, with
+            // its attachments taken from its sockets and its name from the id.
+            auto pass = parameters;
+            pass["name"] = id;
+            pass["type"] = "material";
+            auto after = pass.value("after", Json::array());
+            Json output{{"color", Json::array()}, {"depth", nullptr}};
+            const auto attach = [&](const std::string &port) {
+                const auto &endpoint = node.at("inputs").at(port);
+                const auto producer = endpoint.at("node").get<std::string>();
+                recordLoopReads(id, endpoint);
+                const auto op = nodes.at(producer)->at("op").get<std::string>();
+                const bool other_body = bodyOf(producer) != nullptr && bodyOf(producer) != body;
+                if (!other_body && op != "render.buffer" && op != "render.attribute" && op != "render.image" &&
+                    op != "render.target_ref" && std::find(after.begin(), after.end(), producer) == after.end())
+                    after.push_back(producer);
+                return resourceName(endpoint);
+            };
+            for (const auto &port : renderMaterialPassColorPorts(parameters)) output["color"].push_back(attach(port));
+            output["depth"] = attach("depth");
+            pass["output"] = std::move(output);
+            if (!after.empty()) pass["after"] = std::move(after);
+            // Its draws: a draw_loop's, or today's drawing when unconnected.
+            if (const auto draws = node.at("inputs").find("draws"); draws != node.at("inputs").end()) {
+                const auto marker = draws->find(graphLoopOutputMarker);
+                if (marker == draws->end() || !drawLoop(marker->value("loop", std::string{})))
+                    throw std::invalid_argument("render.material_pass draws come from a graph.loop over draw_items: " + id);
+                const auto loop = marker->at("loop").get<std::string>();
+                draw_loop_passes.emplace(loop, id);
+                // `where` is the pass's material_filter (the queue's tag
+                // filter, shared by its stable id); require_all is the loop's.
+                if (const auto &where = graph.loops.at(loop).shape.draw_where;
+                    where && (!where->include.empty() || !where->exclude.empty())) {
+                    Json filter = Json::object();
+                    if (!where->include.empty()) filter["include"] = where->include;
+                    if (!where->exclude.empty()) filter["exclude"] = where->exclude;
+                    pass["material_filter"] = std::move(filter);
+                }
+            }
+            landGraphicsPass(id, std::move(pass), body);
+            continue;
         }
         if (node.at("op") == "render.buffer" || node.at("op") == "render.attribute") {
             if (parameters.contains("source"))
@@ -358,48 +492,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             parameters["input"] = reads;
             parameters["output"] = std::move(attachments);
             parameters["type"] = node.at("op") == "render.fullscreen" ? "fullscreen" : "raster";
-            const auto family = parameters.value("pass_set", std::string{"main"});
-            parameters.erase("pass_set");
-            if (!graph.node_scopes.at(id).empty()) {
-                if (body != nullptr) body->isolated.emplace_back(family, id);
-                else config["target_planning"]["graphs"][family]["nodes"][id]["isolate"] = true;
-            }
-            if (body != nullptr) {
-                body->passes.emplace_back(family, std::move(parameters));
-                continue;
-            }
-            graph_pass_order.push_back(id);
-            graph_pass_family.emplace(id, family);
-            graph_pass_edges.emplace(id, std::pair{parameters.value("after", Json::array()),
-                                                   parameters.value("before", Json::array())});
-            // LP-0b: the anchor may be a preset's or a feature's pass, so the
-            // pass waits for the resolution stage instead of joining its family
-            // here. The contract has checked the shape.
-            if (parameters.contains("insert") || parameters.contains("canonical_anchor")) {
-                PendingPlacement pending{id, family, true, {}, {}};
-                if (parameters.contains("insert")) {
-                    const auto &insert = parameters.at("insert");
-                    pending.after = insert.contains("after");
-                    pending.anchor = insert.at(pending.after ? "after" : "before").get<std::string>();
-                } else {
-                    pending.anchor = parameters.at("canonical_anchor").get<std::string>();
-                }
-                parameters.erase("insert");
-                parameters.erase("canonical_anchor");
-                pending.pass = std::move(parameters);
-                pending_placements.push_back(std::move(pending));
-                continue;
-            }
-            auto &families = config["rendering_passes"];
-            if (families.is_null()) families = Json::array();
-            auto found = std::find_if(families.begin(), families.end(), [&](const Json &candidate) {
-                return candidate.at("name") == family;
-            });
-            if (found == families.end()) {
-                families.push_back({{"name", family}, {"passes", Json::array()}});
-                found = std::prev(families.end());
-            }
-            (*found)["passes"].push_back(std::move(parameters));
+            landGraphicsPass(id, std::move(parameters), body);
         } else (body != nullptr ? body->compute_tasks : config["compute_tasks"]).push_back(std::move(parameters));
     }
     lowered.graph_node_count = graph_pass_order.size() + config["compute_tasks"].size();
@@ -408,6 +501,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
     // LP-1b: the first value of each carried input that is a render resource
     // (a scalar carry is the values partition's).
     for (const auto &[id, expansion] : graph.loops) {
+        if (drawLoop(id)) continue;
         auto &loop = lowered.loops.at(loop_index.at(id));
         for (const auto &pair : expansion.shape.carry) {
             const auto found = expansion.inputs.find(pair.to);
@@ -517,6 +611,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
     // LP-1a: each body's passes in the body's own dependency order, and what
     // each body output names.
     for (const auto &[id, expansion] : graph.loops) {
+        if (drawLoop(id)) continue;
         auto &loop = lowered.loops.at(loop_index.at(id));
         for (std::size_t branch = 0; branch < loop.branches.size(); ++branch) {
             if (!loop.branches[branch]) continue;
@@ -531,6 +626,40 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                 if (nodes.contains(producer)) body.outputs.emplace(port, resourceName(endpoint));
             }
         }
+    }
+    // LP-3a: each draw_loop's branch table. A branch's steps are its body's
+    // draw.* chain: from the body's `draws` output back along `after` edges,
+    // then first to last.
+    for (const auto &[id, expansion] : graph.loops) {
+        if (!drawLoop(id)) continue;
+        const auto pass = draw_loop_passes.find(id);
+        // The material pass is in an inactive instance: nothing draws.
+        if (pass == draw_loop_passes.end()) continue;
+        GraphDrawLoop loop;
+        loop.loop = id;
+        loop.pass = pass->second;
+        loop.contract = *materialPassContractFromName(expansion.shape.draw_contract);
+        loop.where = expansion.shape.draw_where;
+        for (std::size_t branch = 0; branch < expansion.branches.size(); ++branch) {
+            GraphDrawLoop::Branch entry{expansion.shape.branches.at(branch).draw_when, std::nullopt};
+            if (const auto &body = expansion.branches[branch]) {
+                MaterialDrawStepList steps;
+                auto endpoint = body->outputs.contains("draws") ? body->outputs.at("draws") : Json{};
+                std::set<std::string> seen;
+                while (endpoint.is_object() && endpoint.contains("node")) {
+                    const auto step_id = endpoint.at("node").get<std::string>();
+                    const auto found = nodes.find(step_id);
+                    if (found == nodes.end() || !seen.insert(step_id).second) break;
+                    steps.push_back(drawStepFromNode(*found->second));
+                    const auto inputs = found->second->find("inputs");
+                    endpoint = inputs != found->second->end() && inputs->contains("after") ? inputs->at("after") : Json{};
+                }
+                std::reverse(steps.begin(), steps.end());
+                entry.steps = std::move(steps);
+            }
+            loop.branches.push_back(std::move(entry));
+        }
+        lowered.draw_loops.push_back(std::move(loop));
     }
     if (!pending_placements.empty()) {
         // The graph's own order: the expansion lists nodes by id, not by
@@ -696,37 +825,7 @@ std::optional<RenderLoopOrigin> loopCopyOrigin(const std::string &name, const st
 }
 } // namespace
 
-namespace {
-// LP-0d: defined with the replacements below.
-LoweredRenderGraphDocument withoutExcludedDependents(Json &composed, const LoweredRenderGraphDocument &lowered,
-                                                     const RenderGraphFeatureContext &features,
-                                                     std::vector<RenderGraphDeactivatedNode> &deactivated);
-RenderGraphLoopResolution resolveActiveGraph(Json &composed, const LoweredRenderGraphDocument &lowered);
-} // namespace
-
-RenderGraphLoopResolution resolveGraphDocumentAfterComposition(Json &composed, const LoweredRenderGraphDocument &lowered,
-                                                               const RenderGraphFeatureContext &features) {
-    // LP-0d: what a variant excluded takes the graph nodes that depend on it
-    // along, before anything checks their references.
-    std::vector<RenderGraphDeactivatedNode> deactivated;
-    const auto active = withoutExcludedDependents(composed, lowered, features, deactivated);
-    auto resolution = resolveActiveGraph(composed, active);
-    resolution.deactivated = std::move(deactivated);
-    // LP-0d: a replacement whose node the variant made inactive is not
-    // applied; the feature keeps its own pass in that variant.
-    auto replacing = features;
-    std::erase_if(replacing.replacements, [&](const RenderFeaturePassReplacement &replacement) {
-        return std::any_of(resolution.deactivated.begin(), resolution.deactivated.end(),
-                           [&](const RenderGraphDeactivatedNode &node) { return node.node == replacement.node; });
-    });
-    applyRenderFeaturePassReplacements(composed, active, resolution.passes, replacing);
-    return resolution;
-}
-
-namespace {
-RenderGraphLoopResolution resolveActiveGraph(Json &composed, const LoweredRenderGraphDocument &lowered) {
-    for (const auto &reference : lowered.target_refs) checkTargetReference(composed, reference);
-    for (const auto &read : lowered.history_reads) checkHistoryRead(composed, read);
+void placeRenderGraphPassRuns(Json &composed, const LoweredRenderGraphDocument &lowered) {
     // LP-0b: place each run once its anchor exists. A run may be anchored at
     // a pass another run places, so place what can be placed until nothing
     // moves; the first run left is refused by name.
@@ -740,16 +839,29 @@ RenderGraphLoopResolution resolveActiveGraph(Json &composed, const LoweredRender
         placeRenderGraphPassRun(composed, **next);
         pending.erase(next);
     }
-    // LP-1a: graph.loop expansion. LP-0d (pass_replacements, variant
-    // removals) continues after it.
+}
+
+namespace {
+void resolveDrawLoops(Json &composed, const LoweredRenderGraphDocument &lowered, RenderGraphLoopResolution &resolution);
+} // namespace
+
+RenderGraphLoopResolution resolveGraphDocumentAfterComposition(Json &composed, const LoweredRenderGraphDocument &lowered,
+                                                               const RenderGraphFeatureContext &features) {
+    for (const auto &reference : lowered.target_refs) checkTargetReference(composed, reference);
+    for (const auto &read : lowered.history_reads) checkHistoryRead(composed, read);
+    // LP-1a: graph.loop expansion. LP-0d (pass_replacements) continues after
+    // it; the variant's removals ran before the runs were placed
+    // (withoutExcludedGraphDependents).
     //
     // LP-1b: whatever refuses a node of one element's copy here -- a
     // render.target_ref (LP-0a), a history read, an expression -- names the
     // copy (`<loop>/<element>/<node>`); the refusal adds where the copy came
     // from, as `loop_origin` {loop, element, node}, in this one place rather
     // than at each check.
+    RenderGraphLoopResolution resolution;
     try {
-        return expandRenderGraphLoops(composed, lowered);
+        resolution = expandRenderGraphLoops(composed, lowered);
+        resolveDrawLoops(composed, lowered, resolution);
     } catch (const GraphRegistryError &error) {
         const auto &detail = error.detail();
         const auto node = detail.is_object() ? detail.find("node") : detail.end();
@@ -760,8 +872,11 @@ RenderGraphLoopResolution resolveActiveGraph(Json &composed, const LoweredRender
         extended["loop_origin"] = Json{{"loop", origin->loop}, {"element", origin->element}, {"node", origin->node}};
         throw GraphRegistryError(error.code(), std::move(extended));
     }
+    // LP-0d: the composer left out the replacements whose node the variant
+    // made inactive; the feature keeps its own pass in that variant.
+    applyRenderFeaturePassReplacements(composed, lowered, resolution.passes, features);
+    return resolution;
 }
-} // namespace
 
 namespace {
 // --- LP-1a: the expand stage.
@@ -1485,6 +1600,32 @@ RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRe
 }
 
 namespace {
+// LP-3a: a draw_loop runs inside its material pass, so ordering against the
+// loop is ordering against the pass; and it reports no element until a
+// generation knows the materials (get_frame_plan fills them in).
+void resolveDrawLoops(Json &composed, const LoweredRenderGraphDocument &lowered, RenderGraphLoopResolution &resolution) {
+    if (lowered.draw_loops.empty()) return;
+    std::map<std::string, std::string> pass_of;
+    for (const auto &loop : lowered.draw_loops) pass_of.emplace(loop.loop, loop.pass);
+    for (auto &[name, entry] : composedDeclarations(composed)) {
+        (void)name;
+        for (const auto *key : {"after", "before"}) {
+            const auto list = entry.declaration->find(key);
+            if (list == entry.declaration->end() || !list->is_array()) continue;
+            for (auto &item : *list)
+                if (item.is_string())
+                    if (const auto found = pass_of.find(item.get<std::string>()); found != pass_of.end())
+                        item = found->second;
+        }
+    }
+    for (const auto &loop : lowered.draw_loops) {
+        RenderGraphLoopReport report{loop.loop, graphLoopTierName(GraphLoopTier::draw_loop), 0, {}, {}, loop.pass};
+        resolution.loops.push_back(std::move(report));
+    }
+    std::sort(resolution.loops.begin(), resolution.loops.end(),
+              [](const RenderGraphLoopReport &lhs, const RenderGraphLoopReport &rhs) { return lhs.node < rhs.node; });
+}
+
 // --- LP-0d: what a variant excluded, and pass_replacements.
 
 void dropOrderNames(Json &declaration, const std::set<std::string> &names) {
@@ -1568,9 +1709,11 @@ void rewriteFrameNodeOrder(Json &composed, const NameReplacement &replace) {
     }
 }
 
-LoweredRenderGraphDocument withoutExcludedDependents(Json &composed, const LoweredRenderGraphDocument &lowered,
-                                                     const RenderGraphFeatureContext &features,
-                                                     std::vector<RenderGraphDeactivatedNode> &deactivated) {
+} // namespace
+
+LoweredRenderGraphDocument withoutExcludedGraphDependents(Json &composed, const LoweredRenderGraphDocument &lowered,
+                                                          const RenderGraphFeatureContext &features,
+                                                          std::vector<RenderGraphDeactivatedNode> &deactivated) {
     auto active = lowered;
     if (features.excluded_passes.empty() && features.excluded_resources.empty() &&
         features.excluded_replacements.empty())
@@ -1729,11 +1872,13 @@ LoweredRenderGraphDocument withoutExcludedDependents(Json &composed, const Lower
     std::erase_if(active.history_reads, [&](const RenderGraphHistoryRead &read) {
         return inactive.contains(read.node) || excludedResource(read.target) != nullptr;
     });
+    // LP-3a: a draw_loop draws inside its render.material_pass; with the pass
+    // gone it has nothing to draw into.
+    std::erase_if(active.draw_loops, [&](const GraphDrawLoop &loop) { return inactive.contains(loop.pass); });
     for (const auto &name : inactive) active.graph_declarations.erase(name);
     active.graph_node_count -= std::min(removed, active.graph_node_count);
     return active;
 }
-} // namespace
 
 void applyRenderFeaturePassReplacements(Json &composed, const LoweredRenderGraphDocument &lowered,
                                         const std::map<std::string, RenderLoopOrigin> &loop_passes,

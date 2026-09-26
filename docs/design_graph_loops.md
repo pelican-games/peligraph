@@ -682,7 +682,8 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `graph.loop_override_interface@1` | 組み直し | `{node, material, binding}` |
 | `graph.loop_override_needs_compiler@1` | 組み直し | `{node}` |
 | `graph.loop_override_compile_limit@1` | 組み直し | `{node, count, limit}`(define の差し替えの compile は世代あたり 16。1 件約 200 ms。LP-2) |
-| `graph.definition_role@1` | 編集・読み込み | `{definition, node}` |
+| `graph.definition_role@1` | 編集・読み込み | `{definition, node}`(node は graph.instance の id) |
+| `graph.loop_draws_unconnected@1` | 編集・読み込み | `{node, count}`(draw_loop の出力 draws が 0 本 / 2 本以上。LP-3a) |
 | `graph.definition_referenced@1` | 編集 | `{definition, referenced_by}` |
 | `graph.definition_duplicate@1` | 編集 | `{definition}`(LP-0c) |
 | `graph.definition_missing@1` | 編集 | `{definition}`(rename では `from`。LP-0c) |
@@ -853,6 +854,9 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 5. **v0 の WP の本数と所要**
    - 15 本は、v0 の残りの作業として最大の塊になる。
    - 着地の順は §11 の前提の順。LP-Va と LP-2 は、ほかと並べて走らせられる。
-6. **置き場所を指定した graph の pass と surface_resources**(LP-0b で発見)
+6. **置き場所を指定した graph の pass と surface_resources**(LP-0b で発見。**LP-3a で解決**: 配置を surface resources の選択の前へ移した。expand ループの展開で入る pass は今も選択の後)
    - 置き場所を指定した graph の pass は、解決の段で `applySurfaceResourceContracts`(fullscreen_consumers と material の選択)の後に入るので、消費側として選ばれない。
    - LP-3a の `render.material_pass` を `insert` で置くと、影の map などが結ばれない。LP-3a で、配置を surface resources の前に移すか、配置の後に選択をやり直す。
+7. **置き換えた consumer の pass と surface_resources**(LP-3a と LP-0d の merge で判明)
+   - `pass_replacements` の置き換えは loop の展開の後(surface resources の消費側の選択より後)に行う。そのため、feature の consumer の pass(影を受ける material pass など)を graph の pass で置き換えると、置き換え先は影などを受けない(producer の置き換えは問題ない)。`material_consumers` / `fullscreen_consumers` の名前も写していない(LP-0d)。LP-Vb(cube の material pass を置き換える)で、置き換えの後に消費側の選択をやり直すか、名前を写す。
+   - `pass_replacements` の置き換え先に draw_loop の id は書けない(`render.material_pass` の id を書く)。

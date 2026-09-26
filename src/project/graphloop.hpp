@@ -59,14 +59,49 @@ struct GraphLoopCondition {
     std::vector<std::string> pointers;
 };
 
+// LP-3a: a draw_loop's `where` and a branch's `when` look at one material,
+// never at an element number. `where` takes only `tags`; `when` any of these,
+// every key it writes must hold (AND):
+//   "material":    the matching key (<document>#<name>, <asset>#material[i],
+//                  or the registered name; materialdrawloop.hpp)
+//   "tags":        {"include": [...], "exclude": [...], "require_all": [...]}
+//                  (include: any of them; exclude: none of them; require_all:
+//                  every one of them)
+//   "contract":    the material's shader contract (gbuffer_v1,
+//                  forward_scene_color_v1)
+//   "skinned":     true | false
+//   "has_variant": true | false (any variant), or a variant name
+struct GraphLoopTagFilter {
+    // Each sorted and unique.
+    std::vector<std::string> include;
+    std::vector<std::string> exclude;
+    std::vector<std::string> require_all;
+    bool empty() const noexcept { return include.empty() && exclude.empty() && require_all.empty(); }
+    bool operator==(const GraphLoopTagFilter &) const = default;
+};
+
+struct GraphLoopDrawCondition {
+    std::optional<std::string> material;
+    std::optional<GraphLoopTagFilter> tags;
+    std::optional<std::string> contract;
+    std::optional<bool> skinned;
+    // true / false: has any variant / has none; a string: has that variant.
+    std::optional<bool> has_variant;
+    std::optional<std::string> has_variant_named;
+    bool operator==(const GraphLoopDrawCondition &) const = default;
+};
+
 struct GraphLoopBranch {
     GraphLoopCondition when;
+    // LP-3a: the `when` of a draw_loop branch (`when` above stays `always`).
+    GraphLoopDrawCondition draw_when;
     // Empty for `"body": null`: the element runs nothing.
     std::optional<std::string> body;
 };
 
-// The set a loop runs over. Only `range` is expanded today; `view_axis`
-// (LP-Vb) and `draw_items` (LP-3a) are recognised and refused by name.
+// The set a loop runs over. `range` is expanded; `draw_items` (LP-3a) runs
+// inside one material pass; `view_axis` (LP-Vb) is recognised and refused by
+// name.
 enum class GraphLoopSet : std::uint8_t { range, view_axis, draw_items, unknown };
 enum class GraphLoopTier : std::uint8_t { expand, draw_loop };
 std::string graphLoopTierName(GraphLoopTier tier);
@@ -103,6 +138,11 @@ struct GraphLoopShape {
     std::optional<std::int64_t> limit;
     std::vector<GraphLoopBranch> branches;
     std::vector<GraphLoopCarry> carry;
+    // LP-3a, `over: {"draw_items": {"contract": "<material pass contract>"}}`:
+    // the contract's name, its `where` (tags only) and whether `order` was
+    // written ({"by": "phase_default"} is the only order it takes).
+    std::string draw_contract;
+    std::optional<GraphLoopTagFilter> draw_where;
     std::optional<GraphLoopTier> tier;
     std::vector<std::string> after;
     std::vector<std::string> before;
@@ -133,12 +173,15 @@ struct GraphLoopBodyTraits {
     bool render = false;    // a render.* or value.* node
     bool nested = false;    // a graph.instance or graph.loop node
     bool graphics = false;  // a render.fullscreen / render.raster node
+    bool resource = false;  // LP-3a: a render.image / render.buffer / render.attribute node
 };
 
 // Section 3: which stage runs the loop. Throws graph.loop_tier_unsupported@1
 // {node, reason} or graph.loop_tier_mismatch@1 {node, tier, actual}. LP-1a
 // answers `expand` for `range` over render/value bodies and refuses the rest;
-// LP-3a adds draw_loop (draw_items over draw.* bodies) here, LP-Vb view_axis.
+// LP-3a answers `draw_loop` for `draw_items` over draw.* bodies (reasons
+// resource_in_draw_body, mixed_body, carry_in_draw_loop, limit_in_draw_loop);
+// LP-Vb adds view_axis.
 GraphLoopTier classifyGraphLoopTier(const GraphLoopShape &shape,
                                     const std::vector<GraphLoopBodyTraits> &bodies);
 

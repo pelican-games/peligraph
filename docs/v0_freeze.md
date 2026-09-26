@@ -129,6 +129,9 @@ build から外した unit の op(`audio.*` / `pose.*`)だけが欠けてよい�
 | `audio.pitch` | pelican.audio | values | direct | value | sink | declared | `value`, `voice`? | — |
 | `audio.playback` | pelican.audio | values | replay | value(`asset` / `bus` / `wrap` は rebuild) | — | declared | `delay`?, `events`?, `position`?, `source_begin`?, `source_end`?, `speed`?, `time` | `voice`: pelican.audio.voice@1 |
 | `audio.volume` | pelican.audio | values | direct | value | sink | declared | `value`, `voice`? | — |
+| `draw.material` | pelican.render | rendering | direct | rebuild | — | declared | — | — |
+| `draw.override` | pelican.render | rendering | direct | rebuild | — | declared | — | — |
+| `draw.variant` | pelican.render | rendering | direct | rebuild | — | declared | — | — |
 | `event.playback` | pelican.value | values | direct | value | — | declared | — | `events`: pelican.event.playback_control@1 |
 | `pose.blend` | pelican.pose | animation | direct | value | — | declared | `a`, `b`, `weight` | `pose`: pelican.pose@1 |
 | `pose.clip_sample` | pelican.pose | animation | direct | rebuild | — | declared | `time` | `pose`: pelican.pose@1 |
@@ -141,6 +144,7 @@ build から外した unit の op(`audio.*` / `pose.*`)だけが欠けてよい�
 | `render.compute` | pelican.render | rendering | direct | rebuild | — | parameter_dependent | — | — |
 | `render.fullscreen` | pelican.render | rendering | direct | rebuild | — | parameter_dependent | — | — |
 | `render.image` | pelican.render | rendering | direct | rebuild | — | parameter_dependent | — | — |
+| `render.material_pass` | pelican.render | rendering | direct | rebuild | — | parameter_dependent | — | — |
 | `render.raster` | pelican.render | rendering | direct | rebuild | — | parameter_dependent | — | — |
 | `render.scalar` | pelican.render | values | direct | rebuild | sink | declared | `value` | — |
 | `render.target_ref` | pelican.render | rendering | direct | rebuild | — | parameter_dependent | — | — |

@@ -5,6 +5,8 @@
 
 #include "../src/core/appflow/enginetime.hpp"
 #include "render_graph_root_test_support.hpp"
+#include "lp3a_decompose_support.hpp"
+#include "../src/core/loader/engineresources.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
@@ -332,7 +334,8 @@ GlobalMaterialId registerSurfaceMaterial(
 void setUpDrawLoopScene(
     DrawLoopScene &scene,
     nlohmann::json features = nlohmann::json::array(),
-    const std::vector<std::pair<std::string, std::string>> &extra_files = {}) {
+    const std::vector<std::pair<std::string, std::string>> &extra_files = {},
+    const std::function<nlohmann::json(nlohmann::json)> &rewrite_root = {}) {
     setupLogger();
     scene.temp_dir = makeDrawLoopProjectDir();
     const auto &dir = scene.temp_dir;
@@ -347,16 +350,15 @@ void setUpDrawLoopScene(
     writeText(dir / "shaders" / "masked.surface", maskedSurfaceSource);
     writeText(dir / "materials" / "loop.material.json",
               loopMaterialJson({0.02, 0.08, 1.0, 1.0}).dump(2));
-    writeText(dir / "hybrid.json",
-              TestSupport::renderGraphRootWithTaskFeature(
-                  nlohmann::json{
-                      {"pipeline",
-                       {{"preset",
-                         "engine://render_pipelines/hybrid_v1.json"}}},
-                      {"features", std::move(features)},
-                  },
-                  dir)
-                  .dump(2));
+    auto root = TestSupport::renderGraphRootWithTaskFeature(
+        nlohmann::json{
+            {"pipeline",
+             {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+            {"features", std::move(features)},
+        },
+        dir);
+    if (rewrite_root) root = rewrite_root(std::move(root));
+    writeText(dir / "hybrid.json", root.dump(2));
     nlohmann::json project{
         {"basic_config",
          {
@@ -1216,6 +1218,121 @@ TEST_CASE("LP-2 refuses overrides it cannot draw, by name",
     });
 #else
     SUCCEED("LP-2 GPU acceptance is compiler-ON only");
+#endif
+}
+
+TEST_CASE("LP-3a a draw_loop's branches draw each material its own way",
+          "[headless][render][lp3a][draw-loop]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    runDrawLoopCase("Vulkan LP-3a draw loop unavailable", [](DrawLoopScene &scene) {
+        using Json = nlohmann::json;
+        // deferred_geometry written in the graph: a material tagged `loop`
+        // is drawn with a cull-front override and then as itself; every
+        // other material the plain way (the else branch).
+        const auto decompose = [](Json root) {
+            const auto preset =
+                Json::parse(engineResourceOrThrow(
+                                "render_pipelines/hybrid_v1.json"))
+                    .at("config");
+            auto document = TestSupport::lp3aDecomposeMaterialPasses(
+                std::move(root), preset,
+                {{"deferred_geometry", {{"before", "ssao_pass"}}}});
+            document["definitions"]["twice"] = {
+                {"nodes",
+                 Json::array({
+                     {{"id", "back"},
+                      {"op", "draw.override"},
+                      {"parameters",
+                       {{"render_state", {{"cull", "front"}}}}},
+                      {"outputs", {"draws"}}},
+                     {{"id", "front"},
+                      {"op", "draw.material"},
+                      {"parameters", Json::object()},
+                      {"inputs",
+                       {{"after", {{"node", "back"}, {"port", "draws"}}}}},
+                      {"outputs", {"draws"}}},
+                 })},
+                {"outputs",
+                 {{"draws", {{"node", "front"}, {"port", "draws"}}}}}};
+            for (auto &node : document["nodes"]) {
+                if (node.at("id") != "deferred_geometry_draws") continue;
+                node["parameters"]["branches"] = Json::array({
+                    {{"when", {{"tags", {{"include", {"loop"}}}}}},
+                     {"body", "twice"}},
+                    {{"body", "deferred_geometry_draw"}},
+                });
+            }
+            return document;
+        };
+        setUpDrawLoopScene(scene, Json::array(), {}, decompose);
+        auto &materials = GET_MODULE(MaterialContainer);
+        const auto own = materials.materialPipeline(scene.material).value;
+
+        // The tagged material: its away-facing quad shows its back (red)
+        // and the cube stays blue.
+        const auto tagged = countColors(scene.render());
+        REQUIRE(tagged.red > 0);
+        REQUIRE(tagged.blue > 0);
+        const auto tagged_draws = scene.materialDraws(scene.material);
+        REQUIRE_FALSE(tagged_draws.empty());
+        REQUIRE(tagged_draws.size() % 2 == 0);
+        const auto half = tagged_draws.size() / 2;
+        for (std::size_t index = 0; index < half; ++index) {
+            CAPTURE(index);
+            CHECK(tagged_draws[index].pass == "deferred_geometry");
+            CHECK(tagged_draws[index].pipeline != own);
+            CHECK(tagged_draws[half + index].pipeline == own);
+            CHECK(tagged_draws[index].descriptor_set ==
+                  tagged_draws[half + index].descriptor_set);
+        }
+
+        // A material registered now, untagged, takes the else branch: one
+        // draw with its own pipeline, and its away quad stays culled.
+        const auto plain = registerSurfaceMaterial(
+            loopSurfaceReference, loopSurfaceSource,
+            Json{
+                {"schema", "pelican.material"},
+                {"version", 1},
+                {"materials",
+                 Json::array({{
+                     {"name", "plain_quad"},
+                     {"tags", {"plain"}},
+                     {"surface", std::string{loopSurfaceReference}},
+                     {"values", {{"tint", {0.02, 0.08, 1.0, 1.0}}}},
+                 }})},
+            },
+            "plain_quad");
+        auto &geometry = GET_MODULE(VertBufContainer);
+        ModelTemplate model;
+        model.asset_id = ModelAssetId{2003};
+        model.material_primitives = {ModelTemplate::MaterialPrimitives{
+            .material = plain,
+            .primitives = {geometry.addPrimitiveEntry(
+                awayQuadAt({0.4f, 0.45f, 0.0f}, 0.15f))},
+            .source_material_index = 0,
+        }};
+        const auto instance =
+            GET_MODULE(PolygonInstanceContainer).placeModelInstance(model);
+        REQUIRE(GET_MODULE(PolygonInstanceContainer)
+                    .isModelInstanceAlive(instance));
+        const auto *steps = liveTable().find("deferred_geometry", plain);
+        REQUIRE(steps != nullptr);
+        REQUIRE(steps->size() == 1);
+        CHECK_FALSE(steps->front().pipeline.has_value());
+
+        const auto both = countColors(scene.render());
+        CHECK(both.red == tagged.red);
+        CHECK(both.blue == tagged.blue);
+        const auto plain_draws = scene.materialDraws(plain);
+        REQUIRE_FALSE(plain_draws.empty());
+        for (const auto &record : plain_draws) {
+            CHECK(record.pipeline == materials.materialPipeline(plain).value);
+        }
+        CHECK(scene.materialDraws(scene.material).size() ==
+              tagged_draws.size());
+    });
+#else
+    SUCCEED("LP-3a GPU acceptance is compiler-ON only");
 #endif
 }
 

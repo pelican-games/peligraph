@@ -831,6 +831,56 @@ void MaterialGenerationPlanner::requireEveryMaterialServed(
                 material.name, material.source_document,
                 material.source_asset));
         });
+    // LP-3a (docs/design_graph_loops.md 4.2.5): a graph.loop over draw_items
+    // must draw every material its over and where take in. A branch whose
+    // body draws nothing leaves the material unserved; `"body": null` is a
+    // decision not to draw it and counts as served. Only graph loops are
+    // judged here: a pass's material_filter still decides alone what it
+    // leaves out.
+    if (has_material_passes) {
+        MaterialDrawLoopRules rules;
+        for (const auto rendering_pass_id : generation.rendering_pass_ids) {
+            const auto *program = generation.find(rendering_pass_id);
+            if (program == nullptr ||
+                program->frame_graph.render_pipeline == nullptr ||
+                program->frame_graph.render_pipeline->material_draw_loops ==
+                    nullptr) {
+                continue;
+            }
+            for (const auto &[pass, rule] :
+                 program->frame_graph.render_pipeline->material_draw_loops
+                     ->passes) {
+                rules.passes.insert_or_assign(pass, rule);
+            }
+        }
+        if (!rules.empty()) {
+            const auto ids = container.drawLoopMaterials();
+            std::vector<MaterialDrawSubject> subjects;
+            subjects.reserve(ids.size());
+            for (const auto id : ids) {
+                subjects.push_back(container.drawLoopSubject(id));
+            }
+            for (const auto index :
+                 materialDrawLoopUnservedSubjects(rules, subjects)) {
+                const auto &material = container.materials.get(ids[index]);
+                auto entry = std::find_if(
+                    unserved.begin(), unserved.end(),
+                    [&](const UnservedMaterialRoute &existing) {
+                        return existing.route == material.route &&
+                               existing.shader_contract ==
+                                   material.shader_contract;
+                    });
+                if (entry == unserved.end()) {
+                    unserved.push_back(
+                        {material.route, material.shader_contract, {}});
+                    entry = std::prev(unserved.end());
+                }
+                entry->materials.push_back(describeUnservedMaterial(
+                    material.name, material.source_document,
+                    material.source_asset));
+            }
+        }
+    }
     if (unserved.empty()) return;
     throw std::runtime_error(materialRouteUnservedMessage(
         unserved, activeRenderingConfigReference()));

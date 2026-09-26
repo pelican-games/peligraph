@@ -10,6 +10,7 @@
 
 #include "graphloop.hpp"
 #include "graphmodule.hpp"
+#include "materialdrawloop.hpp"
 #include "renderloopreport.hpp"
 
 namespace Pelican {
@@ -155,6 +156,11 @@ struct LoweredRenderGraphDocument {
     // Passes and compute tasks the lowering made outside any loop: the
     // graph-wide expansion limit counts them with the loops' copies.
     std::size_t graph_node_count = 0;
+    // LP-3a: every graph.loop over draw_items (not in `loops`: nothing of it
+    // is expanded), with the render.material_pass its `draws` reach, in id
+    // order. composeRenderFeatureConfig turns them into the pipeline's
+    // material_draw_loops.
+    std::vector<GraphDrawLoop> draw_loops;
     // LP-0d: their names (each is its node's id), appended or placed. A
     // feature instance's pass_replacements may name one of these or a loop.
     std::set<std::string> graph_declarations;
@@ -196,8 +202,6 @@ struct RenderGraphLoopResolution {
     std::map<std::string, RenderLoopOrigin> passes;
     // Render targets and buffers a loop added, by name.
     std::map<std::string, RenderLoopOrigin> resources;
-    // LP-0d: the graph nodes the variant made inactive, in the order found.
-    std::vector<RenderGraphDeactivatedNode> deactivated;
 };
 
 // LP-0b: places one run in the composed config (see RenderGraphPassRun). The
@@ -224,31 +228,43 @@ nlohmann::json lowerRenderGraphDocument(const nlohmann::json &document,
 // after the preset, every feature, the integrations, the surface resources and
 // the snapshots are composed, and before the canonical pass order, the terminal
 // ordering of compute tasks and the provenance are settled. It receives the
-// composed config and what the lowering recorded, and edits the config in
-// place; a refusal throws GraphRegistryError.
+// composed config and what the lowering recorded -- already without the nodes a
+// variant made inactive (withoutExcludedGraphDependents) -- and edits the
+// config in place; a refusal throws GraphRegistryError.
 //
 // Today it checks every render.target_ref against the composed targets
 // (graph.target_ref_unknown@1, graph.target_ref_type_mismatch@1) and every
-// history read against its target (graph.history_unavailable@1), then
-// places every run of graph passes at its anchor (LP-0b,
-// placeRenderGraphPassRun). A run may name a pass another run places.
+// history read against its target (graph.history_unavailable@1). The runs of
+// graph passes were placed earlier (placeRenderGraphPassRuns, LP-3a).
 // LP-1a then expands every graph.loop (expandRenderGraphLoops below) and
 // returns what it expanded. LP-1b: a refusal there whose `node` is one
 // element's copy of a body node (`<loop>/<element>/<node>`) also carries
 // `loop_origin` {loop, element, node}, the frame plan's shape.
-//
-// LP-0d, before all of the above: a graph node that depends on a feature the
-// variant excluded (features.excluded_*) is made inactive -- it is not
-// declared, its references are not checked, and every after / before naming
-// it is dropped, as for a node of an inactive scope -- and reported in
-// `deactivated` (see RenderGraphDeactivatedNode for when). A loop made
-// inactive takes whoever reads its outputs with it.
-// LP-0d, after the expansion: every pass_replacements entry is applied
-// (applyRenderFeaturePassReplacements below).
+// LP-3a: a graph.loop over draw_items is reported, and an after / before
+// naming it names its render.material_pass.
+// LP-0d, after the expansion: every pass_replacements entry of
+// features.replacements is applied (applyRenderFeaturePassReplacements below).
+// A replacement lands after the surface resources picked their consumers: a
+// feature pass it replaces keeps no binding the selection gave it, and the
+// node that takes its place gets none (a producer is re-pointed).
 // A target added here without a format_class or role is given both by the
 // composer right after this returns, as every other target is.
 RenderGraphLoopResolution resolveGraphDocumentAfterComposition(nlohmann::json &composed,
     const LoweredRenderGraphDocument &lowered, const RenderGraphFeatureContext &features = {});
+
+// LP-0d: the first step of the graph's stages after composition, before the
+// runs are placed (placeRenderGraphPassRuns) and so before the surface
+// resources pick their consumers. A graph node that depends on a feature the
+// variant excluded (features.excluded_*) is made inactive -- it is not
+// declared, its references are not checked, and every after / before naming
+// it is dropped, as for a node of an inactive scope -- and appended to
+// `deactivated` (see RenderGraphDeactivatedNode for when). A loop made
+// inactive takes whoever reads its outputs with it; a draw_loop (LP-3a) goes
+// with its render.material_pass. Returns the lowered document without them;
+// the later stages take that one.
+LoweredRenderGraphDocument withoutExcludedGraphDependents(nlohmann::json &composed,
+    const LoweredRenderGraphDocument &lowered, const RenderGraphFeatureContext &features,
+    std::vector<RenderGraphDeactivatedNode> &deactivated);
 
 // LP-0d: takes each replaced feature pass or compute task out of the composed
 // config and puts the graph node (or the loop's expanded passes and tasks,
@@ -275,6 +291,17 @@ RenderGraphLoopResolution resolveGraphDocumentAfterComposition(nlohmann::json &c
 // `loop_passes` are the expanded copies (RenderGraphLoopResolution::passes).
 void applyRenderFeaturePassReplacements(nlohmann::json &composed, const LoweredRenderGraphDocument &lowered,
     const std::map<std::string, RenderLoopOrigin> &loop_passes, const RenderGraphFeatureContext &features);
+
+// LP-0b / LP-3a: places every run of graph passes at its anchor
+// (placeRenderGraphPassRun); a run may name a pass another run places.
+// composeRenderFeatureConfig calls it once every feature and integration has
+// inserted its passes and BEFORE the surface resources pick their consumers,
+// so a placed pass -- a render.material_pass in particular -- is picked like
+// the preset's own (the shadow map reaches it). A placed pass is therefore
+// in place before the snapshots are materialized and before any
+// render.target_ref is checked. `lowered` is the document
+// withoutExcludedGraphDependents returned (LP-0d).
+void placeRenderGraphPassRuns(nlohmann::json &composed, const LoweredRenderGraphDocument &lowered);
 
 // LP-1a: the expand stage (docs/design_graph_loops.md 5.1, 5.2). For each
 // loop, in dependency order:

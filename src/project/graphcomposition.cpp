@@ -1,6 +1,7 @@
 #include "graphcomposition.hpp"
 #include "featurecompose.hpp"
 #include "graphloopexpression.hpp"
+#include "renderpipeline.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -126,6 +127,72 @@ bool loopConditionMatches(const std::string &node, const GraphLoopCondition &con
     return false;
 }
 
+// LP-3a: the tag test of a draw_loop's `where` / `when`.
+GraphLoopTagFilter loopTagFilter(const std::string &node, const Json &value, const char *what) {
+    if (!value.is_object())
+        throw std::invalid_argument(std::string{"graph.loop "} + what +
+                                    " tags must be {\"include\", \"exclude\", \"require_all\"}: " + node);
+    GraphLoopTagFilter filter;
+    for (const auto &[key, list] : value.items()) {
+        std::vector<std::string> *target = key == "include" ? &filter.include
+            : key == "exclude" ? &filter.exclude : key == "require_all" ? &filter.require_all : nullptr;
+        if (target == nullptr)
+            throw std::invalid_argument(std::string{"graph.loop "} + what + " tags do not take " + key + ": " + node);
+        if (!list.is_array())
+            throw std::invalid_argument(std::string{"graph.loop "} + what + " tags " + key + " must be an array: " + node);
+        for (const auto &tag : list) {
+            if (!tag.is_string() || tag.get_ref<const std::string &>().empty())
+                throw std::invalid_argument(std::string{"graph.loop "} + what + " tags must be nonempty strings: " + node);
+            target->push_back(tag.get<std::string>());
+        }
+        std::sort(target->begin(), target->end());
+        target->erase(std::unique(target->begin(), target->end()), target->end());
+    }
+    return filter;
+}
+
+// LP-3a: a draw_loop's `where` takes the tags alone (the same words as a
+// material pass's material_filter, and require_all); a branch's `when` any of
+// the material's own attributes.
+GraphLoopDrawCondition loopDrawCondition(const std::string &node, const Json &value, const char *what, bool where) {
+    if (!value.is_object())
+        throw std::invalid_argument(std::string{"graph.loop "} + what + " of draw_items must be an object: " + node);
+    GraphLoopDrawCondition condition;
+    for (const auto &[key, operand] : value.items()) {
+        if (isGraphLoopExpression(operand))
+            throw std::invalid_argument(std::string{"graph.loop "} + what +
+                                        " of draw_items compares literal values: " + node);
+        if (key == "tags") {
+            condition.tags = loopTagFilter(node, operand, what);
+            continue;
+        }
+        if (where)
+            throw std::invalid_argument(std::string{"graph.loop where of draw_items takes tags only: "} + node);
+        if (key == "material" || key == "contract") {
+            if (!operand.is_string() || operand.get_ref<const std::string &>().empty())
+                throw std::invalid_argument(std::string{"graph.loop when "} + key + " must be a nonempty string: " + node);
+            (key == "material" ? condition.material : condition.contract) = operand.get<std::string>();
+        } else if (key == "skinned") {
+            if (!operand.is_boolean())
+                throw std::invalid_argument(std::string{"graph.loop when skinned must be a boolean: "} + node);
+            condition.skinned = operand.get<bool>();
+        } else if (key == "has_variant") {
+            if (operand.is_boolean()) condition.has_variant = operand.get<bool>();
+            else if (operand.is_string() && !operand.get_ref<const std::string &>().empty())
+                condition.has_variant_named = operand.get<std::string>();
+            else
+                throw std::invalid_argument(std::string{"graph.loop when has_variant is a boolean or a variant name: "} +
+                                            node);
+        } else {
+            throw std::invalid_argument(std::string{"graph.loop when of draw_items does not know "} + key + ": " + node);
+        }
+    }
+    if (condition.contract && *condition.contract != "legacy_gbuffer_v1" && *condition.contract != "gbuffer_v1" &&
+        *condition.contract != "forward_scene_color_v1")
+        throw std::invalid_argument("graph.loop when contract is a material shader contract: " + node);
+    return condition;
+}
+
 std::vector<std::string> loopNames(const std::string &node, const Json &parameters, const char *key) {
     std::vector<std::string> names;
     const auto found = parameters.find(key);
@@ -192,24 +259,51 @@ GraphLoopShape parseGraphLoopShape(const Json &node, const std::string &pointer)
     } else if (set == "view_axis") {
         shape.set = GraphLoopSet::view_axis;
     } else if (set == "draw_items") {
+        // LP-3a: the draws of one material pass, one element per material.
         shape.set = GraphLoopSet::draw_items;
+        if (!declaration.is_object() || declaration.size() != 1 || !declaration.contains("contract") ||
+            !declaration.at("contract").is_string())
+            throw std::invalid_argument("graph.loop draw_items takes exactly {\"contract\": \"<material_contract>\"}: " + id);
+        shape.draw_contract = declaration.at("contract").get<std::string>();
+        const auto contract = materialPassContractFromName(shape.draw_contract);
+        if (!contract)
+            throw std::invalid_argument("graph.loop draw_items names an unknown material_contract '" +
+                                        shape.draw_contract + "': " + id);
+        // A legacy pass draws with no route and no phase; its queue is not
+        // the one a draw loop walks.
+        if (*contract == MaterialPassContract::legacy_gbuffer_v1)
+            throw GraphRegistryError("graph.loop_contract_unsupported@1", {{"node", id}, {"contract", shape.draw_contract}});
     } else {
         shape.set = GraphLoopSet::unknown;
     }
+    const bool draw_items = shape.set == GraphLoopSet::draw_items;
     // `where` runs before the order: it sees the element and nothing the order
-    // or the limit decides.
-    if (const auto where = parameters.find("where"); where != parameters.end())
-        shape.where = loopCondition(id, *where, "where", {true, false, false}, parameters_pointer / "where");
+    // or the limit decides. A draw_loop's element is a material: its `where`
+    // tests the material's tags.
+    if (const auto where = parameters.find("where"); where != parameters.end()) {
+        if (draw_items) {
+            auto condition = loopDrawCondition(id, *where, "where", true);
+            if (condition.tags) shape.draw_where = std::move(*condition.tags);
+        } else {
+            shape.where = loopCondition(id, *where, "where", {true, false, false}, parameters_pointer / "where");
+        }
+    }
     if (const auto order = parameters.find("order"); order != parameters.end()) {
         const auto refused = [&] {
             return GraphRegistryError("graph.loop_order_unsupported@1", {{"node", id}, {"order", *order}});
         };
-        if (!order->is_object() || !order->contains("by") || order->at("by") != "element") throw refused();
+        // Decision 4: a draw_loop keeps the phase's one order (v0).
+        if (draw_items) {
+            if (!order->is_object() || order->size() != 1 || order->value("by", Json{}) != "phase_default")
+                throw refused();
+        } else if (!order->is_object() || !order->contains("by") || order->at("by") != "element") throw refused();
         for (const auto &[key, value] : order->items()) {
             (void)value;
             if (key != "by" && key != "direction") throw refused();
         }
-        const auto direction = order->value("direction", Json{"ascending"});
+        // Json("ascending"), not Json{"ascending"}: braces make a one-element
+        // array, which refused every order that left the direction out.
+        const auto direction = order->value("direction", Json("ascending"));
         if (direction != "ascending" && direction != "descending") throw refused();
         shape.descending = direction == "descending";
     }
@@ -231,7 +325,9 @@ GraphLoopShape parseGraphLoopShape(const Json &node, const std::string &pointer)
                 throw std::invalid_argument("graph.loop branch does not take " + key + ": " + id);
         }
         GraphLoopBranch branch;
-        if (const auto when = entry.find("when"); when != entry.end())
+        if (const auto when = entry.find("when"); when != entry.end() && draw_items)
+            branch.draw_when = loopDrawCondition(id, *when, "when", false);
+        else if (when != entry.end())
             branch.when = loopCondition(id, *when, "when", {true, true, true},
                                         parameters_pointer / "branches" / index / "when");
         else if (index + 1 != branches->size())
@@ -292,18 +388,33 @@ GraphLoopTier classifyGraphLoopTier(const GraphLoopShape &shape,
     };
     bool draw = false;
     bool render = false;
+    bool resource = false;
     for (const auto &body : bodies) {
         if (body.nested) throw unsupported("nested");
         draw = draw || body.draw;
         render = render || body.render;
+        resource = resource || body.resource;
     }
     // A draw body runs inside one material pass (draw_loop); a render body is
     // copied per element (expand). Mixed, the loop has no single place to run.
     // LP-3a: `draw_items` over draw.* bodies is draw_loop.
-    if (draw) throw unsupported("mixed_body");
-    if (shape.set != GraphLoopSet::range) throw unsupported("set_unsupported");
-    if (shape.per_frame_count) throw unsupported("per_frame_value");
-    const auto actual = GraphLoopTier::expand;
+    auto actual = GraphLoopTier::expand;
+    if (shape.set == GraphLoopSet::draw_items) {
+        // One material pass records the draws: a body cannot make a resource
+        // in it, and has nowhere to put a pass or a value.
+        if (resource) throw unsupported("resource_in_draw_body");
+        if (render) throw unsupported("mixed_body");
+        // The elements are the queue's ranges, drawn in the phase's order
+        // every frame: no element hands a value to the next, and the frame
+        // decides how many there are.
+        if (!shape.carry.empty()) throw unsupported("carry_in_draw_loop");
+        if (shape.limit) throw unsupported("limit_in_draw_loop");
+        actual = GraphLoopTier::draw_loop;
+    } else {
+        if (draw) throw unsupported("mixed_body");
+        if (shape.set != GraphLoopSet::range) throw unsupported("set_unsupported");
+        if (shape.per_frame_count) throw unsupported("per_frame_value");
+    }
     if (shape.tier && *shape.tier != actual)
         throw GraphRegistryError("graph.loop_tier_mismatch@1",
             {{"node", shape.node}, {"tier", graphLoopTierName(*shape.tier)}, {"actual", graphLoopTierName(actual)}});
@@ -384,8 +495,11 @@ LoopBodyInterface loopBodyInterface(const Json &definition) {
         if (op == "graph.input") result.inputs.insert(node.value("id", std::string{}));
         else if (op == "graph.instance" || op == "graph.loop") result.traits.nested = true;
         else if (op.starts_with("draw.")) result.traits.draw = true;
+        else if (op == "render.image" || op == "render.buffer" || op == "render.attribute")
+            result.traits.render = result.traits.resource = true;
         else if (op.starts_with("render.") || op.starts_with("value.")) result.traits.render = true;
-        if (op == "render.fullscreen" || op == "render.raster") result.traits.graphics = true;
+        if (op == "render.fullscreen" || op == "render.raster" || op == "render.material_pass")
+            result.traits.graphics = true;
         // The loop's expansion lands as one run where the loop says; a body
         // node has no place of its own to take.
         if (const auto parameters = node.find("parameters"); parameters != node.end() && parameters->is_object() &&
@@ -604,6 +718,13 @@ class Expander {
             const auto &node = *local.at(id);
             const auto ref = identifier(node.at("definition"));
             if (!definitions.contains(ref)) throw std::invalid_argument("unknown graph definition: " + ref);
+            // LP-3a: draw.* nodes say how a draw_loop draws one material; a
+            // definition that holds one is a loop body and nothing else.
+            if (const auto &body = definitions.at(ref); body.is_object() && body.contains("nodes") &&
+                body.at("nodes").is_array())
+                for (const auto &inner : body.at("nodes"))
+                    if (inner.is_object() && inner.value("op", std::string{}).starts_with("draw."))
+                        throw GraphRegistryError("graph.definition_role@1", {{"definition", ref}, {"node", id}});
             if (node.contains("owner")) {
                 const auto &owner = node.at("owner");
                 object(owner, "graph owner must be an object");
@@ -674,7 +795,13 @@ class Expander {
                     throw GraphRegistryError("graph.loop_branch_interface@1",
                         {{"node", id}, {"branch", branch}, {"definition", *body}, {"port", *port}});
             }
-            (void)classifyGraphLoopTier(shape, traits);
+            const auto tier = classifyGraphLoopTier(shape, traits);
+            // LP-3a: a draw_loop runs inside the material pass its `draws`
+            // reach; the pass takes the place.
+            if (tier == GraphLoopTier::draw_loop &&
+                (shape.placement || !shape.after.empty() || !shape.before.empty()))
+                throw std::invalid_argument("a draw_loop runs inside its render.material_pass; place the pass, "
+                                            "not the loop: " + id);
             // A compute task is declared after every pass; a loop of tasks
             // has no place among the passes to take (as for a graph node).
             if (shape.placement && reference &&
@@ -785,6 +912,8 @@ class Expander {
                 (void)expandLoop(id);
                 continue;
             }
+            if (loop == nullptr && node->value("op", std::string{}).starts_with("draw."))
+                throw std::invalid_argument("a draw.* node stands in a graph.loop body over draw_items: " + id);
             auto expanded = *node;
             expanded["id"] = path + id;
             if (!path.empty()) scopeLocalOrder(expanded, local, path);
@@ -906,6 +1035,58 @@ void requireLoopExpansionUnreferenced(const Json &document, const std::map<std::
 }
 } // namespace
 
+namespace {
+// LP-3a: a draw_loop's `draws` is how one material pass draws, so exactly one
+// render.material_pass reads it, on its `draws` input, and the pass draws the
+// contract the loop runs over. A `where` and the pass's own material_filter
+// may not say two things.
+void requireDrawLoopsConnected(const ExpandedGraphDocument &graph) {
+    for (const auto &[id, expansion] : graph.loops) {
+        if (expansion.shape.set != GraphLoopSet::draw_items) continue;
+        std::vector<const Json *> passes;
+        std::size_t readers = 0;
+        for (const auto &node : graph.nodes) {
+            const auto inputs = node.find("inputs");
+            if (inputs == node.end() || !inputs->is_object()) continue;
+            for (const auto &[port, endpoint] : inputs->items()) {
+                const auto marker = endpoint.find(graphLoopOutputMarker);
+                if (marker == endpoint.end() || marker->value("loop", std::string{}) != id) continue;
+                ++readers;
+                if (node.value("op", std::string{}) == "render.material_pass" && port == "draws" &&
+                    marker->value("port", std::string{}) == "draws")
+                    passes.push_back(&node);
+            }
+        }
+        if (readers != 1 || passes.size() != 1)
+            throw GraphRegistryError("graph.loop_draws_unconnected@1", {{"node", id}, {"count", readers}});
+        const auto &pass = *passes.front();
+        const auto &parameters = pass.value("parameters", Json::object());
+        const auto contract = parameters.value("material_contract", std::string{});
+        if (contract != expansion.shape.draw_contract)
+            throw std::invalid_argument("graph.loop " + id + " runs over draw_items of " +
+                                        expansion.shape.draw_contract + " but " +
+                                        pass.at("id").get<std::string>() + " draws " +
+                                        (contract.empty() ? std::string{"no material_contract"} : contract));
+        if (expansion.shape.draw_where && parameters.contains("material_filter")) {
+            const auto &filter = parameters.at("material_filter");
+            const auto list = [&](const char *key) {
+                std::vector<std::string> tags;
+                if (filter.is_object() && filter.contains(key) && filter.at(key).is_array())
+                    for (const auto &tag : filter.at(key))
+                        if (tag.is_string()) tags.push_back(tag.get<std::string>());
+                std::sort(tags.begin(), tags.end());
+                tags.erase(std::unique(tags.begin(), tags.end()), tags.end());
+                return tags;
+            };
+            if (list("include") != expansion.shape.draw_where->include ||
+                list("exclude") != expansion.shape.draw_where->exclude)
+                throw std::invalid_argument("graph.loop " + id + " where and " + pass.at("id").get<std::string>() +
+                                            " material_filter select different materials");
+        }
+    }
+}
+} // namespace
+
 ExpandedGraphDocument expandGraphDocument(const Json &document) {
     if (document.at("schema") != "pelican.graph" || document.at("version") != 1)
         throw std::invalid_argument("unsupported graph schema/version");
@@ -917,6 +1098,7 @@ ExpandedGraphDocument expandGraphDocument(const Json &document) {
                                             document.value("parameters", Json::object()));
     auto &result = expander.result;
     requireLoopExpansionUnreferenced(document, result.loops);
+    requireDrawLoopsConnected(result);
     const auto addAncestors = [&](std::set<std::string> &scopes, std::string_view path) {
         for (const auto &[scope, owner] : result.instance_owners) {
             if (path == scope || (path.starts_with(scope) && path.size() > scope.size() && path[scope.size()] == '/'))

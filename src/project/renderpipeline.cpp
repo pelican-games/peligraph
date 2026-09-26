@@ -1307,6 +1307,7 @@ ResolvedRenderPipeline resolveRenderPipeline(
     result.resource_provenance =
         std::move(composed.resource_provenance);
     result.graph_loops = std::move(composed.graph_loops);
+    result.material_draw_loops = std::move(composed.material_draw_loops);
     result.deactivated_graph_nodes =
         std::move(composed.deactivated_graph_nodes);
     result.used_features = composed.used_features;
@@ -2326,6 +2327,7 @@ CompiledRenderPipeline compileRenderPipeline(
     result.pass_provenance = pipeline.pass_provenance;
     result.resource_provenance = pipeline.resource_provenance;
     result.graph_loops = pipeline.graph_loops;
+    result.material_draw_loops = pipeline.material_draw_loops;
     result.deactivated_graph_nodes = pipeline.deactivated_graph_nodes;
     synchronizeRenderPipelineProvenance(
         pipeline.normalized_config,

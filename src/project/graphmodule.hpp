@@ -71,4 +71,16 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry();
 // Shared immutable instance for the production entry points.
 const GraphModuleRegistry &builtinGraphModuleRegistry();
 
+// LP-3a: render.material_pass's attachment sockets, in location order, from
+// its parameters (the contract decides them): one per material_outputs output
+// when it declares material_outputs; otherwise `color` for a forward contract
+// and albedo, normal, material, worldpos, emissive for a G-buffer one. The
+// depth socket is `depth`; `draws` takes a draw_loop's draw_stream.
+std::vector<std::string> renderMaterialPassColorPorts(const nlohmann::json &parameters);
+// The parameters render.material_pass takes: a material pass's own fields
+// (the rendering section's pass JSON less name, type, input and output), its
+// family (`pass_set`) and its place (after / before / insert /
+// canonical_anchor).
+bool isRenderMaterialPassParameter(std::string_view key);
+
 } // namespace Pelican

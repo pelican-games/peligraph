@@ -1,5 +1,6 @@
 #include "../src/core/container.hpp"
 #include "render_graph_root_test_support.hpp"
+#include "lp3a_decompose_support.hpp"
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/animation/animationservice.hpp"
 #include "../src/core/animation/vrmapplication.hpp"
@@ -6865,6 +6866,9 @@ std::vector<std::uint32_t> readFrameGraphUint32Buffer(
 // for every material pass.
 struct DrawLoopProbe {
     bool install_identity_steps = false;
+    // LP-3a: rewrites the written project before it loads (the rendering
+    // root's material passes written in the graph).
+    std::function<void(const std::filesystem::path &)> rewrite_project;
     std::vector<MaterialDrawRecord> records;
     std::size_t table_hits = 0;
     std::size_t material_draws = 0;
@@ -7168,6 +7172,10 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
             asset_path,
             R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
         GET_MODULE(ProjectSource).setSourceByData(makeProjectConfig(scene_path, asset_path).dump());
+    }
+    if (active_draw_loop_probe != nullptr &&
+        active_draw_loop_probe->rewrite_project) {
+        active_draw_loop_probe->rewrite_project(temp_dir);
     }
 
     auto &launch_config = GET_MODULE(EngineLaunchConfig);
@@ -12745,6 +12753,116 @@ void GoldenHarness::runDrawLoopIdentityEquivalence() {
         REQUIRE(baseline.image.width == explicit_steps.image.width);
         REQUIRE(baseline.image.height == explicit_steps.image.height);
         REQUIRE(baseline.image.pixels == explicit_steps.image.pixels);
+        ++compared;
+    }
+    REQUIRE(compared == hybrid_modes.size());
+}
+
+namespace {
+
+// LP-3a: every rendering root of the project that selects the hybrid preset
+// gets the preset's three material passes written in the graph
+// (lp3a_decompose_support.hpp), with or without their draw loops.
+std::size_t decomposeHybridMaterialPasses(const std::filesystem::path &root,
+                                          bool with_loop) {
+    const auto preset = nlohmann::json::parse(
+        engineResourceOrThrow("render_pipelines/hybrid_v1.json"))
+                            .at("config");
+    std::size_t rewritten = 0;
+    for (const auto &entry :
+         std::filesystem::recursive_directory_iterator(root)) {
+        if (!entry.is_regular_file() ||
+            entry.path().extension() != ".json") {
+            continue;
+        }
+        nlohmann::json document;
+        try {
+            document = nlohmann::json::parse(readTextFile(entry.path()));
+        } catch (const nlohmann::json::exception &) {
+            continue;
+        }
+        if (!document.is_object() ||
+            document.value("schema", std::string{}) != "pelican.graph" ||
+            !document.contains("rendering") ||
+            document.at("rendering").value("pipeline", nlohmann::json{}) !=
+                nlohmann::json{{"preset",
+                                "engine://render_pipelines/hybrid_v1.json"}}) {
+            continue;
+        }
+        writeTextFile(entry.path(),
+                      TestSupport::lp3aDecomposeMaterialPasses(
+                          document, preset,
+                          TestSupport::lp3aHybridMaterialPasses(), with_loop)
+                          .dump(2));
+        ++rewritten;
+    }
+    return rewritten;
+}
+
+} // namespace
+
+// LP-3a acceptance 1 and 3: every golden case built on the hybrid preset
+// renders the same pixels, issues the same material-pass binds and draws, and
+// compiles the same draw queue bytes whether its material passes come from
+// the preset (the one-piece form) or are written in the graph as
+// render.material_pass nodes placed where the preset has them -- drawn by a
+// graph.loop over draw_items whose else branch is draw.material, or with
+// `draws` left unconnected. shadow_b_layer_engine / _project draw a forward
+// material that receives the shadow map through surface_resources, so the
+// placed forward_opaque must be picked as a consumer to keep its pixels
+// (acceptance 4).
+void GoldenHarness::runDrawLoopDecomposedEquivalence() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const std::set<std::string> hybrid_modes{
+        "shadow_b_layer_engine", "shadow_b_layer_off",
+        "shadow_b_layer_project", "usd0c_openpbr_material",
+#if PELICAN_WITH_VAT
+        "vat_playback",
+#endif
+    };
+    std::size_t compared = 0;
+    for (const auto &golden_case : loadGoldenInventoryCases()) {
+        if (!hybrid_modes.contains(golden_case.mode)) continue;
+        CAPTURE(golden_case.name);
+        DrawLoopProbe one_piece;
+        RenderedCase baseline = [&] {
+            DrawLoopProbeScope scope{one_piece};
+            return renderCase(golden_case);
+        }();
+        REQUIRE_FALSE(one_piece.records.empty());
+        REQUIRE_FALSE(one_piece.table_filled);
+        REQUIRE_FALSE(one_piece.queue_bytes.empty());
+        for (const bool with_loop : {true, false}) {
+            CAPTURE(with_loop);
+            std::size_t rewritten = 0;
+            DrawLoopProbe decomposed;
+            decomposed.rewrite_project =
+                [&](const std::filesystem::path &root) {
+                    rewritten = decomposeHybridMaterialPasses(root, with_loop);
+                };
+            RenderedCase graph = [&] {
+                DrawLoopProbeScope scope{decomposed};
+                return renderCase(golden_case);
+            }();
+            REQUIRE(rewritten > 0);
+            if (with_loop) {
+                // Every material draw came through the loop's table entry.
+                REQUIRE(decomposed.table_filled);
+                REQUIRE(decomposed.material_draws > 0);
+                REQUIRE(decomposed.table_hits == decomposed.material_draws);
+            } else {
+                REQUIRE_FALSE(decomposed.table_filled);
+            }
+            REQUIRE(normalizedDrawRecords(one_piece.records) ==
+                    normalizedDrawRecords(decomposed.records));
+            const bool same_queue_bytes =
+                one_piece.queue_bytes == decomposed.queue_bytes;
+            REQUIRE(same_queue_bytes);
+            REQUIRE(baseline.image.width == graph.image.width);
+            REQUIRE(baseline.image.height == graph.image.height);
+            REQUIRE(baseline.image.pixels == graph.image.pixels);
+        }
         ++compared;
     }
     REQUIRE(compared == hybrid_modes.size());
