@@ -26351,6 +26351,106 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
   - hotspot はシナリオでは確かめていない(scene の test の変異で守っている)
   - このうち pill・枠の追従・Open in Graph は LP-4d2 で扱う予定
 
+### LP-4d2: ループゾーン(2)— 外と中をつなぐ線、carry の矢印、展開の表示 + material_variant への追従
+
+**中段(Studio のみ)。実装者: Claude(Opus)。LP-4d1(f9882d28)の上。合意は 2026-09-26 に利用者と決めた「LP-4 の見え方」(Blender のループゾーン)、engine の op は LP-0c / LP-1b と DO-1(bb05a072)。Studio での見え方は `docs/manual/13_editor.md` の「ループをゾーンで見る・編集する」の「縁をまたぐ線・carry・展開の表示」。**
+
+#### 前提
+- LP-4d1: root の canvas でループを枠(ゾーン)で描き、今の分岐の body を枠の中で編集できる。左の縁 = ループの入力(外)と body の graph.input(内)、右の縁 = body の出力(内)と p / p[](外)。item は (scope, id)
+- engine の op(1 回の `edit_graph_document` の列に並べられ、検査は列の最後に 1 回):
+  - ループの入力を足す = root の `set_input`(loop の inputs に新しい key)+ 各分岐の definition への `add_node graph.input`(同じ id)
+  - `set_input` の source は `{node, port, element?}`(回ごとの入力)
+  - DO-1: `{"op":"set_outputs","scope":"<definition 名 | root>","outputs":{…}}` で scope の outputs を丸ごと置き換える(逆 op は前の outputs で同じ op)。使われている output を消すと `graph.output_referenced@1`、分岐どうしの公開出力の食い違いは `graph.loop_branch_interface@1`(全分岐を同じ列で揃えれば通る)。起票の時点では入れている途中で、bb05a072 で着地した
+- engine の 5e246063: `graph.loop_variant_missing@1` の field は `{node, material, material_variant}`。error の最上位の `variant` は graph の変種だけ。Studio の文は `variant` を読んでいた(`inspectormodel.cpp` の表)。RU-1b で入れた回避(message の中の variant を見る)は不要になった
+
+#### 決定
+1. **外から中へ線を引く**: 外の node の出力を
+   - 左の縁の `+`(空いた入力の口)に落とす → 新しい入力(名前は出力の port 名から提案。重複しない)を、root の `set_input` と、**全分岐の(重複しない)definition** への `add_node graph.input` で 1 回の列に
+   - 枠の中の node の入力に直接落とす → 上に加えて、その definition の中で `graph.input` から node の入力への `set_input` も同じ列に
+   - 既存の入力の口(外側)に落とす → root の `set_input` の差し替えだけ
+2. **中から外へ(出力を足す)**: 枠の中の node の出力を右の縁の `+` に落とす → DO-1 の `set_outputs` で全分岐の definition に同じ出力を足す。他の分岐で同じ port を出す node が無いときの扱いは DO-1 の契約で確かめ、未接続の出力を足せなければ送らずに 1 行で断る。同じ列で loop の `outputs` に `p`(と必要なら `p[]`)を足す
+3. **carry の矢印**: 右の縁の内側(body の出力)から左の縁の内側(body の入力)へ引くと `carry` に `{from, to}` を足す(Loop の欄の carry と同じ payload)。枠の下側を回る矢印で描き、選んで Delete で外す。`to` にループの入力 edge が無ければ矢印に注意の印(tooltip は LP-4c の注意と同じ文)
+4. **回ごとの入力の線**: source に `element` がある線は破線で描き、線の上に式(`[element]` など)の小さなラベル
+5. **展開の表示**: 見出しの下(または枠の下端)に 1 行
+   - expand: `×N copies` と `Show in Frame Plan`(Frame Plan tab を開き、そのループのグループを選ぶ)
+   - draw_loop: `N materials`、各タブに当たる material の数
+6. **Frame Plan の「Open in Graph」**(`loop_origin` を持つノード): 中に入るのではなく、root の canvas でゾーンのその node を選ぶ(タブを `branch` に合わせる。draw_loop は要素から)
+7. **細かい直し**: 枠の中の node を動かしている間も枠が追従する。枠の中の render 系 node の長い parameters の pill は幅を切り詰める(全文は tooltip)
+8. **material_variant への追従**: `graph.loop_variant_missing@1` の文は `{material_variant}` を読む。RU-1b の回避(message の中の `variant` を見て graph の変種と見なさない)を外し、最上位の `variant` は常に graph の変種とする。test を直す(対照: `variant` を読む変異で文から変種名が抜けて赤)
+
+#### 受け入れ
+1. payload の test: 決定 1 の 3 通り(分岐が 2 つで definition が別々のときと、同じ definition を共有するとき)、決定 2(DO-1 の op。分岐 2 つ)、決定 3(carry の追加と削除)、決定 4 の見た目(破線とラベルの item)。それぞれ対照の変異
+2. undo の test: 決定 1・2・3 の列を Undo / Redo して byte 一致(`set_outputs` の逆を含む)
+3. 決定 5・6 の test(fake の frame plan)
+4. 決定 8 の test
+5. GPU シナリオ `loop_zone_wire`: 外の node を枠の左の縁へ → body の pass の入力へつなぐ → Frame Plan の展開後の pass がその入力を読む → body の出力を右の縁へ → loop に `p` が出る → carry を引く(回数 2 以上で、展開後の 2 本目が 1 本目の出力を読む)→ `×N copies` の `Show in Frame Plan` → Undo を 3 回で元に戻る
+6. `loop_zone_edit`・`graph_loop_expand`・既存の Graph tab のシナリオが緑
+7. `-L studio_cpu -LE gpu` 緑
+8. 報告にテキスト入力の欄(入力の名前は提案で埋める)
+
+#### 着地(2026-09-27、3636c7df)
+- **決定 1**: 列は [`GraphCanvasModel::zoneInputOps()`](../src/devstudio/model/graphcanvasmodel.cpp#L2823) が組む。分岐が走る definition を重複なしで分岐の順に並べ、それぞれへの `add_node graph.input`(既定値なし)→ root の `set_input` → (node の入力に落としたとき)その definition の `set_input` の順。落とし先は [`GraphCanvasScene::finishConnection()`](../src/devstudio/view/graphcanvaswidget.cpp#L2037) が見分ける
+  - 左の縁の `+` は `graph_zone_socket#<loop>/in:+`。編集できる文書(digest がある)のときだけ描く([描く所](../src/devstudio/view/graphcanvaswidget.cpp#L1373))
+  - 線を引けるのは canvas が root を見ているときの root の node の出力から。ループ自身の出力からは引けない(循環)
+  - 名前は [`GraphCanvasModel::suggestLoopInputName()`](../src/devstudio/model/graphcanvasmodel.cpp#L2776): port 名の `.` と `/` を `_`、末尾の `[]` を外す(空なら `input`)。ループの入力か body の node の id と重なれば `_2` …
+  - 既存の入力の口(外側)に落とすのは今までの root の `set_input`(新しいコードは無い。test で確かめた)
+- **決定 2**: 列は [`GraphCanvasModel::zoneOutputOps()`](../src/devstudio/model/graphcanvasmodel.cpp#L2869) が組む。body ごとに outputs を丸ごと持つ `set_outputs` → ループの `outputs` に名前を足した root の `replace_node`
+  - DO-1 の endpoint は node と port の両方が必須なので、未接続の出力は足せない。他の分岐の body は同じ id の node の同じ port から出す。無ければ送らず、Graph タブの notice に 1 行で断る([`GraphCanvasModel::addZoneOutput()`](../src/devstudio/model/graphcanvasmodel.cpp#L2914))。例: `Branch 1 of loop steps runs rest, which has no sum.value to give value from: add the output there first.`
+  - 名前は `suggestLoopOutputName()`(入力と同じ規則。空なら `output`)。ループが宣言した `p` / `p[]` か、どれかの body の出力と重なれば `_2` …
+  - `set_outputs` の逆は、前の `outputs`(無ければ空の object)を持つ同じ op([`inverseOps()` の分岐](../src/devstudio/model/graphcanvasmodel.cpp#L1739))。root の `set_outputs` は canvas が送らないので逆にしない(logic_error)
+- **決定 3**: 右の縁の内側の端(`graph_zone_socket#<loop>/out:<出力>`)を押すと carry の線が始まり、左の縁の内側の端(body の `graph.input` の `value`)に落とすと [`GraphCanvasModel::addLoopCarry()`](../src/devstudio/model/graphcanvasmodel.cpp#L2926) が Loop の欄と同じ `set_node_parameters` を送る(同じ組が既にあれば送らない)。Delete は [`removeLoopCarry()`](../src/devstudio/model/graphcanvasmodel.cpp#L2939)([Delete の所](../src/devstudio/view/graphcanvaswidget.cpp#L2764))
+  - 矢印は [`routeZoneCarry()`](../src/devstudio/view/graphcanvasdrawing.cpp#L1121) が、出力の端から右へ出て下の通り道を戻り、入力の端へ左から入る形で引く。通り道は組ごとに 7px、下端の展開の行の上
+  - 選んだ組は `GraphCanvasScene::selectCarry()`(太さ 3.0)。`to` にループの入力 edge が無い組は橙色で `!` の印(`graph_zone_carry_mark#…`)、tooltip は Loop の欄の文
+- **決定 4**: `GraphCanvasEdge` に `element` を足した([読む所](../src/devstudio/model/graphcanvasmodel.cpp#L1580))。式は式の字、文字列はそのまま、他は JSON。[`Builder::addEdge()`](../src/devstudio/view/graphcanvasdrawing.cpp#L561) が破線と `[<element>]` のラベル(`graph_edge_label#<node>/<port>`)を描き、選んでも破線のまま、ラベルは線の中ほどに付いて動く
+- **決定 5**: [出す所](../src/devstudio/view/graphcanvaswidget.cpp#L1402)。報告のあるループに、expand なら `×N copies` と Show in Frame Plan、draw_loop なら `N materials`(1 つなら `1 material`。ボタンなし)。draw_loop の報告のときは各タブの字の後に `(当たった material の数)`
+  - ボタンは owner の [`setFramePlanLoopAction()`](../src/devstudio/view/mainwindow.cpp#L418) を呼び、Frame Plan を前に出して [`FramePlanWidget::showLoopGroup()`](../src/devstudio/view/frameplanwidget.cpp#L4168) が plan を読み直す。届いたら [`FramePlanGraphicsScene::selectLoopGroup()`](../src/devstudio/view/frameplangraphics.cpp#L3711) がそのループのグループを開いて回の node を全部選び、中央に寄せる。status 行は `Loop <loop>: its copies are picked.`(回が無ければ `The frame plan has no copies of loop <loop>.`)
+- **決定 6**: [`GraphCanvasWidget::revealLoopOrigin()`](../src/devstudio/view/graphcanvaswidget.cpp#L4393) が [`GraphCanvasModel::showLoopOrigin()`](../src/devstudio/model/graphcanvasmodel.cpp#L2955) でタブをその要素の分岐に合わせ(root の scope に戻す)、畳んだゾーンは開き、枠の中のその node を選んで中央に寄せる。body がゾーンに描かれないとき(同じ definition を先のループのゾーンが描いている)は LP-4c のとおり body に入る
+- **決定 7**: drag 中は [`GraphCanvasScene::refitZoneLive()`](../src/devstudio/view/graphcanvaswidget.cpp#L1745) が、描き直さずに枠の item を動かす(縁の item は `GraphCanvasZoneAnchorRole` で左・右・下・見出しの右端のどれに付くかを持つ。[`refitZoneFrame()`](../src/devstudio/view/graphcanvasdrawing.cpp#L733))。ループへ出入りする root の線・右の縁への破線・carry の矢印も引き直す。pill は [切る所](../src/devstudio/view/graphcanvasdrawing.cpp#L486)で node の幅に合わせて末尾を `…` にし、全文を tooltip に
+- **決定 8**: 文の表の `graph.loop_variant_missing@1` を `{material_variant}` に([表](../src/devstudio/model/inspectormodel.cpp#L798))。[`graphRefusalVariant()`](../src/devstudio/model/inspectormodel.cpp#L929) は最上位の `variant` をそのまま返す(RU-1b の回避を外した)。message の中の field を code の横のものより優先する規則は残した
+- **automation の名前**: README の表に `graph_zone_socket#<loop>/in:+` / `…/out:+`、`graph_zone_carry#<loop>/<from>/<to>`、`graph_zone_carry_mark#<loop>/<from>/<to>`、`graph_zone_label#<loop>/expansion`、`graph_zone_button#<loop>/frame_plan`、`graph_edge_label#<node>/<port>` を足した([README](../test/studio_scenarios/README.md#L245))。同じ名前の入力と出力を持つ node のソケットは `graph_socket#<id>/in:<port>` / `…/out:<port>` の別名でも引ける(ゾーンの中は前に `<definition>/`)。別名は名前の解決専用で `list` には出ない([別名を作る所](../src/devstudio/automation/automationcommands.cpp#L263))
+- **仕様から外れた判断**(実装者の報告)
+  1. 決定 2 ではループに `p` だけを足す。`p[]` は Loop の欄の Outputs で足す
+  2. draw_loop の要素から Open in Graph する経路は無い(draw_loop は展開されないので `loop_origin` を持つ複製が無い)
+  3. Frame Plan のグループの枠は選べないので、Show in Frame Plan はグループを開いて複製を全部選ぶ
+  4. pill の切り詰めは render 系に限らず、ゾーンの中の全 node に効く
+  5. `in:` / `out:` の別名は名前の解決専用で `list` には出ない
+- **test**: `devstudio_graphcanvas_scene_test` に `[lp4d2]` の 8 本、`devstudio_frameplan_graph_test` に 1 本。決定 8 は既存の 2 本を直した
+  - `LP-4d2 a line from outside into a zone is a loop input and a boundary in every body, in one list`([test](../test/devstudio_graphcanvas_scene_test.cpp#L4012)。左の縁の `+`・body の node の入力・既存の入力の口・2 つの分岐が 1 つの definition を共有、の 4 section)
+  - `LP-4d2 a body output drawn to the right edge is an output of every body and the loop's p`([test](../test/devstudio_graphcanvas_scene_test.cpp#L4093)。送る場合と断る場合)
+  - `LP-4d2 a carry is drawn from a body output back to a boundary input, and Delete takes it out`([test](../test/devstudio_graphcanvas_scene_test.cpp#L4140))
+  - `LP-4d2 a line reading one element of a p[] is dashed and says which element`([test](../test/devstudio_graphcanvas_scene_test.cpp#L4204))
+  - `LP-4d2 Undo and Redo take a zone's input, output and carry back, byte for byte`([test](../test/devstudio_graphcanvas_scene_test.cpp#L4246))
+  - `LP-4d2 a zone says what the loop became, and a draw_loop's tabs how many materials each`([test](../test/devstudio_graphcanvas_scene_test.cpp#L4286))
+  - `LP-4d2 the frame follows a body node while it is dragged, and a long pill keeps to its node`([test](../test/devstudio_graphcanvas_scene_test.cpp#L4343))
+  - `LP-4d2 Show in Frame Plan asks the owner, and Open in Graph on a loop's copy picks the body node in the root's zone`([test](../test/devstudio_graphcanvas_scene_test.cpp#L4395))
+  - `LP-4d2 Show in Frame Plan opens a loop's group with its copies picked`([test](../test/devstudio_frameplan_graph_test.cpp#L11341))
+  - 決定 8: `LP-2 the draw-loop refusals the engine names read as sentences, …`([test](../test/devstudio_graphcanvas_test.cpp#L1946)。`error_fields` で届く形と、message が `variant` を引用しても最上位の `variant` が graph の変種であることを足した)と `LP-4c a loop's or a definition's refusal reads as its sentence, …`([test](../test/devstudio_frameplan_graph_test.cpp#L11388))の field を `material_variant` に
+- **変異**(実装者の報告。22 本、どれも赤)
+  - 決定 1: 最初の body にしか足さない / 共有の definition に重複して足す / 直接のドロップを無効にする / 左の縁の `+` を無効にする
+  - 決定 2: 他の分岐の `set_outputs` を省く / 断る判定を外す
+  - 決定 3: carry のドロップを無効にする / Delete を無効にする / 注意の印を描かない
+  - 決定 4: element の印を外す / 選んだときの破線の復帰を外す / ラベルの `[ ]` を外す
+  - Undo: `set_outputs` の逆に新しい outputs を使う
+  - 決定 5: 展開の行を出さない / ボタンが owner を呼ばない / グループを開かない / タブに数を付けない
+  - 決定 6: 従来の「中に入る」に戻す
+  - 決定 7: 追従を外す / 切り詰めを外す
+  - 決定 8: 文を `{variant}` で読む / RU-1b の回避を戻す
+- **シナリオ(受け入れ 5)**: `loop_zone_wire`([シナリオ](../test/studio_scenarios/loop_zone_wire.json))。json の `steps` は 77。実装者の報告では緑
+  - root に Add fullscreen pass(その image が外の node)→ Add loop → Auto layout(新しいループが root の pass に重なるため)→ ゾーンを選んで body に Add fullscreen pass → Count 2 → root の nodes と definitions を覚える
+  - Frame Plan の barriers に `loop/0/render_fullscreen` → `loop/1/render_fullscreen` の `write_after_write`(resource `render_fullscreen__color`)が無いことを見る
+  - 外の image の出力を body の pass の `color` 入力へ直接ドロップ → ループの入力 `resource`、body の `graph.input`、pass の `color` がそれを読む → 上の barrier が出る(受け入れ 5 の「展開後の pass がその入力を読む」は、この barrier で見る)
+  - body の pass の出力を右の縁の `+` へ → body の `outputs.color` と、ループの `outputs[0]` が `color`
+  - carry を引く → `carry[0].to` が `resource`、矢印 `graph_zone_carry#loop/color/resource` が見える
+  - `×2 copies` の Show in Frame Plan → status 行が `Loop loop: its copies are picked.`
+  - Undo 3 回 → root の nodes と definitions が覚えた値と一致
+- **受け入れ 6**: 既存のシナリオ 9 本(`loop_zone_edit`・`graph_loop_expand`・`material_loop_decompose`・`graph_read`・`graph_edit_roundtrip`・`graph_canvas_zoom_pan`・`graph_auto_layout`・`graph_observe_roundtrip`・`graph_reroute_tie`)が緑(実装者の報告)
+- **受け入れ 7**: `-L studio_cpu -LE gpu` 429/429 緑(実装者の報告)
+- **テキスト入力の欄(受け入れ 8)**(実装者の報告): 足していない。新しい入力・出力の名前は元の port 名から提案し、重なれば `_2`
+- **穴**(実装者の報告)
+  - carry の効き目は frame plan では見分けられない。body の pass が書き込み専用のため(受け入れ 5 の「2 本目が 1 本目の出力を読む」は確かめていない)。読み取りの port は今の Graph タブでは JSON を打たないと作れない
+  - 新しいループが既存の node に重なる(`placeNewNode` が node の幅を 240 と見て横に置く)
+  - `in:` / `out:` の別名に単体の test が無い
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
