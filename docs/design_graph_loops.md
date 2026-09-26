@@ -656,7 +656,8 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 |---|---|---|
 | `graph.loop_branch_else_missing@1` | 編集・読み込み | `{node}` |
 | `graph.loop_branch_interface@1` | 編集・読み込み | `{node, branch, definition, port}` |
-| `graph.loop_nested@1` | 編集・読み込み | `{node, definition}` |
+| `graph.loop_nested@1` | 編集・読み込み | `{node, definition}`(body の definition に `graph.loop` がある。`graph.instance` がある body は `graph.loop_tier_unsupported@1` の `nested`。LP-1a) |
+| `graph.loop_feature_pending@1` | 編集・読み込み | `{node, feature}`(`carry` / `expression` / `per_iteration_input` / `element_output`。LP-1b が入るまでの拒否。LP-1a) |
 | `graph.loop_tier_unsupported@1` | 編集・組み直し | `{node, reason}` |
 | `graph.loop_tier_mismatch@1` | 組み直し | `{node, tier, actual}` |
 | `graph.loop_order_unsupported@1` | 編集・読み込み | `{node, order}` |

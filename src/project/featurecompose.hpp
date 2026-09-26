@@ -57,6 +57,9 @@ struct RenderFeatureComposeResult {
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     std::vector<RenderPassProvenance> pass_provenance;
     std::vector<RenderResourceProvenance> resource_provenance;
+    // LP-1a: every graph.loop of a pelican.graph root, as the resolution
+    // stage expanded it (get_frame_plan's `loops[]`).
+    std::vector<RenderGraphLoopReport> graph_loops;
     bool used_features = false;
 };
 

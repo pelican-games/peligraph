@@ -1306,6 +1306,7 @@ ResolvedRenderPipeline resolveRenderPipeline(
         std::move(composed.pass_provenance);
     result.resource_provenance =
         std::move(composed.resource_provenance);
+    result.graph_loops = std::move(composed.graph_loops);
     result.used_features = composed.used_features;
     result.graph_variant_policy = graph_variant_policy;
     result.graph_variant_feature_decisions =
@@ -2313,6 +2314,7 @@ CompiledRenderPipeline compileRenderPipeline(
     result.diagnostics = pipeline.diagnostics;
     result.pass_provenance = pipeline.pass_provenance;
     result.resource_provenance = pipeline.resource_provenance;
+    result.graph_loops = pipeline.graph_loops;
     synchronizeRenderPipelineProvenance(
         pipeline.normalized_config,
         result.pass_provenance,

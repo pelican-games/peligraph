@@ -14955,4 +14955,183 @@ void main() {
 #endif
 }
 
+// LP-1a: graph.loop on the GPU. `steps` copies a body that draws
+// engine://passthrough into an image of its own, four times. `up` and `down`
+// draw twelve times into one target each (a loop input bound to a
+// render.target_ref): element 10 blends white over it at alpha one half, every
+// other element black, so what is left says where element 10 ran. In element
+// order (up) it ran second to last and a quarter of white is left; in
+// descending order (down) it ran second and almost nothing is. In name order
+// (`/10/` before `/9/`) both come out differently.
+TEST_CASE("LP-1a a graph.loop draws one copy per element, in element order where they share a target",
+          "[headless][gpu][lp1a][graph-loop]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(temp_dir / "assets.json",
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
+        using Json = nlohmann::json;
+        const Json rgba8_target{{"extent_scale", 1.0}, {"format", "R8G8B8A8_UNORM"},
+                                {"format_class", "explicit(R8G8B8A8_UNORM)"},
+                                {"usage", {"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"}}};
+        auto up_target = rgba8_target;
+        up_target["name"] = "lp1a_acc_up";
+        auto down_target = rgba8_target;
+        down_target["name"] = "lp1a_acc_down";
+        std::filesystem::create_directories(temp_dir / "features");
+        writeTextFile(temp_dir / "features" / "lp1a_acc.json", Json{
+            {"schema", "pelican.render_feature"}, {"version", 1}, {"name", "lp1a_acc"},
+            {"render_targets", Json::array({up_target, down_target})}}.dump(2));
+        const Json type{{"semantic", "pelican.render.color_signal@1"},
+            {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+        const Json color{{"kind", "image"}, {"type", type}, {"access", "write"},
+                         {"attachment", "color"}, {"location", 0}};
+        const auto fragment = [](const std::string &shader) {
+            return Json{{"vertex", "engine://fullscreen"}, {"fragment", shader}};
+        };
+        const Json over{{"src", "src_alpha"}, {"dst", "one_minus_src_alpha"}, {"op", "add"}};
+        const auto blend_body = [&](const std::string &shader) {
+            return Json{{"nodes", Json::array({
+                {{"id", "target"}, {"op", "graph.input"}},
+                {{"id", "blend"}, {"op", "render.fullscreen"},
+                 {"parameters", {{"pass_set", "main_render"}, {"shader", fragment(shader)},
+                                 {"color_load_op", "Load"},
+                                 {"raster_state", {{"color_attachments", Json::array({
+                                     {{"blend", {{"color", over}, {"alpha", over}}}}})}}},
+                                 {"ports", {{"color", color}}}}},
+                 {"inputs", {{"color", {{"node", "target"}, {"port", "value"}}}}},
+                 {"outputs", {"color"}}}})},
+                {"outputs", Json::object()}};
+        };
+        const Json paint{{"nodes", Json::array({
+            {{"id", "image"}, {"op", "render.image"},
+             {"parameters", {{"type", type}, {"format", "R8G8B8A8_UNORM"}, {"extent_scale", 1.0},
+                             {"usage", {"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"}}}},
+             {"outputs", {"resource"}}},
+            {{"id", "fill"}, {"op", "render.fullscreen"},
+             {"parameters", {{"pass_set", "main_render"}, {"shader", fragment("engine://passthrough")},
+                             {"ports", {{"color", color}}}}},
+             {"inputs", {{"color", {{"node", "image"}, {"port", "resource"}}}}},
+             {"outputs", {"color"}}}})},
+            {"outputs", {{"image", {{"node", "fill"}, {"port", "color"}}}}}};
+        const auto reference = [&](const std::string &id, const std::string &name) {
+            return Json{{"id", id}, {"op", "render.target_ref"},
+                        {"parameters", {{"name", name}, {"type", type}}}, {"outputs", {"resource"}}};
+        };
+        const auto clear = [&](const std::string &id, const std::string &target) {
+            return Json{{"id", id}, {"op", "render.fullscreen"},
+                        {"parameters", {{"pass_set", "main_render"}, {"shader", fragment("shaders/lp1a_zero")},
+                                        {"ports", {{"color", color}}}}},
+                        {"inputs", {{"color", {{"node", target}, {"port", "resource"}}}}},
+                        {"outputs", {"color"}}};
+        };
+        const auto accumulate = [&](const std::string &id, const std::string &direction,
+                                    const std::string &after, const std::string &target) {
+            return Json{{"id", id}, {"op", "graph.loop"},
+                {"parameters", {{"over", {{"range", {{"count", 12}}}}},
+                                {"order", {{"by", "element"}, {"direction", direction}}},
+                                {"branches", Json::array({{{"when", {{"element", 10}}}, {"body", "mark"}},
+                                                          {{"body", "plain"}}})},
+                                {"after", {after}}}},
+                {"inputs", {{"target", {{"node", target}, {"port", "resource"}}}}},
+                {"outputs", Json::array()}};
+        };
+        const Json document{{"schema", "pelican.graph"}, {"version", 1},
+            {"definitions", {{"mark", blend_body("shaders/lp1a_white")}, {"plain", blend_body("shaders/lp1a_black")},
+                             {"paint", paint}}},
+            {"nodes", Json::array({
+                reference("up_ref", "lp1a_acc_up"), reference("down_ref", "lp1a_acc_down"),
+                clear("clear_up", "up_ref"), clear("clear_down", "down_ref"),
+                accumulate("up", "ascending", "clear_up", "up_ref"),
+                accumulate("down", "descending", "clear_down", "down_ref"),
+                {{"id", "steps"}, {"op", "graph.loop"},
+                 {"parameters", {{"over", {{"range", {{"count", 4}}}}}, {"branches", Json::array({{{"body", "paint"}}})}}},
+                 {"outputs", Json::array()}}})},
+            {"outputs", Json::object()},
+            {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+                           {"features", Json::array({"project://features/lp1a_acc.json"})}}}};
+        writeTextFile(temp_dir / "hybrid.json", document.dump(2));
+        std::filesystem::create_directories(temp_dir / "shaders");
+        const auto constant = [](const char *value) {
+            return std::string{"#version 450\nlayout(location = 0) in vec2 inUV;\n"
+                               "layout(location = 0) out vec4 outColor;\nvoid main() {\n    outColor = "} +
+                   value + ";\n}\n";
+        };
+        writeTextFile(temp_dir / "shaders" / "lp1a_white.frag", constant("vec4(1.0, 1.0, 1.0, 0.5)"));
+        writeTextFile(temp_dir / "shaders" / "lp1a_black.frag", constant("vec4(0.0, 0.0, 0.0, 0.5)"));
+        writeTextFile(temp_dir / "shaders" / "lp1a_zero.frag", constant("vec4(0.0)"));
+        configureRayQueryTestRuntime(temp_dir);
+
+        auto &renderer = GET_MODULE(Renderer);
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+
+        // get_frame_plan: the loops, and where each copy came from.
+        const auto plan = renderer.currentFramePlanJson();
+        REQUIRE(plan.contains("loops"));
+        REQUIRE(plan.at("loops").size() == 3);
+        CHECK(plan.at("loops").at(2).at("node") == "up");
+        CHECK(plan.at("loops").at(2).at("count") == 12);
+        CHECK(plan.at("loops").at(2).at("elements").at(10) == Json{{"element", 10}, {"index", 10}, {"branch", 0}});
+        CHECK(plan.at("loops").at(0).at("elements").at(1) == Json{{"element", 10}, {"index", 1}, {"branch", 0}});
+        std::vector<std::string> up_order;
+        for (const auto &node : plan.at("nodes")) {
+            const auto name = node.at("name").get<std::string>();
+            if (name == "steps/2/fill")
+                CHECK(node.at("loop_origin") == Json{{"loop", "steps"}, {"element", 2}, {"node", "fill"}});
+            if (name.starts_with("up/")) up_order.push_back(name);
+        }
+        REQUIRE(up_order.size() == 12);
+        CHECK(up_order.front() == "up/0/blend");
+        CHECK(up_order.back() == "up/11/blend");
+
+        // Every copy of `steps` drew its own image.
+        for (int element = 0; element < 4; ++element) {
+            const auto name = "steps/" + std::to_string(element) + "/image";
+            INFO(name);
+            const auto image = RendererTestAccess::readRenderTarget(renderer, name, ImageSubresourceRange{});
+            REQUIRE(image.format == vk::Format::eR8G8B8A8Unorm);
+            const auto pixel = [&](std::uint32_t x, std::uint32_t y) {
+                const auto offset = (static_cast<std::size_t>(y) * image.extent.width + x) * 4u;
+                return std::array{image.bytes.at(offset), image.bytes.at(offset + 1),
+                                  image.bytes.at(offset + 2), image.bytes.at(offset + 3)};
+            };
+            const auto last = image.extent.width - 1;
+            CHECK(pixel(0, 0)[0] < 16);
+            CHECK(pixel(last, 0)[0] > 239);
+            CHECK(pixel(last / 2, 0)[3] == 255);
+        }
+
+        // Element order: the white of element 10, halved by what ran after it.
+        const auto red = [&](const std::string &target) {
+            const auto image = RendererTestAccess::readRenderTarget(renderer, target, ImageSubresourceRange{});
+            REQUIRE(image.format == vk::Format::eR8G8B8A8Unorm);
+            std::set<std::uint8_t> values;
+            for (std::size_t offset = 0; offset + 4 <= image.bytes.size(); offset += 4)
+                values.insert(image.bytes.at(offset));
+            REQUIRE(values.size() == 1);
+            return static_cast<int>(*values.begin());
+        };
+        const auto up = red("lp1a_acc_up");
+        const auto down = red("lp1a_acc_down");
+        INFO("up " << up << ", down " << down);
+        CHECK(up >= 60);
+        CHECK(up <= 68);
+        CHECK(down <= 3);
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) std::filesystem::remove_all(temp_dir);
+        TestSupport::skipIfVulkanDeviceUnavailable(error, "Vulkan LP-1a graph.loop fixture unavailable");
+        throw;
+    }
+#else
+    SUCCEED("LP-1a GPU acceptance is compiler-ON only");
+#endif
+}
+
 } // namespace Pelican

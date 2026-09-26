@@ -6,6 +6,7 @@
 #include "materialscreeninput.hpp"
 #include "materialoutput.hpp"
 #include "passfieldownership.hpp"
+#include "renderloopreport.hpp"
 #include "samplecountplanning.hpp"
 #include "sceneaccelerationstructure.hpp"
 #include "targetplanning.hpp"
@@ -240,6 +241,8 @@ struct RenderPassProvenance {
     std::string provider_reference;
     // Source declaration identity survives runtime variant namespacing.
     std::string authored_name;
+    // LP-1a: set on a pass or compute task a graph.loop expanded.
+    std::optional<RenderLoopOrigin> loop_origin;
 
     bool operator==(const RenderPassProvenance &) const = default;
 };
@@ -255,6 +258,8 @@ struct RenderResourceProvenance {
     // Synthetic resources such as the swapchain deliberately remain
     // unknown instead of being represented as an empty usage set.
     std::optional<std::vector<std::string>> usage;
+    // LP-1a: set on a render target or buffer a graph.loop expanded.
+    std::optional<RenderLoopOrigin> loop_origin;
 
     bool operator==(const RenderResourceProvenance &) const = default;
 };
@@ -320,6 +325,8 @@ struct ResolvedRenderPipeline {
     std::vector<RenderPipelineDiagnostic> diagnostics;
     std::vector<RenderPassProvenance> pass_provenance;
     std::vector<RenderResourceProvenance> resource_provenance;
+    // LP-1a: every graph.loop of the composed graph (empty when it has none).
+    std::vector<RenderGraphLoopReport> graph_loops;
     bool used_features = false;
 };
 
@@ -480,6 +487,8 @@ struct CompiledRenderPipeline {
     std::vector<RenderPipelineDiagnostic> diagnostics;
     std::vector<RenderPassProvenance> pass_provenance;
     std::vector<RenderResourceProvenance> resource_provenance;
+    // LP-1a: get_frame_plan's `loops[]` (absent when the graph has no loop).
+    std::vector<RenderGraphLoopReport> graph_loops;
     bool used_features = false;
 };
 

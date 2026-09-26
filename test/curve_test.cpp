@@ -1415,3 +1415,147 @@ TEST_CASE("evaluating a clock without state is refused by name",
         REQUIRE_NOTHROW(graph.evaluate({{"time", 1.0}}, {}, {}, &state));
     }
 }
+
+namespace {
+// LP-1a: a root graph.loop whose element 0 runs `first` and every other
+// element `paint`. Both bodies draw into an image of their own.
+nlohmann::json lp1aEditColorType() {
+    return {{"semantic", "pelican.render.color_signal@1"},
+            {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+}
+
+nlohmann::json lp1aEditBody(const std::string &pass) {
+    using Json = nlohmann::json;
+    const auto type = lp1aEditColorType();
+    return Json{{"nodes", Json::array({
+        {{"id", "image"}, {"op", "render.image"},
+         {"parameters", {{"type", type}, {"format", "R16G16B16A16_SFLOAT"}, {"extent_scale", 1.0},
+                         {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}}},
+         {"outputs", {"resource"}}},
+        {{"id", pass}, {"op", "render.fullscreen"},
+         {"parameters", {{"pass_set", "main_render"},
+                         {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
+                         {"ports", {{"color", {{"kind", "image"}, {"type", type}, {"access", "write"},
+                                               {"attachment", "color"}, {"location", 0}}}}}}},
+         {"inputs", {{"color", {{"node", "image"}, {"port", "resource"}}}}},
+         {"outputs", {"color"}}}})},
+        {"outputs", {{"image", {{"node", pass}, {"port", "color"}}}}}};
+}
+
+nlohmann::json lp1aEditDocument() {
+    using Json = nlohmann::json;
+    return Json{{"schema", "pelican.graph"}, {"version", 1},
+        {"definitions", {{"first", lp1aEditBody("first_fill")}, {"paint", lp1aEditBody("fill")}}},
+        {"nodes", Json::array({
+            {{"id", "lit"}, {"op", "render.target_ref"},
+             {"parameters", {{"name", "lit_color"}, {"type", lp1aEditColorType()}}}, {"outputs", {"resource"}}},
+            {{"id", "steps"}, {"op", "graph.loop"},
+             {"parameters", {{"over", {{"range", {{"count", 3}}}}},
+                             {"branches", Json::array({{{"when", {{"element", 0}}}, {"body", "first"}},
+                                                       {{"body", "paint"}}})}}},
+             {"outputs", {"image"}}}})},
+        {"outputs", Json::object()}};
+}
+} // namespace
+
+TEST_CASE("LP-1a renaming a loop body renames the loop's branch, and a body in use is not removed",
+          "[curve][graph-composition][graph-definition-edit][lp1a]") {
+    using Json = nlohmann::json;
+    const auto document = lp1aEditDocument();
+    REQUIRE_NOTHROW(Pelican::partitionGraphDocument(document));
+    const auto renamed = Pelican::editGraphDocument(document, Json::array({
+        Json{{"op", "rename_definition"}, {"from", "paint"}, {"to", "brush"}}}));
+    CHECK(renamed.at("nodes").at(1).at("parameters").at("branches").at(1).at("body") == "brush");
+    CHECK(renamed.at("nodes").at(1).at("parameters").at("branches").at(0).at("body") == "first");
+    CHECK(Pelican::expandGraphDocument(renamed).loops.at("steps").branches.at(1)->definition == "brush");
+    const auto back = Pelican::editGraphDocument(renamed, Json::array({
+        Json{{"op", "rename_definition"}, {"from", "brush"}, {"to", "paint"}}}));
+    CHECK(back == document);
+    CHECK(back.dump(2) == document.dump(2));
+
+    const Json remove = Json::array({Json{{"op", "remove_definition"}, {"name", "paint"}}});
+    CHECK(lp0cEditCode(document, remove) == "graph.definition_referenced@1");
+    CHECK(lp0cEditDetail(document, remove) ==
+          Json{{"definition", "paint"}, {"referenced_by", Json::array({"steps"})}});
+    // With the branch pointed elsewhere first, the body goes.
+    auto branches = document.at("nodes").at(1).at("parameters");
+    branches["branches"][1]["body"] = "first";
+    CHECK(lp0cEditCode(document, Json::array({
+        Json{{"op", "set_node_parameters"}, {"node", "steps"}, {"parameters", branches}},
+        Json{{"op", "remove_definition"}, {"name", "paint"}}})) == "<accepted>");
+    // A loop stands in the root document only.
+    const Json nested = Json::array({Json{{"op", "add_node"}, {"scope", "paint"},
+        {"node", document.at("nodes").at(1)}}});
+    CHECK(lp0cEditCode(document, nested) == "graph.loop_nested@1");
+    CHECK(lp0cEditDetail(document, nested) == Json{{"node", "steps"}, {"definition", "paint"}});
+    CHECK(lp0cEditCode(document, Json::array({Json{{"op", "add_definition"}, {"name", "holder"},
+        {"definition", {{"nodes", Json::array({document.at("nodes").at(1)})}, {"outputs", Json::object()}}}}})) ==
+          "graph.loop_nested@1");
+}
+
+TEST_CASE("LP-1a a loop's inputs and its bodies' boundary agree after the list, in either order",
+          "[curve][graph-composition][graph-definition-edit][lp1a]") {
+    using Json = nlohmann::json;
+    const auto document = lp1aEditDocument();
+    const auto declare = [](const char *body) {
+        return Json{{"op", "add_node"}, {"scope", body}, {"node", {{"id", "target"}, {"op", "graph.input"}}}};
+    };
+    const Json supply{{"op", "set_input"}, {"node", "steps"}, {"port", "target"},
+                      {"source", {{"node", "lit"}, {"port", "resource"}}}};
+    const auto declared_first = Pelican::editGraphDocument(document, Json::array({
+        declare("first"), declare("paint"), supply}));
+    const auto supplied_first = Pelican::editGraphDocument(document, Json::array({
+        supply, declare("first"), declare("paint")}));
+    CHECK(declared_first == supplied_first);
+    CHECK(declared_first.at("nodes").at(1).at("inputs") ==
+          Json{{"target", {{"node", "lit"}, {"port", "resource"}}}});
+    REQUIRE_NOTHROW(Pelican::partitionGraphDocument(declared_first));
+    // One half alone.
+    CHECK(lp0cEditCode(document, Json::array({supply})) == "graph.input_unknown@1");
+    CHECK(lp0cEditDetail(document, Json::array({supply})) ==
+          Json{{"node", "steps"}, {"definition", "first"}, {"port", "target"}});
+    CHECK_THROWS_AS(Pelican::editGraphDocument(document, Json::array({declare("first"), declare("paint")})),
+                    std::invalid_argument); // an unsupplied input without a default
+    // Declared in one body only: the other body is named.
+    CHECK(lp0cEditDetail(document, Json::array({declare("paint"), supply})) ==
+          Json{{"node", "steps"}, {"definition", "first"}, {"port", "target"}});
+    // Taking it out again, in either order; a body input the loop still
+    // supplies is not removed.
+    const auto undeclare = [](const char *body) {
+        return Json{{"op", "remove_node"}, {"scope", body}, {"node", "target"}};
+    };
+    const Json unsupply{{"op", "set_input"}, {"node", "steps"}, {"port", "target"}, {"source", nullptr}};
+    auto without_inputs = document;
+    CHECK(Pelican::editGraphDocument(declared_first, Json::array({
+        unsupply, undeclare("first"), undeclare("paint")})) == without_inputs);
+    CHECK(Pelican::editGraphDocument(declared_first, Json::array({
+        undeclare("first"), undeclare("paint"), unsupply})) == without_inputs);
+    CHECK(lp0cEditCode(declared_first, Json::array({undeclare("paint"), undeclare("first")})) ==
+          "graph.input_referenced@1");
+    CHECK(lp0cEditDetail(declared_first, Json::array({undeclare("paint"), undeclare("first")})) ==
+          Json{{"definition", "paint"}, {"input", "target"}, {"instance", "steps"}});
+}
+
+TEST_CASE("LP-1a a document with a loop is saved as written, without its expansion",
+          "[curve][graph-composition][lp1a]") {
+    using Json = nlohmann::json;
+    // Built by edits from an empty root, as an editor would.
+    const Json empty{{"schema", "pelican.graph"}, {"version", 1}, {"nodes", Json::array()}, {"outputs", Json::object()}};
+    const auto reference = lp1aEditDocument();
+    const auto edited = Pelican::editGraphDocument(empty, Json::array({
+        Json{{"op", "add_definition"}, {"name", "first"}, {"definition", reference.at("definitions").at("first")}},
+        Json{{"op", "add_definition"}, {"name", "paint"}, {"definition", reference.at("definitions").at("paint")}},
+        Json{{"op", "add_node"}, {"node", reference.at("nodes").at(0)}},
+        Json{{"op", "add_node"}, {"node", reference.at("nodes").at(1)}}}));
+    CHECK(edited == reference);
+    const auto saved = edited.dump(2);
+    CHECK(Json::parse(saved) == edited);
+    // The expansion is derived: neither the template nor a copy is saved.
+    CHECK(saved.find("steps/") == std::string::npos);
+    const auto expanded = Pelican::expandGraphDocument(Json::parse(saved));
+    CHECK(expanded.origins.contains("steps/$0/first_fill"));
+    CHECK(expanded.origins.at("steps/$1/fill").loop == "steps");
+    CHECK(expanded.origins.at("steps/$1/fill").loop_branch == std::optional<std::size_t>{1});
+    // The loop itself is no expanded node.
+    for (const auto &node : expanded.nodes) CHECK(node.at("id") != "steps");
+}

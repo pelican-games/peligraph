@@ -2944,7 +2944,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     // composed, and resolved after them (resolveGraphDocumentAfterComposition).
     auto lowered_graph = common_graph
         ? lowerRenderGraphDocumentForComposition(config, dependencies.inactive_graph_scopes)
-        : LoweredRenderGraphDocument{config, {}, {}, {}};
+        : LoweredRenderGraphDocument{config, {}, {}, {}, {}, {}, 0};
     auto native_config = std::move(lowered_graph.config);
     auto graph_buffers = nlohmann::json::array();
     auto graph_tasks = nlohmann::json::array();
@@ -3397,8 +3397,21 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     materializeSnapshots(composed);
     // Every target the rendering section, the preset, the features and the
     // snapshots declare now exists; pass order is not settled yet.
+    std::vector<RenderGraphLoopReport> graph_loops;
     if (common_graph) {
-        resolveGraphDocumentAfterComposition(composed, lowered_graph);
+        auto loop_resolution = resolveGraphDocumentAfterComposition(composed, lowered_graph);
+        // LP-1a: a loop's copies of a render.image are declared here, after
+        // the format classes and roles above were settled; they take theirs
+        // the same way.
+        for (auto &target : ensureArray(composed, "render_targets")) {
+            if (!target.contains("format_class")) {
+                target["format_class"] = inferFormatClass(target);
+            }
+            if (!target.contains("role")) {
+                const auto format_class = target.at("format_class").get<std::string>();
+                target["role"] = (format_class == "scene" || format_class == "display") ? "color" : "data";
+            }
+        }
         // Placed graph passes were not in the config the first provenance
         // pass saw; they come from the same authoring as the appended ones.
         for (const auto &run : lowered_graph.placed_runs) {
@@ -3409,6 +3422,23 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                 });
             }
         }
+        // LP-1a: what a loop expanded comes from the same authoring, and
+        // says which loop, element and body node it is.
+        for (auto &[name, origin] : loop_resolution.passes) {
+            pass_provenance.push_back(RenderPassProvenance{
+                .name = name,
+                .source = authored_source,
+                .loop_origin = std::move(origin),
+            });
+        }
+        for (auto &[name, origin] : loop_resolution.resources) {
+            resource_provenance.push_back(RenderResourceProvenance{
+                .name = name,
+                .source = authored_source,
+                .loop_origin = std::move(origin),
+            });
+        }
+        graph_loops = std::move(loop_resolution.loops);
     }
     for (auto &pass_set : ensureArray(composed, "rendering_passes")) {
         enforceCanonicalOrder(pass_set.at("passes"));
@@ -3437,6 +3467,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         std::move(pass_provenance);
     result.resource_provenance =
         std::move(resource_provenance);
+    result.graph_loops = std::move(graph_loops);
     result.used_features = !feature_instances.empty();
     return result;
 }

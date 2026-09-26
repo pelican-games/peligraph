@@ -1,9 +1,11 @@
 #include "graphcomposition.hpp"
+#include "featurecompose.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <vector>
@@ -22,6 +24,316 @@ void object(const Json &value, const char *description) {
     if (!value.is_object()) throw std::invalid_argument(description);
 }
 
+// --- graph.loop (LP-1a). The form, the tier and the elements.
+
+GraphRegistryError loopFeaturePending(const std::string &node, const char *feature) {
+    // What LP-1b adds: expressions, carry, per-iteration inputs and the
+    // per-element outputs `p[]`. Until then each is refused by name, so an
+    // author (or Studio) learns the loop is fine and the feature is not there
+    // yet, rather than reading a shape error.
+    return GraphRegistryError("graph.loop_feature_pending@1", {{"node", node}, {"feature", feature}});
+}
+
+bool isLoopExpression(const Json &value) {
+    return value.is_object() && (value.contains("$expr") || value.contains("$format"));
+}
+
+std::int64_t loopInteger(const std::string &node, const Json &value, const char *what) {
+    if (isLoopExpression(value)) throw loopFeaturePending(node, "expression");
+    if (!value.is_number_integer())
+        throw std::invalid_argument(std::string{"graph.loop "} + what + " must be an integer literal: " + node);
+    if (value.is_number_unsigned() &&
+        value.get<std::uint64_t>() > static_cast<std::uint64_t>((std::numeric_limits<std::int64_t>::max)()))
+        throw std::invalid_argument(std::string{"graph.loop "} + what + " is out of range: " + node);
+    return value.get<std::int64_t>();
+}
+
+GraphLoopCondition loopCondition(const std::string &node, const Json &value, const char *what) {
+    if (!value.is_object() || value.size() != 1)
+        throw std::invalid_argument(std::string{"graph.loop "} + what +
+            " must be {\"element\": n}, {\"element_in\": [...]} or {\"element_not_in\": [...]}: " + node);
+    GraphLoopCondition condition;
+    // Not *items().begin(): that dereference returns a reference into the
+    // temporary proxy, which is gone at the end of the statement.
+    const auto first = value.begin();
+    const auto &key = first.key();
+    const auto &operand = first.value();
+    if (key == "element") {
+        condition.kind = GraphLoopCondition::Kind::element;
+        condition.values.push_back(loopInteger(node, operand, what));
+        return condition;
+    }
+    if (key != "element_in" && key != "element_not_in")
+        throw std::invalid_argument(std::string{"graph.loop "} + what + " does not know the test " + key + ": " + node);
+    condition.kind = key == "element_in" ? GraphLoopCondition::Kind::element_in
+                                         : GraphLoopCondition::Kind::element_not_in;
+    if (isLoopExpression(operand)) throw loopFeaturePending(node, "expression");
+    if (!operand.is_array())
+        throw std::invalid_argument(std::string{"graph.loop "} + what + " " + key + " must be an array: " + node);
+    for (const auto &entry : operand) condition.values.push_back(loopInteger(node, entry, what));
+    return condition;
+}
+
+std::vector<std::string> loopNames(const std::string &node, const Json &parameters, const char *key) {
+    std::vector<std::string> names;
+    const auto found = parameters.find(key);
+    if (found == parameters.end()) return names;
+    if (!found->is_array())
+        throw std::invalid_argument(std::string{"graph.loop "} + key + " must be an array: " + node);
+    for (const auto &name : *found) {
+        if (!name.is_string() || name.get_ref<const std::string &>().empty())
+            throw std::invalid_argument(std::string{"graph.loop "} + key + " names must be nonempty strings: " + node);
+        names.push_back(name.get<std::string>());
+    }
+    return names;
+}
+} // namespace
+
+bool GraphLoopCondition::matches(std::int64_t element) const {
+    switch (kind) {
+    case Kind::always: return true;
+    case Kind::element: return element == values.front();
+    case Kind::element_in: return std::find(values.begin(), values.end(), element) != values.end();
+    case Kind::element_not_in: return std::find(values.begin(), values.end(), element) == values.end();
+    }
+    return false;
+}
+
+std::string graphLoopTierName(GraphLoopTier tier) {
+    return tier == GraphLoopTier::expand ? "expand" : "draw_loop";
+}
+
+GraphLoopShape parseGraphLoopShape(const Json &node) {
+    GraphLoopShape shape;
+    shape.node = identifier(node.at("id"));
+    const auto &id = shape.node;
+    const auto found = node.find("parameters");
+    if (found == node.end() || !found->is_object())
+        throw std::invalid_argument("graph.loop requires a parameters object: " + id);
+    const auto &parameters = *found;
+    for (const auto &[key, value] : parameters.items()) {
+        (void)value;
+        static const std::set<std::string> known{"over", "where", "order", "limit", "branches", "carry",
+                                                 "tier", "after", "before", "insert", "canonical_anchor"};
+        if (!known.contains(key)) throw std::invalid_argument("graph.loop does not take parameter " + key + ": " + id);
+    }
+    // over: the set.
+    const auto over = parameters.find("over");
+    if (over == parameters.end() || !over->is_object() || over->size() != 1)
+        throw std::invalid_argument("graph.loop over must name exactly one set: " + id);
+    const auto first = over->begin();
+    const auto &set = first.key();
+    const auto &declaration = first.value();
+    if (set == "range") {
+        shape.set = GraphLoopSet::range;
+        if (!declaration.is_object() || declaration.size() != 1 || !declaration.contains("count"))
+            throw std::invalid_argument("graph.loop range takes exactly {\"count\": n}: " + id);
+        const auto &count = declaration.at("count");
+        if (count.is_object() && count.contains("node") && count.contains("port") && !isLoopExpression(count)) {
+            // A count read from the graph's values changes per frame: the
+            // expand stage cannot build it when the graph is recompiled.
+            shape.per_frame_count = true;
+        } else {
+            shape.range_count = loopInteger(id, count, "range count");
+            if (shape.range_count < 0 || shape.range_count > graphLoopRangeCountBound)
+                throw std::invalid_argument("graph.loop range count must be 0.." +
+                                            std::to_string(graphLoopRangeCountBound) + ": " + id);
+        }
+    } else if (set == "view_axis") {
+        shape.set = GraphLoopSet::view_axis;
+    } else if (set == "draw_items") {
+        shape.set = GraphLoopSet::draw_items;
+    } else {
+        shape.set = GraphLoopSet::unknown;
+    }
+    if (const auto where = parameters.find("where"); where != parameters.end())
+        shape.where = loopCondition(id, *where, "where");
+    if (const auto order = parameters.find("order"); order != parameters.end()) {
+        const auto refused = [&] {
+            return GraphRegistryError("graph.loop_order_unsupported@1", {{"node", id}, {"order", *order}});
+        };
+        if (!order->is_object() || !order->contains("by") || order->at("by") != "element") throw refused();
+        for (const auto &[key, value] : order->items()) {
+            (void)value;
+            if (key != "by" && key != "direction") throw refused();
+        }
+        const auto direction = order->value("direction", Json{"ascending"});
+        if (direction != "ascending" && direction != "descending") throw refused();
+        shape.descending = direction == "descending";
+    }
+    if (const auto limit = parameters.find("limit"); limit != parameters.end()) {
+        shape.limit = loopInteger(id, *limit, "limit");
+        if (*shape.limit < 0) throw std::invalid_argument("graph.loop limit must not be negative: " + id);
+    }
+    // branches: tested top to bottom; the last is the else.
+    const auto branches = parameters.find("branches");
+    if (branches == parameters.end() || !branches->is_array() || branches->empty())
+        throw std::invalid_argument("graph.loop requires a nonempty branches array: " + id);
+    for (std::size_t index = 0; index < branches->size(); ++index) {
+        const auto &entry = branches->at(index);
+        if (!entry.is_object() || !entry.contains("body"))
+            throw std::invalid_argument("graph.loop branch requires a body (a definition name or null): " + id);
+        for (const auto &[key, value] : entry.items()) {
+            (void)value;
+            if (key != "when" && key != "body")
+                throw std::invalid_argument("graph.loop branch does not take " + key + ": " + id);
+        }
+        GraphLoopBranch branch;
+        if (const auto when = entry.find("when"); when != entry.end())
+            branch.when = loopCondition(id, *when, "when");
+        else if (index + 1 != branches->size())
+            throw std::invalid_argument("graph.loop: only the last branch may omit when: " + id);
+        if (!entry.at("body").is_null()) branch.body = identifier(entry.at("body"));
+        shape.branches.push_back(std::move(branch));
+    }
+    if (branches->back().contains("when"))
+        throw GraphRegistryError("graph.loop_branch_else_missing@1", {{"node", id}});
+    if (const auto carry = parameters.find("carry"); carry != parameters.end()) {
+        if (!carry->is_array()) throw std::invalid_argument("graph.loop carry must be an array: " + id);
+        if (!carry->empty()) throw loopFeaturePending(id, "carry");
+    }
+    if (const auto tier = parameters.find("tier"); tier != parameters.end()) {
+        if (*tier == "expand") shape.tier = GraphLoopTier::expand;
+        else if (*tier == "draw_loop") shape.tier = GraphLoopTier::draw_loop;
+        else throw std::invalid_argument("graph.loop tier must be \"expand\" or \"draw_loop\": " + id);
+    }
+    shape.after = loopNames(id, parameters, "after");
+    shape.before = loopNames(id, parameters, "before");
+    // Placement: the same two forms a graph pass takes (LP-0b), for the
+    // loop's whole expansion.
+    if (parameters.contains("insert") && parameters.contains("canonical_anchor"))
+        throw std::invalid_argument("graph.loop insert and canonical_anchor exclude each other: " + id);
+    if (const auto insert = parameters.find("insert"); insert != parameters.end()) {
+        const auto side = insert->is_object() && insert->size() == 1 ? insert->begin() : insert->end();
+        if (side == insert->end() || (side.key() != "after" && side.key() != "before") ||
+            !side->is_string() || side->get_ref<const std::string &>().empty())
+            throw std::invalid_argument("graph.loop insert must be {\"after\" | \"before\": \"<pass>\"}: " + id);
+        shape.placement = GraphLoopPlacement{side.key() == "after", side->get<std::string>()};
+    }
+    if (const auto anchor = parameters.find("canonical_anchor"); anchor != parameters.end()) {
+        if (!anchor->is_string()) throw std::invalid_argument("graph.loop canonical_anchor must be a string: " + id);
+        if (!isCanonicalRenderPassAnchor(anchor->get<std::string>()))
+            throw GraphRegistryError("graph.insert_anchor_unknown@1", {{"node", id}, {"anchor", *anchor}});
+        shape.placement = GraphLoopPlacement{true, anchor->get<std::string>()};
+    }
+    return shape;
+}
+
+GraphLoopTier classifyGraphLoopTier(const GraphLoopShape &shape,
+                                    const std::vector<GraphLoopBodyTraits> &bodies) {
+    const auto unsupported = [&](const char *reason) {
+        return GraphRegistryError("graph.loop_tier_unsupported@1", {{"node", shape.node}, {"reason", reason}});
+    };
+    bool draw = false;
+    bool render = false;
+    for (const auto &body : bodies) {
+        if (body.nested) throw unsupported("nested");
+        draw = draw || body.draw;
+        render = render || body.render;
+    }
+    // A draw body runs inside one material pass (draw_loop); a render body is
+    // copied per element (expand). Mixed, the loop has no single place to run.
+    // LP-3a: `draw_items` over draw.* bodies is draw_loop.
+    if (draw) throw unsupported("mixed_body");
+    if (shape.set != GraphLoopSet::range) throw unsupported("set_unsupported");
+    if (shape.per_frame_count) throw unsupported("per_frame_value");
+    const auto actual = GraphLoopTier::expand;
+    if (shape.tier && *shape.tier != actual)
+        throw GraphRegistryError("graph.loop_tier_mismatch@1",
+            {{"node", shape.node}, {"tier", graphLoopTierName(*shape.tier)}, {"actual", graphLoopTierName(actual)}});
+    return actual;
+}
+
+std::vector<GraphLoopElement> graphLoopElements(const GraphLoopShape &shape, std::int64_t count) {
+    std::vector<GraphLoopElement> elements;
+    for (std::int64_t step = 0; step < count; ++step) {
+        const auto element = shape.descending ? count - 1 - step : step;
+        if (!shape.where.matches(element)) continue;
+        if (shape.limit && static_cast<std::int64_t>(elements.size()) >= *shape.limit) break;
+        GraphLoopElement entry{element, elements.size(), 0};
+        const auto branch = std::find_if(shape.branches.begin(), shape.branches.end(),
+            [&](const GraphLoopBranch &candidate) { return candidate.when.matches(element); });
+        entry.branch = static_cast<std::size_t>(branch - shape.branches.begin());
+        elements.push_back(entry);
+    }
+    if (elements.size() > graphLoopIterationLimit)
+        throw GraphRegistryError("graph.loop_expansion_limit@1",
+            {{"node", shape.node}, {"count", elements.size()}, {"limit", graphLoopIterationLimit}});
+    return elements;
+}
+
+namespace {
+// The template a scope is being expanded as, when it is a graph.loop branch
+// body (LP-1a).
+struct LoopScope {
+    std::string node;
+    std::size_t branch = 0;
+};
+
+// What a branch body holds: its boundary (the graph.input ids and the output
+// ports, which every branch must share) and what the tier decision reads.
+struct LoopBodyInterface {
+    std::set<std::string> inputs;
+    std::set<std::string> outputs;
+    GraphLoopBodyTraits traits;
+};
+
+LoopBodyInterface loopBodyInterface(const Json &definition) {
+    object(definition, "graph definition must be an object");
+    LoopBodyInterface result;
+    const auto &nodes = definition.at("nodes");
+    if (!nodes.is_array()) throw std::invalid_argument("graph nodes must be an array");
+    for (const auto &node : nodes) {
+        const auto op = node.value("op", std::string{});
+        if (op == "graph.input") result.inputs.insert(node.value("id", std::string{}));
+        else if (op == "graph.instance" || op == "graph.loop") result.traits.nested = true;
+        else if (op.starts_with("draw.")) result.traits.draw = true;
+        else if (op.starts_with("render.") || op.starts_with("value.")) result.traits.render = true;
+        if (op == "render.fullscreen" || op == "render.raster") result.traits.graphics = true;
+        // The loop's expansion lands as one run where the loop says; a body
+        // node has no place of its own to take.
+        if (const auto parameters = node.find("parameters"); parameters != node.end() && parameters->is_object() &&
+            (parameters->contains("insert") || parameters->contains("canonical_anchor")))
+            throw std::invalid_argument("a graph.loop body node takes its place from the loop's insert: " +
+                                        node.value("id", std::string{}));
+    }
+    const auto &outputs = definition.at("outputs");
+    object(outputs, "graph outputs must be an object");
+    for (const auto &[port, endpoint] : outputs.items()) {
+        (void)endpoint;
+        result.outputs.insert(port);
+    }
+    return result;
+}
+
+// The first port one side has and the other lacks, in name order.
+std::optional<std::string> firstDifference(const std::set<std::string> &lhs, const std::set<std::string> &rhs) {
+    std::vector<std::string> difference;
+    std::set_symmetric_difference(lhs.begin(), lhs.end(), rhs.begin(), rhs.end(), std::back_inserter(difference));
+    if (difference.empty()) return std::nullopt;
+    return difference.front();
+}
+
+// Inside a definition, a render node's `after` / `before` naming a node of the
+// same body means that body's node, so it takes the scope's path like the
+// node's id does (LP-1a; the same hole for graph.instance bodies).
+void scopeLocalOrder(Json &node, const std::map<std::string, const Json *> &local, const std::string &path) {
+    const auto parameters = node.find("parameters");
+    if (parameters == node.end() || !parameters->is_object()) return;
+    for (const auto *key : {"after", "before"}) {
+        const auto order = parameters->find(key);
+        if (order == parameters->end() || !order->is_array()) continue;
+        for (auto &name : *order) {
+            if (!name.is_string()) continue;
+            const auto found = local.find(name.get<std::string>());
+            if (found == local.end()) continue;
+            const auto op = found->second->value("op", std::string{});
+            if (op == "graph.input" || op == "graph.instance" || op == "graph.loop") continue;
+            name = path + name.get<std::string>();
+        }
+    }
+}
+
 class Expander {
     const Json &definitions;
     std::set<std::string> active_definitions;
@@ -30,7 +342,16 @@ class Expander {
     explicit Expander(const Json &definitions) : definitions(definitions) {}
 
     Json scope(const Json &document, const std::string &path,
-               const std::string &definition, const Json &arguments, const Json &parameters) {
+               const std::string &definition, const Json &arguments, const Json &parameters,
+               const LoopScope *loop = nullptr) {
+        const auto origin = [&](const std::string &id) {
+            GraphNodeOrigin entry{path, definition, id};
+            if (loop != nullptr) {
+                entry.loop = loop->node;
+                entry.loop_branch = loop->branch;
+            }
+            return entry;
+        };
         const auto &nodes = document.at("nodes");
         if (!nodes.is_array()) throw std::invalid_argument("graph nodes must be an array");
         std::map<std::string, const Json *> local;
@@ -66,8 +387,9 @@ class Expander {
         }
         // Record the supply of every instance input port while both halves are
         // still in hand. The root document's own parameters are not an
-        // instance's, so they are left out.
-        if (!path.empty()) {
+        // instance's, so they are left out, and so are a loop body
+        // template's: its ports are the loop's, which Studio reads there.
+        if (!path.empty() && loop == nullptr) {
             const auto scope = path.substr(0, path.size() - 1);
             for (const auto &input : inputs) {
                 GraphInstanceInput record{scope, input};
@@ -114,6 +436,86 @@ class Expander {
             active_instances.erase(id);
             return instances.emplace(id, std::move(outputs)).first->second;
         };
+        // LP-1a: a graph.loop. Its form is checked here, on every edit and
+        // every load; each branch body is expanded once as a template under
+        // `<loop>/$<branch>/`, so its ports and types are checked like any
+        // other node's. The copies per element are made after composition.
+        std::map<std::string, Json> loop_outputs;
+        std::set<std::string> active_loops;
+        std::function<const Json &(const std::string &)> expandLoop;
+        expandLoop = [&](const std::string &id) -> const Json & {
+            if (loop_outputs.contains(id)) return loop_outputs.at(id);
+            if (!active_loops.insert(id).second) throw std::invalid_argument("cyclic subgraph connection: " + id);
+            const auto &node = *local.at(id);
+            auto shape = parseGraphLoopShape(node);
+            // Every input reaches every element with the same value.
+            // LP-1b: an edge with `element` reads a different value per element.
+            Json bound = Json::object();
+            const auto authored_inputs = node.value("inputs", Json::object());
+            object(authored_inputs, "graph.loop inputs must be an object");
+            for (const auto &[port, endpoint] : authored_inputs.items()) {
+                object(endpoint, "graph.loop input must be an endpoint object");
+                if (endpoint.contains("element")) throw loopFeaturePending(id, "per_iteration_input");
+                bound[port] = resolve(endpoint);
+            }
+            std::vector<GraphLoopBodyTraits> traits;
+            std::optional<std::size_t> reference;
+            LoopBodyInterface boundary;
+            for (std::size_t branch = 0; branch < shape.branches.size(); ++branch) {
+                const auto &body = shape.branches[branch].body;
+                if (!body) continue;
+                if (!definitions.contains(*body)) throw std::invalid_argument("unknown graph definition: " + *body);
+                auto interface = loopBodyInterface(definitions.at(*body));
+                traits.push_back(interface.traits);
+                if (!reference) {
+                    reference = branch;
+                    boundary = std::move(interface);
+                    continue;
+                }
+                auto port = firstDifference(boundary.inputs, interface.inputs);
+                if (!port) port = firstDifference(boundary.outputs, interface.outputs);
+                if (port)
+                    throw GraphRegistryError("graph.loop_branch_interface@1",
+                        {{"node", id}, {"branch", branch}, {"definition", *body}, {"port", *port}});
+            }
+            (void)classifyGraphLoopTier(shape, traits);
+            // A compute task is declared after every pass; a loop of tasks
+            // has no place among the passes to take (as for a graph node).
+            if (shape.placement && reference &&
+                std::none_of(traits.begin(), traits.end(), [](const auto &body) { return body.graphics; }))
+                throw GraphRegistryError("graph.insert_on_compute@1", {{"node", id}});
+            GraphLoopExpansion expansion{shape, {}};
+            for (std::size_t branch = 0; branch < shape.branches.size(); ++branch) {
+                const auto &body = shape.branches[branch].body;
+                if (!body) {
+                    expansion.branches.emplace_back(std::nullopt);
+                    continue;
+                }
+                const auto prefix = id + "/$" + std::to_string(branch) + "/";
+                const LoopScope template_scope{id, branch};
+                auto outputs = scope(definitions.at(*body), prefix, *body, bound, Json::object(), &template_scope);
+                expansion.branches.emplace_back(GraphLoopBodyTemplate{*body, prefix, std::move(outputs)});
+            }
+            // The outputs the loop declares are what other nodes may read:
+            // `p`, the value of the last element that has a body.
+            const auto declared = node.value("outputs", Json::array());
+            if (!declared.is_array()) throw std::invalid_argument("graph.loop outputs must be an array: " + id);
+            Json exposed = Json::object();
+            for (const auto &entry : declared) {
+                if (!entry.is_string()) throw std::invalid_argument("graph.loop outputs must be port names: " + id);
+                const auto port = entry.get<std::string>();
+                // LP-1b: `p[]`, one value per element.
+                if (port.ends_with("[]")) throw loopFeaturePending(id, "element_output");
+                if (!reference || !boundary.outputs.contains(port))
+                    throw std::invalid_argument("unknown graph loop output: " + id + "." + port);
+                auto endpoint = expansion.branches.at(*reference)->outputs.at(port);
+                endpoint[graphLoopOutputMarker] = Json{{"loop", id}, {"port", port}};
+                exposed[port] = std::move(endpoint);
+            }
+            result.loops.insert_or_assign(id, std::move(expansion));
+            active_loops.erase(id);
+            return loop_outputs.emplace(id, std::move(exposed)).first->second;
+        };
         resolve = [&](const Json &endpoint) -> Json {
             const auto id = identifier(endpoint.at("node"));
             const auto port = identifier(endpoint.at("port"));
@@ -130,6 +532,12 @@ class Expander {
                 if (!outputs.contains(port)) throw std::invalid_argument("unknown subgraph output: " + port);
                 return outputs.at(port);
             }
+            if (node.at("op") == "graph.loop") {
+                const auto &outputs = expandLoop(id);
+                if (!outputs.contains(port))
+                    throw std::invalid_argument("unknown graph loop output: " + id + "." + port);
+                return outputs.at(port);
+            }
             const auto &ports = node.at("outputs");
             if (!ports.is_array() || std::find(ports.begin(), ports.end(), port) == ports.end())
                 throw std::invalid_argument("unknown graph output port: " + id + "." + port);
@@ -141,19 +549,26 @@ class Expander {
                     result.nodes.push_back({{"id", path + id}, {"op", "value.parameter"},
                         {"parameters", {{"name", path + id}, {"default", defaults.at(id)}}},
                         {"inputs", Json::object()}, {"outputs", {"value"}}});
-                    result.origins.emplace(path + id, GraphNodeOrigin{path, definition, id});
+                    result.origins.emplace(path + id, origin(id));
                 }
                 continue;
             }
             if (node->at("op") == "graph.instance") { (void)instantiate(id); continue; }
+            if (node->at("op") == "graph.loop") {
+                if (!path.empty())
+                    throw GraphRegistryError("graph.loop_nested@1", {{"node", id}, {"definition", definition}});
+                (void)expandLoop(id);
+                continue;
+            }
             auto expanded = *node;
             expanded["id"] = path + id;
+            if (!path.empty()) scopeLocalOrder(expanded, local, path);
             const auto authored_inputs = node->value("inputs", Json::object());
             object(authored_inputs, "node inputs must be an object");
             expanded["inputs"] = Json::object();
             for (const auto &[port, endpoint] : authored_inputs.items()) expanded["inputs"][port] = resolve(endpoint);
             result.nodes.push_back(std::move(expanded));
-            result.origins.emplace(path + id, GraphNodeOrigin{path, definition, id});
+            result.origins.emplace(path + id, origin(id));
         }
         const auto &outputs = document.at("outputs");
         object(outputs, "graph outputs must be an object");
@@ -162,7 +577,8 @@ class Expander {
             auto resolved = resolve(endpoint);
             // Even an input-to-output alias is unavailable when its instance
             // is inactive. Keep that boundary until dependency compilation.
-            if (!path.empty()) resolved["$scopes"].push_back(path.substr(0, path.size() - 1));
+            // A loop body template is no instance: nothing deactivates it.
+            if (!path.empty() && loop == nullptr) resolved["$scopes"].push_back(path.substr(0, path.size() - 1));
             exposed[identifier(port)] = std::move(resolved);
         }
         return exposed;
@@ -170,15 +586,110 @@ class Expander {
 };
 }
 
+namespace {
+// LP-1a: a graph.loop stands in the root document only. Every definition is
+// looked at, not only the ones an instance or a loop reaches, so the refusal
+// does not depend on whether the body is in use.
+void requireNoNestedLoop(const Json &definitions) {
+    for (const auto &[name, body] : definitions.items()) {
+        if (!body.is_object()) continue;
+        const auto nodes = body.find("nodes");
+        if (nodes == body.end() || !nodes->is_array()) continue;
+        for (const auto &node : *nodes)
+            if (node.is_object() && node.value("op", std::string{}) == "graph.loop")
+                throw GraphRegistryError("graph.loop_nested@1",
+                    {{"node", node.value("id", std::string{})}, {"definition", name}});
+    }
+}
+
+// LP-1a: the names a loop's expansion takes (`<loop>/<element>/<node>`) are
+// derived and change with the elements, so the authored document may not
+// name them. Ordering against a loop is written with the loop's own id.
+void requireLoopExpansionUnreferenced(const Json &document, const std::map<std::string, GraphLoopExpansion> &loops) {
+    if (loops.empty()) return;
+    using Pointer = Json::json_pointer;
+    const auto underLoop = [&](const Json &name) {
+        if (!name.is_string()) return false;
+        const auto &text = name.get_ref<const std::string &>();
+        return std::any_of(loops.begin(), loops.end(), [&](const auto &entry) {
+            return text.size() > entry.first.size() + 1 && text.starts_with(entry.first) &&
+                   text[entry.first.size()] == '/';
+        });
+    };
+    const auto refuse = [](const Json &name, const Pointer &pointer) {
+        throw GraphRegistryError("graph.loop_expansion_referenced@1",
+            {{"name", name}, {"pointer", pointer.to_string()}});
+    };
+    const auto orderLists = [&](const Json &holder, const Pointer &at) {
+        if (!holder.is_object()) return;
+        for (const auto *key : {"after", "before"}) {
+            const auto found = holder.find(key);
+            if (found == holder.end() || !found->is_array()) continue;
+            for (std::size_t index = 0; index < found->size(); ++index)
+                if (underLoop(found->at(index))) refuse(found->at(index), at / key / index);
+        }
+        if (const auto insert = holder.find("insert"); insert != holder.end() && insert->is_object())
+            for (const auto &[side, anchor] : insert->items())
+                if (underLoop(anchor)) refuse(anchor, at / "insert" / side);
+    };
+    const auto nodeLists = [&](const Json &holder, const Pointer &at) {
+        const auto nodes = holder.find("nodes");
+        if (nodes == holder.end() || !nodes->is_array()) return;
+        for (std::size_t index = 0; index < nodes->size(); ++index) {
+            const auto &node = nodes->at(index);
+            if (!node.is_object()) continue;
+            if (const auto parameters = node.find("parameters"); parameters != node.end())
+                orderLists(*parameters, at / "nodes" / index / "parameters");
+        }
+    };
+    nodeLists(document, Pointer{});
+    if (const auto definitions = document.find("definitions");
+        definitions != document.end() && definitions->is_object())
+        for (const auto &[name, body] : definitions->items())
+            if (body.is_object()) nodeLists(body, Pointer{"/definitions"} / name);
+    const auto rendering = document.find("rendering");
+    if (rendering == document.end() || !rendering->is_object()) return;
+    const Pointer section{"/rendering"};
+    if (const auto families = rendering->find("rendering_passes");
+        families != rendering->end() && families->is_array())
+        for (std::size_t family = 0; family < families->size(); ++family) {
+            const auto &passes = families->at(family).value("passes", Json::array());
+            for (std::size_t pass = 0; pass < passes.size(); ++pass)
+                orderLists(passes.at(pass), section / "rendering_passes" / family / "passes" / pass);
+        }
+    if (const auto orders = rendering->find("frame_node_order");
+        orders != rendering->end() && orders->is_object())
+        for (const auto &[graph, names] : orders->items())
+            if (names.is_array())
+                for (std::size_t index = 0; index < names.size(); ++index)
+                    if (underLoop(names.at(index)))
+                        refuse(names.at(index), section / "frame_node_order" / graph / index);
+    if (const auto planning = rendering->find("target_planning"); planning != rendering->end() && planning->is_object())
+        if (const auto graphs = planning->find("graphs"); graphs != planning->end() && graphs->is_object())
+            for (const auto &[graph, entry] : graphs->items()) {
+                if (!entry.is_object()) continue;
+                const auto nodes = entry.find("nodes");
+                if (nodes == entry.end() || !nodes->is_object()) continue;
+                for (const auto &[name, value] : nodes->items()) {
+                    (void)value;
+                    if (underLoop(Json(name)))
+                        refuse(name, section / "target_planning" / "graphs" / graph / "nodes" / name);
+                }
+            }
+}
+} // namespace
+
 ExpandedGraphDocument expandGraphDocument(const Json &document) {
     if (document.at("schema") != "pelican.graph" || document.at("version") != 1)
         throw std::invalid_argument("unsupported graph schema/version");
     const auto definitions = document.value("definitions", Json::object());
     object(definitions, "graph definitions must be an object");
+    requireNoNestedLoop(definitions);
     Expander expander{definitions};
     expander.result.outputs = expander.scope(document, "", "", Json::object(),
                                             document.value("parameters", Json::object()));
     auto &result = expander.result;
+    requireLoopExpansionUnreferenced(document, result.loops);
     const auto addAncestors = [&](std::set<std::string> &scopes, std::string_view path) {
         for (const auto &[scope, owner] : result.instance_owners) {
             if (path == scope || (path.starts_with(scope) && path.size() > scope.size() && path[scope.size()] == '/'))
@@ -444,10 +955,21 @@ void visitDefinitionReferences(Document &document, const std::string &definition
                 if (found != node.end() && found->is_string() && *found == definition)
                     visit(scope, node, Json::json_pointer{"/definition"});
             }
-            // LP-1a adds graph.loop here: every `parameters.branches[i].body`
-            // that names this definition is a reference, written at
-            // `/parameters/branches/<i>/body`. remove / rename / the port
-            // check then cover a loop's branches without further change.
+            // LP-1a: every `parameters.branches[i].body` of a graph.loop that
+            // names this definition, written at `/parameters/branches/<i>/body`.
+            if (node.value("op", std::string{}) == "graph.loop") {
+                const auto parameters = node.find("parameters");
+                if (parameters == node.end() || !parameters->is_object()) continue;
+                const auto branches = parameters->find("branches");
+                if (branches == parameters->end() || !branches->is_array()) continue;
+                for (std::size_t index = 0; index < branches->size(); ++index) {
+                    const auto &branch = branches->at(index);
+                    if (!branch.is_object()) continue;
+                    const auto body = branch.find("body");
+                    if (body != branch.end() && body->is_string() && *body == definition)
+                        visit(scope, node, Json::json_pointer{"/parameters/branches"} / index / "body");
+                }
+            }
         }
     };
     if (const auto nodes = document.find("nodes"); nodes != document.end())
@@ -481,19 +1003,21 @@ std::vector<DefinitionReference> definitionReferences(const Json &document,
 }
 
 // Every reference to this definition that supplies this boundary port -- with
-// a stored parameter or with an edge. Only a `graph.instance` supplies ports by
-// the definition's input names (LP-1a decides how a graph.loop's `inputs` /
-// `carry` reach its branch bodies, and adds that here).
+// a stored parameter or with an edge. A `graph.instance` supplies ports by the
+// definition's input names from its `parameters` and `inputs`; a `graph.loop`
+// (LP-1a) from its `inputs` only (its parameters are the loop's own; LP-1b
+// adds `carry`), and it supplies every branch body alike.
 void requireInputUnreferenced(const Json &candidate, const std::string &definition,
                               const std::string &input) {
     for (const auto &reference : definitionReferences(candidate, definition)) {
         const auto &node = *reference.referrer;
-        if (node.value("op", std::string{}) != "graph.instance") continue;
+        const auto op = node.value("op", std::string{});
+        if (op != "graph.instance" && op != "graph.loop") continue;
         const auto supplies = [&](const char *key) {
             const auto found = node.find(key);
             return found != node.end() && found->is_object() && found->contains(input);
         };
-        if (!supplies("parameters") && !supplies("inputs")) continue;
+        if ((op == "graph.loop" || !supplies("parameters")) && !supplies("inputs")) continue;
         throw GraphRegistryError("graph.input_referenced@1",
             {{"definition", definition}, {"input", input}, {"instance", reference.node}});
     }
@@ -503,18 +1027,6 @@ std::string opNodeName(const Json &value) {
     if (!value.is_string() || value.get_ref<const std::string &>().empty())
         throw std::invalid_argument("graph document op requires a nonempty node id");
     return value.get<std::string>();
-}
-
-// The declared inputs of an instance's definition. Empty when the definition is
-// unknown: the expansion names that failure itself.
-std::set<std::string> declaredInstanceInputs(const Json &node, const Json &definitions) {
-    std::set<std::string> declared;
-    const auto reference = node.value("definition", std::string{});
-    if (!definitions.contains(reference)) return declared;
-    for (const auto &entry : definitions.at(reference).value("nodes", Json::array()))
-        if (entry.value("op", std::string{}) == "graph.input")
-            declared.insert(entry.value("id", std::string{}));
-    return declared;
 }
 
 // --- set_layout. Nothing here is read by the engine; what is checked is that
@@ -795,13 +1307,40 @@ void pruneScopeLayout(const EditScope &scope) {
     }
 }
 
+// The definitions whose boundary a structural node's ports are: an instance's
+// one definition, or every branch body of a graph.loop (LP-1a).
+std::vector<std::string> suppliedDefinitions(const Json &node) {
+    std::vector<std::string> names;
+    const auto op = node.value("op", std::string{});
+    if (op == "graph.instance") {
+        names.push_back(node.value("definition", std::string{}));
+    } else if (op == "graph.loop") {
+        const auto parameters = node.value("parameters", Json::object());
+        for (const auto &branch : parameters.value("branches", Json::array()))
+            if (branch.is_object() && branch.contains("body") && branch.at("body").is_string())
+                names.push_back(branch.at("body").get<std::string>());
+    }
+    return names;
+}
+
+bool isStructuralSupplier(const Json &node) {
+    const auto op = node.value("op", std::string{});
+    return op == "graph.instance" || op == "graph.loop";
+}
+
 void requireInstancePort(const Json &node, const Json &definitions, const std::string &port) {
-    if (node.value("op", std::string{}) != "graph.instance") return;
-    const auto declared = declaredInstanceInputs(node, definitions);
-    if (declared.empty() || declared.contains(port)) return;
-    throw GraphRegistryError("graph.input_unknown@1",
-        {{"node", node.at("id")}, {"definition", node.value("definition", std::string{})},
-         {"port", port}});
+    for (const auto &definition : suppliedDefinitions(node)) {
+        if (!definitions.contains(definition)) continue;
+        std::set<std::string> declared;
+        for (const auto &entry : definitions.at(definition).value("nodes", Json::array()))
+            if (entry.value("op", std::string{}) == "graph.input")
+                declared.insert(entry.value("id", std::string{}));
+        // A known definition that declares no input at all is no exception:
+        // the port is still one it does not have.
+        if (declared.contains(port)) continue;
+        throw GraphRegistryError("graph.input_unknown@1",
+            {{"node", node.at("id")}, {"definition", definition}, {"port", port}});
+    }
 }
 
 // --- Checks on the whole document, run once after the last op. LP-0c.
@@ -955,6 +1494,8 @@ void requireDefinitionBody(const std::string &name, const Json &body) {
             throw GraphRegistryError("graph.node_duplicate@1", {{"node", id}, {"scope", name}});
         if (node.value("op", std::string{}) == "graph.instance")
             throw GraphRegistryError("graph.nested_instance@1", {{"node", id}, {"scope", name}});
+        if (node.value("op", std::string{}) == "graph.loop")
+            throw GraphRegistryError("graph.loop_nested@1", {{"node", id}, {"definition", name}});
     }
 }
 
@@ -1044,6 +1585,10 @@ void applyOperation(Json &candidate, const Json &operation, const std::string &k
             if (op == "graph.instance" && !scope.root)
                 throw GraphRegistryError("graph.nested_instance@1",
                     {{"node", id}, {"scope", scope.name}});
+            // LP-1a: a loop stands in the root document only.
+            if (op == "graph.loop" && !scope.root)
+                throw GraphRegistryError("graph.loop_nested@1",
+                    {{"node", id}, {"definition", scope.name}});
             if (op == "graph.input" && scope.root)
                 throw GraphRegistryError("graph.input_scope@1", {{"node", id}});
             if (kind == "replace_node") {
@@ -1103,18 +1648,19 @@ void applyOperation(Json &candidate, const Json &operation, const std::string &k
             const auto port = identifier(operation.at("port"));
             auto &node = locateNode(scope, definitions, id);
             const auto &source = operation.at("source");
-            // The port may be declared by a later op in the list.
-            if (node.value("op", std::string{}) == "graph.instance") {
+            // The port may be declared by a later op in the list. A graph.loop's
+            // inputs are its branch bodies' ports, like an instance's (LP-1a).
+            if (isStructuralSupplier(node)) {
                 DeferredCheck check{DeferredCheck::Kind::instance_port,
                                     scope.root ? std::string{} : scope.name, id, {}, port};
                 if (source.is_null()) {
-                    const auto reference = node.value("definition", std::string{});
-                    check.cleared_known_port =
-                        declaresInput(candidate, reference, port) ||
-                        std::any_of(recorded.begin(), recorded.end(), [&](const DeferredCheck &earlier) {
-                            return earlier.kind == DeferredCheck::Kind::input_unreferenced &&
-                                   earlier.definition == reference && earlier.port == port;
-                        });
+                    for (const auto &reference : suppliedDefinitions(node))
+                        check.cleared_known_port = check.cleared_known_port ||
+                            declaresInput(candidate, reference, port) ||
+                            std::any_of(recorded.begin(), recorded.end(), [&](const DeferredCheck &earlier) {
+                                return earlier.kind == DeferredCheck::Kind::input_unreferenced &&
+                                       earlier.definition == reference && earlier.port == port;
+                            });
                 }
                 checks.push_back(std::move(check));
             }

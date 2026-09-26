@@ -1626,6 +1626,15 @@ nlohmann::json viewAxesJson(
     return axes;
 }
 
+// LP-1a: `loop_origin` on a node or resource a graph.loop expanded.
+nlohmann::json loopOriginJson(const RenderLoopOrigin &origin) {
+    return nlohmann::json{
+        {"loop", origin.loop},
+        {"element", origin.element},
+        {"node", origin.node},
+    };
+}
+
 } // namespace
 
 std::string framePlanNodeKindName(FramePlanNodeKind kind) {
@@ -1877,6 +1886,10 @@ nlohmann::json framePlanToJson(
                 node_json["provider_ref"] =
                     provenance.provider_reference;
             }
+            if (provenance.loop_origin) {
+                node_json["loop_origin"] =
+                    loopOriginJson(*provenance.loop_origin);
+            }
         }
         if (node.kind == FramePlanNodeKind::snapshot_copy) {
             node_json["byte_size"] = node.byte_size;
@@ -1976,9 +1989,37 @@ nlohmann::json framePlanToJson(
                 if (provenance.usage) {
                     resource["usage"] = *provenance.usage;
                 }
+                if (provenance.loop_origin) {
+                    resource["loop_origin"] =
+                        loopOriginJson(*provenance.loop_origin);
+                }
                 resources.push_back(std::move(resource));
             }
             result["resources"] = std::move(resources);
+        }
+        // LP-1a: every graph.loop, including one that expanded nothing.
+        // Absent when the composed graph has no loop.
+        if (!render_pipeline->graph_loops.empty()) {
+            auto loops = nlohmann::json::array();
+            for (const auto &loop : render_pipeline->graph_loops) {
+                auto elements = nlohmann::json::array();
+                for (const auto &element : loop.elements) {
+                    elements.push_back(nlohmann::json{
+                        {"element", element.element},
+                        {"index", element.index},
+                        {"branch", element.branch},
+                    });
+                }
+                loops.push_back(nlohmann::json{
+                    {"node", loop.node},
+                    {"tier", loop.tier},
+                    {"count", loop.count},
+                    {"elements", std::move(elements)},
+                    {"unmatched_branches",
+                     loop.unmatched_branches},
+                });
+            }
+            result["loops"] = std::move(loops);
         }
     }
     return result;

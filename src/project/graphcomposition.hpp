@@ -8,8 +8,10 @@
 #include <string_view>
 #include <functional>
 #include <set>
+#include <optional>
 #include "logicalrendertype.hpp"
 #include "graphinstanceowner.hpp"
+#include "graphloop.hpp"
 
 namespace Pelican {
 
@@ -31,7 +33,35 @@ struct GraphNodeOrigin {
     std::string instance_path;
     std::string definition;
     std::string node;
+    // LP-1a: a node of a graph.loop branch body's template. `loop` is the
+    // loop's id and `loop_branch` the branch; `instance_path` is the
+    // template's prefix `<loop>/$<branch>/`. The template is expanded per
+    // element after composition, where each copy is named
+    // `<loop>/<element>/<node>` and its origin is a RenderLoopOrigin.
+    std::string loop;
+    std::optional<std::size_t> loop_branch;
 };
+// LP-1a: one branch body of a graph.loop, expanded once as a template. Its
+// nodes are in ExpandedGraphDocument::nodes with ids `<prefix><node>`, so
+// ports and types are checked like any other node; the resolution stage
+// copies them per element.
+struct GraphLoopBodyTemplate {
+    std::string definition;
+    // `<loop>/$<branch>/`.
+    std::string prefix;
+    // The body's outputs: port -> expanded endpoint inside the template.
+    nlohmann::json outputs = nlohmann::json::object();
+};
+struct GraphLoopExpansion {
+    GraphLoopShape shape;
+    // One entry per branch; empty for `"body": null`.
+    std::vector<std::optional<GraphLoopBodyTemplate>> branches;
+};
+// An endpoint that reads a loop's output carries this member beside `node` and
+// `port`: {"loop": "<loop>", "port": "<output>"}. The endpoint itself points
+// into the first non-null branch's template (that is what its type is checked
+// against); the resolution stage re-points it at the last element's copy.
+inline constexpr const char *graphLoopOutputMarker = "$loop_output";
 // Where one instance input port takes its value from. A connected port leaves
 // no node of its own behind in the expansion -- the consumer inside the
 // definition points straight at the outer producer -- so the answer is read
@@ -69,6 +99,8 @@ struct ExpandedGraphDocument {
     std::map<std::string, std::set<std::string>> node_scopes;
     std::map<std::string, std::set<std::string>> output_scopes;
     GraphInstanceInputs instance_inputs;
+    // LP-1a: every root graph.loop, by id.
+    std::map<std::string, GraphLoopExpansion> loops;
 };
 
 // Backend-independent authoring expansion. The original document remains the
@@ -108,6 +140,15 @@ ExpandedGraphDocument expandGraphDocument(const nlohmann::json &document);
 // graph.input_scope@1 / graph.layout_invalid@1 / graph.definition_duplicate@1 /
 // graph.definition_missing@1 / graph.definition_referenced@1 -- as
 // GraphRegistryError.
+//
+// LP-1a: a graph.loop's branch bodies are its definitions the way an
+// instance's definition is: rename_definition rewrites
+// `parameters.branches[i].body`, remove_definition of a body in use is
+// graph.definition_referenced@1, a loop's `inputs` are checked against every
+// branch body's graph.input ids at the end of the list (graph.input_unknown@1
+// / graph.input_referenced@1, whose `instance` field then names the loop),
+// and a graph.loop added inside a definition is graph.loop_nested@1. The
+// loop's own form (graph.loop_* codes) is checked by the expansion at the end.
 //
 // `set_layout` is the one op that writes nothing the engine reads. It replaces
 // the addressed scope's `layout` member -- where the editor put the nodes, the

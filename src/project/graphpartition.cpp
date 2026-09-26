@@ -70,6 +70,8 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document,
     result.values.instance_owners = graph.instance_owners;
     result.rendering.instance_owners = graph.instance_owners;
     result.animation.instance_owners = graph.instance_owners;
+    // LP-1a: loops expand into render declarations after composition.
+    result.rendering.loops = graph.loops;
     const auto domain_partition = [&result](GraphExecutionDomain domain) -> ExpandedGraphDocument & {
         switch (domain) {
         case GraphExecutionDomain::values: return result.values;

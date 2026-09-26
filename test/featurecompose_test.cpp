@@ -21,9 +21,11 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <nlohmann/json.hpp>
 #include <set>
@@ -415,6 +417,7 @@ CompiledRenderPipeline compileComposition(
     resolved.pass_provenance = composition.pass_provenance;
     resolved.resource_provenance =
         composition.resource_provenance;
+    resolved.graph_loops = composition.graph_loops;
     resolved.used_features = composition.used_features;
     return compileRenderPipeline(resolved);
 }
@@ -5303,6 +5306,511 @@ TEST_CASE("LP-0b placement refusals are named", "[render-feature][graph-composit
             CHECK_THROWS_AS(partitionGraphDocument(lp0bGraph({"blit"}, placement)), std::invalid_argument);
         }
     }
+}
+
+namespace {
+// LP-1a: graph.loop over the hybrid preset with bloom. `paint` draws
+// engine://passthrough into an image of its own; `accumulate` draws into the
+// image its `target` port is given, loading what is there.
+nlohmann::json lp1aColorPort() {
+    return {{"kind", "image"}, {"type", lp0aSceneColorType()}, {"access", "write"},
+            {"attachment", "color"}, {"location", 0}};
+}
+
+nlohmann::json lp1aFullscreen(const std::string &id, const nlohmann::json &color_source,
+                              const nlohmann::json &extra = nlohmann::json::object()) {
+    using Json = nlohmann::json;
+    Json parameters{{"pass_set", "main_render"},
+                    {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
+                    {"ports", {{"color", lp1aColorPort()}}}};
+    for (const auto &[key, value] : extra.items()) parameters[key] = value;
+    return Json{{"id", id}, {"op", "render.fullscreen"}, {"parameters", std::move(parameters)},
+                {"inputs", {{"color", color_source}}}, {"outputs", {"color"}}};
+}
+
+nlohmann::json lp1aPaintBody(const std::string &pass = "fill") {
+    using Json = nlohmann::json;
+    return Json{{"nodes", Json::array({lp0bImage("image"),
+                                       lp1aFullscreen(pass, {{"node", "image"}, {"port", "resource"}})})},
+                {"outputs", {{"image", {{"node", pass}, {"port", "color"}}}}}};
+}
+
+nlohmann::json lp1aAccumulateBody() {
+    using Json = nlohmann::json;
+    return Json{{"nodes", Json::array({{{"id", "target"}, {"op", "graph.input"}},
+                                       lp1aFullscreen("blend", {{"node", "target"}, {"port", "value"}},
+                                                      {{"color_load_op", "Load"}})})},
+                {"outputs", Json::object()}};
+}
+
+nlohmann::json lp1aLoop(const std::string &id, const nlohmann::json &parameters,
+                        const nlohmann::json &inputs = nlohmann::json::object(),
+                        const nlohmann::json &outputs = nlohmann::json::array()) {
+    return {{"id", id}, {"op", "graph.loop"}, {"parameters", parameters}, {"inputs", inputs}, {"outputs", outputs}};
+}
+
+nlohmann::json lp1aRange(std::int64_t count, const std::string &body = "paint") {
+    return {{"over", {{"range", {{"count", count}}}}}, {"branches", nlohmann::json::array({{{"body", body}}})}};
+}
+
+nlohmann::json lp1aLit() {
+    return {{"id", "lit"}, {"op", "render.target_ref"},
+            {"parameters", {{"name", "lit_color"}, {"type", lp0aSceneColorType()}}}, {"outputs", {"resource"}}};
+}
+
+nlohmann::json lp1aGraph(nlohmann::json nodes, nlohmann::json definitions = nullptr) {
+    using Json = nlohmann::json;
+    if (definitions.is_null())
+        definitions = Json{{"paint", lp1aPaintBody()}, {"accumulate", lp1aAccumulateBody()}};
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", std::move(definitions)},
+                {"nodes", std::move(nodes)}, {"outputs", Json::object()},
+                {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+                               {"features", Json::array({"engine://features/bloom.json"})}}}};
+}
+
+// The main_render frame plan of a composition, as get_frame_plan serializes it.
+nlohmann::json lp1aPlanJson(const RenderFeatureComposeResult &composed) {
+    const auto compiled = compileComposition(composed);
+    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    const auto graph = std::find_if(graphs.begin(), graphs.end(),
+        [](const auto &candidate) { return candidate.name == "main_render"; });
+    REQUIRE(graph != graphs.end());
+    return framePlanToJson(planFrameGraph(*graph), &compiled);
+}
+
+const nlohmann::json *lp1aPlanNode(const nlohmann::json &plan, std::string_view name) {
+    for (const auto &node : plan.at("nodes"))
+        if (node.at("name").get<std::string>() == name) return &node;
+    return nullptr;
+}
+
+std::vector<std::string> lp1aNamesUnder(const nlohmann::json &config, const std::string &prefix) {
+    std::vector<std::string> names;
+    for (const auto &family : config.at("rendering_passes"))
+        for (const auto &pass : family.at("passes"))
+            if (pass.value("name", std::string{}).starts_with(prefix)) names.push_back(pass.at("name").get<std::string>());
+    return names;
+}
+
+std::pair<std::string, nlohmann::json> lp1aEditRefusal(const nlohmann::json &document) {
+    try {
+        (void)partitionGraphDocument(document);
+    } catch (const GraphRegistryError &error) {
+        return {error.code(), error.detail()};
+    }
+    FAIL("the document was not refused by name");
+    return {};
+}
+} // namespace
+
+TEST_CASE("LP-1a a range loop copies its body per element into passes and targets",
+          "[render-feature][graph-composition][lp1a]") {
+    using Json = nlohmann::json;
+    const auto document = lp1aGraph(Json::array({lp1aLoop("steps", lp1aRange(4))}));
+    const auto composed = lp0aCompose(document);
+    const auto &config = composed.config;
+    std::vector<std::string> expected_passes;
+    for (int element = 0; element < 4; ++element) {
+        const auto prefix = "steps/" + std::to_string(element) + "/";
+        expected_passes.push_back(prefix + "fill");
+        const auto &pass = passByName(config, prefix + "fill");
+        CHECK(pass.at("output").at("color") == Json::array({prefix + "image"}));
+        CHECK(std::count_if(config.at("render_targets").begin(), config.at("render_targets").end(),
+                            [&](const Json &target) { return target.at("name") == prefix + "image"; }) == 1);
+    }
+    CHECK(lp1aNamesUnder(config, "steps/") == expected_passes);
+    // The template the body was checked as is never declared.
+    CHECK(config.dump().find("steps/$") == std::string::npos);
+    // The authored document holds the loop, not its expansion.
+    CHECK(document.dump().find("steps/0") == std::string::npos);
+
+    const auto plan = lp1aPlanJson(composed);
+    REQUIRE(plan.contains("loops"));
+    CHECK(plan.at("loops") == Json::array({{{"node", "steps"}, {"tier", "expand"}, {"count", 4},
+        {"elements", Json::array({{{"element", 0}, {"index", 0}, {"branch", 0}},
+                                  {{"element", 1}, {"index", 1}, {"branch", 0}},
+                                  {{"element", 2}, {"index", 2}, {"branch", 0}},
+                                  {{"element", 3}, {"index", 3}, {"branch", 0}}})},
+        {"unmatched_branches", Json::array()}}}));
+    for (int element = 0; element < 4; ++element) {
+        const auto prefix = "steps/" + std::to_string(element) + "/";
+        const auto *node = lp1aPlanNode(plan, prefix + "fill");
+        REQUIRE(node != nullptr);
+        CHECK(node->at("loop_origin") == Json{{"loop", "steps"}, {"element", element}, {"node", "fill"}});
+        const auto resource = std::find_if(plan.at("resources").begin(), plan.at("resources").end(),
+            [&](const Json &entry) { return entry.at("name") == prefix + "image"; });
+        REQUIRE(resource != plan.at("resources").end());
+        CHECK(resource->at("loop_origin") == Json{{"loop", "steps"}, {"element", element}, {"node", "image"}});
+        CHECK(resource->at("source") == "engine");
+    }
+    // A pass no loop made carries no loop_origin.
+    CHECK_FALSE(lp1aPlanNode(plan, "deferred_lighting")->contains("loop_origin"));
+
+    SECTION("a loop that expands nothing is reported with count 0") {
+        const auto empty = lp0aCompose(lp1aGraph(Json::array({lp1aLoop("steps", lp1aRange(0))})));
+        CHECK(lp1aNamesUnder(empty.config, "steps/").empty());
+        const auto empty_plan = lp1aPlanJson(empty);
+        CHECK(empty_plan.at("loops") == Json::array({{{"node", "steps"}, {"tier", "expand"}, {"count", 0},
+            {"elements", Json::array()}, {"unmatched_branches", Json::array({0})}}}));
+    }
+    SECTION("a graph with no loop reports no loops") {
+        CHECK_FALSE(lp1aPlanJson(lp0aCompose(lp0bGraph({"blit"}, Json::object()))).contains("loops"));
+    }
+}
+
+TEST_CASE("LP-1a elements that touch an outside target run in element order",
+          "[render-feature][graph-composition][lp1a]") {
+    using Json = nlohmann::json;
+    for (const auto direction : {"ascending", "descending"}) {
+        DYNAMIC_SECTION(direction) {
+            auto parameters = lp1aRange(12, "accumulate");
+            parameters["order"] = {{"by", "element"}, {"direction", direction}};
+            const auto composed = lp0aCompose(lp1aGraph(Json::array({
+                lp1aLit(),
+                lp1aLoop("acc", parameters, {{"target", {{"node", "lit"}, {"port", "resource"}}}})})));
+            std::vector<std::string> element_order;
+            for (int step = 0; step < 12; ++step) {
+                const auto element = std::string{direction} == "ascending" ? step : 11 - step;
+                element_order.push_back("acc/" + std::to_string(element) + "/blend");
+            }
+            // Each copy waits on the previous element's by an explicit edge.
+            for (std::size_t i = 1; i < element_order.size(); ++i)
+                CHECK(lp0bListed(passByName(composed.config, element_order[i]).at("after"), element_order[i - 1]));
+            // Declared and planned in element order, though `acc/10/blend`
+            // sorts before `acc/9/blend`.
+            CHECK(lp1aNamesUnder(composed.config, "acc/") == element_order);
+            std::vector<std::string> planned;
+            for (const auto &name : lp0bPlanOrder(composed))
+                if (name.starts_with("acc/")) planned.push_back(name);
+            CHECK(planned == element_order);
+            REQUIRE_NOTHROW(compileComposition(composed));
+        }
+    }
+}
+
+TEST_CASE("LP-1a branches choose a body per element, and where, order and limit choose the elements",
+          "[render-feature][graph-composition][lp1a]") {
+    using Json = nlohmann::json;
+    const Json definitions{{"paint", lp1aPaintBody()}, {"first", lp1aPaintBody("first_fill")},
+                           {"never", lp1aPaintBody("never_fill")}};
+    const Json branches = Json::array({{{"when", {{"element", 7}}}, {"body", "never"}},
+                                       {{"when", {{"element", 0}}}, {"body", "first"}},
+                                       {{"when", {{"element_in", {2}}}}, {"body", nullptr}},
+                                       {{"body", "paint"}}});
+    auto parameters = lp1aRange(4);
+    parameters["branches"] = branches;
+    const auto composed = lp0aCompose(lp1aGraph(Json::array({lp1aLoop("steps", parameters)}), definitions));
+    CHECK(lp1aNamesUnder(composed.config, "steps/") ==
+          std::vector<std::string>{"steps/0/first_fill", "steps/1/fill", "steps/3/fill"});
+    const auto plan = lp1aPlanJson(composed);
+    CHECK(plan.at("loops").at(0).at("elements") ==
+          Json::array({{{"element", 0}, {"index", 0}, {"branch", 1}},
+                       {{"element", 1}, {"index", 1}, {"branch", 3}},
+                       {{"element", 2}, {"index", 2}, {"branch", 2}},
+                       {{"element", 3}, {"index", 3}, {"branch", 3}}}));
+    CHECK(plan.at("loops").at(0).at("unmatched_branches") == Json::array({0}));
+    CHECK(lp1aPlanNode(plan, "steps/0/first_fill")->at("loop_origin") ==
+          Json{{"loop", "steps"}, {"element", 0}, {"node", "first_fill"}});
+
+    SECTION("where -> order -> limit") {
+        auto chosen = lp1aRange(6);
+        chosen["where"] = {{"element_not_in", {4}}};
+        chosen["order"] = {{"by", "element"}, {"direction", "descending"}};
+        chosen["limit"] = 3;
+        const auto limited = lp0aCompose(lp1aGraph(Json::array({lp1aLoop("steps", chosen)})));
+        CHECK(lp1aPlanJson(limited).at("loops").at(0).at("elements") ==
+              Json::array({{{"element", 5}, {"index", 0}, {"branch", 0}},
+                           {{"element", 3}, {"index", 1}, {"branch", 0}},
+                           {{"element", 2}, {"index", 2}, {"branch", 0}}}));
+        CHECK(lp1aNamesUnder(limited.config, "steps/").size() == 3);
+        chosen["limit"] = 100;
+        chosen["where"] = {{"element", 1}};
+        const auto one = lp0aCompose(lp1aGraph(Json::array({lp1aLoop("steps", chosen)})));
+        CHECK(lp1aNamesUnder(one.config, "steps/") == std::vector<std::string>{"steps/1/fill"});
+    }
+}
+
+TEST_CASE("LP-1a ordering against a loop names the loop, and a loop's output is its last element's",
+          "[render-feature][graph-composition][lp1a]") {
+    using Json = nlohmann::json;
+    const auto type = lp0aSceneColorType();
+    // `show` reads the loop's output; `after_all` is after the loop; the loop
+    // is after `first`.
+    auto show = lp1aFullscreen("show", {{"node", "shown"}, {"port", "resource"}});
+    show["parameters"]["ports"]["source"] = {{"kind", "image"}, {"type", type}, {"access", "read"}};
+    show["inputs"]["source"] = {{"node", "steps"}, {"port", "image"}};
+    auto after_all = lp1aFullscreen("after_all", {{"node", "late"}, {"port", "resource"}}, {{"after", {"steps"}}});
+    auto first = lp1aFullscreen("first", {{"node", "early"}, {"port", "resource"}});
+    const auto graph = [&](std::int64_t count) {
+        auto parameters = lp1aRange(count);
+        parameters["after"] = {"first"};
+        return lp1aGraph(Json::array({lp0bImage("shown"), lp0bImage("late"), lp0bImage("early"), first, show,
+                                      after_all, lp1aLoop("steps", parameters, Json::object(), {"image"})}));
+    };
+    const auto composed = lp0aCompose(graph(3));
+    const auto &config = composed.config;
+    const auto &show_pass = passByName(config, "show");
+    CHECK(show_pass.at("input") == Json::array({"steps/2/image"}));
+    CHECK(show_pass.at("resource_ports").at("source").at("resource") == "steps/2/image");
+    CHECK(lp0bListed(show_pass.at("after"), "steps/2/fill"));
+    const auto &after_pass = passByName(config, "after_all");
+    for (const auto *name : {"steps/0/fill", "steps/1/fill", "steps/2/fill"}) {
+        CHECK(lp0bListed(after_pass.at("after"), name));
+        CHECK(lp0bListed(passByName(config, name).at("after"), "first"));
+    }
+    CHECK_FALSE(lp0bListed(after_pass.at("after"), "steps"));
+    const auto order = lp0bPlanOrder(composed);
+    CHECK(lp0bIndex(order, "first") < lp0bIndex(order, "steps/0/fill"));
+    CHECK(lp0bIndex(order, "steps/2/fill") < lp0bIndex(order, "show"));
+    CHECK(lp0bIndex(order, "steps/2/fill") < lp0bIndex(order, "after_all"));
+    REQUIRE_NOTHROW(compileComposition(composed));
+
+    SECTION("with no element, an order against the loop is dropped") {
+        auto without_reader = graph(0);
+        auto &nodes = without_reader["nodes"];
+        nodes.erase(std::remove_if(nodes.begin(), nodes.end(), [](const Json &node) { return node.at("id") == "show"; }),
+                    nodes.end());
+        const auto empty = lp0aCompose(without_reader);
+        CHECK(lp1aNamesUnder(empty.config, "steps/").empty());
+        CHECK_FALSE(lp0bListed(passByName(empty.config, "after_all").value("after", Json::array()), "steps"));
+        REQUIRE_NOTHROW(compileComposition(empty));
+    }
+    SECTION("with no element, reading the loop's output is refused by name") {
+        const auto [code, fields] = lp0aRefusal(graph(0));
+        CHECK(code == "graph.loop_output_empty@1");
+        CHECK(fields == Json{{"node", "steps"}, {"port", "image"}});
+    }
+}
+
+TEST_CASE("LP-1a a loop's insert places its whole expansion as one run",
+          "[render-feature][graph-composition][lp1a]") {
+    using Json = nlohmann::json;
+    auto parameters = lp1aRange(3);
+    parameters["insert"] = {{"after", "deferred_lighting"}};
+    const auto composed = lp0aCompose(lp1aGraph(Json::array({lp1aLoop("steps", parameters)})));
+    const auto names = lp0bDeclared(composed.config);
+    const auto anchor = lp0bIndex(names, "deferred_lighting");
+    for (int element = 0; element < 3; ++element)
+        CHECK(lp0bIndex(names, "steps/" + std::to_string(element) + "/fill") == anchor + 1 + element);
+    CHECK(lp0bListed(passByName(composed.config, "steps/0/fill").at("after"), "deferred_lighting"));
+    const auto order = lp0bPlanOrder(composed);
+    CHECK(lp0bIndex(order, "steps/0/fill") == lp0bIndex(order, "deferred_lighting") + 1);
+    REQUIRE_NOTHROW(compileComposition(composed));
+
+    SECTION("canonical_anchor") {
+        auto anchored = lp1aRange(2);
+        anchored["canonical_anchor"] = "post_ldr";
+        const auto placed = lp0aCompose(lp1aGraph(Json::array({lp1aLoop("steps", anchored)})));
+        const auto declared = lp0bDeclared(placed.config);
+        CHECK(lp0bIndex(declared, "steps/0/fill") > lp0bIndex(declared, "HighLuminanceExtraction"));
+        CHECK(lp0bIndex(declared, "steps/1/fill") + 1 == lp0bIndex(declared, "__anchor_pelican_ui"));
+    }
+    SECTION("an anchor nothing declares is refused under the loop's id") {
+        auto unknown = lp1aRange(2);
+        unknown["insert"] = {{"after", "no_such_pass"}};
+        const auto [code, fields] = lp0aRefusal(lp1aGraph(Json::array({lp1aLoop("steps", unknown)})));
+        CHECK(code == "graph.insert_anchor_unknown@1");
+        CHECK(fields == Json{{"node", "steps"}, {"anchor", "no_such_pass"}});
+    }
+}
+
+TEST_CASE("LP-1a loop refusals are named", "[render-feature][graph-composition][lp1a]") {
+    using Json = nlohmann::json;
+    const auto loop_graph = [](const Json &parameters, const Json &definitions = nullptr,
+                               const Json &inputs = Json::object(), const Json &outputs = Json::array()) {
+        return lp1aGraph(Json::array({lp1aLoop("steps", parameters, inputs, outputs)}), definitions);
+    };
+    const auto expect = [](const Json &document, const std::string &code, const Json &fields) {
+        const auto [actual_code, actual_fields] = lp1aEditRefusal(document);
+        CHECK(actual_code == code);
+        CHECK(actual_fields == fields);
+    };
+    SECTION("the last branch is the else") {
+        auto parameters = lp1aRange(2);
+        parameters["branches"] = Json::array({{{"when", {{"element", 0}}}, {"body", "paint"}}});
+        expect(loop_graph(parameters), "graph.loop_branch_else_missing@1", {{"node", "steps"}});
+    }
+    SECTION("every branch body has the same ports") {
+        auto other = lp1aPaintBody();
+        other["outputs"] = {{"picture", {{"node", "fill"}, {"port", "color"}}}};
+        auto parameters = lp1aRange(2);
+        parameters["branches"] = Json::array({{{"when", {{"element", 0}}}, {"body", "paint"}}, {{"body", "other"}}});
+        expect(loop_graph(parameters, {{"paint", lp1aPaintBody()}, {"other", other}}),
+               "graph.loop_branch_interface@1", {{"node", "steps"}, {"branch", 1}, {"definition", "other"}, {"port", "image"}});
+    }
+    SECTION("a loop stands in the root document only") {
+        auto body = lp1aPaintBody();
+        body["nodes"].push_back(lp1aLoop("inner", lp1aRange(1)));
+        expect(lp1aGraph(Json::array(), {{"paint", lp1aPaintBody()}, {"holder", body}}), "graph.loop_nested@1",
+               {{"node", "inner"}, {"definition", "holder"}});
+    }
+    SECTION("what the expand stage cannot run") {
+        auto view = lp1aRange(1);
+        view["over"] = {{"view_axis", {{"family", "$capture/cube"}, {"axis", "face"}}}};
+        expect(loop_graph(view), "graph.loop_tier_unsupported@1", {{"node", "steps"}, {"reason", "set_unsupported"}});
+        auto draws = lp1aRange(1);
+        draws["over"] = {{"draw_items", Json::object()}};
+        expect(loop_graph(draws), "graph.loop_tier_unsupported@1", {{"node", "steps"}, {"reason", "set_unsupported"}});
+        auto per_frame = lp1aRange(1);
+        per_frame["over"]["range"]["count"] = {{"node", "n"}, {"port", "value"}};
+        expect(loop_graph(per_frame), "graph.loop_tier_unsupported@1", {{"node", "steps"}, {"reason", "per_frame_value"}});
+        auto nested = lp1aPaintBody();
+        nested["nodes"].push_back({{"id", "inner"}, {"op", "graph.instance"}, {"definition", "paint"}});
+        expect(loop_graph(lp1aRange(1, "nested"), {{"paint", lp1aPaintBody()}, {"nested", nested}}),
+               "graph.loop_tier_unsupported@1", {{"node", "steps"}, {"reason", "nested"}});
+        auto draw = lp1aPaintBody();
+        draw["nodes"].push_back({{"id", "mat"}, {"op", "draw.material"}, {"parameters", Json::object()},
+                                 {"outputs", Json::array()}});
+        expect(loop_graph(lp1aRange(1, "drawn"), {{"paint", lp1aPaintBody()}, {"drawn", draw}}),
+               "graph.loop_tier_unsupported@1", {{"node", "steps"}, {"reason", "mixed_body"}});
+    }
+    SECTION("a fixed tier the loop cannot run in") {
+        auto parameters = lp1aRange(1);
+        parameters["tier"] = "draw_loop";
+        expect(loop_graph(parameters), "graph.loop_tier_mismatch@1",
+               {{"node", "steps"}, {"tier", "draw_loop"}, {"actual", "expand"}});
+        parameters["tier"] = "expand";
+        REQUIRE_NOTHROW(partitionGraphDocument(loop_graph(parameters)));
+    }
+    SECTION("an order other than by element") {
+        auto parameters = lp1aRange(1);
+        parameters["order"] = {{"by", "phase_default"}};
+        expect(loop_graph(parameters), "graph.loop_order_unsupported@1",
+               {{"node", "steps"}, {"order", {{"by", "phase_default"}}}});
+        parameters["order"] = {{"by", "element"}, {"direction", "sideways"}};
+        expect(loop_graph(parameters), "graph.loop_order_unsupported@1",
+               {{"node", "steps"}, {"order", {{"by", "element"}, {"direction", "sideways"}}}});
+    }
+    SECTION("what arrives with loop expressions") {
+        auto carry = lp1aRange(1);
+        carry["carry"] = Json::array({{{"from", "image"}, {"to", "image"}}});
+        expect(loop_graph(carry), "graph.loop_feature_pending@1", {{"node", "steps"}, {"feature", "carry"}});
+        auto expression = lp1aRange(1);
+        expression["over"]["range"]["count"] = {{"$expr", "2 + 2"}};
+        expect(loop_graph(expression), "graph.loop_feature_pending@1", {{"node", "steps"}, {"feature", "expression"}});
+        auto when = lp1aRange(1);
+        when["branches"] = Json::array({{{"when", {{"element", {{"$expr", "count - 1"}}}}}, {"body", "paint"}},
+                                        {{"body", "paint"}}});
+        expect(loop_graph(when), "graph.loop_feature_pending@1", {{"node", "steps"}, {"feature", "expression"}});
+        expect(loop_graph(lp1aRange(1), nullptr, Json::object(), {"image[]"}), "graph.loop_feature_pending@1",
+               {{"node", "steps"}, {"feature", "element_output"}});
+        auto document = lp1aGraph(Json::array({lp1aLit(), lp1aLoop("steps", lp1aRange(1, "accumulate"),
+            {{"target", {{"node", "lit"}, {"port", "resource"}, {"element", {{"$expr", "element"}}}}}})}));
+        expect(document, "graph.loop_feature_pending@1", {{"node", "steps"}, {"feature", "per_iteration_input"}});
+    }
+    SECTION("a loop of compute tasks takes no place among passes") {
+        Json compute_body{{"nodes", Json::array({
+            {{"id", "data"}, {"op", "render.buffer"}, {"parameters", {{"element", "float"}, {"size", 16}}},
+             {"outputs", {"resource"}}},
+            {{"id", "simulate"}, {"op", "render.compute"},
+             {"parameters", {{"shader", "engine://ray_deform"},
+                             {"ports", {{"data", {{"kind", "buffer"}, {"element", "float"}, {"access", "read_write"}}}}}}},
+             {"inputs", {{"data", {{"node", "data"}, {"port", "resource"}}}}}, {"outputs", {"data"}}}})},
+            {"outputs", Json::object()}};
+        auto parameters = lp1aRange(2, "tasks");
+        parameters["insert"] = {{"after", "deferred_lighting"}};
+        expect(loop_graph(parameters, {{"tasks", compute_body}}), "graph.insert_on_compute@1", {{"node", "steps"}});
+    }
+    SECTION("the expansion's names are not the author's to use") {
+        auto document = lp1aGraph(Json::array({lp1aLoop("steps", lp1aRange(2)), lp0bImage("late"),
+            lp1aFullscreen("late_pass", {{"node", "late"}, {"port", "resource"}}, {{"after", {"steps/1/fill"}}})}));
+        expect(document, "graph.loop_expansion_referenced@1", {{"name", "steps/1/fill"}, {"pointer", "/nodes/2/parameters/after/0"}});
+        auto ordered = lp1aGraph(Json::array({lp1aLoop("steps", lp1aRange(2))}));
+        ordered["rendering"]["frame_node_order"] = {{"main_render", {"deferred_lighting", "steps/0/fill"}}};
+        expect(ordered, "graph.loop_expansion_referenced@1",
+               {{"name", "steps/0/fill"}, {"pointer", "/rendering/frame_node_order/main_render/1"}});
+        auto planned = lp1aGraph(Json::array({lp1aLoop("steps", lp1aRange(2))}));
+        planned["rendering"]["target_planning"] = {{"graphs", {{"main_render", {{"nodes", {{"steps/0/fill", {{"isolate", true}}}}}}}}}};
+        expect(planned, "graph.loop_expansion_referenced@1",
+               {{"name", "steps/0/fill"}, {"pointer", "/rendering/target_planning/graphs/main_render/nodes/steps~10~1fill"}});
+        // The loop's own id is how an order names it.
+        auto by_id = lp1aGraph(Json::array({lp1aLoop("steps", lp1aRange(2)), lp0bImage("late"),
+            lp1aFullscreen("late_pass", {{"node", "late"}, {"port", "resource"}}, {{"after", {"steps"}}})}));
+        REQUIRE_NOTHROW(partitionGraphDocument(by_id));
+    }
+    SECTION("too many elements, or too many passes in the graph") {
+        REQUIRE_NOTHROW(partitionGraphDocument(loop_graph(lp1aRange(65))));
+        auto [code, fields] = lp0aRefusal(loop_graph(lp1aRange(65)));
+        CHECK(code == "graph.loop_expansion_limit@1");
+        CHECK(fields == Json{{"node", "steps"}, {"count", 65}, {"limit", 64}});
+        // A limit keeps a long range within bounds.
+        auto limited = lp1aRange(1000);
+        limited["limit"] = 64;
+        REQUIRE_NOTHROW(lp0aCompose(loop_graph(limited)));
+        // Two loops of 64 and one graph pass: 129 in the graph.
+        auto document = lp1aGraph(Json::array({lp1aLoop("a_steps", lp1aRange(64)), lp1aLoop("b_steps", lp1aRange(64)),
+            lp0bImage("late"), lp1aFullscreen("late_pass", {{"node", "late"}, {"port", "resource"}})}));
+        std::tie(code, fields) = lp0aRefusal(document);
+        CHECK(code == "graph.loop_expansion_limit@1");
+        CHECK(fields == Json{{"node", "b_steps"}, {"count", 129}, {"limit", 128}});
+    }
+    SECTION("the shape is checked when edited") {
+        for (const auto &parameters : {Json{{"branches", Json::array({{{"body", "paint"}}})}},
+                                       Json{{"over", {{"range", {{"count", -1}}}}}, {"branches", Json::array({{{"body", "paint"}}})}},
+                                       Json{{"over", {{"range", {{"count", 1.5}}}}}, {"branches", Json::array({{{"body", "paint"}}})}},
+                                       Json{{"over", {{"range", {{"count", 1}}}}}, {"branches", Json::array()}},
+                                       Json{{"over", {{"range", {{"count", 1}}}}}, {"branches", Json::array({{{"body", "nowhere"}}})}},
+                                       Json{{"over", {{"range", {{"count", 1}}}}}, {"branches", Json::array({{{"body", "paint"}}})},
+                                            {"where", {{"element_greater", 1}}}},
+                                       Json{{"over", {{"range", {{"count", 1}}}}}, {"branches", Json::array({{{"body", "paint"}}})},
+                                            {"limit", -1}},
+                                       Json{{"over", {{"range", {{"count", 1}}}}}, {"branches", Json::array({{{"body", "paint"}}})},
+                                            {"tier", "sometimes"}},
+                                       Json{{"over", {{"range", {{"count", 1}}}}}, {"branches", Json::array({{{"body", "paint"}}})},
+                                            {"colour", "red"}},
+                                       Json{{"over", {{"range", {{"count", 1}}}}},
+                                            {"branches", Json::array({{{"body", "paint"}}, {{"when", {{"element", 0}}}, {"body", "paint"}}})}}}) {
+            INFO(parameters.dump());
+            CHECK_THROWS_AS(partitionGraphDocument(loop_graph(parameters)), std::invalid_argument);
+        }
+        // A body node takes its place from the loop.
+        auto placed = lp1aPaintBody();
+        placed["nodes"][1]["parameters"]["insert"] = {{"after", "deferred_lighting"}};
+        CHECK_THROWS_AS(partitionGraphDocument(loop_graph(lp1aRange(1, "placed"), {{"placed", placed}})),
+                        std::invalid_argument);
+    }
+    SECTION("a composition refusal names the loop's copy") {
+        auto body = lp1aAccumulateBody();
+        body["nodes"].push_back({{"id", "missing"}, {"op", "render.target_ref"},
+                                 {"parameters", {{"name", "no_such_target"}, {"type", lp0aSceneColorType()}}},
+                                 {"outputs", {"resource"}}});
+        body["nodes"][1]["inputs"]["color"] = {{"node", "missing"}, {"port", "resource"}};
+        auto parameters = lp1aRange(2, "broken");
+        const auto document = lp1aGraph(Json::array({lp1aLit(), lp1aLoop("steps", parameters,
+            {{"target", {{"node", "lit"}, {"port", "resource"}}}})}), {{"broken", body}});
+        const auto [code, fields] = lp0aRefusal(document);
+        CHECK(code == "graph.target_ref_unknown@1");
+        CHECK(fields == Json{{"node", "steps/0/missing"}, {"name", "no_such_target"}});
+    }
+}
+
+// LP-1a: what a recompile costs as a loop grows to the expansion limit. Not
+// run by ctest (hidden); run by name to measure:
+//   pelican_test_group_render_pipeline.exe "LP-1a recompile time up to the expansion limit"
+TEST_CASE("LP-1a recompile time up to the expansion limit", "[.][lp1a-timing]") {
+    using Json = nlohmann::json;
+    using Clock = std::chrono::steady_clock;
+    for (const int per_loop : {0, 16, 32, 48, 64}) {
+        const auto document = lp1aGraph(Json::array({lp1aLoop("a_steps", lp1aRange(per_loop)),
+                                                     lp1aLoop("b_steps", lp1aRange(per_loop))}));
+        constexpr int repeats = 5;
+        double compose_ms = 0.0;
+        double plan_ms = 0.0;
+        for (int repeat = 0; repeat < repeats; ++repeat) {
+            const auto start = Clock::now();
+            const auto composed = lp0aCompose(document);
+            const auto compiled = compileComposition(composed);
+            const auto composed_at = Clock::now();
+            for (const auto &graph : parseFrameGraphDefinitionsFromConfigJson(composed.config))
+                (void)framePlanToJson(planFrameGraph(graph), &compiled);
+            const auto planned_at = Clock::now();
+            compose_ms += std::chrono::duration<double, std::milli>(composed_at - start).count();
+            plan_ms += std::chrono::duration<double, std::milli>(planned_at - composed_at).count();
+        }
+        std::cout << "LP-1a timing: " << 2 * per_loop << " loop passes: compose+compile "
+                  << compose_ms / repeats << " ms, plan " << plan_ms / repeats << " ms\n";
+    }
+    SUCCEED();
 }
 
 } // namespace Pelican
