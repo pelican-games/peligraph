@@ -136,9 +136,9 @@ cleaners: [B, A]
 
 `ModelInstanceId` は 3 フィールドの比較可能な値型で、`toString()` は `"index:generation@scene_epoch"` を返します([`toString()`](../../src/core/renderer/modelinstance.hpp#L21))。
 
-- **identity は `PolygonInstanceContainer` から [`ModelInstanceSlots`](../../src/core/renderer/modelinstanceslots.hpp#L14) へ切り出されました。** `index` / `generation` / `scene_epoch` を持っているのはこの class で、`PolygonInstanceContainer` 側にはもう `scene_epoch` も世代表もありません(`instance_slots` メンバ越しに問い合わせます)。
-- `scene_epoch` が進むのは [`ModelInstanceSlots::clearPrepared()`](../../src/core/renderer/modelinstanceslots.cpp#L83) の **1 か所だけ** で、これは [`PolygonInstanceContainer::clear()`](../../src/core/renderer/polygoninstancecontainer.cpp#L924)(scene clear / 再ロード)から呼ばれます。個別 slot が死んで再利用されるときに進むのは [`ModelInstanceSlots::retire()`](../../src/core/renderer/modelinstanceslots.cpp#L63) が上げる slot generation の方です。いずれも animation generation や model asset content revision からは独立です。
-- `clear()` 自体も §9.17 の prepare/publish 形です。epoch 枯渇(`scene epoch exhausted`)を投げうる検査は [`ModelInstanceSlots::prepareClear()`](../../src/core/renderer/modelinstanceslots.cpp#L74) が先に済ませ、実際の書き換えは `noexcept` の `clearPrepared()` が行います。`clear()` を読むときはこの 2 段を 1 つの操作として読んでください。
+- **identity は `PolygonInstanceContainer` から [`ModelInstanceSlots`](../../src/core/renderer/modelinstanceslots.hpp#L22) へ切り出されました。** `index` / `generation` / `scene_epoch` を持っているのはこの class で、`PolygonInstanceContainer` 側にはもう `scene_epoch` も世代表もありません(`instance_slots` メンバ越しに問い合わせます)。
+- `scene_epoch` が進むのは [`ModelInstanceSlots::clearPrepared()`](../../src/core/renderer/modelinstanceslots.cpp#L107) の **1 か所だけ** で、これは [`PolygonInstanceContainer::clear()`](../../src/core/renderer/polygoninstancecontainer.cpp#L924)(scene clear / 再ロード)から呼ばれます。個別 slot が死んで再利用されるときに進むのは [`ModelInstanceSlots::retire()`](../../src/core/renderer/modelinstanceslots.cpp#L87) が上げる slot generation の方です。いずれも animation generation や model asset content revision からは独立です。
+- `clear()` 自体も §9.17 の prepare/publish 形です。epoch 枯渇(`scene epoch exhausted`)を投げうる検査は [`ModelInstanceSlots::prepareClear()`](../../src/core/renderer/modelinstanceslots.cpp#L98) が先に済ませ、実際の書き換えは `noexcept` の `clearPrepared()` が行います。`clear()` を読むときはこの 2 段を 1 つの操作として読んでください。
 - 生存確認は [`isModelInstanceAlive(id)`](../../src/core/renderer/polygoninstancecontainer.hpp#L573)。
 - [`removeModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L517) は `void` ではなく **`bool`** を返します。戻り値を無視すると「消したつもりで消えていない」を見逃します。
 - `instanceCountForTesting()` は **live 数** を返すよう変わり、スロット総数は `slotCountForTesting()` です。両者の差は空きスロットです。
@@ -375,7 +375,7 @@ ID 割当を engine-wide schema として管理する必要がある点は変わ
 cannot unregister component '<name>': dependent ECS system '<sys>' remains
 ```
 
-この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L2427))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
+この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L2450))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
 
 ### custom Component の現状
 
@@ -659,7 +659,7 @@ teardown の最終段は phase で分岐します。
 | `BinaryArchive` | `prop` 宣言のみで、この repository 内に定義なし | [`binaryarchive.hpp`](../../src/core/userpublic/serialize/binaryarchive.hpp#L10) |
 | pose action | **実装済み**(WP130/132)。pose は `poses` map から返り、未サンプルなら default `ActionPose`。flat 環境では pose サンプルが来ないので default が返る点に注意 | [`actionmap.cpp`](../../src/core/os/actionmap.cpp#L873) |
 | `.surface` / material format | **runtime 接続済み**(WP116/117/122)。`.surface` は surfacecompiler で pipeline に、`.material.json` は lowering を経て `MaterialContainer` へ | [`surfacecompiler.hpp`](../../src/core/shader/surfacecompiler.hpp) / [`materiallowering.hpp`](../../src/project/materiallowering.hpp) |
-| Studio project editor | D2、WP264 の viewport / Outliner 選択同期、WP266 の schema-driven property Inspector、WP275 の gizmo 操作まで実装済み。project は同じ child へ `--rpc --project` で渡り、identity は名前でなく `(scene_id, declaration_index)`。property edit / gizmo / live preview / undo / redo / save は公開 RPC を使い、terminal result まで成功扱いしない。picking / gizmo feature 無効は理由を警告し、自動有効化しない | [`SelectionModel`](../../src/devstudio/model/selection.hpp) / [`GizmoModel`](../../src/devstudio/model/gizmomodel.hpp) / [`InspectorModel`](../../src/devstudio/model/inspectormodel.hpp) / [`InspectorWidget`](../../src/devstudio/view/inspectorwidget.hpp) / [`EmbeddedViewport`](../../src/devstudio/viewport/embeddedviewport.hpp#L30) |
+| Studio project editor | D2、WP264 の viewport / Outliner 選択同期、WP266 の schema-driven property Inspector、WP275 の gizmo 操作まで実装済み。project は同じ child へ `--rpc --project` で渡り、identity は名前でなく `(scene_id, declaration_index)`。property edit / gizmo / live preview / undo / redo / save は公開 RPC を使い、terminal result まで成功扱いしない。picking / gizmo feature 無効は理由を警告し、自動有効化しない | [`SelectionModel`](../../src/devstudio/model/selection.hpp) / [`GizmoModel`](../../src/devstudio/model/gizmomodel.hpp) / [`InspectorModel`](../../src/devstudio/model/inspectormodel.hpp) / [`InspectorWidget`](../../src/devstudio/view/inspectorwidget.hpp) / [`EmbeddedViewport`](../../src/devstudio/viewport/embeddedviewport.hpp#L34) |
 | swapchain capture | surface が TRANSFER_SRC を持てば windowed でも readback 実装済み。不可時のみ `capture unavailable_windowed` 例外 | [`swapchainframetarget.cpp`](../../src/core/vkcore/swapchainframetarget.cpp#L436) |
 | frame graph levels | 計算/JSON 出力のみ。runtime は直列 node loop | [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L1585) |
 | custom Component public registration | ID macro はあるが安定 public boot hook なし。ただし登録解除 API と重複拒否は入った。解除と engine owner 登録は WP379a で host 専用へ | [`component/registerer.hpp`](../../src/core/userpublic/details/component/registerer.hpp#L78) / [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) |
@@ -1657,19 +1657,19 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ### 9.23.11 RPC
 
-#### [`gameLogicParticipantRpcStatus()` による participant 照会](../../src/core/communication/rpcserver.cpp#L1297) — 参加者名の正
+#### [`gameLogicParticipantRpcStatus()` による participant 照会](../../src/core/communication/rpcserver.cpp#L1299) — 参加者名の正
 
 **分からなくなること**: 参加者名の文字列が何なのか(`"game_logic_reload"` に見える資料がある)。
 
-**答え**: 定数は [`watch::gameLogicReloadParticipantName = "pelican.game_logic"`](../../src/core/watch/reloadservice.hpp#L47) です。ReloadService が未登録なら [`registerParticipant` で自己登録](../../src/core/watch/reloadservice.cpp#L741)し(frame_start 境界の RuntimeReloadParticipant)、RPC は [`statusJson()["runtime"][participant]`](../../src/core/communication/rpcserver.cpp#L1304) で照会、`applyRuntimeNow(participant)` で明示適用します。
+**答え**: 定数は [`watch::gameLogicReloadParticipantName = "pelican.game_logic"`](../../src/core/watch/reloadservice.hpp#L47) です。ReloadService が未登録なら [`registerParticipant` で自己登録](../../src/core/watch/reloadservice.cpp#L741)し(frame_start 境界の RuntimeReloadParticipant)、RPC は [`statusJson()["runtime"][participant]`](../../src/core/communication/rpcserver.cpp#L1306) で照会、`applyRuntimeNow(participant)` で明示適用します。
 
-#### [`SceneLoadResult` の受け取り](../../src/core/communication/rpcserver.cpp#L1957) — 状態機械
+#### [`SceneLoadResult` の受け取り](../../src/core/communication/rpcserver.cpp#L1959) — 状態機械
 
 **分からなくなること**: 「失敗したのに committed:true」が起きる理由。
 
 **答え**: 型は [`variant<SceneLoadCommitted, PreCommitFailure, CommittedWithEffectFailure>`](../../src/core/loader/sceneload.hpp#L188) です。`load()` 自体は 3 状態を**戻り値で**返し、RPC の入口が通す [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L500) が `PreCommitFailure` だけを**例外に変換して再送出**します(従来の throwing 契約)。この経路ではシーンは差し替わりません。`CommittedWithEffectFailure` は「公開自体は成功したが個別 effect が失敗した」状態で、`load_scene` は `committed:true` のまま `effect_errors` を添えて返します(→ §9.23.1 の destroy フェーズ)。
 
-#### [`parseGizmoSelection()`](../../src/core/communication/rpcserver.cpp#L527) — 2 つの identity を受ける理由
+#### [`parseGizmoSelection()`](../../src/core/communication/rpcserver.cpp#L529) — 2 つの identity を受ける理由
 
 **分からなくなること**: なぜギズモの選択だけ 2 形式あるのか。
 
@@ -1677,16 +1677,16 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [リロード中の一律拒否](../../src/core/communication/rpcserver.cpp#L1506) | `isGameLogicReloadInProgress()` | なぜ全メソッドか | DLL のシンボル・system 登録・behavior 実体が**差し替え途中**で、この状態でハンドラを走らせると無効化されたコードやハンドルを触るため。拒否は transport の中ではなく、[`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1494) が [`RpcServer::setRequestGate()`](../../src/core/communication/rpcserver.cpp#L1166) で差し込む述語になり、`RpcServer` は [parse 後・dispatch 前に gate を 1 回引く](../../src/core/communication/rpcserver.cpp#L1181)だけです |
-| [before_apply / after_apply フックの登録](../../src/core/communication/rpcserver.cpp#L1514) | リロードの前後フック | 2 つで何を挟むか | `before_apply` でプレビューリースを強制中断して未確定編集をコミット済み状態に戻し、`after_apply` で `pending_transforms.clear()` により**旧 DLL 世代のエンティティを指す未フラッシュ transform を破棄**する |
-| [`"resolution_error"` の再帰探索](../../src/core/communication/editorrpchandlers.cpp#L50) | 結果 JSON の走査 | 何を見ているか | どこかに `"resolution_error"` キーがあるかだけを見る。**含まれる場合はキー順序が意味を持つ**ため `nlohmann::json` への変換(順序喪失)を避け、`ordered_json` のまま手組みで dump する分岐に入る。走査は `RpcServer` から editor 側へ移り、`embedsResolutionError` は [`setOrderedHandler()` に渡す順序ポリシー](../../src/core/communication/editorrpchandlers.cpp#L85)として登録されます。transport は [ポリシーが真を返した応答だけ](../../src/core/communication/rpcserver.cpp#L1198)を ordered dump に回し、キー名は知りません |
+| [リロード中の一律拒否](../../src/core/communication/rpcserver.cpp#L1508) | `isGameLogicReloadInProgress()` | なぜ全メソッドか | DLL のシンボル・system 登録・behavior 実体が**差し替え途中**で、この状態でハンドラを走らせると無効化されたコードやハンドルを触るため。拒否は transport の中ではなく、[`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1496) が [`RpcServer::setRequestGate()`](../../src/core/communication/rpcserver.cpp#L1168) で差し込む述語になり、`RpcServer` は [parse 後・dispatch 前に gate を 1 回引く](../../src/core/communication/rpcserver.cpp#L1183)だけです |
+| [before_apply / after_apply フックの登録](../../src/core/communication/rpcserver.cpp#L1516) | リロードの前後フック | 2 つで何を挟むか | `before_apply` でプレビューリースを強制中断して未確定編集をコミット済み状態に戻し、`after_apply` で `pending_transforms.clear()` により**旧 DLL 世代のエンティティを指す未フラッシュ transform を破棄**する |
+| [`"resolution_error"` の再帰探索](../../src/core/communication/editorrpchandlers.cpp#L50) | 結果 JSON の走査 | 何を見ているか | どこかに `"resolution_error"` キーがあるかだけを見る。**含まれる場合はキー順序が意味を持つ**ため `nlohmann::json` への変換(順序喪失)を避け、`ordered_json` のまま手組みで dump する分岐に入る。走査は `RpcServer` から editor 側へ移り、`embedsResolutionError` は [`setOrderedHandler()` に渡す順序ポリシー](../../src/core/communication/editorrpchandlers.cpp#L85)として登録されます。transport は [ポリシーが真を返した応答だけ](../../src/core/communication/rpcserver.cpp#L1200)を ordered dump に回し、キー名は知りません |
 | [`isR7Identifier()`](../../src/core/communication/rpcserver.cpp#L273) | "R7" の由来 | R7 とは何か | **外部ツール契約の要求番号 R7**(`docs/external_tools_requirements.md`)「オブジェクト / ジョイント名は `[a-zA-Z0-9_]` のみ」の実装。`docs/design_scene_format.md` と `docs/manual/04_scene_ecs.md` も同じ R7 を参照 |
-| [`RpcServer::run()` の CRLF 除去](../../src/core/communication/rpcserver.cpp#L1239) | framing 契約 | なぜ `\r` を落とすか | 「1 行 = 1 JSON-RPC メッセージ、区切りは `\n`」で、CRLF 出力の相手から来た行末 `\r` を落とすことで Windows クライアントでも同じ契約が成立する。応答は常に `'\n'` 終端 + flush |
-| [逆引き](../../src/core/communication/rpcserver.cpp#L424) / [名前からの変換](../../src/core/communication/rpcserver.cpp#L756) | model_instance → object_id → authoring_object_id | 橋渡しの規則 | 上記 2 つの identity の橋渡し。詳細は**未執筆** |
+| [`RpcServer::run()` の CRLF 除去](../../src/core/communication/rpcserver.cpp#L1241) | framing 契約 | なぜ `\r` を落とすか | 「1 行 = 1 JSON-RPC メッセージ、区切りは `\n`」で、CRLF 出力の相手から来た行末 `\r` を落とすことで Windows クライアントでも同じ契約が成立する。応答は常に `'\n'` 終端 + flush |
+| [逆引き](../../src/core/communication/rpcserver.cpp#L426) / [名前からの変換](../../src/core/communication/rpcserver.cpp#L758) | model_instance → object_id → authoring_object_id | 橋渡しの規則 | 上記 2 つの identity の橋渡し。詳細は**未執筆** |
 | [`ResolutionFailureException`](../../src/core/loader/resolutionresult.hpp#L176) | `failure()` の中身 | 何を表すか | **未執筆**(§9.23.2 の resolver 失敗形式と対) |
-| [`kbd:` プレフィックス](../../src/core/communication/rpcserver.cpp#L647) | binding 表示 | modal transform との関係 | **未執筆**(根拠がコードにない) |
-| [OpenXR inactive スキーマ](../../src/core/communication/rpcserver.cpp#L99) / [診断](../../src/core/communication/rpcserver.cpp#L1594) | 診断 JSON | スキーマの安定性契約 | **未執筆**(→ §9.23.18) |
-| [frame index と continuous time](../../src/core/communication/rpcserver.cpp#L934) / [replay 開始](../../src/core/communication/rpcserver.cpp#L1887) | どちらが真か、設定順序 | 真の時刻源 | **未執筆**(根拠がコードにない) |
+| [`kbd:` プレフィックス](../../src/core/communication/rpcserver.cpp#L649) | binding 表示 | modal transform との関係 | **未執筆**(根拠がコードにない) |
+| [OpenXR inactive スキーマ](../../src/core/communication/rpcserver.cpp#L99) / [診断](../../src/core/communication/rpcserver.cpp#L1596) | 診断 JSON | スキーマの安定性契約 | **未執筆**(→ §9.23.18) |
+| [frame index と continuous time](../../src/core/communication/rpcserver.cpp#L936) / [replay 開始](../../src/core/communication/rpcserver.cpp#L1889) | どちらが真か、設定順序 | 真の時刻源 | **未執筆**(根拠がコードにない) |
 
 ### 9.23.12 reload / watch
 
