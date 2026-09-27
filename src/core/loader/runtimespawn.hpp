@@ -52,6 +52,18 @@ DECLARE_MODULE(RuntimeSpawner) {
         std::size_t live = 0;
     };
 
+    // RO-1: an object a spawn made, live in the current scene run, as the
+    // editor's get_runtime_objects reports it.
+    struct RuntimeObject {
+        // The name it was given, or spawn:<boundary>.<index> when none was.
+        std::string name;
+        GameObjectId entity = invalidGameObjectId;
+        // The prefab the spawn named.
+        std::string prefab;
+        std::uint64_t boundary = 0;
+        std::uint32_t index = 0;
+    };
+
   private:
     enum class RequestKind : std::uint8_t { spawn, destroy };
 
@@ -63,6 +75,7 @@ DECLARE_MODULE(RuntimeSpawner) {
         std::uint32_t index = 0;
         std::optional<std::string> name;
         std::string identity_name;
+        std::string prefab;
         std::optional<ResolvedObject> object;
         std::vector<PreparedSceneBehaviorAttachment> behaviors;
     };
@@ -73,6 +86,8 @@ DECLARE_MODULE(RuntimeSpawner) {
         std::uint32_t index = 0;
         GameObjectId entity = invalidGameObjectId;
         std::optional<std::string> name;
+        std::string identity_name;
+        std::string prefab;
     };
 
     SceneAuthority run_authority{};
@@ -98,6 +113,12 @@ DECLARE_MODULE(RuntimeSpawner) {
     void applyBoundary();
 
     Stats stats() const noexcept;
+
+    // RO-1: the spawned objects of the scene run now live, in the order they
+    // were spawned (boundary, then index within it). Objects of an earlier run
+    // -- retired by the load that ended it, though the list forgets them only
+    // at the next boundary -- and objects whose entity is gone are left out.
+    std::vector<RuntimeObject> runtimeObjects() const;
 };
 
 } // namespace Pelican

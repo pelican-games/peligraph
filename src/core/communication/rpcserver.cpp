@@ -20,7 +20,9 @@
 #include "../ecs/predefined/transform.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../loader/editorprojectionadapters.hpp"
+#include "../loader/componentcodec.hpp"
 #include "../loader/pathresolver.hpp"
+#include "../loader/runtimespawn.hpp"
 #include "../loader/scene.hpp"
 #include "../gamelogic/gamelogicreload.hpp"
 #include "../gamelogic/gamelogicimports.hpp"
@@ -1712,6 +1714,71 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                        {"capture", color_caps.compile_facts.capture_available ? "available"
                                                                  : "unavailable_windowed"}}},
         };
+    });
+
+    // RO-1. The objects game code spawned in the scene run now live, in the
+    // order they were spawned. They are not in the authoring document, so
+    // scene_tree and get_components do not reach them; this is how the editor
+    // lists them. `parent` is read from the object's live localtransform (a
+    // spawn itself never has one), `spawned_by` names the prefab the spawn
+    // asked for, and `transform` is the runtime Transform in get_components'
+    // runtime_json form. In the edit state no game step runs, so nothing is
+    // spawned and the list is empty.
+    server.setHandler("get_runtime_objects", [&modules](const nlohmann::json &params) {
+        constexpr auto method = "get_runtime_objects";
+        const auto &object = requireObjectParams(params, method);
+        if (!object.empty()) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "get_runtime_objects takes no parameters");
+        }
+        const auto entityJson = [](GameObjectId entity) {
+            return nlohmann::json{{"index", entity.index},
+                                  {"generation", entity.generation}};
+        };
+        const auto spawned = GET_MODULE(RuntimeSpawner).runtimeObjects();
+        auto &ecs = modules.ecs_core.getTemplatePublicModule();
+        auto objects = nlohmann::json::array();
+        for (const auto &spawn : spawned) {
+            nlohmann::json entry{
+                {"name", spawn.name},
+                {"entity", entityJson(spawn.entity)},
+            };
+            auto *local = ecs.tryComponent<LocalTransformComponent>(spawn.entity);
+            if (local != nullptr && local->parent != invalidEntityId &&
+                ecs.isAlive(local->parent)) {
+                const auto parent = local->parent;
+                const auto spawned_parent = std::find_if(
+                    spawned.begin(), spawned.end(),
+                    [&](const auto &candidate) { return candidate.entity == parent; });
+                const auto bindings = modules.scene_loader.runtimeObjectBindings();
+                const auto authored_parent = std::find_if(
+                    bindings.begin(), bindings.end(),
+                    [&](const SceneRuntimeObjectBinding &binding) {
+                        return binding.object_id == parent;
+                    });
+                if (spawned_parent != spawned.end()) {
+                    entry["parent"] = {{"entity", entityJson(parent)}};
+                } else if (authored_parent != bindings.end()) {
+                    entry["parent"] = {
+                        {"authoring_object_id",
+                         authored_parent->authoring_object_id.value},
+                        {"scene_id", modules.scene_loader.currentScene()},
+                    };
+                }
+            }
+            if (!spawn.prefab.empty()) {
+                entry["spawned_by"] = {{"prefab", spawn.prefab}};
+            }
+            if (auto *world = ecs.tryComponent<TransformComponent>(spawn.entity)) {
+                entry["transform"] = nlohmann::json::parse(
+                    projectTransformRuntimeJson(
+                        TransformCodecTarget{.world = world, .local = local})
+                        .dump());
+            }
+            objects.push_back(std::move(entry));
+        }
+        return nlohmann::json{{"objects", std::move(objects)}};
     });
 
     server.setHandler("get_gpu_timing", [](const nlohmann::json &params) {

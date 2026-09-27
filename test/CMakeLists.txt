@@ -2058,6 +2058,31 @@ pelican_configure_game_logic_target(pelican_pm1b_edit_fixture
 target_compile_definitions(pelican_test_pm1b_edit_state_rpc_test PRIVATE
   PELICAN_PM1B_EDIT_FIXTURE="$<TARGET_FILE:pelican_pm1b_edit_fixture>")
 endif()
+# RO-1: get_runtime_objects over the headless RPC. The spawns are the GP-2
+# fixture's (fixtures/gp2_spawn), built again against the SDK this test
+# executable exports.
+if(WIN32 AND COMMAND pelican_configure_game_logic_target)
+pelican_define_test(ro1_runtime_objects_rpc_test GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+target_link_libraries(pelican_test_ro1_runtime_objects_rpc_test PRIVATE pelican_shaderc)
+if(COMMAND pelican_copy_shaderc_runtime)
+    pelican_copy_test_shaderc_runtime(pelican_test_ro1_runtime_objects_rpc_test)
+endif()
+set_target_properties(pelican_test_ro1_runtime_objects_rpc_test PROPERTIES
+  ENABLE_EXPORTS TRUE)
+if(MSVC)
+  target_link_options(pelican_test_ro1_runtime_objects_rpc_test PRIVATE
+    "/WHOLEARCHIVE:$<TARGET_LINKER_FILE:pelican_core>")
+endif()
+add_library(pelican_ro1_gp2_spawn_fixture SHARED
+  fixtures/gp2_spawn/behavior.cpp)
+set_target_properties(pelican_ro1_gp2_spawn_fixture PROPERTIES
+  OUTPUT_NAME "pelican_ro1_gp2_spawn_fixture")
+pelican_configure_game_logic_target(pelican_ro1_gp2_spawn_fixture
+  HOST_TARGET pelican_test_ro1_runtime_objects_rpc_test
+  ROLE gp2-spawn NO_INVENTORY)
+target_compile_definitions(pelican_test_ro1_runtime_objects_rpc_test PRIVATE
+  PELICAN_GP2_SPAWN_FIXTURE="$<TARGET_FILE:pelican_ro1_gp2_spawn_fixture>")
+endif()
 endif()
 endif()
 if(PELICAN_WITH_EXR)

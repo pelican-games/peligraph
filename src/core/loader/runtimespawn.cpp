@@ -281,6 +281,7 @@ TransientObjectRef RuntimeSpawner::spawn(std::string_view prefab,
                                      : std::string{runtime_spawn_name_prefix} +
                                            std::to_string(boundary) +
                                            "." + std::to_string(index),
+        .prefab = std::string{prefab},
         .object = std::move(object),
         .behaviors = std::move(behaviors),
     });
@@ -443,6 +444,8 @@ void RuntimeSpawner::materialize(Request &request) {
         .index = request.index,
         .entity = entity,
         .name = request.name,
+        .identity_name = request.identity_name,
+        .prefab = request.prefab,
     });
 }
 
@@ -490,6 +493,26 @@ void RuntimeSpawner::retire(const Request &request) {
     }
     adapter.publish();
     adapter.finish();
+}
+
+std::vector<RuntimeSpawner::RuntimeObject>
+RuntimeSpawner::runtimeObjects() const {
+    std::vector<RuntimeObject> result;
+    const auto *config = FastModuleContainer::tryGet<ProjectBasicConfig>();
+    if (config == nullptr) return result;
+    const auto active = config->activeSceneAuthority();
+    const auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    for (const auto &object : live) {
+        if (object.authority != active || !ecs.isAlive(object.entity)) continue;
+        result.push_back(RuntimeObject{
+            .name = object.identity_name,
+            .entity = object.entity,
+            .prefab = object.prefab,
+            .boundary = object.boundary,
+            .index = object.index,
+        });
+    }
+    return result;
 }
 
 RuntimeSpawner::Stats RuntimeSpawner::stats() const noexcept {
