@@ -2463,9 +2463,12 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
         };
         Json inputs = Json::object();
         for (const auto &socket : materialPassColorSockets(parameters)) {
-            // What the G-buffer's lighting reads back as data keeps its
-            // precision; a colour is eight bits a channel.
-            const bool wide = socket == "color" || socket == "normal" || socket == "worldpos";
+            // The engine checks a material pass without a material_outputs
+            // schema against its compatibility formats, choosing the HDR set
+            // when the first attachment is R16G16B16A16_SFLOAT: every G-buffer
+            // attachment is wide there except `material`, which is eight bits
+            // a channel. A forward pass's colour is always wide.
+            const bool wide = socket != "material";
             inputs[socket] = image(socket, color_type,
                                    wide ? "R16G16B16A16_SFLOAT" : "R8G8B8A8_UNORM",
                                    "COLOR_ATTACHMENT");
