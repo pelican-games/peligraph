@@ -26851,6 +26851,91 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - `-L studio_cpu -LE gpu` 477/477
 - 13 章の Q-20 の案内の段落は、engine 側(8f9e99a3)が「Q-20 の案内、Q-21 で外した」の短い記録に置き換えた
 
+### PM-3b: 編集モードで起動し、Play / Stop で戻す(残すボタン付き)
+
+**上段寄りの中段(Studio のみ)。実装者: Claude(Opus)。develop 04666d59 以降(engine の PM-1a / PM-1b / PM-2 を含む)。設計は `docs/design_play_mode.md` の §12。Studio での見え方は `docs/manual/13_editor.md` の「Studio で game を再生・停止する」。**
+
+#### 前提
+- 利用者の決定(2026-09-27): engine は止まった状態(編集モード)で起動し、Play で game が動く。ボタンは Play / Pause / Step。再生中の scene の編集は停止で元に戻すのが基本で、再生中の変更を「残す」ボタンもある
+- engine の契約: PM-1b の `edit` と `set_view_camera`、PM-2 の再生のセッション(`get_status.play` の `session` / `recorded_edits`、Stop の `keep` と `not_kept`、`play_busy` / `play_session_active` / `play_keep_unknown_transaction`)。RPC の詳細は `docs/manual/13_editor.md` §13.5 の「edit 状態(✅PM-1b)」「再生のセッション(✅PM-2)」
+- PM-3a は既定の起動(`playing`)のまま Pause / Step と状態の表示を入れ、`play.state` が `"edit"` の読みを解析できない扱いにしていた
+
+#### 決定
+1. **起動**: `--embedded` と一緒に `--start-state edit` を渡す。`PELICAN_STUDIO_PLAYER_ARGUMENTS` が edit と両立しない引数を持つときは付けずに 1 行で知らせる
+2. **ボタンとキー**(§12.1): ▶ Play / ■ Stop(Ctrl+P)、❚❚ Pause、▶| Step(edit では `set_play_state {state:"paused"}` → `advance_frames {count:1}`)
+3. **Play の失敗**: reload の拒否は 1 行。`play_busy` は 1 行と、終わるのを待ってもう一度送るボタン
+4. **状態の表示**(§12.2): playing は青系、paused は黄系(token `play.playing_frame` / `play.playing_band` を足す)。status bar は `Edit` / `Playing · frame N` / `Paused · frame N`
+5. **Play changes と Keep**(§12.3): 行 = `play.recorded_edits`。Studio の編集は項目名、undo / redo は元の項目名、他の client は actor と id。行ごとの check と Keep all / Keep none。Inspector の行に `— reverts on Stop` と Keep のリンク
+6. **Take from game**(§12.3): Transform の runtime の値を読んで同じ値を書く編集を送り、Keep の印を付ける。v0 は Transform だけ
+7. **Stop**: check の付いた編集を `keep` に挙げる(無ければ省く)。`Stopped: N reverted, M kept`(と `not_kept`)。Stop の後は Inspector と Outliner を読み直す
+8. **戻らない編集の帯**(§12.4)、**Save などを押せなくする**、**View: Game | Editor**(§12.5)、**Reload game logic** と**再起動などの確認**(§12.6)
+9. Outliner の runtime の印は RO-1 を待つので PM-3c に分ける
+
+#### 着地(2026-09-27、9c169f61)
+- **決定 1**: [`studioPlayerLaunch()`](../src/devstudio/viewport/studioplayerarguments.cpp#L22) が `--start-state edit` を足す。`--replay` / `--record-input` / `--bake-camera-output` / `--start-time` があれば付けず、`The engine starts playing, not in edit: <引数> in PELICAN_STUDIO_PLAYER_ARGUMENTS runs the game from its first frame.` を status bar に 15 秒出す([出す所](../src/devstudio/viewport/embeddedviewport.cpp#L710))。利用者が `--start-state` を指定していればそれを使い、何も言わない
+- **決定 2**: [`PlayControls`](../src/devstudio/view/playcontrols.cpp#L61) に `pelican.play.play`(edit では ▶ Play、playing / paused では ■ Stop)を足した。Step は edit から [`PlayStateModel::step()`](../src/devstudio/model/playstatemodel.cpp#L328) の 2 手。返事待ちの間(Stop の前の `get_status` の読みを含む)はどれも押せない([`canPlayOrStop()`](../src/devstudio/model/playstatemodel.hpp#L232))
+- **決定 3**: 拒否の表([`playRefusalDescription()`](../src/devstudio/model/playstatemodel.cpp#L184))に `view_camera_unavailable`・`offline.mode_conflict@1` と game logic の DLL の 10 の code を足した(`error_fields` を読める文にし、Play なら `, so the game did not start`)。`play_busy` は 1 行と `pelican.play.retry`(Send when done。Inspector の scene の編集が終わったかを 100 ms おきに見て、同じ操作をもう一度送る。[`retryWhenIdle()`](../src/devstudio/model/playstatemodel.cpp#L368))
+- **決定 4**: status bar は [`statusText()`](../src/devstudio/model/playstatemodel.cpp#L614)。色は [`updatePlayPresentation()`](../src/devstudio/view/mainwindow.cpp#L1265)、token は Dark `#3d8fe0` / `#1f3f60`、Light `#2f7fd0` / `#b9d6f3`([theme の表](../src/devstudio/resources/studio_themes.json#L80))
+- **決定 5**: Play changes は `pelican.playChanges`(modal でない小さな窓。[作る所](../src/devstudio/view/playcontrols.cpp#L188))。行の文は [`changeRows()`](../src/devstudio/model/playstatemodel.cpp#L432): Studio の編集は項目名(`Edit light.intensity` など)、undo / redo は commit の結果の `source_transaction_id` から引いて `Undo <項目名>` / `Redo <項目名>`、他の client は `Actor N · <transaction_id>`。Inspector は commit した編集を transaction ごとに Play changes へ渡し、notice に ` — reverts on Stop` と `pelican.inspectorKeep` を出す(Keep の後は ` — kept after Stop`。[行を組む所](../src/devstudio/view/inspectorwidget.cpp#L1369))
+- **決定 6**: `pelican.inspectorTakeFromGame` は Transform の欄にあり、セッションの間(paused を含む)だけ出る。`get_components` の `runtime_json.local_trs` の `pos` / `rotation` / `scale` を、`set_component_value` 3 つの 1 回の `edit` にして Keep の印付きで送る([`handleTakeFromGame()`](../src/devstudio/model/inspectormodel.cpp#L2414))
+- **決定 7**: [`PlayStateModel::stop()`](../src/devstudio/model/playstatemodel.cpp#L290) は check が無ければ `keep` を省く。check があれば先に `get_status` を読み、まだ記録にある編集だけを挙げる(undo された編集を挙げると engine が Stop ごと断るため)。結果は `Stopped: N reverted, M kept(, K could not be kept)` と、Play changes の `Not kept: <行> — <理由>`([`notKeptReason()`](../src/devstudio/model/playstatemodel.cpp#L223))。セッションが終わったら Outliner と Inspector をすぐ読み直す([その所](../src/devstudio/view/mainwindow.cpp#L1313))
+- **決定 8**: 帯 `Changes here are written to files and stay after Stop.` は Frame Plan の dock(Frame Plan・Features・Graph の 3 タブに共通)と Pass Editor に 1 本ずつ([`withRenderBanner()`](../src/devstudio/view/mainwindow.cpp#L1199))。セッションの間は Save Scene を押せない(tooltip)。Studio に Load Scene / Import snapshot の入口は無い(grep で確かめた)。View: Game | Editor は edit と paused で出る。Reload game logic は帯の `⋯` のメニュー。Restart / project の切替 / Studio を閉じる / Stop Engine は確認のダイアログ(`pelican.playSessionPrompt`)を出し、了承されたら、Stop Engine 以外は先に keep なしで Stop してから進む([`askToEndPlaySession()`](../src/devstudio/view/mainwindow.cpp#L1219))
+- **仕様に無かったもの**(コードで確かめた)
+  - Stop の後の「未保存」: Play の前(edit の間)に保存済みで、Stop で 1 件も keep しなかったなら、Stop の後の最初の新しい revision を保存済みとして扱う(Stop は revision を進めるため。[`adoptRestoredRevisionAsSaved()`](../src/devstudio/model/inspectormodel.cpp#L3184))
+  - 確認のダイアログは Stop Engine(`pelican.viewportStop`)でも出る(§12.6 が挙げるのは Restart / 切替 / 閉じる)。Stop Engine は Stop を送らずに engine を止める
+  - 帯の背景は theme の `play.paused_band`
+- **シナリオ**
+  - 新規: `play_mode_roundtrip`([シナリオ](../test/studio_scenarios/play_mode_roundtrip.json)。97 step)。edit 起動で `Mover` が動かない → Play で動き Stop で戻る → Play 中の `Sun` の `intensity` の編集が Stop で戻る → Keep の印を付けた編集が残る(`Stopped: 0 reverted, 1 kept.`)→ Take from game の x が Stop の後も残る → Save Scene が押せず帯が出る → Pass Editor の fragment の変更が Stop の後も残り、画面で分かる
+  - 新規: `play_view_camera`([シナリオ](../test/studio_scenarios/play_view_camera.json)。26 step)。paused で View: Editor にすると絵が game の camera と違い、Stop で `view_camera` が `editor` に戻る
+  - 直した: `play_pause_step`(edit 起動に合わせ、Play から入り、最後に Stop。35 step)
+  - 既存で緑(実装者の報告): new_blank_project、whole_frame_first_steps、engine_window_embedded、outliner_edit_roundtrip、add_primitive_object、render_undo_roundtrip、menu_actions、deferred_loop_from_scratch、graph_edit_roundtrip、vulkan_validation_runtime_player
+- **test**
+  - `devstudio_play_controls_test`: `PM-3b Studio starts the engine in edit, unless its configured arguments run the game from the first frame`([test](../test/devstudio_play_controls_test.cpp#L695))/ `PM-3b get_status.play is read with edit, the view and the session's edits`([test](../test/devstudio_play_controls_test.cpp#L735))/ `PM-3b Play from edit starts the run, and the band, the frame and the line follow; Stop with nothing marked sends no keep`([test](../test/devstudio_play_controls_test.cpp#L781))/ `PM-3b Step from edit starts the run paused, then steps it once`([test](../test/devstudio_play_controls_test.cpp#L822))/ `PM-3b Play changes names each edit of the run, and Stop keeps only the marked ones still recorded`([test](../test/devstudio_play_controls_test.cpp#L838))/ `PM-3b an edit Stop could not keep is named in Play changes with why`([test](../test/devstudio_play_controls_test.cpp#L898))
+  - 同: `PM-3b Save waits for Stop, and the render panels say their edits stay`([test](../test/devstudio_play_controls_test.cpp#L923))/ `PM-3b View: Game | Editor while paused or in edit, not while playing`([test](../test/devstudio_play_controls_test.cpp#L959))/ `PM-3b play_busy says why in one line and can send the same thing again when done`([test](../test/devstudio_play_controls_test.cpp#L989))/ `PM-3b Reload game logic is sent in any state`([test](../test/devstudio_play_controls_test.cpp#L1011))/ `PM-3b the refusals of Play, Save and Stop read as sentences`([test](../test/devstudio_play_controls_test.cpp#L1030))/ `PM-3b leaving while the game runs is asked first, and the run is stopped before it goes`([test](../test/devstudio_play_controls_test.cpp#L1053))/ `PM-3b with no run, leaving asks nothing about the game`([test](../test/devstudio_play_controls_test.cpp#L1084))
+  - `devstudio_inspector_test`: `PM-3b the Inspector names what it committed by transaction: edits, previews, undo, redo`([test](../test/devstudio_inspector_test.cpp#L2482))/ `PM-3b a Stop that kept nothing on a saved scene leaves it saved`([test](../test/devstudio_inspector_test.cpp#L2546))
+  - `devstudio_inspector_widget_test`: `PM-3b an edit made while the game runs says it reverts on Stop, and Keep marks it`([test](../test/devstudio_inspector_widget_test.cpp#L430))/ `PM-3b Take from game writes the game's Transform back as one edit marked Keep`([test](../test/devstudio_inspector_widget_test.cpp#L470))
+- **変異**(実装者の報告): 25 件、すべて赤
+- **結果**(実装者の報告): `-L studio_cpu -LE gpu` 495(統合側で 494〜503)。GPU は上の新規 2 本・直した 1 本・既存 10 本が緑
+- **テキスト入力**: シナリオの打つ欄は `play_mode_roundtrip` の `intensity` の 2 回(json で確かめた)
+- **穴**(実装者の報告)
+  - engine の PM-2b が入るまで、model のある scene で Keep を付けて Stop すると engine が assert で落ちる(`modelinstanceslots.cpp` の `releaseWithheld`)。そのため GPU シナリオを、model の無い `play_mode_roundtrip` と、model があり keep の無い `play_view_camera` に分けた
+  - gizmo のドラッグと Graph attachment の編集は、Play changes では `Actor N · txn` と出る
+  - 確認ダイアログの CPU test は Close だけ
+  - セッション中の自動化面の `quit` は確認ダイアログで止まる(シナリオは最後に Stop する)
+  - `project_catalog_headless_smoke` は primary で要確認
+  - PM-3a の穴(engine の窓が focus を持つ間はキーが効かない、playing の間の frame N が止まって見える)は残る
+
+### PM-3c: 再生中に spawn された object を Outliner に出す(RO-1 の上)
+
+**下段(Studio のみ)。実装者: Claude(Opus)。develop 0e612751 以降(engine の RO-1 を含む)。PM-3b の着地の後に develop を取り込んで仕上げた。設計は `docs/design_play_mode.md` §12.6 の Outliner の行。Studio での見え方は `docs/manual/13_editor.md` の「Studio で game を再生・停止する」の「Outliner の runtime の行」。**
+
+#### 前提
+- engine の RO-1: `get_runtime_objects {}` が、今の scene で game が spawn した生きている object を `{name, entity, spawned_by?, transform?}` で返す。edit と、セッションを終えた後は空。RPC の詳細は `docs/manual/13_editor.md` §13.5 の「spawn された object を読む(✅RO-1)」
+
+#### 決定
+1. **読む時**: 新しい速い poll を作らず、play の状態の読みに合わせて読む(無ければ再生中だけ 1 秒おき)。edit では読まない
+2. **Outliner**: authoring の object の後ろに `(runtime)` の印と灰色で並べる。選ぶと Inspector は読むだけの表示(Transform の runtime の値だけ)
+3. Stop で消える
+4. Outliner の編集の操作は runtime の行では押せない(tooltip)
+
+#### 着地(2026-09-27、e283aa42)
+- **新しい部品**: model の [`RuntimeObjectsModel`](../src/devstudio/model/runtimeobjects.hpp#L71)(`pelican_studio_inspector_model` にある)と、view の [`RuntimeOutliner`](../src/devstudio/view/runtimeoutliner.cpp#L41)
+- **決定 1**: `get_runtime_objects` を、playing の間は 1 秒おきに読む(`pelican.outliner.runtimeReadTimer`)。どの `get_status` の返事でも、play の状態が変わったとき・paused で game frame が進んだとき(Step)にも読む。edit では読まず、一覧を空にする([`RuntimeObjectsModel::observeStatus()`](../src/devstudio/model/runtimeobjects.cpp#L111))。play の状態は PM-3b の `parsePlayStatus` / `PlayState` で読み(一本化)、`get_status.scene` だけをここで読む。`-32601` を返す engine(RO-1 より前)には一度だけ問い、その engine の間は問わない
+- **決定 2**: 行は、再生中の scene(`get_status.scene`、無ければ先頭の scene)の下の、scene の object の後ろに、灰色の斜体の `<name> (runtime)` で出す(tooltip は prefab と「編集できない」の 2 行。[`RuntimeOutliner::appendRows()`](../src/devstudio/view/runtimeoutliner.cpp#L143))。Transform の値が変わっただけでは行を作り直さない。選ぶと Inspector は欄・Add component・ray の一覧・グラフの装着の欄を隠し、`Transform (runtime, read-only)`(`pelican.inspectorRuntime`)に local の pos / rotation / scale と world の pos を数だけで出す([読むだけの表示](../src/devstudio/view/inspectorwidget.cpp#L507))
+  - viewport の選択とはつながっていない: viewport の pick は runtime の行の選択を外す(`pick_object` が entity を返さないため。[その所](../src/devstudio/view/mainwindow.cpp#L2200))
+- **決定 3**: Stop(と engine の停止・再起動)で一覧は空になり、行が消え、runtime の行を選んでいたら Inspector は `None` に戻る
+- **決定 4**: runtime の行を選んでいる間、Outliner の Duplicate / Delete は押せず、tooltip が `Objects spawned while the game runs cannot be edited.`([`OutlinerTree::setEditRefusal()`](../src/devstudio/view/outlinertree.cpp#L83))。runtime の行は掴めず、その上への drop は断り、同じ文を status bar と Outliner の下の行に出す。rename は Outliner にもともと無い
+- **PM-3b との関係**: runtime の行を表示している間、Take from game は出ない
+- **シナリオ**: `play_runtime_objects`([シナリオ](../test/studio_scenarios/play_runtime_objects.json)。33 step)。behavior `pm3c_spawner`(`test/fixtures/pm3c_spawner/`。最初の歩で prefab `pm3c_shot` から `Shot` を (1.5, 2, -0.5) に spawn する)と fixture `studio_play_runtime_objects`。edit で起動して行が無い → Play で `Shot (runtime)` が出て、選ぶと Inspector に `1.5, 2, -0.5`、欄と Add component が見えず、Delete / Duplicate が押せない → Stop で消えて Inspector は `None` → Play でまた出る → 最後に Stop
+- **test**
+  - `devstudio_runtime_objects_test`: `PM-3c get_runtime_objects is read as RO-1 writes it`([test](../test/devstudio_runtime_objects_test.cpp#L367))/ `PM-3c the list is read when the play state moves and while it plays, never in edit`([test](../test/devstudio_runtime_objects_test.cpp#L394))/ `PM-3c an engine without get_runtime_objects is asked once`([test](../test/devstudio_runtime_objects_test.cpp#L452))/ `PM-3c a selected spawned object is let go when it leaves the list`([test](../test/devstudio_runtime_objects_test.cpp#L474))
+  - 同: `PM-3c a spawned object is a greyed runtime row after the scene's own, read-only in the Inspector, and no Outliner edit reaches it`([test](../test/devstudio_runtime_objects_test.cpp#L490))/ `PM-3c Stop empties the runtime rows, and the edit state reads nothing until Play`([test](../test/devstudio_runtime_objects_test.cpp#L583))/ `PM-3c a Studio attached to an engine in the edit state asks for no runtime objects`([test](../test/devstudio_runtime_objects_test.cpp#L614))/ `PM-3c an engine from before RO-1 is asked once and shows no runtime rows`([test](../test/devstudio_runtime_objects_test.cpp#L629))
+  - `devstudio_inspector_widget_test`: `PM-3c a spawned object's read-only view offers no Take from game`([test](../test/devstudio_inspector_widget_test.cpp#L510))
+- **変異**(実装者の報告): すべて赤
+- **結果**(実装者の報告): `-L studio_cpu -LE gpu` 503。GPU シナリオ `play_runtime_objects` / `play_mode_roundtrip` / `outliner_edit_roundtrip` が緑
+- **テキスト入力**: 増えていない(シナリオの打つ欄は 0。json で確かめた)
+- **穴**: viewport の選択とつながっていない(決定 2)。paused の間は 1 秒おきに読まない(Step の読みだけで動く。コードで確かめた)
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

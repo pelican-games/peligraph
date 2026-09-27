@@ -49,6 +49,7 @@ Features と Inspector の装着操作はその履歴の対象外です(§13.5�
 **Save / Discard / Cancel** を表示します。Save は保存の成功と最新 revision の再確認を待ってから
 画面を切り替えます。保存失敗・接続断・編集中で保存できない場合は、現在のプロジェクトを維持します。
 Graph タブの変更は編集ごとにファイルへ保存されるため、この確認はシーン編集が対象です。
+game の再生のセッションがある間は、この確認の前に、再生を終えるかを問います(✅PM-3b。§13.1「Studio で game を再生・停止する」)。
 
 ### Studio で新しい project を作る
 
@@ -179,12 +180,12 @@ asset が `id [status]` で並びます。
 
 **Inspector の数値欄の名前(✅G-5)**: 自動化面から届くように、数値の欄は 1 つずつ名前を持ちます。vector の列は
 `pelican.inspectorVector.<component>.<field>.<列>`(例: `pelican.inspectorVector.transform.scale.2`)、数 1 つは
-`pelican.inspectorNumeric.<component>.<field>` です([数値欄の名前の付け方](../../src/devstudio/view/inspectorwidget.cpp#L1948))。
+`pelican.inspectorNumeric.<component>.<field>` です([数値欄の名前の付け方](../../src/devstudio/view/inspectorwidget.cpp#L1950))。
 G-5 より前は、どの vector も最初の列が同じ名前でした。シナリオは欄が有効になるのを待って打ち、Return で commit し、
 欄がその値を持つまで待ちます([シナリオの README](../../test/studio_scenarios/README.md#L535))。
 
 **回転は角度で入れます(✅T-1)。**`transform.rotation` は X / Y / Z の 3 欄(度、小数 2 桁、自動化面の名前は
-`pelican.inspectorEuler.transform.rotation.0` 〜 `.2`)で見せて編集します([回転の欄を作る所](../../src/devstudio/view/inspectorwidget.cpp#L1999))。
+`pelican.inspectorEuler.transform.rotation.0` 〜 `.2`)で見せて編集します([回転の欄を作る所](../../src/devstudio/view/inspectorwidget.cpp#L2001))。
 回転は X、Y、Z の順に固定軸の回りにかかります(Rz·Ry·Rx)。保存されるのは今までどおり quaternion `[x, y, z, w]` で、
 変換は Studio がします([角度と quaternion の変換](../../src/devstudio/model/inspectormodel.cpp#L478))。読むときは X と Z が
 (-180, 180]、Y が [-90, 90] で、Y が ±90 のときは X を 0 にして残りを Z に寄せます。欄の右の **Quaternion** の toggle を開くと、
@@ -198,10 +199,10 @@ quaternion の 4 欄(G-5 からの `pelican.inspectorVector.transform.rotation.<
 **Inspector の欄の編集と commit(✅Q-7)**
 
 - **focus だけでは編集になりません。**編集は、値を打つ(値が変わる)か欄の上で mouse の button を押したときに始まります
-  ([focus で編集を始めなくなった所](../../src/devstudio/view/inspectorwidget.cpp#L2217))。欄に focus を置いたままでも
+  ([focus で編集を始めなくなった所](../../src/devstudio/view/inspectorwidget.cpp#L2219))。欄に focus を置いたままでも
   **Refresh** は押せ、他の欄も止まりません。vector の中で列を移るあいだは 1 つの編集のままです。
 - **busy の間に打った値は、手が空いてから送られます。**別の編集の commit の途中(Inspector が busy)は他の欄が止まりますが、
-  focus のある欄は止まりません([busy でも focus のある欄は止めない所](../../src/devstudio/view/inspectorwidget.cpp#L1415))。
+  focus のある欄は止まりません([busy でも focus のある欄は止めない所](../../src/devstudio/view/inspectorwidget.cpp#L1417))。
   そこへ打った値は欄に残り、欄を離れるか Return を押すと、Inspector の手が空いてから 1 回の編集として送られます
   ([手が空いてから値を送る所](../../src/devstudio/view/inspectorwidget.cpp#L668))。その間に欄が消えた(別の object を選んだなど)か、
   値が既に同じなら何も送りません。
@@ -300,68 +301,218 @@ Outliner の行の右クリックの menu の先頭に **Duplicate** と **Delet
   持ったままです。移行の後の offline open が parse error になると、移行だけの player は開き直すか Don't Open まで残ります。
   player の窓を 15 秒で諦める timeout は gate で止めていますが、その test はありません。
 
-### Studio で game を一時停止し、1 歩ずつ進める(✅PM-3a)
+### Studio で game を再生・停止する(✅PM-3a / PM-3b / PM-3c)
 
-engine の一時停止と 1 歩(§13.5 の「一時停止と 1 歩ずつ進める(✅PM-1a)」。RPC の形、止まるもの・止まらないものはそちら)を
-Studio のボタンにしたものです。設計は [design_play_mode.md](../design_play_mode.md) §12。Studio は今も engine を `playing` で
-起動します(`--start-state edit` を渡しません)。edit 状態・Play・Stop はまだありません(PM-3b)。
+engine の play の RPC(§13.5 の「一時停止と 1 歩ずつ進める(✅PM-1a)」「edit 状態(✅PM-1b)」「再生のセッション(✅PM-2)」
+「spawn された object を読む(✅RO-1)」。RPC の形、止まるもの・止まらないもの、Stop で戻るもの・戻らないものはそちら)を
+Studio のボタンにしたものです。設計は [design_play_mode.md](../design_play_mode.md) §12。PM-3a が Pause / Step と状態の表示を、
+PM-3b が edit での起動・Play / Stop・Keep を、PM-3c が Outliner の runtime の行を入れました。
 
-- **ボタン**: Gizmo の toolbar(`pelican.gizmoToolbar`。Move / Rotate / Scale の並び)の Scale の右に、区切りの後に
-  **❚❚ Pause** と **▶| Step** が並びます([ボタンとキーを作る所](../../src/devstudio/view/playcontrols.cpp#L61)、
+**edit で起動する**(✅PM-3b)
+
+- Studio は engine を `--embedded` と一緒に `--start-state edit` で起動します。project を開いた直後は `Edit` で、behavior は
+  眠り、game の時計は止まっています。Play を押すまで game のコードは走りません([`studioPlayerLaunch()`](../../src/devstudio/viewport/studioplayerarguments.cpp#L22))。
+- `PELICAN_STUDIO_PLAYER_ARGUMENTS` に `--replay` / `--record-input` / `--bake-camera-output` / `--start-time` があると、engine は
+  それを edit と併用できない(`offline.mode_conflict@1`)ので、Studio は `--start-state edit` を付けずに起動し、status bar に
+  15 秒 `The engine starts playing, not in edit: <引数> in PELICAN_STUDIO_PLAYER_ARGUMENTS runs the game from its first frame.` を
+  出します(名指すのは最初に見つかった引数です。[1 行を出す所](../../src/devstudio/viewport/embeddedviewport.cpp#L710))。
+  同じ変数に `--start-state` があれば、それをそのまま使い、何も言いません。
+
+**ボタンとキー**
+
+- Gizmo の toolbar(`pelican.gizmoToolbar`。Move / Rotate / Scale の並び)の Scale の右に、区切りの後に **▶ Play**・
+  **❚❚ Pause**・**▶| Step** が並び、その後ろに `View: Game | Editor`(edit と paused のとき)、**Play changes**、`⋯` の
+  メニューが続きます([ボタンとキーを作る所](../../src/devstudio/view/playcontrols.cpp#L61)、
   [toolbar に置く所](../../src/devstudio/view/mainwindow.cpp#L1128))。
-  - Pause は check できるボタンで、押した状態が `paused` です。押すと `set_play_state {state: "paused"}`、押した状態で
-    もう一度押すと `{state: "playing"}` を送ります。これが Resume で、別のボタンはありません。
-  - Step は `paused` のときだけ押せ、`advance_frames {count: 1}` を送ります。
-  - tooltip は状態で変わります(`paused` の Pause は `Resume the game (Ctrl+Shift+P)`)。
-- **キー**: Ctrl+Shift+P が Pause の切り替え、Ctrl+Alt+P が Step です(Ctrl+P は PM-3b)。テキストを打つ所(読み取り専用でない
-  line edit・text box・spin box と、編集できる combo)に focus があるときは効きません
-  ([`textEntryHasFocus()`](../../src/devstudio/view/playcontrols.cpp#L50))。キーは action の shortcut ではなく窓の別の
-  shortcut にしてあるので、ボタンの click は keyboard の focus がどこにあっても効きます。
-- **返事を待つ間は押せません**: `set_play_state` か `advance_frames` の返事を待つ間は、2 つとも押せず、キーも効きません
-  ([`PlayStateModel::canTogglePause()`](../../src/devstudio/model/playstatemodel.hpp#L235))。
-- **断られたとき**は、status bar に 8 秒、1 行で出ます。PM-1a の拒否は Studio の拒否の表の文になります
-  ([`playRefusalDescription()`](../../src/devstudio/model/playstatemodel.cpp#L184))。例: `playing` の間に届いた
-  `advance_frames` は `The game is playing; this works only while it is paused (play_state_mismatch).` です。表に無い code は
-  engine の message に `(<code>)` を付けた文です。断られた後は `get_status` を 1 回読み直します。
+  - **▶ Play / ■ Stop**: edit では ▶ Play で、`set_play_state {state: "playing"}` を送り、再生のセッションが始まります。
+    playing と paused の間は字が ■ Stop に変わり、押すと下の「Stop」です。paused から playing に戻すのは Pause を外す方です
+    (このボタンは Stop になっているため)。
+  - **❚❚ Pause**: check できるボタンで、押した状態が `paused` です。playing で押すと `{state: "paused"}`、押した状態で
+    もう一度押すと `{state: "playing"}` を送ります。これが Resume で、別のボタンはありません。edit では押せません
+    (tooltip `Press Play first; the game is not running`)。
+  - **▶| Step**: paused では `advance_frames {count: 1}` です。**edit では 2 手**になり、先に `set_play_state {state: "paused"}` を
+    送り(セッションが始まり、`onInit` まで走って game のフレーム 0 で止まる)、その返事が `paused` なら続けて
+    `advance_frames {count: 1}` を送ります([`PlayStateModel::step()`](../../src/devstudio/model/playstatemodel.cpp#L328))。
+    playing では押せません。
+  - tooltip は状態で変わります(paused の Pause は `Resume the game (Ctrl+Shift+P)`)。
+- **キー**: Ctrl+P が Play / Stop、Ctrl+Shift+P が Pause の切り替え、Ctrl+Alt+P が Step です。テキストを打つ所(読み取り専用で
+  ない line edit・text box・spin box と、編集できる combo)に focus があるときと、そのボタンが見えていないか押せないときは
+  効きません([`textEntryHasFocus()`](../../src/devstudio/view/playcontrols.cpp#L50))。キーは action の shortcut ではなく窓の
+  別の shortcut にしてあるので、ボタンの click は keyboard の focus がどこにあっても効きます。
+- **返事を待つ間は押せません**: `set_play_state`・`advance_frames`・`set_view_camera`・`reload_game_logic` の返事と、Stop の前の
+  `get_status` の読み(下の「Stop」)を待つ間は、Play / Stop・Pause・Step・View・Reload game logic のどれも押せず、キーも
+  効きません([`PlayStateModel::canPlayOrStop()`](../../src/devstudio/model/playstatemodel.hpp#L232))。
+- **断られたとき**は、status bar に 8 秒、1 行で出て、`get_status` を 1 回読み直します。play の拒否と、Play や
+  Reload game logic が受ける game logic の DLL の拒否は、Studio の拒否の表の文になります
+  ([`playRefusalDescription()`](../../src/devstudio/model/playstatemodel.cpp#L184))。例: `playing` の間に届いた `advance_frames` は
+  `The game is playing; this works only while it is paused (play_state_mismatch).`、Play の DLL の読み直しの失敗は
+  `The game logic DLL did not reload, so the game did not start: <error_fields> (game_logic_reload_failed@1).`
+  (`error_fields` は `鍵 値` を `, ` で並べた文)です。表に無い code は engine の message に `(<code>)` を付けた文です。
+- **`play_busy`**(Studio の scene の編集か preview がまだ終わっていない)で Play・Stop・Step が断られると、1 行
+  `An edit or a preview is still being sent; press again once it has finished (play_busy).` と、status bar の右に
+  **Send when done**(`pelican.play.retry`)が出ます。押すと `Waiting to send...` になり、Inspector の scene の編集が終わったかを
+  100 ms おきに見て、終わったら同じ操作をもう一度送ります([`PlayStateModel::retryWhenIdle()`](../../src/devstudio/model/playstatemodel.cpp#L368))。
 
 **状態の表示**
 
-- **status bar の右の行**(`pelican.playStatus`)に `Playing · frame N` / `Paused · frame N` / `Stepping (k left) · frame N` が
-  出ます([`PlayStateModel::statusText()`](../../src/devstudio/model/playstatemodel.cpp#L614))。N は `get_status.play.game_frame`
-  (game のフレーム)で、`get_status.frame`(評価の番号。一時停止中も進む)ではありません。`Stepping` は `paused` で
+- **status bar の右の行**(`pelican.playStatus`)は `Edit` / `Playing · frame N` / `Paused · frame N` / `Stepping (k left) · frame N`
+  です([`PlayStateModel::statusText()`](../../src/devstudio/model/playstatemodel.cpp#L614))。N は `get_status.play.game_frame`
+  (game のフレーム)で、`get_status.frame`(評価の番号。一時停止中も進む)ではありません。`Stepping` は paused で
   `pending_steps` が 1 以上のときです。
-- **paused の色**: `paused` の間は、viewport の枠(`pelican.viewportFrame`)のうち viewport の少し上から枠の端までの縁と、
-  Gizmo の toolbar の背景を theme の色で塗ります([塗る所](../../src/devstudio/view/mainwindow.cpp#L1265))。viewport の絵
-  そのもの(engine の native の窓)と、枠の上の `Viewport` の字の行は塗りません。色は theme の `play.paused_frame` /
-  `play.paused_band` で、Dark は `#e0ac00` / `#5e4b10`、Light は `#c99200` / `#f3d98a` です
-  ([theme の表](../../src/devstudio/resources/studio_themes.json#L80))。`playing` は窓の色のままです。
+- **枠と帯の色**: playing は青系、paused は黄系、edit は窓の色のままです。塗るのは viewport の枠(`pelican.viewportFrame`)のうち
+  viewport の少し上から枠の端までの縁と、Gizmo の toolbar の背景で、viewport の絵そのもの(engine の native の窓)と、枠の上の
+  `Viewport` の字の行は塗りません([塗る所](../../src/devstudio/view/mainwindow.cpp#L1265))。色は theme の token で、
+  `play.playing_frame` / `play.playing_band` が Dark `#3d8fe0` / `#1f3f60`、Light `#2f7fd0` / `#b9d6f3`、
+  `play.paused_frame` / `play.paused_band` が Dark `#e0ac00` / `#5e4b10`、Light `#c99200` / `#f3d98a` です
+  ([theme の表](../../src/devstudio/resources/studio_themes.json#L80))。
 - **読む時**: Studio には `get_status` を周期で読む時計がありません(Q-2 で止めてあります)。表示は次の読みで動きます
   ([`PlayStateModel`](../../src/devstudio/model/playstatemodel.hpp#L133)):
   - Studio の誰かが送った `get_status` の返事のすべて。engine の準備を確かめる最初の問い合わせも含みます。viewport が
     `engineStatusRead` で配ります([配る所](../../src/devstudio/viewport/embeddedviewport.cpp#L408))
-  - Pause / Resume の返事の後の 1 回と、断られた後の 1 回
+  - 状態を変える返事の後の 1 回と、断られた後の 1 回
   - Step の後: 頼んだ歩が着く(`game_frame` が `until_game_frame` に届き、`pending_steps` が 0)まで、40 ms おきに最大 40 回
+  - セッションの間に Studio が scene の編集を commit した後の 1 回(Play changes の行を追うため)
   - ⚠ そのため、**`playing` の間の `frame N` は最後に読んだ値で止まって見えます**。`paused` と `Stepping` の数は正確です。
+    下の Outliner の runtime の読みは `get_runtime_objects` なので、この行を動かしません。
 - **play を返さない engine**(PM-1a より前)には、ボタンも status bar の行も出ません(Timeline の scrub も今までどおりです)。
-  `play.state` が `edit` の読みは、読めないものとして捨てます(表示は前のまま。PM-3b で扱います)。
-- **engine が止まる・再起動する**と、ボタンと行をいったん消し、paused の色も外します。次の engine が答えると、`Playing` で
-  出し直します(起動した engine は `playing` です。[`PlayStateModel::disconnect()`](../../src/devstudio/model/playstatemodel.cpp#L236))。
-  前の engine の `paused` の表示は残りません。
+- **engine が止まる・再起動する**と、ボタン・行・色・Keep の印をいったん消します。次の engine が答えると、その `get_status` の
+  状態で出し直します。Studio が起動した engine なら `Edit` です([`PlayStateModel::disconnect()`](../../src/devstudio/model/playstatemodel.cpp#L236))。
 - **Graph タブの Timeline**: `playing` の間は scrub できません。帯の tooltip が
   `The game is playing, so its clock moves on its own. Pause it (Ctrl+Shift+P) to go to a time.` になり、cursor が禁止の形になり、
-  drag しても `set_time` を送りません([止める所](../../src/devstudio/model/graphcanvasmodel.cpp#L746))。`paused` では今までどおり
+  drag しても `set_time` を送りません([止める所](../../src/devstudio/model/graphcanvasmodel.cpp#L746))。edit と paused では
   scrub できます。
-- **分かっている穴**(着地時の記録。実装者の報告): engine の窓が keyboard の focus を持っている間は、2 つのキーが効きません。
+
+**再生中の scene の編集と Keep**(✅PM-3b)
+
+再生中も Inspector・Outliner などの scene の編集はでき、engine はそれを記録します(`get_status.play.recorded_edits`)。
+記録された編集は Stop で戻ります。残したい編集には Keep の印を付けます。
+
+- **Inspector の行**: セッションの間に commit された編集は、Inspector の編集の行(`pelican.inspectorNotice`)の後ろに
+  ` — reverts on Stop` が付き、右に **Keep** のリンク(`pelican.inspectorKeep`)が出ます。押すと Play changes でその編集に
+  check が付き、行の後ろは ` — kept after Stop` になってリンクが消えます([行を組む所](../../src/devstudio/view/inspectorwidget.cpp#L1369))。
+- **Play changes**(`pelican.play.changes`。記録が 1 件以上あれば `Play changes (N)`)を押すと、小さな窓
+  (`pelican.playChanges`)が開きます。modal ではないので、開いている間も game は進み、新しい編集も行に加わります
+  ([窓を作る所](../../src/devstudio/view/playcontrols.cpp#L188))。
+  - 行は `recorded_edits` の 1 件ずつで、engine の記録の順です。undo で消えた編集は行から消え、redo で戻ります(engine の
+    記録に従います)。
+  - 行の文: Studio が送った編集はその項目名です。Inspector の欄の編集は `Edit light.intensity` のような名前、Take from game は
+    `Take Transform from game` です。undo は `Undo <元の項目名>`、redo は `Redo <元の項目名>` で、commit の結果の `operation` と
+    `source_transaction_id` から元の編集を引きます。Studio が送らなかった編集は `Actor N · <transaction_id>`(tooltip
+    `An edit another client made (actor N)`)です([`PlayStateModel::changeRows()`](../../src/devstudio/model/playstatemodel.cpp#L432))。
+  - 行ごとに check があり、既定は外れています(= 戻す)。**Keep all** / **Keep none** で全部を付け外しします。
+  - 上の 1 行(`pelican.playChanges.summary`)は、セッションの間は `N scene edit(s) in this run. Stop puts them back, except the
+    ones marked Keep.`、Stop の後は下の Stop の要約です。
+- **Take from game**(`pelican.inspectorTakeFromGame`): 再生中(paused を含む)に Inspector で object を選んでいると、Transform の
+  欄(生成された Transform でないもの)にボタンが出ます。押すと `get_components` でその object を読み、Transform の
+  `runtime_json.local_trs`(ECS の今の値)の `pos` / `rotation` / `scale` を、authoring の Transform に書く `set_component_value`
+  3 つの 1 回の `edit` にして送り(`base_revision` はその読みの `scene_revision`)、その編集に Keep の印を付けます
+  ([`handleTakeFromGame()`](../../src/devstudio/model/inspectormodel.cpp#L2414))。commit すると行は
+  `Take Transform from game committed…` です。v0 は Transform だけです。下の runtime の行を見ている間は出ません。
+
+**Stop**(✅PM-3b)
+
+- check が 1 つも無ければ、`set_play_state {state: "edit"}` を `keep` 無しで送り、記録された編集は全部戻ります。
+- check があれば、先に `get_status` を 1 回読み、そのとき `recorded_edits` にある編集のうち check の付いたものだけを `keep` に
+  挙げます。読んだ後に undo された編集を挙げると、engine が `play_keep_unknown_transaction` で Stop ごと断るためです
+  ([`PlayStateModel::stop()`](../../src/devstudio/model/playstatemodel.cpp#L290))。読んだ時にもう edit だった(別の client が
+  止めた)ときは、何も送りません。
+- 返事が来ると、status bar に 8 秒 `Stopped: N reverted, M kept` が出ます。`not_kept` があれば `, K could not be kept` が付きます。
+  M は `keep` に挙げた数から `not_kept` を引いた数、N は記録された編集の数から M を引いた数です(当て直せなかった編集は
+  reverted に数えます)。Play changes の窓は同じ要約と、`not_kept` の 1 件ごとに `Not kept: <行の文> — <理由>`
+  (`pelican.playChanges.notKept`)を次の Play まで残します。理由は code を読める文にしたもので、例えば `closure_unresolvable` は
+  `it needs an edit that was not kept (the object it changes was made during the run) (closure_unresolvable)`、表に無い code は
+  `the engine could not apply it again (<code>)` です([`notKeptReason()`](../../src/devstudio/model/playstatemodel.cpp#L223))。
+- セッションが終わると、Outliner と Inspector をすぐ読み直します(Q-16 の外部変更の watch を待ちません。
+  [読み直す所](../../src/devstudio/view/mainwindow.cpp#L1313))。
+- **未保存の扱い**: Stop は scene revision を戻さず、新しい revision で scene を戻します(§13.5「再生のセッション」)。そのままでは
+  Stop のたびに未保存に見えるので、Studio は、Play の前(edit の間)に scene が保存済みで、Stop が 1 件も keep しなかったとき、
+  Stop の後の最初の新しい revision を保存済みとして扱います([`InspectorModel::adoptRestoredRevisionAsSaved()`](../../src/devstudio/model/inspectormodel.cpp#L3184))。
+
+**再生中に変わること**(✅PM-3b)
+
+- **戻らない編集の帯**: セッションがある間、render-tools dock の上(Frame Plan・Features・Graph の 3 タブに共通の 1 本)と
+  Pass Editor の上に、帯 `Changes here are written to files and stay after Stop.` が出ます。編集を送らなくても、セッションの間は
+  出ています。帯の背景は theme の `play.paused_band` です([帯を作る所](../../src/devstudio/view/mainwindow.cpp#L1199))。
+  render の編集の Undo(RU-1)は今までどおり効きます。
+- **Save Scene が押せません**: File ▸ Save Scene(`pelican.file.saveScene`。Ctrl+S)はセッションの間は無効で、tooltip は
+  `Stop the game first: while it runs, the scene is saved only after Stop puts it back (play_session_active).` です。Studio には
+  Load Scene と Import snapshot の入口がありません(`src/devstudio` を grep で確かめた)。engine が `play_session_active` で
+  断ったときの文は `The game is running, and Stop puts the scene back as it was when Play was pressed; stop it first (<method>) (play_session_active).`
+  です。
+- **View: Game | Editor**(`pelican.play.viewGame` / `pelican.play.viewEditor`): `get_status.play.view_camera` を返す engine で、
+  edit と paused のときに帯に出て、playing では消えます。押すと `set_view_camera {camera}` を送ります。paused の既定は Game で、
+  Editor にすると止まった game の世界を editor camera で見られます。Stop すると engine が editor camera に戻します(PM-1b)。
+  editor camera の無い engine では
+  `This engine has no editor camera; it was started without --start-state edit or --free-camera (view_camera_unavailable).` です。
+- **Reload game logic**: 帯の `⋯`(`pelican.play.menuButton`)のメニューにあり(`pelican.play.reloadGameLogic`)、どの状態でも
+  押せます(返事待ちの間を除く)。`reload_game_logic` を送り、成功すると edit では
+  `Game logic reloaded; the scene waits in edit, its behaviors asleep.`、再生中は
+  `Game logic reloaded; the game goes on from the scene as it is now.` が出ます。
+- **再起動・切替・閉じる前の確認**: セッションがある間に Restart Engine・別の project を開く・Studio を閉じる・Stop Engine
+  (`pelican.viewportStop`)をすると、先にダイアログ `The Game Is Running`(`pelican.playSessionPrompt`)が
+  `<操作> ends the game's run. The scene edits made while it ran are lost (Keep marks are not used).` と問います。既定の button は
+  Cancel(`.cancel`)です。**End the Run**(`.end`)を押すと、Restart・切替・閉じるでは先に keep なしで Stop を送り、engine が edit に
+  戻ってから、いつもの未保存の確認(§13.1「Studio の未保存変更」)に進みます。Stop を送れなかったときは
+  `The game could not be stopped now.` を出して、その操作をやめます。Stop Engine は Stop を送らずに engine を止めます
+  ([`MainWindow::askToEndPlaySession()`](../../src/devstudio/view/mainwindow.cpp#L1219))。
+
+**Outliner の runtime の行**(✅PM-3c)
+
+- 再生中(paused を含む)は、Studio が `get_runtime_objects {}` を読み、game が spawn した object を Outliner に出します。読む時は、
+  playing の間の 1 秒おき(`pelican.outliner.runtimeReadTimer`)と、Studio の誰かが受けた `get_status` の返事で play の状態が
+  変わったとき、paused で `game_frame` が進んだとき(Step)です。edit では読まず、行は空です
+  ([`RuntimeObjectsModel::observeStatus()`](../../src/devstudio/model/runtimeobjects.cpp#L111))。play の状態は上のボタンと同じ
+  `parsePlayStatus()` で読み、ここで読むのは `get_status.scene` だけです。`get_runtime_objects` を知らない engine(RO-1 より前。
+  `-32601`)には一度だけ問い、その engine の間は問いません。
+- 行は、再生中の scene(`get_status.scene`。まだ名前が無ければ最初の scene)の下の、scene の object の後ろに並びます。字は
+  `<name> (runtime)`(`name` は RO-1 のとおり spawn の名前、名前の無い spawn は `spawn:<boundary>.<index>`)で、灰色の斜体です。
+  tooltip は `Spawned from the prefab <prefab> while the game runs.` と `Objects spawned while the game runs cannot be edited.` の
+  2 行です([行を足す所](../../src/devstudio/view/runtimeoutliner.cpp#L143))。
+- Transform の値だけが変わった読みでは、行を作り直しません(開いたメニューや押している行が消えないように)。作り直すのは、
+  object の組・名前・prefab・scene が変わったときです。
+- 行を選ぶと、Inspector は欄・Add component・ray の一覧・グラフの装着の欄を隠し、枠 `Transform (runtime, read-only)`
+  (`pelican.inspectorRuntime`)に `Position` / `Rotation (x, y, z, w)` / `Scale`(`local_trs`)と `World position`(`world_trs.pos`)を
+  数だけで出します。選択の行は `<name> (runtime)` と `spawned from <prefab> while the game runs` の 2 行です。Take from game は
+  出ません。次の読みで値が変わっていれば、数も追います([読むだけの表示](../../src/devstudio/view/inspectorwidget.cpp#L507))。
+- **編集はできません**: runtime の行を選んでいる間は Outliner の Duplicate / Delete が押せず、tooltip が
+  `Objects spawned while the game runs cannot be edited.` になります([`OutlinerTree::setEditRefusal()`](../../src/devstudio/view/outlinertree.cpp#L83))。
+  runtime の行は掴んで動かせません。その上に object を落とすと断られ、同じ文が status bar(8 秒)と Outliner の下の 1 行に
+  出ます。Outliner に rename はもともとありません。
+- Stop(と engine の停止・再起動)で行は消え、runtime の行を選んでいたら Inspector は `None` に戻ります。
+- **viewport の選択とはつながっていません**。viewport で pick すると runtime の行の選択は外れます。`pick_object` は model
+  instance を返し、`get_runtime_objects` の `entity` を返さないためです([pick の所](../../src/devstudio/view/mainwindow.cpp#L2200))。
+
+**分かっている穴**(着地時の記録。実装者の報告)
+
+- engine の窓が keyboard の focus を持っている間は、play のキーが効きません(PM-3a)。
+- `playing` の間の `frame N` は止まって見えます(上の「読む時」)。
+- gizmo の drag と Graph attachment の編集は、Studio が送った編集でも Play changes では `Actor N · <transaction_id>` と出ます。
+- **engine の PM-2b が入るまで、model を描く scene で Keep を付けて Stop すると、engine が assert で落ちます**
+  (`modelinstanceslots.cpp` の `ModelInstanceSlots::releaseWithheld`)。そのため GPU シナリオは、model の無い
+  `play_mode_roundtrip` と、model があり Keep を使わない `play_view_camera` に分けてあります。
+- 確認のダイアログの CPU の test は、Studio を閉じる場合だけです。
+- セッションの間に自動化面の `quit` を送ると、確認のダイアログで止まります。シナリオは最後に Stop します。
 
 自動化面の名前(コードで確かめたもの):
 
 | 名前 | 指すもの |
 |---|---|
-| `pelican.play.pause` / `pelican.play.step` | ❚❚ Pause / ▶\| Step の `QAction`(`list` は `visible` / `enabled` / `checked` を返します) |
-| `pelican.playStatus` | status bar の `Playing · frame N` などの行 |
-| `pelican.viewportFrame` | viewport の枠。`paused` の間は縁が `play.paused_frame` の色です(シナリオは左端の画素を見ます) |
+| `pelican.play.play` / `pelican.play.pause` / `pelican.play.step` | ▶ Play(■ Stop)/ ❚❚ Pause / ▶\| Step の `QAction`(`list` は `visible` / `enabled` / `checked` を返します) |
+| `pelican.play.viewGame` / `pelican.play.viewEditor` | View: Game / Editor の `QAction`(`pelican.play.viewLabel` は `View:` の字) |
+| `pelican.play.changes` | Play changes の窓を開く `QAction` |
+| `pelican.playChanges` | Play changes の窓。`.summary`(上の 1 行)、`.row.<i>`(上から i 番目の行の check。0 から)、`.keepAll` / `.keepNone`、`.notKept`(Stop が残せなかった行) |
+| `pelican.play.menuButton` / `pelican.play.reloadGameLogic` | 帯の `⋯` と、そのメニューの Reload game logic |
+| `pelican.play.retry` | `play_busy` の後の Send when done |
+| `pelican.playStatus` | status bar の `Edit` / `Playing · frame N` などの行 |
+| `pelican.viewportFrame` | viewport の枠。playing / paused の間は縁が theme の色です(シナリオは左端の画素を見ます) |
+| `pelican.inspectorKeep` / `pelican.inspectorTakeFromGame` | Inspector の Keep のリンク / Take from game |
+| `pelican.play.renderBanner.renderTools` / `pelican.play.renderBanner.passEditor` | 戻らない編集の帯(render-tools dock / Pass Editor) |
+| `pelican.playSessionPrompt` | 再生を終える確認。`.end` / `.cancel` |
+| `pelican.outliner::row#<name> (runtime)` | Outliner の runtime の行 |
+| `pelican.inspectorRuntime` | Inspector の読むだけの枠。`.position` / `.rotation` / `.scale` / `.worldPosition` |
 
-シナリオ `play_pause_step` は §13.5 の「Studio の自動化面」に書きます。
+シナリオ `play_pause_step`・`play_mode_roundtrip`・`play_view_camera`・`play_runtime_objects` は §13.5 の「Studio の自動化面」に
+書きます。
 
 ### 起動のしかた
 
@@ -596,7 +747,7 @@ ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/commu
 
 ### edit 状態(✅PM-1b)
 
-`edit` は、scene を読み込んで描き、編集を受け付けるが、**game のコードを走らせない**状態です(設計は [design_play_mode.md](../design_play_mode.md) §2・§4.4・§5)。engine を `edit` で起こすのは `pelican_player --rpc --start-state edit` です(引数は [第10章](10_tools.md) §10.2。`--replay` / `--record-input` / `--bake-camera-output` / `--start-time` / `--rpc` の無い `--headless` とは併用できません)。**Studio はまだ `--start-state edit` を渡しません**(渡すのは PM-3b から)。
+`edit` は、scene を読み込んで描き、編集を受け付けるが、**game のコードを走らせない**状態です(設計は [design_play_mode.md](../design_play_mode.md) §2・§4.4・§5)。engine を `edit` で起こすのは `pelican_player --rpc --start-state edit` です(引数は [第10章](10_tools.md) §10.2。`--replay` / `--record-input` / `--bake-camera-output` / `--start-time` / `--rpc` の無い `--headless` とは併用できません)。✅PM-3b から、Studio は engine を `--start-state edit` で起動します(§13.1「Studio で game を再生・停止する」)。
 
 | メソッド | params | 返すもの | 拒否 |
 |---|---|---|---|
@@ -628,7 +779,7 @@ ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/commu
 
 ### 再生のセッション(✅PM-2)
 
-`edit` から `playing` / `paused` へ移ると**再生のセッション**が始まり、`edit` へ戻るとセッションが終わって scene が再生の前に戻ります(設計は [design_play_mode.md](../design_play_mode.md) §6・§7。実体は [`set_play_state` の handler](../../src/core/communication/rpcserver.cpp#L2035) と [`PlaySession`](../../src/core/communication/playsession.hpp#L51))。**Studio はまだ Play / Stop のボタンを持ちません**(PM-3b)。
+`edit` から `playing` / `paused` へ移ると**再生のセッション**が始まり、`edit` へ戻るとセッションが終わって scene が再生の前に戻ります(設計は [design_play_mode.md](../design_play_mode.md) §6・§7。実体は [`set_play_state` の handler](../../src/core/communication/rpcserver.cpp#L2035) と [`PlaySession`](../../src/core/communication/playsession.hpp#L51))。Studio の Play / Stop と Keep は ✅PM-3b です(§13.1「Studio で game を再生・停止する」)。
 
 **Play でセッションが始まるとき。**
 
@@ -691,6 +842,7 @@ ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/commu
 - `spawned_by` は spawn が指定した prefab 名(`{prefab}`)だけです。spawn を起こした behavior は記録していません。
 - `transform` は `get_components` の Transform の `runtime_json` と同じ形です。Transform の無い object では省きます。
 - `edit` 状態と、再生のセッションを終えた後は `[]` です。
+- Studio は ✅PM-3c から、これを Outliner の `(runtime)` の行に出します(§13.1「Studio で game を再生・停止する」)。
 
 ### shader を読み直させる(✅F-5)
 
@@ -2709,7 +2861,7 @@ Q-10 の時点では、埋め込んだ player は窓があるので実物の dev
 `studio_exit_code` と `studio_shutdown_forced` も記録します。最後の shutdown step は
 **exit 0、強制終了なし**を要求し、異常終了・タイムアウトによる強制停止も report と driver の失敗になります。
 
-現在のシナリオは **36 本**です(✅LP-4f1 の `loop_view_axis` と ✅LP-4f2 の `graph_template_bloom` で 31 本から 33 本に、✅EW-2 の `engine_window_embedded` で 34 本に、✅Q-19 の `loop_zone_read` で 35 本に、✅PM-3a の `play_pause_step` で 36 本になりました)。
+現在のシナリオは **39 本**です(✅LP-4f1 の `loop_view_axis` と ✅LP-4f2 の `graph_template_bloom` で 31 本から 33 本に、✅EW-2 の `engine_window_embedded` で 34 本に、✅Q-19 の `loop_zone_read` で 35 本に、✅PM-3a の `play_pause_step` で 36 本に、✅PM-3b の `play_mode_roundtrip` と `play_view_camera` で 38 本に、✅PM-3c の `play_runtime_objects` で 39 本になりました)。
 `graph_read` は fixture を Graph タブで開き、`list` が objectName を返すこと・無い名前が
 `automation.widget_missing@1` で断られること・キャンバスが描いたものが `get_graph_instances` の中身と合うことを見ます
 ([シナリオ](../../test/studio_scenarios/graph_read.json))。`graph_edit_roundtrip` は**実物の engine で**値の帯を
@@ -2843,7 +2995,13 @@ preview の判定と除外の伝播が直り([第6章 §6.13](06_rendering.md))�
 ✅LP-4f1 / LP-4f2 の `loop_view_axis`(json の step は 53。✅Q-18 で Refresh の click を外して 54 から減りました)は、`studio_view_select_field` と同じ文書(`hybrid_v1` と、project の feature に写した `cube_capture`)で root の graph が空の fixture を開きます(`test/fixtures/studio_loop_view_axis/`)。Graph タブで **Add loop** を発火し、ゾーンを見出しで選んで Loop の欄の要約が `expand ×1` を言うのを待ってから、Over で `View axis`、family で `$capture/cube` を選びます。文書の `over.view_axis` が `$capture/cube` / `face` になり、回数の字が `×6 (face)` になることを見ます。ゾーンを選び直して **Add fullscreen pass** を発火すると、body の image が `width` 256・`height` 256・`layers` 6 で作られ、pass の `view_family` が `$capture/cube` であることを見ます(✅LP-4f2。LP-4f1 の着地時は、画面の大きさの pass が engine を止めたため fixture の `cube_face` の definition を body にしていました)。pass を見出しで選ぶと View 欄の `face` が `All views` で出るので(✅Q-18 から、この `wait` は欄が有効になるのも待ちます)、**Each element (loop)** を選び、pass の `view_select.face` が `{"$expr": "element"}` になることを見ます。engine の `loops[0].count` が 6・`tier` が `expand` になり、frame plan の `loop/0/render_fullscreen` 〜 `loop/5/render_fullscreen` がそれぞれ `view_select.face` 0〜5 を持ち、ゾーンの段の字が `×6 (face)`、3 つ目の軸のラベル(`graph_zone_label#loop/axis2`)が `+Y` を言うことを確かめます。最後に Frame Plan を前に出して(✅Q-18 から Refresh は押しません)、グループ `loop loop ×6` が出ることを見ます。打つ欄はありません([view の軸のループのシナリオ](../../test/studio_scenarios/loop_view_axis.json))。
 ✅LP-4f2 の `graph_template_bloom`(json の step は 46)は、`studio_automation_graph` の rendering 文書(direct root の features に bloom)に、engine の OpenPBR の発光する material で光らせた箱を置いた fixture を開きます(`test/fixtures/studio_graph_template_bloom/`)。viewport の中央と隅の色と色の数を覚えてから、Render Features で `bloom` の行を選び、**Replace with loop version…** が出て押せることを見て押します。確認のダイアログが `Bloom loop`・`The feature bloom is removed`・`Undo takes it back` を含むことを見て Replace を押すと、root の features が 0 本になり、graph に `graph.loop` の `bloom_down` が入り、Graph タブが前に出てそのゾーンが描かれ、Loop の欄の要約が `bloom_down` を言い、Render Features の notice が `Replaced bloom with Bloom loop. Undo takes it back.` であることを見ます。engine の `loops[0].node` が `bloom_down` で、viewport の中央・隅の色と色の数が置き換える前と同じことを確かめ、Frame Plan を Refresh してループのグループを見ます。**Edit ▸ Undo Render Edit** で bloom が features に戻り graph が 2 node に戻ること、**Redo** でループが戻ることを見て、どちらでも絵が置き換える前と同じことを確かめます(実装者の報告では中央 `#ffffff`・隅 `#000000`・色数 1016)。打つ欄はありません([分解版のシナリオ](../../test/studio_scenarios/graph_template_bloom.json))。
 ✅EW-2 の `engine_window_embedded`(json の step は 12)は、engine の窓が Studio の外に一度も出ないことを見ます。シナリオが `"watch_engine_windows": true` を持つと、driver は Studio を起動した時から監視の thread を回し([`EngineWindowWatch`](../../tools/studio_drive.py#L260))、Studio を親に持つ process の top-level の窓を列挙して、見える窓を記録します(実装者の報告では約 25 ms ごと)。property 付きで owner の無い非表示の窓(読み込み中の engine の窓)を見た回数も engine ごとに数えます。expectation `engine_windows`([判定](../../tools/studio_drive.py#L1099))は、見える窓が 1 つも無いこと、`engines` 本以上の engine について非表示の窓を `min_hidden_samples`(既定 3)回以上見たこと(監視が読み込みを見逃したまま緑にならないように)、最新の engine の窓が見えていて、その root の窓が Studio の process のものであることを要求します。シナリオは project と一緒に起動した engine、Stop Engine → Restart Engine の engine、別の project(`{other_project}`)への切替の engine の 3 回でこれを見て、最後に `screen` モードで viewport を撮ります。実装者の報告では緑(約 19 秒)で、`--embedded` を外す変異では窓が 144 sample 見えて赤でした。⚠ 監視の間隔より短い表示は取り逃がしえます。撮った viewport は黒でした(それが正しい絵かは未確認)。打つ欄はありません([窓のシナリオ](../../test/studio_scenarios/engine_window_embedded.json))。
-✅PM-3a の `play_pause_step`(json の step は 29)は、behavior `pm3a_mover`(game の 1 歩ごとに object の x を 0.25 進める。`test/fixtures/pm3a_mover/`)を付けた object `Mover` の fixture を開きます(`test/fixtures/studio_play_pause_step/`)。behavior は game logic の DLL なので、`test/CMakeLists.txt` に `pelican_studio_<シナリオ名>_game_logic` の target があれば、test がその DLL を run の directory に写し、Studio は `PELICAN_STUDIO_PLAYER_ARGUMENTS` の `--game-logic` で engine に渡します([写す所](../../test/run_studio_scenario.cmake#L47))。起動の直後は status bar の行が `Playing · frame` を言い、Step が押せず、`get_components` の `Mover` の x が増えること、viewport の枠の左端が paused の色でないことを見ます。Pause を押すと行が `Paused · frame N` になり、N が `get_status` の `play.game_frame` と一致します(比べる文は、覚えた値から `value_format` で作ります)。評価の番号(`get_status.frame`)が 30 以上進んでも x と `game_frame` が変わらないこと、枠の左端が `#e0ac00` であることを見ます。Step を押すと `game_frame` がちょうど 1、x がちょうど 0.25 進み(`plus`)、行もその frame を言います。Pause をもう一度押す(Resume)と行が `Playing` に戻り、x がまた増え、枠の色が戻ります。打つ欄はありません([一時停止のシナリオ](../../test/studio_scenarios/play_pause_step.json))。
+✅PM-3a の `play_pause_step`(json の step は 35。✅PM-3b で edit 起動に合わせて直しました)は、behavior `pm3a_mover`(game の 1 歩ごとに object の x を 0.25 進める。`test/fixtures/pm3a_mover/`)を付けた object `Mover` の fixture を開きます(`test/fixtures/studio_play_pause_step/`)。behavior は game logic の DLL なので、`test/CMakeLists.txt` に `pelican_studio_<シナリオ名>_game_logic` の target があれば、test がその DLL を run の directory に写し、Studio は `PELICAN_STUDIO_PLAYER_ARGUMENTS` の `--game-logic` で engine に渡します([写す所](../../test/run_studio_scenario.cmake#L47))。起動の直後は status bar の行が `Edit` で Pause が押せないことを見てから、**Play** を押します。行が `Playing · frame` を言い、Step が押せず、`get_components` の `Mover` の x が増えること、viewport の枠の左端が paused の色でないことを見ます。Pause を押すと行が `Paused · frame N` になり、N が `get_status` の `play.game_frame` と一致します(比べる文は、覚えた値から `value_format` で作ります)。評価の番号(`get_status.frame`)が 30 以上進んでも x と `game_frame` が変わらないこと、枠の左端が `#e0ac00` であることを見ます。Step を押すと `game_frame` がちょうど 1、x がちょうど 0.25 進み(`plus`)、行もその frame を言います。Pause をもう一度押す(Resume)と行が `Playing` に戻り、x がまた増え、枠の左端が `#e0ac00` でなくなります。最後に Stop を押し、行が `Edit` に戻って x が 0 に戻ることを見ます。打つ欄はありません([一時停止のシナリオ](../../test/studio_scenarios/play_pause_step.json))。
+
+✅PM-3b の `play_mode_roundtrip`(json の step は 97)は、`studio_render_undo_roundtrip` の project(Pass Editor で `present` を `shaders/ru1_invert.frag` に替えると背景が反転する)に `pm3a_mover` の `Mover` と directional light の `Sun` を足した fixture を開きます(`test/fixtures/studio_play_mode_roundtrip/`)。model を描きません(下の穴)。起動が `Edit`・`play.session` が false・Play が押せて Pause が押せず Save Scene が押せること、評価の番号が 30 進んでも `Mover` の x が変わらないことを見ます。(1) Play で x が増え、`session` が true、Save Scene が押せず、render-tools の帯が出ること、Stop で x が起動時の値に戻り、Save Scene が押せて帯が消えることを見ます。(2) Play して Inspector で `Sun` の `intensity` を 7 にすると、Inspector の行が `reverts on Stop` を言い、`recorded_edits` が 1 件になり、Keep を付けずに Stop すると `authored_json.intensity` が 3 に戻り、Inspector の欄も `3.00` になります。(3) もう一度 Play して 5 にし、Play changes を開いて最初の行が `Edit light.intensity` であることを見て check を付けて Stop すると、5 が残り、要約が `Stopped: 0 reverted, 1 kept.` です。(4) Play して `Mover` を選び、x が 2 を超えてから Take from game を押すと、行が `Take Transform from game committed` を言い、`authored_json.pos[0]` が 2 を超え、`recorded_edits` が 1 件です。Stop の後、authoring と edit の runtime の x がその値のままです。(5) Play して Frame Plan から `present` を Pass Editor で開き、Pass Editor の帯が `Changes here are written to files and stay after Stop.` を言うことを見て、fragment を `project://shaders/ru1_invert` にして Save します。Stop の後も `get_render_authoring_context` の fragment がそのままで、viewport の隅の色が起動時と違うことを見ます。最後に edit で File ▸ Save Scene を発火し、`Scene saved` を待ちます。打つ欄は `intensity` の 2 回です([再生と停止のシナリオ](../../test/studio_scenarios/play_mode_roundtrip.json))。
+
+✅PM-3b の `play_view_camera`(json の step は 26)は、`studio_render_undo_roundtrip` の箱の前に scene の camera を置き、その camera に `pm3a_mover`(`step` 0.05)を付けた fixture を開きます(`test/fixtures/studio_play_view_camera/`)。edit では `play.view_camera` が `editor` で View が出ていること、viewport の中央に箱が映っていることを見ます。Play すると View が消え、`game_frame` が 90 以上になるまで待って(game の camera が箱から離れる)Pause を押すと、View: Editor が出て `view_camera` は `game` です。View: Editor を押すと `view_camera` が `editor` になり、viewport の中央の色が game の camera の絵と違います。View: Game で `game` に戻し、Stop すると `session` が false、`view_camera` が `editor` です。Keep は使いません(下の穴)。打つ欄はありません([見る camera のシナリオ](../../test/studio_scenarios/play_view_camera.json))。
+
+✅PM-3c の `play_runtime_objects`(json の step は 33)は、最初の歩で prefab `pm3c_shot` から `Shot` を (1.5, 2, -0.5) に spawn する behavior `pm3c_spawner`(`test/fixtures/pm3c_spawner/`)を付けた object `Spawner` の fixture を開きます(`test/fixtures/studio_play_runtime_objects/`)。edit では `get_runtime_objects` の `objects` が空で、Outliner に `pelican.outliner::row#Shot (runtime)` が無いことを見ます。Play すると engine が `Shot`(`spawned_by.prefab` が `pm3c_shot`)を 1 つ返し、Outliner に `Shot (runtime)` の行が出て、`Spawner` の行も残ります。その行を選ぶと、Inspector の選択の行が `Shot (runtime)` と `spawned from pm3c_shot` を言い、`pelican.inspectorRuntime.position` と `.worldPosition` が `1.5, 2, -0.5` で、欄(`pelican.inspectorProperties`)と Add component が見えず、Outliner の Delete と Duplicate が押せません。Stop で `objects` が空になり、行が消え、Inspector の選択が `None` になります。もう一度 Play すると行が戻り、最後に Stop して行が消えることを見ます。打つ欄はありません([runtime の行のシナリオ](../../test/studio_scenarios/play_runtime_objects.json))。
 
 ⚠ **2 つの注意。**(1) `open_project` に**今開いている directory** を渡すと何も起きません(`EmbeddedViewport::openProject`
 がそう作られています)。ディスクから読み直させたいときは、別の project を開いてから戻ります。
@@ -3104,9 +3262,11 @@ with PelicanRpc("mygame") as rpc:   # 第 1 引数は project の dir。既定�
 | package の install / uninstall(RPC と `pelican_cli package`) | ✅X-1 `64eae566`。**Studio に package の UI はありません**(カタログ経由で見えるだけ) |
 | `get_status.animation` と `get_graph_node_values` | ✅AG-3a `32d9a20b` |
 | 一時停止と 1 歩ずつ(`set_play_state` の `playing` / `paused`、`advance_frames`、`get_status.play`、窓ありの `step_frame` の拒否) | ✅PM-1a `c654e65c` |
-| `edit` 状態(`--start-state edit`、眠った behavior、`set_play_state` の `edit`、`set_view_camera`、`get_status.play.view_camera`) | ✅PM-1b `17938ee3`。Stop で authoring を戻すのは ✅PM-2、Studio の Play / Stop は 📐PM-3b |
-| 再生のセッション(Stop で authoring・今の scene・editor の履歴を戻す、`keep`、`get_status.play` の `session` / `recorded_edits`、Play のたびの DLL の読み直し、`play_busy` / `play_session_active` / `play_keep_unknown_transaction`、`edit` 起動の input の記録と再生の拒否、Stop で音を全部止める) | ✅PM-2 `04666d59`(§13.5「再生のセッション」)。Studio の Play / Stop と keep のボタンは 📐PM-3b |
-| Studio の Pause / Step / Resume と再生の状態の表示(status bar の行、paused の枠と帯の色、`playing` の間は Timeline の scrub を止める) | ✅PM-3a `1eaf28a6`(§13.1「Studio で game を一時停止し、1 歩ずつ進める」) |
+| `edit` 状態(`--start-state edit`、眠った behavior、`set_play_state` の `edit`、`set_view_camera`、`get_status.play.view_camera`) | ✅PM-1b `17938ee3`。Stop で authoring を戻すのは ✅PM-2、Studio の Play / Stop は ✅PM-3b `9c169f61` |
+| 再生のセッション(Stop で authoring・今の scene・editor の履歴を戻す、`keep`、`get_status.play` の `session` / `recorded_edits`、Play のたびの DLL の読み直し、`play_busy` / `play_session_active` / `play_keep_unknown_transaction`、`edit` 起動の input の記録と再生の拒否、Stop で音を全部止める) | ✅PM-2 `04666d59`(§13.5「再生のセッション」)。Studio の Play / Stop と keep のボタンは ✅PM-3b `9c169f61` |
+| Studio の Pause / Step / Resume と再生の状態の表示(status bar の行、paused の枠と帯の色、`playing` の間は Timeline の scrub を止める) | ✅PM-3a `1eaf28a6`(§13.1「Studio で game を再生・停止する」) |
+| Studio を edit で起動し、Play / Stop・edit からの Step・Play changes と Keep・Take from game・戻らない編集の帯・再生中の Save の無効・View: Game \| Editor・Reload game logic・再起動などの前の確認・playing の枠と帯の色 | ✅PM-3b `9c169f61`(§13.1「Studio で game を再生・停止する」) |
+| 再生中に spawn された object を Outliner に `(runtime)` の行で出し、Inspector で読むだけの Transform を見せる | ✅PM-3c `e283aa42`(§13.1「Studio で game を再生・停止する」) |
 | Studio の render-tools dock に Graph タブ(読む) | ✅N-1 `edafc41d` |
 | ノードの見た目(見出し + 型付きソケット。形は JSON で足す) | ✅N-1b `6c47a8a4` |
 | ノードキャンバスの編集(接続 / 切断 / 値 / 追加 / 削除 / ラベル / definition の中) | ✅N-2 `f2eccbfd` |

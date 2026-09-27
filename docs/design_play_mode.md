@@ -436,6 +436,9 @@ PM-2 の拒否の `data`(どれも JSON-RPC の `-32000`。`src/core/communicati
 - **PM-3a**(PM-1a の後): 今の既定の起動(`playing`)のまま、`Pause` / `Step` / Resume のボタンと状態の表示(§12.2 の枠の色と status)。Timeline の scrub を `playing` で押せなくする
   - ✅着地(1eaf28a6)。穴: Studio には周期の `get_status` の読みが無い(Q-2)ので、既存の読み・状態を変えた直後・Step の追従に乗せた。`playing` の間の `frame N` は最後に読んだ値で止まって見える(`paused` と `Stepping` は正確)
 - **PM-3b**(PM-2 の後): `--start-state edit`、Play / Stop、Play changes の panel と Keep、Take from game、戻らない編集の帯、Save などを押せなくする、見る camera の切り替え、Reload game logic、再起動などの確認、Outliner の runtime の印
+  - ✅着地(9c169f61)。Outliner の runtime の印は RO-1 を待つので PM-3c に分けた。穴: engine の PM-2b が入るまで、model を描く scene で Keep を付けて Stop すると engine が assert で落ちる(`ModelInstanceSlots::releaseWithheld`)ので、GPU シナリオを model の無い `play_mode_roundtrip` と、model があり Keep を使わない `play_view_camera` に分けた
+- **PM-3c**(RO-1 の後): Outliner の runtime の印(§12.6)。再生中は `get_runtime_objects` を読み、spawn された object を `(runtime)` の灰色の行で出す。選ぶと Inspector は読むだけ。Stop で消える
+  - ✅着地(e283aa42)。穴: viewport の選択とはつながっていない(`pick_object` が `get_runtime_objects` の `entity` を返さない)
 
 ### 12.8 受け入れ(PM-3 の GPU シナリオ)
 
