@@ -1,5 +1,6 @@
 #pragma once
 
+#include "playstatemodel.hpp"
 #include "project.hpp"
 
 #include <schema.hpp>
@@ -384,6 +385,11 @@ class InspectorModel {
     // also feeds them here so edits by another client are noticed with nothing
     // selected. Reset only after an explicitly accepted document switch.
     void observeSceneRevision(std::uint64_t revision);
+    // PM-3b. A play session began on a saved scene and Stop kept nothing:
+    // the scene it put back is the file's, so the next revision observed
+    // past the current one counts as saved (Stop moves the revision on
+    // rather than back, design_play_mode 6.3).
+    void adoptRestoredRevisionAsSaved();
     void resetSceneSaveState();
     bool hasUnsavedChanges() const noexcept;
     bool sceneSaveInFlight() const noexcept;
@@ -393,6 +399,19 @@ class InspectorModel {
     const std::optional<OutlinerObjectKey> &selection() const noexcept;
     const std::optional<InspectorObjectSnapshot> &snapshot() const noexcept;
     const InspectorNotice &notice() const noexcept;
+    // PM-3b. The scene edits this session committed since the last call
+    // (edits, Outliner edits, undo, redo, preview commits), with their
+    // transaction ids, for the Play changes panel to name.
+    std::vector<CommittedEdit> takeCommittedEdits();
+    // The transaction the notice now reports as committed; empty when the
+    // notice is about anything else.
+    const std::string &noticeTransaction() const noexcept;
+    // PM-3b (design_play_mode 12.3). Take from game: read the selected
+    // object's Transform as the game has it now and write the same values as
+    // one edit, marked Keep. Needs a selected object with an editable
+    // Transform and nothing in flight.
+    bool canTakeTransformFromGame() const noexcept;
+    bool takeTransformFromGame();
     std::uint64_t contentRevision() const noexcept;
     bool refreshBlocked() const noexcept;
     bool busy() const noexcept;

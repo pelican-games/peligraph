@@ -103,6 +103,10 @@ struct InspectorWidget::Impl {
     InspectorWidget &owner;
     EmbeddedViewport &viewport;
     InspectorModel model;
+    // PM-3b: the play session, as the window's play controls know it.
+    PlaySessionHooks play;
+    QPushButton *keep_button = nullptr;
+    QPointer<QPushButton> take_from_game;
     GraphAttachmentWidget *graph_attachments = nullptr;
     QHash<qint64, quint64> graph_transport_requests;
     QLabel *selection_label = nullptr;
@@ -269,7 +273,28 @@ struct InspectorWidget::Impl {
         notice_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
         applyPanelNoticeStyle(notice_label);
         notice_label->hide();
-        layout->addWidget(notice_label);
+        // PM-3b (12.3): an edit committed while the game runs goes back on
+        // Stop; Keep marks it in Play changes so it stays.
+        auto *notice_row = new QHBoxLayout;
+        notice_row->setContentsMargins(0, 0, 0, 0);
+        notice_row->addWidget(notice_label, 1);
+        keep_button = new QPushButton(owner.tr("Keep"), &owner);
+        keep_button->setObjectName(QStringLiteral("pelican.inspectorKeep"));
+        keep_button->setFlat(true);
+        keep_button->setCursor(Qt::PointingHandCursor);
+        keep_button->setStyleSheet(
+            QStringLiteral("QPushButton { color: #4f7cac; text-decoration: underline; "
+                           "border: none; padding: 0 4px; }"));
+        keep_button->setToolTip(owner.tr("Keep this edit after Stop (marks it in Play changes)"));
+        keep_button->hide();
+        notice_row->addWidget(keep_button);
+        layout->addLayout(notice_row);
+        QObject::connect(keep_button, &QPushButton::clicked, &owner, [this] {
+            const auto &transaction = model.noticeTransaction();
+            if (transaction.empty() || !play.keep) return;
+            play.keep(transaction);
+            synchronize();
+        });
 
         scroll = new QScrollArea(&owner);
         scroll->setObjectName(QStringLiteral("pelican.inspectorProperties"));
@@ -1254,12 +1279,29 @@ struct InspectorWidget::Impl {
         synchronizeRayDialog();
         add_component_button->setEnabled(model.canRequestComponentAddCandidates());
         synchronizeComponentAddDialog();
+        // PM-3b: what this session committed, told to the play controls so
+        // Play changes can name it.
+        for (auto &edit : model.takeCommittedEdits())
+            if (play.committed) play.committed(edit);
         // N-7 rule 2: one line, hidden when there is nothing to act on; the
         // whole message stays as the row's tooltip.
         const InspectorNotice &notice = model.notice();
-        setPanelNotice(notice_label,
-                       oneLine(QString::fromStdString(notice.message)),
-                       QString::fromStdString(notice.message));
+        const bool in_session = play.session && play.session();
+        const std::string &notice_transaction = model.noticeTransaction();
+        const bool session_edit = in_session && notice.kind == InspectorNoticeKind::Success &&
+                                  !notice_transaction.empty();
+        const bool kept_edit = session_edit && play.kept && play.kept(notice_transaction);
+        const QString notice_text = QString::fromStdString(notice.message);
+        // After the one line, so it is never the part cut off.
+        const QString stop_note = !session_edit ? QString{}
+                                  : kept_edit   ? owner.tr(" — kept after Stop")
+                                                : owner.tr(" — reverts on Stop");
+        setPanelNotice(notice_label, oneLine(notice_text) + stop_note, notice_text + stop_note);
+        keep_button->setVisible(session_edit && !kept_edit);
+        if (take_from_game) {
+            take_from_game->setVisible(in_session);
+            take_from_game->setEnabled(in_session && model.canTakeTransformFromGame());
+        }
         switch (notice.kind) {
         case InspectorNoticeKind::Error:
             notice_label->setStyleSheet(
@@ -1439,6 +1481,25 @@ struct InspectorWidget::Impl {
                 QString::fromStdString(component.read_only_reason), group);
             reason->setStyleSheet(QStringLiteral("color: #b36b00;"));
             form->addRow(reason);
+        }
+        if (component.name == "transform" && !component.generated) {
+            // PM-3b (12.3): while the game runs, the values the game gave
+            // the object can be written into the scene and kept after Stop.
+            auto *take = new QPushButton(owner.tr("Take from game"), group);
+            take->setObjectName(QStringLiteral("pelican.inspectorTakeFromGame"));
+            take->setToolTip(owner.tr(
+                "Write the position, rotation and scale the game has given this object now "
+                "into the scene, and keep that edit after Stop"));
+            const bool in_session = play.session && play.session();
+            take->setVisible(in_session);
+            take->setEnabled(in_session && model.canTakeTransformFromGame());
+            QObject::connect(take, &QPushButton::clicked, &owner, [this] {
+                model.takeTransformFromGame();
+                synchronize();
+                dispatchRequests();
+            });
+            take_from_game = take;
+            form->addRow(take);
         }
         if (!component.generated) {
             auto *remove = new QPushButton(owner.tr("Remove component"), group);
@@ -2223,6 +2284,19 @@ void InspectorWidget::resetSceneSaveState() {
 }
 void InspectorWidget::setSceneStateChangedAction(std::function<void()> action) {
     impl_->scene_state_changed = std::move(action);
+}
+void InspectorWidget::setPlaySessionHooks(PlaySessionHooks hooks) {
+    impl_->play = std::move(hooks);
+    impl_->synchronize();
+}
+void InspectorWidget::playSessionChanged() { impl_->synchronize(); }
+void InspectorWidget::adoptRestoredRevisionAsSaved() {
+    impl_->model.adoptRestoredRevisionAsSaved();
+}
+void InspectorWidget::refreshFromEngine() {
+    impl_->model.requestRefresh();
+    impl_->synchronize();
+    impl_->dispatchRequests();
 }
 
 bool InspectorWidget::eventFilter(QObject *watched, QEvent *event) {

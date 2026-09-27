@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "play_pause_step",
-  "description": "PM-3a: the engine starts playing and a behavior moves an object. Pause stops it (two readings 30 drawn frames apart agree, the status bar says Paused · frame N with the game frame, the viewport's frame turns the paused colour), Step moves it exactly one step and one game frame, and releasing Pause lets it move again.",
+  "description": "PM-3a, PM-3b: the engine starts in edit (Studio passes --start-state edit) and Play starts it; a behavior moves an object. Pause stops it (two readings 30 drawn frames apart agree, the status bar says Paused · frame N with the game frame, the viewport's frame turns the paused colour), Step moves it exactly one step and one game frame, and releasing Pause lets it move again.",
   "steps": [
     {
       "label": "the engine viewport answers editor RPC",
@@ -25,6 +25,29 @@
       },
       "path": "widgets[0].visible",
       "value": true
+    },
+    {
+      "label": "PM-3b: Studio started the engine in edit: the status bar says Edit",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "text": "Edit",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "in edit, Pause cannot be pressed: nothing runs yet",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.play.pause"
+      },
+      "path": "widgets[0].enabled",
+      "value": false,
+      "retry_ms": 5000
+    },
+    {
+      "label": "press Play: the game runs from here",
+      "cmd": "click",
+      "name": "pelican.play.play"
     },
     {
       "label": "the status bar says the game is playing, by its game frame",
@@ -312,6 +335,32 @@
       "path": "pixels[0]",
       "op": "ne",
       "value": "#e0ac00"
+    },
+    {
+      "label": "PM-3b: press Stop, so the run ends before Studio closes",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "the status bar says Edit again",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "text": "Edit",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Stop put the object back where edit had it",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Mover"
+        }
+      },
+      "path": "result.components[0].runtime_json.local_trs.pos[0]",
+      "value": 0.0,
+      "retry_ms": 10000
     }
   ]
 }

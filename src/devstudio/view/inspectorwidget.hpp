@@ -57,6 +57,23 @@ class InspectorWidget final : public QWidget {
     void observeSceneRevision(std::uint64_t revision);
     void resetSceneSaveState();
     void setSceneStateChangedAction(std::function<void()> action);
+    // PM-3b (design_play_mode 12.3). What the Inspector asks of the play
+    // session: whether one runs (Take from game, "— reverts on Stop"),
+    // whether an edit is marked Keep, how to mark it, and where to tell each
+    // edit it committed.
+    struct PlaySessionHooks {
+        std::function<bool()> session;
+        std::function<bool(const std::string &transaction_id)> kept;
+        std::function<void(const std::string &transaction_id)> keep;
+        std::function<void(const CommittedEdit &edit)> committed;
+    };
+    void setPlaySessionHooks(PlaySessionHooks hooks);
+    // The session began, ended or its Keep marks moved.
+    void playSessionChanged();
+    // Reads the selected object again (after Stop put the scene back).
+    void refreshFromEngine();
+    // See InspectorModel::adoptRestoredRevisionAsSaved.
+    void adoptRestoredRevisionAsSaved();
     void setRayGroupAction(std::function<void(const QString &)> action);
     // Where "Open the source" on a graph input row goes. The Inspector names
     // the producing node; the composition root decides which view shows it.

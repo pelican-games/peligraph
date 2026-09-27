@@ -1137,6 +1137,8 @@ struct InspectorModel::Impl {
         PreviewSubmit,
         PreviewPoll,
         Save,
+        // PM-3b: Take from game reads the object's runtime Transform first.
+        TakeFromGame,
     };
 
     enum class PreviewRequestKind : std::uint8_t {
@@ -1154,6 +1156,8 @@ struct InspectorModel::Impl {
         // OL-1: set for an edit the Outliner follows to its end.
         std::optional<SceneEditKind> scene_edit;
         std::uint64_t scene_edit_subject = 0;
+        // PM-3b: marked Keep in Play changes as soon as it commits.
+        bool keep = false;
     };
 
     struct RequestState {
@@ -1172,6 +1176,8 @@ struct InspectorModel::Impl {
         // Q-16: for a watch request, how many of this session's own commits
         // had been seen when it went out.
         std::uint64_t own_commit_generation = 0;
+        // PM-3b: an edit to mark Keep when it commits (Take from game).
+        bool keep = false;
     };
 
     struct PreviewState {
@@ -1266,6 +1272,28 @@ struct InspectorModel::Impl {
 
     void setNotice(InspectorNoticeKind kind, std::string message) {
         notice = {.kind = kind, .message = std::move(message)};
+        notice_transaction.clear();
+    }
+
+    // PM-3b: what this session committed, for the Play changes panel to name
+    // (takeCommittedEdits), and the transaction the notice now reports.
+    std::vector<CommittedEdit> committed_edits;
+    std::string notice_transaction;
+
+    void noteCommitted(const Json &result, const std::string &description, bool keep) {
+        const auto transaction = result.find("transaction_id");
+        if (transaction == result.end() || !transaction->is_string()) return;
+        CommittedEdit edit{.transaction_id = transaction->get<std::string>(),
+                           .label = description,
+                           .keep = keep};
+        const auto operation = result.value("operation", std::string{});
+        if (operation == "undo") edit.kind = CommittedEditKind::undo;
+        if (operation == "redo") edit.kind = CommittedEditKind::redo;
+        if (const auto source = result.find("source_transaction_id");
+            source != result.end() && source->is_string())
+            edit.source_transaction_id = source->get<std::string>();
+        notice_transaction = edit.transaction_id;
+        committed_edits.push_back(std::move(edit));
     }
 
     void observeSceneRevision(std::uint64_t revision) {
@@ -1281,7 +1309,15 @@ struct InspectorModel::Impl {
         first_session_revision = false;
         if (!saved_scene_revision) saved_scene_revision = revision;
         current_scene_revision = std::max(current_scene_revision.value_or(revision), revision);
+        // PM-3b: Stop put back the scene the file holds, under a new revision.
+        if (adopt_after_revision && revision > *adopt_after_revision) {
+            saved_scene_revision = revision;
+            adopt_after_revision.reset();
+        }
     }
+
+    // PM-3b: the first revision past this one is the scene Stop put back.
+    std::optional<std::uint64_t> adopt_after_revision;
 
     void clearSnapshot() {
         invalidateRayOccurrences();
@@ -1572,6 +1608,7 @@ struct InspectorModel::Impl {
                     : std::string{};
             setNotice(InspectorNoticeKind::Success,
                       pending.description + " committed" + suffix + ".");
+            noteCommitted(result, pending.description, pending.keep);
             requestRefresh(true);
             return;
         }
@@ -1853,6 +1890,12 @@ struct InspectorModel::Impl {
         }
         if (kind == PreviewRequestKind::Commit && status == "committed") {
             const std::string field_key = preview->field_key;
+            const InspectorWidgetDescriptor *committed_widget = findWidget(field_key);
+            const std::string committed_label =
+                "Edit " + (committed_widget != nullptr
+                               ? committed_widget->component_slot + "." +
+                                     committed_widget->field_name
+                               : field_key);
             const auto revision = result.find("committed_revision");
             const std::string suffix =
                 revision != result.end()
@@ -1864,6 +1907,7 @@ struct InspectorModel::Impl {
             preview.reset();
             setNotice(InspectorNoticeKind::Success,
                       "Preview committed" + suffix + ".");
+            noteCommitted(result, committed_label, false);
             applyPendingSelection();
             if (!pending_selection_set) {
                 requestRefresh(true);
@@ -2212,6 +2256,7 @@ struct InspectorModel::Impl {
             .component_slot = state.component_slot,
             .scene_edit = state.scene_edit,
             .scene_edit_subject = state.scene_edit_subject,
+            .keep = state.keep,
         };
         if (result.value("status", std::string{}) == "accepted") {
             pending.ticket = requiredString(result, "ticket", "edit response");
@@ -2356,7 +2401,69 @@ struct InspectorModel::Impl {
         case RequestPurpose::Save:
             handleSave(result);
             break;
+        case RequestPurpose::TakeFromGame:
+            handleTakeFromGame(result);
+            break;
         }
+    }
+
+    // PM-3b (design_play_mode 7, 12.3). The object's Transform as the game has
+    // it now (get_components' runtime_json: the ECS values), written back as
+    // one edit of the authored pos, rotation and scale, marked Keep so it
+    // stays after Stop.
+    void handleTakeFromGame(const Json &result) {
+        if (!snapshot || !actor_id) return;
+        const auto components = result.find("components");
+        if (components == result.end() || !components->is_array()) {
+            setNotice(InspectorNoticeKind::Error, "Take from game: the engine sent no components.");
+            return;
+        }
+        const Json *local = nullptr;
+        std::string slot;
+        for (const auto &component : *components) {
+            if (!component.is_object() || component.value("name", std::string{}) != "transform")
+                continue;
+            const auto runtime = component.find("runtime_json");
+            if (runtime == component.end() || !runtime->is_object()) continue;
+            const auto trs = runtime->find("local_trs");
+            if (trs == runtime->end() || !trs->is_object()) continue;
+            local = &*trs;
+            slot = component.value("name", std::string{});
+            break;
+        }
+        if (local == nullptr) {
+            setNotice(InspectorNoticeKind::Error,
+                      "Take from game: the game has no Transform for this object right now.");
+            return;
+        }
+        Json operations = Json::array();
+        for (const char *key : {"pos", "rotation", "scale"}) {
+            const auto value = local->find(key);
+            if (value == local->end()) continue;
+            operations.push_back({{"op", "set_component_value"},
+                                  {"object_id", snapshot->authoring_object_id},
+                                  {"component_slot", slot},
+                                  {"field_path", std::string{"/"} + key},
+                                  {"value", *value}});
+        }
+        if (operations.empty()) {
+            setNotice(InspectorNoticeKind::Error,
+                      "Take from game: the game's Transform has no position, rotation or scale.");
+            return;
+        }
+        const auto revision = result.find("scene_revision");
+        queue("edit",
+              Json{{"actor_id", *actor_id},
+                   {"base_revision", revision != result.end() && revision->is_number_unsigned()
+                                         ? revision->get<std::uint64_t>()
+                                         : snapshot->scene_revision},
+                   {"operations", std::move(operations)}},
+              {.purpose = RequestPurpose::EditSubmit,
+               .selection_generation = selection_generation,
+               .description = "Take Transform from game",
+               .component_slot = slot,
+               .keep = true});
+        setNotice(InspectorNoticeKind::Information, "Taking the Transform from the game...");
     }
 
     void handleFailure(const RequestState &state, std::string message) {
@@ -2429,6 +2536,9 @@ struct InspectorModel::Impl {
         case RequestPurpose::RayOccurrences:
             if (state.ray_catalog_epoch != ray_catalog_epoch) return;
             ray_occurrences.reset();
+            break;
+        case RequestPurpose::TakeFromGame:
+            message = "Take from game: " + message;
             break;
         }
         setNotice(InspectorNoticeKind::Error, std::move(message));
@@ -3071,9 +3181,14 @@ void InspectorModel::observeSceneRevision(std::uint64_t revision) {
     impl_->observeSceneRevision(revision);
 }
 
+void InspectorModel::adoptRestoredRevisionAsSaved() {
+    impl_->adopt_after_revision = impl_->current_scene_revision.value_or(0);
+}
+
 void InspectorModel::resetSceneSaveState() {
     impl_->current_scene_revision.reset();
     impl_->saved_scene_revision.reset();
+    impl_->adopt_after_revision.reset();
     impl_->scene_revision_uncertain = false;
     impl_->first_session_revision = true;
 }
@@ -3098,6 +3213,39 @@ const std::optional<InspectorObjectSnapshot> &InspectorModel::snapshot() const n
 
 const InspectorNotice &InspectorModel::notice() const noexcept {
     return impl_->notice;
+}
+
+std::vector<CommittedEdit> InspectorModel::takeCommittedEdits() {
+    return std::exchange(impl_->committed_edits, {});
+}
+
+const std::string &InspectorModel::noticeTransaction() const noexcept {
+    return impl_->notice_transaction;
+}
+
+bool InspectorModel::canTakeTransformFromGame() const noexcept {
+    if (!canEdit() || busy() || impl_->refresh_in_flight || refreshBlocked()) return false;
+    return std::any_of(impl_->snapshot->components.begin(), impl_->snapshot->components.end(),
+                       [](const InspectorComponentSnapshot &component) {
+                           return component.name == "transform" && component.editable &&
+                                  !component.pending;
+                       });
+}
+
+bool InspectorModel::takeTransformFromGame() {
+    if (!canTakeTransformFromGame()) {
+        impl_->setNotice(InspectorNoticeKind::Error,
+                         "Take from game needs a selected object with a Transform and no edit "
+                         "in flight.");
+        return false;
+    }
+    impl_->queue("get_components",
+                 Json{{"scene_id", impl_->snapshot->scene_id},
+                      {"authoring_object_id", impl_->snapshot->authoring_object_id}},
+                 {.purpose = Impl::RequestPurpose::TakeFromGame,
+                  .selection_generation = impl_->selection_generation});
+    impl_->setNotice(InspectorNoticeKind::Information, "Reading the game's Transform...");
+    return true;
 }
 
 std::uint64_t InspectorModel::contentRevision() const noexcept {

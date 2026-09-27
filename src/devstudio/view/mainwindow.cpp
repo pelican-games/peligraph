@@ -155,9 +155,10 @@ bool sameObject(const OutlinerObjectKey &left, const OutlinerObjectKey &right) {
            left.authoring_object_id == right.authoring_object_id;
 }
 
-// PM-3a (design_play_mode 12.2): the frame around the viewport. While the
-// game is paused, the margin between this frame and the viewport it holds is
-// filled with the theme's paused colour; playing, it is the window's own.
+// PM-3a / PM-3b (design_play_mode 12.2): the frame around the viewport. While
+// the game plays or is paused, the margin between this frame and the viewport
+// it holds is filled with the theme's playing or paused colour; in edit, it
+// is the window's own.
 // The viewport itself is left alone -- the engine's picture is a native
 // window no Qt painting can cover.
 class PlayTintFrame final : public QFrame {
@@ -357,7 +358,7 @@ void MainWindow::createWorkspace() {
     render_tabs->addTab(graph_canvas_, tr("Graph"));
     docks_[FramePlanDock] = makeDock(
         this, tr("Frame Plan"), QStringLiteral("pelican.framePlanDock"),
-        render_tabs);
+        withRenderBanner(render_tabs, QStringLiteral("renderTools")));
     fullscreen_pass_ = new FullscreenPassWidget(
         framePlanReadCapability(*viewport_),
         renderPassAuthoringCapability(*viewport_), this);
@@ -372,7 +373,8 @@ void MainWindow::createWorkspace() {
         QStringLiteral("pelican.fullscreenPassScroll"));
     pass_editor_scroll->setWidgetResizable(true);
     pass_editor_scroll->setFrameShape(QFrame::NoFrame);
-    pass_editor_scroll->setWidget(fullscreen_pass_);
+    pass_editor_scroll->setWidget(
+        withRenderBanner(fullscreen_pass_, QStringLiteral("passEditor")));
     docks_[FullscreenPassDock] = makeDock(
         this, tr("Pass Editor"),
         QStringLiteral("pelican.fullscreenPassDock"), pass_editor_scroll);
@@ -952,9 +954,18 @@ void MainWindow::createMenus() {
     connect(open_project_action, &QAction::triggered, this,
             [this]() { chooseProject(); });
     QAction *save_scene_action = file_menu->addAction(tr("&Save Scene"));
+    save_scene_action_ = save_scene_action;
     save_scene_action->setObjectName(QStringLiteral("pelican.file.saveScene"));
     save_scene_action->setShortcut(QKeySequence::Save);
     connect(save_scene_action, &QAction::triggered, this, [this] {
+        // PM-3b (12.4): the scene waits for Stop to be saved.
+        if (play_controls_ && play_controls_->model().session()) {
+            statusBar()->showMessage(
+                tr("Stop the game first: Stop puts the scene back as it was when Play was "
+                   "pressed, so it is saved from edit."),
+                5000);
+            return;
+        }
         if (inspector_->saveScene()) {
             statusBar()->showMessage(tr("Saving scene..."), 3000);
         } else {
@@ -1121,9 +1132,34 @@ void MainWindow::createPlayControls(QToolBar *band) {
             .notice = [this](const QString &line) {
                 statusBar()->showMessage(line, 8000);
             },
+            .scene_idle = [this] { return !inspector_->sceneEditPending(); },
         },
         this);
+    statusBar()->addPermanentWidget(play_controls_->retryButton());
     statusBar()->addPermanentWidget(play_controls_->statusLabel());
+    // PM-3b: the engine starts in edit unless the configured arguments keep it
+    // from doing so, and then says why.
+    connect(viewport_, &EmbeddedViewport::engineLaunchNotice, this,
+            [this](const QString &line) { statusBar()->showMessage(line, 15000); });
+    // PM-3b (12.3): the Inspector's edits are named in Play changes, carry
+    // "reverts on Stop" and a Keep link, and Take from game shows while the
+    // game runs.
+    inspector_->setPlaySessionHooks(InspectorWidget::PlaySessionHooks{
+        .session = [this] { return play_controls_->model().session(); },
+        .kept = [this](const std::string &transaction_id) {
+            return play_controls_->model().kept(transaction_id);
+        },
+        .keep = [this](const std::string &transaction_id) {
+            play_controls_->keep(QString::fromStdString(transaction_id));
+        },
+        .committed = [this](const CommittedEdit &edit) {
+            play_controls_->noteCommittedEdit(edit);
+        },
+    });
+    // 12.6: stopping the engine loses the run's scene edits; ask first.
+    viewport_->setStopGuard([this](std::function<void()> stop) {
+        return !askToEndPlaySession(tr("Stop the engine"), false, std::move(stop), {});
+    });
     connect(viewport_, &EmbeddedViewport::engineStatusRead, this,
             [this](const QByteArray &result_json) {
                 play_controls_->observeStatus(result_json);
@@ -1137,27 +1173,151 @@ void MainWindow::createPlayControls(QToolBar *band) {
             [this] { play_controls_->engineAvailable(); });
     // A restart, a project switch or a stop: the next engine starts playing,
     // and a paused frame from this one must not stay on screen (PM-3a).
-    connect(viewport_, &EmbeddedViewport::engineRpcBecameUnavailable, this,
-            [this](const QString &) { play_controls_->engineUnavailable(); });
+    connect(viewport_, &EmbeddedViewport::engineRpcBecameUnavailable, this, [this](const QString &) {
+        after_play_stop_ = nullptr;
+        if (play_session_prompt_) {
+            auto *prompt = play_session_prompt_.data();
+            play_session_prompt_ = nullptr;
+            prompt->reject();
+        }
+        play_controls_->engineUnavailable();
+    });
     updatePlayPresentation();
+}
+
+QWidget *MainWindow::withRenderBanner(QWidget *panel, const QString &name) {
+    // 12.4: while the game runs, what these panels send is written to files
+    // and is not put back by Stop.
+    auto *holder = new QWidget(this);
+    holder->setObjectName(QStringLiteral("pelican.play.renderHolder.") + name);
+    auto *layout = new QVBoxLayout(holder);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+    auto *banner = new QLabel(
+        tr("Changes here are written to files and stay after Stop."), holder);
+    banner->setObjectName(QStringLiteral("pelican.play.renderBanner.") + name);
+    banner->setWordWrap(true);
+    banner->setContentsMargins(6, 3, 6, 3);
+    banner->hide();
+    layout->addWidget(banner);
+    layout->addWidget(panel, 1);
+    render_banners_.push_back(banner);
+    return holder;
+}
+
+bool MainWindow::askToEndPlaySession(const QString &action, bool stop_first,
+                                     std::function<void()> proceed,
+                                     std::function<void()> cancelled) {
+    if (play_controls_ == nullptr || !play_controls_->model().session()) return false;
+    if (play_session_prompt_) return true;
+    auto *prompt = new QMessageBox(
+        QMessageBox::Warning, tr("The Game Is Running"),
+        tr("%1 ends the game's run. The scene edits made while it ran are lost (Keep "
+           "marks are not used).")
+            .arg(action),
+        QMessageBox::NoButton, this);
+    prompt->setObjectName(QStringLiteral("pelican.playSessionPrompt"));
+    QPushButton *end = prompt->addButton(tr("End the Run"), QMessageBox::AcceptRole);
+    end->setObjectName(QStringLiteral("pelican.playSessionPrompt.end"));
+    QPushButton *cancel = prompt->addButton(QMessageBox::Cancel);
+    cancel->setObjectName(QStringLiteral("pelican.playSessionPrompt.cancel"));
+    prompt->setDefaultButton(cancel);
+    prompt->setEscapeButton(cancel);
+    prompt->setAttribute(Qt::WA_DeleteOnClose);
+    play_session_prompt_ = prompt;
+    connect(prompt, &QMessageBox::finished, this,
+            [this, prompt, end, stop_first, proceed = std::move(proceed),
+             cancelled = std::move(cancelled)](int) mutable {
+                if (play_session_prompt_ != prompt) return;
+                play_session_prompt_ = nullptr;
+                if (prompt->clickedButton() != end) {
+                    if (cancelled) cancelled();
+                    return;
+                }
+                if (!stop_first) {
+                    if (proceed) proceed();
+                    return;
+                }
+                // Stopped first, with nothing kept, so the scene a Save after
+                // this writes is the one from before Play.
+                after_play_stop_ = std::move(proceed);
+                if (!play_controls_->stopDiscarding()) {
+                    after_play_stop_ = nullptr;
+                    statusBar()->showMessage(tr("The game could not be stopped now."), 8000);
+                    if (cancelled) cancelled();
+                }
+            });
+    prompt->open();
+    return true;
 }
 
 void MainWindow::updatePlayPresentation() {
     if (play_controls_ == nullptr || viewport_frame_ == nullptr) return;
     const PlayStateModel &model = play_controls_->model();
     const bool paused = model.paused();
+    const bool playing = model.playing();
     const StudioTheme &theme = currentStudioTheme();
-    static_cast<PlayTintFrame *>(viewport_frame_)
-        ->setTint(paused ? theme.play.paused_frame : QColor{});
+    // 12.2: edit keeps the window's colours; playing is bluish, paused
+    // yellowish.
+    const QColor frame = paused ? theme.play.paused_frame
+                         : playing ? theme.play.playing_frame
+                                   : QColor{};
+    const QColor band = paused ? theme.play.paused_band
+                        : playing ? theme.play.playing_band
+                                  : QColor{};
+    static_cast<PlayTintFrame *>(viewport_frame_)->setTint(frame);
     if (gizmo_toolbar_ != nullptr) {
         gizmo_toolbar_->setStyleSheet(
-            paused ? QStringLiteral("QToolBar { background: %1; }")
-                         .arg(theme.play.paused_band.name())
-                   : QString{});
+            band.isValid() ? QStringLiteral("QToolBar { background: %1; }").arg(band.name())
+                           : QString{});
+    }
+    // 12.4: Save waits for Stop, and the render panels say their edits stay.
+    const bool session = model.session();
+    if (save_scene_action_ != nullptr) {
+        save_scene_action_->setEnabled(!session);
+        save_scene_action_->setToolTip(
+            session ? tr("Stop the game first: while it runs, the scene is saved only after "
+                         "Stop puts it back (play_session_active).")
+                    : tr("Save the scene to its file"));
+    }
+    for (QLabel *banner : render_banners_) {
+        banner->setVisible(session);
+        banner->setStyleSheet(
+            QStringLiteral("QLabel { background: %1; color: %2; }")
+                .arg(theme.play.paused_band.name(), palette().color(QPalette::WindowText).name()));
+    }
+    if (inspector_ != nullptr) inspector_->playSessionChanged();
+    if (inspector_ != nullptr && (!model.supported() || model.editing()))
+        clean_in_edit_ = !inspector_->hasUnsavedSceneChanges();
+    if (!shown_play_session_ && session) clean_at_play_ = clean_in_edit_;
+    if (model.stopSerial() != shown_stop_serial_) {
+        shown_stop_serial_ = model.stopSerial();
+        // Stop put back the scene as it was when Play was pressed; if that
+        // was the saved one and nothing was kept, there is nothing to save.
+        if (clean_at_play_ && model.lastStop() && model.lastStop()->kept == 0 &&
+            inspector_ != nullptr)
+            inspector_->adoptRestoredRevisionAsSaved();
+    }
+    if (shown_play_session_ && !session) {
+        // Stop put the scene back under a new revision: read it again now
+        // rather than on the next watch (Q-16 would find it too).
+        setOutlinerRefreshInterval(OutlinerRefreshMinimumIntervalMs);
+        requestOutlinerRefresh();
+        if (inspector_ != nullptr) inspector_->refreshFromEngine();
+    }
+    shown_play_session_ = session;
+    if (after_play_stop_ && !model.busy()) {
+        auto proceed = std::move(after_play_stop_);
+        after_play_stop_ = nullptr;
+        if (!session) {
+            // After this call returns: it may close the window.
+            QTimer::singleShot(0, this, std::move(proceed));
+        } else if (pending_navigation_ != Navigation::None) {
+            cancelNavigation(tr("The game could not be stopped. The project remains open."));
+        }
     }
     // 12.6: the Timeline goes to a time only while the game's clock stands
     // still. An engine that reports no play state keeps the scrub it had.
-    const bool playing = model.status() && !paused;
     if (graph_canvas_ != nullptr) {
         graph_canvas_->setTimelineScrubBlocked(
             playing ? tr("The game is playing, so its clock moves on its own. "
@@ -1258,6 +1418,23 @@ void MainWindow::checkNavigationRevision() {
 
 void MainWindow::continueNavigation() {
     if (pending_navigation_ == Navigation::None) return;
+    // PM-3b (12.6): the run ends first, asked.
+    if (!play_session_confirmed_ && play_controls_ && play_controls_->model().session()) {
+        const QString action = pending_navigation_ == Navigation::Restart
+                                   ? tr("Restarting the engine")
+                               : pending_navigation_ == Navigation::Close
+                                   ? tr("Closing Pelican Studio")
+                                   : tr("Opening another project");
+        askToEndPlaySession(
+            action, true,
+            [this] {
+                play_session_confirmed_ = true;
+                // The scene is new (Stop put it back): ask about it again.
+                checkNavigationRevision();
+            },
+            [this] { cancelNavigation(); });
+        return;
+    }
     if (!inspector_->hasUnsavedSceneChanges() && !inspector_->sceneEditPending()) {
         completeNavigation();
         return;
@@ -1311,6 +1488,9 @@ void MainWindow::answerNavigationPrompt(int answer) {
 
 void MainWindow::sceneStateChanged() {
     setWindowModified(inspector_->hasUnsavedSceneChanges());
+    if (play_controls_ != nullptr &&
+        (!play_controls_->model().supported() || play_controls_->model().editing()))
+        clean_in_edit_ = !inspector_->hasUnsavedSceneChanges();
     if (!navigation_waiting_for_save_ ||
         inspector_->sceneSaveCompletion() == navigation_save_completion_) return;
     navigation_waiting_for_save_ = false;
@@ -1344,6 +1524,12 @@ void MainWindow::resetNavigation() {
         viewport_->setRestartPending(false);
     }
     pending_navigation_ = Navigation::None;
+    play_session_confirmed_ = false;
+    if (play_session_prompt_ && after_play_stop_ == nullptr) {
+        auto *prompt = play_session_prompt_.data();
+        play_session_prompt_ = nullptr;
+        prompt->reject();
+    }
     pending_project_path_.clear();
     pending_restart_reason_.clear();
     navigation_revision_request_ = 0;

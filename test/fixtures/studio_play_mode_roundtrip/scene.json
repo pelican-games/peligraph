@@ -1,0 +1,13 @@
+{"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[
+  {"name":"Camera","components":[
+    {"name":"transform","pos":[0.0,0.0,0.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[1.0,1.0,1.0]},
+    {"name":"camera","type":"perspective","yfov":0.7853981633974483,"znear":0.1,"zfar":100.0}
+  ]},
+  {"name":"Mover","components":[
+    {"name":"transform","pos":[0.0,0.0,0.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[1.0,1.0,1.0]},
+    {"name":"behavior","type":"pm3a_mover"}
+  ]},
+  {"name":"Sun","components":[
+    {"name":"light","type":"directional","direction":[-0.4,-0.7,-0.6],"intensity":3.0,"color":[1.0,1.0,1.0]}
+  ]}
+]}}}

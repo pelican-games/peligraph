@@ -17,8 +17,9 @@
     "heading band of a common-graph node (by the operation's domain), and",
     "`source_tint` is the heading band of a Frame Plan node (by where the",
     "resource came from). `play` is what the viewport's frame and the band",
-    "above it turn while the game is paused (playing keeps the window's own",
-    "colours). A key a theme leaves out keeps the built-in value,",
+    "above it turn while the game runs: `playing_*` while it plays, `paused_*`",
+    "while it is paused (edit keeps the window's own colours). A key a theme",
+    "leaves out keeps the built-in value,",
     "and a colour Qt cannot parse is ignored rather than drawn as black."
   ],
 
@@ -77,6 +78,8 @@
         "unknown": "#806f68"
       },
       "play": {
+        "playing_frame": "#3d8fe0",
+        "playing_band": "#1f3f60",
         "paused_frame": "#e0ac00",
         "paused_band": "#5e4b10"
       }
@@ -117,6 +120,8 @@
         "unknown": "#cabbb3"
       },
       "play": {
+        "playing_frame": "#2f7fd0",
+        "playing_band": "#b9d6f3",
         "paused_frame": "#c99200",
         "paused_band": "#f3d98a"
       }

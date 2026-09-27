@@ -1,0 +1,14 @@
+{
+  "schema": "pelican.material_bindings",
+  "version": 1,
+  "model": "project://checker_box.glb",
+  "bindings": [
+    {
+      "usd_path": "/G1/CheckerBox",
+      "mesh": 0,
+      "primitive": 0,
+      "material": "g1_flat",
+      "routing": {"alpha_mode": "opaque", "double_sided": false}
+    }
+  ]
+}

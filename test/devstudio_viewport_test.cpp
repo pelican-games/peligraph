@@ -154,6 +154,8 @@ TEST_CASE("Studio player arguments force public editor feature and input overlay
                         QStringLiteral("--editor-transform"),
                         QStringLiteral("--log-file"),
                         QStringLiteral("C:/projects/example/.pelican/logs/player.log"),
+                        // PM-3b: the engine waits in edit until Play.
+                        QStringLiteral("--start-state"), QStringLiteral("edit"),
                         QStringLiteral("--frames"), QStringLiteral("5")});
     // A configured log file is the user's choice and is not replaced.
     const auto own_log = studioPlayerArguments(

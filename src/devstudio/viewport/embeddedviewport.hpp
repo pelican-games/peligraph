@@ -26,6 +26,10 @@ struct OutlinerObjectKey;
 
 QStringList studioPlayerArguments(QStringList configured,
                                   const QString &project_root);
+// PM-3b: why the engine does not start in edit, when the configured arguments
+// keep it from doing so; empty otherwise.
+QString studioPlayerStartStateNotice(QStringList configured,
+                                     const QString &project_root);
 
 class EmbeddedViewport final : public QWidget {
     Q_OBJECT
@@ -100,8 +104,19 @@ class EmbeddedViewport final : public QWidget {
     bool engineInputActive() const noexcept { return engine_input_active_; }
     void setPickingNotice(const QString &message);
     void setGizmoNotice(const QString &message);
+    // PM-3b. Asked before the footer's Stop Engine stops a running engine:
+    // true stops it now; false keeps it running for now, and the guard calls
+    // `stop` later if the engine is to stop after all. A play session's
+    // changes go with the engine, so the window asks first (design_play_mode
+    // 12.6).
+    void setStopGuard(std::function<bool(std::function<void()> stop)> guard) {
+        stop_guard_ = std::move(guard);
+    }
 
   signals:
+    // PM-3b. One line about how the engine was started, when the configured
+    // arguments keep it from starting in edit.
+    void engineLaunchNotice(const QString &line);
     void engineOutputReceived(const QString &output);
     void engineStandardErrorReceived(const QString &output);
     void viewportPointerPressed(const QPoint &pixel_position);
@@ -186,6 +201,7 @@ class EmbeddedViewport final : public QWidget {
     // PM-3a: the get_status requests in flight, whoever sent them.
     QSet<qint64> status_requests_;
     RpcObserver rpc_observer_;
+    std::function<bool(std::function<void()>)> stop_guard_;
     const SelectionModel *selection_model_ = nullptr;
 
     EngineProcessLaunch launchCommand() const;

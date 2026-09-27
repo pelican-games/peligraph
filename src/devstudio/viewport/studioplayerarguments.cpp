@@ -2,6 +2,7 @@
 #include "../../project/renderfeatureoverlay.hpp"
 
 #include <string_view>
+#include <utility>
 
 namespace PelicanStudio {
 namespace {
@@ -10,19 +11,35 @@ bool startsWith(std::string_view value, std::string_view prefix) {
     return value.starts_with(prefix);
 }
 
+bool isFlag(std::string_view argument, std::string_view flag) {
+    return argument == flag ||
+           (argument.size() > flag.size() && argument.starts_with(flag) &&
+            argument[flag.size()] == '=');
+}
+
 } // namespace
 
-std::vector<std::string> studioPlayerArgumentStrings(
-    std::vector<std::string> configured,
-    const std::string &project_root) {
+StudioPlayerLaunch studioPlayerLaunch(std::vector<std::string> configured,
+                                      const std::string &project_root) {
     std::vector<std::string> additional;
     additional.reserve(configured.size());
     bool has_editor_transform_preset = false;
     bool has_log_file = false;
     bool has_headless = false;
     bool has_embedded = false;
+    bool has_start_state = false;
+    // PM-3b: what runs the game from its first frame, which an engine that
+    // starts in edit refuses (offline.mode_conflict@1, PM-1b). The first one
+    // configured is the one named.
+    std::string runs_from_first_frame;
     for (std::size_t index = 0; index < configured.size(); ++index) {
         const auto &argument = configured[index];
+        if (isFlag(argument, "--start-state")) has_start_state = true;
+        for (const std::string_view flag :
+             {"--replay", "--record-input", "--bake-camera-output", "--start-time"}) {
+            if (runs_from_first_frame.empty() && isFlag(argument, flag))
+                runs_from_first_frame = std::string{flag};
+        }
         if (argument == "--rpc") {
             continue;
         }
@@ -85,8 +102,29 @@ std::vector<std::string> studioPlayerArgumentStrings(
         arguments.emplace_back("--log-file");
         arguments.emplace_back(project_root + "/.pelican/logs/player.log");
     }
+    // PM-3b (design_play_mode 2, 12.2): the engine Studio starts waits in
+    // edit -- its behaviors asleep, its game clock still -- until Play. A
+    // configured start state wins; a configured argument that runs the game
+    // from its first frame cannot be combined with edit, so edit is left out
+    // and the launch says why.
+    std::string notice;
+    if (!has_start_state) {
+        if (runs_from_first_frame.empty()) {
+            arguments.emplace_back("--start-state");
+            arguments.emplace_back("edit");
+        } else {
+            notice = "The engine starts playing, not in edit: " + runs_from_first_frame +
+                     " in PELICAN_STUDIO_PLAYER_ARGUMENTS runs the game from its first frame.";
+        }
+    }
     arguments.insert(arguments.end(), additional.begin(), additional.end());
-    return arguments;
+    return {.arguments = std::move(arguments), .start_state_notice = std::move(notice)};
+}
+
+std::vector<std::string> studioPlayerArgumentStrings(
+    std::vector<std::string> configured,
+    const std::string &project_root) {
+    return studioPlayerLaunch(std::move(configured), project_root).arguments;
 }
 
 } // namespace PelicanStudio

@@ -26,6 +26,7 @@
 #include <QCheckBox>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
+#include <QLabel>
 #include <QPointer>
 #include <QPushButton>
 #include <QTest>
@@ -34,7 +35,10 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <optional>
+#include <set>
 #include <string>
+#include <vector>
 
 #ifndef PELICAN_PROCESS_FIXTURE_PATH
 #error "PELICAN_PROCESS_FIXTURE_PATH must name the process fixture child"
@@ -69,6 +73,12 @@ class FakeEngine {
     Json flags{{"enabled", true}};
     std::uint64_t revision = 1;
     int spawns = 0;
+    // PM-3b: the Transform the game has given the object (get_components'
+    // runtime_json.local_trs); none, and the runtime value is the authored.
+    std::optional<Json> game_transform;
+    // The operations of the last `edit`.
+    Json last_operations = Json::array();
+    int transactions = 0;
 
     // Answer everything the panel has asked so far.
     void pump() {
@@ -136,7 +146,10 @@ class FakeEngine {
                      {{{"name", "transform"},
                        {"component_index", 0},
                        {"authored_json", transform},
-                       {"runtime_json", transform},
+                       {"runtime_json", game_transform
+                                            ? Json{{"local_trs", *game_transform},
+                                                   {"world_trs", *game_transform}}
+                                            : transform},
                        {"editable", true},
                        {"pending", false},
                        {"codec", {{"state", "registered"}}},
@@ -176,17 +189,23 @@ class FakeEngine {
             if (kind == "update_preview") return {{"status", "updated"}};
             if (kind == "abort_preview") return {{"status", "succeeded"}};
             apply(preview_operation_);
-            return {{"status", "committed"}, {"committed_revision", ++revision}};
+            return {{"status", "committed"},
+                    {"committed_revision", ++revision},
+                    {"transaction_id", "txn-" + std::to_string(++transactions)}};
         }
         if (method == "edit") {
             const std::string ticket = "edit:" + std::to_string(next_++);
             edits_[ticket] = params.at("operations");
+            last_operations = params.at("operations");
             return {{"status", "accepted"}, {"ticket", ticket}};
         }
         if (method == "get_edit_result") {
             for (const auto &operation : edits_.at(params.at("ticket").get<std::string>()))
                 apply(operation);
-            return {{"status", "committed"}, {"committed_revision", ++revision}};
+            return {{"status", "committed"},
+                    {"committed_revision", ++revision},
+                    {"operation", "edit"},
+                    {"transaction_id", "txn-" + std::to_string(++transactions)}};
         }
         FAIL("the Inspector asked the engine for " << method);
         return {};
@@ -385,6 +404,107 @@ TEST_CASE("T-1 a rotation is typed as angles and stored as the quaternion",
     about_y->setFocus(Qt::OtherFocusReason);
     rig.pumpFor(300);
     CHECK(rig.engine.revision == committed);
+}
+
+
+namespace {
+
+// PM-3b: the play session as the window's play controls would report it.
+struct PlaySession {
+    bool running = true;
+    std::set<std::string> kept;
+    std::vector<CommittedEdit> committed;
+
+    InspectorWidget::PlaySessionHooks hooks() {
+        return {
+            .session = [this] { return running; },
+            .kept = [this](const std::string &id) { return kept.contains(id); },
+            .keep = [this](const std::string &id) { kept.insert(id); },
+            .committed = [this](const CommittedEdit &edit) { committed.push_back(edit); },
+        };
+    }
+};
+
+} // namespace
+
+TEST_CASE("PM-3b an edit made while the game runs says it reverts on Stop, and Keep marks it",
+          "[devstudio][inspector][pm3b][keep][negative-contrast]") {
+    Rig rig;
+    PlaySession play;
+    rig.inspector->setPlaySessionHooks(play.hooks());
+    auto *notice = rig.inspector->findChild<QLabel *>(QStringLiteral("pelican.inspectorNotice"));
+    auto *keep = rig.inspector->findChild<QPushButton *>(QStringLiteral("pelican.inspectorKeep"));
+    QPointer<QCheckBox> enabled =
+        rig.inspector->findChild<QCheckBox *>(QStringLiteral("pelican.inspectorBoolean"));
+    REQUIRE(notice != nullptr);
+    REQUIRE(keep != nullptr);
+    REQUIRE(enabled);
+
+    enabled->click();
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.flags.at("enabled") == false; }));
+    REQUIRE(rig.pumpUntil([&] { return notice->toolTip().contains(QStringLiteral("committed")); }));
+    // What the panel committed was told, by its transaction and its name.
+    REQUIRE(play.committed.size() == 1);
+    CHECK(play.committed.front().transaction_id == "txn-1");
+    CHECK(play.committed.front().label == "Edit fixture_flags.enabled");
+    CHECK(play.committed.front().kind == CommittedEditKind::edit);
+    CHECK_FALSE(play.committed.front().keep);
+    CHECK(notice->toolTip().endsWith(QStringLiteral(" — reverts on Stop")));
+    CHECK(notice->text().endsWith(QStringLiteral(" — reverts on Stop")));
+    CHECK(keep->isVisible());
+
+    keep->click();
+    CHECK(play.kept.contains("txn-1"));
+    CHECK(notice->toolTip().endsWith(QStringLiteral(" — kept after Stop")));
+    CHECK(notice->text().endsWith(QStringLiteral(" — kept after Stop")));
+    CHECK_FALSE(keep->isVisible());
+
+    // Outside a run an edit says nothing of Stop.
+    play.running = false;
+    rig.inspector->playSessionChanged();
+    CHECK_FALSE(notice->toolTip().contains(QStringLiteral("Stop")));
+    CHECK_FALSE(notice->text().contains(QStringLiteral("Stop")));
+    CHECK_FALSE(keep->isVisible());
+}
+
+TEST_CASE("PM-3b Take from game writes the game's Transform back as one edit marked Keep",
+          "[devstudio][inspector][pm3b][take][negative-contrast]") {
+    Rig rig;
+    PlaySession play;
+    play.running = false;
+    rig.inspector->setPlaySessionHooks(play.hooks());
+    rig.pumpFor(100);
+    const auto take = [&] {
+        return rig.inspector->findChild<QPushButton *>(
+            QStringLiteral("pelican.inspectorTakeFromGame"));
+    };
+    REQUIRE(take() != nullptr);
+    // Only while the game runs.
+    CHECK_FALSE(take()->isVisible());
+    play.running = true;
+    rig.inspector->playSessionChanged();
+    CHECK(take()->isVisible());
+    REQUIRE(take()->isEnabled());
+
+    rig.engine.game_transform = Json{{"pos", Json::array({4.25, 2.0, 3.0})},
+                                     {"rotation", Json::array({0.0, 0.0, 0.0, 1.0})},
+                                     {"scale", Json::array({1.0, 1.0, 2.0})}};
+    take()->click();
+    REQUIRE(rig.pumpUntil(
+        [&] { return rig.engine.transform.at("pos") == Json::array({4.25, 2.0, 3.0}); }));
+    CHECK(rig.engine.transform.at("scale") == Json::array({1.0, 1.0, 2.0}));
+    // One edit, the three fields of the authored Transform.
+    REQUIRE(rig.engine.last_operations.size() == 3);
+    for (const auto &operation : rig.engine.last_operations) {
+        CHECK(operation.at("op") == "set_component_value");
+        CHECK(operation.at("component_slot") == "transform");
+        CHECK(operation.at("object_id") == 41);
+    }
+    CHECK(rig.engine.last_operations.at(0).at("field_path") == "/pos");
+    CHECK(rig.engine.last_operations.at(0).at("value") == Json::array({4.25, 2.0, 3.0}));
+    REQUIRE(rig.pumpUntil([&] { return !play.committed.empty(); }));
+    CHECK(play.committed.back().label == "Take Transform from game");
+    CHECK(play.committed.back().keep);
 }
 
 } // namespace PelicanStudio

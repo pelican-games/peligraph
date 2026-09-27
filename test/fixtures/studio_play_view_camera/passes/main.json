@@ -1,0 +1,49 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "material_route_default": "forward",
+    "render_targets": [
+      {
+        "name": "scene_color",
+        "extent_scale": 1,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "explicit(R16G16B16A16_SFLOAT)",
+        "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+      },
+      {
+        "name": "scene_depth",
+        "extent_scale": 1,
+        "format": "D32_SFLOAT",
+        "format_class": "data",
+        "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"]
+      }
+    ],
+    "rendering_passes": [
+      {
+        "name": "main_render",
+        "passes": [
+          {
+            "name": "forward_opaque",
+            "type": "material",
+            "material_contract": "forward_opaque_v1",
+            "output": {"color": ["scene_color"], "depth": "scene_depth"}
+          },
+          {
+            "name": "present",
+            "type": "fullscreen",
+            "input": ["scene_color"],
+            "output": {"color": ["display"], "depth": null},
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://passthrough"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

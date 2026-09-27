@@ -2478,3 +2478,87 @@ TEST_CASE("Q-16 the Inspector's own commit does not read as an external change",
         REQUIRE(harness.take("scene_tree").method == "scene_tree");
     }
 }
+
+TEST_CASE("PM-3b the Inspector names what it committed by transaction: edits, previews, undo, redo",
+          "[devstudio][inspector][pm3b][negative-contrast]") {
+    using PelicanStudio::CommittedEditKind;
+    InspectorHarness harness;
+    harness.open();
+    CHECK(harness.model.takeCommittedEdits().empty());
+
+    // A live preview committed: named by its field.
+    const std::string field_key = harness.field("transform", "pos").field_key;
+    REQUIRE(harness.model.previewWidgetValue(field_key, Json::array({2.0, 2.0, 3.0})));
+    harness.reply(harness.take("open_preview"), {{"status", "accepted"},
+                                                 {"ticket", "preview:1"},
+                                                 {"request_id", "preview-request:open"}});
+    harness.model.pollPendingOperations();
+    harness.reply(harness.take("get_preview_result"), {{"status", "open"}});
+    REQUIRE(harness.model.finishWidgetEdit(field_key, true));
+    harness.reply(harness.take("commit_preview"),
+                  {{"status", "accepted"}, {"request_id", "preview-request:commit"}});
+    harness.model.pollPendingOperations();
+    harness.reply(harness.take("get_preview_result"),
+                  {{"status", "committed"}, {"committed_revision", 2}, {"transaction_id", "txn-1"}});
+    auto committed = harness.model.takeCommittedEdits();
+    REQUIRE(committed.size() == 1);
+    CHECK(committed.front().transaction_id == "txn-1");
+    CHECK(committed.front().label == "Edit transform.pos");
+    CHECK(committed.front().kind == CommittedEditKind::edit);
+    CHECK(harness.model.noticeTransaction() == "txn-1");
+    harness.completeRefresh(2.0, 2);
+
+    // Its undo, and the redo of that undo: each with its source.
+    harness.model.undo();
+    harness.reply(harness.take("undo"), {{"status", "committed"},
+                                         {"committed_revision", 3},
+                                         {"operation", "undo"},
+                                         {"source_transaction_id", "txn-1"},
+                                         {"transaction_id", "txn-2"}});
+    committed = harness.model.takeCommittedEdits();
+    REQUIRE(committed.size() == 1);
+    CHECK(committed.front().kind == CommittedEditKind::undo);
+    CHECK(committed.front().source_transaction_id == "txn-1");
+    harness.completeRefresh(1.0, 3);
+    harness.model.redo();
+    harness.reply(harness.take("redo"), {{"status", "committed"},
+                                         {"committed_revision", 4},
+                                         {"operation", "redo"},
+                                         {"source_transaction_id", "txn-2"},
+                                         {"transaction_id", "txn-3"}});
+    committed = harness.model.takeCommittedEdits();
+    REQUIRE(committed.size() == 1);
+    CHECK(committed.front().kind == CommittedEditKind::redo);
+    CHECK(committed.front().source_transaction_id == "txn-2");
+    CHECK(committed.front().transaction_id == "txn-3");
+
+    // A refusal names nothing.
+    harness.completeRefresh(2.0, 4);
+    const std::string flag = harness.field("fixture_flags", "enabled").field_key;
+    REQUIRE(harness.model.commitWidgetValue(flag, false));
+    harness.reply(harness.take("edit"),
+                  {{"status", "rejected"},
+                   {"error", {{"code", "stale_revision"}, {"message", "stale"}}}});
+    CHECK(harness.model.takeCommittedEdits().empty());
+    CHECK(harness.model.noticeTransaction().empty());
+}
+
+TEST_CASE("PM-3b a Stop that kept nothing on a saved scene leaves it saved",
+          "[devstudio][inspector][pm3b][save][negative-contrast]") {
+    InspectorModel adopted;
+    adopted.observeSceneRevision(5);
+    REQUIRE_FALSE(adopted.hasUnsavedChanges());
+    adopted.adoptRestoredRevisionAsSaved();
+    // Stop moved the revision on (6.3): the scene it put back is the file's.
+    adopted.observeSceneRevision(6);
+    CHECK_FALSE(adopted.hasUnsavedChanges());
+    // Only that one: an edit after it is unsaved again.
+    adopted.observeSceneRevision(7);
+    CHECK(adopted.hasUnsavedChanges());
+
+    // Without it, the new revision reads as unsaved.
+    InspectorModel plain;
+    plain.observeSceneRevision(5);
+    plain.observeSceneRevision(6);
+    CHECK(plain.hasUnsavedChanges());
+}

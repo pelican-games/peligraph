@@ -3309,7 +3309,9 @@ endif()
 
 # PM-3a: a scenario whose project runs game code names a game logic DLL
 # target `pelican_studio_<scenario>_game_logic`; the scenario's engine loads it
-# (--game-logic). play_pause_step's object is moved by a behavior.
+# (--game-logic). play_pause_step's object is moved by a behavior, and so are
+# play_mode_roundtrip's object and play_view_camera's camera (PM-3b), with the
+# same code.
 if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio AND WIN32 AND
    COMMAND pelican_configure_game_logic_target)
     add_library(pelican_studio_play_pause_step_game_logic SHARED
@@ -3317,6 +3319,16 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio AND WIN32 AND
     set_target_properties(pelican_studio_play_pause_step_game_logic PROPERTIES
         OUTPUT_NAME "pelican_pm3a_mover_fixture")
     pelican_configure_game_logic_target(pelican_studio_play_pause_step_game_logic)
+    add_library(pelican_studio_play_mode_roundtrip_game_logic SHARED
+        fixtures/pm3a_mover/behavior.cpp)
+    set_target_properties(pelican_studio_play_mode_roundtrip_game_logic PROPERTIES
+        OUTPUT_NAME "pelican_pm3b_mover_fixture")
+    pelican_configure_game_logic_target(pelican_studio_play_mode_roundtrip_game_logic)
+    add_library(pelican_studio_play_view_camera_game_logic SHARED
+        fixtures/pm3a_mover/behavior.cpp)
+    set_target_properties(pelican_studio_play_view_camera_game_logic PROPERTIES
+        OUTPUT_NAME "pelican_pm3b_camera_mover_fixture")
+    pelican_configure_game_logic_target(pelican_studio_play_view_camera_game_logic)
 endif()
 
 # Q-1: the Studio scenarios. Each `test/studio_scenarios/<name>.json` becomes

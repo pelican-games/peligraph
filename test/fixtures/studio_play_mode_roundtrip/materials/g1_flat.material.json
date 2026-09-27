@@ -1,0 +1,12 @@
+{
+  "schema": "pelican.material",
+  "version": 1,
+  "materials": [
+    {
+      "name": "g1_flat",
+      "surface": "project://shaders/g1_flat.surface",
+      "routing": {"alpha_mode": "opaque", "double_sided": false},
+      "render_path": "forward"
+    }
+  ]
+}

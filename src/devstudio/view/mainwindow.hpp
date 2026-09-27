@@ -22,6 +22,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 class QDockWidget;
 class QAction;
@@ -145,6 +146,12 @@ class MainWindow : public QMainWindow {
     std::uint64_t navigation_save_completion_ = 0;
     bool close_authorized_ = false;
     QPointer<QMessageBox> navigation_prompt_;
+    // PM-3b (design_play_mode 12.6): leaving while a play session runs is
+    // asked first; once agreed, the session is stopped (nothing kept) and
+    // the navigation goes on when the engine is back in edit.
+    QPointer<QMessageBox> play_session_prompt_;
+    bool play_session_confirmed_ = false;
+    std::function<void()> after_play_stop_;
     QPointer<QDialog> new_project_dialog_;
     // G-2: Add object. One menu, shown by the Outliner's right click and by
     // the Scene toolbar, so a scenario fires the same four named actions.
@@ -181,6 +188,17 @@ class MainWindow : public QMainWindow {
     PlayControls *play_controls_ = nullptr;
     QFrame *viewport_frame_ = nullptr;
     QToolBar *gizmo_toolbar_ = nullptr;
+    // PM-3b: Save waits for Stop (12.4); the render panels say their edits
+    // stay (12.4); whether the last reading had a session, to read the
+    // scene again when it ends.
+    QAction *save_scene_action_ = nullptr;
+    std::vector<QLabel *> render_banners_;
+    bool shown_play_session_ = false;
+    // Whether the scene was saved while in edit, and when Play began; a Stop
+    // that kept nothing then leaves it saved.
+    bool clean_in_edit_ = true;
+    bool clean_at_play_ = false;
+    std::uint64_t shown_stop_serial_ = 0;
 
     void createWorkspace();
     void createRenderHistory(QWidget *pass_editor);
@@ -189,6 +207,13 @@ class MainWindow : public QMainWindow {
     void createMenus();
     void createPlayControls(QToolBar *band);
     void updatePlayPresentation();
+    // PM-3b: a banner saying render edits stay after Stop, above `panel`.
+    QWidget *withRenderBanner(QWidget *panel, const QString &name);
+    // PM-3b: asks whether to end the play session before leaving; `proceed`
+    // runs once the engine is back in edit. False when nothing had to be
+    // asked.
+    bool askToEndPlaySession(const QString &action, bool stop_first,
+                             std::function<void()> proceed, std::function<void()> cancelled);
     // View > Theme. One entry per theme in the table, each carrying the
     // objectName a scenario triggers (`pelican.view.theme.<name>`).
     void createThemeMenu(QMenu *view_menu);

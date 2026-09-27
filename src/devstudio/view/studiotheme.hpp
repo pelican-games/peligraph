@@ -40,8 +40,11 @@ struct StudioFonts {
 };
 
 // PM-3a (design_play_mode 12.2): what the viewport's frame and the band above
-// it turn while the game is paused. Playing keeps the window's own colours.
+// it turn while the game runs (PM-3b: playing, bluish) or is paused (PM-3a:
+// yellowish). Edit keeps the window's own colours.
 struct StudioPlayColors {
+    QColor playing_frame;
+    QColor playing_band;
     QColor paused_frame;
     QColor paused_band;
 };

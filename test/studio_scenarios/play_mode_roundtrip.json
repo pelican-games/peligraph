@@ -1,0 +1,849 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "play_mode_roundtrip",
+  "description": "PM-3b: Studio starts the engine in edit, where the behavior does not move its object (two readings 30 frames apart agree). Play moves it and Stop puts it back. An Inspector edit made while the game runs goes back on Stop; the same edit marked Keep in Play changes stays. Take from game writes where the game has put the object into the scene and it stays after Stop. While the game runs Save cannot be pressed and the render panels say their edits stay; a Pass Editor edit made then (present draws an inverting fragment) is still there, on screen, after Stop. The scene draws no model (see the fixture's README); the camera view is play_view_camera's.",
+  "steps": [
+    {
+      "label": "the engine viewport answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "the frame plan has the present pass",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "timeout_ms": 180000,
+      "visible": true
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "Studio started the engine in edit: the status bar says Edit",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "timeout_ms": 60000,
+      "text": "Edit"
+    },
+    {
+      "label": "the engine says edit",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.state",
+      "value": "edit"
+    },
+    {
+      "label": "and runs no play session",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.session",
+      "value": false
+    },
+    {
+      "label": "Play is offered",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.play.play"
+      },
+      "path": "widgets[0].enabled",
+      "value": true,
+      "retry_ms": 10000
+    },
+    {
+      "label": "Pause is not: nothing runs",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.play.pause"
+      },
+      "path": "widgets[0].enabled",
+      "value": false
+    },
+    {
+      "label": "Save is offered in edit",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.file.saveScene"
+      },
+      "path": "widgets[0].enabled",
+      "value": true
+    },
+    {
+      "label": "in edit, the background in a corner",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/edit.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[1]",
+      "remember": "background",
+      "retry_ms": 60000
+    },
+    {
+      "label": "where the Mover is in edit",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Mover"
+        }
+      },
+      "path": "result.components[0].runtime_json.local_trs.pos[0]",
+      "remember": "x_edit"
+    },
+    {
+      "label": "the evaluation number now",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.frame",
+      "remember": "evaluation_edit"
+    },
+    {
+      "label": "the engine goes on drawing in edit (30 frames)",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.frame",
+      "op": "ge",
+      "value_of": "evaluation_edit",
+      "plus": 30,
+      "retry_ms": 10000
+    },
+    {
+      "label": "a second reading, 30 frames later: the behavior did not move it",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Mover"
+        }
+      },
+      "path": "result.components[0].runtime_json.local_trs.pos[0]",
+      "value_of": "x_edit"
+    },
+    {
+      "label": "press Play: the run begins",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "the status bar says the game plays",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "timeout_ms": 60000,
+      "contains": "Playing · frame"
+    },
+    {
+      "label": "playing, the behavior moves the Mover",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Mover"
+        }
+      },
+      "path": "result.components[0].runtime_json.local_trs.pos[0]",
+      "op": "gt",
+      "value_of": "x_edit",
+      "retry_ms": 10000
+    },
+    {
+      "label": "the engine runs a play session",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.session",
+      "value": true
+    },
+    {
+      "label": "while it runs, Save cannot be pressed",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.file.saveScene"
+      },
+      "path": "widgets[0].enabled",
+      "value": false,
+      "retry_ms": 5000
+    },
+    {
+      "label": "and the render tools say their edits stay",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.play.renderBanner.renderTools"
+      },
+      "path": "widgets[0].visible",
+      "value": true,
+      "retry_ms": 5000
+    },
+    {
+      "label": "press Stop",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "the status bar says Edit again",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "timeout_ms": 60000,
+      "text": "Edit"
+    },
+    {
+      "label": "the engine has no play session",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.session",
+      "value": false,
+      "retry_ms": 10000
+    },
+    {
+      "label": "Stop puts the Mover back where it was",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Mover"
+        }
+      },
+      "path": "result.components[0].runtime_json.local_trs.pos[0]",
+      "value_of": "x_edit",
+      "retry_ms": 10000
+    },
+    {
+      "label": "Save can be pressed again",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.file.saveScene"
+      },
+      "path": "widgets[0].enabled",
+      "value": true,
+      "retry_ms": 5000
+    },
+    {
+      "label": "and the banner is gone",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.play.renderBanner.renderTools"
+      },
+      "path": "widgets[0].visible",
+      "value": false,
+      "retry_ms": 5000
+    },
+    {
+      "label": "press Play again",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "the status bar says the game plays",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "timeout_ms": 60000,
+      "contains": "Playing · frame"
+    },
+    {
+      "label": "pick the Sun in the Outliner",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "Sun"
+    },
+    {
+      "label": "the Inspector holds the Sun",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "timeout_ms": 30000,
+      "contains": "Sun\n"
+    },
+    {
+      "label": "let the Inspector settle",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "contains": "zz-never-shown",
+      "timeout_ms": 1500,
+      "expect_error": "automation.wait_timeout@1"
+    },
+    {
+      "label": "its intensity takes input",
+      "cmd": "wait",
+      "name": "pelican.inspectorNumeric.light.intensity",
+      "timeout_ms": 60000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "set the intensity to 7 while the game runs",
+      "cmd": "type",
+      "name": "pelican.inspectorNumeric.light.intensity",
+      "text": "7"
+    },
+    {
+      "label": "commit it",
+      "cmd": "key",
+      "name": "pelican.inspectorNumeric.light.intensity",
+      "sequence": "Return"
+    },
+    {
+      "label": "the Inspector says the edit reverts on Stop",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "timeout_ms": 30000,
+      "contains": "reverts on Stop"
+    },
+    {
+      "label": "the scene holds 7 while the game runs",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Sun"
+        }
+      },
+      "path": "result.components[0].authored_json.intensity",
+      "value": 7.0,
+      "retry_ms": 10000
+    },
+    {
+      "label": "the run recorded the edit",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.recorded_edits.$len",
+      "value": 1,
+      "retry_ms": 10000
+    },
+    {
+      "label": "press Stop, nothing marked Keep",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "the status bar says Edit again",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "timeout_ms": 60000,
+      "text": "Edit"
+    },
+    {
+      "label": "the engine has no play session",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.session",
+      "value": false,
+      "retry_ms": 10000
+    },
+    {
+      "label": "Stop put the intensity back",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Sun"
+        }
+      },
+      "path": "result.components[0].authored_json.intensity",
+      "value": 3.0,
+      "retry_ms": 10000
+    },
+    {
+      "label": "and the Inspector reads it again",
+      "cmd": "wait",
+      "name": "pelican.inspectorNumeric.light.intensity",
+      "timeout_ms": 30000,
+      "contains": "3.00"
+    },
+    {
+      "label": "press Play once more",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "the status bar says the game plays",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "timeout_ms": 60000,
+      "contains": "Playing · frame"
+    },
+    {
+      "label": "the intensity takes input again",
+      "cmd": "wait",
+      "name": "pelican.inspectorNumeric.light.intensity",
+      "timeout_ms": 60000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "let the Inspector settle",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "contains": "zz-never-shown",
+      "timeout_ms": 1500,
+      "expect_error": "automation.wait_timeout@1"
+    },
+    {
+      "label": "set the intensity to 5",
+      "cmd": "type",
+      "name": "pelican.inspectorNumeric.light.intensity",
+      "text": "5"
+    },
+    {
+      "label": "commit it",
+      "cmd": "key",
+      "name": "pelican.inspectorNumeric.light.intensity",
+      "sequence": "Return"
+    },
+    {
+      "label": "the Inspector says the edit reverts on Stop",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "timeout_ms": 30000,
+      "contains": "reverts on Stop"
+    },
+    {
+      "label": "open Play changes from the band",
+      "cmd": "action",
+      "name": "pelican.play.changes"
+    },
+    {
+      "label": "the edit is its first row",
+      "cmd": "wait",
+      "name": "pelican.playChanges.row.0",
+      "timeout_ms": 30000,
+      "visible": true
+    },
+    {
+      "label": "the row is named by the edit",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.playChanges.row.0"
+      },
+      "path": "text",
+      "value": "Edit light.intensity"
+    },
+    {
+      "label": "mark it Keep",
+      "cmd": "click",
+      "name": "pelican.playChanges.row.0"
+    },
+    {
+      "label": "a picture of the window with Play changes open",
+      "expect": "screenshot",
+      "path": "play_changes.png"
+    },
+    {
+      "label": "press Stop",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "the status bar says Edit again",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "timeout_ms": 60000,
+      "text": "Edit"
+    },
+    {
+      "label": "the engine has no play session",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.session",
+      "value": false,
+      "retry_ms": 10000
+    },
+    {
+      "label": "the kept edit stays after Stop",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Sun"
+        }
+      },
+      "path": "result.components[0].authored_json.intensity",
+      "value": 5.0,
+      "retry_ms": 10000
+    },
+    {
+      "label": "Play changes says what Stop did",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.playChanges.summary"
+      },
+      "path": "text",
+      "value": "Stopped: 0 reverted, 1 kept."
+    },
+    {
+      "label": "press Play for Take from game",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "the status bar says the game plays",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "timeout_ms": 60000,
+      "contains": "Playing · frame"
+    },
+    {
+      "label": "pick the Mover in the Outliner",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "Mover"
+    },
+    {
+      "label": "the Inspector holds the Mover",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "timeout_ms": 30000,
+      "contains": "Mover\n"
+    },
+    {
+      "label": "Take from game is offered while the game runs",
+      "cmd": "wait",
+      "name": "pelican.inspectorTakeFromGame",
+      "timeout_ms": 60000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "the game has moved the Mover well away",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Mover"
+        }
+      },
+      "path": "result.components[0].runtime_json.local_trs.pos[0]",
+      "op": "gt",
+      "value": 2.0,
+      "retry_ms": 20000
+    },
+    {
+      "label": "Take from game",
+      "cmd": "click",
+      "name": "pelican.inspectorTakeFromGame"
+    },
+    {
+      "label": "the Transform was written from the game",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "timeout_ms": 30000,
+      "contains": "Take Transform from game committed"
+    },
+    {
+      "label": "what was taken, as the scene holds it now",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Mover"
+        }
+      },
+      "path": "result.components[0].authored_json.pos[0]",
+      "op": "gt",
+      "value": 2.0,
+      "retry_ms": 10000
+    },
+    {
+      "label": "remember it",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Mover"
+        }
+      },
+      "path": "result.components[0].authored_json.pos[0]",
+      "remember": "x_taken"
+    },
+    {
+      "label": "Take from game marked its edit Keep: one recorded",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.recorded_edits.$len",
+      "value": 1
+    },
+    {
+      "label": "press Stop",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "the status bar says Edit again",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "timeout_ms": 60000,
+      "text": "Edit"
+    },
+    {
+      "label": "the engine has no play session",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.session",
+      "value": false,
+      "retry_ms": 10000
+    },
+    {
+      "label": "after Stop, the scene keeps the position the game gave",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Mover"
+        }
+      },
+      "path": "result.components[0].authored_json.pos[0]",
+      "value_of": "x_taken",
+      "retry_ms": 10000
+    },
+    {
+      "label": "and the edit runtime stands there",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Mover"
+        }
+      },
+      "path": "result.components[0].runtime_json.local_trs.pos[0]",
+      "value_of": "x_taken",
+      "retry_ms": 10000
+    },
+    {
+      "label": "press Play for a render edit",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "the status bar says the game plays",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "timeout_ms": 60000,
+      "contains": "Playing · frame"
+    },
+    {
+      "label": "the Frame Plan tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "fit the graph so the pass can be picked",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "open present in the Pass Editor by its heading",
+      "cmd": "double_click",
+      "name": "pelican.framePlanLogicalView::node_header#present"
+    },
+    {
+      "label": "the Pass Editor holds the pass",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.name",
+      "timeout_ms": 60000,
+      "text": "present"
+    },
+    {
+      "label": "the Pass Editor says its edits stay after Stop",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.play.renderBanner.passEditor"
+      },
+      "path": "widgets[0].visible",
+      "value": true,
+      "retry_ms": 10000
+    },
+    {
+      "label": "the banner's words",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.play.renderBanner.passEditor"
+      },
+      "path": "text",
+      "value": "Changes here are written to files and stay after Stop."
+    },
+    {
+      "label": "pick the inverting fragment from the list",
+      "cmd": "select",
+      "name": "pelican.fullscreenPass.shader.fragmentChoice",
+      "text": "project://shaders/ru1_invert"
+    },
+    {
+      "label": "Save is ready",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.save",
+      "timeout_ms": 60000,
+      "enabled": true
+    },
+    {
+      "label": "save: edit_preset_pass",
+      "cmd": "click",
+      "name": "pelican.fullscreenPass.save"
+    },
+    {
+      "label": "present draws the inverting fragment",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].declaration.shader.fragment",
+      "value": "project://shaders/ru1_invert",
+      "retry_ms": 120000
+    },
+    {
+      "label": "a picture of the window with the banner",
+      "expect": "screenshot",
+      "path": "render_banner.png"
+    },
+    {
+      "label": "press Stop",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "the status bar says Edit again",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "timeout_ms": 60000,
+      "text": "Edit"
+    },
+    {
+      "label": "the engine has no play session",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.session",
+      "value": false,
+      "retry_ms": 10000
+    },
+    {
+      "label": "after Stop, present still draws the inverting fragment",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].declaration.shader.fragment",
+      "value": "project://shaders/ru1_invert",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and the picture shows it: the background is not what it was",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/after_stop.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[1]",
+      "op": "ne",
+      "value_of": "background",
+      "retry_ms": 60000
+    },
+    {
+      "label": "Save can be pressed in edit",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.file.saveScene"
+      },
+      "path": "widgets[0].enabled",
+      "value": true,
+      "retry_ms": 5000
+    },
+    {
+      "label": "File > Save Scene",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "the save is done",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "timeout_ms": 60000,
+      "contains": "Scene saved"
+    }
+  ]
+}

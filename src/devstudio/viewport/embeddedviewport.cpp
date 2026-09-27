@@ -7,6 +7,7 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QJsonArray>
+#include <QPointer>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
@@ -167,6 +168,16 @@ QStringList studioPlayerArguments(QStringList configured,
     return arguments;
 }
 
+QString studioPlayerStartStateNotice(QStringList configured,
+                                     const QString &project_root) {
+    std::vector<std::string> configured_strings;
+    configured_strings.reserve(static_cast<std::size_t>(configured.size()));
+    for (const auto &argument : configured) configured_strings.push_back(argument.toStdString());
+    return QString::fromStdString(
+        studioPlayerLaunch(std::move(configured_strings), project_root.toStdString())
+            .start_state_notice);
+}
+
 EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(this) {
     setObjectName(QStringLiteral("pelican.viewportPanel"));
 
@@ -245,7 +256,14 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
     resize_elapsed_.start();
 
     connect(restart_button_, &QPushButton::clicked, this, [this]() { startEngine(); });
-    connect(stop_button_, &QPushButton::clicked, this, [this]() { stopEngine(); });
+    connect(stop_button_, &QPushButton::clicked, this, [this]() {
+        if (stop_guard_ &&
+            !stop_guard_([viewport = QPointer<EmbeddedViewport>{this}] {
+                if (viewport) viewport->stopEngine();
+            }))
+            return;
+        stopEngine();
+    });
     connect(window_discovery_timer_, &QTimer::timeout, this, [this]() { discoverEngineWindow(); });
     connect(diagnostics_timer_, &QTimer::timeout, this, [this]() { updateDiagnostics(); });
     connect(pointer_focus_timer_, &QTimer::timeout, this, [this]() { pollPointerFocus(); });
@@ -688,6 +706,14 @@ void EmbeddedViewport::startEngine() {
     status_->setText(tr("Starting pelican_player..."));
 
     QString error;
+    const QString configured_arguments = qEnvironmentVariable("PELICAN_STUDIO_PLAYER_ARGUMENTS");
+    if (const QString notice = studioPlayerStartStateNotice(
+            configured_arguments.isEmpty() ? QStringList{}
+                                           : QProcess::splitCommand(configured_arguments),
+            project_root_);
+        !notice.isEmpty()) {
+        emit engineLaunchNotice(notice);
+    }
     if (!process_.start(launchCommand(), &error)) {
         status_->setText(error);
         restart_button_->setText(tr("Retry Engine"));

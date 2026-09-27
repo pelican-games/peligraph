@@ -48,6 +48,8 @@ StudioTheme builtInTheme() {
     theme.label = QStringLiteral("Dark");
     theme.style = QStringLiteral("Fusion");
     theme.canvas = builtInCanvas();
+    theme.play.playing_frame = QColor{QStringLiteral("#3d8fe0")};
+    theme.play.playing_band = QColor{QStringLiteral("#1f3f60")};
     theme.play.paused_frame = QColor{QStringLiteral("#e0ac00")};
     theme.play.paused_band = QColor{QStringLiteral("#5e4b10")};
     theme.font.family = QStringLiteral("Segoe UI");
@@ -172,6 +174,8 @@ StudioTheme themeFromJson(const QString &name, const Json &entry) {
     readTints(entry.value("domain_tint", Json::object()), &theme.domain_tint);
     readTints(entry.value("source_tint", Json::object()), &theme.source_tint);
     if (const Json play = entry.value("play", Json::object()); play.is_object()) {
+        readColor(play, "playing_frame", &theme.play.playing_frame);
+        readColor(play, "playing_band", &theme.play.playing_band);
         readColor(play, "paused_frame", &theme.play.paused_frame);
         readColor(play, "paused_band", &theme.play.paused_band);
     }

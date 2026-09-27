@@ -23,6 +23,7 @@
 #include "../src/devstudio/viewport/enginelogbuffer.hpp"
 #include "../src/devstudio/viewport/engineprocess.hpp"
 #include "../src/devstudio/viewport/nativewindowhost.hpp"
+#include "../src/devstudio/viewport/studioplayerarguments.hpp"
 #include "../src/devstudio/viewport/viewportgeometry.hpp"
 #include "graphcanvaswidget.hpp"
 #include "outlinertree.hpp"
@@ -32,6 +33,10 @@
 #include <QAction>
 #include <QApplication>
 #include <QByteArray>
+#include <QCheckBox>
+#include <QDialog>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QElapsedTimer>
 #include <QFrame>
 #include <QHash>
@@ -99,6 +104,15 @@ class FakeEngine {
     }
 
     bool report_play = true;
+    // PM-3b: report view_camera, session and recorded_edits (PM-1b / PM-2).
+    bool report_session = false;
+    bool session = false;
+    std::string view = "game";
+    std::vector<Json> recorded;
+    // The not_kept a Stop with keep answers with.
+    Json not_kept = Json::array();
+    int reloads = 0;
+    int saves = 0;
     std::string state = "playing";
     std::uint64_t evaluation = 5000;
     std::uint64_t game_frame = 100;
@@ -174,7 +188,8 @@ class FakeEngine {
         const auto id = request.at("id").get<qint64>();
         const auto method = request.at("method").get<std::string>();
         const Json params = request.value("params", Json::object());
-        if (method == "set_play_state" || method == "advance_frames") {
+        if (method == "set_play_state" || method == "advance_frames" ||
+            method == "set_view_camera" || method == "reload_game_logic") {
             if (first) play_requests.push_back({{"method", method}, {"params", params}});
             if (hold) {
                 held_.push_back(request);
@@ -189,7 +204,42 @@ class FakeEngine {
             const auto previous = state;
             state = params.at("state").get<std::string>();
             if (state == "playing") pending_steps = 0;
-            result(id, {{"state", state}, {"previous", previous}});
+            Json answer{{"state", state}, {"previous", previous}};
+            if (previous == "edit" && state != "edit") {
+                session = true;
+                view = "game";
+                game_frame = 0;
+            }
+            if (state == "edit" && previous != "edit") {
+                session = false;
+                view = "editor";
+                recorded.clear();
+                if (params.contains("keep")) answer["not_kept"] = not_kept;
+            }
+            result(id, answer);
+            return;
+        }
+        if (method == "set_view_camera") {
+            if (state == "playing") {
+                error(id, -32000, "set_view_camera: playing",
+                      {{"code", "play_state_mismatch"},
+                       {"state", state},
+                       {"required", Json::array({"edit", "paused"})}});
+                return;
+            }
+            const auto previous = view;
+            view = params.at("camera").get<std::string>();
+            result(id, {{"camera", view}, {"previous", previous}});
+            return;
+        }
+        if (method == "reload_game_logic") {
+            ++reloads;
+            result(id, {{"generation", reloads}, {"systems", 1}});
+            return;
+        }
+        if (method == "save_scene") {
+            ++saves;
+            result(id, {{"status", "saved"}, {"scene_revision", 1}});
             return;
         }
         if (method == "advance_frames") {
@@ -211,6 +261,11 @@ class FakeEngine {
                                   {"game_frame", game_frame},
                                   {"game_time", 1.5},
                                   {"pending_steps", pending_steps}};
+                if (report_session) {
+                    status["play"]["view_camera"] = view;
+                    status["play"]["session"] = session;
+                    status["play"]["recorded_edits"] = recorded;
+                }
                 reported_game_frame = game_frame;
             }
             result(id, status);
@@ -270,8 +325,9 @@ struct Rig {
     FakeEngine engine{viewport};
     PlayControls &controls = *window.play_controls_;
 
-    explicit Rig(bool report_play = true) {
+    explicit Rig(bool report_play = true, const std::function<void(FakeEngine &)> &setup = {}) {
         engine.report_play = report_play;
+        if (setup) setup(engine);
         QString error;
         REQUIRE(viewport.process_.start(
             {QString::fromUtf8(PELICAN_PROCESS_FIXTURE_PATH), {QStringLiteral("rpc-hold")}, {}},
@@ -389,10 +445,12 @@ TEST_CASE("PM-3a the play refusals read as one line from Studio's table",
                                       {"state", "playing"},
                                       {"required", "paused"}}) ==
           "The game is playing; this works only while it is paused (play_state_mismatch).");
+    // PM-3b: set_view_camera names the states it works in as a list.
     CHECK(playRefusalDescription(Json{{"code", "play_state_mismatch"},
                                       {"state", "playing"},
-                                      {"requested", "edit"}}) ==
-          "This engine has no edit state yet; the game stays playing (play_state_mismatch).");
+                                      {"required", Json::array({"edit", "paused"})}}) ==
+          "The game is playing; this works only while it is in edit or paused "
+          "(play_state_mismatch).");
     CHECK(playRefusalDescription(Json{{"code", "step_frame_windowed"}}) ==
           "step_frame steps a headless engine only; pause the game and use Step "
           "(step_frame_windowed).");
@@ -414,7 +472,9 @@ TEST_CASE("PM-3a Pause sends paused, pressing it again sends playing, and the li
     CHECK_FALSE(rig.step().isEnabled());
     const QColor paused_frame = currentStudioTheme().play.paused_frame;
     CHECK(rig.frameColour() != paused_frame);
-    CHECK(rig.bandStyle().isEmpty());
+    // PM-3b: playing has a colour of its own.
+    const QString playing_band = currentStudioTheme().play.playing_band.name();
+    CHECK(rig.bandStyle().contains(playing_band));
 
     rig.pause().trigger();
     REQUIRE(rig.pumpUntil([&] { return rig.line().startsWith(QStringLiteral("Paused")); }));
@@ -437,7 +497,7 @@ TEST_CASE("PM-3a Pause sends paused, pressing it again sends playing, and the li
     CHECK_FALSE(rig.pause().isChecked());
     CHECK_FALSE(rig.step().isEnabled());
     CHECK(rig.frameColour() != paused_frame);
-    CHECK(rig.bandStyle().isEmpty());
+    CHECK(rig.bandStyle().contains(playing_band));
 }
 
 TEST_CASE("PM-3a Step sends advance_frames count 1, and only while paused",
@@ -602,6 +662,433 @@ TEST_CASE("PM-3a another panel's get_status moves the line; no clock of its own 
     REQUIRE(rig.viewport.requestRpc(QStringLiteral("get_status"), QJsonObject{}, &error) != 0);
     REQUIRE(rig.pumpUntil([&] { return rig.line().startsWith(QStringLiteral("Paused")); }));
     CHECK(rig.pause().isChecked());
+}
+
+
+// ---------------------------------------------------------------------------
+// PM-3b: the engine starts in edit; Play / Stop, the Play changes panel and
+// its Keep marks, the View choice, Reload game logic, what waits for Stop,
+// and what is asked before leaving a run.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// An engine as Studio starts it now: in edit, with PM-1b's view and PM-2's
+// session in its get_status.
+void editEngine(FakeEngine &engine) {
+    engine.state = "edit";
+    engine.report_session = true;
+    engine.view = "editor";
+    engine.game_frame = 0;
+}
+
+QCheckBox *changeRow(Rig &rig, int index) {
+    return rig.window.findChild<QCheckBox *>(QStringLiteral("pelican.playChanges.row.%1").arg(index));
+}
+
+QLabel *namedLabel(Rig &rig, const char *name) {
+    return rig.window.findChild<QLabel *>(QString::fromLatin1(name));
+}
+
+} // namespace
+
+TEST_CASE("PM-3b Studio starts the engine in edit, unless its configured arguments run the game "
+          "from the first frame",
+          "[devstudio][play][pm3b][launch][negative-contrast]") {
+    const auto has_edit = [](const std::vector<std::string> &arguments) {
+        for (std::size_t index = 0; index + 1 < arguments.size(); ++index)
+            if (arguments[index] == "--start-state" && arguments[index + 1] == "edit") return true;
+        return false;
+    };
+    const auto plain = studioPlayerLaunch({}, "C:/project");
+    CHECK(has_edit(plain.arguments));
+    CHECK(plain.start_state_notice.empty());
+    // With --embedded, as EW-2 passes it.
+    CHECK(std::find(plain.arguments.begin(), plain.arguments.end(), "--embedded") !=
+          plain.arguments.end());
+    // The probe the CTest lanes use reads the same list.
+    CHECK(studioPlayerArgumentStrings({}, "C:/project") == plain.arguments);
+    // Headless with Studio's --rpc is an edit launch the engine accepts.
+    CHECK(has_edit(studioPlayerLaunch({"--headless"}, "C:/project").arguments));
+
+    for (const std::vector<std::string> &configured :
+         {std::vector<std::string>{"--replay", "run.jsonl"},
+          std::vector<std::string>{"--record-input=out.jsonl"},
+          std::vector<std::string>{"--bake-camera-output", "cam.json"},
+          std::vector<std::string>{"--start-time", "3"}}) {
+        const auto launch = studioPlayerLaunch(configured, "C:/project");
+        CHECK_FALSE(has_edit(launch.arguments));
+        const auto flag = configured.front().substr(0, configured.front().find('='));
+        CHECK(launch.start_state_notice.find(flag) != std::string::npos);
+        CHECK(launch.start_state_notice.find("starts playing") != std::string::npos);
+    }
+    // A start state of its own wins, and needs no word.
+    const auto own = studioPlayerLaunch({"--start-state=playing"}, "C:/project");
+    CHECK_FALSE(has_edit(own.arguments));
+    CHECK(own.start_state_notice.empty());
+    // The Qt side says the same.
+    CHECK(studioPlayerStartStateNotice({QStringLiteral("--replay"), QStringLiteral("x")},
+                                       QStringLiteral("C:/project"))
+              .contains(QStringLiteral("--replay")));
+}
+
+TEST_CASE("PM-3b get_status.play is read with edit, the view and the session's edits",
+          "[devstudio][play][pm3b][negative-contrast]") {
+    const Json status{{"play",
+                       {{"state", "edit"},
+                        {"game_frame", 12},
+                        {"game_time", 0.0},
+                        {"pending_steps", 0},
+                        {"view_camera", "editor"},
+                        {"session", false},
+                        {"recorded_edits", Json::array()}}}};
+    const auto reading = parsePlayStatus(status);
+    REQUIRE(reading);
+    CHECK(reading->state == PlayState::edit);
+    CHECK(reading->view_camera == ViewCamera::editor);
+    CHECK_FALSE(reading->session);
+
+    PlayStateModel model;
+    model.connect();
+    (void)model.takeRequests();
+    REQUIRE(model.observeStatus(status));
+    CHECK(model.editing());
+    CHECK(model.statusText() == "Edit");
+    // In edit: Play and Step (which starts the run paused), not Pause.
+    CHECK(model.canPlayOrStop());
+    CHECK(model.canStep());
+    CHECK_FALSE(model.canTogglePause());
+    CHECK(model.canSetView());
+
+    Json playing = status;
+    playing["play"]["state"] = "playing";
+    playing["play"]["session"] = true;
+    playing["play"]["view_camera"] = "game";
+    playing["play"]["recorded_edits"] =
+        Json::array({{{"transaction_id", "txn-1"}, {"actor", 9}}});
+    REQUIRE(model.observeStatus(playing));
+    CHECK(model.session());
+    CHECK_FALSE(model.canSetView());
+    REQUIRE(model.status()->recorded_edits.size() == 1);
+    CHECK(model.status()->recorded_edits.front() == RecordedEdit{"txn-1", 9});
+
+    // A recorded edit without its transaction is not the engine's shape.
+    Json broken = playing;
+    broken["play"]["recorded_edits"] = Json::array({{{"actor", 9}}});
+    CHECK_FALSE(parsePlayStatus(broken));
+}
+
+TEST_CASE("PM-3b Play from edit starts the run, and the band, the frame and the line follow; "
+          "Stop with nothing marked sends no keep",
+          "[devstudio][play][pm3b][negative-contrast]") {
+    Rig rig{true, editEngine};
+    REQUIRE(rig.pumpUntil([&] { return rig.line() == QStringLiteral("Edit"); }));
+    QAction &play = *rig.controls.playAction();
+    CHECK(play.isVisible());
+    CHECK(play.isEnabled());
+    CHECK(play.text() == QStringLiteral("▶ Play"));
+    CHECK_FALSE(rig.pause().isEnabled());
+    CHECK(rig.step().isEnabled());
+    const StudioTheme &theme = currentStudioTheme();
+    CHECK(rig.frameColour() != theme.play.playing_frame);
+    CHECK(rig.frameColour() != theme.play.paused_frame);
+    CHECK(rig.bandStyle().isEmpty());
+    // In edit the Timeline can be scrubbed.
+    CHECK(rig.graph().scrubBlockedReason().empty());
+
+    // Ctrl+P: Play.
+    rig.press(*rig.window.outliner_, Qt::ControlModifier);
+    REQUIRE(rig.pumpUntil([&] { return rig.line().startsWith(QStringLiteral("Playing")); }));
+    REQUIRE(rig.sent() == 1);
+    CHECK(rig.last() == Json{{"method", "set_play_state"}, {"params", {{"state", "playing"}}}});
+    CHECK(play.text() == QStringLiteral("■ Stop"));
+    CHECK(rig.pause().isEnabled());
+    CHECK_FALSE(rig.step().isEnabled());
+    CHECK(rig.frameColour() == theme.play.playing_frame);
+    CHECK(rig.bandStyle().contains(theme.play.playing_band.name()));
+    CHECK_FALSE(rig.graph().scrubBlockedReason().empty());
+
+    // Ctrl+P again: Stop, nothing marked, so no keep at all.
+    rig.press(*rig.window.outliner_, Qt::ControlModifier);
+    REQUIRE(rig.pumpUntil([&] { return rig.line() == QStringLiteral("Edit"); }));
+    REQUIRE(rig.sent() == 2);
+    CHECK(rig.last() == Json{{"method", "set_play_state"}, {"params", {{"state", "edit"}}}});
+    CHECK(play.text() == QStringLiteral("▶ Play"));
+    CHECK(rig.frameColour() != theme.play.playing_frame);
+    CHECK(rig.bandStyle().isEmpty());
+    CHECK(rig.window.statusBar()->currentMessage().startsWith(QStringLiteral("Stopped: 0 reverted, 0 kept")));
+}
+
+TEST_CASE("PM-3b Step from edit starts the run paused, then steps it once",
+          "[devstudio][play][pm3b][negative-contrast]") {
+    Rig rig{true, editEngine};
+    REQUIRE(rig.pumpUntil([&] { return rig.line() == QStringLiteral("Edit"); }));
+    rig.step().trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.line() == shown("Paused", 1); }));
+    REQUIRE(rig.sent() == 2);
+    CHECK(rig.engine.play_requests[0] ==
+          Json{{"method", "set_play_state"}, {"params", {{"state", "paused"}}}});
+    CHECK(rig.engine.play_requests[1] ==
+          Json{{"method", "advance_frames"}, {"params", {{"count", 1}}}});
+    CHECK(rig.pause().isChecked());
+    CHECK(rig.controls.playAction()->text() == QStringLiteral("■ Stop"));
+    CHECK(rig.frameColour() == currentStudioTheme().play.paused_frame);
+}
+
+TEST_CASE("PM-3b Play changes names each edit of the run, and Stop keeps only the marked ones "
+          "still recorded",
+          "[devstudio][play][pm3b][keep][negative-contrast]") {
+    Rig rig{true, editEngine};
+    REQUIRE(rig.pumpUntil([&] { return rig.line() == QStringLiteral("Edit"); }));
+    rig.controls.playAction()->trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.controls.model().session(); }));
+
+    // Studio's own edit, its undo and redo, and another client's edit.
+    rig.engine.recorded = Json::array({{{"transaction_id", "txn-1"}, {"actor", 9}},
+                                       {{"transaction_id", "txn-3"}, {"actor", 9}},
+                                       {{"transaction_id", "txn-9"}, {"actor", 4}}});
+    rig.controls.noteCommittedEdit({.transaction_id = "txn-1", .label = "Edit light.intensity"});
+    rig.controls.noteCommittedEdit({.transaction_id = "txn-2",
+                                    .kind = CommittedEditKind::undo,
+                                    .source_transaction_id = "txn-1"});
+    rig.controls.noteCommittedEdit({.transaction_id = "txn-3",
+                                    .kind = CommittedEditKind::redo,
+                                    .source_transaction_id = "txn-2"});
+    REQUIRE(rig.pumpUntil([&] { return changeRow(rig, 2) != nullptr; }));
+    rig.controls.showChanges();
+    CHECK(changeRow(rig, 0)->text() == QStringLiteral("Edit light.intensity"));
+    CHECK(changeRow(rig, 1)->text() == QStringLiteral("Redo Edit light.intensity"));
+    CHECK(changeRow(rig, 2)->text() == QString::fromUtf8("Actor 4 · txn-9"));
+    CHECK(rig.controls.model().labelOf("txn-2") == "Undo Edit light.intensity");
+    for (int row = 0; row < 3; ++row) CHECK_FALSE(changeRow(rig, row)->isChecked());
+    CHECK(rig.controls.changesAction()->text() == QStringLiteral("Play changes (3)"));
+
+    // Keep all, then Keep none, then one mark by hand.
+    rig.window.findChild<QPushButton *>(QStringLiteral("pelican.playChanges.keepAll"))->click();
+    for (int row = 0; row < 3; ++row) CHECK(changeRow(rig, row)->isChecked());
+    rig.window.findChild<QPushButton *>(QStringLiteral("pelican.playChanges.keepNone"))->click();
+    for (int row = 0; row < 3; ++row) CHECK_FALSE(changeRow(rig, row)->isChecked());
+    // A press where a person points: the row as laid out, near its right
+    // end. A check box answers a press on its box and its words only, so a
+    // row wider than its words would let this press fall on nothing.
+    for (int row : {1, 2}) {
+        QCheckBox *box = changeRow(rig, row);
+        QTest::mouseClick(box, Qt::LeftButton, Qt::NoModifier,
+                          QPoint{box->width() - 3, box->height() / 2});
+    }
+    CHECK(rig.controls.model().kept("txn-3"));
+    CHECK(rig.controls.model().kept("txn-9"));
+
+    // txn-9 is undone by its client before Stop: the recorded edits are read
+    // first, and only txn-3 is named.
+    rig.engine.recorded = Json::array({{{"transaction_id", "txn-1"}, {"actor", 9}},
+                                       {{"transaction_id", "txn-3"}, {"actor", 9}}});
+    const auto reads = rig.engine.status_reads;
+    rig.controls.playAction()->trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.line() == QStringLiteral("Edit"); }));
+    CHECK(rig.engine.status_reads > reads);
+    CHECK(rig.last() == Json{{"method", "set_play_state"},
+                             {"params", {{"state", "edit"}, {"keep", Json::array({"txn-3"})}}}});
+    CHECK(rig.window.statusBar()->currentMessage() ==
+          QStringLiteral("Stopped: 1 reverted, 1 kept"));
+    // The marks went with the run.
+    CHECK_FALSE(rig.controls.model().kept("txn-3"));
+}
+
+TEST_CASE("PM-3b an edit Stop could not keep is named in Play changes with why",
+          "[devstudio][play][pm3b][keep][negative-contrast]") {
+    Rig rig{true, editEngine};
+    REQUIRE(rig.pumpUntil([&] { return rig.line() == QStringLiteral("Edit"); }));
+    rig.controls.playAction()->trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.controls.model().session(); }));
+    rig.engine.recorded = Json::array({{{"transaction_id", "txn-5"}, {"actor", 9}},
+                                       {{"transaction_id", "txn-6"}, {"actor", 9}}});
+    rig.controls.noteCommittedEdit({.transaction_id = "txn-6", .label = "Edit transform.pos"});
+    REQUIRE(rig.pumpUntil([&] { return changeRow(rig, 1) != nullptr; }));
+    rig.controls.keep(QStringLiteral("txn-6"));
+    rig.engine.not_kept = Json::array({{{"transaction_id", "txn-6"}, {"code", "closure_unresolvable"}}});
+    rig.controls.playAction()->trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.line() == QStringLiteral("Edit"); }));
+    CHECK(rig.window.statusBar()->currentMessage() ==
+          QStringLiteral("Stopped: 2 reverted, 0 kept, 1 could not be kept"));
+    const QLabel *not_kept = namedLabel(rig, "pelican.playChanges.notKept");
+    REQUIRE(not_kept != nullptr);
+    CHECK_FALSE(not_kept->isHidden());
+    CHECK(not_kept->text().contains(QStringLiteral("Edit transform.pos")));
+    CHECK(not_kept->text().contains(QStringLiteral("closure_unresolvable")));
+    CHECK(namedLabel(rig, "pelican.playChanges.summary")->text().contains(
+        QStringLiteral("1 could not be kept")));
+}
+
+TEST_CASE("PM-3b Save waits for Stop, and the render panels say their edits stay",
+          "[devstudio][play][pm3b][negative-contrast]") {
+    Rig rig{true, editEngine};
+    REQUIRE(rig.pumpUntil([&] { return rig.line() == QStringLiteral("Edit"); }));
+    QAction &save = *rig.window.save_scene_action_;
+    const QLabel *tools = namedLabel(rig, "pelican.play.renderBanner.renderTools");
+    const QLabel *pass = namedLabel(rig, "pelican.play.renderBanner.passEditor");
+    REQUIRE(tools != nullptr);
+    REQUIRE(pass != nullptr);
+    CHECK(save.isEnabled());
+    CHECK(tools->isHidden());
+    CHECK(pass->isHidden());
+
+    rig.controls.playAction()->trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.controls.model().session(); }));
+    CHECK_FALSE(save.isEnabled());
+    CHECK(save.toolTip().contains(QStringLiteral("play_session_active")));
+    CHECK_FALSE(tools->isHidden());
+    CHECK_FALSE(pass->isHidden());
+    CHECK(tools->text() == QStringLiteral("Changes here are written to files and stay after Stop."));
+    save.trigger();
+    rig.pumpFor(50);
+    CHECK(rig.engine.saves == 0);
+
+    // Paused is still the run.
+    rig.pause().trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.pause().isChecked(); }));
+    CHECK_FALSE(save.isEnabled());
+
+    rig.controls.playAction()->trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.line() == QStringLiteral("Edit"); }));
+    CHECK(save.isEnabled());
+    CHECK(tools->isHidden());
+    CHECK(pass->isHidden());
+}
+
+TEST_CASE("PM-3b View: Game | Editor while paused or in edit, not while playing",
+          "[devstudio][play][pm3b][view][negative-contrast]") {
+    Rig rig{true, editEngine};
+    REQUIRE(rig.pumpUntil([&] { return rig.line() == QStringLiteral("Edit"); }));
+    QAction &game = *rig.controls.viewGameAction();
+    QAction &editor = *rig.controls.viewEditorAction();
+    CHECK(game.isVisible());
+    CHECK(editor.isChecked());
+
+    rig.controls.playAction()->trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.line().startsWith(QStringLiteral("Playing")); }));
+    CHECK_FALSE(game.isVisible());
+    CHECK_FALSE(editor.isVisible());
+
+    rig.pause().trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.line().startsWith(QStringLiteral("Paused")); }));
+    CHECK(game.isVisible());
+    CHECK(game.isChecked());
+    editor.trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.view == "editor"; }));
+    CHECK(rig.last() == Json{{"method", "set_view_camera"}, {"params", {{"camera", "editor"}}}});
+    REQUIRE(rig.pumpUntil([&] { return editor.isChecked() && editor.isEnabled(); }));
+    game.trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.view == "game"; }));
+
+    CHECK(playRefusalDescription(Json{{"code", "view_camera_unavailable"}, {"camera", "editor"}}) ==
+          "This engine has no editor camera; it was started without --start-state edit or "
+          "--free-camera (view_camera_unavailable).");
+}
+
+TEST_CASE("PM-3b play_busy says why in one line and can send the same thing again when done",
+          "[devstudio][play][pm3b][busy][negative-contrast]") {
+    Rig rig{true, editEngine};
+    REQUIRE(rig.pumpUntil([&] { return rig.line() == QStringLiteral("Edit"); }));
+    rig.engine.refuse_next = Json{{"code", "play_busy"},
+                                  {"state", "edit"},
+                                  {"requested", "playing"},
+                                  {"pending_ticket_ids", Json::array({"edit:4"})},
+                                  {"open_preview_lease", false}};
+    rig.controls.playAction()->trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.controls.retryButton()->isVisible(); }));
+    CHECK(rig.window.statusBar()->currentMessage().contains(QStringLiteral("(play_busy)")));
+    CHECK(rig.line() == QStringLiteral("Edit"));
+    REQUIRE(rig.sent() == 1);
+
+    rig.controls.retryButton()->click();
+    REQUIRE(rig.pumpUntil([&] { return rig.line().startsWith(QStringLiteral("Playing")); }));
+    REQUIRE(rig.sent() == 2);
+    CHECK(rig.last() == Json{{"method", "set_play_state"}, {"params", {{"state", "playing"}}}});
+    CHECK_FALSE(rig.controls.retryButton()->isVisible());
+}
+
+TEST_CASE("PM-3b Reload game logic is sent in any state",
+          "[devstudio][play][pm3b][negative-contrast]") {
+    Rig rig{true, editEngine};
+    REQUIRE(rig.pumpUntil([&] { return rig.line() == QStringLiteral("Edit"); }));
+    REQUIRE(rig.controls.reloadAction()->isEnabled());
+    rig.controls.reloadAction()->trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.reloads == 1; }));
+    CHECK(rig.last() == Json{{"method", "reload_game_logic"}, {"params", Json::object()}});
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.statusBar()->currentMessage().startsWith(
+            QStringLiteral("Game logic reloaded"));
+    }));
+    rig.controls.playAction()->trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.line().startsWith(QStringLiteral("Playing")); }));
+    REQUIRE(rig.controls.reloadAction()->isEnabled());
+    rig.controls.reloadAction()->trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.reloads == 2; }));
+}
+
+TEST_CASE("PM-3b the refusals of Play, Save and Stop read as sentences",
+          "[devstudio][play][pm3b]") {
+    CHECK(playRefusalDescription(Json{{"code", "game_logic_reload_failed@1"},
+                                      {"state", "edit"},
+                                      {"requested", "playing"},
+                                      {"error_fields", {{"found", "v4"}, {"host", "v3"}}}}) ==
+          "The game logic DLL did not reload, so the game did not start: found v4, host v3 "
+          "(game_logic_reload_failed@1).");
+    CHECK(playRefusalDescription(Json{{"code", "game_logic_abi_stale@1"},
+                                      {"error_fields", Json::object()}}) ==
+          "The game logic DLL was built for another engine version (game_logic_abi_stale@1).");
+    CHECK(playRefusalDescription(Json{{"code", "play_session_active"},
+                                      {"method", "save_scene"},
+                                      {"state", "playing"}})
+              .find("stop it first (save_scene) (play_session_active).") != std::string::npos);
+    CHECK(knownRefusalDescription("play_session_active", "").find("stop it first") !=
+          std::string::npos);
+    CHECK(notKeptReason("closure_unresolvable").find("(closure_unresolvable)") !=
+          std::string::npos);
+    CHECK(notKeptReason("something_new") ==
+          "the engine could not apply it again (something_new)");
+}
+
+TEST_CASE("PM-3b leaving while the game runs is asked first, and the run is stopped before it goes",
+          "[devstudio][play][pm3b][confirm][negative-contrast]") {
+    Rig rig{true, editEngine};
+    REQUIRE(rig.pumpUntil([&] { return rig.line() == QStringLiteral("Edit"); }));
+    rig.controls.playAction()->trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.controls.model().session(); }));
+    const auto prompt = [&] {
+        return rig.window.findChild<QMessageBox *>(QStringLiteral("pelican.playSessionPrompt"));
+    };
+
+    // Cancel: the run goes on, nothing is sent, Studio stays.
+    rig.window.close();
+    REQUIRE(rig.pumpUntil([&] { return prompt() != nullptr && prompt()->isVisible(); }));
+    const auto before = rig.sent();
+    prompt()->findChild<QPushButton *>(QStringLiteral("pelican.playSessionPrompt.cancel"))->click();
+    REQUIRE(rig.pumpUntil([&] { return prompt() == nullptr || !prompt()->isVisible(); }));
+    rig.pumpFor(100);
+    CHECK(rig.sent() == before);
+    CHECK(rig.window.isVisible());
+    CHECK(rig.controls.model().session());
+
+    // End the run: Stop with nothing kept, then Studio closes.
+    rig.controls.keep(QStringLiteral("txn-1"));
+    rig.window.close();
+    REQUIRE(rig.pumpUntil([&] { return prompt() != nullptr && prompt()->isVisible(); }));
+    prompt()->findChild<QPushButton *>(QStringLiteral("pelican.playSessionPrompt.end"))->click();
+    REQUIRE(rig.pumpUntil([&] { return !rig.window.isVisible(); }));
+    CHECK(rig.last() == Json{{"method", "set_play_state"}, {"params", {{"state", "edit"}}}});
+    CHECK(rig.engine.state == "edit");
+}
+
+TEST_CASE("PM-3b with no run, leaving asks nothing about the game",
+          "[devstudio][play][pm3b][confirm]") {
+    Rig rig{true, editEngine};
+    REQUIRE(rig.pumpUntil([&] { return rig.line() == QStringLiteral("Edit"); }));
+    rig.window.close();
+    REQUIRE(rig.pumpUntil([&] { return !rig.window.isVisible(); }));
+    CHECK(rig.window.findChild<QMessageBox *>(QStringLiteral("pelican.playSessionPrompt")) == nullptr);
+    CHECK(rig.sent() == 0);
 }
 
 } // namespace PelicanStudio
