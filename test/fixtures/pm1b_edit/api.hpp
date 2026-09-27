@@ -26,6 +26,16 @@ struct Counts {
     // The spawns a mover asked for, and the ones refused.
     std::uint64_t spawns = 0;
     std::uint64_t spawn_errors = 0;
+    // PM-2: pm1b_ticker, a game system of the DLL, counts its updates in its
+    // own instance, which lives as long as this copy of the DLL does; this is
+    // that count as it last stood.
+    std::uint64_t system_updates = 0;
+    // The sounds and scene loads a mover's first update asked for (its
+    // `sound` / `load_scene` params), and the ones refused.
+    std::uint64_t sounds = 0;
+    std::uint64_t sound_errors = 0;
+    std::uint64_t scene_loads = 0;
+    std::uint64_t scene_load_errors = 0;
 };
 
 } // namespace Pelican::Pm1bFixture

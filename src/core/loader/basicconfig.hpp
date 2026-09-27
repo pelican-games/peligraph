@@ -162,6 +162,16 @@ DECLARE_MODULE(ProjectBasicConfig) {
     SceneImportResult importSceneDocument(std::string_view scene_bytes,
                                           const SceneImportCallback &reload);
     void refreshResolvedScene(const std::function<void()> &reload);
+    // PM-2 (docs/design_play_mode.md 6.3). The metadata that puts a play
+    // session's saved authoring back: its content and AuthoringObjectIds as
+    // the next SceneRevision (the current one + 1, never an earlier number),
+    // with the next AuthoringObjectId the larger of the saved and the current
+    // one. Loading it (SceneLoadRequest::owned) commits it with the scene the
+    // request names and a fresh authority, whose epoch closes the editor gate
+    // on anything accepted before. Nothing is published until that load
+    // commits.
+    MetadataCommitToken prepareRestoredSceneMetadata(
+        const AuthoringSceneDocument &saved) const;
     SceneSaveResult saveSceneDocument();
     void setSceneSaveFaultForTesting(
         std::optional<SceneSaveFaultPoint> fault) noexcept {

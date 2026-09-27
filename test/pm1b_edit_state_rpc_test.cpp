@@ -1,11 +1,16 @@
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/appflow/playmode.hpp"
+#if PELICAN_WITH_AUDIO
+#include "../src/core/audio/audio.hpp"
+#endif
 #include "../src/core/communication/rpcserver.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/gamelogic/behaviorarena.hpp"
 #include "../src/core/gamelogic/gamelogicreload.hpp"
 #include "../src/core/launchconfig.hpp"
+#include "../src/core/loader/authoringsceneauthority.hpp"
+#include "../src/core/loader/basicconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
@@ -30,11 +35,13 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <nlohmann/json.hpp>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // PM-1b. The edit state over the headless RPC, the way Studio drives it: an
@@ -43,6 +50,10 @@
 // switches the view, and the editor's input overlays leave the action set
 // stack while the game plays. The behaviors are a real game DLL's
 // (fixtures/pm1b_edit), built against the SDK this test executable exports.
+//
+// PM-2. The play session over the same launch: what stopping puts back
+// (the authoring, the history, the first scene, silence), what `keep` carries
+// past it, the record of the edits made while playing, and the refusals.
 
 namespace Pelican {
 namespace {
@@ -222,14 +233,18 @@ std::uint64_t objectId(Rpc &rpc, std::string_view name) {
 }
 
 // A --start-state edit launch, with the editor transform overlay Studio
-// passes as well, and the fixture DLL as the project's game logic.
+// passes as well, and the fixture DLL as the project's game logic. `adjust`
+// changes the project before the engine reads it.
+using ProjectAdjustment = std::function<void(const std::filesystem::path &root)>;
+
 struct EditLaunch {
     TempDir dir{std::filesystem::temp_directory_path() /
                 ("pelican_pm1b_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))};
-    std::filesystem::path root = makeProject(dir.root);
+    std::filesystem::path root;
     FastModuleContainer modules;
 
-    EditLaunch() {
+    explicit EditLaunch(const ProjectAdjustment &adjust = {}) : root{makeProject(dir.root)} {
+        if (adjust) adjust(root);
         setupLogger(true);
         GET_MODULE(PathResolver).setup(root, false);
         GET_MODULE(ProjectSource).setProjectData(readFile(root / "project.json"));
@@ -391,12 +406,13 @@ TEST_CASE("PM-1b an engine launched in edit runs no behavior until a play sessio
             Json{{"state", "edit"}, {"previous", "edit"}});
 
     // Acceptance 4. Into paused: onInit runs and the game stands at frame 0;
-    // advance_frames takes it one step.
+    // advance_frames takes it one step. (PM-2: every session starts from a
+    // fresh copy of the DLL, so its counts start over.)
     REQUIRE(rpc.result("set_play_state", {{"state", "paused"}}) ==
             Json{{"state", "paused"}, {"previous", "edit"}});
     seen = counts();
-    REQUIRE(seen.constructed == 2U);
-    REQUIRE(seen.inits == 2U);
+    REQUIRE(seen.constructed == 1U);
+    REQUIRE(seen.inits == 1U);
     play = rpc.play();
     REQUIRE(play.at("state") == "paused");
     REQUIRE(play.at("game_frame") == 0);
@@ -414,10 +430,10 @@ TEST_CASE("PM-1b an engine launched in edit runs no behavior until a play sessio
     REQUIRE(rpc.result("set_view_camera", {{"camera", "editor"}}).at("camera") == "editor");
     REQUIRE(camera.activeCameraName() == editor_camera);
     REQUIRE(rpc.result("set_play_state", {{"state", "edit"}}).at("previous") == "paused");
-    REQUIRE(counts().destroys == 2U);
+    REQUIRE(counts().destroys == 1U);
     REQUIRE(rpc.play().at("view_camera") == "editor");
 
-    // What a session would keep is PM-2's; refused with nothing changed.
+    // `keep` belongs to stopping; refused with nothing changed.
     REQUIRE(rpc.error("set_play_state", {{"state", "playing"}, {"keep", "all"}}).at("code") == -32602);
     REQUIRE(rpc.play().at("state") == "edit");
     REQUIRE(rpc.error("set_play_state", {{"state", "stopped"}}).at("code") == -32602);
@@ -510,6 +526,425 @@ TEST_CASE("PM-1b behavior edits and a game logic reload in edit leave the behavi
     REQUIRE(moverX() == Catch::Approx(3.0f));
     REQUIRE(rpc.result("set_play_state", {{"state", "edit"}}).at("previous") == "playing");
     REQUIRE(counts().destroys == 2U);
+}
+
+namespace {
+
+// PM-2 helpers.
+
+std::string persistentAuthoring() {
+    return AuthoringSceneAuthority::encodePersistent(GET_MODULE(ProjectBasicConfig).sceneDocument());
+}
+
+std::string semanticAuthoring() { return GET_MODULE(ProjectBasicConfig).sceneDataJson(); }
+
+std::uint64_t sceneRevision() { return GET_MODULE(ProjectBasicConfig).sceneDocument().revision().value; }
+
+Json setTransform(std::uint64_t object, double x) {
+    return Json::array({{{"op", "set_component_value"},
+                         {"object_id", object},
+                         {"component_slot", "transform"},
+                         {"field_path", "/pos"},
+                         {"value", {x, 0.0, 0.0}}}});
+}
+
+Json setStep(std::uint64_t object, int step) {
+    return Json::array({{{"op", "set_component_value"},
+                         {"object_id", object},
+                         {"component_slot", "behavior"},
+                         {"attachment_index", 1},
+                         {"field_path", "/params/step"},
+                         {"value", step}}});
+}
+
+Json recordedEntry(const Json &committed, std::uint64_t actor) {
+    return Json{{"transaction_id", committed.at("transaction_id")}, {"actor", actor}};
+}
+
+bool hasObject(Rpc &rpc, std::string_view name) {
+    const auto tree = rpc.result("scene_tree");
+    for (const auto &object : tree.at("objects"))
+        if (object.value("name", std::string{}) == name) return true;
+    return false;
+}
+
+// An object's x as its runtime transform has it, read through scene_tree
+// (an object the editor made has no name binding in the scene loader).
+float runtimeX(Rpc &rpc, std::string_view name) {
+    const auto tree = rpc.result("scene_tree");
+    for (const auto &object : tree.at("objects")) {
+        if (object.value("name", std::string{}) != name) continue;
+        REQUIRE(object.contains("entity_id"));
+        for (const auto &component : object.at("components"))
+            if (component.at("name") == "transform")
+                return component.at("runtime_json").at("local_trs").at("pos").at(0).get<float>();
+    }
+    FAIL("scene_tree has no object named " << name << " with a transform");
+    return 0.0f;
+}
+
+float objectX(std::string_view name) {
+    const auto object = GET_MODULE(SceneLoader).objectId(std::string{name});
+    REQUIRE(object);
+    return GameObjects::localTransform(*object).pos.x;
+}
+
+Json moverParams(std::string_view name) {
+    const auto entity = GET_MODULE(SceneLoader).objectId(std::string{name});
+    REQUIRE(entity);
+    for (const auto &info : attachments())
+        if (info.entity == *entity) return Json::parse(info.canonical_params);
+    FAIL(name << " has no behavior attachment");
+    return Json{};
+}
+
+#if PELICAN_WITH_AUDIO
+void writeU16(std::ofstream &file, std::uint16_t value) {
+    file.put(static_cast<char>(value & 0xFF));
+    file.put(static_cast<char>((value >> 8) & 0xFF));
+}
+
+void writeU32(std::ofstream &file, std::uint32_t value) {
+    for (int shift = 0; shift < 32; shift += 8) file.put(static_cast<char>((value >> shift) & 0xFF));
+}
+
+// One second of a quiet square wave, 16-bit mono PCM at 8 kHz.
+void writeToneWav(const std::filesystem::path &path) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream file{path, std::ios_base::binary};
+    constexpr std::uint32_t sample_rate = 8000;
+    constexpr std::uint32_t samples = sample_rate;
+    constexpr std::uint32_t data_size = samples * 2U;
+    file.write("RIFF", 4);
+    writeU32(file, 36 + data_size);
+    file.write("WAVE", 4);
+    file.write("fmt ", 4);
+    writeU32(file, 16);
+    writeU16(file, 1);
+    writeU16(file, 1);
+    writeU32(file, sample_rate);
+    writeU32(file, sample_rate * 2U);
+    writeU16(file, 2);
+    writeU16(file, 16);
+    file.write("data", 4);
+    writeU32(file, data_size);
+    for (std::uint32_t index = 0; index < samples; ++index)
+        writeU16(file, static_cast<std::uint16_t>((index / 20U) % 2U == 0U ? 512 : -512));
+}
+#endif
+
+} // namespace
+
+// PM-2 acceptance 1, 3 and 4: a session keeps the authoring and the history
+// as they were when it began, and stopping puts both back under a new
+// revision with the same ids; the edits made while playing are recorded
+// (undo takes one out, redo puts it back); a scene edit in flight refuses
+// Play and Stop, and saving, loading or importing a scene waits for the stop.
+TEST_CASE("PM-2 stopping a play session puts the authoring and the editor history back",
+          "[pm2][play-state][rpc][gpu]") {
+    EditLaunch launch;
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("render_frame");
+    const auto actor = rpc.result("open_editor_session", {{"display_name", "PM-2"}})
+                           .at("actor_id")
+                           .get<std::uint64_t>();
+    const auto mover_id = objectId(rpc, "Mover");
+    const auto other_id = objectId(rpc, "Other");
+
+    // An edit made before the session, for the undo after it.
+    const auto before_session = rpc.edit(actor, setTransform(other_id, 4.0));
+    REQUIRE(objectX("Other") == Catch::Approx(4.0f));
+    const auto authoring = persistentAuthoring();
+    const auto revision = sceneRevision();
+    auto play = rpc.play();
+    INFO(play.dump());
+    REQUIRE(play.at("session") == false);
+    REQUIRE(play.at("recorded_edits") == Json::array());
+
+    // Acceptance 4. A live preview in flight refuses Play: while its request
+    // waits for the boundary, and once its lease is open. Nothing changes.
+    const auto preview = rpc.result("open_preview", {{"actor_id", actor}, {"operations", setTransform(other_id, 8.0)}});
+    REQUIRE(preview.at("status") == "accepted");
+    auto busy = rpc.error("set_play_state", {{"state", "playing"}});
+    INFO(busy.dump());
+    REQUIRE(dataCode(busy) == "play_busy");
+    REQUIRE(busy.at("data").at("pending_ticket_ids").size() == 1U);
+    (void)rpc.result("step_frame");
+    busy = rpc.error("set_play_state", {{"state", "playing"}});
+    REQUIRE(dataCode(busy) == "play_busy");
+    REQUIRE(busy.at("data").at("open_preview_lease") == true);
+    REQUIRE(rpc.play().at("state") == "edit");
+    REQUIRE(rpc.play().at("session") == false);
+    REQUIRE(counts().constructed == 0U);
+    (void)rpc.result("abort_preview", {{"actor_id", actor}, {"ticket", preview.at("ticket")}});
+    (void)rpc.result("step_frame");
+    REQUIRE(persistentAuthoring() == authoring);
+    REQUIRE(sceneRevision() == revision);
+
+    REQUIRE(rpc.result("set_play_state", {{"state", "playing"}}) ==
+            Json{{"state", "playing"}, {"previous", "edit"}});
+    play = rpc.play();
+    REQUIRE(play.at("session") == true);
+    REQUIRE(play.at("recorded_edits") == Json::array());
+
+    // Acceptance 1. Inspector edits while playing: a transform and a
+    // behavior's value. Both reach the authoring and are recorded.
+    const auto moved = rpc.edit(actor, setTransform(other_id, 9.0));
+    const auto stepped = rpc.edit(actor, setStep(mover_id, 6));
+    REQUIRE(objectX("Other") == Catch::Approx(9.0f));
+    REQUIRE(moverParams("Mover").at("step") == 6);
+    REQUIRE(rpc.play().at("recorded_edits") ==
+            Json::array({recordedEntry(moved, actor), recordedEntry(stepped, actor)}));
+
+    // Acceptance 3. Undo takes the edit out of the record; redo puts it back,
+    // under the redo's own transaction.
+    (void)rpc.revert("undo", actor);
+    REQUIRE(rpc.play().at("recorded_edits") == Json::array({recordedEntry(moved, actor)}));
+    const auto redone = rpc.revert("redo", actor);
+    REQUIRE(rpc.play().at("recorded_edits") ==
+            Json::array({recordedEntry(moved, actor), recordedEntry(redone, actor)}));
+    REQUIRE(moverParams("Mover").at("step") == 6);
+
+    // Acceptance 4. What would replace or write the scene waits for the stop,
+    // and a keep naming an edit the session did not record refuses the stop.
+    // Nothing changes.
+    const auto during = persistentAuthoring();
+    const auto during_revision = sceneRevision();
+    REQUIRE(during_revision > revision);
+    for (const auto &[method, params] : std::vector<std::pair<std::string, Json>>{
+             {"save_scene", Json::object()},
+             {"load_scene", Json{{"name", "default_scene"}}},
+             {"import_scene_snapshot", Json{{"schema_version", 2}}}}) {
+        const auto refused = rpc.error(method, params);
+        INFO(refused.dump());
+        REQUIRE(dataCode(refused) == "play_session_active");
+        REQUIRE(refused.at("data").at("method") == method);
+        REQUIRE(refused.at("data").at("state") == "playing");
+    }
+    auto unknown = rpc.error("set_play_state", {{"state", "edit"},
+                                                {"keep", Json::array({moved.at("transaction_id"), "txn-999999"})}});
+    INFO(unknown.dump());
+    REQUIRE(dataCode(unknown) == "play_keep_unknown_transaction");
+    REQUIRE(unknown.at("data").at("transaction_id") == "txn-999999");
+    // The undone edit is not recorded any more.
+    unknown = rpc.error("set_play_state", {{"state", "edit"}, {"keep", Json::array({stepped.at("transaction_id")})}});
+    REQUIRE(dataCode(unknown) == "play_keep_unknown_transaction");
+    REQUIRE(rpc.play().at("state") == "playing");
+    REQUIRE(rpc.play().at("session") == true);
+    REQUIRE(persistentAuthoring() == during);
+    REQUIRE(sceneRevision() == during_revision);
+
+    // A preview in flight refuses the stop too.
+    const auto late_preview =
+        rpc.result("open_preview", {{"actor_id", actor}, {"operations", setTransform(other_id, 11.0)}});
+    (void)rpc.result("step_frame");
+    busy = rpc.error("set_play_state", {{"state", "edit"}});
+    REQUIRE(dataCode(busy) == "play_busy");
+    REQUIRE(rpc.play().at("state") == "playing");
+    (void)rpc.result("abort_preview", {{"actor_id", actor}, {"ticket", late_preview.at("ticket")}});
+    (void)rpc.result("step_frame");
+    REQUIRE(persistentAuthoring() == during);
+
+    // Stop: the authoring is what it was before the session -- the same
+    // content and ids -- under a revision later than any seen, and the
+    // runtime is the dormant edit one.
+    REQUIRE(rpc.result("set_play_state", {{"state", "edit"}}) ==
+            Json{{"state", "edit"}, {"previous", "playing"}});
+    REQUIRE(persistentAuthoring() == authoring);
+    REQUIRE(sceneRevision() > during_revision);
+    REQUIRE(objectId(rpc, "Mover") == mover_id);
+    REQUIRE(objectId(rpc, "Other") == other_id);
+    REQUIRE(objectX("Other") == Catch::Approx(4.0f));
+    REQUIRE(moverParams("Mover").at("step") == 2);
+    const auto dormant = attachments();
+    REQUIRE(dormant.size() == 1U);
+    REQUIRE_FALSE(dormant.front().active);
+    REQUIRE_FALSE(dormant.front().pending);
+    play = rpc.play();
+    REQUIRE(play.at("session") == false);
+    REQUIRE(play.at("recorded_edits") == Json::array());
+    REQUIRE(play.at("view_camera") == "editor");
+
+    // The history is as it was too: the next undo is the edit made before
+    // the session, and it applies.
+    const auto undone_before = rpc.revert("undo", actor);
+    REQUIRE(undone_before.at("source_transaction_id") == before_session.at("transaction_id"));
+    REQUIRE(objectX("Other") == Catch::Approx(3.0f));
+}
+
+// PM-2 acceptance 2 and 3: an object made while playing goes with the stop
+// unless its edit is kept, when it stays under the same id; the kept edits
+// are one history entry that one undo takes out; an edit to an object whose
+// making is not kept cannot be applied, is reported, and the stop succeeds.
+TEST_CASE("PM-2 keep carries chosen play-session edits past the stop as one history entry",
+          "[pm2][play-state][rpc][gpu]") {
+    EditLaunch launch;
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("render_frame");
+    const auto actor = rpc.result("open_editor_session", {{"display_name", "PM-2"}})
+                           .at("actor_id")
+                           .get<std::uint64_t>();
+    const auto spawn = Json::array({{{"op", "spawn"},
+                                     {"scene_id", "default_scene"},
+                                     {"object", {{"name", "Made"}, {"components", Json::array({transform(5.0)})}}}}});
+    const auto semantic = semanticAuthoring();
+
+    // Not kept: gone.
+    REQUIRE(rpc.result("set_play_state", {{"state", "playing"}}).at("previous") == "edit");
+    (void)rpc.edit(actor, spawn);
+    const auto first_id = objectId(rpc, "Made");
+    REQUIRE(rpc.result("set_play_state", {{"state", "edit"}}) ==
+            Json{{"state", "edit"}, {"previous", "playing"}});
+    REQUIRE_FALSE(hasObject(rpc, "Made"));
+    REQUIRE(semanticAuthoring() == semantic);
+
+    // Kept with an edit to it: it stays under the id it was made with, and the
+    // id is a new one (numbers never go back).
+    REQUIRE(rpc.result("set_play_state", {{"state", "playing"}}).at("previous") == "edit");
+    const auto made = rpc.edit(actor, spawn);
+    const auto made_id = objectId(rpc, "Made");
+    REQUIRE(made_id > first_id);
+    const auto moved = rpc.edit(actor, setTransform(made_id, 6.0));
+    const auto kept = rpc.result(
+        "set_play_state",
+        {{"state", "edit"}, {"keep", Json::array({made.at("transaction_id"), moved.at("transaction_id")})}});
+    INFO(kept.dump());
+    REQUIRE(kept.at("state") == "edit");
+    REQUIRE(kept.at("previous") == "playing");
+    REQUIRE(kept.at("not_kept") == Json::array());
+    REQUIRE(kept.contains("kept_transaction_id"));
+    REQUIRE(objectId(rpc, "Made") == made_id);
+    REQUIRE(runtimeX(rpc, "Made") == Catch::Approx(6.0f));
+    REQUIRE(rpc.play().at("session") == false);
+
+    // One undo takes both kept edits out.
+    const auto undone = rpc.revert("undo", actor);
+    REQUIRE(undone.at("source_transaction_id") == kept.at("kept_transaction_id"));
+    REQUIRE_FALSE(hasObject(rpc, "Made"));
+    REQUIRE(semanticAuthoring() == semantic);
+
+    // Keeping the edit to an object whose making is not kept: it does not
+    // apply, it is reported, and the stop succeeds with the object gone.
+    REQUIRE(rpc.result("set_play_state", {{"state", "paused"}}).at("previous") == "edit");
+    (void)rpc.edit(actor, spawn);
+    const auto touched = rpc.edit(actor, setTransform(objectId(rpc, "Made"), 7.0));
+    const auto partial =
+        rpc.result("set_play_state", {{"state", "edit"}, {"keep", Json::array({touched.at("transaction_id")})}});
+    INFO(partial.dump());
+    REQUIRE(partial.at("state") == "edit");
+    REQUIRE(partial.at("previous") == "paused");
+    REQUIRE(partial.at("not_kept") ==
+            Json::array({{{"transaction_id", touched.at("transaction_id")}, {"code", "closure_unresolvable"}}}));
+    REQUIRE_FALSE(partial.contains("kept_transaction_id"));
+    REQUIRE_FALSE(hasObject(rpc, "Made"));
+    REQUIRE(semanticAuthoring() == semantic);
+
+    // "all" keeps every recorded edit.
+    REQUIRE(rpc.result("set_play_state", {{"state", "playing"}}).at("previous") == "edit");
+    (void)rpc.edit(actor, spawn);
+    const auto all_id = objectId(rpc, "Made");
+    const auto everything = rpc.result("set_play_state", {{"state", "edit"}, {"keep", "all"}});
+    REQUIRE(everything.at("not_kept") == Json::array());
+    REQUIRE(objectId(rpc, "Made") == all_id);
+    REQUIRE(attachments().size() == 1U);
+    REQUIRE_FALSE(attachments().front().active);
+}
+
+// PM-2 acceptance 5, 6 and 7: every session starts from a fresh copy of the
+// game's DLL (a game system's own count starts over), a scene the game loaded
+// while playing gives way to the one the session began in, and the stop
+// leaves no voice behind.
+TEST_CASE("PM-2 each session starts a fresh game DLL, and stopping brings back the first scene and silence",
+          "[pm2][play-state][rpc][game-logic][gpu]") {
+    EditLaunch launch{[](const std::filesystem::path &root) {
+        auto scene = Json::parse(readFile(root / "scenes/main.scene.json"));
+        auto &scenes = scene.at("scenes");
+        Json params{{"step", 0}, {"load_scene", "second_scene"}};
+#if PELICAN_WITH_AUDIO
+        writeToneWav(root / "sounds/tone.wav");
+        params["sound"] = "project://sounds/tone.wav";
+#endif
+        scenes.at("default_scene")
+            .at("objects")
+            .push_back({{"name", "Loader"},
+                        {"components",
+                         Json::array({transform(-2.0), {{"name", "behavior"}, {"type", "pm1b_mover"}, {"params", params}}})}});
+        scenes["second_scene"] = {
+            {"objects",
+             Json::array({{{"name", "SecondCamera"}, {"components", Json::array({transform(0.0), {{"name", "camera"}}})}},
+                          {{"name", "Far"}, {"components", Json::array({transform(40.0)})}}})}};
+        writeFile(root / "scenes/main.scene.json", scene.dump(2));
+    }};
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("render_frame");
+    const auto authoring = persistentAuthoring();
+    auto &loader = GET_MODULE(SceneLoader);
+
+    // Acceptance 5 and 6. Playing: the system counts every frame, the Loader
+    // asks for second_scene on its first update, and it plays a sound.
+    REQUIRE(rpc.result("set_play_state", {{"state", "playing"}}).at("previous") == "edit");
+    for (int frame = 0; frame < 3; ++frame) (void)rpc.result("step_frame");
+    auto seen = counts();
+    REQUIRE(seen.system_updates == 3U);
+    REQUIRE(seen.scene_loads == 1U);
+    REQUIRE(seen.scene_load_errors == 0U);
+    REQUIRE(loader.currentScene() == "second_scene");
+#if PELICAN_WITH_AUDIO
+    // Acceptance 7. The sound is still there (nothing mixed it to its end).
+    auto &audio = GET_MODULE(Audio);
+    REQUIRE(seen.sounds == 1U);
+    REQUIRE(seen.sound_errors == 0U);
+    REQUIRE(audio.voiceCountForTesting() >= 1U);
+    REQUIRE(audio.backendVoiceCountForTesting() >= 1U);
+#endif
+
+    // Stop: the scene the session began in, as it was, and no voice.
+    REQUIRE(rpc.result("set_play_state", {{"state", "edit"}}).at("previous") == "playing");
+    REQUIRE(loader.currentScene() == "default_scene");
+    REQUIRE(persistentAuthoring() == authoring);
+    REQUIRE(hasObject(rpc, "Loader"));
+    REQUIRE(hasObject(rpc, "Mover"));
+    REQUIRE(attachments().size() == 2U);
+#if PELICAN_WITH_AUDIO
+    REQUIRE(audio.voiceCountForTesting() == 0U);
+    REQUIRE(audio.backendVoiceCountForTesting() == 0U);
+    for (int frame = 0; frame < 2; ++frame) (void)rpc.result("step_frame");
+    REQUIRE(audio.voiceCountForTesting() == 0U);
+#endif
+
+    // Acceptance 5. The next session's DLL is a fresh copy: the system's own
+    // count starts again from 1.
+    REQUIRE(rpc.result("set_play_state", {{"state", "playing"}}).at("previous") == "edit");
+    (void)rpc.result("step_frame");
+    REQUIRE(counts().system_updates == 1U);
+    REQUIRE(rpc.result("set_play_state", {{"state", "edit"}}).at("previous") == "playing");
+    REQUIRE(loader.currentScene() == "default_scene");
+}
+
+// PM-2: an engine launched with --start-state edit refuses the input record
+// and replay in every state, as its command line refuses --record-input and
+// --replay.
+TEST_CASE("PM-2 an engine launched in edit refuses the input record and replay",
+          "[pm2][play-state][rpc][gpu]") {
+    EditLaunch launch;
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    const auto path = (launch.dir.root / "input.jsonl").generic_string();
+    for (const auto *state : {"edit", "playing"}) {
+        if (std::string_view{state} == "playing")
+            REQUIRE(rpc.result("set_play_state", {{"state", "playing"}}).at("previous") == "edit");
+        for (const auto *method : {"start_input_record", "start_input_replay"}) {
+            const auto refused = rpc.error(method, {{"path", path}});
+            INFO(refused.dump());
+            REQUIRE(dataCode(refused) == "offline.mode_conflict@1");
+            REQUIRE(refused.at("data").at("method") == method);
+            REQUIRE(refused.at("data").at("start_state") == "edit");
+        }
+    }
+    REQUIRE_FALSE(std::filesystem::exists(path));
 }
 
 } // namespace Pelican

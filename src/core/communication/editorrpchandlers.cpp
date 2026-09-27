@@ -97,10 +97,14 @@ void configureEditorRpcHandlers(RpcServer &server,
     });
 
     auto snapshot_imported = std::move(hooks.snapshot_imported);
+    auto refuse_during_play_session =
+        std::move(hooks.refuse_during_play_session);
     server.setHandler(
         "import_scene_snapshot",
-        [&editor_rpc, snapshot_imported = std::move(snapshot_imported)](
-            const nlohmann::json &params) {
+        [&editor_rpc, snapshot_imported = std::move(snapshot_imported),
+         refuse_during_play_session](const nlohmann::json &params) {
+            if (refuse_during_play_session)
+                refuse_during_play_session("import_scene_snapshot");
             return invokeEditorRpc([&] {
                 auto result = editor_rpc.importSceneSnapshot(params);
                 snapshot_imported();
@@ -110,8 +114,11 @@ void configureEditorRpcHandlers(RpcServer &server,
 
     auto save_busy = std::move(hooks.save_busy);
     server.setHandler("save_scene",
-                      [&editor_rpc, save_busy = std::move(save_busy)](
+                      [&editor_rpc, save_busy = std::move(save_busy),
+                       refuse_during_play_session](
                           const nlohmann::json &params) {
+        if (refuse_during_play_session)
+            refuse_during_play_session("save_scene");
         return invokeEditorRpc([&] {
             if (save_busy()) {
                 throw EditorCommandError{

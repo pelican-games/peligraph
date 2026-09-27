@@ -11,6 +11,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace Pelican {
@@ -243,6 +244,36 @@ struct EditorEditRuntimeDependencies {
     std::function<bool(std::string_view)> component_exists;
 };
 
+// PM-2 (docs/design_play_mode.md 6.3 and 7). The editor's history as a play
+// session saves it and puts it back: the journal, the active writers and each
+// actor's undo / redo stack. The ticket, transaction and preview numbers are
+// not part of it; they never go back.
+struct EditorRedoEntry {
+    std::string source_transaction_id;
+    std::string undo_transaction_id;
+};
+
+struct EditorHistorySnapshot {
+    std::vector<EditorJournalRecord> journal;
+    std::unordered_map<std::string, std::vector<EditorLastWriterStamp>>
+        last_writers;
+    std::unordered_map<std::uint64_t, std::vector<std::string>> undo_stacks;
+    std::unordered_map<std::uint64_t, std::vector<EditorRedoEntry>>
+        redo_stacks;
+};
+
+// What replayJournalRecords did: the one history entry the applied records
+// became (none when nothing applied), and each record that did not apply with
+// the editor error code that stopped it.
+struct EditorJournalReplayOutcome {
+    struct NotApplied {
+        std::string transaction_id;
+        std::string code;
+    };
+    std::optional<std::string> transaction_id;
+    std::vector<NotApplied> not_applied;
+};
+
 // Production journal validation exposed for corruption controls. A value is
 // returned only when the two canonical unpack operations are not mechanical
 // inverses of one another.
@@ -290,6 +321,22 @@ class EditorEditCoordinator {
     // Used by replay/reload/scene-transition owners before observers resume.
     bool forceAbortPreview(std::string reason);
     const std::vector<EditorJournalRecord> &journal() const noexcept;
+
+    // PM-2. Engine-internal, not an RPC surface. snapshotHistory copies the
+    // history; restoreHistory puts a copy back and moves the gate epoch on,
+    // so nothing accepted against the history it replaces can commit.
+    EditorHistorySnapshot snapshotHistory() const;
+    void restoreHistory(EditorHistorySnapshot snapshot);
+    // PM-2 keep. Applies each record's forward operations in order to the
+    // current document, as the production path does an undo: on the current
+    // revision, behavior handles rebound to the attachments alive now, a
+    // spawn restoring the AuthoringObjectId its closure carries. A record
+    // that does not apply is skipped and named in the outcome. The records
+    // that applied become one journal entry (operation_kind "play_keep") on
+    // the undo stack of the actor who made the last of them, so one undo by
+    // that actor takes them all out again.
+    EditorJournalReplayOutcome replayJournalRecords(
+        std::span<const EditorJournalRecord> records);
 
     EditorProjectionResult executeJournalForVerification(
         std::string_view transaction_id, bool inverse);

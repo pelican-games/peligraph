@@ -3252,10 +3252,7 @@ struct EditorEditCoordinator::Impl {
         std::string accepted_scene_id;
         OrderedJson result;
     };
-    struct RedoEntry {
-        std::string source_transaction_id;
-        std::string undo_transaction_id;
-    };
+    using RedoEntry = EditorRedoEntry;
     struct PreviewLease {
         std::string ticket;
         EditorActorId actor_id{};
@@ -4971,6 +4968,147 @@ bool EditorEditCoordinator::forceAbortPreview(std::string reason) {
 const std::vector<EditorJournalRecord> &
 EditorEditCoordinator::journal() const noexcept {
     return impl_->journal;
+}
+
+EditorHistorySnapshot EditorEditCoordinator::snapshotHistory() const {
+    return EditorHistorySnapshot{
+        .journal = impl_->journal,
+        .last_writers = impl_->last_writers,
+        .undo_stacks = impl_->undo_stacks,
+        .redo_stacks = impl_->redo_stacks,
+    };
+}
+
+void EditorEditCoordinator::restoreHistory(EditorHistorySnapshot snapshot) {
+    impl_->journal = std::move(snapshot.journal);
+    impl_->last_writers = std::move(snapshot.last_writers);
+    impl_->undo_stacks = std::move(snapshot.undo_stacks);
+    impl_->redo_stacks = std::move(snapshot.redo_stacks);
+    (void)impl_->gate_tracker.advance();
+}
+
+EditorJournalReplayOutcome EditorEditCoordinator::replayJournalRecords(
+    std::span<const EditorJournalRecord> records) {
+    auto &impl = *impl_;
+    EditorJournalReplayOutcome outcome;
+    const auto base_revision = impl.document().revision();
+    std::vector<const EditorJournalRecord *> applied;
+    for (const auto &record : records) {
+        const auto skip = [&](std::string code) {
+            outcome.not_applied.push_back({record.transaction_id, std::move(code)});
+        };
+        try {
+            if (journalUsesUnpack(record)) {
+                requireUnpackJournalRecord(
+                    record, impl.requireProjectionState("play_keep"));
+            }
+            const auto operations = rebindJournalBehaviorTargets(
+                record.ordered_forward, impl.dependencies);
+            std::vector<EditorCanonicalOperation> canonical_operations;
+            const auto commands = commandsFromCanonical(
+                operations, impl.document(), impl.prefabRegistry(),
+                impl.bindableProvider(), impl.projectionState(),
+                &canonical_operations);
+            const EditorEditExecutionRequest request{
+                .base_revision = impl.document().revision(),
+                .commands = commands,
+                .operations = canonical_operations,
+            };
+            const auto projection = impl.dependencies.execute(request);
+            if (!projection.committed()) {
+                const auto failure = projectionFailure(projection, "play_keep");
+                skip(failure.code_name.empty()
+                         ? std::string{editorEditErrorCodeName(failure.code)}
+                         : failure.code_name);
+                continue;
+            }
+            applied.push_back(&record);
+        } catch (const EditFailure &failure) {
+            skip(failure.code_name.empty()
+                     ? std::string{editorEditErrorCodeName(failure.code)}
+                     : failure.code_name);
+        } catch (const std::exception &) {
+            skip(std::string{editorEditErrorCodeName(
+                EditorEditErrorCode::method_unavailable)});
+        }
+    }
+    if (applied.empty()) return outcome;
+
+    // One history entry for everything that applied: the forward operations
+    // in the order they ran, the inverse in the reverse order (each record's
+    // own inverse already runs backwards), and each command stamped against
+    // the document they left behind, as a committed edit's are.
+    EditorJournalRecord kept;
+    kept.transaction_id = impl.allocateTransaction();
+    kept.actor_id = applied.back()->actor_id;
+    if (const auto session = impl.sessions.find(kept.actor_id.value);
+        session != impl.sessions.end()) {
+        kept.actor_display_name = session->second.display_name;
+    } else {
+        kept.actor_display_name = applied.back()->actor_display_name;
+    }
+    kept.base_revision = base_revision;
+    kept.committed_revision = impl.document().revision();
+    kept.operation_kind = "play_keep";
+    for (const auto *record : applied) {
+        kept.ordered_forward.insert(kept.ordered_forward.end(),
+                                    record->ordered_forward.begin(),
+                                    record->ordered_forward.end());
+        kept.affected_authoring_ids.insert(kept.affected_authoring_ids.end(),
+                                           record->affected_authoring_ids.begin(),
+                                           record->affected_authoring_ids.end());
+    }
+    for (auto it = applied.rbegin(); it != applied.rend(); ++it) {
+        kept.ordered_inverse.insert(kept.ordered_inverse.end(),
+                                    (*it)->ordered_inverse.begin(),
+                                    (*it)->ordered_inverse.end());
+    }
+    std::sort(kept.affected_authoring_ids.begin(), kept.affected_authoring_ids.end(),
+              [](auto left, auto right) { return left.value < right.value; });
+    kept.affected_authoring_ids.erase(
+        std::unique(kept.affected_authoring_ids.begin(),
+                    kept.affected_authoring_ids.end()),
+        kept.affected_authoring_ids.end());
+
+    const EditorLastWriterStamp stamp{kept.committed_revision,
+                                       kept.transaction_id, kept.actor_id};
+    std::size_t index = 0;
+    const auto count = kept.ordered_forward.size();
+    for (const auto *record : applied) {
+        for (const auto &command : record->commands) {
+            EditorJournalCommandRecord replayed{
+                .forward = kept.ordered_forward.at(index),
+                .inverse = kept.ordered_inverse.at(count - 1U - index),
+                .stable_target = command.stable_target,
+                .read_set = command.read_set,
+                .write_set = command.write_set,
+                .structural_domain = command.structural_domain,
+                .forward_postcondition = targetState(
+                    Json::array({kept.ordered_forward.at(index)}),
+                    impl.document()),
+                .last_writer = stamp,
+            };
+            Impl::appendCommandRecord(kept, std::move(replayed));
+            ++index;
+        }
+    }
+    if (index != count) {
+        throw std::logic_error(
+            "play_keep journal commands do not match their forward operations");
+    }
+    Impl::finalizeRecordSets(kept);
+    for (const auto &write : kept.write_set) {
+        auto &history = impl.last_writers[write];
+        if (history.empty() ||
+            history.back().transaction_id != stamp.transaction_id) {
+            history.push_back(stamp);
+        }
+    }
+    outcome.transaction_id = kept.transaction_id;
+    impl.undo_stacks[kept.actor_id.value].push_back(kept.transaction_id);
+    impl.redo_stacks[kept.actor_id.value].clear();
+    impl.journal.push_back(std::move(kept));
+    return outcome;
 }
 
 EditorProjectionResult EditorEditCoordinator::executeJournalForVerification(

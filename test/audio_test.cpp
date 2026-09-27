@@ -1418,4 +1418,34 @@ TEST_CASE("PM-1a the whole mix held mixes silence and moves no voice on", "[audi
     REQUIRE(position() > playing_at);
 }
 
+// PM-2. Stopping a play session stops every voice at once: the device-less
+// engine mixes silence after it, both registries are empty, and a handle held
+// from before names nothing any more. The hold on the whole mix is not part
+// of it.
+TEST_CASE("PM-2 stopAll stops every voice and forgets its handle", "[audio][pm2]") {
+    VoiceRig rig;
+    writeConstantWav(rig.sandbox.root / "level.wav", 2.0, 0.5);
+    auto &audio = rig.audio();
+    REQUIRE(audio.backendKind() == AudioBackendKind::offline);
+    const auto first = audio.playSound("project://level.wav");
+    const auto second = audio.playSound("project://level.wav", AudioBus::Bgm);
+    REQUIRE(peak(rig.mix()) > 0.1);
+    REQUIRE(audio.voiceCountForTesting() == 2U);
+    REQUIRE(audio.backendVoiceCountForTesting() == 2U);
+    audio.setAllPaused(true);
+
+    audio.stopAll();
+    REQUIRE(audio.voiceCountForTesting() == 0U);
+    REQUIRE(audio.backendVoiceCountForTesting() == 0U);
+    REQUIRE_FALSE(audio.isPlaying(first));
+    REQUIRE_FALSE(audio.soundState(second));
+    audio.stopSound(first);
+    REQUIRE(audio.allPaused());
+    audio.setAllPaused(false);
+    REQUIRE(peak(rig.mix()) == 0.0);
+    // The engine plays again afterwards.
+    (void)audio.playSound("project://level.wav");
+    REQUIRE(peak(rig.mix()) > 0.1);
+}
+
 } // namespace Pelican

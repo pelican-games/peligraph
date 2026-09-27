@@ -475,6 +475,8 @@ class Audio::Backend {
     virtual std::uint32_t channels() const noexcept { return 0; }
     // PM-1a: the whole mix held or resumed. Nothing to hold by default (null).
     virtual void setAllPaused(bool paused) { (void)paused; }
+    // PM-2: every voice stopped and let go at once.
+    virtual void stopAll() = 0;
 };
 
 class NullAudioBackend final : public Audio::Backend {
@@ -538,6 +540,8 @@ class NullAudioBackend final : public Audio::Backend {
     std::size_t voiceCount() const noexcept override {
         return playing.size();
     }
+
+    void stopAll() override { playing.clear(); }
 };
 
 class MiniaudioBackend final : public Audio::Backend {
@@ -767,6 +771,10 @@ class MiniaudioBackend final : public Audio::Backend {
     std::size_t voiceCount() const noexcept override {
         return voices.size();
     }
+
+    // Each voice stops and uninitializes as it goes (~MiniaudioVoice). The
+    // engine itself, and whether it is held, stay as they are.
+    void stopAll() override { voices.clear(); }
 
     void setAllPaused(bool paused) override {
         if (paused == all_paused_) return;
@@ -1187,6 +1195,11 @@ void Audio::setAllPaused(bool paused) {
     if (paused == all_paused) return;
     backend->setAllPaused(paused);
     all_paused = paused;
+}
+
+void Audio::stopAll() {
+    backend->stopAll();
+    voices.clear();
 }
 
 std::vector<float> Audio::mixOffline(std::uint64_t frames) {

@@ -3,6 +3,7 @@
 #include <behavior.hpp>
 #include <gamecontext.hpp>
 #include <gameobjects.hpp>
+#include <gamesystem.hpp>
 
 #include <string>
 
@@ -16,17 +17,24 @@ Pelican::Pm1bFixture::Counts counts;
 struct MoverParams {
     std::int32_t step = 1;
     bool spawn = false;
+    // PM-2: a sound to play and a scene to load on the first update.
+    std::string sound;
+    std::string load_scene;
 
     static constexpr auto schema = Pelican::structFields(
         Pelican::behaviorParamsPolicy,
         Pelican::defaulted(Pelican::field<&MoverParams::step>("step"), 1),
-        Pelican::defaulted(Pelican::field<&MoverParams::spawn>("spawn"), false));
+        Pelican::defaulted(Pelican::field<&MoverParams::spawn>("spawn"), false),
+        Pelican::defaulted(Pelican::field<&MoverParams::sound>("sound"), ""),
+        Pelican::defaulted(Pelican::field<&MoverParams::load_scene>("load_scene"), ""));
 };
 
 // Moves its object along +x by step / 2 on every update. With `spawn`, its
-// first update spawns one pm1b_spark next to it.
+// first update spawns one pm1b_spark next to it; with `sound` it plays that
+// sound, and with `load_scene` it asks for that scene.
 class MoverBehavior final : public Pelican::Behavior {
     bool spawned_ = false;
+    bool first_done_ = false;
 
   public:
     using Params = MoverParams;
@@ -52,6 +60,25 @@ class MoverBehavior final : public Pelican::Behavior {
                 ++counts.spawn_errors;
             }
         }
+        if (!first_done_) {
+            first_done_ = true;
+            if (!params.sound.empty()) {
+                ++counts.sounds;
+                try {
+                    (void)Pelican::GameContext{}.audio().playSound(params.sound);
+                } catch (...) {
+                    ++counts.sound_errors;
+                }
+            }
+            if (!params.load_scene.empty()) {
+                ++counts.scene_loads;
+                try {
+                    Pelican::GameContext{}.loadScene(params.load_scene);
+                } catch (...) {
+                    ++counts.scene_load_errors;
+                }
+            }
+        }
     }
 
     void onDestroy(Pelican::BehaviorContext &) noexcept override { ++counts.destroys; }
@@ -73,8 +100,17 @@ class SparkBehavior final : public Pelican::Behavior {
     void onDestroy(Pelican::BehaviorContext &) noexcept override { ++counts.spark_destroys; }
 };
 
+// PM-2: a game system whose count lives in its own instance, which the DLL
+// keeps until it is loaded again.
+struct TickerSystem {
+    std::uint64_t updates = 0;
+
+    void update(Pelican::GameContext &) { counts.system_updates = ++updates; }
+};
+
 } // namespace
 
+PELICAN_REGISTER_SYSTEM(TickerSystem, 60);
 PELICAN_REGISTER_BEHAVIOR(MoverBehavior, "pm1b_mover", 1);
 PELICAN_REGISTER_BEHAVIOR(SparkBehavior, "pm1b_spark", 1);
 

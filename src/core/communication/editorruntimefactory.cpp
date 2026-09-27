@@ -1731,13 +1731,38 @@ EditorProjectionResult materializeEditorProjection(
         }
 
         if (!transform_scenes.empty()) {
+            // PM-2: an object this transaction removes is absent from the
+            // next document and its entity goes with the lifecycle route, so
+            // no transform is projected onto it. (A transaction that writes
+            // an object's transform and then removes it -- the undo of a kept
+            // "made it, moved it" -- would otherwise find a bound entity with
+            // no authored transform.)
+            std::unordered_set<std::uint64_t> removed;
+            for (const auto &operation : plan.operations) {
+                std::visit(
+                    [&](const auto &candidate) {
+                        using Operation = std::remove_cvref_t<decltype(candidate)>;
+                        if constexpr (std::same_as<Operation, EditorDestroyOperation> ||
+                                      std::same_as<Operation,
+                                                   EditorRemoveObjectsOperation>) {
+                            for (const auto id : candidate.object_ids)
+                                removed.insert(id.value);
+                        }
+                    },
+                    operation);
+            }
+            auto transform_bindings = runtime_bindings;
+            std::erase_if(transform_bindings, [&](const auto &binding) {
+                return removed.contains(binding.authoring_object_id.value);
+            });
             adapters.push_back(std::make_unique<TransformProjectionAdapter>(
                 makeTransformBindings(*modules.ecs,
                                       target.projectionState(),
-                                      runtime_bindings)));
+                                      transform_bindings)));
             adapters.push_back(
                 std::make_unique<StandaloneTransformProjectionAdapter>(
-                    *modules.ecs, runtime_bindings, transform_scenes));
+                    *modules.ecs, std::move(transform_bindings),
+                    transform_scenes));
         }
         std::vector<ComponentCodec> catalog{
             plan.context.codecCatalog().begin(),

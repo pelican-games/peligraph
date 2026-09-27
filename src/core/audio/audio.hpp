@@ -167,6 +167,11 @@ DECLARE_MODULE(Audio) {
     // nothing to hold. Each voice keeps its own paused state underneath.
     void setAllPaused(bool paused);
     bool allPaused() const noexcept { return all_paused; }
+    // PM-2. Stops every voice at once, graph voices included, and forgets
+    // their handles: a handle held by game code or a graph afterwards names
+    // nothing (stopping it does nothing, it is not playing). The whole-mix
+    // hold, the bus volumes and the decode cache stay.
+    void stopAll();
 
     // Called at the shared logical-frame boundary. Completed backend voices
     // are destroyed here rather than accumulating until Audio teardown.

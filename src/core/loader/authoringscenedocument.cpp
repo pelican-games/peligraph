@@ -2,6 +2,7 @@
 
 #include "../../project/sceneformat.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <stdexcept>
 #include <tuple>
@@ -429,6 +430,19 @@ AuthoringSceneDocument AuthoringSceneDocumentStage::finish(
     base_.uses_prefabs_ = validated.uses_prefabs;
     base_.warnings_ = std::move(validated.warnings);
     return std::move(base_);
+}
+
+AuthoringSceneDocument AuthoringSceneDocument::restagedAuthoring(
+    SceneRevision revision, std::uint64_t minimum_next_object_id) const {
+    if (revision.value == 0 || revision.value <= revision_.value) {
+        throw std::invalid_argument(
+            "restaged AuthoringSceneDocument revision must increase");
+    }
+    auto result = *this;
+    result.revision_ = revision;
+    result.next_authoring_object_id_value_ =
+        (std::max)(next_authoring_object_id_value_, minimum_next_object_id);
+    return result;
 }
 
 void AuthoringSceneDocument::swap(AuthoringSceneDocument &other) noexcept {

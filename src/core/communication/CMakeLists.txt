@@ -22,6 +22,7 @@ target_link_libraries(pelican_core PRIVATE pelican_schema_core_adapter)
 if(PELICAN_WITH_RPC)
 target_sources(pelican_core PRIVATE
     rpcserver.cpp
+    playsession.cpp
     windowedrpchost.cpp
     editorrpchandlers.cpp
     projectmigrationrpc.cpp

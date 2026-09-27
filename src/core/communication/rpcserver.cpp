@@ -4,6 +4,7 @@
 #include "animationstatus.hpp"
 #include "editorrpchandlers.hpp"
 #include "editorruntimefactory.hpp"
+#include "playsession.hpp"
 #include "projectmigrationrpc.hpp"
 #include "../startup.hpp"
 
@@ -65,6 +66,7 @@
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstdint>
@@ -78,6 +80,7 @@
 #include <ostream>
 #include <random>
 #include <set>
+#include <span>
 #include <sstream>
 #include <unordered_set>
 #include <utility>
@@ -948,14 +951,107 @@ std::string_view viewCameraName(Camera::ViewCamera view) {
     return view == Camera::ViewCamera::editor ? "editor" : "game";
 }
 
-nlohmann::json playStatusJson(const EngineTime &engine_time, const Camera &camera) {
+// PM-2: the edits a play session recorded, as get_status and the keep
+// refusal show them.
+nlohmann::json recordedEditsJson(std::span<const internal::PlaySessionEdit> edits) {
+    auto result = nlohmann::json::array();
+    for (const auto &edit : edits) {
+        result.push_back({{"transaction_id", edit.transaction_id},
+                          {"actor", edit.actor_id.value}});
+    }
+    return result;
+}
+
+nlohmann::json playStatusJson(const EngineTime &engine_time, const Camera &camera,
+                              const internal::PlaySession &session,
+                              const EditorEditCoordinator *editor) {
     return nlohmann::json{
         {"state", playStateName(engine_time.playState())},
         {"game_frame", engine_time.frameIndex()},
         {"game_time", engine_time.now()},
         {"pending_steps", engine_time.pendingSteps()},
         {"view_camera", viewCameraName(camera.viewCamera())},
+        {"session", session.active()},
+        {"recorded_edits", recordedEditsJson(session.recordedEdits(editor))},
     };
+}
+
+// PM-2. A play session starts and ends only between scene edits: a ticket
+// accepted and not yet committed, or an open live preview, would land on a
+// scene about to be made again (export_scene_snapshot's busy rule; the render
+// config and procedural asset tickets are not the scene's and never go back).
+void requireNoPendingSceneEdit(const EditorEditCoordinator *editor,
+                               EngineTime::PlayState state,
+                               std::string_view requested) {
+    if (editor == nullptr) return;
+    const auto pending = editor->pendingTicketIds();
+    const bool lease = editor->hasOpenPreviewLease();
+    if (pending.empty() && !lease) return;
+    throw JsonRpcHandlerError(
+        JsonRpcErrorCodes::applicationError,
+        "set_play_state: a scene edit is still in flight (an accepted ticket or an open live "
+        "preview); let it commit or abort it, then ask again",
+        {{"code", "play_busy"},
+         {"state", playStateName(state)},
+         {"requested", requested},
+         {"pending_ticket_ids", pending},
+         {"open_preview_lease", lease}});
+}
+
+// PM-2. What `keep` may name: "all", or an array of transaction ids.
+internal::PlaySessionKeep parsePlaySessionKeep(const nlohmann::json &keep) {
+    internal::PlaySessionKeep result;
+    if (keep.is_string() && keep.get_ref<const std::string &>() == "all") {
+        result.all = true;
+        return result;
+    }
+    if (!keep.is_array()) {
+        throw JsonRpcHandlerError(
+            JsonRpcErrorCodes::invalidParams,
+            "set_play_state keep must be \"all\" or an array of transaction ids");
+    }
+    for (const auto &id : keep) {
+        if (!id.is_string() || id.get_ref<const std::string &>().empty()) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "set_play_state keep must be \"all\" or an array of transaction ids");
+        }
+        const auto &value = id.get_ref<const std::string &>();
+        if (std::find(result.transaction_ids.begin(), result.transaction_ids.end(), value) ==
+            result.transaction_ids.end()) {
+            result.transaction_ids.push_back(value);
+        }
+    }
+    return result;
+}
+
+// PM-2. A play session keeps the scene's authoring as it was when it began:
+// what changes it wholesale, or writes it to disk, waits for the stop.
+void refuseDuringPlaySession(const internal::PlaySession &session,
+                             const EngineTime &engine_time, std::string_view method) {
+    if (!session.active()) return;
+    throw JsonRpcHandlerError(
+        JsonRpcErrorCodes::applicationError,
+        std::string{method} +
+            ": a play session is running and puts the scene back when it stops; stop it "
+            "first (set_play_state {\"state\": \"edit\"})",
+        {{"code", "play_session_active"},
+         {"method", method},
+         {"state", playStateName(engine_time.playState())}});
+}
+
+// PM-2. The input record and replay are a playing launch's; an engine started
+// in edit refuses them in every state, as its command line refuses
+// --record-input and --replay.
+void refuseInputSequenceInEditLaunch(std::string_view method) {
+    if (!internal::launchedInEditState()) return;
+    throw JsonRpcHandlerError(
+        JsonRpcErrorCodes::applicationError,
+        "offline.mode_conflict@1: " + std::string{method} +
+            " cannot be used in an engine launched with --start-state edit",
+        {{"code", "offline.mode_conflict@1"},
+         {"method", method},
+         {"start_state", "edit"}});
 }
 
 constexpr std::uint64_t maxAdvanceFrames = 600;
@@ -1396,7 +1492,9 @@ void internal::loadSceneResolutionBoundary(
 void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                                 const std::string &instance_id,
                                 std::vector<PendingTransformUpdate> &pending_transforms,
-                                EditorCommandRpcAdapter &editor_rpc) {
+                                EditorCommandRpcAdapter &editor_rpc,
+                                EditorCommandService &editor_service,
+                                internal::PlaySession &play_session) {
     // The engine endpoint refuses every method while the game logic DLL is
     // being swapped: handlers reach state the reload is rebuilding underneath
     // them. That is an engine fact, not a transport one, so it is declared
@@ -1426,7 +1524,8 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             },
         });
 
-    server.setHandler("get_status", [instance_id, &modules](const nlohmann::json &params) {
+    server.setHandler("get_status", [instance_id, &modules, &editor_service,
+                                     &play_session](const nlohmann::json &params) {
         requireObjectParams(params, "get_status");
         std::vector<PipelineHandle> active_pipelines;
         const auto runtime = modules.frame_graph.snapshot();
@@ -1479,7 +1578,8 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             // clock are under `play`.
             {"frame", modules.engine_time.evaluationIndex()},
             {"time", modules.engine_time.now()},
-            {"play", playStatusJson(modules.engine_time, modules.camera)},
+            {"play", playStatusJson(modules.engine_time, modules.camera, play_session,
+                                    editor_service.editCoordinator())},
             // AG-3a. What the frame that just ran drove, from what it
             // recorded: a sink's frame_revision is that frame's, which is the
             // one below `frame` here, since the RPC runs at the boundary after
@@ -1640,6 +1740,10 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             .save_busy = [&pending_transforms] {
                 return !pending_transforms.empty();
             },
+            .refuse_during_play_session = [&play_session, &modules](
+                                              std::string_view method) {
+                refuseDuringPlaySession(play_session, modules.engine_time, method);
+            },
         });
 
     server.setHandler("set_seed", [](const nlohmann::json &params) {
@@ -1675,6 +1779,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     });
 
     server.setHandler("start_input_record", [&modules](const nlohmann::json &params) {
+        refuseInputSequenceInEditLaunch("start_input_record");
         const auto path = absoluteCapturePath(requireStringParam(params, "path", "start_input_record"));
         try {
             const auto pose_action_names = internal::poseInputActionNames();
@@ -1699,6 +1804,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     });
 
     server.setHandler("start_input_replay", [&modules, &editor_rpc](const nlohmann::json &params) {
+        refuseInputSequenceInEditLaunch("start_input_replay");
         const auto path = absoluteCapturePath(requireStringParam(params, "path", "start_input_replay"));
         try {
             if (modules.input_state.pendingEventCount() != 0) {
@@ -1776,8 +1882,10 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         return result;
     });
 
-    server.setHandler("load_scene", [&pending_transforms, &modules, &editor_rpc](const nlohmann::json &params) {
+    server.setHandler("load_scene", [&pending_transforms, &modules, &editor_rpc,
+                                     &play_session](const nlohmann::json &params) {
         const auto name = requireStringParam(params, "name", "load_scene");
+        refuseDuringPlaySession(play_session, modules.engine_time, "load_scene");
         editor_rpc.forceAbortPreview("scene_transition");
         SceneLoadResult scene_result{SceneLoadCommitted{}};
         internal::loadSceneResolutionBoundary(
@@ -1839,13 +1947,24 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         return result;
     });
 
-    // PM-1a / PM-1b. edit, playing and paused (internal::changePlayState).
-    // Between edit and the other two the runtime is made again from the
-    // current authoring, through load_scene's path: behaviors wake and run
-    // onInit on the way out of edit, and get onDestroy on the way back, when
-    // spawned objects go. The same state again is a success that changes
-    // nothing. `keep` (what to carry out of a session) is PM-2's and refused.
-    server.setHandler("set_play_state", [&pending_transforms, &modules, &editor_rpc](
+    // PM-1a / PM-1b / PM-2. edit, playing and paused (internal::changePlayState).
+    // Between edit and the other two the runtime is made again, through
+    // load_scene's path: behaviors wake and run onInit on the way out of edit,
+    // and get onDestroy on the way back, when spawned objects go. The same
+    // state again is a success that changes nothing.
+    //
+    // PM-2 (docs/design_play_mode.md 6 and 7): leaving edit starts a play
+    // session. The authoring, the current scene and the editor's history are
+    // saved, and a loaded game logic DLL is reloaded first, so the game's
+    // systems start from their static initial state every time. Returning to
+    // edit ends it: every voice stops, the saved authoring comes back as a
+    // new SceneRevision (ids as saved, numbers never back) in the scene the
+    // session began in, the history comes back, and the edits `keep` names
+    // are applied again on top as one history entry. Without a session (an
+    // engine launched playing) the edit runtime is made from the current
+    // authoring and nothing is put back.
+    server.setHandler("set_play_state", [&pending_transforms, &modules, &editor_rpc,
+                                         &editor_service, &play_session](
                                             const nlohmann::json &params) {
         constexpr auto method = "set_play_state";
         const auto &object = requireObjectParams(params, method);
@@ -1854,16 +1973,13 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                 JsonRpcErrorCodes::invalidParams,
                 "set_play_state requires the string field 'state' (\"edit\", \"playing\" or \"paused\")");
         }
-        if (object.contains("keep")) {
-            throw JsonRpcHandlerError(
-                JsonRpcErrorCodes::invalidParams,
-                "set_play_state: 'keep' is not available in this build; stopping keeps nothing "
-                "and makes the edit runtime from the current authoring");
-        }
-        if (object.size() != 1) {
-            throw JsonRpcHandlerError(
-                JsonRpcErrorCodes::invalidParams,
-                "set_play_state accepts only the field 'state'");
+        for (const auto &[key, value] : object.items()) {
+            (void)value;
+            if (key != "state" && key != "keep") {
+                throw JsonRpcHandlerError(
+                    JsonRpcErrorCodes::invalidParams,
+                    "set_play_state accepts only the fields 'state' and 'keep'");
+            }
         }
         const auto &requested = object.at("state").get_ref<const std::string &>();
         EngineTime::PlayState target{};
@@ -1879,8 +1995,34 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                 "set_play_state state must be \"edit\", \"playing\" or \"paused\", not \"" +
                     requested + "\"");
         }
-        const auto change = internal::changePlayState(target, [&] {
-            editor_rpc.forceAbortPreview("scene_transition");
+        std::optional<internal::PlaySessionKeep> keep;
+        if (object.contains("keep")) {
+            if (target != EngineTime::PlayState::edit) {
+                throw JsonRpcHandlerError(
+                    JsonRpcErrorCodes::invalidParams,
+                    "set_play_state: 'keep' belongs to stopping (\"state\": \"edit\")");
+            }
+            keep = parsePlaySessionKeep(object.at("keep"));
+        }
+
+        const auto previous = modules.engine_time.playState();
+        const auto result = [](const internal::PlayStateChange &change) {
+            return nlohmann::json{
+                {"state", playStateName(change.state)},
+                {"previous", playStateName(change.previous)},
+            };
+        };
+        if (target == previous) return result({previous, target});
+        auto *editor = editor_service.editCoordinator();
+        const bool session_starts = previous == EngineTime::PlayState::edit;
+        const bool session_ends = target == EngineTime::PlayState::edit;
+        if (!session_starts && !session_ends) {
+            return result(internal::changePlayState(target, {}));
+        }
+        requireNoPendingSceneEdit(editor, previous, requested);
+
+        // The PM-1b edge: the runtime made again from the current authoring.
+        const auto rebuild_from_current = [&] {
             const auto scene = modules.scene_loader.currentScene();
             if (scene.empty()) return;
             internal::loadSceneResolutionBoundary(
@@ -1892,12 +2034,125 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                     (void)requireSceneLoadCommitted(
                         modules.scene_loader.load(std::move(request)));
                 });
+        };
+
+        if (session_starts) {
+            // A fresh copy of the game's DLL: its systems' statics start over.
+            // In edit, the reload makes the dormant edit runtime again; the
+            // session's own rebuild below wakes it. A replay or golden driver
+            // refuses any reload (it would break the run's determinism), so
+            // such a run keeps the DLL it has.
+            const bool deterministic_driver = modules.launch_config.input_replay ||
+                                              modules.launch_config.golden_mode;
+            if (configuredGameLogicStatus().loaded && !deterministic_driver) {
+                editor_rpc.forceAbortPreview("reload");
+                watch::RuntimeReloadResult reloaded;
+                if (modules.reload_service != nullptr) {
+                    reloaded = modules.reload_service->applyRuntimeNow(
+                        watch::gameLogicReloadParticipantName);
+                } else {
+                    const auto attempt = reloadConfiguredGameLogicAttempt(true);
+                    reloaded.attempted = attempt.attempted;
+                    reloaded.committed = attempt.committed;
+                    reloaded.error = attempt.error;
+                    reloaded.error_code = attempt.error_code;
+                    reloaded.error_fields = attempt.error_fields;
+                }
+                pending_transforms.clear();
+                if (!reloaded.committed) {
+                    const auto status = configuredGameLogicStatus();
+                    const auto code = !reloaded.error_code.empty()
+                                          ? reloaded.error_code
+                                          : (!status.error_code.empty()
+                                                 ? status.error_code
+                                                 : std::string{internal::gameLogicReloadFailedErrorCode});
+                    throw JsonRpcHandlerError(
+                        JsonRpcErrorCodes::applicationError,
+                        "set_play_state: the game logic DLL did not reload, so no play "
+                        "session started: " +
+                            (reloaded.error.empty() ? status.last_error : reloaded.error),
+                        {{"code", code},
+                         {"state", playStateName(previous)},
+                         {"requested", requested},
+                         {"error_fields", reloaded.error_fields.is_object()
+                                              ? nlohmann::json(reloaded.error_fields)
+                                              : nlohmann::json::object()}});
+                }
+            }
+            // An engine with no scene has no authoring to put back: it plays
+            // and stops as PM-1b did.
+            if (!modules.scene_loader.currentScene().empty()) {
+                play_session.begin(modules.project_config, editor);
+            }
+            try {
+                return result(internal::changePlayState(target, [&] {
+                    editor_rpc.forceAbortPreview("scene_transition");
+                    rebuild_from_current();
+                    pending_transforms.clear();
+                }));
+            } catch (...) {
+                play_session.discard();
+                throw;
+            }
+        }
+
+        // The session ends.
+        std::vector<EditorJournalRecord> kept_records;
+        if (keep) {
+            try {
+                kept_records = play_session.keptRecords(*keep, editor);
+            } catch (const internal::PlaySessionUnknownTransaction &unknown) {
+                throw JsonRpcHandlerError(
+                    JsonRpcErrorCodes::applicationError, unknown.what(),
+                    {{"code", "play_keep_unknown_transaction"},
+                     {"transaction_id", unknown.transactionId()},
+                     {"session", play_session.active()},
+                     {"recorded_edits", recordedEditsJson(unknown.recorded())}});
+            }
+        }
+        const bool restoring = play_session.active();
+        const auto change = internal::changePlayState(target, [&] {
+            editor_rpc.forceAbortPreview("scene_transition");
+#if PELICAN_WITH_AUDIO
+            if (auto *audio = FastModuleContainer::tryGet<Audio>()) audio->stopAll();
+#endif
+            if (!restoring) {
+                rebuild_from_current();
+            } else {
+                internal::loadSceneResolutionBoundary(
+                    play_session.savedSceneId(), [&](std::string_view scene_name) {
+                        auto request = SceneLoadRequest::owned(
+                            std::string{scene_name},
+                            modules.project_config.prepareRestoredSceneMetadata(
+                                play_session.savedDocument()),
+                            SceneLoadRoot::rpc);
+                        (void)requireSceneLoadCommitted(
+                            modules.scene_loader.load(std::move(request)));
+                    });
+            }
             pending_transforms.clear();
         });
-        return nlohmann::json{
-            {"state", playStateName(change.state)},
-            {"previous", playStateName(change.previous)},
-        };
+        if (restoring) {
+            auto history = play_session.takeHistory();
+            play_session.discard();
+            if (editor != nullptr && history) editor->restoreHistory(std::move(*history));
+        }
+        auto response = result(change);
+        if (keep) {
+            auto not_kept = nlohmann::json::array();
+            if (editor != nullptr && !kept_records.empty()) {
+                const auto outcome = editor->replayJournalRecords(kept_records);
+                for (const auto &skipped : outcome.not_applied) {
+                    not_kept.push_back({{"transaction_id", skipped.transaction_id},
+                                        {"code", skipped.code}});
+                }
+                if (outcome.transaction_id) {
+                    response["kept_transaction_id"] = *outcome.transaction_id;
+                }
+            }
+            response["not_kept"] = std::move(not_kept);
+        }
+        return response;
     });
 
     // PM-1b. The camera the frame is drawn from, in edit or paused: the
@@ -2357,6 +2612,8 @@ struct EngineRpcEndpoint::Impl {
     std::vector<PendingTransformUpdate> pending_transforms;
     std::unique_ptr<EditorCommandService> editor_service;
     EditorCommandRpcAdapter editor_rpc;
+    // PM-2: the running play session, if any.
+    internal::PlaySession play_session;
 
     Impl(std::istream &input, std::ostream &output)
         : modules{resolveEngineRpcModules()}, server{input, output},
@@ -2365,7 +2622,8 @@ struct EngineRpcEndpoint::Impl {
               {.render_config_editing = true})},
           editor_rpc{*editor_service} {
         configureEngineRpcHandlers(server, modules, instance_id,
-                                   pending_transforms, editor_rpc);
+                                   pending_transforms, editor_rpc,
+                                   *editor_service, play_session);
     }
 };
 

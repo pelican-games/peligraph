@@ -132,6 +132,11 @@ class AuthoringSceneDocument {
     AuthoringSceneDocument stageAuthoring(nlohmann::json raw_document,
                                           SceneRevision revision) const;
     AuthoringSceneDocumentStage structuralStageAuthoring() const;
+    // PM-2. This document's content and identities as a new revision, with
+    // the next AuthoringObjectId at least `minimum_next_object_id`: a play
+    // session's saved authoring put back without taking a number back.
+    AuthoringSceneDocument restagedAuthoring(SceneRevision revision,
+                                             std::uint64_t minimum_next_object_id) const;
 
     friend class ProjectBasicConfig;
     friend class ProjectBasicConfigProjectionTarget;

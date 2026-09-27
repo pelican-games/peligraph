@@ -195,9 +195,10 @@ TEST_CASE("PM-1a paused, headless frames evaluate the animated scene again and a
         REQUIRE(out_of_range.at("code") == -32602);
         REQUIRE(dataCode(out_of_range).empty());
     }
-    // PM-1b: the edit state exists now (pm1b_edit_state_rpc_test); what a
-    // session would keep is PM-2's, refused before anything changes.
-    REQUIRE(rpc.error("set_play_state", {{"state", "edit"}, {"keep", "all"}}).at("code") == -32602);
+    // PM-1b / PM-2: the edit state exists now (pm1b_edit_state_rpc_test); a
+    // keep that is neither "all" nor a list of transaction ids is an argument
+    // error, refused before anything changes.
+    REQUIRE(rpc.error("set_play_state", {{"state", "edit"}, {"keep", 3}}).at("code") == -32602);
     REQUIRE(rpc.result("get_status").at("play").at("state") == "paused");
     REQUIRE(rpc.error("set_play_state", {{"state", "stopped"}}).at("code") == -32602);
 

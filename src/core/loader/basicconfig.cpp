@@ -904,6 +904,46 @@ void ProjectBasicConfig::refreshResolvedScene(
     ++scene_metadata.next_prefab_provider_generation;
 }
 
+MetadataCommitToken ProjectBasicConfig::prepareRestoredSceneMetadata(
+    const AuthoringSceneDocument &saved) const {
+    (void)sceneProjectionState();
+    if (scene_metadata.next_scene_revision == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("SceneRevision space exhausted");
+    }
+    if (scene_metadata.next_scene_resolver_generation ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("SceneResolverGeneration space exhausted");
+    }
+    const auto &current = scene_metadata.projection->resolved();
+    auto document = saved.restagedAuthoring(
+        SceneRevision{scene_metadata.next_scene_revision},
+        scene_metadata.next_authoring_object_id);
+    auto candidate = ResolvedSceneResolver::prepare(
+        std::move(document),
+        SceneResolverGeneration{scene_metadata.next_scene_resolver_generation},
+        current.defaults(), current.prefabRegistry(), current.bindableProvider());
+
+    // prepareImportedSceneMetadata's candidate, except that the disk baseline
+    // stays what it is (saving is refused for the whole session, so the file
+    // is the one the session began with) and so does the provider.
+    auto impl = std::make_unique<MetadataCommitToken::Impl>();
+    impl->owner = const_cast<ProjectBasicConfig *>(this);
+    impl->candidate = scene_metadata;
+    impl->candidate.projection.emplace(std::move(candidate));
+    const auto &projection = *impl->candidate.projection;
+    if (scene_metadata.persistence_baseline) {
+        impl->candidate.persistence_baseline = scenePersistenceBaseline(
+            scene_metadata.persistence_baseline->scene_digest_sha256,
+            projection.resolved());
+    }
+    impl->candidate.next_scene_revision = projection.revision().value + 1U;
+    impl->candidate.next_scene_resolver_generation =
+        projection.resolverGeneration().value + 1U;
+    impl->candidate.next_authoring_object_id =
+        projection.authoring_.next_authoring_object_id_value_;
+    return MetadataCommitToken{std::move(impl)};
+}
+
 SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
     const auto &source = sceneDocument();
     if (!scene_metadata.persistence_baseline) {
