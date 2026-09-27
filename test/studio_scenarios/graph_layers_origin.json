@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "graph_layers_origin",
-  "description": "GL-2b: the Graph tab reads the frame plan's origin (GL-2a). The fixture's root holds two fullscreen passes (tint, and show reading tint's image), an instance, and a loop of three over the shadow cascades whose element 0 runs the body near and the others the else branch's body cascade, taking the place of the shadow_directional feature's pass; the pipeline is the engine's hybrid_v1 preset. The loop's zone carries a band under it saying x3 copies, a preset pass is a folded node, and the plan's diagnostics are one line. From the Frame Plan's Barriers, the row from tint to show opens tint in the Graph tab (its Layers section names it), and the row from the copy of element 2 to the lighting pass opens the body node depth in the zone, whose tab moves from near to the else branch's cascade. Nothing is written.",
+  "description": "GL-2b: the Graph tab reads the frame plan's origin (GL-2a). The fixture's root holds two fullscreen passes (tint, and show reading tint's image), an instance, and a loop of three over the shadow cascades whose element 0 runs the body near and the others the else branch's body cascade, taking the place of the shadow_directional feature's pass; the pipeline is the engine's hybrid_v1 preset. The loop's zone carries a band under it naming the barriers its copies take part in (the zone's own bottom row says how many copies), a preset pass is a folded node, and the plan's diagnostics are one line. From the Frame Plan's Barriers, the row from tint to show opens tint in the Graph tab (its Layers section names it), and the row from the copy of element 2 to the lighting pass opens the body node depth in the zone, whose tab moves from near to the else branch's cascade. Nothing is written.",
   "tab": "graph",
   "probe_no_automation": false,
   "steps": [
@@ -13,7 +13,6 @@
     {"label": "the engine says the copies of cascades came from the loop's body node", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "nodes[2].origin.loop", "value": "cascades"},
     {"label": "the Graph tab is in front", "cmd": "action", "name": "pelican.view.renderTools.graph"},
     {"label": "the loop is drawn as a zone", "cmd": "wait", "name": "pelican.graphCanvasView::graph_zone#cascades", "visible": true, "timeout_ms": 120000},
-    {"label": "decision 2: the band under the loop says how many copies it became", "cmd": "wait", "name": "pelican.graphCanvasView::graph_layer_band#cascades", "contains": "×3 copies", "timeout_ms": 60000},
     {"label": "and the barriers its copies take part in", "cmd": "wait", "name": "pelican.graphCanvasView::graph_layer_band#cascades", "contains": "barriers", "timeout_ms": 10000},
     {"label": "decision 1: a pass of the preset, with no origin, is a folded node", "cmd": "wait", "name": "pelican.graphCanvasView::graph_node#deferred_geometry", "visible": true, "timeout_ms": 30000},
     {"label": "decision 3: the plan's diagnostics, one line", "cmd": "wait", "name": "pelican.graphCanvasDiagnostics", "contains": "diagnostics", "visible": true, "timeout_ms": 30000},

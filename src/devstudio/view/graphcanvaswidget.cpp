@@ -255,6 +255,11 @@ void routeDerivedEdge(QGraphicsScene &scene, QGraphicsPathItem &line) {
     line.setPath(line.mapFromScene(curveGeometryBetween(*start, *tip).path));
 }
 
+// GL-1b, decision 1: a folded node's key in the one placement. It cannot be a
+// graph node's id, so the two never share a box.
+std::string foldedLayoutKey(const std::string &id) { return std::string{"\x01" "folded|"} + id; }
+bool isFoldedLayoutKey(const std::string &key) { return key.starts_with('\x01'); }
+
 void rerouteDerivedEdges(QGraphicsScene &scene, const std::string &node) {
     const QString name = qtext(node);
     for (QGraphicsItem *item : scene.items()) {
@@ -471,8 +476,10 @@ void GraphCanvasScene::pruneSessionPositions() {
     pruned_revision_ = model_->contentRevision();
     std::set<std::pair<std::string, std::string>> present;
     for (auto &key : model_->allNodeKeys()) present.insert(std::move(key));
+    // GL-1b: a folded node's place is not a document node's; it stays.
+    const auto folded_prefix = foldedPositionKey({}).first;
     std::erase_if(session_node_positions_, [&](const auto &entry) {
-        return !present.contains(entry.first);
+        return entry.first.first != folded_prefix && !present.contains(entry.first);
     });
     std::erase_if(session_collapsed_, [&](const auto &entry) {
         return !present.contains(entry.first);
@@ -514,8 +521,12 @@ bool GraphCanvasScene::showLoopBranch(const std::string &loop, std::size_t branc
 void GraphCanvasScene::autoLayout() {
     if (model_ == nullptr) return;
     const std::string scope = model_->currentScope();
+    // GL-1b: the folded nodes of the view on screen are placed again too.
+    const auto folded_prefix = foldedPositionKey({});
     std::erase_if(session_node_positions_, [&](const auto &entry) {
-        return entry.first.first == scope;
+        return entry.first.first == scope ||
+               (entry.first.first == folded_prefix.first &&
+                entry.first.second.starts_with(folded_prefix.second));
     });
     // Start from nothing: the placement is the whole answer, so a leftover
     // control point from the last one would be a bend nobody asked for.
@@ -527,6 +538,8 @@ void GraphCanvasScene::autoLayout() {
     clearControlSelection();
     // One draw to get the placement, which is where `placement_*` comes from.
     repopulate();
+    // GL-1b, decision 1: the folded nodes' places in it, for the session.
+    keepFoldedPlaces();
 
     GraphCanvasLayout placed;
     placed.nodes = placement_boxes_;
@@ -581,6 +594,21 @@ void GraphCanvasScene::autoLayout() {
     // "Auto layout" is one deliberate act, not the tail of a drag: it is sent
     // at once rather than after the wait a drag needs.
     flushLayout();
+}
+
+// GL-1b: a folded node's place is session state, per view (GL-1).
+std::pair<std::string, std::string> GraphCanvasScene::foldedPositionKey(const std::string &id) const {
+    return {std::string{"\x01" "derived"}, (model_ != nullptr ? model_->viewKey() : std::string{}) + "|" + id};
+}
+
+void GraphCanvasScene::keepFoldedPlaces() {
+    for (QGraphicsItem *item : items()) {
+        if (!item->data(GraphCanvasDerivedRole).toBool() ||
+            nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem})
+            continue;
+        session_node_positions_.try_emplace(
+            foldedPositionKey(item->data(NodeGraphNameRole).toString().toStdString()), item->pos());
+    }
 }
 
 void GraphCanvasScene::setMenuActions(QAction *auto_layout, QAction *fit_view,
@@ -1503,7 +1531,37 @@ void GraphCanvasScene::repopulate() {
         }
         drawn.push_back(std::move(entry));
     }
-    const NodeGraphLayout layout = GraphCanvasDrawing::placeNodes(drawn, edges, top);
+    // GL-1b, decision 1: one placement for the whole root, the Frame Plan's
+    // (layoutNodeGraph, columns by the longest path) -- the folded nodes and
+    // the lines the plan implies go into it with the graph's own nodes and
+    // edges, so the plan's order reads left to right as it does on the Frame
+    // Plan's Logical graph.
+    std::set<std::string, std::less<>> graph_ids;
+    for (const auto &entry : drawn) graph_ids.insert(entry.node->id);
+    std::set<std::string, std::less<>> folded_ids;
+    std::vector<LayoutNode> folded_layout_nodes;
+    for (const auto &folded : folded_nodes) {
+        folded_ids.insert(folded.id);
+        const QSizeF size = drawing.derivedNodeSize(folded);
+        folded_layout_nodes.push_back(
+            LayoutNode{foldedLayoutKey(folded.id), size.width(), size.height()});
+    }
+    std::vector<LayoutEdge> derived_layout_edges;
+    std::vector<LayoutEdge> folded_only_edges;
+    for (const auto &edge : derived_edges) {
+        const auto end = [&](const std::string &id) {
+            return folded_ids.contains(id) ? foldedLayoutKey(id)
+                   : graph_ids.contains(id) ? id
+                                            : std::string{};
+        };
+        LayoutEdge line{end(edge.from), end(edge.to)};
+        if (line.from.empty() || line.to.empty()) continue;
+        if (folded_ids.contains(edge.from) && folded_ids.contains(edge.to))
+            folded_only_edges.push_back(line);
+        derived_layout_edges.push_back(std::move(line));
+    }
+    const NodeGraphLayout layout = GraphCanvasDrawing::placeNodes(
+        drawn, edges, top, folded_layout_nodes, derived_layout_edges);
     // A zone's frame can reach left of or above the item's position (a body
     // node dragged there); the placement is of the frame, so the item goes
     // that much further in.
@@ -1515,7 +1573,7 @@ void GraphCanvasScene::repopulate() {
     // control points; nothing else reads it, and it is recomputed every draw.
     placement_boxes_.clear();
     for (const auto &[id, box] : layout.boxes)
-        placement_boxes_.emplace(id, QPointF{box.x, box.y} - frameOffset(id));
+        if (!isFoldedLayoutKey(id)) placement_boxes_.emplace(id, QPointF{box.x, box.y} - frameOffset(id));
     placement_bends_.clear();
     for (std::size_t index = 0; index < edges.size(); ++index) {
         if (index >= layout.bends.size() || layout.bends[index].empty()) continue;
@@ -1529,6 +1587,11 @@ void GraphCanvasScene::repopulate() {
     }
 
     const GraphCanvasLayout &root_placement = this->layout(scope);
+    // GL-1b: whether the document places any of the graph's nodes. Until it
+    // does, the one placement is the whole canvas.
+    const bool anchored = std::ranges::any_of(drawn, [&](const auto &entry) {
+        return root_placement.nodes.contains(entry.node->id);
+    });
     std::set<std::string, std::less<>> drawn_nodes;
     std::vector<std::pair<std::string, QGraphicsItem *>> zone_bodies;
     // GL-1: the left edge of the graph's nodes, which the folded ones keep to
@@ -1556,8 +1619,11 @@ void GraphCanvasScene::repopulate() {
             position = retained->second;
         }
 
-        auto moved = [this, position_key, scope](const QPointF &at) {
+        auto moved = [this, position_key, scope, anchored](const QPointF &at) {
             if (rebuilding_) return;
+            // GL-1b: the first place the document is given ends the one
+            // placement; the folded nodes stay where it put them.
+            if (!anchored) keepFoldedPlaces();
             session_node_positions_[position_key] = at;
             // And the document, once the drag has settled. The control
             // points do not move with it: they are absolute, which is the
@@ -1594,32 +1660,44 @@ void GraphCanvasScene::repopulate() {
         graph_left = graph_left ? std::min(*graph_left, left) : left;
     }
 
-    // GL-1, decision 1: the folded nodes, one column in the plan's order left
-    // of the graph's nodes. Where they sit is not kept (a drag holds for the
-    // session), and nothing about them goes to the document.
+    // GL-1b, decision 1: a folded node sits where the one placement put it.
+    // Once the document places the graph's nodes (a drag, Auto layout), that
+    // placement no longer describes them: a folded node keeps the place it
+    // had this session, and one that never had one is placed with the folded
+    // nodes alone -- the same layout -- left of the graph's nodes. Where they
+    // sit is never written to the document.
+    std::optional<NodeGraphLayout> folded_alone;
+    QPointF folded_shift;
+    if (anchored && !folded_nodes.empty()) {
+        folded_alone = GraphCanvasDrawing::placeNodes({}, {}, top, folded_layout_nodes,
+                                                      folded_only_edges);
+        std::optional<qreal> right;
+        for (const auto &[id, box] : folded_alone->boxes)
+            right = std::max(right.value_or(box.right()), box.right());
+        folded_shift = QPointF{graph_left.value_or(0.0) - NodeGraphHorizontalGap -
+                                   right.value_or(0.0),
+                               0.0};
+    }
+    const NodeGraphLayout &folded_layout = folded_alone ? *folded_alone : layout;
     std::set<std::string, std::less<>> derived_drawn;
-    if (!folded_nodes.empty()) {
-        qreal column_width = 0.0;
-        for (const auto &folded : folded_nodes)
-            column_width = std::max(column_width, drawing.derivedNodeSize(folded).width());
-        const qreal x = graph_left ? *graph_left - column_width - 110.0 : 0.0;
-        qreal y = top;
-        for (const auto &folded : folded_nodes) {
-            const auto key = std::pair{std::string{"\x01" "derived"}, model_->viewKey() + "|" + folded.id};
-            QPointF position{x, y};
-            if (const auto kept = session_node_positions_.find(key);
-                kept != session_node_positions_.end())
-                position = kept->second;
-            y += drawing.derivedNodeSize(folded).height() + NodeGraphVerticalGap;
-            const std::string id = folded.id;
-            drawing.addDerivedNode(folded, position, [this, key, id](const QPointF &at) {
-                if (rebuilding_) return;
-                session_node_positions_[key] = at;
-                rerouteDerivedEdges(*this, id);
-                scheduleSceneRectUpdate();
-            });
-            derived_drawn.insert(folded.id);
-        }
+    for (const auto &folded : folded_nodes) {
+        const auto key = foldedPositionKey(folded.id);
+        const auto layout_key = foldedLayoutKey(folded.id);
+        QPointF position{0.0, top};
+        if (const auto box = folded_layout.boxes.find(layout_key); box != folded_layout.boxes.end())
+            position = QPointF{box->second.x, box->second.y} + folded_shift;
+        if (const auto kept = session_node_positions_.find(key); kept != session_node_positions_.end())
+            position = kept->second;
+        const auto column = folded_layout.columns.find(layout_key);
+        const std::string id = folded.id;
+        QGraphicsItem *item = drawing.addDerivedNode(folded, position, [this, key, id](const QPointF &at) {
+            if (rebuilding_) return;
+            session_node_positions_[key] = at;
+            rerouteDerivedEdges(*this, id);
+            scheduleSceneRectUpdate();
+        });
+        item->setData(GraphCanvasColumnRole, column == folded_layout.columns.end() ? 0 : column->second);
+        derived_drawn.insert(folded.id);
     }
 
     for (std::size_t index = 0; index < edges.size(); ++index) {
@@ -3491,6 +3569,11 @@ struct GraphCanvasWidget::Impl {
     // have changed with it, and the last commit they were told of.
     std::function<void()> plan_commit_action;
     std::uint64_t told_plan_commit = 0;
+    // GL-1b, decision 2: who restarts the engine for a commit that asks.
+    std::function<void(const QString &)> engine_restart_action;
+    // Whether this tab asked for the restart now pending (a decline is only
+    // this tab's to report then).
+    bool restart_asked = false;
     QLineEdit *label_edit = nullptr;
     QPushButton *apply_label = nullptr;
     QPushButton *add_node = nullptr;
@@ -4111,6 +4194,7 @@ struct GraphCanvasWidget::Impl {
             });
         if (graph.ready)
             graph.ready(&view, [this](bool available, const QString &) {
+                if (!available) restart_asked = false;
                 model.setConnected(available);
                 dispatch();
             });
@@ -4131,6 +4215,18 @@ struct GraphCanvasWidget::Impl {
         dispatch();
         tellPlanCommit();
         revealPending();
+        restartEngineIfAsked();
+    }
+
+    // GL-1b, decision 2: the commit is written; the engine starts again to
+    // run it, through the same restart the Frame Plan asks for. Last, since
+    // it can stop the engine this tab's requests go to.
+    void restartEngineIfAsked() {
+        const auto line = model.takeEngineRestart();
+        if (!line) return;
+        if (!engine_restart_action) return;
+        restart_asked = true;
+        engine_restart_action(qtext(*line));
     }
 
     // Q-18. The digest the panels share moves on a placement too -- the
@@ -5109,7 +5205,11 @@ struct GraphCanvasWidget::Impl {
         } else {
             const QString whole = qtext(message.message);
             notice->setToolTip(whole);
-            notice->setText(oneLine(whole));
+            // GL-1b, decision 3: the engine's sentence is long; what would
+            // have applied the change is kept on the line whatever is cut.
+            const QString hint = qtext(std::string{GraphCanvasModel::restartNotOfferedHint});
+            notice->setText(whole.endsWith(hint) ? oneLine(whole.chopped(hint.size())) + hint
+                                                 : oneLine(whole));
             notice->setStyleSheet(message.kind == InspectorNoticeKind::Error
                                       ? QStringLiteral("color: #c0392b;")
                                       : QStringLiteral("color: #7f8c8d;"));
@@ -5375,6 +5475,16 @@ void GraphCanvasWidget::setFramePlanLoopAction(std::function<bool(const QString 
 
 void GraphCanvasWidget::setPlanCommitAction(std::function<void()> action) {
     impl_->plan_commit_action = std::move(action);
+}
+
+void GraphCanvasWidget::setEngineRestartAction(std::function<void(const QString &reason)> action) {
+    impl_->engine_restart_action = std::move(action);
+}
+
+void GraphCanvasWidget::engineRestartDeclined(const QString &message) {
+    if (!std::exchange(impl_->restart_asked, false)) return;
+    impl_->model.engineRestartDeclined(message.toStdString());
+    impl_->dispatch();
 }
 
 bool openGraphNodeInTabs(QTabWidget &tabs, GraphCanvasWidget &graph,

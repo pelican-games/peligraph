@@ -645,6 +645,7 @@ void GraphCanvasModel::setConnected(bool connected) {
     types_ = Json::object();
     failure_ = {};
     edit_notice_ = {};
+    engine_restart_.reset();
     ticket_.clear();
     clearContext();
     refresh();
@@ -653,6 +654,15 @@ void GraphCanvasModel::setConnected(bool connected) {
 
 void GraphCanvasModel::refresh() {
     if (canRefresh()) request(RequestKind::Context, "get_graph_instances", Json::object());
+}
+
+void GraphCanvasModel::engineRestartDeclined(std::string message) {
+    // GL-1b: the engine that committed the edit is still the one running --
+    // read what it has now (the plan comes with the document), as after any
+    // other commit, and say why nothing restarted.
+    engine_restart_.reset();
+    edit_notice_ = {InspectorNoticeKind::Information, std::move(message)};
+    refresh();
 }
 
 void GraphCanvasModel::requestCatalog() {
@@ -1057,6 +1067,15 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                     layout_retry_ = pending_history_->entry.forward;
                 pending_history_.reset();
                 edit_notice_ = {InspectorNoticeKind::Error, diagnostic(response)};
+                // GL-1b, decision 3: an engine that cannot yet answer a graph
+                // edit with restart_required refuses a change to a live
+                // material's physical contract with this sentence (and no
+                // code). Say what would have applied it. Remove once every
+                // engine answers restart_required instead (RS-1).
+                if (edit_notice_.message.find(
+                        "changes the physical rendering contract of live material") !=
+                    std::string::npos)
+                    edit_notice_.message += restartNotOfferedHint;
                 // LP-4c, decision 9: and where the refusal points.
                 markRefusal(error, edit_notice_.message);
                 ++content_revision_;
@@ -1083,6 +1102,24 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             commitHistory(response);
             layout_retrying_ = false;
             refusal_marks_.clear();
+            // GL-1b, decision 2: written, but the engine can only run it
+            // after a restart (RS-1). The owner restarts it; the document and
+            // the plan are read from the engine that comes back.
+            if (response.value("restart_required", false)) {
+                pending_placement_only_ = false;
+                std::string line = "Restarting the engine to apply this change";
+                if (const auto reason = response.find("restart_reason");
+                    reason != response.end() && reason->is_object()) {
+                    const auto code = reason->value("code", std::string{});
+                    const auto detail = reason->value("detail", std::string{});
+                    if (!code.empty() || !detail.empty())
+                        line += " (" + (code.empty() ? detail : code) + ")";
+                }
+                line += "...";
+                edit_notice_ = {InspectorNoticeKind::Information, line};
+                engine_restart_ = std::move(line);
+                return;
+            }
             edit_notice_ = {InspectorNoticeKind::Success, "Graph change saved."};
             // Q-18: the engine published the edit before it said committed,
             // so the plan it holds now is the edit's. The read of the
@@ -4795,7 +4832,9 @@ std::string GraphCanvasModel::layerBand(std::string_view canvas_node) const {
             copies.insert(pass->loop + "|" +
                           (pass->loop.empty() ? std::string{} : std::to_string(pass->loop_element)));
     }
-    if (copies.size() > 1) parts.push_back("\xC3\x97" + std::to_string(copies.size()) + " copies");
+    // A loop's zone already says how many copies on its bottom row.
+    if (copies.size() > 1 && !loop(std::string{canvas_node}))
+        parts.push_back("\xC3\x97" + std::to_string(copies.size()) + " copies");
     // L2: the barriers its passes take part in, and aliasing.
     const auto barriers = static_cast<std::size_t>(
         std::ranges::count_if(plan_barriers_, [&](const PlanBarrier &barrier) {

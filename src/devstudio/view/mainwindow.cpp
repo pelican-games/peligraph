@@ -488,6 +488,9 @@ void MainWindow::createWorkspace() {
     // Frame Plan's own node positions are the Graph tab's set_layout -- and
     // would read the whole plan again after each drag.
     graph_canvas_->setPlanCommitAction([this] { frame_plan_->planChangedByCommit(); });
+    // GL-1b: a graph edit the engine can only apply by starting again goes
+    // through the Frame Plan's restart (G-4 / G-5), not a second one.
+    graph_canvas_->setEngineRestartAction([this](const QString &reason) { requestEngineRestart(reason); });
     // LP-4e: a decomposed material pass is edited as its loop, so the Graph
     // tab comes to the front with that loop selected.
     frame_plan_->setLoopDecomposedAction([this, render_tabs](const QString &loop) {
@@ -1421,6 +1424,7 @@ void MainWindow::requestEngineRestart(const QString &reason) {
         const QString declined = tr("The engine was not restarted. The setting is saved and applies the next time the engine starts.");
         statusBar()->showMessage(declined);
         frame_plan_->engineRestartDeclined(declined);
+        graph_canvas_->engineRestartDeclined(declined);
         return;
     }
     // Set first: with nothing unsaved the restart happens inside this call.
@@ -1551,6 +1555,7 @@ void MainWindow::cancelNavigation(const QString &message) {
         const QString declined = tr("The engine was not restarted. The setting is saved and applies the next time the engine starts.");
         statusBar()->showMessage(message.isEmpty() ? declined : message + QLatin1Char(' ') + declined);
         frame_plan_->engineRestartDeclined(declined);
+        graph_canvas_->engineRestartDeclined(declined);
         return;
     }
     if (!message.isEmpty()) statusBar()->showMessage(message, 8000);

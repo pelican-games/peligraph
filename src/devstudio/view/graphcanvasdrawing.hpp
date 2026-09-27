@@ -66,8 +66,13 @@ struct Node {
     bool zone_folded = false;
 };
 
+// GL-1b: `extra_nodes` and `extra_edges` go into the same one placement after
+// the graph's own -- the root's folded nodes and the lines the plan implies --
+// so `bends[i]` still belongs to `edges[i]`.
 NodeGraphLayout placeNodes(const std::vector<Node> &nodes,
-                          const std::vector<GraphCanvasEdge> &edges, qreal top);
+                          const std::vector<GraphCanvasEdge> &edges, qreal top,
+                          const std::vector<LayoutNode> &extra_nodes = {},
+                          const std::vector<LayoutEdge> &extra_edges = {});
 
 // LP-4d1, the loop zone. One row of a frame's left or right edge: the loop's
 // own port outside (empty when the loop has none of that name) and the body's

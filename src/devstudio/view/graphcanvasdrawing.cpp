@@ -218,16 +218,20 @@ Node Builder::prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &
 }
 
 NodeGraphLayout placeNodes(const std::vector<Node> &nodes,
-                          const std::vector<GraphCanvasEdge> &edges, qreal top) {
+                          const std::vector<GraphCanvasEdge> &edges, qreal top,
+                          const std::vector<LayoutNode> &extra_nodes,
+                          const std::vector<LayoutEdge> &extra_edges) {
     std::vector<LayoutNode> layout_nodes;
-    layout_nodes.reserve(nodes.size());
+    layout_nodes.reserve(nodes.size() + extra_nodes.size());
     for (const Node &entry : nodes)
         layout_nodes.push_back(
             LayoutNode{entry.node->id, entry.width, entry.height});
+    layout_nodes.insert(layout_nodes.end(), extra_nodes.begin(), extra_nodes.end());
     std::vector<LayoutEdge> layout_edges;
-    layout_edges.reserve(edges.size());
+    layout_edges.reserve(edges.size() + extra_edges.size());
     for (const auto &edge : edges)
         layout_edges.push_back(LayoutEdge{edge.from_node, edge.to_node});
+    layout_edges.insert(layout_edges.end(), extra_edges.begin(), extra_edges.end());
     LayoutOptions layout_options;
     layout_options.horizontal_gap = NodeGraphHorizontalGap;
     layout_options.vertical_gap = NodeGraphVerticalGap;

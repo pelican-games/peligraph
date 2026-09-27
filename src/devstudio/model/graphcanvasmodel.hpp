@@ -769,6 +769,9 @@ class GraphCanvasModel {
     bool pending_placement_only_ = false;
     bool plan_after_commit_ = false;
     std::uint64_t plan_commit_revision_ = 0;
+    // GL-1b, decision 2: the line a committed edit's restart_required asked
+    // for, until the owner takes it (takeEngineRestart).
+    std::optional<std::string> engine_restart_;
     // History belongs to exactly one committed document. A refresh showing
     // another writer's revision invalidates it instead of overwriting them.
     std::string history_digest_;
@@ -1219,6 +1222,23 @@ class GraphCanvasModel {
     // owner compares it before and after a reply to tell the other panels
     // that show the plan to read it again.
     auto planCommitRevision() const noexcept { return plan_commit_revision_; }
+    // GL-1b, decision 2. An edit committed with `restart_required: true` (the
+    // engine could not apply it live -- RS-1's `restart_reason` says why):
+    // the document is written, and the engine has to start again to run it.
+    // The model neither reads the document nor the plan after such a commit;
+    // this hands the owner, once, the line to restart with (the same
+    // restart the Frame Plan's G-4 asks for). Empty when none is asked.
+    [[nodiscard]] std::optional<std::string> takeEngineRestart() {
+        return std::exchange(engine_restart_, std::nullopt);
+    }
+    // The restart was declined: the engine that committed the edit is still
+    // running. Say why, and read what it has now.
+    void engineRestartDeclined(std::string message);
+    // GL-1b, decision 3. Added to a refusal an engine without RS-1 gives a
+    // graph edit it could only apply by restarting.
+    static constexpr std::string_view restartNotOfferedHint =
+        " \xE2\x80\x94 this change needs an engine restart, which the engine does not "
+        "offer for graph edits yet";
     bool busy() const noexcept { return pending_.has_value() || !ticket_.empty(); }
     bool canRefresh() const noexcept { return connected_ && !busy(); }
     // An edit needs a digest to compare against: without one there is nothing

@@ -2796,7 +2796,8 @@ TEST_CASE("GL-2b the plan's origin says which graph node made a pass; bands, Lay
     for (const auto &domain : GraphCanvasModel::domainNames())
         model.setDomainShown(domain, domain == "render");
     REQUIRE(model.layersShown());
-    CHECK(model.layerBand("cascades") == "\xC3\x97" "3 copies \xC2\xB7 2 barriers");
+    // The zone's bottom row says how many copies; the band leaves them out.
+    CHECK(model.layerBand("cascades") == "2 barriers");
     CHECK(model.layerBand("tint") == "1 barrier \xC2\xB7 aliased");
     CHECK(model.layerBand("left") == "aliased");
     CHECK(model.layerBand("gbuffer").empty());

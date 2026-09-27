@@ -5826,3 +5826,201 @@ TEST_CASE("Q-19 Rename definition… and Delete definition act on the zone picke
     CHECK(notice->text() ==
           QStringLiteral("Definition body is used by steps: make them run another definition first."));
 }
+
+// --- GL-1b. The Graph's root is placed the way the Frame Plan is: one
+// layoutNodeGraph over the graph's nodes and the folded ones, with the lines
+// the plan implies (decision 1). A commit that asks for an engine restart is
+// handed to the owner's restart, the Frame Plan's (decision 2); an engine
+// that cannot ask yet refuses in words, and the line says what it needed
+// (decision 3).
+
+namespace {
+
+// The root: a target_ref naming scene_color and the fullscreen pass reading
+// it. The plan: the preset's gbuffer and lighting write scene_color, the
+// graph's own blur reads it, and the rendering section's present reads blur.
+Json gl1bRead(const Json &layout = Json::object()) {
+    Json blur_inputs = Json::object();
+    blur_inputs["source"] = Json{{"node", "bloomed"}, {"port", "resource"}};
+    Json document{{"nodes", Json::array({
+                       {{"id", "bloomed"}, {"op", "render.target_ref"},
+                        {"parameters", {{"name", "scene_color"}}},
+                        {"outputs", Json::array({"resource"})}},
+                       {{"id", "blur"}, {"op", "render.fullscreen"}, {"parameters", Json::object()},
+                        {"inputs", blur_inputs}, {"outputs", Json::array({"color"})}}})},
+                  {"definitions", Json::object()},
+                  {"layout", layout}};
+    auto read = context(document);
+    read["root_schema"] = "pelican.graph";
+    read["source_reference"] = "fixture";
+    return read;
+}
+
+Json gl1bPass(const std::string &name, std::size_t order, const std::string &source,
+              const Json &reads, const Json &writes) {
+    return {{"name", name},     {"kind", "render"}, {"order", order},   {"level", order},
+            {"source", source}, {"reads", reads},   {"writes", writes}, {"reads_history", Json::array()},
+            {"declaration_index", order}};
+}
+
+Json gl1bPlan() {
+    return {{"schema", "pelican.frame_plan"},
+            {"version", 1},
+            {"graph", "main_render"},
+            {"loops", Json::array()},
+            {"nodes", Json::array({
+                 gl1bPass("gbuffer", 0, "engine", Json::array(), Json::array({"g_albedo"})),
+                 gl1bPass("lighting", 1, "engine", Json::array({"g_albedo"}),
+                          Json::array({"scene_color"})),
+                 gl1bPass("blur", 2, "engine", Json::array({"scene_color"}),
+                          Json::array({"blur_image"})),
+                 gl1bPass("present", 3, "project", Json::array({"blur_image"}),
+                          Json::array({"display"}))})}};
+}
+
+void openGl1b(GraphCanvasModel &model, GraphCanvasScene &scene, const Json &read) {
+    model.setConnected(true);
+    for (const auto &request : model.takeRpcRequests())
+        if (request.method == "get_graph_instances")
+            model.receiveRpcResult(request.request_id, read.dump());
+    // The plan is read with the document.
+    bool planned = false;
+    for (const auto &request : model.takeRpcRequests())
+        if (request.method == "get_frame_plan") {
+            model.receiveRpcResult(request.request_id, gl1bPlan().dump());
+            planned = true;
+        }
+    REQUIRE(planned);
+    scene.setModel(&model);
+    REQUIRE(scene.property("pelicanGraphFoldedCount").toULongLong() == 3);
+}
+
+} // namespace
+
+TEST_CASE("GL-1b the root's folded nodes are placed by the same one layout as the graph's, "
+          "in the plan's order left to right",
+          "[devstudio][graph-canvas][scene][gl1b]") {
+    (void)application();
+    const QStringList order{QStringLiteral("gbuffer"), QStringLiteral("lighting"),
+                            QStringLiteral("bloomed"), QStringLiteral("blur"),
+                            QStringLiteral("present")};
+
+    SECTION("a document that places nothing: one placement for everything") {
+        GraphCanvasModel model;
+        GraphCanvasScene scene;
+        openGl1b(model, scene, gl1bRead());
+        CHECK(itemsOfKind(scene, PelicanStudio::GraphCanvasDerivedEdgeItem).size() == 3);
+        // The Frame Plan's column rule: the longest path over the plan's
+        // dependencies. present reads what the graph's own blur writes, so it
+        // is right of it, not in a column of folded nodes on the left (GL-1).
+        std::map<QString, QPointF> placed;
+        for (int column = 0; column < order.size(); ++column) {
+            QGraphicsItem *item = nodeItem(scene, order[column]);
+            REQUIRE(item != nullptr);
+            CHECK(item->data(PelicanStudio::GraphCanvasColumnRole).toInt() == column);
+            if (column > 0) CHECK(item->pos().x() > nodeItem(scene, order[column - 1])->pos().x());
+            placed[order[column]] = item->pos();
+        }
+
+        // Auto layout is the same one placement: nothing moves, and only the
+        // graph's own nodes are written to the document.
+        scene.autoLayout();
+        for (const auto &name : order) CHECK(nodeItem(scene, name)->pos() == placed.at(name));
+        CHECK(scene.layout().nodes.contains("bloomed"));
+        CHECK(scene.layout().nodes.contains("blur"));
+        CHECK_FALSE(scene.layout().nodes.contains("gbuffer"));
+        CHECK_FALSE(scene.layout().nodes.contains("present"));
+        // Drawn again from the document's placement, the folded nodes keep
+        // the places it gave them (session state).
+        scene.repopulate();
+        for (const auto &name : order) CHECK(nodeItem(scene, name)->pos() == placed.at(name));
+    }
+
+    SECTION("a document that places the graph's nodes: the folded ones go left of them") {
+        GraphCanvasModel model;
+        GraphCanvasScene scene;
+        const Json layout{{"nodes", {{"bloomed", {{"x", 500.0}, {"y", 40.0}}},
+                                     {"blur", {{"x", 900.0}, {"y", 40.0}}}}}};
+        openGl1b(model, scene, gl1bRead(layout));
+        CHECK(nodeItem(scene, QStringLiteral("bloomed"))->pos() == QPointF{500.0, 40.0});
+        for (const auto &name : {QStringLiteral("gbuffer"), QStringLiteral("lighting"),
+                                 QStringLiteral("present")})
+            CHECK(nodeItem(scene, name)->sceneBoundingRect().right() < 500.0);
+        // Among themselves, still the plan's order.
+        CHECK(nodeItem(scene, QStringLiteral("gbuffer"))->pos().x() <
+              nodeItem(scene, QStringLiteral("lighting"))->pos().x());
+    }
+}
+
+TEST_CASE("GL-1b a Graph commit that asks for a restart goes to the owner's restart; an older "
+          "engine's refusal says a restart is what it needed",
+          "[devstudio][graph-canvas][scene][gl1b]") {
+    (void)application();
+    Q18Tab tab;
+    QStringList restarts;
+    tab.widget->setEngineRestartAction([&](const QString &reason) { restarts.push_back(reason); });
+    const auto document = zoneDocument();
+    tab.answer(QStringLiteral("get_graph_instances"), q18Context(document, "gl1b-0"));
+    tab.answer(QStringLiteral("get_graph_catalog"), visualCatalog());
+    tab.answer(QStringLiteral("get_frame_plan"), q18Plan(2));
+    auto *notice = tab.field<QLabel>("pelican.graphCanvasNotice");
+    const auto edit = [&](int count) {
+        const int sent = tab.reads("edit_graph_document");
+        tab.widget->scene().selectNode("steps");
+        QCoreApplication::processEvents();
+        auto *field = tab.field<QSpinBox>("pelican.graphCanvasLoop.count");
+        field->setValue(count);
+        Q_EMIT field->editingFinished();
+        QCoreApplication::processEvents();
+        REQUIRE(tab.reads("edit_graph_document") == sent + 1);
+        tab.answer(QStringLiteral("edit_graph_document"),
+                   Json{{"status", "accepted"}, {"ticket", "gl1b"}});
+    };
+
+    // Decision 3: an engine without RS-1 refuses in words (and no code).
+    edit(3);
+    const std::string refusal =
+        "render-pipeline candidate pass 'render_material_pass' changes the physical rendering "
+        "contract of live material 0; require a transactional material pipeline rebuild";
+    tab.answer(QStringLiteral("get_edit_result"),
+               Json{{"status", "rejected"}, {"committed", false}, {"error", {{"message", refusal}}}});
+    const QString hint = QString::fromUtf8(
+        " \xE2\x80\x94 this change needs an engine restart, which the engine does not offer for "
+        "graph edits yet");
+    CHECK(restarts.isEmpty());
+    CHECK(notice->toolTip() == QString::fromStdString(refusal) + hint);
+    // The sentence is cut to one line; the hint is not.
+    CHECK(notice->text().endsWith(hint));
+    tab.answer(QStringLiteral("get_graph_instances"), q18Context(document, "gl1b-0"));
+    tab.answer(QStringLiteral("get_frame_plan"), q18Plan(2));
+
+    // Decision 2: RS-1's answer. Written, and the engine starts again through
+    // the owner's restart; nothing is read from the engine about to stop.
+    edit(4);
+    const int reads = tab.reads("get_graph_instances");
+    tab.answer(QStringLiteral("get_edit_result"),
+               Json{{"status", "committed"},
+                    {"committed", true},
+                    {"source_digest", {{"hex", "gl1b-1"}}},
+                    {"restart_required", true},
+                    {"restart_reason",
+                     {{"code", "material_physical_contract_changed"},
+                      {"material", 0},
+                      {"pass", "render_material_pass"},
+                      {"detail", "material 0 changes its physical rendering contract"}}}});
+    REQUIRE(restarts.size() == 1);
+    CHECK(restarts.front() ==
+          QStringLiteral("Restarting the engine to apply this change "
+                         "(material_physical_contract_changed)..."));
+    CHECK(notice->text() == restarts.front());
+    CHECK(tab.reads("get_graph_instances") == reads);
+
+    // Declined (unsaved scene edits, Cancel): the running engine has the edit;
+    // the tab reads it and says why nothing restarted. A decline of a restart
+    // another panel asked for is not this tab's to report.
+    tab.widget->engineRestartDeclined(QStringLiteral("The engine was not restarted."));
+    CHECK(tab.reads("get_graph_instances") == reads + 1);
+    CHECK(notice->text() == QStringLiteral("The engine was not restarted."));
+    tab.widget->engineRestartDeclined(QStringLiteral("Someone else's."));
+    CHECK(tab.reads("get_graph_instances") == reads + 1);
+}

@@ -638,6 +638,10 @@ class GraphCanvasScene final : public QGraphicsScene {
     // Only the edges that touch the selected node are lit.
     void applyEdgeEmphasis();
     void pruneSessionPositions();
+    // GL-1b, decision 1: where a folded node's session place is filed (per
+    // view), and keeping the places the folded nodes are drawn at now.
+    [[nodiscard]] std::pair<std::string, std::string> foldedPositionKey(const std::string &id) const;
+    void keepFoldedPlaces();
     void scheduleSceneRectUpdate();
     void applySceneRectNow();
     void clearControlSelection();
@@ -739,6 +743,13 @@ class GraphCanvasWidget final : public QWidget {
     // change the frame plan (anything but a placement), when the engine says
     // it committed: the owner has the Frame Plan read the plan again.
     void setPlanCommitAction(std::function<void()> action);
+    // GL-1b, decision 2. An edit that committed with restart_required hands
+    // the restart to this action -- the window's, the one the Frame Plan's
+    // G-4 / G-5 calls -- with the line the tab's notice shows. When the
+    // restart is declined, engineRestartDeclined says why and reads the
+    // document the running engine now has.
+    void setEngineRestartAction(std::function<void(const QString &reason)> action);
+    void engineRestartDeclined(const QString &message);
     // LP-4e. Show a root node another panel's edit just made (Decompose into
     // loop's graph.loop): the document is read again, and the node is
     // selected as soon as a document that holds it arrives -- at once when
