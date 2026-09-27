@@ -277,7 +277,70 @@
 
 ## 12. Studio(GUI session が書く)
 
-(見出しだけ。Play / Pause / Step のボタン、再生中の表示、Inspector の「残す」、Timeline との関係、戻らない編集の見せ方、見る camera の切り替え)
+### 12.1 ボタンとキー
+
+- viewport の上の帯(今の Move / Rotate / Scale の並び)に 3 つのボタンを置く
+  - `▶ Play`: `edit` では「セッションを始めて `playing`」。`paused` では「`playing` に戻す」。`playing` の間は `■ Stop` に変わる
+  - `❚❚ Pause`: `playing` ↔ `paused` の切り替え(押した状態で `paused`)。`edit` では押せない
+  - `▶| Step`: `paused` では `advance_frames {count: 1}`。`edit` では `set_play_state {state: "paused"}` を送ってから `advance_frames {count: 1}`(§2。onInit まで走り、game のフレーム 1 で止まる)。`playing` では押せない
+- `■ Stop`(`playing` / `paused`): `set_play_state {state: "edit", keep}`。`keep` は §12.3 の一覧で印を付けたもの
+- キー(Unity と同じ): Ctrl+P = Play / Stop、Ctrl+Shift+P = Pause、Ctrl+Alt+P = Step。テキスト欄に focus があるときは効かない
+- 送信中(返事待ち)の間は 3 つとも押せない。`play_busy` で断られたら、status に「編集の送信か preview が終わってから、もう一度押してください」相当の 1 行と、終わるのを待って自動でもう一度送るかを選ぶボタン
+
+### 12.2 今の状態を見せる
+
+- 状態は `get_status` の `play`(`state`、`game_frame`、`game_time`、`pending_steps`、`view_camera`、`session`、`recorded_edits`)から読む。Studio が今 `get_status` を読んでいる周期に乗せる(新しい poll を増やさない)
+- viewport の枠と上の帯の色で分ける: `edit` は今の色、`playing` は青系、`paused` は黄系(色は theme の token で。明暗どちらでも読める)
+- status bar: `Edit` / `Playing 00:12.4 · frame 734` / `Paused · frame 734`(`pending_steps` があれば `Stepping (3 left)`)
+- 起動: Studio は engine に `--start-state edit` を渡す(EW-1 の `--embedded` と一緒に)。起動の直後は `Edit`
+
+### 12.3 再生中の編集と「残す」
+
+- 再生中も Inspector・Outliner・Graph tab・Frame Plan などの編集はできる(engine は断らない)
+- **scene の編集**(Inspector・Outliner・behavior・graph の装着など、scene の authoring に効くもの)は Stop で戻る。編集の行(notice)の後ろに `— reverts on Stop` を添え、`Keep` のリンクを出す(押すと §12.3 の一覧でその行に印)
+- **Play changes**(再生中の編集の一覧。viewport の上の帯のボタンで開く小さな panel)
+  - 行 = `play.recorded_edits` の 1 件。行の文は Studio が送った編集ならその履歴の項目名(`Move Cube`、`Set Light.intensity` など。transaction_id から引く)、他の client の編集なら `actor` と transaction_id
+  - 行ごとの check(既定は外れている = 戻す)、`Keep all` / `Keep none`
+  - undo で消えた編集は一覧から消え、redo で戻る(engine の `recorded_edits` に従う)
+- **game が動かした値を残す**: Inspector で object を選んでいるときに `Take from game` ボタン(再生中だけ)。その object の Transform の今の runtime の値を読み、同じ値を書く編集として送り、その行に印を付ける(engine の §7 の「Studio が値を読んで書く編集を送る」形)。v0 は Transform だけ
+- **Stop のあと**: status に `Stopped: 5 changes reverted, 2 kept` 。`not_kept` があれば、その件数と行ごとの理由(code を読める文に)を Play changes の panel に残す
+- Stop のあとは scene の revision が進むので、Inspector・Outliner・Graph tab の装着は今の外部変更の経路(Q-16 の watch)で読み直す。Studio の scene の Undo の履歴は engine の履歴(戻した形)に合わせて読み直す
+
+### 12.4 戻らない編集の見せ方
+
+- §6.4 のとおり、再生中でも次の編集はファイルに書かれ、Stop で戻らない: render の構成(Frame Plan・Pass Editor・Render Features・Graph tab の graph 文書・Decompose・Replace with loop version)、material・shader・code・asset
+- 再生中にこれらの panel で編集を送るときは、その panel の上に 1 行の帯「Changes here are written to files and stay after Stop.」を出す(再生中の間だけ。閉じても次の再生で出る)。render の編集の Undo(RU-1)は今どおり効く
+- Save(scene)・Load scene・Import snapshot は再生中は押せない(tooltip に `play_session_active` の理由)。File > Save Scene も同じ
+
+### 12.5 見る camera
+
+- `edit`: editor camera(今の viewport の操作のまま)
+- `playing`: game の active camera。viewport での editor camera の操作(WASD など)は game に渡る入力と重ならないよう、`playing` の間は Studio からは送らない
+- `paused`: 帯に `View: Game | Editor` の切り替え(`set_view_camera`)。既定は Game。Editor に切り替えると、止まった game の世界を editor camera で見て回れる
+- Stop で editor camera に戻る
+
+### 12.6 他の機能との関係
+
+- **Graph tab の Timeline**: `edit` / `paused` では scrub した時刻にとどまる(§8)。`playing` では scrub を押せない(tooltip: Pause してから)
+- **game logic の reload**: 帯のメニューに `Reload game logic`(`reload_game_logic`)を足す。どの状態でも押せる(§6.5)。`playing` / `paused` では「再生中の状態は保ち、今の authoring から作り直す」を tooltip に
+- **Restart Engine / project の切替 / Studio を閉じる**: 再生中なら確認(「再生を終えます。再生中の scene の変更は失われます(Keep の印は使われません)」)
+- **Outliner**: 再生中に spawn された runtime の object は、`(runtime)` の印を付けて灰色で出す(編集できない)。Stop で消える
+
+### 12.7 PM-3 の分け方
+
+- **PM-3a**(PM-1a の後): 今の既定の起動(`playing`)のまま、`Pause` / `Step` / Resume のボタンと状態の表示(§12.2 の枠の色と status)。Timeline の scrub を `playing` で押せなくする
+- **PM-3b**(PM-2 の後): `--start-state edit`、Play / Stop、Play changes の panel と Keep、Take from game、戻らない編集の帯、Save などを押せなくする、見る camera の切り替え、Reload game logic、再起動などの確認、Outliner の runtime の印
+
+### 12.8 受け入れ(PM-3 の GPU シナリオ)
+
+- PM-3a: behavior で動く object を持つ fixture で、Pause で位置が止まり(2 回の読みで同じ)、Step で 1 歩だけ変わり、Play で動き出す。状態の表示が `Paused · frame N` になる
+- PM-3b:
+  - 起動が `Edit`(object が動かない)。Play で動き、Stop で起動時の位置に戻る
+  - 再生中の Inspector の編集(Light の強さなど)が Stop で戻る。Keep の印を付けた編集は残る
+  - `Take from game` で、game が動かした位置が Stop の後も残る
+  - 再生中に Save が押せない
+  - 再生中の Pass Editor の編集が Stop の後も残り、帯が出ていた
+  - `paused` で `View: Editor` にすると editor camera で見える(screenshot の違い)
 
 ## 13. v1 に残すもの
 
