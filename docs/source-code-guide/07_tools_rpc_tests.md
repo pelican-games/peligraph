@@ -1030,7 +1030,7 @@ package の文書が壊れていれば `available: false` + `unavailable_reason`
 
 これは RPC 利用時に最も間違えやすい点です。
 
-- `step_frame` は simulation の1 tick です。`EngineTime::advance()` と通常の5 phase executor を通るため、input、game system、physics、ECS が更新されます。
+- `step_frame` は headless 専用の 1 フレームです。`EngineTime::advance()` と通常の5 phase executor を通るため、input、ECS と editor の system は毎回更新されます。game system、physics、game の event は `playing` のときだけ進みます(paused では PM-1a の `editor_only`)。窓ありでは `step_frame_windowed` で断ります。
 - `render_frame` は現在時刻の再描画です。通常 game/ECS update は行わず、sequence player を現在時刻へ sample して描画します。
 - `set_time` → `render_frame` は、任意時刻を sampling/capture する用途です。
 - `inject_input` → `step_frame` は、入力がその frame の game system へ届く標準経路です。

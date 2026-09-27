@@ -340,7 +340,7 @@ RPCモードでは通常のfor-loopへ入らず、[`runEngineRpcServer(std::cin,
 
 ### 全経路に共通する `setCurrentFrameIndex()`
 
-`engine_time.advance()` の直後に `modules.vulkan.setCurrentFrameIndex(engine_time.frameIndex())` を呼ぶのは、いまや三経路に一つずつではなく [`FrameStep::advance()`](../../src/core/appflow/loop.cpp#L422) の中の[この1行](../../src/core/appflow/loop.cpp#L426)だけです。三つのドライバはどれもフレームの先頭でこの `advance` を呼ぶので、「ある経路だけ呼び忘れる」形が構造として作れません。これが [`VulkanManageCore`](../../src/core/vkcore/core.hpp#L36) 側の `logical_frame` 軸になり、debug-utilsラベルとGPU timingの計測が同じフレーム番号で並びます。
+`engine_time.advance()` の直後に `vulkan_.setCurrentFrameIndex(engine_time_.evaluationIndex())` を呼ぶのは、いまや三経路に一つずつではなく [`FrameStep::advance()`](../../src/core/appflow/loop.cpp#L422) の中の[評価の番号を渡すこの1行](../../src/core/appflow/loop.cpp#L426)だけです(渡すのは game のフレームではなく評価の番号。§2.6。✅PM-1a)。headless RPC の `step_frame` / `advance_frames` は `FrameStep` を通らず、[`rpcserver.cpp`](../../src/core/communication/rpcserver.cpp#L1820) の中で同じ 2 行を自分で呼びます。三つのドライバはどれもフレームの先頭でこの `advance` を呼ぶので、「ある経路だけ呼び忘れる」形が構造として作れません。これが [`VulkanManageCore`](../../src/core/vkcore/core.hpp#L36) 側の `logical_frame` 軸になり、debug-utilsラベルとGPU timingの計測が同じフレーム番号で並びます。
 
 ### F11 RenderDocキャプチャ（windowedのflat描画のみ） ✅実装済み
 
@@ -393,12 +393,14 @@ void updateFrameState() {
 
 ```text
 ECSCore::update()
-→ updateRegisteredGameSystems(GameContext&)
+→ updateRegisteredGameSystems(GameContext&, all | editor_only)
 → Vrm::applicationServiceRuntime().ensureStandardPhasesRegistered()
-→ Animation::animationServiceRuntime().runAllPhases(frame_index)
+→ Animation::animationServiceRuntime().runAllPhases(evaluation_index, all | engine_only)
 → SeqPlayer::update(current_time)
-→ SceneLoader::applyPendingLoad()
+→ SceneLoader::applyPendingLoad()      # game の 1 歩のときだけ
 ```
+
+**一時停止の分岐(✅PM-1a)。**`updateFrameState()` は reload 公開と commit hook の後で [`EngineTime::gameStepping()`](../../src/core/appflow/enginetime.cpp#L82) を 1 回読み、そのフレームが game の 1 歩か(`playing` か、`paused` で `advance_frames` の歩を取るフレームか)を [`game_step`](../../src/core/appflow/framephase.cpp#L168) に取ります。1 歩でないフレームでは、`runtime_spawner.applyBoundary()`・`freeze_events` と `deliver_events`(片方だけ止めると event の registerer のフレームの検査に当たるので一緒に止める)・`applyPendingLoad()` を飛ばし、game の UI には [`setEventsSuppressed(true)`](../../src/core/ui/module.hpp#L116) で event を積ませず、game system は [`GameSystemScope::editor_only`](../../src/core/userpublic/details/system/registerer.hpp#L143)(engine が [`markEditorGameSystem()`](../../src/core/userpublic/details/system/registerer.hpp#L152) で印を付けた camera controller と modal transform だけ)、animation の phase は `PhaseOwners::engine_only`(game DLL が登録した phase を外す)で走らせます。入力の凍結・内部 ECS・engine 側の animation・seq・描画は毎フレーム走り、止まった game の時刻で評価し直します。editor の system を呼ぶ間は [`ScopedEditorClock`](../../src/core/userpublic/details/system/registerer.hpp#L157) が立ち、`GameContext::deltaTime()` が game の `dt` ではなく `EngineTime::editorDt()` を返します。
 
 フェーズ後には `CameraBakeRecorder` が（有効時のみ）フレームを記録します（[framephase.cpp](../../src/core/appflow/framephase.cpp#L227)）。
 
@@ -487,7 +489,9 @@ ECSCore::update()
 - `realtime`: `steady_clock`差分。異常に長い停止は0.1秒へclamp（[`advance()`](../../src/core/appflow/enginetime.cpp#L34)）。
 - `fixed_step`: `1 / launch_config.fps`を毎回加算。headless/RPC/replayの再現性に使う。
 
-`advance()`後に`current_time += delta_time`、`frame_index++`です。最初の更新フレームはindex 1になります。RPCの`set_time`は時刻だけを直接変更し、deltaを0へ戻します。この不連続は [`timeSetRevision()`](../../src/core/appflow/enginetime.cpp#L76) で観測でき、rendererはこれとcamera不連続をまとめて検知してtemporal history（前フレームのview/projection行列やcamera位置をview単位で覚えておく履歴。前フレームの描画結果を今フレームへ再投影して混ぜる処理が使うので、時刻やcameraが飛ぶと対応関係が崩れて捨てる必要があります）をリセットします（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1544)）。
+`advance()`後に`current_time += delta_time`、`frame_index++`です。最初の更新フレームはindex 1になります。
+
+**評価の番号と play state(✅PM-1a)。**[`advance()`](../../src/core/appflow/enginetime.cpp#L34) は描画のフレームごとに必ず `evaluation_index` を 1 進めます(戻すのは `setup()` だけ)。animation の書き込み・graph・phase の revision、VMA の frame index、GPU timing、TAA、shader の `frame_index`、graph の publish、picking、RenderDoc、XR の mirror、RPC の `frame`、そして `GameContext::frameIndex()` が読むのはこちらで、[`evaluationIndex()`](../../src/core/appflow/enginetime.hpp#L77) で取ります。上の `current_time` / `delta_time` / `frame_index` は game の時計と game のフレームで、`PlayState::playing` の間は毎フレーム、`paused` の間は [`requestSteps()`](../../src/core/appflow/enginetime.cpp#L102) で頼まれた歩を 1 フレームに 1 つ取るときだけ進みます(そのときの `dt` は固定の `1/fps`)。それ以外の `paused` のフレームは `delta_time = 0` で、止まった時刻のまま評価し直されます。そのフレーム自身の差分(realtime の測定値か fixed_step の固定値)は `editor_delta_time` に別に取り、[`editorDt()`](../../src/core/appflow/enginetime.hpp#L78) で editor の system が読みます。[`setPlayState()`](../../src/core/appflow/enginetime.cpp#L88) は `paused` から出るときに取っていない歩を捨て、`last_tick` を今に合わせ直すので、再開の最初のフレームの `dt` に一時停止の時間は入りません。一時停止しない実行では、評価の番号と game のフレームは同じ値で進みます。RPCの`set_time`は時刻だけを直接変更し、deltaを0へ戻します。この不連続は [`timeSetRevision()`](../../src/core/appflow/enginetime.cpp#L76) で観測でき、rendererはこれとcamera不連続をまとめて検知してtemporal history（前フレームのview/projection行列やcamera位置をview単位で覚えておく履歴。前フレームの描画結果を今フレームへ再投影して混ぜる処理が使うので、時刻やcameraが飛ぶと対応関係が崩れて捨てる必要があります）をリセットします（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1544)）。
 
 ## 2.7 ゲームSystemと内部ECS Systemは別の更新列
 

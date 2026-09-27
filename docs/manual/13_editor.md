@@ -351,7 +351,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 
 > **設計決定(コミット点は 1 フレームに 1 箇所):** 編集の適用点はフレーム境界の一点だけ。理由は決定性 — ゲームシステムの実行中に ECS の構造が変わらないことを保証し、リプレイとゴールデンテストの前提を壊さないため。同じ理由で、**受付時に通った前提条件はコミット時にもう一度すべて検査**されます(その間に他の編集が入るため)。
 
-- **ウィンドウモードでは `step_frame` を呼ばないでください**。フレームは自然に進んでいるので、`step_frame` は余分に 1 フレーム進めてしまいます。代わりに `get_edit_result` / `get_scene_revision` をポーリングします。
+- **ウィンドウモードの `step_frame` は断られます**(✅PM-1a。JSON-RPC の `-32000`、`data.code` が `step_frame_windowed`)。フレームは engine が自分で描き続けているので、結果は `get_edit_result` / `get_scene_revision` をポーリングして取ります。game を 1 歩ずつ進めたいときは、`set_play_state {"state": "paused"}` の後に `advance_frames {"count": n}` を使います(§13.5 の「一時停止と 1 歩ずつ進める」)。
 - ヘッドレスでは `step_frame` を呼んで進め、応答の `edit_results[]` で結果を受け取るのが基本形です。
 
 ### 編集操作(operations)の 13 種
@@ -513,6 +513,23 @@ ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/commu
 | `export_scene_snapshot` | `{schema_version:2, allow_pending?}` |
 | `import_scene_snapshot` | `{schema_version:2, semantic_scene_bytes, digest, current_scene_id, prefab_closure}` |
 | `save_scene` | `{}`(フィールドを書くとエラー) |
+
+### 一時停止と 1 歩ずつ進める(✅PM-1a)
+
+設計は [design_play_mode.md](../design_play_mode.md)。この版にあるのは `playing` と `paused` の 2 つの状態だけで、`edit` は未実装です。起動した engine は `playing` です。
+
+| メソッド | params | 返すもの | 拒否 |
+|---|---|---|---|
+| `set_play_state` | `{state: "playing" \| "paused"}`(他の鍵は書けない) | `{state, previous}`。同じ状態への指示は何も変えずに成功 | `"edit"` は `-32000` の `play_state_mismatch`(`data` に `state` = 今の状態、`requested`)/ それ以外の値や鍵は `-32602` |
+| `advance_frames` | `{count}`(1〜600 の整数。鍵は `count` だけ) | 窓あり: すぐに `{scheduled, until_game_frame}` / headless: 歩き終えてから `{scheduled, until_game_frame, frame, t, edit_results}` | `paused` 以外では `-32000` の `play_state_mismatch`(`data` に `state` と `required: "paused"`)/ 範囲外の `count` は `-32602`(`data.code` 無し) |
+| `step_frame` | `{}` | headless だけ。描画のフレームを 1 つ進める。game が進むのは `playing` のときだけ | 窓ありでは `-32000` の `step_frame_windowed`(message が `advance_frames` を示す) |
+
+- **2 つの番号**: `get_status` の `frame`(と `step_frame` / `advance_frames` の `frame`)は**評価の番号**で、描画のフレームごとに必ず 1 増え、一時停止中も進みます。game が何歩進んだかは `get_status` の `play.game_frame` で読みます。`get_status` の `time`(と `t`)は game の時計で、一時停止中は止まります
+- **`get_status.play`** は `{state, game_frame, game_time, pending_steps}` です。`pending_steps` は `advance_frames` で頼んでまだ取っていない歩数です。一時停止しているかは `play.state` だけで示し、`get_status.audio` の形は変わりません
+- **窓あり**の `advance_frames` は、次のフレームから 1 フレームに 1 歩ずつ進めます(入れ子のフレームは走らせません)。`until_game_frame` は歩き終えたときの `play.game_frame` なので、`get_status` をポーリングして `play.game_frame` がそこに着き `pending_steps` が 0 になるのを待ちます。**headless** は応答の前に `count` 回、描画のフレームを回します
+- 1 歩の `dt` は `1/fps`(既定 60 fps)です。進み終わっても `paused` のままです
+- 一時停止中に止まるもの: game の event の凍結と配送、`ctx.spawn` / `destroy` の着地、game の system(behavior、DLL の system、physics trigger)、game DLL が登録した animation の phase、`ctx.loadScene` の適用、game の UI の event(ポインタは追うが event を積まない)、音(全体をまとめて一時停止。offline の backend は無音を返し再生位置を進めない)。止まらないもの: 描画、入力の取り込み、RPC、編集の反映、engine 側の animation・seq・graph(止まった時刻で毎フレーム評価し直す)、組み込みの camera controller と modal transform(そのフレーム自身の `dt` で動く)
+- `playing` に戻すと、最初のフレームの `dt` に一時停止していた時間は入りません。頼んでまだ取っていない歩は捨てます
 
 ### shader を読み直させる(✅F-5)
 
@@ -2803,7 +2820,7 @@ with PelicanRpc(["pelican_player", "--headless", "--rpc", "--project", "mygame"]
 ## 13.11 落とし穴のまとめ
 
 1. **`--rpc` と ImGui は排他** — GUI と外部エージェントを同一プロセスで併用できません。
-2. **ウィンドウモードで `step_frame` を呼ばない** — 余分にフレームが進みます。結果は `get_edit_result` をポーリングして取ります。
+2. **ウィンドウモードの `step_frame` は `step_frame_windowed` で断られる**(✅PM-1a) — 結果は `get_edit_result` をポーリングして取ります。game を 1 歩ずつ進めるのは `set_play_state` で止めてからの `advance_frames` です。
 3. **`stale_revision` は無関係な編集でも起きる** — revision だけ差し替えて再送せず、最新を取り直してやり直します。
 4. **チケットプレビューは transform / light の値変更だけ** — 他の操作は `method_unavailable` です。
 5. **`update_transforms` / `load_gltf` を使ったら、そのセッションでは保存できない**(`runtime_only_data`)。
@@ -2849,6 +2866,7 @@ with PelicanRpc(["pelican_player", "--headless", "--rpc", "--project", "mygame"]
 | authoring 面が graph root の `rendering` 節を読む / 共有部品の export・import | ✅P-2a-4a + P-2a-3 `7e983ed9` |
 | package の install / uninstall(RPC と `pelican_cli package`) | ✅X-1 `64eae566`。**Studio に package の UI はありません**(カタログ経由で見えるだけ) |
 | `get_status.animation` と `get_graph_node_values` | ✅AG-3a `32d9a20b` |
+| 一時停止と 1 歩ずつ(`set_play_state` の `playing` / `paused`、`advance_frames`、`get_status.play`、窓ありの `step_frame` の拒否) | ✅PM-1a `c654e65c`。`edit` 状態は 📐PM-1b |
 | Studio の render-tools dock に Graph タブ(読む) | ✅N-1 `edafc41d` |
 | ノードの見た目(見出し + 型付きソケット。形は JSON で足す) | ✅N-1b `6c47a8a4` |
 | ノードキャンバスの編集(接続 / 切断 / 値 / 追加 / 削除 / ラベル / definition の中) | ✅N-2 `f2eccbfd` |

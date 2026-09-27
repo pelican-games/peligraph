@@ -77,10 +77,12 @@
 
 | 名前 | 増え方 | 誰が読むか |
 |---|---|---|
-| **評価の番号**(revision) | 描画のフレームごとに必ず 1 増える。戻らない | VMA、animation の書き込み・graph・phase の revision、GPU timing、TAA の jitter、shader の `frame_index`、graph の publish と logical_frame、picking、RenderDoc、XR の mirror、editor の system の `ctx.frameIndex()` |
-| **game のフレーム** | game の 1 歩ごとに 1 増える。セッションの始めに 0 に戻る | game の system と behavior の `ctx.frameIndex()`、get_status の `play.game_frame` |
+| **評価の番号**(revision) | 描画のフレームごとに必ず 1 増える。戻らない | VMA、animation の書き込み・graph・phase の revision、GPU timing、TAA の jitter、shader の `frame_index`、graph の publish と logical_frame、picking、RenderDoc、XR の mirror、`ctx.frameIndex()`(editor の system も game のコードも。下の注)、get_status の `frame` |
+| **game のフレーム** | game の 1 歩ごとに 1 増える。セッションの始めに 0 に戻る | get_status の `play.game_frame` と、`advance_frames` の返り値の `until_game_frame` だけ |
 | **game の時計**(`now` / `dt` / `time_set_revision`) | `playing` と `advance_frames` の 1 歩でだけ進む。止まっている間は `dt = 0`。`set_time` はどの状態でも動かす | game のコード、animation の sampling、seq、VAT、graph の入力と時計、audio の graph voice |
-| **editor の時計** | 壁時計の `dt`(今の realtime と同じ丸め)と評価の番号 | editor の system(§4.2) |
+| **editor の時計** | そのフレーム自身の `dt`(realtime では壁時計の差分を今と同じく 0.1 秒で丸めたもの、fixed_step では固定の `dt` = `1/fps`)と評価の番号 | editor の system(§4.2) |
+
+- **`GameContext::frameIndex()` は game のコードにも評価の番号を返す**(PM-1a で決めた。`gamecontext.cpp`)。game のコードが animgraph の `prepareTick` に渡す revision は `ctx.frameIndex()` から取るので、engine が phase を走らせる revision(評価の番号)と一致していないと断られるため。そのため pause の後、game のコードから見える `ctx.frameIndex()` は止まっていたフレームの数だけ飛ぶ。`ctx.time()` は game の時計なので飛ばない。0 から数え直す game のフレームを外から読めるのは、get_status の `play.game_frame` と `advance_frames` の `until_game_frame` だけ
 
 - `paused` での `advance_frames` の 1 歩の `dt` は `1/fps`(既定 60)に固める
 - `edit` / `paused` でも animation・seq・graph・VAT は、評価の番号が進むので、止まった game の時計の時刻で毎フレーム評価し直される。Timeline の scrub で見た目が変わるのはこのため
@@ -212,12 +214,14 @@
 - `advance_frames {count}`(count は 1〜600)
   - `paused` でだけ許す。`edit` / `playing` では `play_state_mismatch`
   - 窓あり: 次のフレームの境目から、1 フレームに 1 歩ずつ、game を `count` 回進める(入れ子にしない)。すぐに `{scheduled: count, until_game_frame}` を返す
-  - headless: その場で同期して `count` 歩進め、終わってから返す
+  - headless: その場で同期して `count` 歩進め、終わってから返す。返り値は `{scheduled, until_game_frame, frame, t, edit_results}`。`until_game_frame` は歩き終えた game のフレーム、`frame` は評価の番号、`t` は game の時計、`edit_results` は `step_frame` と同じ(PM-1a の `rpcserver.cpp`)
   - 進み終わっても `paused` のまま
 - `set_view_camera {camera: "editor" | "game"}`: `edit` / `paused` で使える
 - `get_status` に `play` を足す
   - 形: `{state, game_frame, game_time, pending_steps, view_camera, session: bool, recorded_edits: [{transaction_id, actor}]}`
   - 今ある `frame` と `engine_time` は評価の番号と game の時計のままにし、意味を manual に書く
+  - PM-1a の時点の `play` は `{state, game_frame, game_time, pending_steps}` の 4 つ(`view_camera` / `session` / `recorded_edits` は PM-1b / PM-2)
+  - 一時停止しているかは `play.state` だけで示す。`get_status` の `audio` の形は変えない(全体の一時停止は `audio` に出ない)
 - `step_frame`
   - headless 専用にする。窓ありでは `step_frame_windowed` で断り、message で `advance_frames` を示す
   - headless では、描画のフレームを 1 つ進める。game が進むのは `playing` のときだけ
@@ -259,6 +263,7 @@
   - `step_frame` を窓ありで断る
   - 再開のときの dt
   - 既定の起動(`playing`)は、今と同じ見た目と決定性のまま
+  - **着地 `c654e65c`**(2026-09-27)。この節の計画との差: editor の system の印は PM-1a で入れた(engine 内部の `markEditorGameSystem`。camera controller は分けずに丸ごと、modal transform と合わせて 2 つ)/ audio は `setAllPaused` だけで、`stopAll` は PM-2 のまま / `ctx.frameIndex()` は game のコードにも評価の番号(§3 の注)
 - **PM-1b**(engine): `edit` 状態
   - `--start-state` と、両立しない引数の拒否
   - edit の読み込み(instance を持たない behavior、§4.3)

@@ -9,7 +9,7 @@
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
 | Action入力（`actionPose()`含む） | `Actions` / `InputActionsRuntime` | [`gamecontext.cpp` 内](../../src/core/userpublic/gamecontext.cpp#L42) |
-| 時刻（`frameIndex()`含む） | `EngineTime` | [`GameContext::time()`](../../src/core/userpublic/gamecontext.cpp#L70) |
+| 時刻（`frameIndex()`含む） | `EngineTime`。`time()` は game の時計、`deltaTime()` は game の `dt`(editor の system を呼ぶ間だけ `editorDt()`)、`frameIndex()` は game のフレームではなく評価の番号（✅PM-1a。[第2章 §2.6](02_runtime_lifecycle.md)） | [`GameContext::time()`](../../src/core/userpublic/gamecontext.cpp#L70) / [`GameContext::deltaTime()`](../../src/core/userpublic/gamecontext.cpp#L78) / [`GameContext::frameIndex()`](../../src/core/userpublic/gamecontext.cpp#L89) |
 | ログ | quill logger | [`GameContext::logInfo()`](../../src/core/userpublic/gamecontext.cpp#L93) |
 | object/transform | `GameObjects` | [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L105) |
 | sprite（`createSpriteObject`/`spriteView`/`setSpriteView`/`setSpriteTexture`） | `GameObjects` / sprite runtime | [`GameContext::createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L118) |
@@ -69,7 +69,7 @@ setterは対象ライトのstructを書き換えるだけです（[`LightContain
 5. PG-1 の `resolvedObjectFeatureRefusal()`（[spawn からの呼び出し](../../src/core/loader/runtimespawn.cpp#L238)。scene load の prepare と editor の `add_component` / `spawn` と同じ判定）、light / camera の拒否、behavior の準備（`prepareResolvedSceneBehaviorAttachments`）。
 6. 展開済みの `ResolvedObject` と behavior を `Request` として積み、ref を返します。
 
-**境界**: [`RuntimeSpawner::applyBoundary()`](../../src/core/loader/runtimespawn.cpp#L352) は [`updateFrameState()` から 1 回だけ](../../src/core/appflow/framephase.cpp#L167) 呼ばれます。置き場所は audio の回収・DLL reload の `applyFrame()`・editor の commit queue hook の**後**（これらは scene run を置き換えうる）、`forEachFramePhase` の最初の相（`freeze_events`）の**前**です。したがって前のフレームのどこで積んだ要求も、このフレームのゲームコードの全部から見えます。`applyBoundary()` は `ProjectBasicConfig::activeSceneAuthority()` が追跡中の run と違えば、run を切り替えて境界の数を 0 に戻し、別の run の `live` を捨ててから数を 1 進めます。待ち行列は swap して要求順に処理し、run が live でない要求（旧 run のもの、失敗した load 候補のもの）は黙って捨てます。1 件の失敗は `LOG_ERROR` に出して次の要求へ進みます。
+**境界**: [`RuntimeSpawner::applyBoundary()`](../../src/core/loader/runtimespawn.cpp#L352) は [`updateFrameState()` から、game の 1 歩のフレームに 1 回だけ](../../src/core/appflow/framephase.cpp#L173) 呼ばれます(一時停止中の、歩を取らないフレームでは呼ばれない。✅PM-1a)。置き場所は audio の回収・DLL reload の `applyFrame()`・editor の commit queue hook の**後**（これらは scene run を置き換えうる）、`forEachFramePhase` の最初の相（`freeze_events`）の**前**です。したがって前のフレームのどこで積んだ要求も、このフレームのゲームコードの全部から見えます。`applyBoundary()` は `ProjectBasicConfig::activeSceneAuthority()` が追跡中の run と違えば、run を切り替えて境界の数を 0 に戻し、別の run の `live` を捨ててから数を 1 進めます。待ち行列は swap して要求順に処理し、run が live でない要求（旧 run のもの、失敗した load 候補のもの）は黙って捨てます。1 件の失敗は `LOG_ERROR` に出して次の要求へ進みます。
 
 **投影**: [`materialize(Request&)`](../../src/core/loader/runtimespawn.cpp#L399) は editor の spawn と同じ `SceneObjectProjectionAdapter` を、文書無しの入口 [`prepareTransientSpawn()`](../../src/core/loader/editorprojectionadapters.hpp#L92) で使います。ECS の entity と描画のインスタンスは editor の spawn と同じ staging、collider と model の衝突 mesh は `runtime_only` の physics binding（名前は `SpawnParams::name` か `spawn:<境界>.<番号>`）になり、scene の runtime object binding・camera・light には触りません。`publish()` の後に [`BehaviorAttachmentArena::attachSpawned()`](../../src/core/gamelogic/behaviorarena.hpp#L289) で behavior を付けて `onInit` を呼び、それが投げたら adapter を `rollback()` します（その spawn だけが戻る）。[`retire()`](../../src/core/loader/runtimespawn.cpp#L449) は逆順で、`preDestroyEntity()`（`onDestroy`）→ [`prepareTransientDestroy()`](../../src/core/loader/editorprojectionadapters.hpp#L94)（physics の binding を外し、entity を消す）です。
 
@@ -110,6 +110,8 @@ registry実体は [`getGameSystemRegisterer()`](../../src/core/userpublic/detail
 2. 同じorderなら登録時の型名文字列昇順
 
 従ってtranslation unitの静的初期化順には依存せず、最終実行順は決定的です。組み込み [`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L346) はorder 10000なので、通常のゲームSystemの後に動きます。
+
+**一時停止中のフレーム(✅PM-1a)。**[`updateRegisteredGameSystems(ctx, scope)`](../../src/core/userpublic/details/system/registerer.cpp#L80) は、game の 1 歩でないフレームには `GameSystemScope::editor_only` で呼ばれ、[`markEditorGameSystem()`](../../src/core/userpublic/details/system/registerer.cpp#L57) で印の付いた system だけを同じ order 順で呼びます。印を付けるのは engine だけで、camera controller と modal transform の登録がそれぞれ `registerSystem<...>()` の token に付けます(公開の登録の形は変えていない)。印の付いた system を呼ぶ間は `ScopedEditorClock` が立ち、`GameContext::deltaTime()` はそのフレーム自身の `dt` を返します。`frameIndex()` はどちらの場合も評価の番号です。behavior(`BehaviorSystem`)・DLL の system・physics trigger には印が無いので、一時停止中は呼ばれません。
 
 ## 5.3 event handlerを持つSystem
 

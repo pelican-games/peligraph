@@ -133,7 +133,7 @@ PELICAN_REGISTER_SYSTEM(Type, order);
 → シーン遷移の適用 → 描画
 ```
 
-rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテスト = 実行時と同じ意味論」がこれで保証されます。
+rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテスト = 実行時と同じ意味論」がこれで保証されます(`step_frame` は headless 専用で、窓ありでは `step_frame_windowed` で断られます。✅PM-1a)。一時停止中のフレームでは、この順序のうちイベント配送・ゲームシステム・シーン遷移の適用が飛ばされます(§8.4 の「時刻の 3 つの値と一時停止」)。
 
 ## 8.4 GameContext API 一覧
 
@@ -153,6 +153,21 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 | シーン | `loadScene(name)` / `currentScene()` | §8.7 |
 | イベント | `emit(const Event&)` | §8.6 |
 | 設定 | `gameSettings()` / `setGameSettings(json)` / `saveSettings()` | §8.12(✅WP65)。**ゲーム設定はセーブデータではない**ので根に残っています |
+
+### 時刻の 3 つの値と一時停止(✅PM-1a)
+
+engine は RPC の `set_play_state` で一時停止でき、`advance_frames` で 1 歩ずつ進められます(契約は [第13章](13_editor.md) §13.5 の「一時停止と 1 歩ずつ進める」)。ゲームコードから見た 3 つの値の意味は次のとおりです。
+
+| API | 意味 | 一時停止の前後 |
+|---|---|---|
+| [`ctx.time()`](../../src/core/userpublic/gamecontext.cpp#L70) | game の時計(秒) | 一時停止の間は止まり、再開すると止まった所から続く。**飛ばない** |
+| [`ctx.deltaTime()`](../../src/core/userpublic/gamecontext.cpp#L78) | game の時計がこのフレームで進んだ秒 | 再開の最初のフレームに一時停止していた時間は入らない。`advance_frames` の 1 歩では `1/fps`(既定 60 fps) |
+| [`ctx.frameIndex()`](../../src/core/userpublic/gamecontext.cpp#L89) | **評価の番号**。描画のフレームごとに 1 増え、一時停止中も増える | 再開の後、止まっていたフレームの数だけ**飛ぶ** |
+
+- **一時停止の間、ゲームコードは走りません。** game の system(`PELICAN_REGISTER_SYSTEM`)・behavior・イベントの配送・game DLL が登録した animation の phase は呼ばれず、`ctx.spawn` / `destroy` と `ctx.loadScene` の要求は再開(か次の 1 歩)まで待ちます。だから一時停止中に `deltaTime()` が 0 になるのを見ることはありません
+- `ctx.frameIndex()` が game の歩数ではなく評価の番号なのは、animgraph の [`prepareTick()`](../../src/core/userpublic/animation/animgraph.cpp#L1150) に渡す revision を、engine が phase を走らせる revision と一致させるためです(一致しないと phase が `invalid_argument` で断ります)。**game の歩数を数えたいときは `frameIndex()` の差を使わず、自分で数えるか `time()` を使ってください**。0 から数える game の歩数は RPC の `get_status` の `play.game_frame` でだけ読めます
+- 一時停止しない実行(今までの起動のまま)では、評価の番号と game の歩数は同じ値で進みます
+- 組み込みの camera controller と modal transform は engine 内部で editor の system に印が付いていて、一時停止中も動きます。このとき `deltaTime()` は game の時計ではなく、そのフレーム自身の `dt` を返します。ゲームの system にこの印を付ける公開の口はありません
 
 ### ドメインファサード
 
@@ -311,7 +326,7 @@ PELICAN_REGISTER_SYSTEM(Gun, 100);
 **フレーム境界の規則**
 
 - 要求は**呼んだ時点で検査して展開**します。prefab はシーンのロードと同じ ResolvedScene の経路で展開するので、prefab・parameter・build の機能の検査もロードと同じ答えになります。例えば `PELICAN_WITH_PHYSICS=OFF` の build で collider を持つ prefab を spawn すると、ロードと同じ `physics.module_unavailable@1` で拒否されます([検査の呼び出し](../../src/core/loader/runtimespawn.cpp#L238))。拒否されたときは何も積まれません。
-- **object ができるのは次のフレーム境界**です。境界はフレームの先頭、ゲームコードより前にあります([`updateFrameState()` の中](../../src/core/appflow/framephase.cpp#L167)。イベント配送・ECS・ゲームシステムより前)。behavior のコールバックの中から呼んでも外から呼んでも同じ境界です。
+- **object ができるのは次のフレーム境界**です。境界はフレームの先頭、ゲームコードより前にあります([`updateFrameState()` の中の境界の呼び出し](../../src/core/appflow/framephase.cpp#L173)。イベント配送・ECS・ゲームシステムより前)。behavior のコールバックの中から呼んでも外から呼んでも同じ境界です。一時停止中のフレームは境界を通らないので、着地は再開か `advance_frames` の 1 歩のフレームです(✅PM-1a)。
 - 境界より前に `materialize` / `worldTransform` を呼ぶと `object.not_materialized@1` です。境界の後のフレームでは、そのフレームのゲームコードの全部から見えます。
 - 1 つの境界の中では、要求を**呼んだ順**に実行します。spawn と destroy も混ぜて呼んだ順です。まだ実体化していない spawn を destroy すると、同じ境界で作ってから消します(`onInit` の後に `onDestroy`)。
 - 境界で起きること: ECS の entity と描画のインスタンスを作り、collider(と model の衝突 mesh)を物理に `runtime_only` で登録し、最後に behavior を付けて `onInit` を呼びます。`onInit` が例外を投げたら、**その spawn だけ**を巻き戻します(init 済みの behavior に `onDestroy`、entity・collider・描画を戻す)。ほかの spawn とシーンには影響しません。失敗は engine log に `runtime spawn of boundary … failed: …` と出て、ref はずっと `object.not_materialized@1` のままです。
