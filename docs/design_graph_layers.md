@@ -170,6 +170,17 @@ canvas は 1 枚だが、**見せる領域を選ぶ**。全領域を一度に描
 - 物理 plan の側は既に node 名を持つ要素が多い。足りない resource・alias・decision・backend → node の対応を `from_nodes[]` で足し、diagnostics と `deactivated_graph_nodes` を `get_frame_plan` に出す
 - 受け入れ: どの層のどの要素からも node 名 → `origin` で L0 に戻れる
 
+**着地(GL-2a、`d3a34869`、2026-09-28)。** 上の 4 行は着地前の案として残す。実物は次のとおり(コードで確認):
+
+- 通り道: 展開の [`GraphNodeOrigin`](../src/project/graphcomposition.hpp#L38) を、lowering が node の作った pass・task の名前ごとに `LoweredRenderGraphDocument::origins` に残し([残す所](../src/project/rendergraphcomposition.cpp#L760))、合成が provenance を同期した直後に [`RenderPassProvenance::graph_origin`](../src/project/renderpipeline.hpp#L267) と `replaces` に載せる([載せる所](../src/project/featurecompose.cpp#L3666))。付くのは root の node・instance の中の node・ループの回(`loop_origin` の要素が選んだ分岐から body の node を引く)が作った pass と compute task だけ。preset・feature・rendering 節の pass には付かない(feature の pass は、同じ名前の node が非活性でも付かない)
+- `get_frame_plan` の node の形は `origin: {graph, node, definition?, instance_path?, loop?, loop_branch?, element?}`([組む所](../src/core/renderingpass/frameplanner.cpp#L1639))。案に無かった `graph` と `element` を足した。`graph` は rendering root 文書の参照(`ProjectBasicConfig::renderingConfigReference()`。`get_compute_task_authoring` が node の task に返す `source_reference` と同じ値)で、renderer が `framePlanToJson()` に渡す([渡す所](../src/core/vkcore/renderer.cpp#L4012))。渡さない経路(CPU の test など)では空文字。`definition` は root の node では出ない。`instance_path` は末尾の `/` を除き、root とループの body では出ない(body は instance ではない)。`element` は `loop_origin.element` と同じ
+- `replaces: [{feature, pass}]` は配列(案には無かった)。1 つの node が複数の feature pass を置き換えうるため(planar の mip chain の雛形は `planar_reflection_filter_mip_1`〜`_6` を 1 つのループで置き換える)。ループでは、置き換えた pass と同じ pass family に移った回にだけ付く([対応を取る所](../src/project/rendergraphcomposition.cpp#L2339))
+- `from_nodes[]`(frame plan の node 名、plan の node の順)は `physical_target_plan` の resources[](reads / writes / reads_history と attachment の node から)・alias_groups[](メンバーの和)・4 か所の decisions[](最上位・`lowering_graph`・`planning_opportunities`・`backend_selection`。`subject` を node → resource → alias group → scope の順で引き、lowering の node は `sources` へ開く。graph 全体の決定は `[]`)・`backend_selection.candidates[]` に付く([`appendFramePlanPhysicalNodeReferences()`](../src/core/renderingpass/frameplanner.cpp#L2183))。backend の候補は failures / diagnostics の `subject` から引くが、`probeVulkanBackend()` の拒否は `subject` に候補自身の名前を入れるので([拒否を積む所](../src/project/targetplanning.cpp#L488))node に当たらない。実装者の報告では GL-2a の test の plan で候補は全部 `[]` だった(どの構成でも必ず `[]` かは未確認)
+- `diagnostics: [{kind, subject, detail}]`(kind は `graph_variant_selected` / `pipeline_preset_resolved` / `feature_excluded` / `graph_node_deactivated`)と `deactivated_graph_nodes: [{node, feature, reason}]` は、compiled pipeline のある plan では空でも最上位に出る
+- 既存の `source` / `loop_origin` / `provider_*` / `authored_name` は変わらない。`get_compute_task_authoring` は root を展開し直すのをやめ、provenance の `graph_origin` を読む(出力は同じ。ループの回の task は今までどおり `graph_node` にならない)
+- 案の受け入れとの差: node を指す要素からは node 名 → `origin` で戻れる。graph 全体の決定と backend の候補は `from_nodes: []` で、戻る先を持たない
+- test: [`GL-2a frame plan nodes carry the graph node that made them`](../test/rendercompilerprogram_test.cpp#L1717)(compiler_only の本番の compiler。`engine://` preset・instance・ループ・`pass_replacements` を持つ graph で、root / instance / ループの回 / 置き換え / preset の pass に `origin` が無いこと / `from_nodes` の名前が plan に在ること / diagnostics と `deactivated_graph_nodes`)。LP-3b の provenance の一致の check は「`graph_origin` だけが違う」に直した([直した所](../test/featurecompose_test.cpp#L7872))
+
 ### 5.2 断片の宣言
 
 ```json

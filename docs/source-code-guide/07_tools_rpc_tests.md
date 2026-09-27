@@ -360,6 +360,14 @@ get_frame_plan 応答 = pelican.frame_plan v1
   └ physical_target_plan                  : その名前を実画像へ落とした物理側(attachments / resources / alias / native scope)
 ```
 
+2 つの層は互いに引けます(✅GL-2a)。名前の層の node の出所の鍵(`source` / `provider_*` / `authored_name` / `loop_origin` と、GL-2a の
+`origin` / `replaces`)は、`framePlanToJson()` が compiled pipeline の `RenderPassProvenance` から写します
+([写す所](../../src/core/renderingpass/frameplanner.cpp#L1926))。`origin` の `graph`(rendering root 文書の参照)は raw の planner が知らないので、
+renderer が `framePlanToJson()` に渡します。物理の層は、`physical_target_plan` を足した直後に renderer が
+[`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L2183) を呼び
+([呼ぶ所](../../src/core/vkcore/renderer.cpp#L4239))、resources / alias_groups / decisions / backend の候補に、関わる node 名の
+`from_nodes[]` を書き込みます。物理の要素 → node 名 → `origin` → graph の文書、の順に辿れます(形は manual 第13章「`get_frame_plan` に足されたもの」)。
+
 Graph タブが読む応答も同じ読み方をします。1 応答に「今の版」と「文書の 2 つの層」が入っています
 ([組み立ては `getGraphInstances()`](../../src/core/communication/renderconfigeditor.cpp#L2333))。
 
