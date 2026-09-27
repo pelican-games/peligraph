@@ -68,12 +68,12 @@ Pelican が「こう呼んでいる」基本語(scene、asset、feature、render
 
 エンジン全体を最短で追うなら、次のリンクを順に開いてください。
 
-1. [`main()`](../../src/player/main.cpp#L655) — CLIで起動条件を確定する。
+1. [`main()`](../../src/player/main.cpp#L663) — CLIで起動条件を確定する。
 2. [`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L83) — 設定、ECS、scene、loopを組み立てる。
 3. [`Loop::run()`](../../src/core/appflow/loop.cpp#L772) — 通常/XR/headless/RPCの実行方式を分ける（windowed + RPCを含む5経路）。
 4. [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L152) — 1フレームのゲーム状態更新を5フェーズで実行する。
 5. [`ECSCoreTemplatePublic::update()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L663) — 内部ECS Systemを依存順に実行する（実行計画は [`buildECSExecutionPlan()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L206) が作る）。
-6. [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4930) — フレームグラフをGPUコマンドへ変換する。ここは view family を 1 つ受ける薄い overload で、本体は view families を取る [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4930)。flat画面では [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L6386) がflat variantの選択と再lowering再試行を被せ、cameraから1 viewを組むのは引数なしの [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L6386)。
+6. [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4932) — フレームグラフをGPUコマンドへ変換する。ここは view family を 1 つ受ける薄い overload で、本体は view families を取る [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4932)。flat画面では [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L6388) がflat variantの選択と再lowering再試行を被せ、cameraから1 viewを組むのは引数なしの [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L6388)。
 7. [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) — 例外時もGPU/ECS/queue資源を規範順で解放する（実体は [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp#L122)）。
 
 ## リンクの見方
