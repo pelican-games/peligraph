@@ -730,6 +730,9 @@ class GraphCanvasWidget final : public QWidget {
     // that edit it: the tab says which revision it read, and reads the
     // document again when another panel's commit moved it.
     void setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> digest);
+    // PM-3a (design_play_mode 12.6): the Timeline's scrub is refused while
+    // `reason` is not empty (the game is playing), and the strip says it.
+    void setTimelineScrubBlocked(const QString &reason);
 
     GraphCanvasModel &model();
     GraphCanvasScene &scene();

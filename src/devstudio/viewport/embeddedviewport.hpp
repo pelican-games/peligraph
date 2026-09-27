@@ -121,6 +121,15 @@ class EmbeddedViewport final : public QWidget {
     // and its message as the engine wrote it.
     void inspectorRpcRejected(qint64 request_id, const QString &error_code,
                               const QString &message);
+    // PM-3a. The whole JSON-RPC error of an editor request, emitted before
+    // inspectorRpcRejected: a refusal whose data names its code as `code`
+    // (the play refusals) and carries fields beside it is read from here.
+    void engineRpcRefused(qint64 request_id, int code, const QString &message,
+                          const QJsonValue &data);
+    // PM-3a. Every get_status result this viewport receives -- the readiness
+    // probe's and any panel's -- before it is handed on. The play state rides
+    // on these reads instead of on a clock of its own.
+    void engineStatusRead(const QByteArray &result_json);
     void engineInputActiveChanged(bool active);
     // MG-1. `refusal` is the line the player wrote:
     // "project.migration_required@1: {documents:[...]}".
@@ -174,6 +183,8 @@ class EmbeddedViewport final : public QWidget {
     QSize last_requested_extent_;
     QString project_root_;
     QSet<qint64> pending_pick_requests_;
+    // PM-3a: the get_status requests in flight, whoever sent them.
+    QSet<qint64> status_requests_;
     RpcObserver rpc_observer_;
     const SelectionModel *selection_model_ = nullptr;
 

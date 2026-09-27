@@ -44,9 +44,24 @@ if(DEFINED QT_BIN_DIR AND NOT "${QT_BIN_DIR}" STREQUAL "")
     endif()
 endif()
 
+# PM-3a: a project that runs game code gets the DLL beside it (a copy, so a
+# rebuild is never blocked by the engine holding the file) and Studio passes
+# it to every engine it starts.
+set(scenario_extra_env)
+if(DEFINED GAME_LOGIC AND NOT "${GAME_LOGIC}" STREQUAL "")
+    if(NOT EXISTS "${GAME_LOGIC}")
+        message(FATAL_ERROR "the scenario's game logic was not built: ${GAME_LOGIC}")
+    endif()
+    get_filename_component(game_logic_name "${GAME_LOGIC}" NAME)
+    file(COPY "${GAME_LOGIC}" DESTINATION "${run_dir}/game_logic")
+    file(TO_NATIVE_PATH "${run_dir}/game_logic/${game_logic_name}" game_logic_native)
+    list(APPEND scenario_extra_env
+        "PELICAN_STUDIO_PLAYER_ARGUMENTS=--game-logic \"${game_logic_native}\"")
+endif()
+
 set(report "${run_dir}/report.json")
 execute_process(
-    COMMAND ${CMAKE_COMMAND} -E env "PATH=${scenario_path_env}"
+    COMMAND ${CMAKE_COMMAND} -E env "PATH=${scenario_path_env}" ${scenario_extra_env}
         "${PYTHON}" -B "${DRIVER}"
             --studio "${STUDIO}"
             --player "${PLAYER}"

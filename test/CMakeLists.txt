@@ -725,6 +725,28 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   add_dependencies(pelican_test_devstudio_outliner_edit_test
     pelican_test_process_fixture_child)
 
+  # PM-3a: Pause / Step / Resume and the play line on the real window, over
+  # the real RPC transport, with the test answering as a PM-1a engine.
+  pelican_define_test(devstudio_play_controls_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+  target_compile_definitions(pelican_test_devstudio_play_controls_test PRIVATE
+    PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
+  )
+  add_dependencies(pelican_test_devstudio_play_controls_test
+    pelican_test_process_fixture_child)
+
   # RU-1: Ctrl+Z by where the keyboard is -- the render history in the Frame
   # Plan and the Pass Editor, the graph's in the Graph tab, the scene's in the
   # Inspector -- on the real window over the real RPC transport.
@@ -3260,6 +3282,18 @@ else()
     message(STATUS "Python-backed tests are disabled")
 endif()
 
+# PM-3a: a scenario whose project runs game code names a game logic DLL
+# target `pelican_studio_<scenario>_game_logic`; the scenario's engine loads it
+# (--game-logic). play_pause_step's object is moved by a behavior.
+if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio AND WIN32 AND
+   COMMAND pelican_configure_game_logic_target)
+    add_library(pelican_studio_play_pause_step_game_logic SHARED
+        fixtures/pm3a_mover/behavior.cpp)
+    set_target_properties(pelican_studio_play_pause_step_game_logic PROPERTIES
+        OUTPUT_NAME "pelican_pm3a_mover_fixture")
+    pelican_configure_game_logic_target(pelican_studio_play_pause_step_game_logic)
+endif()
+
 # Q-1: the Studio scenarios. Each `test/studio_scenarios/<name>.json` becomes
 # one `studio_scenario_<name>` test: a real Studio window, the real engine
 # behind it, and tools/studio_drive.py driving the GUI over the `--automation`
@@ -3284,6 +3318,11 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
                 set(pelican_studio_scenario_fixture
                     "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_${pelican_studio_scenario_name}")
             endif()
+            set(pelican_studio_scenario_game_logic)
+            if(TARGET pelican_studio_${pelican_studio_scenario_name}_game_logic)
+                set(pelican_studio_scenario_game_logic
+                    "-DGAME_LOGIC=$<TARGET_FILE:pelican_studio_${pelican_studio_scenario_name}_game_logic>")
+            endif()
             add_test(
                 NAME studio_scenario_${pelican_studio_scenario_name}
                 COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
@@ -3295,6 +3334,7 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
                     -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/studio_scenarios
                     -DPYTHON=${Python3_EXECUTABLE}
                     -DQT_BIN_DIR=$<TARGET_FILE_DIR:Qt6::Core>
+                    ${pelican_studio_scenario_game_logic}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_studio_scenario.cmake
             )
             set_property(TEST studio_scenario_${pelican_studio_scenario_name}

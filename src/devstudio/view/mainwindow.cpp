@@ -10,6 +10,7 @@
 #include "../model/outlineredit.hpp"
 #include "newprojectdialog.hpp"
 #include "panelhelp.hpp"
+#include "playcontrols.hpp"
 #include "projectmigrationwidget.hpp"
 #include "renderconfigdigest.hpp"
 #include "renderfeatureswidget.hpp"
@@ -32,6 +33,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QJsonValue>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
@@ -39,6 +41,9 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPaintEvent>
+#include <QRegion>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScopeGuard>
@@ -150,6 +155,45 @@ bool sameObject(const OutlinerObjectKey &left, const OutlinerObjectKey &right) {
            left.authoring_object_id == right.authoring_object_id;
 }
 
+// PM-3a (design_play_mode 12.2): the frame around the viewport. While the
+// game is paused, the margin between this frame and the viewport it holds is
+// filled with the theme's paused colour; playing, it is the window's own.
+// The viewport itself is left alone -- the engine's picture is a native
+// window no Qt painting can cover.
+class PlayTintFrame final : public QFrame {
+  public:
+    explicit PlayTintFrame(QWidget *parent) : QFrame(parent) {}
+
+    void setHole(QWidget *hole) { hole_ = hole; }
+    void setTint(const QColor &tint) {
+        if (tint == tint_) return;
+        tint_ = tint;
+        update();
+    }
+
+  protected:
+    void paintEvent(QPaintEvent *event) override {
+        QFrame::paintEvent(event);
+        if (!tint_.isValid()) return;
+        // Around the viewport, from a little above it to the frame's edges;
+        // the title above keeps the window's colour, so it stays readable.
+        QRegion ring{rect()};
+        if (hole_ != nullptr && hole_->isVisible()) {
+            const QRect hole = hole_->geometry();
+            ring = QRegion{QRect{QPoint{rect().left(), std::max(rect().top(), hole.top() - 6)},
+                                 rect().bottomRight()}} -
+                   QRegion{hole};
+        }
+        QPainter painter{this};
+        painter.setClipRegion(ring);
+        painter.fillRect(rect(), tint_);
+    }
+
+  private:
+    QWidget *hole_ = nullptr;
+    QColor tint_;
+};
+
 } // namespace
 
 MainWindow::MainWindow() : MainWindow(applicationConfigDirectory()) {}
@@ -195,7 +239,9 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 }
 
 void MainWindow::createWorkspace() {
-    auto *workspace = new QFrame(this);
+    auto *workspace = new PlayTintFrame(this);
+    workspace->setObjectName(QStringLiteral("pelican.viewportFrame"));
+    viewport_frame_ = workspace;
     workspace->setFrameShape(QFrame::StyledPanel);
     auto *workspace_layout = new QVBoxLayout(workspace);
     auto *workspace_title = new QLabel(tr("Viewport"), workspace);
@@ -218,6 +264,7 @@ void MainWindow::createWorkspace() {
     workspace_layout->setStretch(3, 0);
     viewport_ = new EmbeddedViewport(workspace);
     viewport_->bindSelectionModel(&selection_model_);
+    workspace->setHole(viewport_);
     workspace_layout->addWidget(viewport_, 1);
     migration_panel_ = new ProjectMigrationWidget(
         [this](const QString &method, const QJsonObject &params,
@@ -633,6 +680,10 @@ void MainWindow::createWorkspace() {
             [this](qint64 request_id, const QByteArray &result_json) {
                 if (migration_panel_->acceptRpcResult(request_id, result_json))
                     return;
+                // PM-3a: Pause, Step and the reads that follow them.
+                if (play_controls_ &&
+                    play_controls_->receiveResult(request_id, result_json))
+                    return;
                 // RU-1: the render history's own reads, restores and polls,
                 // and the replies to the edits it follows.
                 if (render_history_ && render_history_->waitingFor(request_id)) {
@@ -670,6 +721,9 @@ void MainWindow::createWorkspace() {
     connect(viewport_, &EmbeddedViewport::inspectorRpcFailed, this,
             [this](qint64 request_id, const QString &message) {
                 if (migration_panel_->acceptRpcFailure(request_id, message))
+                    return;
+                if (play_controls_ &&
+                    play_controls_->receiveFailure(request_id, message))
                     return;
                 if (render_history_ && render_history_->waitingFor(request_id)) {
                     render_history_->receiveFailure(request_id, message.toStdString());
@@ -1049,8 +1103,67 @@ void MainWindow::createMenus() {
         tr("Scale"), QStringLiteral("pelican.gizmo.scale"), GizmoMode::Scale,
         tr("Scale the selection along one axis"));
     gizmo_mode_actions_[0]->setChecked(true);
+    createPlayControls(gizmo_toolbar);
 
     createAddObjectMenu();
+}
+
+void MainWindow::createPlayControls(QToolBar *band) {
+    gizmo_toolbar_ = band;
+    play_controls_ = new PlayControls(
+        *band, *this, *statusBar(),
+        PlayControls::Hooks{
+            .send = [this](const QString &method, const QJsonObject &params,
+                           QString *error) {
+                return viewport_->requestRpc(method, params, error);
+            },
+            .changed = [this] { updatePlayPresentation(); },
+            .notice = [this](const QString &line) {
+                statusBar()->showMessage(line, 8000);
+            },
+        },
+        this);
+    statusBar()->addPermanentWidget(play_controls_->statusLabel());
+    connect(viewport_, &EmbeddedViewport::engineStatusRead, this,
+            [this](const QByteArray &result_json) {
+                play_controls_->observeStatus(result_json);
+            });
+    connect(viewport_, &EmbeddedViewport::engineRpcRefused, this,
+            [this](qint64 request_id, int code, const QString &message,
+                   const QJsonValue &data) {
+                play_controls_->receiveRefusal(request_id, code, message, data);
+            });
+    connect(viewport_, &EmbeddedViewport::engineRpcBecameAvailable, this,
+            [this] { play_controls_->engineAvailable(); });
+    // A restart, a project switch or a stop: the next engine starts playing,
+    // and a paused frame from this one must not stay on screen (PM-3a).
+    connect(viewport_, &EmbeddedViewport::engineRpcBecameUnavailable, this,
+            [this](const QString &) { play_controls_->engineUnavailable(); });
+    updatePlayPresentation();
+}
+
+void MainWindow::updatePlayPresentation() {
+    if (play_controls_ == nullptr || viewport_frame_ == nullptr) return;
+    const PlayStateModel &model = play_controls_->model();
+    const bool paused = model.paused();
+    const StudioTheme &theme = currentStudioTheme();
+    static_cast<PlayTintFrame *>(viewport_frame_)
+        ->setTint(paused ? theme.play.paused_frame : QColor{});
+    if (gizmo_toolbar_ != nullptr) {
+        gizmo_toolbar_->setStyleSheet(
+            paused ? QStringLiteral("QToolBar { background: %1; }")
+                         .arg(theme.play.paused_band.name())
+                   : QString{});
+    }
+    // 12.6: the Timeline goes to a time only while the game's clock stands
+    // still. An engine that reports no play state keeps the scrub it had.
+    const bool playing = model.status() && !paused;
+    if (graph_canvas_ != nullptr) {
+        graph_canvas_->setTimelineScrubBlocked(
+            playing ? tr("The game is playing, so its clock moves on its own. "
+                         "Pause it (Ctrl+Shift+P) to go to a time.")
+                    : QString{});
+    }
 }
 
 QStringList MainWindow::renderToolsTabIds() {

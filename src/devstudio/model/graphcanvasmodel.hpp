@@ -534,6 +534,7 @@ class GraphCanvasModel {
     // render_frame, and the value read back would belong to neither. The
     // render is what ends it, so its id is the one that has to be watched for.
     bool scrubbing_ = false;
+    std::string scrub_blocked_reason_;
     std::uint64_t scrub_render_ = 0;
 
     InspectorNotice failure_;
@@ -824,6 +825,12 @@ class GraphCanvasModel {
     // and never two scrubs at once.
     bool scrub(double time);
     [[nodiscard]] bool scrubbing() const noexcept { return scrubbing_; }
+    // PM-3a (design_play_mode 12.6): while the game plays its clock moves on
+    // its own, so a scrub is refused and `reason` says why; empty lets it be.
+    void setScrubBlockedReason(std::string reason) { scrub_blocked_reason_ = std::move(reason); }
+    [[nodiscard]] const std::string &scrubBlockedReason() const noexcept {
+        return scrub_blocked_reason_;
+    }
 
     // --- Q-8: the UI node a `ui.value` / `ui.visible` sink writes.
 

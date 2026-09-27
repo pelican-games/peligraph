@@ -16,7 +16,9 @@
     "`canvas` is what every node canvas draws with, `domain_tint` is the",
     "heading band of a common-graph node (by the operation's domain), and",
     "`source_tint` is the heading band of a Frame Plan node (by where the",
-    "resource came from). A key a theme leaves out keeps the built-in value,",
+    "resource came from). `play` is what the viewport's frame and the band",
+    "above it turn while the game is paused (playing keeps the window's own",
+    "colours). A key a theme leaves out keeps the built-in value,",
     "and a colour Qt cannot parse is ignored rather than drawn as black."
   ],
 
@@ -73,6 +75,10 @@
         "feature": "#c47b25",
         "engine": "#66717e",
         "unknown": "#806f68"
+      },
+      "play": {
+        "paused_frame": "#e0ac00",
+        "paused_band": "#5e4b10"
       }
     },
 
@@ -109,6 +115,10 @@
         "feature": "#eec292",
         "engine": "#c1cad3",
         "unknown": "#cabbb3"
+      },
+      "play": {
+        "paused_frame": "#c99200",
+        "paused_band": "#f3d98a"
       }
     }
   }

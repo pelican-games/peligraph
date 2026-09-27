@@ -18,6 +18,8 @@ add_library(pelican_studio_inspector_model STATIC
     graphcanvasmodel.hpp
     renderedithistory.cpp
     renderedithistory.hpp
+    playstatemodel.cpp
+    playstatemodel.hpp
 )
 
 set_target_properties(pelican_studio_inspector_model PROPERTIES CXX_STANDARD 20)

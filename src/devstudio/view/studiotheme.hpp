@@ -39,6 +39,13 @@ struct StudioFonts {
     double size_small = 11.0;
 };
 
+// PM-3a (design_play_mode 12.2): what the viewport's frame and the band above
+// it turn while the game is paused. Playing keeps the window's own colours.
+struct StudioPlayColors {
+    QColor paused_frame;
+    QColor paused_band;
+};
+
 // One theme. `style` and `palette` are the window chrome; a theme that
 // declares no palette keeps Qt's own, which is what the light theme wants.
 struct StudioTheme {
@@ -53,6 +60,7 @@ struct StudioTheme {
     std::map<QString, QColor> domain_tint;
     // The heading band of a Frame Plan node, by where the resource came from.
     std::map<QString, QColor> source_tint;
+    StudioPlayColors play;
 
     // A domain or a source the table never named is not a reason to draw
     // black: both fall through to the entry the table keeps for that case.

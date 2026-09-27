@@ -743,6 +743,7 @@ void GraphCanvasModel::clearTimeline() {
 
 bool GraphCanvasModel::scrub(double time) {
     if (!connected_ || scrubbing_) return false;
+    if (!scrub_blocked_reason_.empty()) return false;
     if (!std::isfinite(time)) return false;
     scrubbing_ = true;
     // O-1: a scrub is the clock plus one drawn frame. The order is the whole

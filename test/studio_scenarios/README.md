@@ -17,6 +17,12 @@ scenario is looking at. Everything
 the run produced is in that directory: `report.json`, `studio.log`, and the
 screenshots.
 
+A scenario whose project runs game code (a behavior) has a game logic DLL
+target named `pelican_studio_<name>_game_logic` in `test/CMakeLists.txt`; the
+test copies the DLL into the run directory and Studio starts every engine
+with `--game-logic` on it (`PELICAN_STUDIO_PLAYER_ARGUMENTS`).
+`play_pause_step` does, for the object its behavior moves.
+
 To run one by hand, without CTest:
 
     uv run tools/studio_drive.py \
@@ -111,6 +117,10 @@ reply, which is how `view_state` and `menu_list` are checked.
 * `value` is a literal; `value_of` is what an earlier step wrote down with
   `remember`. With neither, the step only reads (and remembers), and passes.
 * `op` is `eq` (the default), `ne`, `gt`, `ge`, `lt`, `le`, `contains` or `excludes` (the text does not hold the value -- how a scenario says a message never appeared).
+* `plus` adds a number to `value_of` (`"value_of": "frame", "plus": 1` is one
+  step later), and `value_format` is a text made of what earlier steps
+  remembered (`"Paused · frame {frame}"`) -- PM-3a's `play_pause_step` uses
+  both.
 * `retry_ms` asks again, a fifth of a second apart, until the answer
   satisfies the step or the time is up, as it does on `rpc_equals`. What the
   engine draws after a shader file is saved arrives on the engine's clock:

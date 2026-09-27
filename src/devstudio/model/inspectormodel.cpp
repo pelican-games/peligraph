@@ -1,4 +1,5 @@
 #include "inspectormodel.hpp"
+#include "playstatemodel.hpp"
 
 #include <schemawire.hpp>
 
@@ -641,6 +642,8 @@ std::string knownRefusalDescription(std::string_view code, std::string_view mess
     const nlohmann::json error{{"code", std::string{code}}, {"message", std::string{message}}};
     if (auto view_select = viewSelectRefusalDescription(error); !view_select.empty())
         return view_select;
+    // PM-3a: the play refusals (set_play_state, advance_frames, step_frame).
+    if (auto play = playRefusalDescription(error); !play.empty()) return play;
     // LP-4c: and so does a loop's or a definition's.
     return graphLoopRefusalDescription(error);
 }

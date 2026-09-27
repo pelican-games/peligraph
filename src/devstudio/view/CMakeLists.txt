@@ -69,6 +69,8 @@ add_library(pelican_studio_view STATIC
     renderfeatureswidget.hpp
     viewselectfield.cpp
     viewselectfield.hpp
+    playcontrols.cpp
+    playcontrols.hpp
 )
 
 set_target_properties(pelican_studio_view PROPERTIES

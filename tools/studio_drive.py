@@ -894,7 +894,7 @@ def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
                     run, kind, label, step, None, "a result step needs a command", started
                 )
             path = str(step.get("path", ""))
-            has_expectation = "value" in step or "value_of" in step
+            has_expectation = "value" in step or "value_of" in step or "value_format" in step
             expected: Any = None
             shown = ""
             if "value" in step:
@@ -913,6 +913,21 @@ def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
                         started,
                     )
                 shown = f"{step['value_of']} ({json.dumps(expected)})"
+                # PM-3a: "one step later" is the remembered number plus one.
+                if "plus" in step:
+                    expected = expected + step["plus"]
+                    shown = f"{step['value_of']} + {json.dumps(step['plus'])} ({json.dumps(expected)})"
+            elif "value_format" in step:
+                # PM-3a: a text made of remembered readings, e.g.
+                # "Paused · frame {paused_frame}".
+                try:
+                    expected = str(step["value_format"]).format(**run.remembered)
+                except (KeyError, IndexError, ValueError) as error:
+                    return _fail(
+                        run, kind, label, request, None,
+                        f"value_format: nothing remembered for {error}", started,
+                    )
+                shown = json.dumps(expected)
             op = str(step.get("op", "eq"))
             # Like `rpc_equals`, `retry_ms` asks the same question again until
             # the answer satisfies the step or the time is up: what the engine

@@ -1,0 +1,317 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "play_pause_step",
+  "description": "PM-3a: the engine starts playing and a behavior moves an object. Pause stops it (two readings 30 drawn frames apart agree, the status bar says Paused · frame N with the game frame, the viewport's frame turns the paused colour), Step moves it exactly one step and one game frame, and releasing Pause lets it move again.",
+  "steps": [
+    {
+      "label": "the engine viewport answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine reports its play state: the status bar has a play line",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "so Pause is offered",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.play.pause"
+      },
+      "path": "widgets[0].visible",
+      "value": true
+    },
+    {
+      "label": "the status bar says the game is playing, by its game frame",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "contains": "Playing · frame",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Step cannot be pressed while the game plays",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.play.step"
+      },
+      "path": "widgets[0].enabled",
+      "value": false,
+      "retry_ms": 5000
+    },
+    {
+      "label": "where the behavior has put the object so far",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Mover"
+        }
+      },
+      "path": "result.components[0].runtime_json.local_trs.pos[0]",
+      "remember": "x_start"
+    },
+    {
+      "label": "playing, the behavior moves it",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Mover"
+        }
+      },
+      "path": "result.components[0].runtime_json.local_trs.pos[0]",
+      "op": "gt",
+      "value_of": "x_start",
+      "retry_ms": 5000
+    },
+    {
+      "label": "playing, the viewport's frame keeps the window's colour",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportFrame",
+        "path": "{artifacts}/frame_playing.png",
+        "pixels": [
+          [
+            0.002,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value": "#e0ac00"
+    },
+    {
+      "label": "press Pause",
+      "cmd": "click",
+      "name": "pelican.play.pause"
+    },
+    {
+      "label": "the status bar says paused",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "contains": "Paused · frame",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the game frame the engine stopped on",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.game_frame",
+      "remember": "paused_frame"
+    },
+    {
+      "label": "the status bar shows that game frame, not the evaluation number",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.playStatus"
+      },
+      "path": "text",
+      "value_format": "Paused · frame {paused_frame}"
+    },
+    {
+      "label": "where the object stopped",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Mover"
+        }
+      },
+      "path": "result.components[0].runtime_json.local_trs.pos[0]",
+      "remember": "x_paused"
+    },
+    {
+      "label": "the evaluation number now",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.frame",
+      "remember": "evaluation_paused"
+    },
+    {
+      "label": "the engine goes on drawing while paused (30 frames)",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.frame",
+      "op": "ge",
+      "value_of": "evaluation_paused",
+      "plus": 30,
+      "retry_ms": 10000
+    },
+    {
+      "label": "a second reading, 30 frames later: the object has not moved",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Mover"
+        }
+      },
+      "path": "result.components[0].runtime_json.local_trs.pos[0]",
+      "value_of": "x_paused"
+    },
+    {
+      "label": "nor has the game frame",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.game_frame",
+      "value_of": "paused_frame"
+    },
+    {
+      "label": "paused, the viewport's frame is the theme's paused colour",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportFrame",
+        "path": "{artifacts}/frame_paused.png",
+        "pixels": [
+          [
+            0.002,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "value": "#e0ac00"
+    },
+    {
+      "label": "the window while paused: the frame and the band above the viewport",
+      "expect": "screenshot",
+      "path": "window_paused.png"
+    },
+    {
+      "label": "Step can be pressed now",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.play.step"
+      },
+      "path": "widgets[0].enabled",
+      "value": true,
+      "retry_ms": 5000
+    },
+    {
+      "label": "press Step",
+      "cmd": "click",
+      "name": "pelican.play.step"
+    },
+    {
+      "label": "the game frame went up by exactly one",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.game_frame",
+      "value_of": "paused_frame",
+      "plus": 1,
+      "retry_ms": 5000,
+      "remember": "stepped_frame"
+    },
+    {
+      "label": "and no further",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.game_frame",
+      "value_of": "stepped_frame"
+    },
+    {
+      "label": "the object moved exactly one step (0.25)",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Mover"
+        }
+      },
+      "path": "result.components[0].runtime_json.local_trs.pos[0]",
+      "value_of": "x_paused",
+      "plus": 0.25,
+      "remember": "x_stepped"
+    },
+    {
+      "label": "the status bar shows the stepped frame",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.playStatus"
+      },
+      "path": "text",
+      "value_format": "Paused · frame {stepped_frame}",
+      "retry_ms": 5000
+    },
+    {
+      "label": "release Pause: Resume",
+      "cmd": "click",
+      "name": "pelican.play.pause"
+    },
+    {
+      "label": "the status bar says playing again",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "contains": "Playing · frame",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the behavior moves the object again",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "Mover"
+        }
+      },
+      "path": "result.components[0].runtime_json.local_trs.pos[0]",
+      "op": "gt",
+      "value_of": "x_stepped",
+      "retry_ms": 5000
+    },
+    {
+      "label": "playing again, the paused colour is gone",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportFrame",
+        "path": "{artifacts}/frame_resumed.png",
+        "pixels": [
+          [
+            0.002,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value": "#e0ac00"
+    }
+  ]
+}

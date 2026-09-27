@@ -37,6 +37,8 @@ class QTreeWidget;
 class QTabWidget;
 class QTreeWidgetItem;
 class QTimer;
+class QFrame;
+class QToolBar;
 
 namespace PelicanStudio {
 
@@ -46,6 +48,7 @@ class GraphCanvasWidget;
 class FullscreenPassWidget;
 class InspectorWidget;
 class OutlinerTree;
+class PlayControls;
 class ProjectMigrationWidget;
 class RenderConfigDigest;
 class RenderFeaturesWidget;
@@ -173,12 +176,19 @@ class MainWindow : public QMainWindow {
     QAction *render_undo_action_ = nullptr;
     QAction *render_redo_action_ = nullptr;
     std::uint64_t shown_render_history_line_ = 0;
+    // PM-3a: Pause / Step on the gizmo band, the play line of the status bar,
+    // and what a paused game turns the viewport's frame and that band.
+    PlayControls *play_controls_ = nullptr;
+    QFrame *viewport_frame_ = nullptr;
+    QToolBar *gizmo_toolbar_ = nullptr;
 
     void createWorkspace();
     void createRenderHistory(QWidget *pass_editor);
     void renderHistoryChanged();
     void renderDocumentsRestored(const nlohmann::json &commit, bool restart_required);
     void createMenus();
+    void createPlayControls(QToolBar *band);
+    void updatePlayPresentation();
     // View > Theme. One entry per theme in the table, each carrying the
     // objectName a scenario triggers (`pelican.view.theme.<name>`).
     void createThemeMenu(QMenu *view_menu);

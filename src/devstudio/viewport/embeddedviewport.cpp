@@ -385,8 +385,14 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                 // Q-4: the readiness probe is Studio's own question and is
                 // nobody else's answer to receive.
                 if (request_id != 0 && request_id == readiness_request_) {
+                    // PM-3a: the probe is a get_status, and what it says of
+                    // the play state is known before anyone is told "ready".
+                    emit engineStatusRead(result_json);
                     markRpcReady();
                     return;
+                }
+                if (status_requests_.remove(request_id)) {
+                    emit engineStatusRead(result_json);
                 }
                 // Passed straight through. The reply was walked once by
                 // EngineProcess and is parsed once by whichever model wants
@@ -408,7 +414,9 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                     markRpcReady();
                     return;
                 }
+                status_requests_.remove(request_id);
                 if (!pending_pick_requests_.remove(request_id)) {
+                    emit engineRpcRefused(request_id, code, message, data);
                     // F-5: the engine's own words and error_code first, for
                     // a caller that tells one refusal from another; then the
                     // one-line failure every caller already reads.
@@ -437,6 +445,7 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                     readiness_request_ = 0;
                     return;
                 }
+                status_requests_.remove(request_id);
                 if (!pending_pick_requests_.remove(request_id)) {
                     emit inspectorRpcFailed(request_id, message);
                     return;
@@ -590,6 +599,9 @@ qint64 EmbeddedViewport::requestRpc(const QString &method,
     }
     if (rpc_observer_.before) rpc_observer_.before(method, params);
     const qint64 request_id = process_.requestRpc(method, params, error);
+    if (request_id != 0 && method == QLatin1String("get_status")) {
+        status_requests_.insert(request_id);
+    }
     if (rpc_observer_.sent) rpc_observer_.sent(request_id, method, params);
     return request_id;
 }
@@ -662,6 +674,7 @@ void EmbeddedViewport::startEngine() {
     restart_pending_ = false;
     readiness_request_ = 0;
     engine_stop_reason_.clear();
+    status_requests_.clear();
     setEngineLoadingNotice({});
     last_requested_extent_ = {};
     resize_timer_->stop();

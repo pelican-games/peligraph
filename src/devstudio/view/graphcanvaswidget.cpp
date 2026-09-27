@@ -3062,7 +3062,18 @@ class GraphTimelineStrip final : public QWidget {
         : QWidget{parent}, model_{model}, scrub_{std::move(scrub)} {
         setObjectName(QStringLiteral("pelican.graphTimeline"));
         setMinimumHeight(96);
-        setToolTip(tr("Scene time, left to right. Drag to go to a time."));
+        setScrubBlocked({});
+    }
+
+    // PM-3a: while the game plays, the strip is read-only and says why.
+    void setScrubBlocked(const QString &reason) {
+        setToolTip(reason.isEmpty()
+                       ? tr("Scene time, left to right. Drag to go to a time.")
+                       : reason);
+        if (reason.isEmpty())
+            unsetCursor();
+        else
+            setCursor(Qt::ForbiddenCursor);
     }
 
     // The window the strip draws, in scene seconds. Empty buffer: nothing has
@@ -4887,6 +4898,11 @@ void GraphCanvasWidget::setRenderConfigDigest(
         impl_->digest_hub->subscribe(this, [impl = impl_.get()](const std::string &moved) {
             impl->documentMoved(moved);
         });
+}
+
+void GraphCanvasWidget::setTimelineScrubBlocked(const QString &reason) {
+    impl_->model.setScrubBlockedReason(reason.toStdString());
+    impl_->timeline->setScrubBlocked(reason);
 }
 
 GraphCanvasModel &GraphCanvasWidget::model() { return impl_->model; }
