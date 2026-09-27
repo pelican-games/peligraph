@@ -107,7 +107,7 @@ PELICAN_REGISTER_SYSTEM(ExamplePlayerControl, 100);
 
 ポイント:
 
-- `dt` は delta time(前フレームからの経過秒)。`ctx.deltaTime()` は最初のフレームや rpc `set_time` の直後に 0 になり得るので([EngineTime::setTime](../../src/core/appflow/enginetime.cpp#L44) が 0 に戻します)、その場合は 1/60 秒で代用しています。
+- `dt` は delta time(前フレームからの経過秒)。`ctx.deltaTime()` は最初のフレームや rpc `set_time` の直後に 0 になり得るので([EngineTime::setTime](../../src/core/appflow/enginetime.cpp#L63) が 0 に戻します)、その場合は 1/60 秒で代用しています。
 - `ctx.actionsConfigured()` ガード — `actions.json` を持たないプロジェクトでも壊れない作法です(ビルトインのカメラコントローラも同じ作法)。
 - `GameObjects::add()...finish()` ビルダーでオブジェクトを生成し、以後は **`GameObjectId` だけを保持**します(ポインタ保持は禁止 — [第4章](04_scene_ecs.md) §4.4)。
 - `PELICAN_REGISTER_SYSTEM` は**型の完全定義より後**(ファイル末尾)に置きます。※設計文書のコード例は定義前に書いていますが、マクロが型を実体化するためコンパイルできません。実物が正です。
@@ -172,7 +172,7 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 | [`objects()`](../../src/core/userpublic/gamecontext.hpp#L363) → [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L214) | `resolve(name)`→`Resolved<ObjectRef>` / `materialize(ref)`→`Resolved<GameObjectId>` / `worldTransform(ref)`→`Resolved<WorldTransform>` | ✅GP-1。シーンオブジェクトを名前で引き、ワールド変換を読む。失敗は例外ではなく名前付きエラー(下の「objects()」)。`materialize` / `worldTransform` は `spawn` が返した `TransientObjectRef` も受ける([多重定義](../../src/core/userpublic/gamecontext.hpp#L219)。✅GP-2) |
 | [`ui()`](../../src/core/userpublic/gamecontext.hpp#L364) / `ui(document_key)` → [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L271) | `setText(path, text)` / `setVisible(path, bool)` / `setValue(path, float)` → いずれも [`UiWriteResult`](../../src/core/userpublic/ui_write.hpp#L39) | ✅GP-3。UI 文書の node を path(root からの `id` を `/` でつないだもの)で指して書く。text は label / button、value は gauge、visible は全 node。書き込みはフレーム境界で適用。失敗は例外ではなく `ui.feature_unreferenced@1` / `ui.node_unknown@1` / `ui.property_mismatch@1` / `ui.sink_conflict@1`(この順で先のもの)。`ui.*` sink が書いている (path, 性質) はグラフのもので、ここからは書けない([第7章](07_input_ui.md) §7.4「ゲームコードと共通グラフから UI を書く」) |
 
-> **この 3 本は「アニメーションの API」ですが、対象が 2 つに分かれていて互いに委譲しません(✅AG-1b 決定 5)。ファサード分割もその線を引き直しただけで、行き先は変わっていません。** `render().setValueGraphParameter` が触るのは **pass 文書の `graph.instance`** の入力ポート、`animation().setParameter` / `animation().forceState` が触るのは **シーンの `animation` コンポーネント**が持つ評価器です(前者は [gamecontext.cpp:406](../../src/core/userpublic/gamecontext.cpp#L618) で `SceneLoader` へ、後者は [:319](../../src/core/userpublic/gamecontext.cpp#L523) / [:329](../../src/core/userpublic/gamecontext.cpp#L533) で `AnimationSystem` へ行きます)。**姿勢の装着様式が 2 つある**(§8.13)ことがそのまま API に出ています。同じ owner に両方は付かないので、「どちらを呼ぶか」は装着の仕方で決まります。
+> **この 3 本は「アニメーションの API」ですが、対象が 2 つに分かれていて互いに委譲しません(✅AG-1b 決定 5)。ファサード分割もその線を引き直しただけで、行き先は変わっていません。** `render().setValueGraphParameter` が触るのは **pass 文書の `graph.instance`** の入力ポート、`animation().setParameter` / `animation().forceState` が触るのは **シーンの `animation` コンポーネント**が持つ評価器です(前者は [gamecontext.cpp:406](../../src/core/userpublic/gamecontext.cpp#L630) で `SceneLoader` へ、後者は [:319](../../src/core/userpublic/gamecontext.cpp#L535) / [:329](../../src/core/userpublic/gamecontext.cpp#L545) で `AnimationSystem` へ行きます)。**姿勢の装着様式が 2 つある**(§8.13)ことがそのまま API に出ています。同じ owner に両方は付かないので、「どちらを呼ぶか」は装着の仕方で決まります。
 >
 > 同じ `graph.instance` 側には `render().emitValueGraphEvent(object, input, command)` もあります。`input` は **`event.playback` ノードの(展開後の)id** で、そこから `value.event_clock` / `audio.playback` の `events` ポートへ再生制御イベントが流れます([valuegraph.cpp:302](../../src/core/userpublic/valuegraph.cpp#L469))。
 >
@@ -186,9 +186,9 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 |---|---|---|
 | `ctx.audio()` の 9 関数(`playSound` の 2 つの overload を含む) | `PELICAN_WITH_AUDIO=OFF` | [`BuildFeatureCallDisabledError`](../../src/core/build_features.hpp#L45) を投げる。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_AUDIO"`、`what()` = `This binary was built with PELICAN_WITH_AUDIO=OFF: playSound is unavailable`(呼んだ関数名が入る) |
 | 同上を `onInit` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | `playSound` / `stopSound` / `setBusVolume` / `busVolume` / `isPlaying` は同じ例外を投げる。`setSoundVolume` / `setSoundPitch` / `setSoundPaused` は build を見る前に `false` を返す(ロード中は ON の build でも `false`) |
-| 同上を `onDestroy` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | 9 本とも例外にならず、空で答える: 無効な `SoundHandle` / `false` / `0.0` / `soundState` は `nullopt`(✅PG-2b。[`soundState` の包み](../../src/core/userpublic/gamecontext.cpp#L661))。拒否は記録に残る: scene のロード/破棄トランザクションの中ではロード結果の `effect_errors` に `build_feature_disabled@1`(`phase` は `destroy`)、トランザクションの無い `onDestroy`(プレイ中の object 削除、ゲーム DLL の解放、`deactivateAll`)では engine log に `build_feature_disabled@1 in a destruction callback: …`。トランザクションの中の `setSoundVolume` / `setSoundPitch` / `setSoundPaused` は、ON の build と同じく build を見る前に `false` を返すので何も記録されない |
+| 同上を `onDestroy` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | 9 本とも例外にならず、空で答える: 無効な `SoundHandle` / `false` / `0.0` / `soundState` は `nullopt`(✅PG-2b。[`soundState` の包み](../../src/core/userpublic/gamecontext.cpp#L673))。拒否は記録に残る: scene のロード/破棄トランザクションの中ではロード結果の `effect_errors` に `build_feature_disabled@1`(`phase` は `destroy`)、トランザクションの無い `onDestroy`(プレイ中の object 削除、ゲーム DLL の解放、`deactivateAll`)では engine log に `build_feature_disabled@1 in a destruction callback: …`。トランザクションの中の `setSoundVolume` / `setSoundPitch` / `setSoundPaused` は、ON の build と同じく build を見る前に `false` を返すので何も記録されない |
 | `ctx.physics()` の 5 本を `onDestroy` の中で呼ぶ | `PELICAN_WITH_PHYSICS=OFF`、または provider が 0 本 | 例外にならず、空で答える: `raycastAll` / `overlapAll` / `shapeCastAll` は空の配列、`raycastClosest` / `shapeCastClosest` は `nullopt`(✅PG-2b)。これは「何にも当たらなかった」と同じ答えで、見分けられるのは記録だけです。記録は audio と同じ場所(トランザクションの中なら `effect_errors`、無ければ engine log)に、`build_feature_disabled@1` か `physics.provider_unavailable@1` で残る |
-| `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=OFF` | `BuildFeatureCallDisabledError`。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_PHYSICS"`。rpc の `raycast` は JSON-RPC の error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b。[受け口](../../src/core/communication/rpcserver.cpp#L1125)) |
+| `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=OFF` | `BuildFeatureCallDisabledError`。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_PHYSICS"`。rpc の `raycast` は JSON-RPC の error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b。[受け口](../../src/core/communication/rpcserver.cpp#L1153)) |
 | `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=ON` で provider が 0 本(`PELICAN_WITH_BUILTIN_PHYSICS` と `PELICAN_WITH_JOLT_PHYSICS` が両方 OFF) | ゲーム DLL がそのクエリの provider を登録していなければ [`phys::ProviderUnavailableError`](../../src/core/phys/physquery.hpp#L102) を投げる。`code()` = `physics.provider_unavailable@1`。空の結果(「何にも当たらなかった」)は返さない。rpc の `raycast` も同じ場合は JSON-RPC の error(code `-32000`、message はこの例外の `what()`)を返す |
 | `ctx.animation().setParameter` / `forceState` | `PELICAN_WITH_ANIMATION=OFF` | 例外ではなく `Animation::Status::not_found`。シーンのロード/破棄トランザクションの中では、ON の build と同じく `phase_order_error` |
 
@@ -196,7 +196,7 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 - provider 0 本の build では、トリガー更新は例外を投げません。`OverlapEnter` / `OverlapExit` を出さず、それまでの overlap の組をそのまま持ち続けます([physworld.cpp のコメント](../../src/core/phys/physworld.cpp#L564))。
 - `PELICAN_WITH_PHYSICS=OFF` の build の rpc `raycast` は、PG-2b から stub の [`PhysWorld::raycastClosest()`](../../src/core/phys/physworld_stub.cpp#L108) に問い合わせず、params を見る前に上の JSON-RPC error で断ります。PG-2b より前は stub の空の答えがそのまま `{"hit": null}` になり、「外れ」と区別できませんでした。
 - activate 相(`onInit`)と、ロードの外の通常の呼び出しは、PG-2b の後も上の表のとおり投げます。空で答えるのは `onDestroy` の中だけです([規則のコメント](../../src/core/userpublic/gamecontext.hpp#L43))。
-- 残した穴: `render()` の `setRayTracingDispatchExtent` / `setRayTracingCallableRecord` は、scene のトランザクション中の呼び出しを `SceneTransactionMutationRejected` で投げます([トランザクション中の拒否](../../src/core/userpublic/gamecontext.cpp#L286))。PG-2b の包みの外なので、ロード中の `onDestroy` から呼ぶと `std::terminate` になりえます(コードからの推論。実行では未確認)。
+- 残した穴: `render()` の `setRayTracingDispatchExtent` / `setRayTracingCallableRecord` は、scene のトランザクション中の呼び出しを `SceneTransactionMutationRejected` で投げます([トランザクション中の拒否](../../src/core/userpublic/gamecontext.cpp#L298))。PG-2b の包みの外なので、ロード中の `onDestroy` から呼ぶと `std::terminate` になりえます(コードからの推論。実行では未確認)。
 - `animation` の OFF build の挙動は凍結 ABI の契約です(§8.13「`PELICAN_WITH_ANIMATION=OFF` の見え方」)。
 
 ### objects() — シーンオブジェクトを名前で引いてワールドを読む(✅GP-1)
@@ -358,7 +358,7 @@ PELICAN_REGISTER_SYSTEM(Gun, 100);
 
 ### input() と screenRay — クリックした先を調べる(✅GP-4)
 
-ポインタの位置は [`ctx.input().pointer()`](../../src/core/userpublic/gamecontext.cpp#L477) で、その位置を通る world の ray は [`ctx.render().screenRay()`](../../src/core/userpublic/gamecontext.cpp#L463) で得られます。ray は §8.8 の物理クエリにそのまま渡せます。
+ポインタの位置は [`ctx.input().pointer()`](../../src/core/userpublic/gamecontext.cpp#L489) で、その位置を通る world の ray は [`ctx.render().screenRay()`](../../src/core/userpublic/gamecontext.cpp#L475) で得られます。ray は §8.8 の物理クエリにそのまま渡せます。
 
 ```cpp
 void update(Pelican::GameContext &ctx) {
@@ -681,7 +681,7 @@ ctx.loadScene("scene_flow_second");   // 予約(名前はその場で検証。�
 - 適用は**フレーム末尾**(ゲームシステム実行後・描画前)。同フレームに複数回呼ぶと最後の 1 件が勝ちます。
 - 切替では全 GameObject・物理・描画インスタンス・名前束縛が破棄され、**起動時と同じロード経路**で新シーンが構築されます(第 2 経路を作らない方針)。
 - 切替は **1 つのトランザクション**です(✅WP380a)。途中で失敗したら document・ライト・カメラ・ECS・物理・描画・behavior が**まるごと旧シーンのまま**で、中途半端な状態にはなりません(読み込み済みのモデル資産だけはキャッシュなので残ります)。commit 後に音やセーブの書き出しだけが失敗した場合は「シーンは新しいまま + `effect_errors`」になります([第4章 §4.3](04_scene_ecs.md))。
-- **`EngineTime` は継続**します(時刻・フレーム番号はリセットされない)。時計はシーンではなくプロセスに属するモジュールで([enginetime.hpp](../../src/core/appflow/enginetime.hpp#L10))、シーンロードはこれに触らないためです。シーンローカル時間が欲しければ `SceneLoaded` 受信時の時刻を覚えてください。
+- **`EngineTime` は継続**します(時刻・フレーム番号はリセットされない)。時計はシーンではなくプロセスに属するモジュールで([enginetime.hpp](../../src/core/appflow/enginetime.hpp#L31))、シーンロードはこれに触らないためです。シーンローカル時間が欲しければ `SceneLoaded` 受信時の時刻を覚えてください。
 - 非同期ロード(`loadSceneAsync`)は 📐S2 未実装です。
 
 ### 落とし穴: システム状態はシーン切替で消えない
@@ -730,7 +730,7 @@ if (auto hit = ctx.physics().shapeCastClosest(player, {0, -4, 0})) {
 - **プロバイダの選択はビルド時**です: `PELICAN_WITH_BUILTIN_PHYSICS`(既定 ON)/ `PELICAN_WITH_JOLT_PHYSICS`(既定 OFF。両方 ON なら Jolt が勝つ)。project.json や実行時の切替はありません。クエリ契約(順序・タイブレーク)はプロバイダによらずエンジン側が所有するため、通常は意識不要です。ゲーム DLL から capability 単位で provider をオーバーレイする上級拡張点(`physics/abi_v2.hpp` — raycast だけ独自実装し残りはフォールバック、等)もあります。
 - transform 追従は現行では毎フレーム再収集(BVH = bounding volume hierarchy、形状を包む箱を木に組んで判定候補を絞る加速構造。それを持たないという意味 — 計測してから見直す方針)。capsule の軸はローカル Y、box は OBB(回転対応)です。
 - `debug_draw` feature を rendering config で参照していると collider のワイヤフレームが描画されます([第6章](06_rendering.md))。
-- rpc の query は `raycast`([受け口](../../src/core/communication/rpcserver.cpp#L1125)。`origin` / `direction` / `max_distance` を受けて最近傍 1 件を返す)だけです。provider が 0 本のビルドと `PELICAN_WITH_PHYSICS=OFF` のビルド(✅PG-2b)では、この `raycast` も「当たらなかった」ではなく JSON-RPC の error を返します(§8.4「機能を外した build」)。
+- rpc の query は `raycast`([受け口](../../src/core/communication/rpcserver.cpp#L1153)。`origin` / `direction` / `max_distance` を受けて最近傍 1 件を返す)だけです。provider が 0 本のビルドと `PELICAN_WITH_PHYSICS=OFF` のビルド(✅PG-2b)では、この `raycast` も「当たらなかった」ではなく JSON-RPC の error を返します(§8.4「機能を外した build」)。
 - 📐未実装: rpc の overlap / shapeCast、メッシュコライダ/BVH、剛体シミュレーション。
 
 ### 8.7.1 side-scroller controller(WP109)
@@ -814,7 +814,7 @@ ctx.audio().stopSound(h);
 
 ### どのバックエンドで鳴るか(✅AU-1、起動時の指定は ✅AU-3)
 
-起動で名指ししなければ、起動の形でバックエンドが決まります([`preferredAudioBackend`](../../src/core/audio/audio.cpp#L437)、[`Audio::Audio()`](../../src/core/audio/audio.cpp#L782))。
+起動で名指ししなければ、起動の形でバックエンドが決まります([`preferredAudioBackend`](../../src/core/audio/audio.cpp#L437)、[`Audio::Audio()`](../../src/core/audio/audio.cpp#L799))。
 
 | 起動の形 | バックエンド | 音 |
 |---|---|---|
@@ -1003,7 +1003,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 ### 長い音の streaming(✅AU-2)
 
-- header が言う長さが **10 秒を超える**音は、WAV でも Ogg Vorbis でも streaming で鳴ります(判定は [`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L839)、10 秒は [`defaultStreamingThresholdSeconds`](../../src/core/audio/audio.cpp#L401))。
+- header が言う長さが **10 秒を超える**音は、WAV でも Ogg Vorbis でも streaming で鳴ります(判定は [`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L856)、10 秒は [`defaultStreamingThresholdSeconds`](../../src/core/audio/audio.cpp#L401))。
 - 全体を decode しません。**rendering config 登録時のアセット検査も header だけを読みます**(WAV は短い WAV と同じ chunk の規則、Ogg Vorbis は decoder で header と長さを読む)。
 - decode の cache が持つのは PCM ではなく **符号化された bytes** で、同じアセットを鳴らす voice の間で 1 つを共有します。voice はそれぞれ自分の decoder(`ma_decoder`)を持ち、再生しながら読みます。
 - 一体版のネイティブループも、分解版の seek も、decode 済みの音と同じ意味で動きます(範囲・ループ点・開始位置は同じ frame 番号で指定します)。
