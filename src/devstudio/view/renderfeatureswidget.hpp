@@ -7,6 +7,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 class QAction;
@@ -58,6 +59,17 @@ class RenderFeaturesWidget final : public QWidget {
     // RU-1. The render edit history's Undo / Redo: their keys work in this
     // panel and in every editor it opens (the Task Editor among them).
     void setRenderHistoryActions(const QList<QAction *> &actions);
+    // LP-4f2. "Replace with loop version..." on a feature the engine ships a
+    // decomposed graph for (get_graph_templates' decomposes.feature): the
+    // confirmation, then apply_graph_template. The Frame Plan's right-click
+    // on a feature's group comes here too.
+    void replaceWithLoopVersion(const QString &feature_reference);
+    // nullopt when the feature has no loop version (or is not listed); an
+    // empty string when it can be taken in now, the reason otherwise.
+    [[nodiscard]] std::optional<QString> loopVersionOffered(
+        const QString &feature_reference) const;
+    // Who hears the loop an apply_graph_template added, once it committed.
+    void setLoopVersionAppliedAction(std::function<void(const QString &loop)> action);
 
   signals:
     void renderConfigCommitted();

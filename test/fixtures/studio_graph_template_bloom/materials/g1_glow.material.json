@@ -1,0 +1,16 @@
+{
+  "schema": "pelican.material",
+  "version": 1,
+  "materials": [
+    {
+      "name": "g1_glow",
+      "surface": "engine://surfaces/openpbr/opaque_single.surface",
+      "values": {
+        "base_color": [1.0, 0.45, 0.05, 1.0],
+        "emission_luminance": 4.0,
+        "emission_color": [1.0, 0.45, 0.05, 1.0]
+      },
+      "routing": {"alpha_mode": "opaque", "double_sided": false}
+    }
+  ]
+}

@@ -215,6 +215,16 @@ modelReferenceChoices(std::string_view current,
 // another's message, in the "<code>: {...}" of that message. Answers
 // "<sentence> (<code>)." in Q-10's form, or empty for any other refusal.
 [[nodiscard]] std::string viewSelectRefusalDescription(const nlohmann::json &error);
+// LP-4f2 (VF-1): render.view_family_extent_mismatch@1 {family, pass, target,
+// extent, expected_pass, expected_target, expected_extent, loop_origin?,
+// expected_loop_origin?} -- the passes of one view family draw at two sizes.
+// An extent reads as "256×256" ([w, h]) or "screen ×1.0" ({output_scale: s}),
+// and a pass a loop copied is named with its loop and body node. Read as
+// viewSelectRefusalDescription reads its own (which answers this one too).
+// Empty for any other refusal.
+[[nodiscard]] std::string viewFamilyExtentRefusalDescription(const nlohmann::json &error);
+// An extent of that refusal as the sentence shows it.
+[[nodiscard]] std::string viewFamilyExtentText(const nlohmann::json &extent);
 // LP-4c, decision 9: the graph.loop_* and graph.definition_* refusals, one
 // sentence each, made from the refusal's own fields (the loop, the branch,
 // the definition, the port, the counts). `error` is read as for view_select:

@@ -21,9 +21,11 @@ constexpr int TicketPollMs = 25;
 // The render edits: the ones that replace what documents hold (RD-1), and
 // the ones that create or remove files (RD-1b), which RU-1 could not take
 // back.
-constexpr std::array<std::string_view, 16> RecordedMethods{
+constexpr std::array<std::string_view, 17> RecordedMethods{
     "edit_preset_pass",
     "decompose_material_pass",
+    // LP-4f2: a shipped graph template in place of a feature (GT-1).
+    "apply_graph_template",
     "edit_compute_task",
     "add_compute_task",
     "remove_compute_task",
@@ -227,6 +229,11 @@ std::string RenderEditHistory::labelFor(const std::string &method, const Json &p
         return named("Edit pass ", stringAt(params, "pass_name"), "Edit pass");
     if (method == "decompose_material_pass")
         return named("Decompose ", stringAt(params, "pass"), "Decompose");
+    // LP-4f2: the feature is not among the params; the accepted answer names
+    // it (applied.feature), and the entry is named again then.
+    if (method == "apply_graph_template")
+        return named("Replace with ", graphTemplateTitle(stringAt(params, "template")),
+                     "Replace with loop version");
     if (method == "edit_compute_task")
         return named("Edit task ", stringAt(params, "task_name"), "Edit task");
     if (method == "add_compute_task")
@@ -275,6 +282,35 @@ std::string RenderEditHistory::labelFor(const std::string &method, const Json &p
     if (method == "fork_render_pipeline") return "Fork render pipeline";
     if (method == "import_render_feature") return "Import feature";
     return method;
+}
+
+std::string RenderEditHistory::graphTemplateTitle(const std::string &reference) {
+    // The engine's own rule when a template names no title
+    // (renderconfigeditor.cpp): the file's name, spaces for underscores, the
+    // first letter capital -- "engine://graphs/bloom_loop.json" is "Bloom loop".
+    auto name = reference.substr(reference.rfind('/') == std::string::npos ? 0
+                                                                           : reference.rfind('/') + 1);
+    if (name.ends_with(".json")) name.resize(name.size() - 5);
+    std::ranges::replace(name, '_', ' ');
+    if (!name.empty() && name.front() >= 'a' && name.front() <= 'z')
+        name.front() = static_cast<char>(name.front() - 'a' + 'A');
+    return name;
+}
+
+std::string RenderEditHistory::featureName(const std::string &reference) {
+    // "engine://features/bloom.json" -> "bloom".
+    auto name = reference.substr(reference.rfind('/') == std::string::npos ? 0
+                                                                           : reference.rfind('/') + 1);
+    if (name.ends_with(".json")) name.resize(name.size() - 5);
+    return name;
+}
+
+std::string RenderEditHistory::graphTemplateLabel(const Json &accepted) {
+    const auto applied = accepted.is_object() ? accepted.value("applied", Json::object()) : Json{};
+    const auto feature = stringAt(applied, "feature");
+    const auto reference = stringAt(applied, "template");
+    if (feature.empty() || reference.empty()) return {};
+    return "Replace " + featureName(feature) + " with " + graphTemplateTitle(reference);
 }
 
 std::int64_t RenderEditHistory::send(const std::string &method, const Json &params,
@@ -360,6 +396,11 @@ bool RenderEditHistory::receiveResult(std::int64_t id, const Json &result) {
             const auto ticket = stringAt(result, "ticket");
             if (status(result) == "accepted" && !ticket.empty()) {
                 edit.ticket = ticket;
+                // LP-4f2: "Replace <feature> with <title>", from what the
+                // engine says it applied.
+                if (edit.method == "apply_graph_template")
+                    if (const auto label = graphTemplateLabel(result); !label.empty())
+                        edit.label = label;
                 pollEdit(edit.edit_request);
                 return true;
             }

@@ -3719,6 +3719,9 @@ struct GraphCanvasWidget::Impl {
                 }
             } else if (request.method == "get_frame_plan" && graph.requestFramePlan)
                 transport = graph.requestFramePlan(&error);
+            else if (request.method == "get_render_authoring_context" &&
+                     graph.requestRenderAuthoringContext)
+                transport = graph.requestRenderAuthoringContext(&error);
             else if (request.method == "set_time" && graph.requestSetTime)
                 transport = graph.requestSetTime(
                     request.params.value("t", 0.0), &error);

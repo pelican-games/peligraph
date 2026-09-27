@@ -4175,6 +4175,11 @@ void FramePlanGraphicsScene::contextMenuEvent(
     const bool session_group =
         group != nullptr && session_groups_.contains(group->state_key);
 
+    // LP-4f2: a feature's group offers the feature's loop version, when the
+    // engine ships one.
+    if (group != nullptr) addLoopVersionEntry(menu, group_id);
+    else context_feature_.clear();
+
     if (on_entity && kind == QLatin1String{FramePlanGroupItem}) {
         QAction *expand = menu.addAction(QStringLiteral("Expand group"));
         connect(expand, &QAction::triggered, this,
@@ -4968,6 +4973,52 @@ void FramePlanGraphicsScene::setOpenInGraphAction(QAction *action) {
 
 void FramePlanGraphicsScene::setDecomposeAction(QAction *action) {
     decompose_action_ = action;
+}
+
+void FramePlanGraphicsScene::setLoopVersionAction(QAction *action) {
+    loop_version_action_ = action;
+}
+
+std::string FramePlanGraphicsScene::groupFeatureReference(const QString &group_id) const {
+    if (!current_model_ || group_id.isEmpty()) return {};
+    const auto groups = discoverGroups(*current_model_, session_groups_);
+    const auto *group = findGroupById(groups, group_id);
+    if (group == nullptr || !group->key.starts_with("feature:")) return {};
+    for (const auto &member : group->members) {
+        const auto node = std::ranges::find(current_model_->nodes, member, &FramePlanNode::name);
+        if (node != current_model_->nodes.end() && !node->provider_reference.empty())
+            return node->provider_reference;
+    }
+    return {};
+}
+
+bool FramePlanGraphicsScene::addLoopVersionEntry(QMenu &menu, const QString &group_id) {
+    context_feature_.clear();
+    if (loop_version_action_ == nullptr || !loopVersionOffered) return false;
+    const auto feature = groupFeatureReference(group_id);
+    if (feature.empty()) return false;
+    const auto reason = loopVersionOffered(feature);
+    if (!reason) return false;
+    context_feature_ = feature;
+    loop_version_action_->setEnabled(reason->empty());
+    loop_version_action_->setToolTip(
+        reason->empty() ? QStringLiteral("Replace this feature with the graph the engine ships "
+                                         "for it: the same picture, drawn by graph nodes you "
+                                         "can edit")
+                        : qtext(*reason));
+    if (!menu.actions().isEmpty()) menu.addSeparator();
+    menu.addAction(loop_version_action_);
+    menu.setToolTipsVisible(true);
+    menu.addSeparator();
+    return true;
+}
+
+std::string FramePlanGraphicsScene::loopVersionFeature() const {
+    if (!context_feature_.empty()) return context_feature_;
+    if (!current_model_ || !selected_node_) return {};
+    const auto node =
+        std::ranges::find(current_model_->nodes, selected_node_->name, &FramePlanNode::name);
+    return node != current_model_->nodes.end() ? node->provider_reference : std::string{};
 }
 
 void FramePlanGraphicsScene::applyResourcePick() {

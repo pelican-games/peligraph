@@ -1,0 +1,503 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_template_bloom",
+  "description": "LP-4f2: the bloom feature replaced by the engine's shipped loop version (engine://graphs/bloom_loop.json, GT-1) from Render Features. Bloom's row offers Replace with loop version... because get_graph_templates names bloom as the feature bloom_loop decomposes; the confirmation says what happens and that Undo takes it back; apply_graph_template goes with the root's digest (a direct root). Once it commits, the Graph tab comes to the front with the loop selected, the Frame Plan shows the loop's copies as one group, and the viewport is the picture bloom drew -- a glowing box, same middle, same corner, as many colours. Undo brings the feature back and the same picture; Redo puts the loop version again.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the root lists bloom among its features",
+      "expect": "rpc_equals",
+      "method": "get_render_features",
+      "params": {},
+      "path": "features[0]",
+      "value": "engine://features/bloom.json",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the graph holds the fixture's two nodes",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 2
+    },
+    {
+      "label": "before: the glowing box in the middle",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "box",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and the background in a corner",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[1]",
+      "remember": "background"
+    },
+    {
+      "label": "the box is on screen: its colour is not the background's",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "background"
+    },
+    {
+      "label": "and how many colours the picture has",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before.png"
+      },
+      "path": "distinct_colors",
+      "remember": "colors_before"
+    },
+    {
+      "label": "the Features tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.render_features"
+    },
+    {
+      "label": "the feature list has been read",
+      "cmd": "wait",
+      "name": "pelican.renderFeatures.current",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick bloom",
+      "cmd": "select",
+      "name": "pelican.renderFeatures.current",
+      "text": "bloom"
+    },
+    {
+      "label": "bloom's row offers its loop version (the engine ships one: get_graph_templates)",
+      "cmd": "wait",
+      "name": "pelican.renderFeatures.replaceWithLoop",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Replace with loop version...",
+      "cmd": "click",
+      "name": "pelican.renderFeatures.replaceWithLoop"
+    },
+    {
+      "label": "the confirmation is on screen",
+      "cmd": "wait",
+      "name": "pelican.renderFeatures.replaceConfirm",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "it names the graph",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.renderFeatures.replaceConfirm"
+      },
+      "path": "text",
+      "op": "contains",
+      "value": "Bloom loop"
+    },
+    {
+      "label": "and says the feature goes",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.renderFeatures.replaceConfirm"
+      },
+      "path": "text",
+      "op": "contains",
+      "value": "The feature bloom is removed"
+    },
+    {
+      "label": "and that Undo takes it back",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.renderFeatures.replaceConfirm"
+      },
+      "path": "text",
+      "op": "contains",
+      "value": "Undo takes it back"
+    },
+    {
+      "label": "Replace",
+      "cmd": "click",
+      "name": "pelican.renderFeatures.replaceConfirm.ok"
+    },
+    {
+      "label": "the root no longer lists bloom",
+      "expect": "rpc_equals",
+      "method": "get_render_features",
+      "params": {},
+      "path": "features.$len",
+      "value": 0,
+      "retry_ms": 120000
+    },
+    {
+      "label": "the graph holds the loop version: bloom_down, a loop",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[6].id",
+      "value": "bloom_down",
+      "retry_ms": 60000
+    },
+    {
+      "label": "as a graph.loop",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[6].op",
+      "value": "graph.loop"
+    },
+    {
+      "label": "the Graph tab is in front with the loop drawn as a zone",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#bloom_down",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the loop is the one selected: its fields are shown",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.summary",
+      "contains": "bloom_down",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Render features says what happened, and the way back",
+      "expect": "text_equals",
+      "name": "pelican.renderFeatures.notice",
+      "value": "Replaced bloom with Bloom loop. Undo takes it back."
+    },
+    {
+      "label": "the engine expands the loop",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].node",
+      "value": "bloom_down",
+      "retry_ms": 60000
+    },
+    {
+      "label": "after the replacement: the middle is the glowing box, as before",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/replaced.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "value_of": "box",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and the corner the background",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/replaced.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[1]",
+      "value_of": "background"
+    },
+    {
+      "label": "and as many colours",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/replaced.png"
+      },
+      "path": "distinct_colors",
+      "value_of": "colors_before",
+      "retry_ms": 30000
+    },
+    {
+      "label": "a picture of the Graph tab with the loop version",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "graph_template_bloom_graph.png"
+    },
+    {
+      "label": "the Frame Plan tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "read the frame plan again",
+      "cmd": "click",
+      "name": "pelican.framePlanRefresh"
+    },
+    {
+      "label": "the loop's copies are one group",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::group#__pelican_group__:loop:bloom_down",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "a picture of the Frame Plan with the loop's group",
+      "expect": "screenshot",
+      "name": "pelican.framePlan",
+      "path": "graph_template_bloom_frame_plan.png"
+    },
+    {
+      "label": "Edit > Undo Render Edit, fired by name",
+      "cmd": "action",
+      "name": "pelican.edit.undoRenderEdit"
+    },
+    {
+      "label": "Undo: bloom is a feature of the root again",
+      "expect": "rpc_equals",
+      "method": "get_render_features",
+      "params": {},
+      "path": "features[0]",
+      "value": "engine://features/bloom.json",
+      "retry_ms": 120000
+    },
+    {
+      "label": "and the graph holds its two nodes only",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 2,
+      "retry_ms": 60000
+    },
+    {
+      "label": "after the Undo: the middle is the glowing box, as before",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/undone.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "value_of": "box",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and the corner the background",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/undone.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[1]",
+      "value_of": "background"
+    },
+    {
+      "label": "and as many colours",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/undone.png"
+      },
+      "path": "distinct_colors",
+      "value_of": "colors_before",
+      "retry_ms": 30000
+    },
+    {
+      "label": "Edit > Redo Render Edit, fired by name",
+      "cmd": "action",
+      "name": "pelican.edit.redoRenderEdit"
+    },
+    {
+      "label": "Redo: bloom leaves the root again",
+      "expect": "rpc_equals",
+      "method": "get_render_features",
+      "params": {},
+      "path": "features.$len",
+      "value": 0,
+      "retry_ms": 120000
+    },
+    {
+      "label": "and the loop is back",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[6].id",
+      "value": "bloom_down",
+      "retry_ms": 60000
+    },
+    {
+      "label": "after the Redo: the middle is the glowing box, as before",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/redone.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "value_of": "box",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and the corner the background",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/redone.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[1]",
+      "value_of": "background"
+    },
+    {
+      "label": "and as many colours",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/redone.png"
+      },
+      "path": "distinct_colors",
+      "value_of": "colors_before",
+      "retry_ms": 30000
+    }
+  ]
+}

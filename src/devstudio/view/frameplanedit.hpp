@@ -570,6 +570,70 @@ std::string framePlanDecomposeRejection(const nlohmann::json &error);
 // or empty.
 std::string framePlanDecomposedLoop(const nlohmann::json &response);
 
+// --- LP-4f2: a shipped decomposed graph in place of a feature (GT-1's
+// get_graph_templates / apply_graph_template).
+
+// One template of get_graph_templates, as Studio reads it: what its
+// `decomposes` says it replaces, and what it adds.
+struct GraphTemplateInfo {
+    std::string reference;
+    std::string title;
+    std::string description;
+    // decomposes.feature: the feature reference it is the loop version of.
+    std::string feature;
+    bool remove_feature = false;
+    // decomposes.pass_replacements, in the template's order.
+    std::vector<std::pair<std::string, std::string>> pass_replacements;
+    std::vector<std::string> shader_defines;
+    std::size_t definitions = 0;
+    std::size_t nodes = 0;
+    // The root nodes that are graph.loop (what the Graph tab shows after).
+    std::vector<std::string> loops;
+};
+
+// get_graph_templates' answer; a template without decomposes.feature is left
+// out (it replaces nothing a feature row could offer).
+std::vector<GraphTemplateInfo> graphTemplatesFromResponse(const nlohmann::json &response);
+
+// The template that is `feature`'s loop version, or null. Studio keeps no
+// table of its own: this is the one place the answer comes from.
+const GraphTemplateInfo *graphTemplateForFeature(const std::vector<GraphTemplateInfo> &templates,
+                                                 const std::string &feature);
+
+// "bloom" for "engine://features/bloom.json".
+std::string graphTemplateFeatureName(const std::string &feature);
+
+// What a feature row of `scope` ("root" | "preset") listed in `document`
+// cannot do before anything is sent: a feature of an engine preset nobody
+// forked (project_preset_required, as LP-4e's Decompose says it). Empty when
+// the request can go.
+std::string graphTemplateRefusal(const std::string &feature, const std::string &scope,
+                                 const std::string &document);
+
+// apply_graph_template {base_source_digest, base_preset_digest?, template}:
+// the preset's digest goes only when the project's preset lists the feature
+// (`preset_digest` non-empty); a direct root's feature goes with the root's.
+nlohmann::json graphTemplateApplyParams(const GraphTemplateInfo &graph_template,
+                                        const std::string &source_digest,
+                                        const std::string &preset_digest);
+
+// The confirmation: the title and description, then what happens in one to
+// three lines (the feature removed or its passes replaced, the nodes and
+// definitions added, the shader defines added), and that Undo takes it back.
+std::string graphTemplateConfirmation(const GraphTemplateInfo &graph_template);
+
+// One sentence for each refusal apply_graph_template answers with; anything
+// else reads as renderAuthoringRefusalLine.
+std::string graphTemplateRejection(const nlohmann::json &error);
+
+// The loop the Graph tab selects once it committed: the first of the
+// accepted answer's applied.nodes that the template declares as a graph.loop.
+std::string graphTemplateAppliedLoop(const GraphTemplateInfo &graph_template,
+                                     const nlohmann::json &accepted);
+
+// "Replaced bloom with Bloom loop. Undo takes it back."
+std::string graphTemplateAppliedLine(const GraphTemplateInfo &graph_template);
+
 // --- LP-4a: view_select (LP-Va).
 
 // The line under a node's heading when the node runs only for some views of

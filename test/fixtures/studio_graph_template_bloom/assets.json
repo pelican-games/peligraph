@@ -1,0 +1,14 @@
+{
+  "schema": "pelican.asset_data",
+  "version": 2,
+  "models": [
+    {
+      "name": "checker_box",
+      "path": "checker_box.glb",
+      "material_bindings": "material_bindings.json"
+    }
+  ],
+  "materials": [
+    {"path": "materials/g1_glow.material.json"}
+  ]
+}

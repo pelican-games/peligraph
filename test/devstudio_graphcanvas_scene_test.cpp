@@ -3747,6 +3747,11 @@ struct ZoneHarness {
     Json loops = Json::array();
     // LP-4f1: the rest of the plan (its nodes' view axes, its resources).
     Json plan = Json::object();
+    // LP-4f2: the operation catalog, and get_render_authoring_context's
+    // answer (null: left unanswered).
+    Json catalog = visualCatalog();
+    Json authoring;
+    int authoring_reads = 0;
 
     explicit ZoneHarness(Json initial = zoneDocument()) : document(std::move(initial)) {}
 
@@ -3765,7 +3770,12 @@ struct ZoneHarness {
             if (request.method == "get_graph_instances")
                 model.receiveRpcResult(request.request_id, snapshot().dump());
             else if (request.method == "get_graph_catalog")
-                model.receiveRpcResult(request.request_id, visualCatalog().dump());
+                model.receiveRpcResult(request.request_id, catalog.dump());
+            else if (request.method == "get_render_authoring_context") {
+                ++authoring_reads;
+                if (!authoring.is_null())
+                    model.receiveRpcResult(request.request_id, authoring.dump());
+            }
             else if (request.method == "get_frame_plan") {
                 auto reply = plan;
                 reply["loops"] = loops;
@@ -5022,6 +5032,136 @@ TEST_CASE("LP-4f1 a view-axis loop's body offers Each element on its axis, and n
     // Nor for a node that takes no view_select.
     view.showNode(nullptr, {});
     CHECK(view.isHidden());
+}
+
+// LP-4f2 (VF-1): the engine holds a view family's passes to the extent of its
+// first raster pass. A pass put in the body of a loop over that family's axis
+// draws into an image made at that extent.
+TEST_CASE("LP-4f2 Add fullscreen pass in a view-axis loop's body makes its image at the "
+          "family's size",
+          "[devstudio][graph-canvas][scene][lp4f2][vf1]") {
+    (void)application();
+    ZoneHarness h{lp4f1Document()};
+    // The render operations, which declare no ports of their own, as the
+    // engine publishes them.
+    for (const char *op : {"render.image", "render.fullscreen"})
+        h.catalog["modules"][1]["operations"].push_back({{"op", op},
+                                                         {"domain", "rendering"},
+                                                         {"evaluation", "direct"},
+                                                         {"sink", false},
+                                                         {"ports", "parameter_dependent"}});
+    // The plan: the cube's first raster pass by declaration order is
+    // `outside`, whose first write is its own graph image (no declaration)
+    // and whose second is the cube's 256 x 256, six-layer target; a later
+    // pass of the family writes another size. The shadow's first pass writes
+    // a target half the screen's size.
+    auto nodes = lp4f1PlanNodes();
+    nodes[0]["declaration_index"] = 7;
+    nodes[0]["writes"] = Json::array({"cube_capture_ao"});
+    nodes[1]["declaration_index"] = 1;
+    nodes[1]["writes"] = Json::array({"shadow_map"});
+    nodes[3]["declaration_index"] = 3;
+    nodes[3]["writes"] = Json::array({"outside__color", "cube_capture_albedo"});
+    h.plan = Json{{"nodes", nodes}};
+    h.authoring = Json{
+        {"render_targets",
+         Json::array({{{"name", "cube_capture_albedo"},
+                       {"declaration",
+                        {{"name", "cube_capture_albedo"}, {"extent_scale", 1.0}, {"width", 256},
+                         {"height", 256}, {"layers", 6}}}},
+                      {{"name", "cube_capture_ao"},
+                       {"declaration", {{"name", "cube_capture_ao"}, {"width", 128}, {"height", 128}}}},
+                      {{"name", "shadow_map"},
+                       {"declaration", {{"name", "shadow_map"}, {"extent_scale", 0.5}}}}})}};
+    h.open();
+    h.answerReads();
+    // Asked for because the document holds a loop over a view axis.
+    CHECK(h.authoring_reads >= 1);
+    CHECK(h.model.viewAxisFamilyOf("faces") == "$capture/cube");
+    CHECK(h.model.viewAxisFamilyOf("counted_body").empty());
+    CHECK(h.model.viewAxisFamilyOf("").empty());
+    CHECK(h.model.viewFamilyImageExtent("$shadow/directional") == Json{{"extent_scale", 0.5}});
+    CHECK_FALSE(h.model.viewFamilyImageExtent("$main").has_value());
+
+    // Add fullscreen pass, in the cube loop's body: a 256 x 256 image of six
+    // layers, and the pass in the cube's family, resolved on its own.
+    REQUIRE(h.scene.addFromPalette("faces", "render.fullscreen", {}));
+    const auto ops = h.commit(false);
+    REQUIRE(ops.size() == 2);
+    CHECK(ops[0].at("scope") == "faces");
+    const auto image = ops[0].at("node").at("parameters");
+    INFO(image.dump());
+    CHECK(ops[0].at("node").at("op") == "render.image");
+    CHECK(image.at("width") == 256);
+    CHECK(image.at("height") == 256);
+    CHECK(image.at("layers") == 6);
+    const auto pass = ops[1].at("node").at("parameters");
+    CHECK(ops[1].at("node").at("op") == "render.fullscreen");
+    CHECK(pass.at("view_family") == "$capture/cube");
+    CHECK(pass.at("resolution_domain") == "independent");
+
+    // In the body of a loop over a count: as before -- the screen's size, and
+    // no family named.
+    const auto counted = h.model.addNodeOpsIn("counted_body", "render.fullscreen", {});
+    REQUIRE(counted.size() == 2);
+    CHECK_FALSE(counted[0].at("node").at("parameters").contains("width"));
+    CHECK(counted[0].at("node").at("parameters").at("extent_scale") == 1.0);
+    CHECK_FALSE(counted[1].at("node").at("parameters").contains("view_family"));
+    CHECK_FALSE(counted[1].at("node").at("parameters").contains("resolution_domain"));
+}
+
+TEST_CASE("LP-4f2 without the targets' declarations the image is made as before, in the "
+          "loop's family",
+          "[devstudio][graph-canvas][scene][lp4f2][vf1]") {
+    (void)application();
+    ZoneHarness h{lp4f1Document()};
+    for (const char *op : {"render.image", "render.fullscreen"})
+        h.catalog["modules"][1]["operations"].push_back({{"op", op},
+                                                         {"domain", "rendering"},
+                                                         {"evaluation", "direct"},
+                                                         {"sink", false},
+                                                         {"ports", "parameter_dependent"}});
+    h.plan = lp4f1Plan();
+    h.open();
+    h.answerReads();
+    const auto ops = h.model.addNodeOpsIn("faces", "render.fullscreen", {});
+    REQUIRE(ops.size() == 2);
+    // The engine names a mismatch, if there is one (render.view_family_extent_mismatch@1).
+    CHECK_FALSE(ops[0].at("node").at("parameters").contains("width"));
+    CHECK(ops[0].at("node").at("parameters").at("extent_scale") == 1.0);
+    CHECK(ops[1].at("node").at("parameters").at("view_family") == "$capture/cube");
+    CHECK_FALSE(ops[1].at("node").at("parameters").contains("resolution_domain"));
+}
+
+// VF-1's refusal of a copy a loop made marks the loop and its body node.
+TEST_CASE("LP-4f2 a view family's size refusal of a loop's copy marks the zone's node",
+          "[devstudio][graph-canvas][scene][lp4f2][vf1][refusal]") {
+    (void)application();
+    ZoneHarness h{lp4f1Document()};
+    h.plan = lp4f1Plan();
+    h.open();
+    h.answerReads();
+    const Json error{{"code", "render.view_family_extent_mismatch@1"},
+                     {"family", "$capture/cube"},
+                     {"pass", "faces_loop/0/pass"},
+                     {"target", "faces_loop/0/pass__color"},
+                     {"extent", {{"output_scale", 1.0}}},
+                     {"expected_pass", "cube_capture_ssao"},
+                     {"expected_target", "cube_capture_ao"},
+                     {"expected_extent", Json::array({256, 256})},
+                     {"loop_origin", {{"loop", "faces_loop"}, {"element", 0}, {"node", "pass"}}}};
+    REQUIRE(h.model.setLoopCount("counted", 3));
+    const auto edits = h.answerReads();
+    REQUIRE(edits.size() == 1);
+    h.model.receiveRpcResult(edits.front().request_id,
+                             Json{{"status", "rejected"}, {"error", error}}.dump());
+    // The sentence, and the marks on the loop and on the body node it copies.
+    CHECK(h.model.notice().message == PelicanStudio::viewFamilyExtentRefusalDescription(error));
+    const auto &marks = h.model.refusalMarks();
+    CHECK(std::ranges::find(marks, PelicanStudio::GraphCanvasRefusalMark{"", "faces_loop", h.model.notice().message}) !=
+          marks.end());
+    CHECK(std::ranges::find(marks, PelicanStudio::GraphCanvasRefusalMark{"faces", "pass", h.model.notice().message}) !=
+          marks.end());
 }
 
 TEST_CASE("LP-4f1 a view-axis zone says how many views along which axis, and names them",

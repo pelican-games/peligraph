@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 
 class QAction;
 class QByteArray;
@@ -73,6 +74,13 @@ class FramePlanWidget final : public QWidget {
     // it made, which the Graph tab then shows.
     void decomposeMaterialPass(const QString &graph, const QString &pass);
     void setLoopDecomposedAction(std::function<void(const QString &loop)> action);
+    // LP-4f2. "Replace with loop version..." on a feature's group: `offered`
+    // says whether the feature (its reference) has one -- nullopt: no entry;
+    // empty: offered; else the reason it cannot now -- and `replace` takes it
+    // in. Both are the Features tab's.
+    void setLoopVersionActions(
+        std::function<std::optional<QString>(const QString &feature)> offered,
+        std::function<void(const QString &feature)> replace);
     void setPresetPassEditAction(std::function<void(const QString &, const QString &)> action);
     // N-8. What the canvas is allowed to change, and where its placement is
     // kept. Without these the canvas is exactly the read-only projection it was

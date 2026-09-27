@@ -461,6 +461,10 @@ struct FramePlanWidget::Impl {
     std::string decomposed_loop;
     // The confirmation in front of a decompose, while it is open.
     QPointer<QMessageBox> decompose_prompt;
+    // LP-4f2: whether a feature has a loop version, and taking it in (the
+    // Features tab's).
+    std::function<std::optional<QString>(const QString &feature)> loop_version_offered;
+    std::function<void(const QString &feature)> loop_version_replace;
     // LP-4e, decision 5: the draw_loop materials read past the plan's first
     // page ("Read more" in the details), by loop; cleared by a new plan.
     std::map<std::string, std::vector<FramePlanLoopElement>, std::less<>> loop_more;
@@ -1021,6 +1025,33 @@ struct FramePlanWidget::Impl {
                 if (!decomposeAbout(node)) return std::nullopt;
                 return framePlanDecomposeRefusal(authoring, model ? &*model : nullptr,
                                                  node.graph, node.name);
+            };
+        // LP-4f2: a feature's group offers the feature's loop version; the
+        // Features tab owns the rest (the confirmation and the request).
+        auto *loop_version_entry = new QAction(
+            QStringLiteral("Replace with loop version…"), &owner);
+        loop_version_entry->setObjectName(
+            QStringLiteral("pelican.framePlan.replaceWithLoopVersion"));
+        owner.addAction(loop_version_entry);
+        QObject::connect(loop_version_entry, &QAction::triggered, &owner, [this] {
+            const auto feature = logical_scene->loopVersionFeature();
+            if (feature.empty()) {
+                showStatus(owner.tr("Right-click the group of the feature to replace first."));
+                return;
+            }
+            if (!loop_version_replace) {
+                showStatus(owner.tr("Replacing a feature is unavailable here."));
+                return;
+            }
+            loop_version_replace(text(feature));
+        });
+        logical_scene->setLoopVersionAction(loop_version_entry);
+        logical_scene->loopVersionOffered =
+            [this](const std::string &feature) -> std::optional<std::string> {
+                if (!loop_version_offered) return std::nullopt;
+                const auto reason = loop_version_offered(text(feature));
+                if (!reason) return std::nullopt;
+                return reason->toStdString();
             };
         // F-1: named like the insert entries, and offered on a right-click
         // over open canvas and on the toolbar.
@@ -4181,6 +4212,13 @@ void FramePlanWidget::decomposeMaterialPass(const QString &graph, const QString 
 
 void FramePlanWidget::setLoopDecomposedAction(std::function<void(const QString &loop)> action) {
     impl_->loop_decomposed_action = std::move(action);
+}
+
+void FramePlanWidget::setLoopVersionActions(
+    std::function<std::optional<QString>(const QString &feature)> offered,
+    std::function<void(const QString &feature)> replace) {
+    impl_->loop_version_offered = std::move(offered);
+    impl_->loop_version_replace = std::move(replace);
 }
 
 void FramePlanWidget::setTaskEditAction(std::function<void(const QString &)> action) {

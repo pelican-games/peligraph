@@ -7,11 +7,12 @@ the frame plan lists passes of the `$capture/cube` family, with the `face`
 axis (length 6, labels +X .. -Z) on them. Its root graph starts empty: the
 scenario puts a loop over that axis there, with Studio's controls only.
 
-The document also holds one definition no node runs yet, `cube_face`: a
-fullscreen pass of the `$capture/cube` family drawing into a 256 x 256, six
-layer image of its own -- the size of the cube's other passes. The scenario
-chooses it as the loop's body. (Studio's Add fullscreen pass draws into an
-image the size of the screen, and the engine does not run one family at two
-raster extents: `renderer.cpp` stops with "spans multiple raster extents".)
+Its graph holds no definition either: the loop's body is the new, empty one
+Add loop makes, and the pass in it is Studio's Add fullscreen pass. In the
+body of a loop over the cube's axis, that pass draws into an image made at the
+size the cube's family draws at -- 256 x 256, six layers, read off the target
+the family's first raster pass writes (LP-4f2) -- because the engine does not
+run one family at two raster extents (render.view_family_extent_mismatch@1,
+VF-1).
 
 The scenario copies this directory before opening it; nothing here is written.

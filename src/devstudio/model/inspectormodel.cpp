@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <concepts>
+#include <sstream>
 #include <stdexcept>
 #include <type_traits>
 #include <unordered_map>
@@ -699,8 +700,75 @@ std::string refusalField(const nlohmann::json &fields, const char *key) {
 
 } // namespace
 
+std::string viewFamilyExtentText(const nlohmann::json &extent) {
+    const auto number = [](const nlohmann::json &value) {
+        if (value.is_number_integer() || value.is_number_unsigned()) return value.dump();
+        if (!value.is_number()) return std::string{"?"};
+        std::ostringstream out;
+        out.setf(std::ios::fixed);
+        out.precision(1);
+        const auto scalar = value.get<double>();
+        // One decimal unless the number needs more ("×0.25").
+        if (std::abs(scalar * 10.0 - std::round(scalar * 10.0)) > 1e-9) {
+            out.unsetf(std::ios::fixed);
+            out.precision(6);
+        }
+        out << scalar;
+        return out.str();
+    };
+    if (extent.is_array() && extent.size() == 2)
+        return number(extent[0]) + "×" + number(extent[1]);
+    if (extent.is_object())
+        if (const auto scale = extent.find("output_scale"); scale != extent.end())
+            return "screen ×" + number(*scale);
+    return extent.is_null() ? std::string{"?"} : extent.dump();
+}
+
+std::string viewFamilyExtentRefusalDescription(const nlohmann::json &error) {
+    constexpr std::string_view code = "render.view_family_extent_mismatch@1";
+    if (!error.is_object()) return {};
+    const auto own_code = error.value("code", std::string{});
+    const auto message = error.value("message", std::string{});
+    nlohmann::json fields;
+    if (own_code == code) {
+        if (const auto relayed = error.find("error_fields");
+            relayed != error.end() && relayed->is_object())
+            fields = *relayed;
+        else if (error.contains("family") || error.contains("pass"))
+            fields = error;
+    }
+    if (!fields.is_object()) {
+        auto quoted = fieldsAfterCode(message, code);
+        if (!quoted) return {};
+        fields = std::move(*quoted);
+    }
+    // A pass a loop copied: named with the loop and the body node it copies.
+    const auto passName = [&](const char *pass_key, const char *origin_key) {
+        auto name = refusalField(fields, pass_key);
+        if (name.empty()) name = "a pass";
+        const auto origin = fields.find(origin_key);
+        if (origin != fields.end() && origin->is_object()) {
+            const auto loop = origin->value("loop", std::string{});
+            const auto node = origin->value("node", std::string{});
+            if (!loop.empty() && !node.empty())
+                name += " (loop " + loop + ", body node " + node + ")";
+        }
+        return name;
+    };
+    const auto family = refusalField(fields, "family");
+    return passName("pass", "loop_origin") + " writes " + refusalField(fields, "target") +
+           " at " + viewFamilyExtentText(fields.value("extent", nlohmann::json{})) + ", but " +
+           (family.empty() ? std::string{"its view family"} : family) + " draws at " +
+           viewFamilyExtentText(fields.value("expected_extent", nlohmann::json{})) +
+           " (its first pass " + passName("expected_pass", "expected_loop_origin") +
+           " writes " + refusalField(fields, "expected_target") +
+           "): the passes of one view family draw at one size (" + std::string{code} + ").";
+}
+
 std::string viewSelectRefusalDescription(const nlohmann::json &error) {
     if (!error.is_object()) return {};
+    // LP-4f2 (VF-1): a view family's passes at two sizes.
+    if (auto extent = viewFamilyExtentRefusalDescription(error); !extent.empty()) return extent;
     const auto code_value = error.find("code");
     const std::string own_code = code_value != error.end() && code_value->is_string()
                                      ? code_value->get<std::string>()

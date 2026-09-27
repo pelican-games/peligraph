@@ -353,6 +353,24 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     // its tooltip). Named like the others; acts on insertAnchor().
     void setDecomposeAction(QAction *action);
     std::function<std::optional<std::string>(const FramePlanNodeKey &)> decomposeOffered;
+    // LP-4f2: "Replace with loop version..." on a right-click over a
+    // feature's group (provider_feature), folded or open. `loopVersionOffered`
+    // is asked with the feature's reference (its passes' provider_ref):
+    // nothing leaves the entry out, an empty line offers it, a reason offers
+    // it disabled with the reason as its tooltip. Named like the others; acts
+    // on loopVersionFeature().
+    void setLoopVersionAction(QAction *action);
+    std::function<std::optional<std::string>(const std::string &feature)> loopVersionOffered;
+    // The feature reference of the group `group_id` names, or empty when it
+    // is not a feature's group.
+    [[nodiscard]] std::string groupFeatureReference(const QString &group_id) const;
+    // The feature the last right-click offered the entry for; else the
+    // feature of the picked node.
+    [[nodiscard]] std::string loopVersionFeature() const;
+    // What a right-click on the group `group_id` puts in `menu` for it: the
+    // entry, when the group is a feature's and loopVersionOffered answers.
+    // False, and nothing put, otherwise.
+    bool addLoopVersionEntry(QMenu &menu, const QString &group_id);
     // LP-4b: "View" on a node's right-click, for a node whose family has
     // view axes (view_axes): per axis, All views and each value as radio
     // entries, the node's view_select checked; an axis decided each frame is
@@ -517,6 +535,8 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     QAction *material_pass_action_ = nullptr;
     QAction *open_in_graph_action_ = nullptr;
     QAction *decompose_action_ = nullptr;
+    QAction *loop_version_action_ = nullptr;
+    std::string context_feature_;
     QAction *fix_sockets_action_ = nullptr;
     QAction *variadic_sockets_action_ = nullptr;
     // F-1: the resource node the user clicked. Delete acts on it.

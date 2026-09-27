@@ -1645,6 +1645,157 @@ std::string framePlanDecomposedLoop(const Json &response) {
     return textOr(decomposed, "loop");
 }
 
+// --- LP-4f2: a shipped decomposed graph in place of a feature.
+
+std::vector<GraphTemplateInfo> graphTemplatesFromResponse(const Json &response) {
+    std::vector<GraphTemplateInfo> templates;
+    const auto list = response.is_object() ? response.find("templates") : response.end();
+    if (!response.is_object() || list == response.end() || !list->is_array()) return templates;
+    for (const auto &entry : *list) {
+        if (!entry.is_object()) continue;
+        GraphTemplateInfo info;
+        info.reference = textOr(entry, "reference");
+        info.title = textOr(entry, "title");
+        info.description = textOr(entry, "description");
+        const auto decomposes = objectOr(entry, "decomposes");
+        info.feature = textOr(decomposes, "feature");
+        if (info.reference.empty() || info.feature.empty()) continue;
+        if (info.title.empty()) info.title = info.reference;
+        info.remove_feature = decomposes.value("remove_feature", false);
+        const auto replacements = objectOr(decomposes, "pass_replacements");
+        for (const auto &[pass, node] : replacements.items())
+            if (node.is_string()) info.pass_replacements.emplace_back(pass, node.get<std::string>());
+        if (const auto defines = decomposes.find("shader_defines");
+            defines != decomposes.end() && defines->is_array())
+            for (const auto &define : *defines)
+                if (define.is_string()) info.shader_defines.push_back(define.get<std::string>());
+        const auto document = objectOr(entry, "document");
+        info.definitions = objectOr(document, "definitions").size();
+        if (const auto nodes = document.find("nodes"); nodes != document.end() && nodes->is_array()) {
+            info.nodes = nodes->size();
+            for (const auto &node : *nodes)
+                if (node.is_object() && textOr(node, "op") == "graph.loop" &&
+                    !textOr(node, "id").empty())
+                    info.loops.push_back(textOr(node, "id"));
+        }
+        templates.push_back(std::move(info));
+    }
+    return templates;
+}
+
+const GraphTemplateInfo *graphTemplateForFeature(const std::vector<GraphTemplateInfo> &templates,
+                                                 const std::string &feature) {
+    if (feature.empty()) return nullptr;
+    const auto found = std::ranges::find(templates, feature, &GraphTemplateInfo::feature);
+    return found == templates.end() ? nullptr : &*found;
+}
+
+std::string graphTemplateFeatureName(const std::string &feature) {
+    auto name = feature.substr(feature.rfind('/') == std::string::npos ? 0 : feature.rfind('/') + 1);
+    if (name.ends_with(".json")) name.resize(name.size() - 5);
+    return name.empty() ? feature : name;
+}
+
+std::string graphTemplateRefusal(const std::string &feature, const std::string &scope,
+                                 const std::string &document) {
+    if (scope != "preset" || document.starts_with("project://")) return {};
+    return graphTemplateFeatureName(feature) + " is a feature of the engine preset " +
+           (document.empty() ? std::string{"the project selects"} : document) +
+           ": fork the preset into the project first (Features tab, Fork), then replace the "
+           "feature there.";
+}
+
+Json graphTemplateApplyParams(const GraphTemplateInfo &graph_template,
+                              const std::string &source_digest, const std::string &preset_digest) {
+    Json params{{"base_source_digest", source_digest}, {"template", graph_template.reference}};
+    if (!preset_digest.empty()) params["base_preset_digest"] = preset_digest;
+    return params;
+}
+
+std::string graphTemplateConfirmation(const GraphTemplateInfo &graph_template) {
+    const auto feature = graphTemplateFeatureName(graph_template.feature);
+    std::string text = graph_template.title;
+    if (!graph_template.description.empty()) text += ": " + graph_template.description;
+    text += "\n\n";
+    if (graph_template.remove_feature) {
+        text += "The feature " + feature + " is removed, and the graph draws what it drew.";
+    } else if (!graph_template.pass_replacements.empty()) {
+        std::set<std::string> nodes;
+        for (const auto &[pass, node] : graph_template.pass_replacements) nodes.insert(node);
+        std::string by;
+        for (const auto &node : nodes) by += (by.empty() ? "" : ", ") + node;
+        const auto count = graph_template.pass_replacements.size();
+        text += "The feature " + feature + " stays; " + std::to_string(count) +
+                (count == 1 ? " of its passes is" : " of its passes are") + " replaced by " + by +
+                ".";
+    } else {
+        text += "The feature " + feature + " stays as it is.";
+    }
+    text += "\nThe graph gains " + std::to_string(graph_template.nodes) +
+            (graph_template.nodes == 1 ? " node" : " nodes") + " and " +
+            std::to_string(graph_template.definitions) +
+            (graph_template.definitions == 1 ? " definition." : " definitions.");
+    if (!graph_template.shader_defines.empty()) {
+        text += "\nShader defines added: ";
+        for (std::size_t index = 0; index < graph_template.shader_defines.size(); ++index)
+            text += (index == 0 ? "" : ", ") + graph_template.shader_defines[index];
+        text += ".";
+    }
+    text += "\n\nUndo takes it back (Ctrl+Z here, or Undo on the Frame Plan).";
+    return text;
+}
+
+std::string graphTemplateRejection(const Json &error) {
+    if (!error.is_object()) return "The engine refused to replace the feature.";
+    const auto code = textOr(error, "code");
+    const auto fields = refusalFields(error);
+    const auto suffix = " (" + code + ").";
+    const auto feature = graphTemplateFeatureName(textOr(fields, "feature"));
+    const auto reference = textOr(fields, "template");
+    if (code == "graph_template_unknown")
+        return "The engine does not ship the graph " +
+               (reference.empty() ? std::string{"Studio asked for"} : reference) + suffix;
+    if (code == "graph_template_invalid")
+        return "The graph " + reference + " cannot be taken in: " + textOr(fields, "reason") + suffix;
+    if (code == "graph_template_feature_absent")
+        return "Neither the rendering config nor its preset lists " + feature +
+               ", which the graph replaces: add the feature, or refresh the list" + suffix;
+    if (code == "graph_template_pass_replacement_conflict")
+        return "The feature " + feature + " already replaces its pass " + textOr(fields, "pass") +
+               " with " + textOr(fields, "current") + ", and the graph would replace it with " +
+               textOr(fields, "requested") + ": remove that replacement first" + suffix;
+    if (code == "project_preset_required")
+        return feature + " is a feature of the engine preset " + textOr(fields, "preset") +
+               ": fork the preset into the project first (Features tab, Fork), then replace the "
+               "feature there" + suffix;
+    if (code == "graph.node_duplicate@1")
+        return "The graph already has a node named " + textOr(fields, "node") +
+               ", which the loop version adds -- perhaps it is in already (Undo takes an earlier "
+               "one back), or rename that node first" + suffix;
+    if (code == "graph.definition_duplicate@1")
+        return "The graph already has a definition named " + textOr(fields, "definition") +
+               ", which the loop version adds -- perhaps it is in already (Undo takes an earlier "
+               "one back), or rename that definition first" + suffix;
+    return renderAuthoringRefusalLine(error);
+}
+
+std::string graphTemplateAppliedLoop(const GraphTemplateInfo &graph_template, const Json &accepted) {
+    const auto applied = objectOr(accepted, "applied");
+    const auto nodes = applied.find("nodes");
+    if (nodes == applied.end() || !nodes->is_array()) return {};
+    for (const auto &node : *nodes)
+        if (node.is_string() &&
+            std::ranges::find(graph_template.loops, node.get<std::string>()) !=
+                graph_template.loops.end())
+            return node.get<std::string>();
+    return {};
+}
+
+std::string graphTemplateAppliedLine(const GraphTemplateInfo &graph_template) {
+    return "Replaced " + graphTemplateFeatureName(graph_template.feature) + " with " +
+           graph_template.title + ". Undo takes it back.";
+}
+
 std::string renderAuthoringRefusalLine(const Json &error) {
     const auto code = textOr(error, "code");
     const auto message = textOr(error, "message");

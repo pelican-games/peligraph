@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "loop_view_axis",
-  "description": "LP-4f1: a loop over the cube's faces, built on the Graph tab with Studio's controls only. The fixture carries the cube_capture feature, so the frame plan lists passes of the $capture/cube family with the face axis. Add loop puts a loop over a new, empty body in the root; its Loop fields' Over is set to View axis, and the family and the axis are chosen from what the frame plan lists ($capture/cube, face) -- nothing typed. Its count is the axis's length, read only (x6 (face)), and the zone's heading says so. The body is chosen from the branch table's list: the fixture's cube_face, a fullscreen pass of the $capture/cube family drawing into an image of the cube's size (Studio's Add fullscreen pass draws into a screen-sized image, and the engine stops a family that spans two raster extents). The pass's View field offers Each element (loop), which writes view_select face {$expr: element}. The engine expands the loop six times, one copy a face: the frame plan's copies run for faces 0 to 5, and the Frame Plan shows them as one group of six.",
+  "description": "LP-4f1 and LP-4f2: a loop over the cube's faces, built on the Graph tab with Studio's controls only. The fixture carries the cube_capture feature, so the frame plan lists passes of the $capture/cube family with the face axis. Add loop puts a loop over a new, empty body in the root; its Loop fields' Over is set to View axis, and the family and the axis are chosen from what the frame plan lists ($capture/cube, face) -- nothing typed. Its count is the axis's length, read only (x6 (face)), and the zone's heading says so. With the zone picked, Add fullscreen pass puts a pass in the body, drawing into an image made at the size the cube's family draws at (LP-4f2: 256 x 256, six layers, read off the family's first raster pass's target -- the engine refuses a family whose passes draw at two sizes, render.view_family_extent_mismatch@1), in the loop's family. The pass's View field offers Each element (loop), which writes view_select face {$expr: element}. The engine expands the loop six times, one copy a face: the frame plan's copies run for faces 0 to 5, and the Frame Plan shows them as one group of six.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -132,31 +132,74 @@
       "timeout_ms": 60000
     },
     {
-      "label": "the body is chosen from a list: the fixture's cube_face, a pass of the cube's family drawing into an image of the cube's size",
-      "cmd": "select",
-      "name": "pelican.graphCanvasLoop.branch0.body",
-      "text": "cube_face"
+      "label": "pick the zone by its heading again: Add fullscreen pass puts the pass in its body",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#loop"
     },
     {
-      "label": "the loop runs cube_face",
+      "label": "the loop is picked: its fields are shown",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.viewCount",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Add fullscreen pass, with the zone picked: into its body",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addFullscreenPass"
+    },
+    {
+      "label": "the body holds the image and the pass",
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[0].parameters.branches[0].body",
-      "value": "cube_face",
+      "path": "definitions.loop_body.nodes.$len",
+      "value": 2,
       "retry_ms": 60000
+    },
+    {
+      "label": "LP-4f2: the image is the size the cube's family draws at -- 256 wide, as its first pass's target",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.loop_body.nodes[0].parameters.width",
+      "value": 256
+    },
+    {
+      "label": "256 high",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.loop_body.nodes[0].parameters.height",
+      "value": 256
+    },
+    {
+      "label": "six layers, a face each",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.loop_body.nodes[0].parameters.layers",
+      "value": 6
+    },
+    {
+      "label": "and the pass draws in the loop's family",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.loop_body.nodes[1].parameters.view_family",
+      "value": "$capture/cube"
     },
     {
       "label": "the pass is drawn inside the zone",
       "cmd": "wait",
-      "name": "pelican.graphCanvasView::graph_node#cube_face/face_pass",
+      "name": "pelican.graphCanvasView::graph_node#loop_body/render_fullscreen",
       "visible": true,
       "timeout_ms": 60000
     },
     {
       "label": "pick the pass",
       "cmd": "click",
-      "name": "pelican.graphCanvasView::graph_node_header#cube_face/face_pass"
+      "name": "pelican.graphCanvasView::graph_node_header#loop_body/render_fullscreen"
     },
     {
       "label": "its View field has the loop's face axis",
@@ -177,16 +220,16 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "definitions.cube_face.nodes[1].parameters.view_select.face.$expr",
+      "path": "definitions.loop_body.nodes[1].parameters.view_select.face.$expr",
       "value": "element",
       "retry_ms": 60000
     },
     {
-      "label": "and in the loop's family, which it named already",
+      "label": "in the loop's family, which it named when it was added",
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "definitions.cube_face.nodes[1].parameters.view_family",
+      "path": "definitions.loop_body.nodes[1].parameters.view_family",
       "value": "$capture/cube"
     },
     {
@@ -207,12 +250,12 @@
       "value": "expand"
     },
     {
-      "label": "the copies stand in the frame plan in element order: copy 0 is loop/0/face_pass",
+      "label": "the copies stand in the frame plan in element order: copy 0 is loop/0/render_fullscreen",
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
       "path": "nodes[16].name",
-      "value": "loop/0/face_pass"
+      "value": "loop/0/render_fullscreen"
     },
     {
       "label": "and runs for face 0 only",
@@ -223,12 +266,12 @@
       "value": 0
     },
     {
-      "label": "copy 1 is loop/1/face_pass",
+      "label": "copy 1 is loop/1/render_fullscreen",
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
       "path": "nodes[17].name",
-      "value": "loop/1/face_pass"
+      "value": "loop/1/render_fullscreen"
     },
     {
       "label": "and runs for face 1 only",
@@ -239,12 +282,12 @@
       "value": 1
     },
     {
-      "label": "copy 2 is loop/2/face_pass",
+      "label": "copy 2 is loop/2/render_fullscreen",
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
       "path": "nodes[18].name",
-      "value": "loop/2/face_pass"
+      "value": "loop/2/render_fullscreen"
     },
     {
       "label": "and runs for face 2 only",
@@ -255,12 +298,12 @@
       "value": 2
     },
     {
-      "label": "copy 3 is loop/3/face_pass",
+      "label": "copy 3 is loop/3/render_fullscreen",
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
       "path": "nodes[19].name",
-      "value": "loop/3/face_pass"
+      "value": "loop/3/render_fullscreen"
     },
     {
       "label": "and runs for face 3 only",
@@ -271,12 +314,12 @@
       "value": 3
     },
     {
-      "label": "copy 4 is loop/4/face_pass",
+      "label": "copy 4 is loop/4/render_fullscreen",
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
       "path": "nodes[20].name",
-      "value": "loop/4/face_pass"
+      "value": "loop/4/render_fullscreen"
     },
     {
       "label": "and runs for face 4 only",
@@ -287,12 +330,12 @@
       "value": 4
     },
     {
-      "label": "copy 5 is loop/5/face_pass",
+      "label": "copy 5 is loop/5/render_fullscreen",
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
       "path": "nodes[21].name",
-      "value": "loop/5/face_pass"
+      "value": "loop/5/render_fullscreen"
     },
     {
       "label": "and runs for face 5 only",

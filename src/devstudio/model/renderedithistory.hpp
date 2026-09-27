@@ -107,6 +107,13 @@ class RenderEditHistory {
     [[nodiscard]] static bool followsMethod(const std::string &method);
     // "Edit pass present", "Decompose deferred_geometry", ...
     [[nodiscard]] static std::string labelFor(const std::string &method, const Json &params);
+    // LP-4f2. apply_graph_template's entry: "Replace <feature> with <title>",
+    // from the accepted answer's applied.feature and applied.template; empty
+    // when it names neither. The title is the template file's name as the
+    // engine makes it ("Bloom loop"), the feature its file's ("bloom").
+    [[nodiscard]] static std::string graphTemplateLabel(const Json &accepted);
+    [[nodiscard]] static std::string graphTemplateTitle(const std::string &reference);
+    [[nodiscard]] static std::string featureName(const std::string &reference);
     // RU-1b, decision 3: whether two contents of a root differ in nothing
     // but placement -- the root's `layout` and each definition's -- which
     // the engine carries and never reads (graphcomposition's set_layout).

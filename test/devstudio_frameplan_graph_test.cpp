@@ -11706,4 +11706,256 @@ TEST_CASE("LP-4e a material pass a draw_loop draws in says so under its heading,
     CHECK(fixture.widget.findChild<QPushButton *>(
               QStringLiteral("pelican.framePlan.loopMaterialsMore")) != nullptr);
 }
+
+// --- LP-4f2: a shipped decomposed graph in place of a feature (GT-1), and
+// VF-1's refusal.
+
+namespace {
+
+// get_graph_templates as GT-1 answers it, cut down to what Studio reads:
+// bloom removes its feature and adds two defines; the cascade replaces one
+// pass of the directional shadow.
+Json lp4f2Templates() {
+    const auto document = [](const Json &decomposes, const Json &nodes, const Json &definitions) {
+        return Json{{"schema", "pelican.graph"},
+                    {"version", 1},
+                    {"decomposes", decomposes},
+                    {"definitions", definitions},
+                    {"nodes", nodes}};
+    };
+    const Json bloom_decomposes{
+        {"feature", "engine://features/bloom.json"},
+        {"remove_feature", true},
+        {"shader_defines", Json::array({"PELICAN_FEATURE_BLOOM_THRESHOLD=0.4",
+                                        "PELICAN_FEATURE_BLOOM_KNEE=0.7"})}};
+    const Json cascade_decomposes{{"feature", "engine://features/shadow_directional.json"},
+                                  {"pass_replacements", {{"shadow_depth", "shadow_cascades"}}}};
+    return Json{
+        {"templates",
+         Json::array(
+             {{{"reference", "engine://graphs/bloom_loop.json"},
+               {"title", "Bloom loop"},
+               {"decomposes", bloom_decomposes},
+               {"document",
+                document(bloom_decomposes,
+                         Json::array({{{"id", "bloom_lit"}, {"op", "render.target_ref"}},
+                                      {{"id", "bloom_down"}, {"op", "graph.loop"}},
+                                      {{"id", "bloom_up"}, {"op", "graph.loop"}}}),
+                         {{"bloom_down_step", Json::object()}, {"bloom_up_step", Json::object()}})}},
+              {{"reference", "engine://graphs/shadow_cascade_loop.json"},
+               {"title", "Shadow cascade loop"},
+               {"description", "One depth pass a cascade."},
+               {"decomposes", cascade_decomposes},
+               {"document", document(cascade_decomposes,
+                                     Json::array({{{"id", "shadow_cascades"}, {"op", "graph.loop"}}}),
+                                     {{"shadow_cascade", Json::object()}})}},
+              // No decomposes.feature: nothing a feature row could offer.
+              {{"reference", "engine://graphs/loose.json"},
+               {"title", "Loose"},
+               {"decomposes", Json::object()},
+               {"document", Json::object()}}})}};
+}
+
+} // namespace
+
+TEST_CASE("LP-4f2 the templates name the features that have a loop version, and what taking "
+          "one in does",
+          "[devstudio][frame-plan][lp4f2]") {
+    const auto templates = graphTemplatesFromResponse(lp4f2Templates());
+    REQUIRE(templates.size() == 2);
+    const auto *bloom = graphTemplateForFeature(templates, "engine://features/bloom.json");
+    REQUIRE(bloom != nullptr);
+    CHECK(bloom->reference == "engine://graphs/bloom_loop.json");
+    CHECK(bloom->loops == std::vector<std::string>{"bloom_down", "bloom_up"});
+    CHECK(graphTemplateForFeature(templates, "engine://features/ssao.json") == nullptr);
+    const auto *cascade =
+        graphTemplateForFeature(templates, "engine://features/shadow_directional.json");
+    REQUIRE(cascade != nullptr);
+
+    // The confirmation says what happens, from decomposes.
+    const auto bloom_text = graphTemplateConfirmation(*bloom);
+    CHECK(bloom_text.starts_with("Bloom loop\n\n"));
+    CHECK(bloom_text.find("The feature bloom is removed") != std::string::npos);
+    CHECK(bloom_text.find("gains 3 nodes and 2 definitions") != std::string::npos);
+    CHECK(bloom_text.find("PELICAN_FEATURE_BLOOM_THRESHOLD=0.4, PELICAN_FEATURE_BLOOM_KNEE=0.7") !=
+          std::string::npos);
+    CHECK(bloom_text.find("Undo takes it back") != std::string::npos);
+    const auto cascade_text = graphTemplateConfirmation(*cascade);
+    CHECK(cascade_text.starts_with("Shadow cascade loop: One depth pass a cascade.\n\n"));
+    CHECK(cascade_text.find("The feature shadow_directional stays; 1 of its passes is replaced "
+                            "by shadow_cascades.") != std::string::npos);
+    CHECK(cascade_text.find("Shader defines") == std::string::npos);
+
+    // The digests: the root's alone for a direct root's feature, the
+    // preset's too for one the project's preset lists.
+    CHECK(graphTemplateApplyParams(*bloom, std::string(64, 'a'), {}) ==
+          Json{{"base_source_digest", std::string(64, 'a')},
+               {"template", "engine://graphs/bloom_loop.json"}});
+    CHECK(graphTemplateApplyParams(*bloom, std::string(64, 'a'), std::string(64, 'b')) ==
+          Json{{"base_source_digest", std::string(64, 'a')},
+               {"base_preset_digest", std::string(64, 'b')},
+               {"template", "engine://graphs/bloom_loop.json"}});
+    // An engine preset's feature: fork first, nothing sent.
+    CHECK(graphTemplateRefusal("engine://features/bloom.json", "preset",
+                               "engine://render_pipelines/hybrid_v1.json") ==
+          "bloom is a feature of the engine preset engine://render_pipelines/hybrid_v1.json: fork "
+          "the preset into the project first (Features tab, Fork), then replace the feature there.");
+    CHECK(graphTemplateRefusal("engine://features/bloom.json", "preset",
+                               "project://passes/local-pipeline.json")
+              .empty());
+    CHECK(graphTemplateRefusal("engine://features/bloom.json", "root", "passes/main.json").empty());
+
+    // What the Graph tab selects: the first loop the engine says it added.
+    CHECK(graphTemplateAppliedLoop(*bloom, Json{{"applied",
+                                                 {{"nodes", Json::array({"bloom_lit", "bloom_down",
+                                                                         "bloom_up"})}}}}) ==
+          "bloom_down");
+    CHECK(graphTemplateAppliedLoop(*bloom, Json{{"status", "accepted"}}).empty());
+    CHECK(graphTemplateAppliedLine(*bloom) == "Replaced bloom with Bloom loop. Undo takes it back.");
+}
+
+TEST_CASE("LP-4f2 each refusal of apply_graph_template reads as its sentence",
+          "[devstudio][frame-plan][lp4f2][refusal]") {
+    const auto line = [](Json error) { return graphTemplateRejection(error); };
+    const std::string bloom = "engine://graphs/bloom_loop.json";
+    CHECK(line({{"code", "graph_template_unknown"}, {"template", "engine://graphs/nope.json"}}) ==
+          "The engine does not ship the graph engine://graphs/nope.json (graph_template_unknown).");
+    CHECK(line({{"code", "graph_template_invalid"}, {"template", bloom}, {"reason", "no decomposes"}}) ==
+          "The graph engine://graphs/bloom_loop.json cannot be taken in: no decomposes "
+          "(graph_template_invalid).");
+    CHECK(line({{"code", "graph_template_feature_absent"},
+                {"template", bloom},
+                {"feature", "engine://features/bloom.json"}}) ==
+          "Neither the rendering config nor its preset lists bloom, which the graph replaces: add "
+          "the feature, or refresh the list (graph_template_feature_absent).");
+    CHECK(line({{"code", "graph_template_pass_replacement_conflict"},
+                {"feature", "engine://features/shadow_directional.json"},
+                {"pass", "shadow_depth"},
+                {"current", "my_shadows"},
+                {"requested", "shadow_cascades"}}) ==
+          "The feature shadow_directional already replaces its pass shadow_depth with my_shadows, "
+          "and the graph would replace it with shadow_cascades: remove that replacement first "
+          "(graph_template_pass_replacement_conflict).");
+    CHECK(line({{"code", "project_preset_required"},
+                {"feature", "engine://features/bloom.json"},
+                {"preset", "engine://render_pipelines/hybrid_v1.json"}}) ==
+          "bloom is a feature of the engine preset engine://render_pipelines/hybrid_v1.json: fork "
+          "the preset into the project first (Features tab, Fork), then replace the feature there "
+          "(project_preset_required).");
+    CHECK(line({{"code", "graph.node_duplicate@1"}, {"node", "bloom_lit"}, {"scope", "root"}}) ==
+          "The graph already has a node named bloom_lit, which the loop version adds -- perhaps it "
+          "is in already (Undo takes an earlier one back), or rename that node first "
+          "(graph.node_duplicate@1).");
+    CHECK(line({{"code", "graph.definition_duplicate@1"}, {"definition", "shadow_cascade"}}) ==
+          "The graph already has a definition named shadow_cascade, which the loop version adds -- "
+          "perhaps it is in already (Undo takes an earlier one back), or rename that definition "
+          "first (graph.definition_duplicate@1).");
+    // Relayed under error_fields, the same.
+    CHECK(line({{"code", "graph.definition_duplicate@1"},
+                {"error_fields", {{"definition", "shadow_cascade"}}}})
+              .starts_with("The graph already has a definition named shadow_cascade,"));
+    // Anything else reads as any render edit's refusal.
+    CHECK(line({{"code", "external_modification"}, {"message", "The document changed"}}) ==
+          "external_modification: The document changed");
+}
+
+TEST_CASE("LP-4f2 VF-1's refusal names the pass, the sizes and the family's first pass",
+          "[devstudio][frame-plan][lp4f2][vf1][refusal]") {
+    const Json fields{{"family", "$capture/cube"},
+                      {"pass", "loop/0/face_pass"},
+                      {"target", "loop/0/face_pass__color"},
+                      {"extent", {{"output_scale", 1.0}}},
+                      {"expected_pass", "cube_capture_geometry"},
+                      {"expected_target", "cube_capture_albedo"},
+                      {"expected_extent", Json::array({256, 256})},
+                      {"loop_origin", {{"loop", "loop"}, {"element", 0}, {"node", "face_pass"}}}};
+    const std::string sentence =
+        "loop/0/face_pass (loop loop, body node face_pass) writes loop/0/face_pass__color at "
+        "screen ×1.0, but $capture/cube draws at 256×256 (its first pass "
+        "cube_capture_geometry writes cube_capture_albedo): the passes of one view family draw at "
+        "one size (render.view_family_extent_mismatch@1).";
+    // Beside the code (an edit's refusal, isCarriedRefusalCode) ...
+    auto beside = fields;
+    beside["code"] = "render.view_family_extent_mismatch@1";
+    CHECK(viewFamilyExtentRefusalDescription(beside) == sentence);
+    // ... relayed under error_fields ...
+    CHECK(viewFamilyExtentRefusalDescription(
+              {{"code", "render.view_family_extent_mismatch@1"}, {"error_fields", fields}}) ==
+          sentence);
+    // ... or only in a message (a load that stopped on it).
+    CHECK(viewFamilyExtentRefusalDescription(
+              {{"code", "render_pipeline_preflight_failed"},
+               {"message", "render.view_family_extent_mismatch@1: " + fields.dump()}}) == sentence);
+    // Every render refusal line of the panels reads it.
+    CHECK(renderAuthoringRefusalLine(beside) == sentence);
+    CHECK(viewFamilyExtentText({{"output_scale", 0.25}}) == "screen ×0.25");
+    CHECK(viewFamilyExtentText(Json::array({512, 128})) == "512×128");
+    // Nothing else is it.
+    CHECK(viewFamilyExtentRefusalDescription({{"code", "graph.loop_nested@1"}}).empty());
+}
+
+TEST_CASE("LP-4f2 a feature's group offers its loop version when the Features tab has one",
+          "[devstudio][frame-plan][lp4f2][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    fixture.open();
+    auto &scene = fixture.logical();
+    QGraphicsItem *fallback = nodeItem(scene, "wp343_mixed_c");
+    QGraphicsItem *region = nodeItem(scene, "wp343_mixed_a");
+    REQUIRE(fallback != nullptr);
+    REQUIRE(region != nullptr);
+    const auto feature_group = fallback->data(FramePlanGroupIdRole).toString();
+    const auto region_group = region->data(FramePlanGroupIdRole).toString();
+    // The feature's group names the feature its passes came from; a
+    // region's names none.
+    const auto feature = scene.groupFeatureReference(feature_group);
+    CHECK_FALSE(feature.empty());
+    CHECK(scene.groupFeatureReference(region_group).empty());
+
+    std::vector<std::string> asked;
+    QStringList replaced;
+    std::optional<QString> answer = QString{};
+    fixture.widget.setLoopVersionActions(
+        [&](const QString &reference) {
+            asked.push_back(reference.toStdString());
+            return answer;
+        },
+        [&](const QString &reference) { replaced << reference; });
+    auto *entry = fixture.widget.findChild<QAction *>(
+        QStringLiteral("pelican.framePlan.replaceWithLoopVersion"));
+    REQUIRE(entry != nullptr);
+
+    // A feature that has one: offered, and it hands the feature on.
+    {
+        QMenu menu;
+        REQUIRE(scene.addLoopVersionEntry(menu, feature_group));
+        CHECK(asked == std::vector<std::string>{feature});
+        CHECK(menu.actions().contains(entry));
+        CHECK(entry->isEnabled());
+        entry->trigger();
+        CHECK(replaced == QStringList{QString::fromStdString(feature)});
+    }
+    // A region's group: not a feature's, nothing asked, nothing offered.
+    {
+        QMenu menu;
+        CHECK_FALSE(scene.addLoopVersionEntry(menu, region_group));
+        CHECK(menu.actions().isEmpty());
+        CHECK(asked.size() == 1);
+    }
+    // A feature the Features tab has no loop version for: no entry.
+    answer = std::nullopt;
+    {
+        QMenu menu;
+        CHECK_FALSE(scene.addLoopVersionEntry(menu, feature_group));
+        CHECK(menu.actions().isEmpty());
+    }
+    // One it cannot take in now: offered disabled, the reason its tooltip.
+    answer = QStringLiteral("Apply the pending edit first.");
+    {
+        QMenu menu;
+        REQUIRE(scene.addLoopVersionEntry(menu, feature_group));
+        CHECK_FALSE(entry->isEnabled());
+        CHECK(entry->toolTip() == QStringLiteral("Apply the pending edit first."));
+    }
+}
 } // namespace PelicanStudio

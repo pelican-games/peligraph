@@ -1,0 +1,13 @@
+{"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[
+  {"name":"Anchor","components":[
+    {"name":"transform","pos":[0.0,0.0,0.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[1.0,1.0,1.0]}
+  ]},
+  {"name":"Camera","components":[
+    {"name":"transform","pos":[0.0,0.0,5.0],"rotation":[0.0,1.0,0.0,0.0],"scale":[1.0,1.0,1.0]},
+    {"name":"camera"}
+  ]},
+  {"name":"GlowBox","components":[
+    {"name":"transform","pos":[0.0,0.0,0.0],"rotation":[0.0,0.2588190451,0.0,0.9659258263],"scale":[1.0,1.0,1.0]},
+    {"name":"simplemodelview","model":"checker_box"}
+  ]}
+]}}}

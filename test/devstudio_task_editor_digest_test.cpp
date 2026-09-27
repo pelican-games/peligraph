@@ -23,6 +23,9 @@
 #include "viewportgeometry.hpp"
 
 #include <QApplication>
+#include <QAction>
+#include <QListWidget>
+#include <QMessageBox>
 #include <QComboBox>
 #include <QDialog>
 #include <QElapsedTimer>
@@ -40,6 +43,7 @@
 #undef private
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -370,4 +374,266 @@ TEST_CASE("LP-4b the Task Editor's View field writes view_select into the "
     }
 }
 
+
+// --- LP-4f2: Render features' "Replace with loop version...", on the real
+// panel over the real transport (the test answers for the engine).
+
+namespace {
+
+const std::string PresetDigest(64, 'p');
+const std::string BloomTemplate = "engine://graphs/bloom_loop.json";
+const std::string CascadeTemplate = "engine://graphs/shadow_cascade_loop.json";
+const std::string BloomFeature = "engine://features/bloom.json";
+const std::string ShadowFeature = "engine://features/shadow_directional.json";
+const std::string SsaoFeature = "engine://features/ssao.json";
+
+Json lp4f2Instance(const std::string &reference, const std::string &scope, int index,
+                   const std::string &document, const std::string &digest) {
+    return {{"index", index},
+            {"reference", reference},
+            {"parameters", Json::object()},
+            {"parameter_schema", nullptr},
+            {"editable", false},
+            {"removable", scope == "root"},
+            {"scope", scope},
+            {"source_reference", document},
+            {"source_digest", {{"hex", digest}}}};
+}
+
+// get_graph_templates, cut to what the panel reads: bloom (removes its
+// feature) and the cascade (replaces a pass of the directional shadow).
+Json lp4f2Templates() {
+    return {{"templates",
+             Json::array(
+                 {{{"reference", BloomTemplate},
+                   {"title", "Bloom loop"},
+                   {"decomposes",
+                    {{"feature", BloomFeature},
+                     {"remove_feature", true},
+                     {"shader_defines", Json::array({"PELICAN_FEATURE_BLOOM_KNEE=0.7"})}}},
+                   {"document",
+                    {{"definitions", {{"bloom_down_step", Json::object()}}},
+                     {"nodes", Json::array({{{"id", "bloom_lit"}, {"op", "render.target_ref"}},
+                                            {{"id", "bloom_down"}, {"op", "graph.loop"}}})}}}},
+                  {{"reference", CascadeTemplate},
+                   {"title", "Shadow cascade loop"},
+                   {"decomposes",
+                    {{"feature", ShadowFeature},
+                     {"pass_replacements", {{"shadow_depth", "shadow_cascades"}}}}},
+                   {"document",
+                    {{"definitions", {{"shadow_cascade", Json::object()}}},
+                     {"nodes", Json::array({{{"id", "shadow_cascades"},
+                                             {"op", "graph.loop"}}})}}}}})}};
+}
+
+// One refresh of the panel, answered: it can edit, the root lists `root`
+// features and the preset (`preset_document`, unless empty) lists `preset`.
+void lp4f2Refresh(Rig &rig, const std::vector<std::string> &root,
+                  const std::vector<std::string> &preset = {},
+                  const std::string &preset_document = {}) {
+    const auto can_edit = rig.next("can_edit");
+    REQUIRE(can_edit);
+    rig.answer(*can_edit, {{"can_edit", true}});
+    const auto current = rig.next("get_render_features");
+    REQUIRE(current);
+    auto instances = Json::array();
+    for (std::size_t index = 0; index < root.size(); ++index)
+        instances.push_back(lp4f2Instance(root[index], "root", static_cast<int>(index),
+                                          "passes/main.json", RootA));
+    for (std::size_t index = 0; index < preset.size(); ++index)
+        instances.push_back(lp4f2Instance(preset[index], "preset", static_cast<int>(index),
+                                          preset_document, PresetDigest));
+    rig.answer(*current, {{"source_reference", "passes/main.json"},
+                          {"source_digest", {{"hex", RootA}}},
+                          {"feature_instances", instances}});
+    const auto catalog = rig.next("list_render_features");
+    REQUIRE(catalog);
+    rig.answer(*catalog,
+               {{"features", Json::array({{{"name", "bloom"}, {"reference", BloomFeature}, {"available", true}},
+                                          {{"name", "shadow_directional"}, {"reference", ShadowFeature}, {"available", true}},
+                                          {{"name", "ssao"}, {"reference", SsaoFeature}, {"available", true}}})}});
+    const auto templates = rig.next("get_graph_templates");
+    REQUIRE(templates);
+    rig.answer(*templates, lp4f2Templates());
+}
+
+QListWidget &lp4f2List(Rig &rig) {
+    return required<QListWidget>(*rig.features, "pelican.renderFeatures.current");
+}
+
+void lp4f2Pick(Rig &rig, const QString &text) {
+    auto &list = lp4f2List(rig);
+    const auto found = list.findItems(text, Qt::MatchExactly);
+    REQUIRE(found.size() == 1);
+    list.setCurrentItem(found.front());
+    QApplication::processEvents();
+}
+
+QMessageBox *lp4f2Prompt(Rig &rig) {
+    return rig.features->findChild<QMessageBox *>(
+        QStringLiteral("pelican.renderFeatures.replaceConfirm"));
+}
+
+} // namespace
+
+TEST_CASE("LP-4f2 Replace with loop version is offered on a feature the engine ships one for, "
+          "and on no other",
+          "[devstudio][render-features][lp4f2][widget][negative-contrast]") {
+    Rig rig;
+    lp4f2Refresh(rig, {BloomFeature, SsaoFeature});
+    auto &button = required<QPushButton>(*rig.features, "pelican.renderFeatures.replaceWithLoop");
+    auto *action = rig.features->findChild<QAction *>(
+        QStringLiteral("pelican.renderFeatures.replaceWithLoopVersion"));
+    REQUIRE(action != nullptr);
+
+    lp4f2Pick(rig, QStringLiteral("bloom"));
+    CHECK_FALSE(button.isHidden());
+    CHECK(button.isEnabled());
+    CHECK(action->isEnabled());
+    CHECK(rig.features->loopVersionOffered(QString::fromStdString(BloomFeature)) ==
+          std::optional<QString>{QString{}});
+
+    // ssao has no loop version: no button, and the Frame Plan is told none.
+    lp4f2Pick(rig, QStringLiteral("ssao"));
+    CHECK(button.isHidden());
+    CHECK_FALSE(action->isEnabled());
+    CHECK_FALSE(rig.features->loopVersionOffered(QString::fromStdString(SsaoFeature)).has_value());
+    // Nor is a feature the project does not list.
+    CHECK_FALSE(rig.features->loopVersionOffered(QString::fromStdString(ShadowFeature)).has_value());
+    // Fired by name on it anyway: nothing asked, nothing sent.
+    action->trigger();
+    QApplication::processEvents();
+    CHECK(lp4f2Prompt(rig) == nullptr);
+    CHECK_FALSE(rig.next("apply_graph_template", 100));
+}
+
+TEST_CASE("LP-4f2 Replace with loop version confirms, sends the digests the feature lives "
+          "under, and hands the loop it added to the Graph tab",
+          "[devstudio][render-features][lp4f2][widget]") {
+    const std::string how = GENERATE(std::string{"root"}, std::string{"preset"});
+    CAPTURE(how);
+    Rig rig;
+    if (how == "root")
+        lp4f2Refresh(rig, {BloomFeature});
+    else
+        lp4f2Refresh(rig, {}, {BloomFeature}, "project://passes/local-pipeline.json");
+    QStringList loops;
+    rig.features->setLoopVersionAppliedAction([&](const QString &loop) { loops << loop; });
+    int commits = 0;
+    QObject::connect(rig.features.get(), &RenderFeaturesWidget::renderConfigCommitted,
+                     [&] { ++commits; });
+
+    // The Frame Plan's way in: by the feature's reference.
+    rig.features->replaceWithLoopVersion(QString::fromStdString(BloomFeature));
+    QApplication::processEvents();
+    auto *prompt = lp4f2Prompt(rig);
+    REQUIRE(prompt != nullptr);
+    // Nothing goes before the question is answered.
+    CHECK_FALSE(rig.next("apply_graph_template", 100));
+    CHECK(prompt->text().contains(QStringLiteral("Bloom loop")));
+    CHECK(prompt->text().contains(QStringLiteral("The feature bloom is removed")));
+    CHECK(prompt->text().contains(QStringLiteral("PELICAN_FEATURE_BLOOM_KNEE=0.7")));
+    CHECK(prompt->text().contains(QStringLiteral("Undo takes it back")));
+    required<QPushButton>(*prompt, "pelican.renderFeatures.replaceConfirm.ok").click();
+    QApplication::processEvents();
+
+    const auto sent = rig.next("apply_graph_template");
+    REQUIRE(sent);
+    Json expected{{"base_source_digest", RootA}, {"template", BloomTemplate}};
+    if (how == "preset") expected["base_preset_digest"] = PresetDigest;
+    CHECK(sent->at("params") == expected);
+
+    // Accepted with what it applied, then committed.
+    rig.answer(*sent, {{"status", "accepted"},
+                       {"ticket", "gt-1"},
+                       {"applied",
+                        {{"template", BloomTemplate},
+                         {"feature", BloomFeature},
+                         {"nodes", Json::array({"bloom_lit", "bloom_down"})}}}});
+    CHECK(loops.isEmpty());
+    const auto poll = rig.next("get_edit_result");
+    REQUIRE(poll);
+    CHECK(poll->at("params") == Json{{"ticket", "gt-1"}});
+    rig.answer(*poll, {{"status", "committed"},
+                       {"committed", true},
+                       {"source_digest", {{"hex", RootB}}},
+                       {"documents", {{"passes/main.json", RootB}}}});
+    CHECK(loops == QStringList{QStringLiteral("bloom_down")});
+    CHECK(commits == 1);
+    CHECK(rig.digest->current() == RootB);
+    CHECK(required<QLabel>(*rig.features, "pelican.renderFeatures.notice").text() ==
+          QStringLiteral("Replaced bloom with Bloom loop. Undo takes it back."));
+    // The list is read again, and the line stays while it is.
+    lp4f2Refresh(rig, {});
+    CHECK(required<QLabel>(*rig.features, "pelican.renderFeatures.notice").text() ==
+          QStringLiteral("Replaced bloom with Bloom loop. Undo takes it back."));
+}
+
+TEST_CASE("LP-4f2 Replace with loop version says why it cannot, before and after it is sent",
+          "[devstudio][render-features][lp4f2][widget][refusal]") {
+    SECTION("Cancel sends nothing") {
+        Rig rig;
+        lp4f2Refresh(rig, {BloomFeature});
+        rig.features->replaceWithLoopVersion(QString::fromStdString(BloomFeature));
+        QApplication::processEvents();
+        auto *prompt = lp4f2Prompt(rig);
+        REQUIRE(prompt != nullptr);
+        required<QPushButton>(*prompt, "pelican.renderFeatures.replaceConfirm.cancel").click();
+        QApplication::processEvents();
+        CHECK_FALSE(rig.next("apply_graph_template", 100));
+    }
+    SECTION("an engine preset's feature: fork first, nothing sent") {
+        Rig rig;
+        lp4f2Refresh(rig, {}, {ShadowFeature}, "engine://render_pipelines/hybrid_v1.json");
+        const auto reason = rig.features->loopVersionOffered(QString::fromStdString(ShadowFeature));
+        REQUIRE(reason.has_value());
+        CHECK(*reason == QStringLiteral(
+                             "shadow_directional is a feature of the engine preset "
+                             "engine://render_pipelines/hybrid_v1.json: fork the preset into the "
+                             "project first (Features tab, Fork), then replace the feature there."));
+        lp4f2Pick(rig, QStringLiteral("shadow_directional (preset)"));
+        auto &button =
+            required<QPushButton>(*rig.features, "pelican.renderFeatures.replaceWithLoop");
+        CHECK_FALSE(button.isHidden());
+        CHECK_FALSE(button.isEnabled());
+        CHECK(button.toolTip() == *reason);
+        rig.features->replaceWithLoopVersion(QString::fromStdString(ShadowFeature));
+        QApplication::processEvents();
+        CHECK(lp4f2Prompt(rig) == nullptr);
+        CHECK_FALSE(rig.next("apply_graph_template", 100));
+        CHECK(required<QLabel>(*rig.features, "pelican.renderFeatures.notice")
+                  .toolTip()
+                  .contains(QStringLiteral("fork the preset")));
+    }
+    SECTION("the engine's refusal reads as its sentence") {
+        Rig rig;
+        lp4f2Refresh(rig, {ShadowFeature});
+        rig.features->replaceWithLoopVersion(QString::fromStdString(ShadowFeature));
+        QApplication::processEvents();
+        auto *prompt = lp4f2Prompt(rig);
+        REQUIRE(prompt != nullptr);
+        CHECK(prompt->text().contains(QStringLiteral("The feature shadow_directional stays")));
+        required<QPushButton>(*prompt, "pelican.renderFeatures.replaceConfirm.ok").click();
+        QApplication::processEvents();
+        const auto sent = rig.next("apply_graph_template");
+        REQUIRE(sent);
+        CHECK(sent->at("params") ==
+              Json{{"base_source_digest", RootA}, {"template", CascadeTemplate}});
+        rig.answer(*sent, {{"status", "rejected"},
+                           {"error",
+                            {{"code", "graph.definition_duplicate@1"},
+                             {"message", "graph.definition_duplicate@1 {\"definition\":\"shadow_cascade\"}"},
+                             {"definition", "shadow_cascade"},
+                             {"template", CascadeTemplate}}}});
+        CHECK(required<QLabel>(*rig.features, "pelican.renderFeatures.notice").toolTip() ==
+              QStringLiteral("The graph already has a definition named shadow_cascade, which the "
+                             "loop version adds -- perhaps it is in already (Undo takes an "
+                             "earlier one back), or rename that definition first "
+                             "(graph.definition_duplicate@1)."));
+        // Nothing stays pending: the row offers it again.
+        lp4f2Pick(rig, QStringLiteral("shadow_directional"));
+        CHECK(required<QPushButton>(*rig.features, "pelican.renderFeatures.replaceWithLoop")
+                  .isEnabled());
+    }
+}
 } // namespace PelicanStudio

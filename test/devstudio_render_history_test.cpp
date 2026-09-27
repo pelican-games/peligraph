@@ -814,4 +814,66 @@ TEST_CASE("RU-1 Undo waits for what is in flight, and an engine that went away d
     CHECK_FALSE(rig.history.canUndo());
 }
 
+// --- LP-4f2: apply_graph_template (GT-1) is a render edit like the others.
+
+TEST_CASE("LP-4f2 apply_graph_template is recorded as Replace <feature> with <title>, and Undo "
+          "restores the documents it wrote",
+          "[devstudio][render-history][lp4f2][negative-contrast]") {
+    Rig rig;
+    const std::string Bloom = "engine://graphs/bloom_loop.json";
+    const std::string RootAfter(64, 'e');
+    CHECK(RenderEditHistory::recordsMethod("apply_graph_template"));
+    const auto before = rig.sent.size();
+    const auto panel = rig.panelSends(
+        "apply_graph_template", Json{{"base_source_digest", RootA}, {"template", Bloom}});
+    // The documents are read before it is on the wire, as for every render edit.
+    REQUIRE(rig.sent.size() == before + 1);
+    CHECK(rig.sent[before].method == "get_render_documents");
+    CHECK(rig.sent[before].params == Json::object());
+    rig.answer(rig.sent[before].id, Json{{"documents", bothBefore()}});
+    // Accepted, with what it applied: the feature is named there.
+    rig.answer(panel, Json{{"status", "accepted"},
+                           {"ticket", "t-gt"},
+                           {"applied",
+                            {{"template", Bloom},
+                             {"feature", "engine://features/bloom.json"},
+                             {"nodes", Json::array({"bloom_down"})}}}});
+    REQUIRE(rig.last().method == "get_edit_result");
+    rig.answer(rig.last().id, committed({{Root, RootAfter}}));
+    REQUIRE(rig.last().method == "get_render_documents");
+    rig.answer(rig.last().id,
+               Json{{"documents", Json::array({document(Root, "root", RootAfter, "root after")})}});
+    REQUIRE(rig.history.undoStack().size() == 1);
+    CHECK(rig.history.undoLabel() == "Replace bloom with Bloom loop");
+
+    // Undo: the root before it goes back, under the digest the commit named.
+    REQUIRE(rig.history.undo());
+    REQUIRE(rig.last().method == "get_render_documents");
+    rig.answer(rig.last().id,
+               Json{{"documents", Json::array({document(Root, "root", RootAfter, "root after")})}});
+    REQUIRE(rig.last().method == "restore_render_documents");
+    CHECK(rig.last().params.at("documents") ==
+          Json::array({restored(Root, RootAfter, "root bytes")}));
+    rig.answer(rig.last().id, Json{{"status", "accepted"}, {"ticket", "undo-gt"}});
+    rig.answer(rig.last().id, committed({{Root, RootA}}));
+    CHECK(rig.restores_committed == 1);
+    CHECK(rig.history.redoLabel() == "Replace bloom with Bloom loop");
+}
+
+TEST_CASE("LP-4f2 the entry is named for the template until the engine names the feature",
+          "[devstudio][render-history][lp4f2]") {
+    CHECK(RenderEditHistory::labelFor(
+              "apply_graph_template",
+              Json{{"template", "engine://graphs/shadow_cascade_loop.json"}}) ==
+          "Replace with Shadow cascade loop");
+    CHECK(RenderEditHistory::graphTemplateLabel(
+              Json{{"applied",
+                    {{"template", "engine://graphs/shadow_cascade_loop.json"},
+                     {"feature", "engine://features/shadow_directional.json"}}}}) ==
+          "Replace shadow_directional with Shadow cascade loop");
+    CHECK(RenderEditHistory::graphTemplateLabel(Json{{"status", "accepted"}}).empty());
+    CHECK(RenderEditHistory::graphTemplateTitle("engine://graphs/planar_mip_chain_loop.json") ==
+          "Planar mip chain loop");
+}
+
 } // namespace PelicanStudio

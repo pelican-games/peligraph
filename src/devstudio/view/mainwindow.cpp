@@ -430,6 +430,22 @@ void MainWindow::createWorkspace() {
         docks_[FramePlanDock]->raise();
         graph_canvas_->revealNodeWhenPresent(loop);
     });
+    // LP-4f2: a feature replaced by its loop version is edited as that loop,
+    // so the Graph tab comes to the front with it selected -- as LP-4e's
+    // decompose does. The Frame Plan's right-click on a feature's group asks
+    // the Features tab, which owns the feature list and the request.
+    render_features_->setLoopVersionAppliedAction([this, render_tabs](const QString &loop) {
+        render_tabs->setCurrentWidget(graph_canvas_);
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        graph_canvas_->revealNodeWhenPresent(loop);
+    });
+    frame_plan_->setLoopVersionActions(
+        [this](const QString &feature) { return render_features_->loopVersionOffered(feature); },
+        [this, render_tabs](const QString &feature) {
+            render_tabs->setCurrentWidget(render_features_);
+            render_features_->replaceWithLoopVersion(feature);
+        });
     render_features_->setGraphNodeOpenAction(open_graph_node);
     inspector_->setRayGroupAction([this, render_tabs](const QString &group) {
         docks_[FramePlanDock]->show();

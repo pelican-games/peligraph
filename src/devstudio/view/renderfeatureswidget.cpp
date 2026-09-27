@@ -38,6 +38,9 @@
 #include <QJsonParseError>
 #include <QLabel>
 #include <QListWidget>
+#include <QMenu>
+#include <QMessageBox>
+#include <QPointer>
 #include <QPushButton>
 #include <QTimer>
 #include <QTreeWidget>
@@ -2064,6 +2067,8 @@ struct RenderFeaturesWidget::Impl {
         Catalog,
         Submit,
         Result,
+        // LP-4f2: get_graph_templates, which features have a loop version.
+        Templates,
     };
 
     struct PendingRequest {
@@ -2082,6 +2087,9 @@ struct RenderFeaturesWidget::Impl {
         QString preset_digest;
         QString feature_digest;
         QString destination;
+        // LP-4f2 (op "apply_graph_template"): `reference` is the template,
+        // this the feature it replaces.
+        QString feature;
     };
 
     RenderFeaturesWidget &owner;
@@ -2106,6 +2114,17 @@ struct RenderFeaturesWidget::Impl {
     QPushButton *refresh = nullptr;
     QLabel *notice = nullptr;
     QTimer *result_poll = nullptr;
+    // --- LP-4f2: Replace with loop version.
+    QPushButton *replace = nullptr;
+    QAction *replace_action = nullptr;
+    std::vector<GraphTemplateInfo> templates;
+    bool have_templates = false;
+    // The loop the accepted apply_graph_template made, handed on at commit.
+    std::string applied_loop;
+    std::function<void(const QString &loop)> loop_applied_action;
+    QPointer<QMessageBox> replace_prompt;
+    // The line a replacement left stays while the list is read again.
+    bool notice_sticky = false;
     QHash<qint64, PendingRequest> pending;
     quint64 refresh_generation = 0;
     QString source_digest;
@@ -2168,6 +2187,39 @@ struct RenderFeaturesWidget::Impl {
         materialize->setObjectName("pelican.renderFeatures.materialize");
         remove_row->addWidget(materialize);
         QObject::connect(materialize, &QPushButton::clicked, &owner, [this] { stageMaterialize(); });
+        // LP-4f2. A feature the engine ships a decomposed graph for offers it
+        // on its row: the button under the list and the row's right-click
+        // fire the same named action.
+        replace_action = new QAction(owner.tr("Replace with loop version\u2026"), &owner);
+        replace_action->setObjectName(
+            QStringLiteral("pelican.renderFeatures.replaceWithLoopVersion"));
+        owner.addAction(replace_action);
+        QObject::connect(replace_action, &QAction::triggered, &owner, [this] {
+            auto *item = current->currentItem();
+            if (item == nullptr) {
+                showError(owner.tr("Select the feature to replace first."));
+                return;
+            }
+            replaceWithLoopVersion(item);
+        });
+        replace = new QPushButton(owner.tr("Replace with loop version\u2026"), &owner);
+        replace->setObjectName(QStringLiteral("pelican.renderFeatures.replaceWithLoop"));
+        replace->hide();
+        remove_row->addWidget(replace);
+        QObject::connect(replace, &QPushButton::clicked, replace_action, &QAction::trigger);
+        current->setContextMenuPolicy(Qt::CustomContextMenu);
+        QObject::connect(current, &QWidget::customContextMenuRequested, &owner,
+                         [this](const QPoint &point) {
+                             auto *item = current->itemAt(point);
+                             if (item == nullptr) return;
+                             current->setCurrentItem(item);
+                             if (templateFor(item) == nullptr) return;
+                             updateControls();
+                             QMenu menu(&owner);
+                             menu.setToolTipsVisible(true);
+                             menu.addAction(replace_action);
+                             menu.exec(current->viewport()->mapToGlobal(point));
+                         });
         remove_row->addStretch();
         layout->addLayout(remove_row);
 
@@ -2341,6 +2393,7 @@ struct RenderFeaturesWidget::Impl {
     // message stays reachable as the row's tooltip, and the Output dock
     // still receives everything the panel logs.
     void showNotice(const QString &colour, const QString &message) {
+        notice_sticky = false;
         notice->setStyleSheet(colour);
         setPanelNotice(notice, oneLine(message), message);
     }
@@ -2392,6 +2445,11 @@ struct RenderFeaturesWidget::Impl {
                       generation);
         (void)request(RequestKind::Catalog,
                       QStringLiteral("list_render_features"), {},
+                      generation);
+        // LP-4f2: which features have a loop version -- the engine's answer,
+        // not a table of Studio's.
+        (void)request(RequestKind::Templates,
+                      QStringLiteral("get_graph_templates"), {},
                       generation);
         showInformation(owner.tr(
             "Refreshing authored features and engine catalog..."));
@@ -2592,6 +2650,10 @@ struct RenderFeaturesWidget::Impl {
             !active_ticket.isEmpty()) {
             return;
         }
+        if (staged->op == QStringLiteral("apply_graph_template")) {
+            submitGraphTemplate();
+            return;
+        }
         QJsonObject operation{
             {QStringLiteral("op"), staged->op},
             {QStringLiteral("feature"), staged->reference},
@@ -2658,6 +2720,13 @@ struct RenderFeaturesWidget::Impl {
             owner.receiveCatalogResult(result_json);
             return;
         }
+        if (request.kind == RequestKind::Templates) {
+            templates = graphTemplatesFromResponse(nlohmann::json::parse(
+                result_json.toStdString(), nullptr, false));
+            have_templates = true;
+            updateControls();
+            return;
+        }
         switch (request.kind) {
         case RequestKind::CanEdit:
             consumeCanEdit(*decoded);
@@ -2674,6 +2743,8 @@ struct RenderFeaturesWidget::Impl {
         case RequestKind::Result:
             consumeResult(*decoded);
             break;
+        case RequestKind::Templates:
+            break;
         }
         followWhenIdle();
         updateControls();
@@ -2685,6 +2756,14 @@ struct RenderFeaturesWidget::Impl {
         if (found == pending.end()) return;
         const auto kind = found->kind;
         pending.erase(found);
+        // LP-4f2: an engine without get_graph_templates offers no loop
+        // version; the panel is otherwise as it was.
+        if (kind == RequestKind::Templates) {
+            templates.clear();
+            have_templates = false;
+            updateControls();
+            return;
+        }
         if (kind == RequestKind::Result) {
             result_poll->stop();
             active_ticket.clear();
@@ -2797,7 +2876,7 @@ struct RenderFeaturesWidget::Impl {
             if (instance.value("scope").toString() == "preset") item->setText(owner.tr("%1 (preset)").arg(item->text()));
             item->setToolTip(reference + "\n" + instance.value("source_reference").toString() + "\n" + instance.value("reason").toString());
         }
-        if (pending.isEmpty() && active_ticket.isEmpty()) {
+        if (pending.isEmpty() && active_ticket.isEmpty() && !notice_sticky) {
             showInformation(owner.tr(
                 "Select one catalog entry to add, or one current feature to remove."));
         }
@@ -2873,10 +2952,17 @@ struct RenderFeaturesWidget::Impl {
         if (response.value(QStringLiteral("status")).toString() !=
             QStringLiteral("accepted")) {
             if (refusedForMovedDocument(response)) return;
+            const bool graph_template = submittingGraphTemplate();
             submitted_staged.reset();
-            showError(responseError(response));
+            // It was sent at once, not staged for Apply: nothing stays pending.
+            if (graph_template) staged.reset();
+            showError(graph_template ? graphTemplateError(response) : responseError(response));
             return;
         }
+        // LP-4f2: what it made is named here, not in the commit.
+        if (submittingGraphTemplate())
+            if (const auto *info = templateByReference(submitted_staged->reference))
+                applied_loop = graphTemplateAppliedLoop(*info, toJson(response));
         active_ticket = response.value(
             QStringLiteral("ticket")).toString();
         if (active_ticket.isEmpty()) {
@@ -2897,12 +2983,16 @@ struct RenderFeaturesWidget::Impl {
         if (status == QStringLiteral("pending")) return;
         result_poll->stop();
         active_ticket.clear();
+        const bool graph_template = submittingGraphTemplate();
+        const auto template_reference =
+            graph_template ? submitted_staged->reference : QString{};
         if (status != QStringLiteral("committed") ||
             !response.value(QStringLiteral("committed"))
                  .toBool(false)) {
             if (refusedForMovedDocument(response)) return;
             submitted_staged.reset();
-            showError(responseError(response));
+            applied_loop.clear();
+            showError(graph_template ? graphTemplateError(response) : responseError(response));
             return;
         }
         submitted_staged.reset();
@@ -2918,10 +3008,188 @@ struct RenderFeaturesWidget::Impl {
             QStringLiteral("published_generation"))
                                     .toVariant()
                                     .toULongLong();
+        if (graph_template) {
+            // LP-4f2: the feature's place is the graph's now: the Graph tab
+            // comes forward with the loop it added, and the other panels
+            // read the document the commit wrote.
+            requestRefresh();
+            if (const auto *info = templateByReference(template_reference)) {
+                // Both sentences on the line -- the second is the way back --
+                // and kept there while the list is read again.
+                const auto line = QString::fromStdString(graphTemplateAppliedLine(*info));
+                notice->setStyleSheet(QStringLiteral("color: #388e3c;"));
+                setPanelNotice(notice, line, line);
+                notice_sticky = true;
+            }
+            emit owner.renderConfigCommitted();
+            const auto loop = std::exchange(applied_loop, {});
+            if (!loop.empty() && loop_applied_action)
+                loop_applied_action(QString::fromStdString(loop));
+            return;
+        }
         showSuccess(owner.tr(
             "Applied without restarting (runtime generation %1).")
                         .arg(generation));
         requestRefresh();
+    }
+
+    // --- LP-4f2: Replace with loop version.
+
+    static nlohmann::json toJson(const QJsonObject &object) {
+        return nlohmann::json::parse(
+            QJsonDocument{object}.toJson(QJsonDocument::Compact).toStdString(), nullptr, false);
+    }
+
+    bool submittingGraphTemplate() const {
+        return submitted_staged && submitted_staged->op == QStringLiteral("apply_graph_template");
+    }
+
+    QString graphTemplateError(const QJsonObject &response) const {
+        return QString::fromStdString(
+            graphTemplateRejection(toJson(response).value("error", nlohmann::json::object())));
+    }
+
+    const GraphTemplateInfo *templateByReference(const QString &reference) const {
+        const auto wanted = reference.toStdString();
+        const auto found = std::ranges::find(templates, wanted, &GraphTemplateInfo::reference);
+        return found == templates.end() ? nullptr : &*found;
+    }
+
+    const GraphTemplateInfo *templateFor(const QListWidgetItem *item) const {
+        if (item == nullptr || !have_templates) return nullptr;
+        return graphTemplateForFeature(templates, item->data(ReferenceRole).toString().toStdString());
+    }
+
+    // Why the row's loop version cannot be taken in now; empty when it can.
+    QString loopVersionRefusal(const QListWidgetItem *item) const {
+        if (item == nullptr) return owner.tr("Select the feature to replace first.");
+        const auto instance = item->data(InstanceRole).toJsonObject();
+        if (const auto refusal = graphTemplateRefusal(
+                item->data(ReferenceRole).toString().toStdString(),
+                instance.value("scope").toString("root").toStdString(),
+                instance.value("source_reference").toString().toStdString());
+            !refusal.empty())
+            return QString::fromStdString(refusal);
+        if (!can_edit) return owner.tr("Editing is unavailable.");
+        if (staged) return owner.tr("Apply the pending edit first.");
+        return {};
+    }
+
+    QListWidgetItem *itemForFeature(const QString &reference) const {
+        // The root's own entry first: that is the one a person reads first.
+        QListWidgetItem *found = nullptr;
+        for (int index = 0; index < current->count(); ++index) {
+            auto *item = current->item(index);
+            if (item->data(ReferenceRole).toString() != reference) continue;
+            if (item->data(InstanceRole).toJsonObject().value("scope").toString("root") ==
+                QStringLiteral("root"))
+                return item;
+            if (found == nullptr) found = item;
+        }
+        return found;
+    }
+
+    // Confirm, then send. The request is built when it is sent, from the
+    // list as it is then.
+    void replaceWithLoopVersion(QListWidgetItem *item) {
+        const auto *info = templateFor(item);
+        if (info == nullptr) {
+            showError(owner.tr("The engine ships no loop version of %1.")
+                          .arg(item != nullptr ? item->text() : QString{}));
+            return;
+        }
+        if (!active_ticket.isEmpty() || submitting()) {
+            showInformation(owner.tr("Wait for the current change to finish."));
+            return;
+        }
+        if (const auto refusal = loopVersionRefusal(item); !refusal.isEmpty()) {
+            showError(refusal);
+            return;
+        }
+        if (replace_prompt) {
+            replace_prompt->raise();
+            return;
+        }
+        auto *prompt = new QMessageBox(QMessageBox::Question,
+                                       owner.tr("Replace with loop version"),
+                                       QString::fromStdString(graphTemplateConfirmation(*info)),
+                                       QMessageBox::NoButton, &owner);
+        prompt->setObjectName(QStringLiteral("pelican.renderFeatures.replaceConfirm"));
+        // Named, so a scenario answers the way a person does.
+        auto *accept = prompt->addButton(owner.tr("Replace"), QMessageBox::AcceptRole);
+        accept->setObjectName(QStringLiteral("pelican.renderFeatures.replaceConfirm.ok"));
+        auto *cancel = prompt->addButton(QMessageBox::Cancel);
+        cancel->setObjectName(QStringLiteral("pelican.renderFeatures.replaceConfirm.cancel"));
+        prompt->setDefaultButton(cancel);
+        prompt->setEscapeButton(cancel);
+        prompt->setAttribute(Qt::WA_DeleteOnClose);
+        replace_prompt = prompt;
+        const auto feature = item->data(ReferenceRole).toString();
+        const auto scope =
+            item->data(InstanceRole).toJsonObject().value("scope").toString("root");
+        const auto template_reference = QString::fromStdString(info->reference);
+        QObject::connect(prompt, &QMessageBox::buttonClicked, &owner,
+                         [this, accept, feature, scope, template_reference](QAbstractButton *button) {
+                             if (button != accept) {
+                                 showInformation(owner.tr("%1 is left as it is.")
+                                                     .arg(QString::fromStdString(
+                                                         graphTemplateFeatureName(
+                                                             feature.toStdString()))));
+                                 return;
+                             }
+                             staged = StagedOperation{
+                                 .op = QStringLiteral("apply_graph_template"),
+                                 .reference = template_reference,
+                                 .display_name = feature,
+                                 .scope = scope,
+                                 .feature = feature,
+                             };
+                             submit();
+                             if (!submitting()) staged.reset();
+                             updateControls();
+                         });
+        prompt->open();
+    }
+
+    void submitGraphTemplate() {
+        const auto *info = templateByReference(staged->reference);
+        if (info == nullptr) {
+            staged.reset();
+            showError(owner.tr("The engine no longer lists that graph; press Refresh."));
+            return;
+        }
+        // The preset's digest goes when the project's preset lists the
+        // feature, read from the list as it is now (a retry reads it again).
+        QString preset_digest;
+        if (staged->scope == QStringLiteral("preset"))
+            for (int index = 0; index < current->count(); ++index) {
+                const auto instance = current->item(index)->data(InstanceRole).toJsonObject();
+                if (current->item(index)->data(ReferenceRole).toString() == staged->feature &&
+                    instance.value("scope").toString() == QStringLiteral("preset")) {
+                    preset_digest =
+                        instance.value("source_digest").toObject().value("hex").toString();
+                    break;
+                }
+            }
+        QJsonObject params;
+        try {
+            params = exactJsonRpcObject(graphTemplateApplyParams(
+                *info, source_digest.toStdString(), preset_digest.toStdString()));
+        } catch (const std::exception &error) {
+            staged.reset();
+            showError(QString::fromUtf8(error.what()));
+            return;
+        }
+        if (request(RequestKind::Submit, QStringLiteral("apply_graph_template"), params) != 0) {
+            submitted_staged = staged;
+            submitted_retried = std::exchange(retrying, false);
+            applied_loop.clear();
+            showInformation(owner.tr("Replacing %1 with %2...")
+                                .arg(QString::fromStdString(graphTemplateFeatureName(
+                                         staged->feature.toStdString())),
+                                     QString::fromStdString(info->title)));
+            updateControls();
+        }
     }
 
     void updateControls() {
@@ -2953,6 +3221,23 @@ struct RenderFeaturesWidget::Impl {
         apply->setEnabled(
             can_edit && idle && staged.has_value() &&
             !source_digest.isEmpty());
+        // LP-4f2: offered on a row whose feature has a loop version, and on
+        // no other.
+        const auto *row = current->currentItem();
+        const auto *info = templateFor(row);
+        replace->setVisible(info != nullptr);
+        const auto refusal = info != nullptr ? loopVersionRefusal(row) : QString{};
+        const bool offered = info != nullptr && idle && have_current && refusal.isEmpty();
+        replace->setEnabled(offered);
+        replace_action->setEnabled(offered);
+        const auto tip = info == nullptr ? QString{}
+                         : !refusal.isEmpty()
+                             ? refusal
+                             : owner.tr("Take in %1 in its place: the same picture, drawn by "
+                                        "graph nodes you can edit.")
+                                   .arg(QString::fromStdString(info->title));
+        replace->setToolTip(tip);
+        replace_action->setToolTip(tip);
     }
 };
 
@@ -3019,6 +3304,29 @@ void RenderFeaturesWidget::setGraphNodeOpenAction(GraphNodeOpenAction action) {
 
 void RenderFeaturesWidget::setTaskViewAxesProvider(TaskViewAxesProvider provider) {
     impl_->task_view_axes = std::move(provider);
+}
+
+void RenderFeaturesWidget::replaceWithLoopVersion(const QString &feature_reference) {
+    auto *item = impl_->itemForFeature(feature_reference);
+    if (item == nullptr) {
+        impl_->showError(tr("The feature list does not hold %1; press Refresh.")
+                             .arg(feature_reference));
+        return;
+    }
+    impl_->current->setCurrentItem(item);
+    impl_->replaceWithLoopVersion(item);
+}
+
+std::optional<QString> RenderFeaturesWidget::loopVersionOffered(
+    const QString &feature_reference) const {
+    auto *item = impl_->itemForFeature(feature_reference);
+    if (item == nullptr || impl_->templateFor(item) == nullptr) return std::nullopt;
+    return impl_->loopVersionRefusal(item);
+}
+
+void RenderFeaturesWidget::setLoopVersionAppliedAction(
+    std::function<void(const QString &loop)> action) {
+    impl_->loop_applied_action = std::move(action);
 }
 
 } // namespace PelicanStudio
