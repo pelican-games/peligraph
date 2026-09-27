@@ -5,8 +5,32 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace Pelican::RendererInternal {
+
+// A copy keeps the room the original had reserved, not only its elements:
+// publish() appends into generations_ / alive_ reserved by staging, and a
+// withheld slot released after a copy was published must still fit in the
+// free list without allocating.
+ModelInstanceSlots::ModelInstanceSlots(const ModelInstanceSlots &other)
+    : generations_(other.generations_), alive_(other.alive_),
+      free_indices_(other.free_indices_), live_count_(other.live_count_),
+      scene_epoch_(other.scene_epoch_) {
+    generations_.reserve(other.generations_.capacity());
+    alive_.reserve(other.alive_.capacity());
+    free_indices_.reserve(
+        std::max(other.free_indices_.capacity(), generations_.size()));
+}
+
+ModelInstanceSlots &
+ModelInstanceSlots::operator=(const ModelInstanceSlots &other) {
+    if (this != &other) {
+        ModelInstanceSlots copy{other};
+        *this = std::move(copy);
+    }
+    return *this;
+}
 
 bool ModelInstanceSlots::isLive(ModelInstanceId id) const noexcept {
     return id.scene_epoch == scene_epoch_ && id.index < alive_.size() &&

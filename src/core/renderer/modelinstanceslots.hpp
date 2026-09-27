@@ -11,6 +11,14 @@ namespace Pelican::RendererInternal {
 // Owns model-instance identity independently from the render and deformation
 // data stored by PolygonInstanceContainer. A slot generation changes only when
 // that slot dies; the scene epoch changes only when the whole scene is cleared.
+//
+// The free list always has room for every slot (capacity >= slotCount()), so
+// retire() and releaseWithheld() never allocate. A slot withheld by a scene
+// replacement is released later, when its retirement drains, into whatever
+// table is live by then -- possibly a copy made in between (an editor
+// projection's candidate is a copy of the live table, and publication swaps
+// it in). A std::vector copy only allocates for the elements it holds, so the
+// copy operations below reserve the free list again.
 class ModelInstanceSlots {
     std::vector<std::uint32_t> generations_;
     std::vector<bool> alive_;
@@ -19,6 +27,13 @@ class ModelInstanceSlots {
     std::uint64_t scene_epoch_ = 1;
 
   public:
+    ModelInstanceSlots() = default;
+    ModelInstanceSlots(const ModelInstanceSlots &other);
+    ModelInstanceSlots &operator=(const ModelInstanceSlots &other);
+    ModelInstanceSlots(ModelInstanceSlots &&) noexcept = default;
+    ModelInstanceSlots &operator=(ModelInstanceSlots &&) noexcept = default;
+    ~ModelInstanceSlots() = default;
+
     bool isLive(ModelInstanceId id) const noexcept;
     std::uint32_t requireLive(ModelInstanceId id, const char *api_name) const;
 

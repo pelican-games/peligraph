@@ -16,6 +16,7 @@
 #include "../src/core/loader/scene.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/renderer/camera.hpp"
+#include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/userpublic/gameobjects.hpp"
 #include "../src/core/userpublic/userinput.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -945,6 +946,72 @@ TEST_CASE("PM-2 an engine launched in edit refuses the input record and replay",
         }
     }
     REQUIRE_FALSE(std::filesystem::exists(path));
+}
+
+// PM-2b: a stop with `keep` in a scene that draws a model. The stop's scene
+// load withholds the play runtime's model slot until its retirement drains at
+// the next frame; the kept edit runs in between, and its renderer projection
+// publishes a copy of the slot table. The frames after the stop drain the
+// withheld slot into that copy (a Debug build asserted there, and Studio's
+// engine went down right after the stop replied).
+TEST_CASE("PM-2b keep past a stop in a scene with a model survives the frames after it",
+          "[pm2][pm2b][play-state][rpc][model-instance][gpu]") {
+    EditLaunch launch{[](const std::filesystem::path &root) {
+        auto scene = Json::parse(readFile(root / "scenes/main.scene.json"));
+        scene.at("scenes").at("default_scene").at("objects").push_back(
+            {{"name", "Box"},
+             {"components", Json::array({transform(0.0),
+                                         {{"name", "simplemodelview"}, {"model", "engine://primitives/cube"}}})}});
+        writeFile(root / "scenes/main.scene.json", scene.dump(2));
+    }};
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("render_frame");
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    REQUIRE(instances.instanceCountForTesting() == 1U);
+    const auto actor = rpc.result("open_editor_session", {{"display_name", "PM-2b"}})
+                           .at("actor_id")
+                           .get<std::uint64_t>();
+    const auto intensity = [&rpc] {
+        return rpc.result("get_components", {{"name", "KeyLight"}})
+            .at("components")
+            .at(0)
+            .at("authored_json")
+            .at("intensity")
+            .get<double>();
+    };
+    REQUIRE(intensity() == Catch::Approx(1.0));
+
+    REQUIRE(rpc.result("set_play_state", {{"state", "playing"}}).at("previous") == "edit");
+    (void)rpc.result("render_frame");
+    const auto brighter = rpc.edit(actor, Json::array({{{"op", "set_component_value"},
+                                                        {"object_id", objectId(rpc, "KeyLight")},
+                                                        {"component_slot", "light"},
+                                                        {"field_path", "/intensity"},
+                                                        {"value", 5.0}}}));
+    const auto stopped = rpc.result(
+        "set_play_state", {{"state", "edit"}, {"keep", Json::array({brighter.at("transaction_id")})}});
+    INFO(stopped.dump());
+    REQUIRE(stopped.at("state") == "edit");
+    REQUIRE(stopped.at("not_kept") == Json::array());
+    REQUIRE(stopped.contains("kept_transaction_id"));
+
+    // The withheld slot drains here, into the table the kept edit published.
+    for (int frame = 0; frame < 4; ++frame) {
+        (void)rpc.result("render_frame");
+        (void)rpc.result("step_frame");
+    }
+    REQUIRE(intensity() == Catch::Approx(5.0));
+    REQUIRE(instances.instanceCountForTesting() == 1U);
+    REQUIRE(rpc.play().at("state") == "edit");
+
+    // The released slot is reusable: another session and stop still draw the
+    // one box.
+    REQUIRE(rpc.result("set_play_state", {{"state", "playing"}}).at("previous") == "edit");
+    (void)rpc.result("render_frame");
+    REQUIRE(rpc.result("set_play_state", {{"state", "edit"}, {"keep", "all"}}).at("state") == "edit");
+    (void)rpc.result("render_frame");
+    REQUIRE(instances.instanceCountForTesting() == 1U);
 }
 
 } // namespace Pelican

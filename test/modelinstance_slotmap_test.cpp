@@ -348,4 +348,40 @@ TEST_CASE("ModelInstanceSlots successive scene replacements preserve withheld sl
     REQUIRE(last.liveCount() == 2);
 }
 
+// PM-2b. An editor projection prepares from a copy of the live slot table and
+// publishes that copy, possibly while a scene replacement still withholds a
+// slot. The drain then releases the slot into the copy, which must have kept
+// room for it (a Debug build asserted, since a vector copy reserves only what
+// it holds and the free list was empty).
+TEST_CASE("ModelInstanceSlots copies keep room to release a withheld slot",
+          "[model-instance][scene-replacement][retirement][pm2b]") {
+    RendererInternal::ModelInstanceSlots slots;
+    slots.reserve(1);
+    const auto first = slots.nextId(0);
+    slots.publish(first);
+
+    std::vector<std::uint32_t> withheld;
+    auto next = slots.prepareSceneReplacement(withheld);
+    REQUIRE(withheld == std::vector<std::uint32_t>{first.index});
+    next.reserve(2);
+    const auto replacement = next.nextId(1);
+    REQUIRE(replacement.index == 1U);
+    next.publish(replacement);
+    REQUIRE_FALSE(next.hasReusableSlot());
+
+    RendererInternal::ModelInstanceSlots copied{next};
+    RendererInternal::ModelInstanceSlots assigned;
+    assigned = next;
+    for (auto *table : {&copied, &assigned}) {
+        REQUIRE_FALSE(table->hasReusableSlot());
+        table->releaseWithheld(first.index);
+        REQUIRE(table->hasReusableSlot());
+        REQUIRE(table->nextId(2).index == first.index);
+        // Every slot dead at once still fits without allocating.
+        table->retire(replacement);
+        REQUIRE(table->liveCount() == 0U);
+        REQUIRE(table->nextId(2).index == replacement.index);
+    }
+}
+
 } // namespace Pelican
