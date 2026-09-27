@@ -1397,7 +1397,7 @@ LP-4c の着地時はゾーン表示が無く、body は instance と同じく�
 - 出力ソケットはループが宣言した `p` / `p[]` で、`p[]` は `<名前>[] (each)` と出ます(回ごとの値の束)。
   - ⚠ LP-4c の着地時は、`p[]` の行の port と字が入れ替わっていて(port が `<名前>[] (each)`)、そこからの線がソケットに届いていませんでした。✅LP-4d1 から、字が `<名前>[] (each)`、port が `<名前>[]` です([行を組む所](../../src/devstudio/view/graphcanvasdrawing.cpp#L152))。
 - parameters(`over`・`branches` …)はソケットにも値の帯にも出ず、詳細表にも `parameters` の行を出しません。詳細表の `body` の行は、入るときの body です。
-- Graph タブは、文書にループがあるときだけ、文書を読むたびに `get_frame_plan` を 1 回読んで `loops[]` を使います。✅LP-4f1 から、ループが無くても root に view_select を取る render node があれば読み、同じ plan から node の `view_axes`(view family ごとの軸)と render target の名前も集めます(下の「view の軸で回す」。[読みを決める所](../../src/devstudio/model/graphcanvasmodel.cpp#L634))。
+- Graph タブは、文書にループがあるときだけ、文書を読むたびに `get_frame_plan` を 1 回読んで `loops[]` を使います。✅LP-4f1 から、ループが無くても root に view_select を取る render node があれば読み、同じ plan から node の `view_axes`(view family ごとの軸)と render target の名前も集めます(下の「view の軸で回す」。[読みを決める所](../../src/devstudio/model/graphcanvasmodel.cpp#L634))。✅Q-19 から、root の instance の definition に render node があるときも読み、同じ plan から pass の `pass_inputs` も集めます(下の「render node の入力は shader の宣言から」)。
 
 **ループをゾーンで見る・編集する(✅LP-4d1)**: root の canvas は、root の各 `graph.loop` を枠(ゾーン)で描き、枠の中に今の分岐の body の node を並べます(Blender のループゾーンの見え方。保存の形は変わらず、body は definition 名のままです)。枠の中の編集は body の definition へ、枠の移動は root へ書きます([ゾーンを計画する所](../../src/devstudio/view/graphcanvaswidget.cpp#L1189)、[`Builder::addZone()`](../../src/devstudio/view/graphcanvasdrawing.cpp#L833))。
 
@@ -1433,6 +1433,7 @@ LP-4c の着地時はゾーン表示が無く、body は instance と同じく�
 - **外から入力を足す**: 編集できる文書では、左の縁の行の最後に空いた口 `+` があります(tooltip `Drop a line from outside here for a new loop input`)。root の node の出力をここへ落とすと、ループの新しい入力を足す列を 1 回で送ります([列を組む所](../../src/devstudio/model/graphcanvasmodel.cpp#L3337)、[落とし先を見分ける所](../../src/devstudio/view/graphcanvaswidget.cpp#L2061))。
   - 列の中身は、ループの分岐が走る definition への `add_node graph.input`(同じ definition には 1 回だけ、分岐の順。既定値は付けません)と、root の `set_input`(ループの新しい入力 ← 落とした出力)です。今のタブの body だけでなく、全部の body に足します(分岐の body の入出力がそろっていないと engine が `graph.loop_branch_interface@1` で断るため)。
   - 枠の中の body の node の入力に直接落としても、同じ列を送ります。列の最後に、その definition の `set_input`(その入力 ← 新しい `graph.input` の `value`)が付きます。
+  - ✅Q-19 から、落とした先が body の render node の宣言のソケットなら、列の最後は番号付きの port を足す `set_node_parameters` とその `set_input` です(下の「render node の入力は shader の宣言から」)。
   - 入力の名前は、落とした出力の port 名から Studio が提案します。`.` と `/` は `_` になり、末尾の `[]` は外します(空なら `input`)。ループの入力か body の node の id と重なれば `_2`、`_3` … です([`GraphCanvasModel::suggestLoopInputName()`](../../src/devstudio/model/graphcanvasmodel.cpp#L3290))。打つものはありません。
   - 引けるのは、canvas が root を見ているときの、root の node の出力からだけです。ループ自身の出力からは引けません(循環になるため)。
   - ループが既に持つ入力の外側のソケットに落とすと、今までどおり root の `set_input` の差し替えだけです。
@@ -1457,6 +1458,40 @@ LP-4c の着地時はゾーン表示が無く、body は instance と同じく�
 - **値の帯の切り詰め**: ゾーンの中の node の値の帯(pill)は、node の幅に収まるように末尾を `…` で切り、全文を tooltip に出します([切る所](../../src/devstudio/view/graphcanvasdrawing.cpp#L522))。render 系に限らず、ゾーンの中の node 全部に効きます。
 - **Undo**: 上の 3 つの操作(入力・出力・carry)は、それぞれ 1 項目として戻ります。`set_outputs` の逆は、前の `outputs`(無ければ空)を持つ同じ op です(下の「Undo」)。入力・出力・carry を足してから Undo 3 回と Redo 3 回をすると、文書は byte 一致で戻ります(scene の test)。
 
+**render node の入力は shader の宣言から —— 線で番号付きの port を作る(✅Q-19)**: Graph タブの `render.fullscreen` / `render.raster` の node は、engine がその pass の shader の宣言を出していれば、入力のソケットを Frame Plan と同じ形で描きます(✅VI-3a。下の「ソケットは shader の宣言から出ます」)。ソケットへ線を落とすと、Graph タブが engine の番号付きの入力の port(✅LP-1d。`"binding": "input"` と `input_index`。[第6章 §6.18](06_rendering.md) の「番号付きの入力」)を書いてつなぎます。Q-19 の前は、render node に別の画像を読ませるには、parameters の JSON(pill)に port を打つしかありませんでした。
+
+- **宣言の出所**: Graph タブが読む `get_frame_plan` の node の `pass_inputs` です([読む所](../../src/devstudio/model/graphcanvasmodel.cpp#L3787))。Graph タブの node と plan の pass は次のように対応づけます([`GraphCanvasModel::passInputs()`](../../src/devstudio/model/graphcanvasmodel.cpp#L3817)):
+  - root の node: 名前がその id の pass
+  - ループの body の node: plan の順で最初の、`loop_origin` の `node` がその id で、その要素の分岐がこの body を走らせる回の pass(どの回も同じ shader で描くため、1 つの回の宣言を使います)
+  - instance の definition の node: `<instance>/<id>` の pass
+- **形**: 固定の宣言は ○ 1 つずつで、字は宣言の変数名です(つながっていれば `<変数名> ← <node>.<port>`)。可変の組は、つながっている ○(字は `← <node>.<port>`)と下端の空の落とし先 `+ input` を半透明の帯が囲みます([ソケットを組む所](../../src/devstudio/model/graphcanvasmodel.cpp#L288)、[帯を描く所](../../src/devstudio/view/graphcanvasdrawing.cpp#L498))。宣言のソケットは binding の順で、node のほかの行(書く port など)より上に並びます。buffer の宣言も ○ で描きます。
+  - 番号付きの port はソケットのものになり、port の行としては出ません。宣言が取らない番号付きの port は、port 名の ○(`<port> ← <node>.<port>`)で残ります。線の行き先が無くならないようにです。
+- **宣言が無い node は今の行のまま**です。plan にその pass が無い、`pass_inputs` が `declared` でない(pipeline がまだ無い、など)、宣言が 1 つも無い、Studio が読めない宣言のどれでも、Q-19 の前と同じ port の行で描きます([分ける所](../../src/devstudio/model/graphcanvasmodel.cpp#L1674))。
+- **plan を読む時**: 上の「ループの node」の読みに加えて、root の instance の definition に render node があるときも読みます([読みを決める所](../../src/devstudio/model/graphcanvasmodel.cpp#L638))。足した直後の pass は、engine がそれを持つ世代を出すまで plan に載りません。そのため、render node の pass が plan に無い(か宣言が `declared` でない)間は、文書を読むたびに最大 40 回まで、時計で plan を読み直します([読み直す所](../../src/devstudio/model/graphcanvasmodel.cpp#L765))。回数 0 と報告されたループの body は待ちません。
+
+線を落とした先で起きることは次のとおりです。どれも 1 回の編集で、Undo 1 回で戻ります([列を組む所](../../src/devstudio/model/graphcanvasmodel.cpp#L3969))。入力のソケットから出力へ逆向きに引いても同じです。
+
+| 落とした先 | 送るもの |
+|---|---|
+| 空の ○ か `+ input` で、binding が次の番号(0 から続く番号付きの port の数) | `set_node_parameters`(`ports` に `{"kind": "image", "type": …, "access": "read", "binding": "input", "input_index": <b>}` を足す)と `set_input`(その port ← 落とした出力) |
+| つながっている ○(宣言が取らない port の ○ も) | その port の `set_input` の差し替え。source の型が今の `type` と違えば、先に `type` を直す `set_node_parameters` も送ります。同じ線なら何も送りません |
+
+- **type**: engine は image の port に `type` を要るので、落とした出力から辿ります([`GraphCanvasModel::imageTypeOf()`](../../src/devstudio/model/graphcanvasmodel.cpp#L3916))。pass の port の `type`、image などの `parameters.type`、body の `graph.input` ならそのループか instance に入っている線の source、instance やループの出力なら body の出力の source、の順です。分からなければ、Add fullscreen pass の image と同じ scene color の型(`pelican.render.color_signal@1`、`reference: scene`・`transfer: linear`・`range: extended`)です。
+- **port の名前**: source が body の `graph.input` ならその id、それ以外は source の port 名から、ループの入力と同じ規則(`.` と `/` は `_`、末尾の `[]` は外す、空なら `input`)で提案します。node の ports か inputs と重なれば `_2`、`_3` … です([`GraphCanvasModel::suggestInputPortName()`](../../src/devstudio/model/graphcanvasmodel.cpp#L3895))。打つものはありません。
+- **外す**: 番号付きの port の線を選んで Delete するか、つながっている ○ を空所へ drag すると、`set_input{source: null}` と、port を消して後ろの port の `input_index` を 1 つずつ詰めた `set_node_parameters` を 1 回で送ります([`GraphCanvasModel::removeInputPortOps()`](../../src/devstudio/model/graphcanvasmodel.cpp#L4085))。
+- **断るもの**(送らず、notice に 1 行):
+  - 飛ばし: `Connect binding <n>..<b-1> of <node> first: a pass's inputs fill the bindings in order.`(飛ばしたのが 1 つなら `Connect binding <n> of ...`)。可変の組の前の固定の宣言が埋まっていないときの `+ input` も同じです
+  - 可変の組が max まで埋まっている: `<node>'s shader takes at most <max> inputs in its variadic group.`
+  - buffer の宣言: `Binding <b> of <node> takes a buffer: a graph pass reads only images by number.`
+  - 宣言に無い binding: `<node>'s shader declares no binding <b>.`
+- **ゾーンの外から body のソケットへ**: root の node の出力を、枠の中の body の render node の宣言のソケットへ直接落とすと、上の「外から入力を足す」の列(`add_node graph.input` と root の `set_input`)の後に、その `graph.input` の `value` を読む番号付きの port の `set_node_parameters` と `set_input` を付けて、1 回で送ります([`GraphCanvasModel::addZoneInputToSocket()`](../../src/devstudio/model/graphcanvasmodel.cpp#L4106))。port の名前は新しい `graph.input` の id、型は root の source から辿ります。飛ばしなどで断るときは、ループの入力も足しません。
+- **carry で前の回の出力を読む**: 線だけで組めます。(1) root の pass の出力を左の縁の `+` へ(ループの入力)、(2) body の pass の出力を右の縁の `+` へ(ループの出力)、(3) 右の縁の内側の端を左の縁の内側の端へ(carry)、(4) 左の縁の内側の端(body の `graph.input`)を body の pass の宣言のソケットへ落とします。(4) で pass がその `graph.input` を番号付きの入力として読み、展開された 2 回目の pass が 1 回目の出力を読みます(frame plan の `loop/1/render_fullscreen` の `reads` に `loop/0/render_fullscreen__color` が入ります。シナリオ `loop_zone_read`)。
+  - carry の矢印は左の縁の内側のソケットで終わり、その上に描かれます。Q-19 から、矢印の下のソケットを押すと、carry を選ぶのではなく線を引き始めます([押した所](../../src/devstudio/view/graphcanvaswidget.cpp#L2244))。Q-19 の前は、carry の付いた入力からは線を引けませんでした(実装者の報告)。
+- **分かっている穴**(Q-19 の着地時の記録。実装者の報告):
+  - root の `render.image` の出力を body の pass のソケットへ引くと、engine が断ります(拒否の code は未確認)。engine の LP-6 で直す予定です。今は、シナリオのように root の pass の出力 port から引きます。
+  - シナリオ `loop_zone_read` は、frame plan の回の pass を位置(`nodes[2]` / `nodes[3]`)で見ています(同じ位置の `name` が合うことも見ます)。
+  - シナリオで `Graph change saved.` を待った直後に発火する action は、文書の読み直しの途中で disabled のことがありえます(`loop_zone_wire` も同じ手順です)。
+
 自動化面の名前(表の正は [README](../../test/studio_scenarios/README.md)。[definition を前に付ける所](../../src/devstudio/automation/automationcommands.cpp#L244)):
 
 | 名前 | 指すもの |
@@ -1476,15 +1511,20 @@ LP-4c の着地時はゾーン表示が無く、body は instance と同じく�
 | `graph_zone_label#<loop>/axis<i>` | ✅LP-4f1。view の軸で回すループの見出しの下の、i 番目の軸のラベル(`+X` …。0 から) |
 | `graph_zone_button#<loop>/frame_plan` | ✅LP-4d2。Show in Frame Plan |
 | `graph_edge_label#<node>/<port>` | ✅LP-4d2。回ごとの入力の破線のラベル(`<node>` / `<port>` は線の受け手) |
+| `graph_socket#<id>/in@<binding>` | ✅Q-19。render node の宣言の ○、または可変の組のつながっている ○(ゾーンの中は `graph_socket#<definition>/<id>/in@<binding>`) |
+| `graph_socket#<id>/in:variadic` | ✅Q-19。可変の帯の空の端(`+ input`) |
+| `graph_socket#<id>/in:<port>` | ✅Q-19。宣言のソケットにつながっている番号付きの port の名前でも、その ○ に当たります(別名。`list` には出ません)。宣言が取らない番号付きの port の ○ は `graph_socket#<id>/<port>` が自分の名前です |
+| `graph_node_label#<id>/in:band` | ✅Q-19。可変の帯そのもの(描くだけ) |
 
 - definition 名にも id にも `/` は入らないので、最初の `/` が definition と id の区切りです。body の node の id が root の node の id と同じでも、名前は分かれます。
 - Open body で body に入ったときの名前は今までどおりで、definition は付きません。
 - ✅LP-4d2: 同じ名前の入力と出力を持つ node(fullscreen pass の `color` など)のソケットは、`graph_socket#<id>/<port>` では分けられません。そのため `graph_socket#<id>/in:<port>` / `graph_socket#<id>/out:<port>` の別名でも引けます(ゾーンの中は `graph_socket#<definition>/<id>/in:<port>` …)。別名は名前を解決するときだけ効き、`list` には出ません([別名を作る所](../../src/devstudio/automation/automationcommands.cpp#L263))。
+  - ✅Q-19 から、宣言のソケットの `in:<port>` は、そこにつながっている番号付きの port の名前です(宣言のソケット自身の名前は `in@<binding>` なので)。
 
 **分かっている穴**(LP-4d1 と LP-4d2 の着地時の記録):
 
 - 見出しに当たる `click` の位置(hotspot)は、シナリオでは確かめていません(scene の test の変異で守っています)。
-- carry の効き目は Frame Plan では見分けられません。シナリオの body の pass は書くだけで、前の回の値を読む port を持たないためです。読む port は、今の Graph タブでは JSON を打たないと作れません(実装者の報告)。
+- carry の効き目は Frame Plan では見分けられません。シナリオの body の pass は書くだけで、前の回の値を読む port を持たないためです。読む port は、今の Graph タブでは JSON を打たないと作れません(実装者の報告)。✅Q-19 で塞がりました。線で番号付きの port を作れるようになり、シナリオ `loop_zone_read` が 2 回目の pass の `reads` で carry の効き目を見ます(上の「render node の入力は shader の宣言から」)。
 - 新しいループが既存の node に重なることがありました。選んでいる node の横に、node の幅を 240 と見て置いていたためです(`GraphCanvasScene::placeNewNode()`。実装者の報告)。✅LP-4f1 で塞がりました(下の「新しい node の置き場所」)。
 - draw_loop の要素から Open in Graph する道はありません。draw_loop は展開されないので、`loop_origin` を持つ回の node が Frame Plan に無いためです(実装者の報告)。
 - `in:` / `out:` の別名には単体の test がありません(シナリオ `loop_zone_wire` が使っています)。
@@ -1592,6 +1632,27 @@ Outputs の区は body に出力があるときだけ、Carry の区は body に
 - definition の op も戻せます。`add_definition` の逆は `remove_definition`、`rename_definition` の逆は名前を戻す rename、`remove_definition` の逆は本体つきの `add_definition` です。
 - ✅LP-4d2 から、`set_outputs` も戻せます。逆は、前の `outputs`(無ければ空)を持つ同じ op です([逆にする所](../../src/devstudio/model/graphcanvasmodel.cpp#L1934))。canvas が送るのは definition の `set_outputs` だけです。
 
+**definition の改名と削除(✅Q-19)**: Graph タブから definition の名前を変え、どこからも使われていない definition を消せます。送るのは engine の `rename_definition` / `remove_definition`(✅LP-0c。上の「`ops[]` と `scope`」の表)の 1 op で、どちらも Undo 1 回で戻ります(上の「Undo」の逆の op)。Q-19 の前は、Studio にこの 2 つの入口がありませんでした。
+
+- **入口**は右クリックの **Rename definition…**(`pelican.graphCanvas.renameDefinition`)/ **Delete definition**(`pelican.graphCanvas.deleteDefinition`)で、次の 3 か所に出ます。
+  - パンくず: canvas の中のパンくずと上段のパンくずの字。今見ている definition が対象です([canvas のメニューに足す所](../../src/devstudio/view/graphcanvaswidget.cpp#L2443))。
+  - ゾーンの見出し: そのタブが見せている body の definition が対象です。
+  - 上段の `Scope:` の combo: 選んでいる definition が対象です(`root` では出ません)。
+  - メニューを通さず名前で発火したときは、今見ている definition、root ならゾーン(か枠の中の node)を選んでいればその body の definition が対象です。対象が無いか編集できない間は押せません([対象を決める所](../../src/devstudio/view/graphcanvaswidget.cpp#L3948))。
+- **Rename**: 上段の下に 1 行(`pelican.graphCanvasDefinitionRow`)が開きます。`Rename definition <name> to`、名前の欄(今の名前が入って全部選ばれた状態)、**Rename**、Cancel です([行を開く所](../../src/devstudio/view/graphcanvaswidget.cpp#L3978))。Enter で Rename、Esc で Cancel です。
+  - Studio は送る前に名前を確かめ、送れない名前なら欄の右に赤で理由を出して Rename を押せなくします([名前を確かめる所](../../src/devstudio/model/graphcanvasmodel.cpp#L3177))。今の名前のままでも押せません(何も送りません)。
+    - 空: `A definition needs a name.`
+    - `/` を含む: `A definition's name cannot hold a slash: <name>.`
+    - `root`: `A definition cannot be named root: that name is the root document's.`(`root` は root の scope の名前です。engine も断ります)
+    - 既にある: `A definition named <name> already exists.`
+  - 送るのは `rename_definition` 1 つだけです。engine が同じ op の中で、名指している `graph.instance` の `definition` とループの `branches[].body` も書き換えます(上の「`edit_graph_document` の definition の op」)。
+  - 改名した definition の中にいれば、パンくずと今の scope は新しい名前へ移ります。Undo で名前が戻れば、元の名前へ戻ります([移す所](../../src/devstudio/model/graphcanvasmodel.cpp#L1081))。
+- **Delete**: 使われていれば、何も送らず行も開かずに、notice に 1 行を出します([断る所](../../src/devstudio/model/graphcanvasmodel.cpp#L3205))。`Definition <name> is used by <node>, <node>: make them run another definition first.` の `<node>` は、その definition を走らせる root の node(instance と、どれかの分岐がそれを body にするループ)を文書の順に 1 つずつ並べたものです。
+  - 使われていなければ、上段の下の行が `Delete definition <name>? Nothing runs it.` と **Delete** / Cancel で開き、Delete で `remove_definition` を送ります。確認は dialog ではなくこの行です。
+  - engine が断ったときの `graph.definition_referenced@1` の文は、下の拒否の表にあります。
+- 開いている行の definition が文書から消えると、行は閉じます。
+- 名前は打ちます(今の名前を全部選んだ状態で開くので、打つと置き換わります)。
+
 **Frame Plan のループのグループ(✅LP-4c)**: Frame Plan は `loops[]` と、展開された pass・task・target・buffer の `loop_origin` を読みます。
 
 - 1 つのループが展開した回の pass と task は、1 つのグループ `loop <id> ×N` になります([ループのグループを決める所](../../src/devstudio/view/frameplangraphics.cpp#L532))。
@@ -1614,7 +1675,7 @@ Outputs の区は body に出力があるときだけ、Carry の区は body に
 - シナリオ `graph_loop_expand` / `loop_view_axis` / `material_loop_decompose` は、Graph タブの編集の後に Frame Plan の Refresh を押さなくなりました。
 - ⚠ MainWindow のつなぎを通して見ているのは GPU シナリオ(`graph_loop_expand`)だけです。CPU の test は、Graph タブが知らせることと Frame Plan が読み直すことを別々に見ます(Q-18 の着地時の記録)。
 
-**ループと definition の拒否は 1 文で出ます(✅LP-4c / LP-4e)**: `graph.loop_*` と `graph.definition_*` の拒否は、field の JSON のままではなく、1 文と末尾の code で出ます([`graphLoopRefusalDescription()`](../../src/devstudio/model/inspectormodel.cpp#L960)、[文の表](../../src/devstudio/model/inspectormodel.cpp#L841))。
+**ループと definition の拒否は 1 文で出ます(✅LP-4c / LP-4e)**: `graph.loop_*` と `graph.definition_*` の拒否(✅Q-19 から `graph.input_index_invalid@1` も)は、field の JSON のままではなく、1 文と末尾の code で出ます([`graphLoopRefusalDescription()`](../../src/devstudio/model/inspectormodel.cpp#L960)、[文の表](../../src/devstudio/model/inspectormodel.cpp#L841))。
 
 | code | 文 |
 |---|---|
@@ -1643,6 +1704,7 @@ Outputs の区は body に出力があるときだけ、Carry の区は body に
 | `graph.definition_duplicate@1` | `A definition named <definition> already exists` |
 | `graph.definition_missing@1` | `There is no definition named <definition>` |
 | `graph.definition_immutable@1` | `<node> is made by an instance or a loop; edit it in its definition` |
+| `graph.input_index_invalid@1` | ✅Q-19(engine の LP-1d)。`The numbered inputs of <node> are not 0, 1, 2...: input <input_index> is <reason>`(`reason` が `missing` / `duplicate` なら下の 2 つの文) |
 
 - 行の形は `<文> (<code>).` です。field が無い所は `?` になります。
 - `graph.loop_tier_unsupported@1` の `reason` が draw_loop の 4 つなら、何を直すかを言う文に替わります(✅LP-4e):
@@ -1650,6 +1712,9 @@ Outputs の区は body に出力があるときだけ、Carry の区は body に
   - `limit_in_draw_loop`: `Loop <node> draws every material of its pass: remove its limit`
   - `resource_in_draw_body`: `A body of loop <node> makes a resource, which a draw_loop body cannot: it holds draw steps only`
   - `mixed_body`: `The bodies of loop <node> mix draw steps with passes: a body holds draw steps only (draw_loop) or passes only (expand)`
+- `graph.input_index_invalid@1` の `reason` も、それぞれの文に替わります(✅Q-19。[reason の文](../../src/devstudio/model/inspectormodel.cpp#L897)):
+  - `missing`: `No port of <node> reads input <input_index>: its numbered inputs run from 0 without a gap`
+  - `duplicate`: `Ports <ports> of <node> all read input <input_index>: each number is one port's`(`<ports>` は `a, b` の形)
 - fields は、code の横、`error_fields`、別の拒否の message の中の `<code> {…}` / `<code>: {…}` のどこからでも読みます。✅RU-1b から、message の中の field を code の横の同じ名前のものより優先します。RU-1b の当時は、変種の preflight で code の横の `variant` が変種の名前になり、`graph.loop_variant_missing@1` 自身の `variant`(material の変種)が message の中にだけ残ったためです。今はこの field は `material_variant` で、`variant` という名前の field を持つ拒否はありません(下)。
 - 出る所は、Graph タブの notice と、Frame Plan の status 行です。render target の form は、変種が断ったときと、ループの code の拒否のときにこの文を使います(後者は ✅RU-1b から。LP-2 で draw_loop の拒否 5 つが最上位の code で届くようになったためです)。
 - **変種の前置き(LP-0d)**: 変種(preview / xr)の preflight が断ったときは、code が何であっても前に `The <variant> graph refused it: ` が付きます。LP-0d から、変種の graph の拒否が graph の code のまま `variant` 付きで返るためです(それまで Frame Plan の render target の form は、`render_pipeline_preflight_failed` のときだけ前置きを付けていました)。
@@ -1982,6 +2047,8 @@ fragment を開いて足す行を clipboard に入れます。VI-3b より前は
 | `pelican.computeTasks.notice` | Task Editor の notice の行(✅LP-4a で名前が付いた) |
 | `pelican.view.renderTools.frame_plan` / `.render_features` / `.graph` | View ▸ Render Tools の 3 つのタブを前に出す(✅LP-4c。menu は `pelican.renderToolsMenu`。`action` で発火) |
 | `pelican.graphCanvas.addLoop` / `pelican.graphCanvas.addFullscreenPass` | Graph タブの右クリックの Add loop / Add fullscreen pass(✅LP-4c。`action` で発火) |
+| `pelican.graphCanvas.renameDefinition` / `pelican.graphCanvas.deleteDefinition` | Graph タブの Rename definition… / Delete definition(✅Q-19。`action` で発火すると、今見ている definition か、選んでいるゾーンの body に効く) |
+| `pelican.graphCanvasDefinitionRow` / `pelican.graphCanvasDefinitionCaption` / `pelican.graphCanvasDefinitionName` / `pelican.graphCanvasDefinitionApply` / `pelican.graphCanvasDefinitionCancel` / `pelican.graphCanvasDefinitionLine` | definition の改名・削除の行(✅Q-19): 行全体 / `Rename definition <name> to` などの字 / 新しい名前の欄 / Rename か Delete のボタン / Cancel / 赤い理由の字 |
 | `pelican.graphCanvasLoop.<欄>` | Loop の欄(✅LP-4c): `summary`・`openBody`・`count`・`countExpression`・`countExpressionToggle`・`order`・`limitEnabled`・`limit`・`tier`・`place`・`whereKind`・`whereValues`・`output.<port>`・`carry<i>.from` / `.to` / `.remove` / `.warning`・`addCarry`・`addBranch`。draw_loop では `contract`・`whereTagsInclude`・`whereTagsExclude`・`whereTagsRequireAll`(✅LP-4e)。✅LP-4f1 で `over`・`viewFamily`・`viewAxis`・`viewCount`・`viewAxisNote`・`countTarget`・`insertMipLevels`・`insertLayers`・`whereChecks`・`whereValue<i>`(i 番目の要素の check)。✅Q-17 で欄全体を包む `fields` |
 | `pelican.graphCanvasLoop.branch<i>.<列>` | 分岐表の i 行目(0 から): `when`・`values`・`body`・`up`・`down`・`remove`・`matched`。draw_loop では `material`・`tags`・`contract`・`skinned`・`hasVariant`(✅LP-4e)。✅LP-4f1 で `value`(`element =` の spin)・`checks`・`check<j>`(`element in` / `not in` の j 番目の要素の check) |
 | `pelican.graphCanvasRender`(`.heading` / `.view.<axis>` / `.view.<axis>.warning` / `.view.<axis>.remove`) | Graph タブの render node の View 欄(✅LP-4f1。行の名前は LP-4b の View の欄と同じ形) |
@@ -2509,7 +2576,7 @@ Q-10 の時点では、埋め込んだ player は窓があるので実物の dev
 `studio_exit_code` と `studio_shutdown_forced` も記録します。最後の shutdown step は
 **exit 0、強制終了なし**を要求し、異常終了・タイムアウトによる強制停止も report と driver の失敗になります。
 
-現在のシナリオは **34 本**です(✅LP-4f1 の `loop_view_axis` と ✅LP-4f2 の `graph_template_bloom` で 31 本から 33 本に、✅EW-2 の `engine_window_embedded` で 34 本になりました)。
+現在のシナリオは **35 本**です(✅LP-4f1 の `loop_view_axis` と ✅LP-4f2 の `graph_template_bloom` で 31 本から 33 本に、✅EW-2 の `engine_window_embedded` で 34 本に、✅Q-19 の `loop_zone_read` で 35 本になりました)。
 `graph_read` は fixture を Graph タブで開き、`list` が objectName を返すこと・無い名前が
 `automation.widget_missing@1` で断られること・キャンバスが描いたものが `get_graph_instances` の中身と合うことを見ます
 ([シナリオ](../../test/studio_scenarios/graph_read.json))。`graph_edit_roundtrip` は**実物の engine で**値の帯を
@@ -2638,7 +2705,8 @@ preview の判定と除外の伝播が直り([第6章 §6.13](06_rendering.md))�
 ✅LP-4e の `material_loop_decompose`(json の step は 46。✅Q-18 で Refresh の click を外して 47 から減りました。LP-4e の実装者の報告では 49 手順で緑)は、root の rendering 節が forward の material pass `forward_opaque` を宣言する fixture を開きます(`test/fixtures/studio_material_loop_decompose/`。箱が 1 つと、平らな色の material `g1_flat`)。viewport の中央と隅の色と色の数を覚えてから、Frame Plan で `forward_opaque` を選んで **Decompose into loop...** を発火し、確認のダイアログが `Undo takes it back` を言うことを見て Decompose を押します(LP-4e の着地時は `cannot be undone yet` を見ていました。RU-1 で変わりました)。root に `forward_opaque_draws` のループと `render.material_pass` ができ、Graph タブが前に出てループが選ばれること、`loops[0].tier` が `draw_loop` で、Loop の欄が Contract に `forward_opaque_v1` を出して Count を出さないこと、viewport の 2 点の色と色の数が分解の前と同じことを確かめます。**Add branch** で最初の material(`pelican.builtin.transparent`)の分岐が入ったら、分岐の material の combo で箱の material `materials/g1_flat.material.json#g1_flat` を選び(鍵は打ちません)、body を `(nothing)` にします。中央が背景の色になって色の数が 1 になり、engine の `loops[0].elements[2]` がその material で `branch` 0、最初の built-in の material が else に移り、表の行がその鍵を言うことを見ます。最後に Frame Plan を前に出して(✅Q-18 から Refresh は押しません)、material pass に `node_draw_loop#forward_opaque` の 1 行があることを見ます。打つ欄はありません([分解のシナリオ](../../test/studio_scenarios/material_loop_decompose.json))。
 ✅RU-1 / RU-1b の `render_undo_roundtrip`(json の step は 127。実装者の報告では 129 手で緑)は、`studio_material_loop_decompose` を別の名前で写し、`scene_color` を反転して描く `shaders/ru1_invert.frag` を足した fixture を開きます(`test/fixtures/studio_render_undo_roundtrip/`)。まず Frame Plan で `present` を見出しで開き、Pass Editor の fragment の一覧で `project://shaders/ru1_invert` を選んで Save し、viewport の中央の色が変わることを見ます。Frame Plan の toolbar の **Undo** で fragment が `engine://passthrough` に戻り、中央と隅の色が編集の前と同じになり、**Redo** で反転に戻ることを確かめます(最初の Undo をキーでなくボタンで押すのは、この lane では窓が active にならずキーが届かないためです。キーの振り分けは `devstudio_render_undo_keys_test` が見ます)。続けて `forward_opaque` を Decompose into loop で分解し(確認の文が `Undo takes it back` を含むことを見ます)、**Edit ▸ Undo Render Edit** を発火して、root の node が 0 個になり、`forward_opaque` が root の material pass に戻り、Frame Plan に draw_loop の行が無いことを見ます。Redo でループが戻り、Undo でもう一度戻します。次に Add fullscreen pass で `ru1_tint` を足し、`get_render_documents` の文書が 2 つになって `passes/authoring/` に fragment のファイルができたら、Undo で `Undid "Add pass ru1_tint".` が出て、pass が canvas から消え、文書が 1 つに戻り、ファイルも消えることを確かめます。同じ名前でもう一度足せて同じファイルに書かれ、Undo の後の Redo でファイルが戻ります。最後に Pass Editor で `present` の fragment を `engine://passthrough` に戻して Save し、Frame Plan で `present` を見出しで drag して配置を root に書かせてから Undo し、`Undid "Edit pass present".` が出て fragment が反転に戻り、drag の配置が残ることを見ます。打つのは pass 名 `ru1_tint` の 2 回です([Undo のシナリオ](../../test/studio_scenarios/render_undo_roundtrip.json))。
 ✅LP-4d1 の `loop_zone_edit`(json の step は 66。実装者の報告では 68 手で緑)は、Blank pipeline の project を作り、Graph タブで **Add loop** を発火して、root に `graph.loop` が立ち body の `loop_body` が空であることを見てから、ループが枠(`graph_zone#loop`)と段の字(`graph_zone_label#loop/stage`)で描かれるのを待ちます。見出しを押してゾーンを選び(Loop の欄が出る)、**Add fullscreen pass** を発火すると、body が image と pass の 2 つを持ち、root はループ 1 つのままで、pass が枠の中に `graph_node#loop_body/render_fullscreen` として描かれ、`graph_node#render_fullscreen` の名前は無いことを見ます。見出しでゾーンを選び直して Count に 2 を打って Enter し、root の `layout` がまだ空のうちに、pass を見出しで枠の中へ drag します。definition の `layout.nodes` に `render_fullscreen` が入り、root の `layout` は空のままであることを見て、definition の配置を覚えます。engine の `loops[0].count` が 2 になり、段の字が `expand ×2` を言い、Frame Plan の Refresh の後にグループ `loop loop ×2` が出ることを見ます。Graph タブに戻って枠を見出しで drag すると、root の `layout.nodes` に `loop` が入って `render_fullscreen` は入らず、definition の配置は覚えた値のままで、pass は枠の中に描かれたままです。最後に Undo(`pelican.graphCanvas.undo`)を 2 回発火し、枠の移動が戻って root の `layout` が空になり(definition の配置はそのまま)、次に pass の移動が戻って definition から `layout` が消えることを見ます。Count を 2 にするのは、Frame Plan が 2 つ以上の回をグループにするためです(実装者の報告)。打つ欄は New Project のフォルダと名前、Count の 1 回です([ゾーンのシナリオ](../../test/studio_scenarios/loop_zone_edit.json))。
-✅LP-4d2 の `loop_zone_wire`(json の step は 77。実装者の報告では緑)は、縁をまたぐ 3 本の線を引きます。Blank pipeline の project を作り、Graph タブで root に **Add fullscreen pass**(その image が枠の外の node です)、**Add loop** を発火し、新しいループが root の pass に重なるので **Auto layout** を発火します。ゾーンを選んで body に Add fullscreen pass を足し、Count を 2 にして、engine の `loops[0].count` が 2 になったら root の `nodes` と `definitions` を覚えます。このとき Frame Plan の `barriers` に、`loop/0/render_fullscreen` から `loop/1/render_fullscreen` への `write_after_write`(resource `render_fullscreen__color`)が無いことを見ます。(1) root の image の出力(`graph_socket#render_fullscreen__color/resource`)を、枠の中の body の pass の color 入力(`graph_socket#loop_body/render_fullscreen/in:color`)へ drag します。ループの入力 `resource` が root の image から来て、body に `graph.input` が立ち、pass の `color` がそれを読み、ループの外側のソケット `graph_socket#loop/resource` が描かれることを見ます。2 つの回が同じ image に描くようになるので、上の barrier が出ることも見ます。(2) body の pass の出力(`graph_socket#loop_body/render_fullscreen/out:color`)を右の縁の `graph_zone_socket#loop/out:+` へ drag し、body の `outputs.color` が pass を指し、ループの `outputs[0]` が `color` になることを見ます。(3) 右の縁の内側の端 `graph_zone_socket#loop/out:color` を左の縁の内側の端 `graph_socket#loop_body/resource/value` へ drag し、ループの `carry[0].to` が `resource` になり、矢印 `graph_zone_carry#loop/color/resource` が描かれることを見ます。下端の `graph_zone_label#loop/expansion` が `×2 copies` を言うのを待って **Show in Frame Plan**(`graph_zone_button#loop/frame_plan`)を押し、Frame Plan の status 行が `Loop loop: its copies are picked.` を言うことを見ます。最後に Graph タブへ戻って Undo を 3 回発火し、root の `nodes` と `definitions` が覚えた値と一致することを見ます。carry の効き目は Frame Plan では見分けられません(上の「分かっている穴」)。打つ欄は New Project のフォルダと名前、Count の 1 回です([縁をまたぐ線のシナリオ](../../test/studio_scenarios/loop_zone_wire.json))。
+✅LP-4d2 の `loop_zone_wire`(json の step は 77。実装者の報告では緑)は、縁をまたぐ 3 本の線を引きます。Blank pipeline の project を作り、Graph タブで root に **Add fullscreen pass**(その image が枠の外の node です)、**Add loop** を発火し、新しいループが root の pass に重なるので **Auto layout** を発火します。ゾーンを選んで body に Add fullscreen pass を足し、Count を 2 にして、engine の `loops[0].count` が 2 になったら root の `nodes` と `definitions` を覚えます。このとき Frame Plan の `barriers` に、`loop/0/render_fullscreen` から `loop/1/render_fullscreen` への `write_after_write`(resource `render_fullscreen__color`)が無いことを見ます。(1) root の image の出力(`graph_socket#render_fullscreen__color/resource`)を、枠の中の body の pass の color 入力(`graph_socket#loop_body/render_fullscreen/in:color`)へ drag します。ループの入力 `resource` が root の image から来て、body に `graph.input` が立ち、pass の `color` がそれを読み、ループの外側のソケット `graph_socket#loop/resource` が描かれることを見ます。2 つの回が同じ image に描くようになるので、上の barrier が出ることも見ます。(2) body の pass の出力(`graph_socket#loop_body/render_fullscreen/out:color`)を右の縁の `graph_zone_socket#loop/out:+` へ drag し、body の `outputs.color` が pass を指し、ループの `outputs[0]` が `color` になることを見ます。(3) 右の縁の内側の端 `graph_zone_socket#loop/out:color` を左の縁の内側の端 `graph_socket#loop_body/resource/value` へ drag し、ループの `carry[0].to` が `resource` になり、矢印 `graph_zone_carry#loop/color/resource` が描かれることを見ます。下端の `graph_zone_label#loop/expansion` が `×2 copies` を言うのを待って **Show in Frame Plan**(`graph_zone_button#loop/frame_plan`)を押し、Frame Plan の status 行が `Loop loop: its copies are picked.` を言うことを見ます。最後に Graph タブへ戻って Undo を 3 回発火し、root の `nodes` と `definitions` が覚えた値と一致することを見ます。このシナリオでは carry の効き目は Frame Plan では見分けられません(上の「分かっている穴」。✅Q-19 の `loop_zone_read` が見ます)。打つ欄は New Project のフォルダと名前、Count の 1 回です([縁をまたぐ線のシナリオ](../../test/studio_scenarios/loop_zone_wire.json))。
+✅Q-19 の `loop_zone_read`(json の step は 80。実装者の報告では 82 step で緑)は、線だけで、body の pass に前の回の出力を読ませます。Blank pipeline の project を作り、Graph タブで root に **Add fullscreen pass**、**Add loop**、**Auto layout** を発火し、ゾーンを選んで body に Add fullscreen pass を足して、Count を 2 にします。(1) root の pass の出力 `graph_socket#render_fullscreen/out:color` を左の縁の `graph_zone_socket#loop/in:+` へ drag し、ループの入力 `color` が root の pass から来ることを見ます(pass の出力 port から引くので、回の pass はその pass を待ちます。root の image から body の pass のソケットへ引く形は、上の「render node の入力は shader の宣言から」の分かっている穴のとおり engine が断ります)。(2) body の pass の出力を右の縁の `+` へ drag してループの出力 `color` を作り、(3) 右の縁の内側の端 `graph_zone_socket#loop/out:color` を左の縁の内側の端 `graph_socket#loop_body/color/value` へ drag して、carry と矢印を作ります。body の pass(`engine://passthrough`)のソケットが可変の帯の端 `graph_socket#loop_body/render_fullscreen/in:variadic` で描かれるのを待ち、frame plan の `loop/1/render_fullscreen` の `reads` に `loop/0/render_fullscreen__color` が無いことを見て、`definitions` を覚えます。(4) 左の縁の内側の端を帯の端へ drag すると、pass に port `color_2`(`binding` `input`・`input_index` 0。pass 自身の `color` と重なるので `_2`)ができて body の `graph.input` の `color` から読み、`in@0` の ○ が描かれ、`loop/1/render_fullscreen` の `reads` に `loop/0/render_fullscreen__color` が入ることを見ます。次にゾーンを選んで **Rename definition…** を発火し、名前の欄が `loop_body` で開くのを見て `stroke` を打って Enter すると、`definitions.stroke` ができ、ループの `branches[0].body` が `stroke` になります。Undo で `loop_body` に戻り、もう 1 回の Undo で `definitions` が覚えた値と一致することを見ます。打つ欄は New Project のフォルダと名前、Count の 1 回、definition の新しい名前の 1 回です([読みの線のシナリオ](../../test/studio_scenarios/loop_zone_read.json))。
 ✅LP-4f1 / LP-4f2 の `loop_view_axis`(json の step は 53。✅Q-18 で Refresh の click を外して 54 から減りました)は、`studio_view_select_field` と同じ文書(`hybrid_v1` と、project の feature に写した `cube_capture`)で root の graph が空の fixture を開きます(`test/fixtures/studio_loop_view_axis/`)。Graph タブで **Add loop** を発火し、ゾーンを見出しで選んで Loop の欄の要約が `expand ×1` を言うのを待ってから、Over で `View axis`、family で `$capture/cube` を選びます。文書の `over.view_axis` が `$capture/cube` / `face` になり、回数の字が `×6 (face)` になることを見ます。ゾーンを選び直して **Add fullscreen pass** を発火すると、body の image が `width` 256・`height` 256・`layers` 6 で作られ、pass の `view_family` が `$capture/cube` であることを見ます(✅LP-4f2。LP-4f1 の着地時は、画面の大きさの pass が engine を止めたため fixture の `cube_face` の definition を body にしていました)。pass を見出しで選ぶと View 欄の `face` が `All views` で出るので(✅Q-18 から、この `wait` は欄が有効になるのも待ちます)、**Each element (loop)** を選び、pass の `view_select.face` が `{"$expr": "element"}` になることを見ます。engine の `loops[0].count` が 6・`tier` が `expand` になり、frame plan の `loop/0/render_fullscreen` 〜 `loop/5/render_fullscreen` がそれぞれ `view_select.face` 0〜5 を持ち、ゾーンの段の字が `×6 (face)`、3 つ目の軸のラベル(`graph_zone_label#loop/axis2`)が `+Y` を言うことを確かめます。最後に Frame Plan を前に出して(✅Q-18 から Refresh は押しません)、グループ `loop loop ×6` が出ることを見ます。打つ欄はありません([view の軸のループのシナリオ](../../test/studio_scenarios/loop_view_axis.json))。
 ✅LP-4f2 の `graph_template_bloom`(json の step は 46)は、`studio_automation_graph` の rendering 文書(direct root の features に bloom)に、engine の OpenPBR の発光する material で光らせた箱を置いた fixture を開きます(`test/fixtures/studio_graph_template_bloom/`)。viewport の中央と隅の色と色の数を覚えてから、Render Features で `bloom` の行を選び、**Replace with loop version…** が出て押せることを見て押します。確認のダイアログが `Bloom loop`・`The feature bloom is removed`・`Undo takes it back` を含むことを見て Replace を押すと、root の features が 0 本になり、graph に `graph.loop` の `bloom_down` が入り、Graph タブが前に出てそのゾーンが描かれ、Loop の欄の要約が `bloom_down` を言い、Render Features の notice が `Replaced bloom with Bloom loop. Undo takes it back.` であることを見ます。engine の `loops[0].node` が `bloom_down` で、viewport の中央・隅の色と色の数が置き換える前と同じことを確かめ、Frame Plan を Refresh してループのグループを見ます。**Edit ▸ Undo Render Edit** で bloom が features に戻り graph が 2 node に戻ること、**Redo** でループが戻ることを見て、どちらでも絵が置き換える前と同じことを確かめます(実装者の報告では中央 `#ffffff`・隅 `#000000`・色数 1016)。打つ欄はありません([分解版のシナリオ](../../test/studio_scenarios/graph_template_bloom.json))。
 ✅EW-2 の `engine_window_embedded`(json の step は 12)は、engine の窓が Studio の外に一度も出ないことを見ます。シナリオが `"watch_engine_windows": true` を持つと、driver は Studio を起動した時から監視の thread を回し([`EngineWindowWatch`](../../tools/studio_drive.py#L260))、Studio を親に持つ process の top-level の窓を列挙して、見える窓を記録します(実装者の報告では約 25 ms ごと)。property 付きで owner の無い非表示の窓(読み込み中の engine の窓)を見た回数も engine ごとに数えます。expectation `engine_windows`([判定](../../tools/studio_drive.py#L1084))は、見える窓が 1 つも無いこと、`engines` 本以上の engine について非表示の窓を `min_hidden_samples`(既定 3)回以上見たこと(監視が読み込みを見逃したまま緑にならないように)、最新の engine の窓が見えていて、その root の窓が Studio の process のものであることを要求します。シナリオは project と一緒に起動した engine、Stop Engine → Restart Engine の engine、別の project(`{other_project}`)への切替の engine の 3 回でこれを見て、最後に `screen` モードで viewport を撮ります。実装者の報告では緑(約 19 秒)で、`--embedded` を外す変異では窓が 144 sample 見えて赤でした。⚠ 監視の間隔より短い表示は取り逃がしえます。撮った viewport は黒でした(それが正しい絵かは未確認)。打つ欄はありません([窓のシナリオ](../../test/studio_scenarios/engine_window_embedded.json))。

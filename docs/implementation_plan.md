@@ -26720,6 +26720,52 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
   - 設定の `--headless` と衝突したとき(`--embedded` を付けないとき)に知らせる 1 行は無い
   - シナリオの screenshot の viewport は黒だった(fixture の絵としてそれが正しいかは未確認)
 
+### Q-19: Graph tab の render node に入力の線を引ける(読み取り port を JSON で書かない)/ definition の改名・削除
+
+**中段(Studio のみ)。実装者: Claude(Opus)。develop 018a96f6 以降。Studio での見え方は `docs/manual/13_editor.md` の「render node の入力は shader の宣言から —— 線で番号付きの port を作る」と「definition の改名と削除」。**
+
+#### 前提
+- Graph tab の render node(`render.fullscreen` など)が別の画像を読むには、parameters の JSON(pill)に port を手で書くしかなかった。LP-4d2 の報告: 「carry の効果は frame plan では見分けられない。body の pass が書き込み専用のため。読み取り port は今の Graph tab では JSON を打たないと作れない」
+- engine の LP-1d: graph の fullscreen / raster の読みの image port に `"binding":"input"` と `"input_index":n`(0 から連続)を書くと、pass の input 配列の n 番として読まれる。`PELICAN_DECLARE_INPUT_<i>`・可変入力・`engine://passthrough`・Studio の雛形がそのまま使える。抜け / 重複は `graph.input_index_invalid@1 {node, input_index, reason: missing|duplicate, ports}`。入力 port に sampling / view / subresource は書けない
+- Frame Plan(VI-3a/3b)は、pass の入力のソケットを shader の宣言(`get_frame_plan` の `nodes[].pass_inputs`)から描き、番号でつなぐ。graph の render node が作る pass も frame plan の node になる(ループなら `loop_origin`)
+- definition の改名・削除: engine の op `rename_definition {from, to}` / `remove_definition {name}`(参照が残れば `graph.definition_referenced@1 {definition, referenced_by}`)。Studio には UI が無かった(LP-4c の穴)。undo の逆 op は LP-4c で入っている
+
+#### 決定
+1. **render node の入力のソケットを shader の宣言から**: frame plan の対応する pass の node の `pass_inputs` を読み(ループの body の node は `loop_origin` で対応づけ、展開後のどれか 1 つの copy の宣言を使う)、入力のソケットを VI-3a と同じ形で描く(固定の ○ は宣言の変数名、可変の組は帯)。宣言が取れない node は今の port の行のまま
+2. **線を引くと port ができる**: 外の node の image の出力を宣言のソケット(binding b)に落とす → 1 回の編集で、ports に `{"kind":"image", "access":"read", "binding":"input", "input_index": <b>}` の port(名前は source の port 名から提案、重複しない)を足し、`set_input` でつなぐ。飛ばしは VI-3a と同じ 1 行で断る。つながっている ○ に落とすと置き換え。外すと port を消し、後ろの `input_index` を詰める
+3. **ゾーンの body でも同じ**(scope は definition)。`loop_zone_wire` の流れで「body の pass が前の回の出力を読む」を作れること
+4. **definition の改名・削除**: breadcrumb の definition 名、ゾーンの見出し、Scope の combo の右クリックに `Rename definition…` / `Delete definition`。Rename は名前の欄(今の名前を選んだ状態。規則と "root" の禁止を送る前に確かめる)→ `rename_definition`(ループの分岐の body の参照を engine が書き換えるかは engine の実装で確かめる)。Delete は参照があれば送らずに 1 行、無ければ確認して `remove_definition`。どちらも undo できる
+5. `graph.input_index_invalid@1` の文を拒否の表に
+
+#### 着地(2026-09-27、fb6053d3)
+- **決定 1**: Graph tab は文書を読むたびに読む `get_frame_plan` から、pass ごとの `pass_inputs` と、`loop_origin` を持つ回の名前を集める([`readPlanPassInputs()`](../src/devstudio/model/graphcanvasmodel.cpp#L3787))。node との対応は [`passInputs()`](../src/devstudio/model/graphcanvasmodel.cpp#L3817): root は id、body は plan の順で最初の、その要素の分岐がこの body を走らせる回、instance の definition は `<instance>/<id>`
+  - ソケットは [`graphInputSockets()`](../src/devstudio/model/graphcanvasmodel.cpp#L288) が組む(固定の宣言、可変の組のつながっている ○ と `+ input`、宣言が取らない番号付きの port の ○)。番号付きの port は port の行から外す([分ける所](../src/devstudio/model/graphcanvasmodel.cpp#L1674))。plan に pass が無い、`declared` でない、宣言が 0 個、読めない宣言のときは今の行
+  - plan を読む条件に「root の instance の definition に render node がある」を足した([読みを決める所](../src/devstudio/model/graphcanvasmodel.cpp#L638))
+  - 追加直後の pass は plan に無いので、render node の pass が plan に無い(か `declared` でない)間は、文書の読み 1 回につき最大 40 回まで時計で plan を読み直す([読み直す所](../src/devstudio/model/graphcanvasmodel.cpp#L765))
+  - `pelican_studio_inspector_model` が `pelican_studio_frame_plan` を link するようになった(`framePlanPassInputs()` を使うため)
+- **決定 2**: [`socketOps()`](../src/devstudio/model/graphcanvasmodel.cpp#L3969) が `set_node_parameters`(port を足す)と `set_input` を 1 列で組む。置き換えは `set_input` だけ(型が違えば `type` を直す `set_node_parameters` を先に)。外すのは [`removeInputPortOps()`](../src/devstudio/model/graphcanvasmodel.cpp#L4085)(`set_input{null}` と、port を消して後ろを詰めた `set_node_parameters`)で、線の Delete と空所への drag の両方が通る。断る 1 行は飛ばし・可変の組の max・buffer の宣言・宣言に無い binding
+- **決定 3**: ゾーンの外の root の出力を body の宣言のソケットへ落とすと、LP-4d2 のループの入力の列の後に番号付きの port の列を付けて 1 回で送る([`addZoneInputToSocket()`](../src/devstudio/model/graphcanvasmodel.cpp#L4106))。body の中の線はそのまま決定 2
+- **決定 4**: [`renameDefinition()`](../src/devstudio/model/graphcanvasmodel.cpp#L3153) は `rename_definition` の 1 op だけを送る。engine が同じ op の中でループの `branches[].body` も書き換えるため(engine の `visitDefinitionReferences()`。コードで確かめた)。名前の検査は空・`/`・`root`・既にある名前の 4 つ([`definitionNameRefusal()`](../src/devstudio/model/graphcanvasmodel.cpp#L3177))。[`removeDefinition()`](../src/devstudio/model/graphcanvasmodel.cpp#L3167) は、root の instance かループが走らせていれば送らずに `Definition <name> is used by <a>, <b>: make them run another definition first.`
+  - 入口はパンくず(canvas の中と上段の字)・ゾーンの見出し・Scope の combo の右クリック([canvas のメニュー](../src/devstudio/view/graphcanvaswidget.cpp#L2443))。名前で発火したときは今の definition か、選んでいるゾーンの body([対象を決める所](../src/devstudio/view/graphcanvaswidget.cpp#L3948))
+  - 改名した definition の中にいれば、パンくずが新しい名前へ移る(Undo で戻る。[移す所](../src/devstudio/model/graphcanvasmodel.cpp#L1081))
+- **決定 5**: [文の表](../src/devstudio/model/inspectormodel.cpp#L888) に 1 行と、`reason` の 2 つの文([reason の文](../src/devstudio/model/inspectormodel.cpp#L897))
+- **仕様から外れた判断**(実装者の報告。コードで確かめた)
+  - port に `type` を足した。engine が image の port に type を要るため。source から辿り([`imageTypeOf()`](../src/devstudio/model/graphcanvasmodel.cpp#L3916))、分からなければ scene color の型
+  - port 名は、source が `graph.input` ならその id、それ以外は source の port 名から提案する
+  - 削除の確認は dialog ではなく、上段の下のインラインの行(`pelican.graphCanvasDefinitionRow`)にした
+  - carry の矢印が境界の入力ソケットの上に描かれていて、そこから線を引けなかった既存の穴を直した(矢印の下にソケットがあれば carry を選ばない。[押した所](../src/devstudio/view/graphcanvaswidget.cpp#L2244))
+- **シナリオ**: `loop_zone_read`([シナリオ](../test/studio_scenarios/loop_zone_read.json))。json の `steps` は 80(実装者の報告では 82 step で緑)。線だけでループの入力・body の出力・carry・body の pass への読みの線を引き、numbered port `color_2`(`input_index` 0、`binding` `input`)ができること、`get_frame_plan` の `loop/1/render_fullscreen` の `reads` に `loop/0/render_fullscreen__color` が入ること(線の前は入っていない)を見る。Rename definition… で `stroke` にするとループの branch も追従し、Undo で戻り、読みの線の Undo で `definitions` が元と一致する
+- **test**
+  - `devstudio_graphcanvas_test`: `Q-19 a render node's sockets come from its pass's declarations; without them it keeps its rows`([test](../test/devstudio_graphcanvas_test.cpp#L2110))/ `Q-19 a line on a socket is a numbered port and its edge in one list; taking it away moves the later ones down`([test](../test/devstudio_graphcanvas_test.cpp#L2180))/ `Q-19 a line on a socket past the next binding, on a buffer or on a full band is refused in one line, and a body's pass reads its boundary the same way`([test](../test/devstudio_graphcanvas_test.cpp#L2242))/ `Q-19 a definition is renamed and deleted from the Graph tab, checked before it is sent, and both come back byte for byte`([test](../test/devstudio_graphcanvas_test.cpp#L2284))/ `Q-19 graph.input_index_invalid@1 reads as a sentence for each reason`([test](../test/devstudio_graphcanvas_test.cpp#L2349))
+  - `devstudio_graphcanvas_scene_test`: `Q-19 a body pass in a zone draws its shader's sockets, and a line onto them is a numbered port`([test](../test/devstudio_graphcanvas_scene_test.cpp#L5604))/ `Q-19 Rename definition… and Delete definition act on the zone picked, and a name that cannot be one is not sent`([test](../test/devstudio_graphcanvas_scene_test.cpp#L5701))
+- **変異**(実装者の報告): すべて赤。root の宣言を読まない / body の copy を読まない / `input_index` を binding+1 にする / 外して詰めない / 飛ばしを断らない / 置き換えで新しい port を作る / view の drop を旧経路にする / 名前に root を許す / 参照ありでも削除を送る / 改名後に移らない / carry の矢印の下のソケットで carry を選ぶ
+- **結果**(実装者の報告): `-L studio_cpu -LE gpu` 467/467。GPU シナリオ `loop_zone_read` が緑
+- **テキスト入力**(実装者の報告): definition の新しい名前(`pelican.graphCanvasDefinitionName`。今の名前を全選択で開く)。減らす案は、ループから開いたときに `<loop>_body` のような候補を combo で出すこと
+- **穴**(実装者の報告)
+  - root の `render.image` の出力を body の pass のソケットへ引くと engine が断る(拒否の code は未確認)。engine の LP-6 で直す予定。今は pass の出力 port から引く
+  - シナリオは frame plan の node を位置(`nodes[2]` / `nodes[3]`)で見ている(同じ位置の `name` の一致も見る)
+  - 「Graph change saved.」の直後の action が、読み直しの途中で disabled になりうる。`loop_zone_wire` も同じ手順
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
