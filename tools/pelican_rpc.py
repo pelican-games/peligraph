@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import threading
 from types import TracebackType
-from typing import Any, Self
+from typing import Any, Self, Sequence
 
 
 class PelicanRpcError(RuntimeError):
@@ -21,7 +21,11 @@ class PelicanRpcError(RuntimeError):
 
 
 class PelicanRpc:
-    """Launch and control a headless ``pelican_player`` process over stdio."""
+    """Launch and control a ``pelican_player`` process over stdio.
+
+    The player is headless unless ``headless=False``; ``extra_arguments`` are
+    passed before ``--project`` (for example ``["--embedded"]``).
+    """
 
     _DEFAULT_EXE = Path("build/dist/Debug/pelican_player.exe")
 
@@ -29,6 +33,9 @@ class PelicanRpc:
         self,
         project_dir: str | Path,
         exe_path: str | Path | None = None,
+        *,
+        headless: bool = True,
+        extra_arguments: Sequence[str] = (),
     ) -> None:
         self.project_dir = Path(project_dir).expanduser().resolve()
         self.exe_path = self._resolve_executable(exe_path)
@@ -39,7 +46,8 @@ class PelicanRpc:
             [
                 str(self.exe_path),
                 "--rpc",
-                "--headless",
+                *(["--headless"] if headless else []),
+                *extra_arguments,
                 "--project",
                 str(self.project_dir),
             ],

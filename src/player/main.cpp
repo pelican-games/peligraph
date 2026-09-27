@@ -333,6 +333,10 @@ std::uint64_t parseStartFrame(const std::string &text, double fps) {
 ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     argparse::ArgumentParser program("Pelican Player");
     program.add_argument("--headless").flag().help("run without a window");
+    program.add_argument("--embedded")
+        .flag()
+        .help("create the window hidden, unfocused and never fullscreen, for another "
+              "process's window to host");
     program.add_argument("--rpc")
         .flag()
         .help("enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)");
@@ -447,6 +451,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         auto &config = parsed.engine;
         config.headless = program.get<bool>("--headless");
         config.rpc = program.get<bool>("--rpc");
+        config.embedded = program.get<bool>("--embedded");
+        if (config.embedded && config.headless) {
+            throw std::runtime_error("--embedded cannot be combined with --headless");
+        }
         config.xr_mode = parseXrMode(program.get<std::string>("--xr"));
         // AU-3: which mixer the voices reach. The argument wins and leaves the
         // environment unread; the variable lets a harness (Studio's scenario

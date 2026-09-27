@@ -1,4 +1,5 @@
 #include "window.hpp"
+#include "enginewindowproperty.hpp"
 #include "../launchconfig.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../log.hpp"
@@ -181,12 +182,25 @@ Window::Window() : window{nullptr} {
 
     const auto window_size = config.initialWindowSize();
     const auto title = config.windowTitle();
-    const auto fullscreen = config.initialFullScreenState();
+    // EW-1: an embedded window belongs inside its host from the first frame.
+    // It is created hidden and unfocused, so nothing appears outside the host
+    // while the project loads, and a hosted window is never fullscreen.
+    const bool embedded = GET_MODULE(EngineLaunchConfig).embedded;
+    auto fullscreen = config.initialFullScreenState();
+    if (embedded && fullscreen) {
+        LOG_INFO(logger, "--embedded: the project's fullscreen setting is ignored; the window is created windowed");
+        fullscreen = false;
+    }
 
     if (glfwInit() != GLFW_TRUE) {
         throw std::runtime_error("glfwInit failed");
     }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    if (embedded) {
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+        glfwWindowHint(GLFW_FOCUSED, GLFW_FALSE);
+        glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+    }
 
     try {
         const auto create_info = makeWindowCreateInfo(window_size, fullscreen);
@@ -198,6 +212,11 @@ Window::Window() : window{nullptr} {
         glfwTerminate();
         throw;
     }
+#ifdef _WIN32
+    // EW-1: the mark a host looks for (enginewindowproperty.hpp). GLFW's own
+    // hidden helper window never carries it.
+    SetPropW(glfwGetWin32Window(window), engineRenderWindowProperty, reinterpret_cast<HANDLE>(1));
+#endif
     glfwSetWindowUserPointer(window, this);
     {
         int width = 0;
@@ -282,6 +301,14 @@ Window::Window() : window{nullptr} {
 
 Window::~Window() {
     if (window != nullptr) {
+#ifdef _WIN32
+        // An embedding host may have destroyed the window with its own parent
+        // already (see process()); there is then no property to remove.
+        const auto native_window = glfwGetWin32Window(window);
+        if (native_window != nullptr && IsWindow(native_window)) {
+            RemovePropW(native_window, engineRenderWindowProperty);
+        }
+#endif
         glfwDestroyWindow(window);
         window = nullptr;
     }

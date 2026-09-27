@@ -42,6 +42,10 @@ DECLARE_MODULE(EngineLaunchConfig) {
   public:
     bool headless = false;
     bool rpc = false;
+    // EW-1 (--embedded): another process's window will host this one, so the
+    // window is created hidden, unfocused and never fullscreen. Nothing else
+    // changes: time and game behaviour are those of a normal windowed run.
+    bool embedded = false;
     // Deterministic drivers never run developer-tool callbacks. Replay and
     // golden harnesses set these when they are not already using headless.
     bool input_replay = false;

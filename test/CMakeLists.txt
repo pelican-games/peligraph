@@ -3566,6 +3566,16 @@ if(PELICAN_PYTHON_TESTS_AVAILABLE)
             --repo-root ${CMAKE_SOURCE_DIR}
             --player $<TARGET_FILE:pelican_player>
         )
+        if(WIN32)
+            # EW-1: --embedded creates the render window hidden and marked
+            # with the PelicanEngineRenderWindow property.
+            pelican_define_gpu_python_test(
+                ew1_engine_window_embedded
+                ${CMAKE_CURRENT_SOURCE_DIR}/engine_window_embedded.py
+                --repo-root ${CMAKE_SOURCE_DIR}
+                --player $<TARGET_FILE:pelican_player>
+            )
+        endif()
     endif()
 
     # Golden inventory integrity is deliberately GPU-free and therefore runs
