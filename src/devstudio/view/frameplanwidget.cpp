@@ -3456,6 +3456,10 @@ struct FramePlanWidget::Impl {
                     QString::number(
                         static_cast<qulonglong>(node.declaration_index)));
             addFact(facts, owner.tr("View family"), text(node.view_family));
+            // LP-4f3 (VF-2): the size the family's passes draw at.
+            if (const auto size = framePlanFamilyExtentLine(node); !size.empty())
+                addFact(facts, owner.tr("Family size"),
+                        text(size.substr(std::string_view{"Family size: "}.size())));
             // LP-4c: the loop that expanded it, and what it copies.
             if (node.loop_origin)
                 addFact(facts, owner.tr("Loop origin"),

@@ -54,11 +54,6 @@ struct GraphCanvasReadCapability {
     // {loop_elements: {node, offset, limit}}); loops[] is again all it reads.
     std::function<qint64(const QString &node, qint64 offset, qint64 limit, QString *error)>
         requestLoopElements;
-    // LP-4f2: get_render_authoring_context, for its render_targets[] only --
-    // the size a view family's passes draw at, which a new image in the body
-    // of a loop over that family's axis is made at. Asked only when the
-    // document holds such a loop.
-    std::function<qint64(QString *error)> requestRenderAuthoringContext;
     // The scrub, as two explicit writes. Nothing else on this canvas moves the
     // engine's clock or asks it to draw.
     std::function<qint64(double time, QString *error)> requestSetTime;

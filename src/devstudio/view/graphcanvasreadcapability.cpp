@@ -70,10 +70,6 @@ GraphCanvasReadCapability graphCanvasReadCapability(EmbeddedViewport &viewport) 
                                          {QStringLiteral("limit"), limit}}}},
                 error);
         },
-        .requestRenderAuthoringContext = [&viewport](QString *error) {
-            return viewport.requestRpc(QStringLiteral("get_render_authoring_context"),
-                                       QJsonObject{}, error);
-        },
         .requestSetTime = [&viewport](double time, QString *error) {
             return viewport.requestRpc(
                 QStringLiteral("set_time"),

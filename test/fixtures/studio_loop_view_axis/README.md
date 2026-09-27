@@ -10,8 +10,9 @@ scenario puts a loop over that axis there, with Studio's controls only.
 Its graph holds no definition either: the loop's body is the new, empty one
 Add loop makes, and the pass in it is Studio's Add fullscreen pass. In the
 body of a loop over the cube's axis, that pass draws into an image made at the
-size the cube's family draws at -- 256 x 256, six layers, read off the target
-the family's first raster pass writes (LP-4f2) -- because the engine does not
+size the cube's family draws at -- 256 x 256, six layers, as the frame plan's
+`family_extent` / `family_layers` on the family's nodes say (LP-4f3, VF-2) --
+because the engine does not
 run one family at two raster extents (render.view_family_extent_mismatch@1,
 VF-1).
 

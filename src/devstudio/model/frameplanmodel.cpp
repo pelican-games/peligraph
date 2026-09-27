@@ -1088,6 +1088,32 @@ FramePlanPassInputs parsePassInputs(const Json &value,
 
 } // namespace
 
+std::optional<FramePlanFamilyExtent> framePlanFamilyExtent(const Json &node,
+                                                           std::string_view context) {
+    const auto found = node.find("family_extent");
+    if (found == node.end() || found->is_null()) return std::nullopt;
+    const std::string where = std::string{context} + ".family_extent";
+    FramePlanFamilyExtent extent;
+    if (found->is_array()) {
+        if (found->size() != 2) throw invalid(where + " must be [width, height]");
+        extent.size = std::array<std::uint64_t, 2>{
+            unsignedInteger(found->at(0), where + "[0]"),
+            unsignedInteger(found->at(1), where + "[1]")};
+    } else if (found->is_object()) {
+        const auto scale = found->find("output_scale");
+        if (scale == found->end() || !scale->is_number())
+            throw invalid(where + ".output_scale must be a number");
+        extent.output_scale = scale->get<double>();
+    } else {
+        throw invalid(where + " must be [width, height] or {output_scale}");
+    }
+    if (const auto layers = node.find("family_layers");
+        layers != node.end() && !layers->is_null())
+        extent.layers = unsignedInteger(*layers, std::string{context} + ".family_layers");
+    extent.pass = optionalStringField(node, "family_extent_pass", context);
+    return extent;
+}
+
 FramePlanModel buildFramePlanModel(std::string_view response_json) {
     Json root;
     try {
@@ -1162,6 +1188,7 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         node.view_family = optionalStringField(value, "view_family", context);
         node.view_select = optionalViewSelect(value, context);
         node.view_axes = optionalViewAxes(value, context);
+        node.family_extent = framePlanFamilyExtent(value, context);
         node.no_selected_view =
             optionalBoolField(value, "no_selected_view", context)
                 .value_or(false);

@@ -527,17 +527,6 @@ void GraphCanvasModel::requestLoopReports() {
         return;
     }
     read(RequestKind::Loops, "get_frame_plan", Json::object());
-    // LP-4f2: a loop over a view axis sizes the images Add fullscreen pass
-    // makes in its body by the family's extent, which the plan does not
-    // carry: the targets' declarations do.
-    if (std::ranges::any_of(nodes_, [](const Json &node) {
-            if (!isLoop(node)) return false;
-            const auto parameters = node.value("parameters", Json::object());
-            const auto over = parameters.is_object() ? parameters.value("over", Json::object())
-                                                     : Json::object();
-            return over.is_object() && over.contains("view_axis");
-        }))
-        read(RequestKind::Targets, "get_render_authoring_context", Json::object());
 }
 
 void GraphCanvasModel::requestNextLoopPage() {
@@ -665,7 +654,7 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
         const auto kind = pending->kind;
         // LP-4c: the loop report only adds marks to what the document
         // already draws. Without it the canvas says "loop" and nothing else.
-        if (kind == RequestKind::Loops || kind == RequestKind::Targets) return;
+        if (kind == RequestKind::Loops) return;
         if (kind == RequestKind::LoopPage) {
             loop_pages_done_.insert(std::exchange(loop_page_node_, {}));
             requestNextLoopPage();
@@ -717,8 +706,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         try {
             const auto response = Json::parse(json);
             if (response.contains("error")) {
-                if (pending.kind == RequestKind::Loops || pending.kind == RequestKind::Targets)
-                    return;
+                if (pending.kind == RequestKind::Loops) return;
                 if (pending.kind == RequestKind::LoopPage) {
                     // The loop keeps the materials it has; the next loop
                     // is asked for its own.
@@ -752,16 +740,6 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             if (pending.kind == RequestKind::LoopPage) {
                 receiveLoopPage(response);
                 ++report_revision_;
-                return;
-            }
-            if (pending.kind == RequestKind::Targets) {
-                render_targets_.clear();
-                if (const auto targets = response.find("render_targets");
-                    targets != response.end() && targets->is_array())
-                    for (const auto &target : *targets)
-                        if (target.is_object() && !text(target, "name").empty())
-                            render_targets_[text(target, "name")] =
-                                target.value("declaration", Json::object());
                 return;
             }
             if (pending.kind == RequestKind::Catalog) {
@@ -806,7 +784,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             failure_ = {};
             ++report_revision_;
         } catch (const std::exception &error) {
-            if (pending.kind == RequestKind::Loops || pending.kind == RequestKind::Targets) return;
+            if (pending.kind == RequestKind::Loops) return;
             if (pending.kind == RequestKind::LoopPage) {
                 loop_pages_done_.insert(std::exchange(loop_page_node_, {}));
                 requestNextLoopPage();
@@ -2119,7 +2097,7 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
                                                      "TRANSFER_SRC"})}};
         // LP-4f2 (VF-1): in the body of a loop over a view axis, the pass
         // draws in that loop's family, whose passes all draw at one size --
-        // the size of its first raster pass. The image is made at it, and the
+        // the frame plan's family_extent (VF-2). The image is made at it, and the
         // pass names the family (the View field's "Each element" then narrows
         // it to one view a copy).
         const auto family = viewAxisFamilyOf(in_scope);
@@ -2551,6 +2529,30 @@ std::vector<FramePlanViewAxis> planViewAxes(const Json &node) {
     return axes;
 }
 
+// LP-4f3: VF-2's family_extent / family_layers / family_extent_pass, read as
+// leniently as view_axes (the Frame Plan tab's framePlanFamilyExtent is the
+// strict reading, and names a malformed one): nothing when it is absent or
+// cannot be used. This library does not link the frame plan's.
+std::optional<FramePlanFamilyExtent> planFamilyExtent(const Json &node) {
+    const auto found = node.find("family_extent");
+    if (found == node.end()) return std::nullopt;
+    FramePlanFamilyExtent extent;
+    if (found->is_array() && found->size() == 2 && (*found)[0].is_number_unsigned() &&
+        (*found)[1].is_number_unsigned())
+        extent.size = std::array<std::uint64_t, 2>{(*found)[0].get<std::uint64_t>(),
+                                                   (*found)[1].get<std::uint64_t>()};
+    else if (const auto scale = found->find("output_scale");
+             found->is_object() && scale != found->end() && scale->is_number())
+        extent.output_scale = scale->get<double>();
+    else
+        return std::nullopt;
+    if (const auto layers = node.find("family_layers");
+        layers != node.end() && layers->is_number_unsigned())
+        extent.layers = layers->get<std::uint64_t>();
+    extent.pass = text(node, "family_extent_pass");
+    return extent;
+}
+
 bool isElementExpression(const Json &value) {
     return value.is_object() && value.size() == 1 && text(value, "$expr") == "element";
 }
@@ -2561,27 +2563,17 @@ void GraphCanvasModel::readPlanViews(const Json &plan) {
     view_families_.clear();
     plan_node_views_.clear();
     plan_targets_.clear();
-    family_reference_writes_.clear();
-    // LP-4f2: the first raster pass of each family, by declaration order.
-    std::map<std::string, std::uint64_t, std::less<>> reference_index;
+    family_extents_.clear();
     if (const auto nodes = plan.find("nodes"); nodes != plan.end() && nodes->is_array())
         for (const auto &node : *nodes) {
             if (!node.is_object()) continue;
-            if (const auto family = text(node, "view_family");
-                !family.empty() && text(node, "kind") == "render") {
-                const auto index = node.value("declaration_index", std::uint64_t{0});
-                const auto held = reference_index.find(family);
-                if (held == reference_index.end() || index < held->second) {
-                    reference_index[family] = index;
-                    std::vector<std::string> writes;
-                    if (const auto listed = node.find("writes");
-                        listed != node.end() && listed->is_array())
-                        for (const auto &write : *listed)
-                            if (write.is_string()) writes.push_back(write.get<std::string>());
-                    family_reference_writes_[family] = std::move(writes);
-                }
-            }
             const auto family = text(node, "view_family");
+            // LP-4f3 (VF-2): the size the engine holds the family's passes
+            // to, the same on every node of it. A node whose family_extent
+            // Studio cannot read is passed over, as a malformed axis is.
+            if (!family.empty() && !family_extents_.contains(family))
+                if (auto extent = planFamilyExtent(node))
+                    family_extents_.emplace(family, std::move(*extent));
             auto axes = planViewAxes(node);
             if (family.empty() || axes.empty()) continue;
             if (const auto name = text(node, "name"); !name.empty())
@@ -2623,30 +2615,17 @@ std::string GraphCanvasModel::viewAxisFamilyOf(std::string_view scope) const {
 }
 
 std::optional<Json> GraphCanvasModel::viewFamilyImageExtent(std::string_view family) const {
-    const auto writes = family_reference_writes_.find(family);
-    if (writes == family_reference_writes_.end()) return std::nullopt;
-    for (const auto &write : writes->second) {
-        const auto target = render_targets_.find(write);
-        if (target == render_targets_.end() || !target->second.is_object()) continue;
-        const auto &declaration = target->second;
-        const auto width = declaration.find("width");
-        const auto height = declaration.find("height");
-        if (width != declaration.end() && height != declaration.end() &&
-            width->is_number_unsigned() && height->is_number_unsigned()) {
-            // A fixed size: the same, and its layers (a cube's six faces are
-            // six views of one image).
-            Json extent{{"width", *width}, {"height", *height}};
-            if (const auto layers = declaration.find("layers");
-                layers != declaration.end() && layers->is_number_unsigned() &&
-                layers->get<std::uint64_t>() > 1)
-                extent["layers"] = *layers;
-            return extent;
-        }
-        if (const auto scale = declaration.find("extent_scale");
-            scale != declaration.end() && scale->is_number())
-            return Json{{"extent_scale", *scale}};
-    }
-    return std::nullopt;
+    const auto found = family_extents_.find(family);
+    if (found == family_extents_.end()) return std::nullopt;
+    const auto &extent = found->second;
+    // A fixed size is the same size; one relative to the output, the same
+    // scale. Either way the family's layers (a cube's six faces are six views
+    // of one image).
+    Json image = extent.size
+                     ? Json{{"width", (*extent.size)[0]}, {"height", (*extent.size)[1]}}
+                     : Json{{"extent_scale", extent.output_scale}};
+    if (extent.layers > 1) image["layers"] = extent.layers;
+    return image;
 }
 
 const std::vector<FramePlanViewAxis> *GraphCanvasModel::familyAxes(std::string_view family) const {

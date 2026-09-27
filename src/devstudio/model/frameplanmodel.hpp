@@ -1,5 +1,8 @@
 #pragma once
 
+#include <nlohmann/json_fwd.hpp>
+
+#include <array>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -235,6 +238,29 @@ struct FramePlanLoop {
     bool operator==(const FramePlanLoop &) const = default;
 };
 
+// VF-2: the size a secondary view family's passes draw at, as get_frame_plan
+// writes it on each node of that family -- family_extent ([w, h] for a
+// fixed-size target, {"output_scale": s} for one relative to the output),
+// family_layers, and family_extent_pass, the pass whose target sets it (the
+// one VF-1's render.view_family_extent_mismatch@1 names as expected_pass).
+// Absent on $main, and for a family no raster pass of which writes a
+// declared target.
+struct FramePlanFamilyExtent {
+    // Set for a fixed size; empty for one relative to the output.
+    std::optional<std::array<std::uint64_t, 2>> size;
+    double output_scale = 1.0;
+    std::uint64_t layers = 1;
+    std::string pass;
+
+    bool operator==(const FramePlanFamilyExtent &) const = default;
+};
+
+// Reads those three keys off one get_frame_plan node (`context` names it in
+// the error). Nothing when the node carries no family_extent; throws
+// std::runtime_error when it carries one Studio cannot read.
+[[nodiscard]] std::optional<FramePlanFamilyExtent> framePlanFamilyExtent(
+    const nlohmann::json &node, std::string_view context);
+
 struct FramePlanNode {
     std::string name;
     std::string authored_name;
@@ -254,6 +280,8 @@ struct FramePlanNode {
     // axes ($main, planar, an author's family) and for a plan that predates
     // view_axes.
     std::vector<FramePlanViewAxis> view_axes;
+    // VF-2: the size the node's secondary view family draws at.
+    std::optional<FramePlanFamilyExtent> family_extent;
     // LP-4a: the frame ran no view the node's view_select matches (the
     // engine's execution trace says so); the node recorded nothing.
     bool no_selected_view = false;

@@ -415,9 +415,6 @@ class GraphCanvasModel {
         // LP-4e: get_frame_plan {loop_elements}, one more page of a
         // draw_loop's materials.
         LoopPage,
-        // LP-4f2: get_render_authoring_context, for its render_targets[]
-        // only (the extent a view family's passes draw at).
-        Targets,
     };
     struct PendingRequest {
         std::uint64_t id = 0;
@@ -551,12 +548,9 @@ class GraphCanvasModel {
     std::vector<GraphCanvasViewFamily> view_families_;
     std::map<std::string, GraphCanvasViewFamily, std::less<>> plan_node_views_;
     std::vector<std::string> plan_targets_;
-    // LP-4f2: per view family (not $main), what its first raster pass of the
-    // plan writes (declaration order) -- the pass whose extent the engine
-    // holds the family's others to (VF-1) -- and the composed render targets'
-    // declarations, by name, read off get_render_authoring_context.
-    std::map<std::string, std::vector<std::string>, std::less<>> family_reference_writes_;
-    std::map<std::string, nlohmann::json, std::less<>> render_targets_;
+    // LP-4f3 (VF-2): per secondary view family, the size the engine holds
+    // its passes to, as the plan's family_extent on the family's nodes says.
+    std::map<std::string, FramePlanFamilyExtent, std::less<>> family_extents_;
     void readPlanViews(const nlohmann::json &plan);
     [[nodiscard]] const std::vector<FramePlanViewAxis> *familyAxes(std::string_view family) const;
     void requestLoopReports();
@@ -949,11 +943,12 @@ class GraphCanvasModel {
     // (its over.view_axis.family); empty for any other scope.
     [[nodiscard]] std::string viewAxisFamilyOf(std::string_view scope) const;
     // The size a new image drawn in `family` is made at, as render.image
-    // parameters: {width, height[, layers]} when the family's first raster
-    // pass writes a fixed-size target, {extent_scale} when it writes one
-    // relative to the screen. Nothing when the plan or the targets do not
-    // say (the image is made as before, and a mismatch is the engine's to
-    // name: render.view_family_extent_mismatch@1).
+    // parameters, from the frame plan's family_extent / family_layers on the
+    // family's nodes (LP-4f3, VF-2): {width, height[, layers]} for a fixed
+    // size, {extent_scale[, layers]} for one relative to the screen. Nothing
+    // when the plan carries no family_extent for it (the image is made as
+    // before, and a mismatch is the engine's to name:
+    // render.view_family_extent_mismatch@1).
     [[nodiscard]] std::optional<nlohmann::json> viewFamilyImageExtent(
         std::string_view family) const;
 

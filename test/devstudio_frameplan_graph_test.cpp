@@ -11958,4 +11958,75 @@ TEST_CASE("LP-4f2 a feature's group offers its loop version when the Features ta
         CHECK(entry->toolTip() == QStringLiteral("Apply the pending edit first."));
     }
 }
+
+// --- LP-4f3: the size a secondary view family draws at, as get_frame_plan
+// says it (VF-2's family_extent, family_layers, family_extent_pass).
+
+TEST_CASE("LP-4f3 the model reads family_extent, and the details say the family's size",
+          "[devstudio][frame-plan][lp4f3][vf2]") {
+    (void)application();
+    Json wire = lp4bWire();
+    for (auto &node : wire["nodes"]) {
+        const auto name = node.at("name").get<std::string>();
+        if (name == "wp343_mixed_a") {
+            node["family_extent"] = Json::array({256, 256});
+            node["family_layers"] = 6;
+            node["family_extent_pass"] = "cube_capture_geometry";
+        } else if (name == "wp343_mixed_b") {
+            node["family_extent"] = {{"output_scale", 1.0}};
+            node["family_layers"] = 1;
+            node["family_extent_pass"] = "shadow_depth";
+        }
+    }
+    const auto model = buildFramePlanModel(wire.dump());
+    const auto &a = vi3aNode(model, "wp343_mixed_a");
+    const auto &b = vi3aNode(model, "wp343_mixed_b");
+    const auto &c = vi3aNode(model, "wp343_mixed_c");
+
+    // The model reads them: a fixed size with its layers, one relative to
+    // the output, and none on $main.
+    REQUIRE(a.family_extent.has_value());
+    CHECK(a.family_extent->size == std::array<std::uint64_t, 2>{256, 256});
+    CHECK(a.family_extent->layers == 6);
+    CHECK(a.family_extent->pass == "cube_capture_geometry");
+    REQUIRE(b.family_extent.has_value());
+    CHECK_FALSE(b.family_extent->size.has_value());
+    CHECK(b.family_extent->output_scale == 1.0);
+    CHECK(b.family_extent->layers == 1);
+    CHECK_FALSE(c.family_extent.has_value());
+
+    // The details line, written as VF-1's refusal writes an extent.
+    CHECK(framePlanFamilyExtentLine(a) ==
+          "Family size: 256×256 ×6 layers (from cube_capture_geometry)");
+    CHECK(framePlanFamilyExtentLine(b) == "Family size: screen ×1.0 (from shadow_depth)");
+    CHECK(framePlanFamilyExtentLine(c).empty());
+
+    SECTION("the node's details carry it") {
+        EmbeddedViewport viewport;
+        FramePlanWidget widget{&viewport};
+        widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+        QApplication::processEvents();
+        QStringList sizes;
+        for (auto *tree : widget.findChildren<QTreeWidget *>())
+            for (const auto *item : tree->findItems(QStringLiteral("Family size"),
+                                                    Qt::MatchExactly | Qt::MatchRecursive, 1))
+                sizes.push_back(item->text(2));
+        sizes.sort();
+        CHECK(sizes == QStringList{QStringLiteral("256×256 ×6 layers (from cube_capture_geometry)"),
+                                   QStringLiteral("screen ×1.0 (from shadow_depth)")});
+    }
+
+    SECTION("a family_extent Studio cannot read is refused with the node named") {
+        for (auto &node : wire["nodes"])
+            if (node.at("name") == "wp343_mixed_a") node["family_extent"] = Json::array({256});
+        std::string refusal;
+        try {
+            (void)buildFramePlanModel(wire.dump());
+        } catch (const std::exception &error) {
+            refusal = error.what();
+        }
+        INFO(refusal);
+        CHECK(refusal.find("family_extent") != std::string::npos);
+    }
+}
 } // namespace PelicanStudio

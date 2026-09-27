@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "loop_view_axis",
-  "description": "LP-4f1 and LP-4f2: a loop over the cube's faces, built on the Graph tab with Studio's controls only. The fixture carries the cube_capture feature, so the frame plan lists passes of the $capture/cube family with the face axis. Add loop puts a loop over a new, empty body in the root; its Loop fields' Over is set to View axis, and the family and the axis are chosen from what the frame plan lists ($capture/cube, face) -- nothing typed. Its count is the axis's length, read only (x6 (face)), and the zone's heading says so. With the zone picked, Add fullscreen pass puts a pass in the body, drawing into an image made at the size the cube's family draws at (LP-4f2: 256 x 256, six layers, read off the family's first raster pass's target -- the engine refuses a family whose passes draw at two sizes, render.view_family_extent_mismatch@1), in the loop's family. The pass's View field offers Each element (loop), which writes view_select face {$expr: element}. The engine expands the loop six times, one copy a face: the frame plan's copies run for faces 0 to 5, and the Frame Plan shows them as one group of six.",
+  "description": "LP-4f1, LP-4f2 and LP-4f3: a loop over the cube's faces, built on the Graph tab with Studio's controls only. The fixture carries the cube_capture feature, so the frame plan lists passes of the $capture/cube family with the face axis. Add loop puts a loop over a new, empty body in the root; its Loop fields' Over is set to View axis, and the family and the axis are chosen from what the frame plan lists ($capture/cube, face) -- nothing typed. Its count is the axis's length, read only (x6 (face)), and the zone's heading says so. With the zone picked, Add fullscreen pass puts a pass in the body, drawing into an image made at the size the cube's family draws at (LP-4f3: 256 x 256, six layers, as the frame plan's family_extent and family_layers on the family's nodes say (VF-2) -- the engine refuses a family whose passes draw at two sizes, render.view_family_extent_mismatch@1), in the loop's family. The pass's View field offers Each element (loop), which writes view_select face {$expr: element}. The engine expands the loop six times, one copy a face: the frame plan's copies run for faces 0 to 5, and the Frame Plan shows them as one group of six.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -158,7 +158,7 @@
       "retry_ms": 60000
     },
     {
-      "label": "LP-4f2: the image is the size the cube's family draws at -- 256 wide, as its first pass's target",
+      "label": "LP-4f3: the image is the size the cube's family draws at -- 256 wide, the frame plan's family_extent",
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},

@@ -1840,6 +1840,18 @@ std::string framePlanNoSelectedViewNotice(const FramePlanNode &node) {
            " matches view_select this frame.";
 }
 
+std::string framePlanFamilyExtentLine(const FramePlanNode &node) {
+    if (!node.family_extent) return {};
+    const auto &extent = *node.family_extent;
+    // The extent as VF-1's refusal writes it.
+    const auto json = extent.size ? nlohmann::json::array({(*extent.size)[0], (*extent.size)[1]})
+                                  : nlohmann::json{{"output_scale", extent.output_scale}};
+    auto line = "Family size: " + viewFamilyExtentText(json);
+    if (extent.layers > 1) line += " ×" + std::to_string(extent.layers) + " layers";
+    if (!extent.pass.empty()) line += " (from " + extent.pass + ")";
+    return line;
+}
+
 // --- LP-4b.
 
 std::string framePlanViewValueText(const std::vector<FramePlanViewAxis> &axes,

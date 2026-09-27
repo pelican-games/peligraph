@@ -650,6 +650,13 @@ std::string framePlanViewSelectLine(
 // that ran.
 std::string framePlanNoSelectedViewNotice(const FramePlanNode &node);
 
+// LP-4f3 (VF-2): the details line of a node of a secondary view family, the
+// size the engine holds the family's passes to, written as VF-1's refusal
+// writes an extent -- "Family size: 256×256 ×6 layers (from
+// cube_capture_geometry)", "Family size: screen ×1.0 (from bloom_down)".
+// Empty for a node whose plan entry carries no family_extent ($main).
+std::string framePlanFamilyExtentLine(const FramePlanNode &node);
+
 // --- LP-4b: the View field, drawn from the engine's view_axes (LP-Va2).
 
 // A value as the field, the menu and the canvas name it: "2 (+Y)" when the

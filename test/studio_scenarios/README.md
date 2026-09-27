@@ -267,6 +267,57 @@ A graph node can have an input and an output of one name (a fullscreen pass's
 `graph_socket#<id>/in:<port>` and `.../out:<port>` do (resolving only; `list`
 publishes the plain name). `loop_zone_wire` is the example.
 
+A picked loop's fields are `pelican.graphCanvasLoop.<field>`, and a branch
+table row's are `pelican.graphCanvasLoop.branch<i>.<column>` (`i` counts from
+0; the last row is the else). LP-4f1 made a loop run over a view axis and took
+the typing out of the fields while the count is known; these are the names it
+added (combos are `select`ed by the label a person reads):
+
+| name | what it is |
+|------|------------|
+| `pelican.graphCanvasLoop.over` | Over: `Count` or `View axis` |
+| `pelican.graphCanvasLoop.viewFamily` | the view family a view-axis loop runs over, from the frame plan's families that have axes |
+| `pelican.graphCanvasLoop.viewAxis` | the axis of that family: one element per view along it |
+| `pelican.graphCanvasLoop.viewCount` | the count, which is the axis's length (read only): `×6 (face)` |
+| `pelican.graphCanvasLoop.viewAxisNote` | the note under the View row: which families are listed, or why an axis cannot be chosen (one decided each frame) |
+| `pelican.graphCanvasLoop.countTarget` | behind the count's ƒ: a render target of the frame plan |
+| `pelican.graphCanvasLoop.insertMipLevels`, `.insertLayers` | put `mip_levels_of("<target>")` / `layers_of("<target>")` into the count's expression |
+| `pelican.graphCanvasLoop.whereChecks` | Where's checks, one per element while the count is known (up to 64) |
+| `pelican.graphCanvasLoop.whereValue<i>` | the check for element `i`; on a view-axis loop its text carries the axis's label (`2 (+Y)`) |
+| `pelican.graphCanvasLoop.branch<i>.value` | `element =`'s element: a spin while the count is known |
+| `pelican.graphCanvasLoop.branch<i>.checks`, `.check<j>` | `element in` / `not in`: a check per element, and the one for element `j` |
+| `pelican.graphCanvasLoop.fields` | the form and the rows together, switched off while an edit's round trip is under way |
+| `pelican.graphCanvasPerIteration.element` | the per-iteration dialog's Element: `element`, `element - 1`, `element + 1` or `Custom…` |
+| `pelican.graphCanvasPerIteration.element.custom` | the expression Custom… takes |
+| `pelican.graphCanvasView::graph_zone_label#<loop>/axis<i>` | a view-axis zone's label for element `i`, in the zone's heading (`+X` ... `-Z` for a cube's faces) |
+
+A render node picked on the Graph tab shows its View field under the Loop
+fields, `pelican.graphCanvasRender` (the Pass Editor's field, with this prefix):
+
+| name | what it is |
+|------|------------|
+| `pelican.graphCanvasRender.heading` | `View (<family>)`, or `View (<family>) · in loop <loop>` in a loop's body |
+| `pelican.graphCanvasRender.view` | the field |
+| `pelican.graphCanvasRender.view.<axis>` | one axis: a combo of `All views`, its values and, on the axis of the loop the node's body runs over, `Each element (loop)`; a label for an axis decided each frame |
+| `pelican.graphCanvasRender.view.<axis>.remove`, `.warning` | the Remove button of an axis the family no longer has, and the warning under a row |
+
+With a view-axis loop's zone picked, `pelican.graphCanvas.addFullscreenPass`
+puts the pass in the loop's family and makes its image at the size the frame
+plan gives that family (`family_extent`, LP-4f3). `loop_view_axis` is the
+example.
+
+LP-4f2 replaces a feature with its shipped loop version:
+
+| name | what it is |
+|------|------------|
+| `pelican.renderFeatures.replaceWithLoopVersion` | the QAction acting on the feature picked in Render Features (the row's right-click fires it too) |
+| `pelican.renderFeatures.replaceWithLoop` | the button under the list that fires it; shown only for a feature a template decomposes |
+| `pelican.renderFeatures.replaceConfirm` | the confirmation: what the template does, and that Undo takes it back |
+| `pelican.renderFeatures.replaceConfirm.ok`, `.cancel` | its Replace and Cancel |
+| `pelican.framePlan.replaceWithLoopVersion` | the Frame Plan's entry on a feature's group; Render Features comes forward and asks the same |
+
+`graph_template_bloom` is the example.
+
 The editor the canvas opens over a pill or a heading is a real widget carried by
 a drawn item, and is named the same way:
 `pelican.graphCanvasView::graph_inline_editor#left/gain`. `type`, `key` and
