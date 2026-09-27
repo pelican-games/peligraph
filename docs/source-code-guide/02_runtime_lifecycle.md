@@ -28,16 +28,16 @@ sequenceDiagram
 
 ### 段階A: `main()` でプロセス条件を確定
 
-入口は [`src/player/main.cpp` の `main()`](../../src/player/main.cpp#L663) です。先に [`parseLaunchConfig()`](../../src/player/main.cpp#L333) が次を決めます。
+入口は [`src/player/main.cpp` の `main()`](../../src/player/main.cpp#L703) です。先に [`parseLaunchConfig()`](../../src/player/main.cpp#L345) が次を決めます。
 
 - windowedかheadlessか
 - RPCを使うか（`--rpc`）
 - headlessの解像度・フレーム数・固定FPS
-- headlessの開始時刻（`--start-time`、[引数宣言](../../src/player/main.cpp#L356)。後述）
+- headlessの開始時刻（`--start-time`、[引数宣言](../../src/player/main.cpp#L373)。後述）
 - project rootと`project.json`
 - asset検証をstrictにするか
 - render出力、frame plan dump（`--dump-frame-plan`）
-- Vulkanのdebugオブジェクト名とコマンドラベル（`--gpu-labels` → [`EngineLaunchConfig::gpu_labels`](../../src/core/launchconfig.hpp#L82)）
+- Vulkanのdebugオブジェクト名とコマンドラベル（`--gpu-labels` → [`EngineLaunchConfig::gpu_labels`](../../src/core/launchconfig.hpp#L93)）
 - Vulkan validation + synchronization validation（`--vulkan-validation=off|on`。未指定は `_DEBUG` だけ ON）
 - sequence/VAT再生とcamera override
 - XRモード（`--xr off|auto|on`）
@@ -45,15 +45,15 @@ sequenceDiagram
 - 入力の記録/再生（`--record-input` / `--replay` / `--input-profile`）
 - camera bake（`--bake-camera-output`、headless + replay 必須）
 
-> **設計決定:** `--rpc` は `--headless` を要求しません（WP156。以後この文書に出る `WP<番号>` は work package = 台帳 [`docs/implementation_plan.md`](../implementation_plan.md) が「独立に依頼できる単位」として採番した作業の番号で、`-fix` / `a` / `b` は同じ作業の分割・追補です。[用語集](../manual/14_glossary.md)）。ヘルプ文言そのものが現在の契約です — `enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)`（[`main.cpp`](../../src/player/main.cpp#L340)）。headlessではRPCがフレーム進行を所有し、windowedではフレーム境界でだけdispatchされます。両者の違いは §2.4 で分解します。
+> **設計決定:** `--rpc` は `--headless` を要求しません（WP156。以後この文書に出る `WP<番号>` は work package = 台帳 [`docs/implementation_plan.md`](../implementation_plan.md) が「独立に依頼できる単位」として採番した作業の番号で、`-fix` / `a` / `b` は同じ作業の分割・追補です。[用語集](../manual/14_glossary.md)）。ヘルプ文言そのものが現在の契約です — `enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)`（[`main.cpp`](../../src/player/main.cpp#L352)）。headlessではRPCがフレーム進行を所有し、windowedではフレーム境界でだけdispatchされます。両者の違いは §2.4 で分解します。
 
-`--project` がなければ、実行ファイルの祖先から `projects/example/project.json` を探索します（[`configureImplicitProject()`](../../src/player/main.cpp#L259)）。明示projectなら、directoryまたは`project.json`そのものを受け付けます（[`configureExplicitProject()`](../../src/player/main.cpp#L274)）。
+`--project` がなければ、実行ファイルの祖先から `projects/example/project.json` を探索します（[`configureImplicitProject()`](../../src/player/main.cpp#L271)）。明示projectなら、directoryまたは`project.json`そのものを受け付けます（[`configureExplicitProject()`](../../src/player/main.cpp#L286)）。
 
 #### `--start-time`: 秒はここでフレーム番号になる ✅実装済み（O-1）
 
 `--start-time <秒>` は「その時刻から `--frames` 枚を出す」オフライン出力用の引数です。押さえる点は3つあります。
 
-**engineは frame 番号しか受け取りません。** 変換は [`parseStartFrame()`](../../src/player/main.cpp#L314) 1箇所だけで、`llround(seconds * fps)` によって固定ステップのタイムライン上のフレーム番号に落ちます（フレームとフレームの間の時刻は近い方のフレームへ丸められ、engineへ渡ることはありません）。結果は [`EngineLaunchConfig::start_frames`](../../src/core/launchconfig.hpp#L76) に入ります。非常に大きな秒数では `llround` が溢れますが、これは台帳 O-1 が既知の穴として記録している範囲で、実用的な入力では起きません。
+**engineは frame 番号しか受け取りません。** 変換は [`parseStartFrame()`](../../src/player/main.cpp#L326) 1箇所だけで、`llround(seconds * fps)` によって固定ステップのタイムライン上のフレーム番号に落ちます（フレームとフレームの間の時刻は近い方のフレームへ丸められ、engineへ渡ることはありません）。結果は [`EngineLaunchConfig::start_frames`](../../src/core/launchconfig.hpp#L87) に入ります。非常に大きな秒数では `llround` が溢れますが、これは台帳 O-1 が既知の穴として記録している範囲で、実用的な入力では起きません。
 
 **失敗は全部ひとつの名前になります。** argparse に `double` としてscanさせず、テキストのまま `std::stod` で読んで「文字を全部消費したか・有限か・非負か」を自分で確かめます（[検査](../../src/player/main.cpp#L323)）。綴り間違いも負の時刻も同じ `offline.time_invalid@1` で、理由は「そんなフレームは存在しない」の一言に畳めるからです。
 
@@ -73,30 +73,30 @@ sequenceDiagram
 
 ### 段階C: `PelicanCore::run()` でruntimeを組み立てる
 
-[`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L83) は短いですが、初期化の正規順序を定義しています。
+[`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L84) は短いですが、初期化の正規順序を定義しています。
 
 1. ローカルな `FastModuleContainer` と `RuntimeTeardownGuard` を生成。
 2. `StartupMetrics` を開始。
 3. **XR activationを決定**: [`resolveXrActivation()`](../../src/core/xractivation.hpp) がheadless/RPC/replay等のforced-offとOpenXR discovery hookから `launch_config.xr_active` を確定。
 4. constructorへ渡されたsettings JSONを`ProjectSource`の上書きsourceへ設定し、[`watch::ReloadGate.configureFromLaunch()`](../../src/core/watch/reloadgate.hpp) を呼ぶ。
-5. [`recoverRenderConfigDocumentTransaction()`](../../src/core/userpublic/pelican_core.cpp#L108) — プロセスのクラッシュをまたいだ project 文書の transaction を、`ProjectBasicConfig` や `Renderer` がdocument setのどれかを観測する**前**に決着させます。この transaction は project 文書全般のもので、rendering config の編集と `project migrate` の apply が共用します(MG-1 で実体が [`recoverProjectDocumentTransaction()`](../../src/project/projectdocumenttransaction.cpp#L1182) として `pelican_project` へ移り、ここで呼ぶ名前は [editor 側の別名](../../src/core/communication/renderconfigtransaction.hpp#L36) として残りました。ディレクトリと形式は変わっていません)。なお `pelican_player` は project.json を持つ project を開くとき、`PelicanCore::run()` より前、`parseProjectEnvelopeText` の手前の MG-1 の入口([`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563)、[呼ぶ場所](../../src/player/main.cpp#L688))で同じ復旧を先に一度走らせます。この段の復旧はそのあとで、ふつうは片付けるものが残っていません。ここでいう document set は「rendering config の root 文書と、それが参照する feature JSON 断片を、1つのtransactionでまとめて書き換える単位」です（[`RenderConfigCandidateDocumentSet`](../../src/project/renderconfigdocument.hpp#L122)。ヘッダのコメントが `A render-authoring candidate is a document set, not a replacement string for the root document.` と書いています）。root だけ新版で断片が旧版、という中途半端な組み合わせを誰にも観測させないために、この復旧が最初に来ます。
+5. [`recoverRenderConfigDocumentTransaction()`](../../src/core/userpublic/pelican_core.cpp#L109) — プロセスのクラッシュをまたいだ project 文書の transaction を、`ProjectBasicConfig` や `Renderer` がdocument setのどれかを観測する**前**に決着させます。この transaction は project 文書全般のもので、rendering config の編集と `project migrate` の apply が共用します(MG-1 で実体が [`recoverProjectDocumentTransaction()`](../../src/project/projectdocumenttransaction.cpp#L1182) として `pelican_project` へ移り、ここで呼ぶ名前は [editor 側の別名](../../src/core/communication/renderconfigtransaction.hpp#L36) として残りました。ディレクトリと形式は変わっていません)。なお `pelican_player` は project.json を持つ project を開くとき、`PelicanCore::run()` より前、`parseProjectEnvelopeText` の手前の MG-1 の入口([`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563)、[呼ぶ場所](../../src/player/main.cpp#L728))で同じ復旧を先に一度走らせます。この段の復旧はそのあとで、ふつうは片付けるものが残っていません。ここでいう document set は「rendering config の root 文書と、それが参照する feature JSON 断片を、1つのtransactionでまとめて書き換える単位」です（[`RenderConfigCandidateDocumentSet`](../../src/project/renderconfigdocument.hpp#L122)。ヘッダのコメントが `A render-authoring candidate is a document set, not a replacement string for the root document.` と書いています）。root だけ新版で断片が旧版、という中途半端な組み合わせを誰にも観測させないために、この復旧が最初に来ます。
    復旧が読む「このtransactionはcommit済みか」の答えは、`manifest.json` の中のフィールドではなく **`committed` という別ファイルが在るかどうか**です（[`committedMarkerName`](../../src/project/projectdocumenttransaction.cpp#L413)、判定は [`transactionDecision()`](../../src/project/projectdocumenttransaction.cpp#L498)）。commit側は `committed.next` を書いてから [`linkExclusive()`](../../src/project/projectdocumenttransaction.cpp#L306) で `committed` という**それまで存在しなかった名前**を作ります。生きているファイルを上書きしないので、「途中まで書けた commit 済み印」という状態が原理的に作れません（R1-2）。marker は自分が属する manifest の digest を持っていて、`manifest.json` が別物にすり替わっていれば [`render_authoring_manifest_mismatch@1`](../../src/project/projectdocumenttransaction.cpp#L510) で名前付きに落ちます —— 黙って rollback すると commit 済みの編集を消す破壊操作になるためです。旧形式(marker を持たず、`manifest.json` の `status: "committed"` で決定を記録していた形)のディレクトリは、MG-2a から**読みません**。[`rejectLegacyTransactionDirectory()`](../../src/project/projectdocumenttransaction.cpp#L488) が判定の先頭で `render_config.legacy_transaction_dir@1`(error_fields は `path`)を投げ、rollback も committed としての片付けもせずにディレクトリを残します。この段で投げられると `PelicanCore::run()` の catch が `Pelican fatal error` として記録し、起動はそこで終わります(player では先に MG-1 の入口の復旧が同じ例外に当たるので、stderr に 1 行出して exit 1 で終わります。コードを読んで確認、実行では未確認)。以前はこの形を committed として読む互換を残していましたが(旧形式の dir が残った project が二度と commit できなくなるのを避けるため)、MG-2a で「黙って読む」から「名前付きで止める」へ替わりました。片付けの手順は [manual 第3章 §3.1](../manual/03_project_format.md#31-プロジェクトとは) にあります。
 6. `Persistence`からsettingsを読み、audio設定を適用。
-7. [`configureRayLayoutModeBeforeComponentRegistration()`](../../src/core/userpublic/pelican_core.cpp#L38) — rendering configから ray layout の意味モードを求めて [`RayLayoutRuntimeState`](../../src/core/shader/raygrouplayout.hpp#L168) へ固定します。意味モードは `LegacyNoLayout` / `LayoutV3` の2値で（[`RayLayoutSemanticMode`](../../src/core/shader/raygrouplayout.hpp#L74)）、ray layout 文書が無い（`LegacyNoLayout`）かある（`LayoutV3`）かだけを表します。MG-2a より前は版ごとの `LayoutV1Q` / `LayoutV2` もありましたが、layout は version 3 だけを読むようになり、版差を運ぶ値とフィールド（`RayGroupLayout::version` / `semantic_mode` など）は消えました。どの値になるかは次の3つの判定だけで決まります。(1) rendering config の `rendering` 節に `ray_group_layout` key が無ければ(root は MG-2b から `pelican.graph` だけで、それ以外は [`RenderConfigLegacyRoot`](../../src/core/shader/raygrouplayout.cpp#L1464) で拒否) [`loadRayTracingProjectConfig()` が空を返し](../../src/core/shader/raygrouplayout.cpp#L1471)、[`rayLayoutSemanticMode()` の `config == nullptr` 枝](../../src/core/shader/raygrouplayout.cpp#L762)が `LegacyNoLayout` を返します（`ray_bindings` だけ書くと `pelican.ray_tracing.bindings_without_layout@1` で拒否）。(2) key があれば参照先の layout 文書を [`parseRayGroupLayout()`](../../src/core/shader/raygrouplayout.cpp#L822) が読み、読めれば [`rayLayoutSemanticMode()` の layout 有りの枝](../../src/core/shader/raygrouplayout.cpp#L763)が `LayoutV3` を返します。(3) 読めないのは2通りです。schema 名が違うか `version` が整数でなければ [schema エラー](../../src/core/shader/raygrouplayout.cpp#L838)、整数でも 3 以外(1 と 2 を含む)なら [`pelican.ray_group_layout.version_unsupported@1`](../../src/core/shader/raygrouplayout.cpp#L845) で拒否されます。旧版を旧い意味で読む分岐は残っていないので、version 1 / 2 の layout は version 3 の形(各 group に `type`)へ書き直すしかありません。組み込みComponent登録より前に置くのは、`pelican_ray_instance` の登録可否がこのモードで決まるためです（[`builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L177) が真になるのは `LayoutV3` のとき、つまり layout があるとき。§3.11）。プロセス寿命の間このモードは変えられません（変更しようとすると `pelican.ray_layout_mode_change_requires_restart@1`）。
+7. [`configureRayLayoutModeBeforeComponentRegistration()`](../../src/core/userpublic/pelican_core.cpp#L39) — rendering configから ray layout の意味モードを求めて [`RayLayoutRuntimeState`](../../src/core/shader/raygrouplayout.hpp#L168) へ固定します。意味モードは `LegacyNoLayout` / `LayoutV3` の2値で（[`RayLayoutSemanticMode`](../../src/core/shader/raygrouplayout.hpp#L74)）、ray layout 文書が無い（`LegacyNoLayout`）かある（`LayoutV3`）かだけを表します。MG-2a より前は版ごとの `LayoutV1Q` / `LayoutV2` もありましたが、layout は version 3 だけを読むようになり、版差を運ぶ値とフィールド（`RayGroupLayout::version` / `semantic_mode` など）は消えました。どの値になるかは次の3つの判定だけで決まります。(1) rendering config の `rendering` 節に `ray_group_layout` key が無ければ(root は MG-2b から `pelican.graph` だけで、それ以外は [`RenderConfigLegacyRoot`](../../src/core/shader/raygrouplayout.cpp#L1464) で拒否) [`loadRayTracingProjectConfig()` が空を返し](../../src/core/shader/raygrouplayout.cpp#L1471)、[`rayLayoutSemanticMode()` の `config == nullptr` 枝](../../src/core/shader/raygrouplayout.cpp#L762)が `LegacyNoLayout` を返します（`ray_bindings` だけ書くと `pelican.ray_tracing.bindings_without_layout@1` で拒否）。(2) key があれば参照先の layout 文書を [`parseRayGroupLayout()`](../../src/core/shader/raygrouplayout.cpp#L822) が読み、読めれば [`rayLayoutSemanticMode()` の layout 有りの枝](../../src/core/shader/raygrouplayout.cpp#L763)が `LayoutV3` を返します。(3) 読めないのは2通りです。schema 名が違うか `version` が整数でなければ [schema エラー](../../src/core/shader/raygrouplayout.cpp#L838)、整数でも 3 以外(1 と 2 を含む)なら [`pelican.ray_group_layout.version_unsupported@1`](../../src/core/shader/raygrouplayout.cpp#L845) で拒否されます。旧版を旧い意味で読む分岐は残っていないので、version 1 / 2 の layout は version 3 の形(各 group に `type`)へ書き直すしかありません。組み込みComponent登録より前に置くのは、`pelican_ray_instance` の登録可否がこのモードで決まるためです（[`builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L177) が真になるのは `LayoutV3` のとき、つまり layout があるとき。§3.11）。プロセス寿命の間このモードは変えられません（変更しようとすると `pelican.ray_layout_mode_change_requires_restart@1`）。
 8. [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) で組み込みComponent/Systemを登録。
-9. **[`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L917) でgame DLLをロード**（WP110系列。§2.11）。失敗しても`run()`は続行し、`error_code` と `error_fields` を添えて [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L122) するだけです。保存された失敗はRPC `status` から読めます（§2.11）。
-10. **`(void)GET_MODULE(Renderer)`**（[この1行](../../src/core/userpublic/pelican_core.cpp#L130)） — render graphの検証と公開を、scene loadのprepareが `ModelAssetContainer` を実体化してmodelをuploadするより**前**に済ませます（WP380a-fix。§3.8）。
-11. `ProjectBasicConfig.defaultSceneId()` のsceneを [`SceneLoadRoot::startup`](../../src/core/userpublic/pelican_core.cpp#L135) の `Borrowed` requestで即時ロード（§3.5 の 3）。`Borrowed` は scene load 要求の2種別のうち「いま commit 済みの projection をそのまま借りて読む」側で、新しい document を持ち込む `Owned`（import 経路）と対です（[`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L222)）。
+9. **[`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L917) でgame DLLをロード**（WP110系列。§2.11）。失敗しても`run()`は続行し、`error_code` と `error_fields` を添えて [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L123) するだけです。保存された失敗はRPC `status` から読めます（§2.11）。
+10. **`(void)GET_MODULE(Renderer)`**（[この1行](../../src/core/userpublic/pelican_core.cpp#L131)） — render graphの検証と公開を、scene loadのprepareが `ModelAssetContainer` を実体化してmodelをuploadするより**前**に済ませます（WP380a-fix。§3.8）。
+11. `ProjectBasicConfig.defaultSceneId()` のsceneを [`SceneLoadRoot::startup`](../../src/core/userpublic/pelican_core.cpp#L138) の `Borrowed` requestで即時ロード（§3.5 の 3）。`Borrowed` は scene load 要求の2種別のうち「いま commit 済みの projection をそのまま借りて読む」側で、新しい document を持ち込む `Owned`（import 経路）と対です（[`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L222)）。
 12. `ProjectMaterialAssetContainer` と `ModelAssetContainer` を明示的に生成（並列prepareのcommitを起動スレッドで実施）。
 13. [`watch::ReloadService.setup()`](../../src/core/watch/reloadservice.hpp#L196) でwatcherのlive inventoryを種付け。
 14. `Loop::run()`へ入る。
 15. loop終了後、Vulkan deviceをidleまで待つ。
-16. [`internal::runTerminalShutdown(teardown)`](../../src/core/userpublic/pelican_core.cpp#L64) — `teardown.run()` でruntime資源を順序付き解放し、続けて `shutdownConfiguredGameLogic()`。
+16. [`internal::runTerminalShutdown(teardown)`](../../src/core/userpublic/pelican_core.cpp#L172) — `teardown.run()` でruntime資源を順序付き解放し、続けて `shutdownConfiguredGameLogic()`。
 17. 関数を抜けるとmodule containerがmoduleを生成逆順に破棄。
 
-16番はtry-catchの**外**にあります（[呼び出し箇所](../../src/core/userpublic/pelican_core.cpp#L169)）。この2手を [`terminalshutdown.hpp`](../../src/core/terminalshutdown.hpp#L10) の `noexcept` 関数1本にまとめてあるのはWP379aで、ヘッダのコメントが規範です — playerとlifecycleの受け入れテストが**同じ終了順序**を共有します（テスト側の呼び出しは [`raytracing_rt3_1_production_test.cpp` 内](../../test/raytracing_rt3_1_production_test.cpp#L4430)）。順序が2箇所に書かれていれば、テストだけが正しい順で終わる状態を作れてしまいます。
+16番はtry-catchの**外**にあります（[呼び出し箇所](../../src/core/userpublic/pelican_core.cpp#L172)）。この2手を [`terminalshutdown.hpp`](../../src/core/terminalshutdown.hpp#L10) の `noexcept` 関数1本にまとめてあるのはWP379aで、ヘッダのコメントが規範です — playerとlifecycleの受け入れテストが**同じ終了順序**を共有します（テスト側の呼び出しは [`raytracing_rt3_1_production_test.cpp` 内](../../test/raytracing_rt3_1_production_test.cpp#L4430)）。順序が2箇所に書かれていれば、テストだけが正しい順で終わる状態を作れてしまいます。
 
-`RuntimeTeardownGuard` は関数冒頭（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L85)）で `RuntimeTeardownMode::terminal_shutdown` として作られ、`FastModuleContainer::beginShutdown()` はguardの外ではなく [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) の内部で、8段階の解放へ入る直前に呼ばれます（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L158)）。したがって初期化途中で例外が出ても、同じ「新規module生成を閉じてから順序解放」という経路を通ります。
+`RuntimeTeardownGuard` は関数冒頭（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L86)）で `RuntimeTeardownMode::terminal_shutdown` として作られ、`FastModuleContainer::beginShutdown()` はguardの外ではなく [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) の内部で、8段階の解放へ入る直前に呼ばれます（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L158)）。したがって初期化途中で例外が出ても、同じ「新規module生成を閉じてから順序解放」という経路を通ります。
 
 標準例外も非標準例外もここで捕捉され、ログを出して`false`を返します。したがって、playerの終了コードは `pl.run() ? 0 : 1` です。
 
@@ -336,11 +336,11 @@ offline: start_time=<秒> start_frame=<番号> replay=<枚数> frames=<枚数>  
 
 ### headless RPC
 
-RPCモードでは通常のfor-loopへ入らず、[`runEngineRpcServer(std::cin, std::cout)`](../../src/core/appflow/loop.cpp#L814) を呼びます。フレーム進行はクライアントの`step_frame`要求が所有します。stdoutはNDJSON protocol（newline-delimited JSON — 1行に1個のJSON値を置く形式。ここでは1行が1リクエストまたは1レスポンスにあたるため、ログを1行でも混ぜると相手のparseが壊れます）専用なので、[`PelicanCore` constructor](../../src/core/userpublic/pelican_core.cpp#L78) がloggerをprotocol対応で初期化します。
+RPCモードでは通常のfor-loopへ入らず、[`runEngineRpcServer(std::cin, std::cout)`](../../src/core/appflow/loop.cpp#L814) を呼びます。フレーム進行はクライアントの`step_frame`要求が所有します。stdoutはNDJSON protocol（newline-delimited JSON — 1行に1個のJSON値を置く形式。ここでは1行が1リクエストまたは1レスポンスにあたるため、ログを1行でも混ぜると相手のparseが壊れます）専用なので、[`PelicanCore` constructor](../../src/core/userpublic/pelican_core.cpp#L79) がloggerをprotocol対応で初期化します。
 
 ### 全経路に共通する `setCurrentFrameIndex()`
 
-`engine_time.advance()` の直後に `vulkan_.setCurrentFrameIndex(engine_time_.evaluationIndex())` を呼ぶのは、いまや三経路に一つずつではなく [`FrameStep::advance()`](../../src/core/appflow/loop.cpp#L422) の中の[評価の番号を渡すこの1行](../../src/core/appflow/loop.cpp#L426)だけです(渡すのは game のフレームではなく評価の番号。§2.6。✅PM-1a)。headless RPC の `step_frame` / `advance_frames` は `FrameStep` を通らず、[`rpcserver.cpp`](../../src/core/communication/rpcserver.cpp#L1820) の中で同じ 2 行を自分で呼びます。三つのドライバはどれもフレームの先頭でこの `advance` を呼ぶので、「ある経路だけ呼び忘れる」形が構造として作れません。これが [`VulkanManageCore`](../../src/core/vkcore/core.hpp#L36) 側の `logical_frame` 軸になり、debug-utilsラベルとGPU timingの計測が同じフレーム番号で並びます。
+`engine_time.advance()` の直後に `vulkan_.setCurrentFrameIndex(engine_time_.evaluationIndex())` を呼ぶのは、いまや三経路に一つずつではなく [`FrameStep::advance()`](../../src/core/appflow/loop.cpp#L422) の中の[評価の番号を渡すこの1行](../../src/core/appflow/loop.cpp#L426)だけです(渡すのは game のフレームではなく評価の番号。§2.6。✅PM-1a)。headless RPC の `step_frame` / `advance_frames` は `FrameStep` を通らず、[`rpcserver.cpp`](../../src/core/communication/rpcserver.cpp#L1822) の中で同じ 2 行を自分で呼びます。三つのドライバはどれもフレームの先頭でこの `advance` を呼ぶので、「ある経路だけ呼び忘れる」形が構造として作れません。これが [`VulkanManageCore`](../../src/core/vkcore/core.hpp#L36) 側の `logical_frame` 軸になり、debug-utilsラベルとGPU timingの計測が同じフレーム番号で並びます。
 
 ### F11 RenderDocキャプチャ（windowedのflat描画のみ） ✅実装済み
 
@@ -400,9 +400,9 @@ ECSCore::update()
 → SceneLoader::applyPendingLoad()      # game の 1 歩のときだけ
 ```
 
-**一時停止の分岐(✅PM-1a)。**`updateFrameState()` は reload 公開と commit hook の後で [`EngineTime::gameStepping()`](../../src/core/appflow/enginetime.cpp#L82) を 1 回読み、そのフレームが game の 1 歩か(`playing` か、`paused` で `advance_frames` の歩を取るフレームか)を [`game_step`](../../src/core/appflow/framephase.cpp#L168) に取ります。1 歩でないフレームでは、`runtime_spawner.applyBoundary()`・`freeze_events` と `deliver_events`(片方だけ止めると event の registerer のフレームの検査に当たるので一緒に止める)・`applyPendingLoad()` を飛ばし、game の UI には [`setEventsSuppressed(true)`](../../src/core/ui/module.hpp#L116) で event を積ませず、game system は [`GameSystemScope::editor_only`](../../src/core/userpublic/details/system/registerer.hpp#L143)(engine が [`markEditorGameSystem()`](../../src/core/userpublic/details/system/registerer.hpp#L152) で印を付けた camera controller と modal transform だけ)、animation の phase は `PhaseOwners::engine_only`(game DLL が登録した phase を外す)で走らせます。入力の凍結・内部 ECS・engine 側の animation・seq・描画は毎フレーム走り、止まった game の時刻で評価し直します。editor の system を呼ぶ間は [`ScopedEditorClock`](../../src/core/userpublic/details/system/registerer.hpp#L157) が立ち、`GameContext::deltaTime()` が game の `dt` ではなく `EngineTime::editorDt()` を返します。
+**一時停止の分岐(✅PM-1a)。**`updateFrameState()` は reload 公開と commit hook の後で [`EngineTime::gameStepping()`](../../src/core/appflow/enginetime.cpp#L84) を 1 回読み、そのフレームが game の 1 歩か(`playing` か、`paused` で `advance_frames` の歩を取るフレームか)を [`game_step`](../../src/core/appflow/framephase.cpp#L174) に取ります。1 歩でないフレームでは、`runtime_spawner.applyBoundary()`・`freeze_events` と `deliver_events`(片方だけ止めると event の registerer のフレームの検査に当たるので一緒に止める)・`applyPendingLoad()` を飛ばし、game の UI には [`setEventsSuppressed(true)`](../../src/core/ui/module.hpp#L116) で event を積ませず、game system は [`GameSystemScope::editor_only`](../../src/core/userpublic/details/system/registerer.hpp#L145)(engine が [`markEditorGameSystem()`](../../src/core/userpublic/details/system/registerer.hpp#L155) で印を付けた camera controller と modal transform だけ)、animation の phase は `PhaseOwners::engine_only`(game DLL が登録した phase を外す)で走らせます。入力の凍結・内部 ECS・engine 側の animation・seq・描画は毎フレーム走り、止まった game の時刻で評価し直します。editor の system を呼ぶ間は [`ScopedEditorClock`](../../src/core/userpublic/details/system/registerer.hpp#L160) が立ち、`GameContext::deltaTime()` が game の `dt` ではなく `EngineTime::editorDt()` を返します。
 
-フェーズ後には `CameraBakeRecorder` が（有効時のみ）フレームを記録します（[framephase.cpp](../../src/core/appflow/framephase.cpp#L227)）。
+フェーズ後には `CameraBakeRecorder` が（有効時のみ）フレームを記録します（[framephase.cpp](../../src/core/appflow/framephase.cpp#L241)）。
 
 ### 共通グラフは1フレームに二度評価される
 
@@ -419,7 +419,7 @@ ECSCore::update()
 
 ### `freeze_actions` とImGuiゲートの後始末
 
-`freeze_actions` でImGuiへ入力をルーティングする前に、[`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L80) がゲートの開閉を判定します。ゲートの実体は [`isImGuiRuntimeEnabled(config)`](../../src/core/imgui/imguiruntime.cpp#L9) で、`EngineLaunchConfig` の `headless` / `rpc` / `input_replay` / `golden_mode` / `xr_active` を読むだけの述語です（この関数自身は何も書き換えません）。ここでの「開いている」はこの述語が真で、そのフレームの `FrameStateModules.imgui_system` に [`GET_MODULE(ImGuiSystem)` が入る](../../src/core/appflow/framephase.cpp#L98)状態、「閉じている」は偽で `imgui_system` が nullptr のまま（= `freeze_actions` の [`routeInputAndBeginFrame()`](../../src/core/appflow/framephase.cpp#L189) が呼ばれず、そのフレームで ImGui フレームが始まらない）状態を指します。開閉が変わるのは、読んでいる側のlaunch configが変わったときです（例: XRのVulkan bootstrapが失敗してflatへ落ちる [`core.cpp` 内](../../src/core/vkcore/core.cpp#L626)）。ImGuiゲートが閉じたフレームでは、開始済みのImGuiフレームを [`ImGuiSystem::endFrameIfStarted()`](../../src/core/imgui/imguisystem.hpp#L31) で畳みます（[`framephase.cpp` 内](../../src/core/appflow/framephase.cpp#L83)）。守っている対応関係は「`freeze_actions` の `routeInputAndBeginFrame()` が立てた `frame_started` は、そのフレームの `ImGuiSystem::render()` が必ず倒す」で、ImGuiパスを持たないグラフへ持ち越すと `render()` が呼ばれず、立ったままのフレームへ次の `NewFrame()` が重なります。
+`freeze_actions` でImGuiへ入力をルーティングする前に、[`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L80) がゲートの開閉を判定します。ゲートの実体は [`isImGuiRuntimeEnabled(config)`](../../src/core/imgui/imguiruntime.cpp#L9) で、`EngineLaunchConfig` の `headless` / `rpc` / `input_replay` / `golden_mode` / `xr_active` を読むだけの述語です（この関数自身は何も書き換えません）。ここでの「開いている」はこの述語が真で、そのフレームの `FrameStateModules.imgui_system` に [`GET_MODULE(ImGuiSystem)` が入る](../../src/core/appflow/framephase.cpp#L98)状態、「閉じている」は偽で `imgui_system` が nullptr のまま（= `freeze_actions` の [`routeInputAndBeginFrame()`](../../src/core/appflow/framephase.cpp#L203) が呼ばれず、そのフレームで ImGui フレームが始まらない）状態を指します。開閉が変わるのは、読んでいる側のlaunch configが変わったときです（例: XRのVulkan bootstrapが失敗してflatへ落ちる [`core.cpp` 内](../../src/core/vkcore/core.cpp#L626)）。ImGuiゲートが閉じたフレームでは、開始済みのImGuiフレームを [`ImGuiSystem::endFrameIfStarted()`](../../src/core/imgui/imguisystem.hpp#L31) で畳みます（[`framephase.cpp` 内](../../src/core/appflow/framephase.cpp#L83)）。守っている対応関係は「`freeze_actions` の `routeInputAndBeginFrame()` が立てた `frame_started` は、そのフレームの `ImGuiSystem::render()` が必ず倒す」で、ImGuiパスを持たないグラフへ持ち越すと `render()` が呼ばれず、立ったままのフレームへ次の `NewFrame()` が重なります。
 
 > **設計決定:** ゲートは論理フレーム境界で閉じ得るため、「開始済みのImGuiフレームを、ImGui passを持たないグラフへ持ち越さない」ことを明示的に保証しています。ソース中のコメントがそのまま契約です。
 
@@ -427,7 +427,7 @@ ECSCore::update()
 >
 > **何をする所か**: `updateFrameState()` の冒頭で、そのフレームが触る module 参照を1つの構造体へ集めます。名前どおりの解決に加えて、直前の節で見たImGuiゲートの後始末という**状態変更**もここで起きます。
 >
-> **素朴に読むと**: 「参照を集めるだけの純粋な関数」に見えるので、毎フレーム呼ぶのが無駄に見えます。実際には毎フレーム通ることに意味があります。(1) ImGuiゲートが閉じたフレームでは [`endFrameIfStarted()`](../../src/core/imgui/imguisystem.hpp#L31) をここで呼びます — ゲートは論理フレーム境界で閉じ得るので、判定と後始末を同じ場所へ置かないと開始済みImGuiフレームが持ち越されます。(2) `ui_module` と `render_target` は**どちらか一方が無ければ両方 nullptr にします**([その判定](../../src/core/appflow/framephase.cpp#L60))。`freeze_actions` の [`routeFrameInput(input_state, render_target->getExtent())`](../../src/core/appflow/framephase.cpp#L185) が `ui_module != nullptr` の分岐の中で `render_target` を**無条件に**参照するからで、片方だけの nullptr を許すとここで落ちます。(3) `tryGet` と `GET_MODULE` の使い分けも意図的です。`GET_MODULE` 側は「必ず存在する前提」で、凍結後に未生成のmoduleを `GET_MODULE` すると例外になります。だから `prepareFrameStateModules()` が凍結前に同じ解決を一度だけ走らせて実体化しておきます([`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L259) から呼ばれる)。
+> **素朴に読むと**: 「参照を集めるだけの純粋な関数」に見えるので、毎フレーム呼ぶのが無駄に見えます。実際には毎フレーム通ることに意味があります。(1) ImGuiゲートが閉じたフレームでは [`endFrameIfStarted()`](../../src/core/imgui/imguisystem.hpp#L31) をここで呼びます — ゲートは論理フレーム境界で閉じ得るので、判定と後始末を同じ場所へ置かないと開始済みImGuiフレームが持ち越されます。(2) `ui_module` と `render_target` は**どちらか一方が無ければ両方 nullptr にします**([その判定](../../src/core/appflow/framephase.cpp#L60))。`freeze_actions` の [`routeFrameInput(input_state, render_target->getExtent())`](../../src/core/appflow/framephase.cpp#L199) が `ui_module != nullptr` の分岐の中で `render_target` を**無条件に**参照するからで、片方だけの nullptr を許すとここで落ちます。(3) `tryGet` と `GET_MODULE` の使い分けも意図的です。`GET_MODULE` 側は「必ず存在する前提」で、凍結後に未生成のmoduleを `GET_MODULE` すると例外になります。だから `prepareFrameStateModules()` が凍結前に同じ解決を一度だけ走らせて実体化しておきます([`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L259) から呼ばれる)。
 >
 > **骨子**:
 > ```text
@@ -447,7 +447,7 @@ ECSCore::update()
 
 > 🧩 **難所 — capture は黙って消える**([`InputRouter::route()`](../../src/core/ui/inputrouter.cpp#L45))
 >
-> **何をする所か**: `freeze_actions` が呼ぶ [`UiModule::routeFrameInput()`](../../src/core/ui/module.cpp#L281) の中身([`framephase.cpp` 内](../../src/core/appflow/framephase.cpp#L176))で、そのフレームの生ポインタ列を widget へ割り当て、`Capture` / `Click` / `DragStart` などのeffect列へ変換します。
+> **何をする所か**: `freeze_actions` が呼ぶ [`UiModule::routeFrameInput()`](../../src/core/ui/module.cpp#L281) の中身([`framephase.cpp` 内](../../src/core/appflow/framephase.cpp#L190))で、そのフレームの生ポインタ列を widget へ割り当て、`Capture` / `Click` / `DragStart` などのeffect列へ変換します。
 >
 > **素朴に読むと**: Down/Move/Up の switch だけ見ると「Move は今カーソルの下にある widget へ配られる」と読めます。実際は逆で、**Down で捕まえた widget が Up まで全ての Move を受け取ります** — Move の `routed.target` は hit 判定の結果ではなく `state.capture->owner` です([Move 側の代入](../../src/core/ui/inputrouter.cpp#L67))。物理判定は `hover_target` 側だけを更新するので、**hover と target がずれているのが正常状態**です。この前提が崩れる唯一の経路が switch より**前**の2行([消えた capture の掃除](../../src/core/ui/inputrouter.cpp#L58))で、capture 先の widget が arena から消えていると `state.capture` を無言で `reset()` します。ここだけ `ReleaseCapture` も `Cancel` も出ません。明示通知する [`cancelCapture()`](../../src/core/ui/inputrouter.cpp#L144) は `{Cancel, ReleaseCapture}` を返しますが、現在エンジン内に呼び出し元がありません(定義だけがある状態)。したがって **widget を消す側のコードが「ドラッグ中に消すと DragEnd 相当の通知が来ない」ことを知っている必要があります**。消えたと判定されるのは [`WidgetArena::erase()`](../../src/core/ui/widgetarena.cpp#L20) / `clear()` が slot の generation(世代番号 — 同じ index を再利用しても古い `WidgetId` を別物と判別するための連番)を進め、[`resolve()`](../../src/core/ui/widgetarena.cpp#L33) が `nullptr` を返すようになるからです。
 >
@@ -480,18 +480,18 @@ ECSCore::update()
 
 ### inputの1フレーム固定
 
-[`InputStateCore::beginFrame()`](../../src/core/os/inputstate.cpp#L417) がpending eventをframe eventへswapし、down/pushed/released/mouse deltaを作ります。Action層は [`freezeInputActionsFrame()`](../../src/core/userpublic/userinput.cpp#L416) で消費maskを適用したsnapshotを評価します。以後の`Actions::*`は再計算せず同じ`InputActionFrame`を返します。
+[`InputStateCore::beginFrame()`](../../src/core/os/inputstate.cpp#L417) がpending eventをframe eventへswapし、down/pushed/released/mouse deltaを作ります。Action層は [`freezeInputActionsFrame()`](../../src/core/userpublic/userinput.cpp#L454) で消費maskを適用したsnapshotを評価します。以後の`Actions::*`は再計算せず同じ`InputActionFrame`を返します。
 
 ## 2.6 EngineTime
 
 [`EngineTime`](../../src/core/appflow/enginetime.hpp#L31) には二モードあります。
 
-- `realtime`: `steady_clock`差分。異常に長い停止は0.1秒へclamp（[`advance()`](../../src/core/appflow/enginetime.cpp#L34)）。
+- `realtime`: `steady_clock`差分。異常に長い停止は0.1秒へclamp（[`advance()`](../../src/core/appflow/enginetime.cpp#L36)）。
 - `fixed_step`: `1 / launch_config.fps`を毎回加算。headless/RPC/replayの再現性に使う。
 
 `advance()`後に`current_time += delta_time`、`frame_index++`です。最初の更新フレームはindex 1になります。
 
-**評価の番号と play state(✅PM-1a)。**[`advance()`](../../src/core/appflow/enginetime.cpp#L34) は描画のフレームごとに必ず `evaluation_index` を 1 進めます(戻すのは `setup()` だけ)。animation の書き込み・graph・phase の revision、VMA の frame index、GPU timing、TAA、shader の `frame_index`、graph の publish、picking、RenderDoc、XR の mirror、RPC の `frame`、そして `GameContext::frameIndex()` が読むのはこちらで、[`evaluationIndex()`](../../src/core/appflow/enginetime.hpp#L77) で取ります。上の `current_time` / `delta_time` / `frame_index` は game の時計と game のフレームで、`PlayState::playing` の間は毎フレーム、`paused` の間は [`requestSteps()`](../../src/core/appflow/enginetime.cpp#L102) で頼まれた歩を 1 フレームに 1 つ取るときだけ進みます(そのときの `dt` は固定の `1/fps`)。それ以外の `paused` のフレームは `delta_time = 0` で、止まった時刻のまま評価し直されます。そのフレーム自身の差分(realtime の測定値か fixed_step の固定値)は `editor_delta_time` に別に取り、[`editorDt()`](../../src/core/appflow/enginetime.hpp#L78) で editor の system が読みます。[`setPlayState()`](../../src/core/appflow/enginetime.cpp#L88) は `paused` から出るときに取っていない歩を捨て、`last_tick` を今に合わせ直すので、再開の最初のフレームの `dt` に一時停止の時間は入りません。一時停止しない実行では、評価の番号と game のフレームは同じ値で進みます。RPCの`set_time`は時刻だけを直接変更し、deltaを0へ戻します。この不連続は [`timeSetRevision()`](../../src/core/appflow/enginetime.cpp#L76) で観測でき、rendererはこれとcamera不連続をまとめて検知してtemporal history（前フレームのview/projection行列やcamera位置をview単位で覚えておく履歴。前フレームの描画結果を今フレームへ再投影して混ぜる処理が使うので、時刻やcameraが飛ぶと対応関係が崩れて捨てる必要があります）をリセットします（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1544)）。
+**評価の番号と play state(✅PM-1a)。**[`advance()`](../../src/core/appflow/enginetime.cpp#L36) は描画のフレームごとに必ず `evaluation_index` を 1 進めます(戻すのは `setup()` だけ)。animation の書き込み・graph・phase の revision、VMA の frame index、GPU timing、TAA、shader の `frame_index`、graph の publish、picking、RenderDoc、XR の mirror、RPC の `frame`、そして `GameContext::frameIndex()` が読むのはこちらで、[`evaluationIndex()`](../../src/core/appflow/enginetime.hpp#L93) で取ります。上の `current_time` / `delta_time` / `frame_index` は game の時計と game のフレームで、`PlayState::playing` の間は毎フレーム、`paused` の間は [`requestSteps()`](../../src/core/appflow/enginetime.cpp#L134) で頼まれた歩を 1 フレームに 1 つ取るときだけ進みます(そのときの `dt` は固定の `1/fps`)。それ以外の `paused` のフレームは `delta_time = 0` で、止まった時刻のまま評価し直されます。そのフレーム自身の差分(realtime の測定値か fixed_step の固定値)は `editor_delta_time` に別に取り、[`editorDt()`](../../src/core/appflow/enginetime.hpp#L94) で editor の system が読みます。[`setPlayState()`](../../src/core/appflow/enginetime.cpp#L90) は `paused` から出るときに取っていない歩を捨て、`last_tick` を今に合わせ直すので、再開の最初のフレームの `dt` に一時停止の時間は入りません。一時停止しない実行では、評価の番号と game のフレームは同じ値で進みます。RPCの`set_time`は時刻だけを直接変更し、deltaを0へ戻します。この不連続は [`timeSetRevision()`](../../src/core/appflow/enginetime.cpp#L78) で観測でき、rendererはこれとcamera不連続をまとめて検知してtemporal history（前フレームのview/projection行列やcamera位置をview単位で覚えておく履歴。前フレームの描画結果を今フレームへ再投影して混ぜる処理が使うので、時刻やcameraが飛ぶと対応関係が崩れて捨てる必要があります）をリセットします（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1544)）。
 
 ## 2.7 ゲームSystemと内部ECS Systemは別の更新列
 
@@ -500,7 +500,7 @@ ECSCore::update()
 | 種類 | 登録 | 呼び出し | 主用途 |
 |---|---|---|---|
 | 内部ECS System | [`ECSCore::registerSystem`](../../src/core/ecs/core.hpp#L40) | `ECSCore::update()` | Component配列をまとめて処理 |
-| ゲームSystem | [`PELICAN_REGISTER_SYSTEM`](../../src/core/userpublic/details/system/registerer.hpp#L200) | `updateRegisteredGameSystems()` | `GameContext`経由のゲームロジック |
+| ゲームSystem | [`PELICAN_REGISTER_SYSTEM`](../../src/core/userpublic/details/system/registerer.hpp#L203) | `updateRegisteredGameSystems()` | `GameContext`経由のゲームロジック |
 
 内部ECSが先に走ります。そのため、ゲームSystemが同フレーム中に`LocalTransform`を書き換えた結果を内部transform Systemが見るのは原則次フレームです。ただし [`GameObjects::setLocalTransform()`](../../src/core/userpublic/gameobjects.cpp#L67) は公開componentと内部`TransformComponent`を即時同期し、model instanceへも直接TRSを反映するため、公開API経由の通常操作では表示遅延を避けています。
 
@@ -534,7 +534,7 @@ flat画面では`render()`がactive Cameraを1-view providerとして渡しま�
 
 ### RPCディスパッチャは1個
 
-[`EngineRpcEndpoint`](../../src/core/communication/rpcserver.hpp#L140) が「状態を持つエンジンRPCディスパッチャ」を1個所有します。ヘッダのコメントが契約です — headlessは [`run()`](../../src/core/communication/rpcserver.cpp#L2314) がEOFまでブロックし、windowedのホストは [`processLine()`](../../src/core/communication/rpcserver.hpp#L100) を**フレーム境界でだけ**呼びます。`runEngineRpcServer()` はheadless用の薄いラッパです。
+[`EngineRpcEndpoint`](../../src/core/communication/rpcserver.hpp#L140) が「状態を持つエンジンRPCディスパッチャ」を1個所有します。ヘッダのコメントが契約です — headlessは [`run()`](../../src/core/communication/rpcserver.cpp#L2382) がEOFまでブロックし、windowedのホストは [`processLine()`](../../src/core/communication/rpcserver.hpp#L100) を**フレーム境界でだけ**呼びます。`runEngineRpcServer()` はheadless用の薄いラッパです。
 
 ### 編集セッションの生成点も1個
 
@@ -633,7 +633,7 @@ pollを駆動するのはreload serviceのruntime participant `game_logic` で�
 
 ### 起動時の失敗はRPC `status` まで運ばれる
 
-`initializeConfiguredGameLogic()` が `false` を返しても `run()` は続きます（§2.1 の 9番）。失敗の内容は `GameLogicReloader` に保存され、[`configuredGameLogicStatus()`](../../src/core/gamelogic/gamelogicreload.cpp#L951) から読めます。RPC `status` の `participants.game_logic`（[組み立て箇所](../../src/core/communication/rpcserver.cpp#L1582)）を作るのは [`gameLogicParticipantRpcStatus()`](../../src/core/communication/rpcserver.cpp#L1197) で、規則はコメントが規範です。
+`initializeConfiguredGameLogic()` が `false` を返しても `run()` は続きます（§2.1 の 9番）。失敗の内容は `GameLogicReloader` に保存され、[`configuredGameLogicStatus()`](../../src/core/gamelogic/gamelogicreload.cpp#L951) から読めます。RPC `status` の `participants.game_logic`（[組み立て箇所](../../src/core/communication/rpcserver.cpp#L1584)）を作るのは [`gameLogicParticipantRpcStatus()`](../../src/core/communication/rpcserver.cpp#L1199) で、規則はコメントが規範です。
 
 - reload serviceのruntime participant行があり、その `attempted` が0でない（= 一度は走った）なら、その行をそのまま返す。
 - participantが**まだ一度も試されていない**（`attempted == 0`）場合に限り、保存済みの起動時失敗（`status.error_code`）を優先する。

@@ -2630,7 +2630,7 @@ layout の骨格:
 
 ### semantic mode はプロセス一生ものの 2 値
 
-起動時、コンポーネント登録より前に rendering config を先読みして `RayLayoutRuntimeState` を確定します([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp#L38))。
+起動時、コンポーネント登録より前に rendering config を先読みして `RayLayoutRuntimeState` を確定します([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp#L39))。
 
 | layout | semantic mode | 効果 |
 |---|---|---|

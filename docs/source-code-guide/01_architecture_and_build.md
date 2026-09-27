@@ -8,7 +8,7 @@ Pelican2のコードは、最初から個々のクラスを読むより、次の
 
 | 領域 | 役割 | 主な入口 |
 |---|---|---|
-| 実行ファイル | 引数を読み、ライブラリを起動する | [`src/player/main.cpp`](../../src/player/main.cpp#L663)、[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L14)、[`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5)、[`src/spvlink/main.cpp`](../../src/spvlink/main.cpp#L1)（オフラインSPIR-VリンカCLI、[`spvlink.hpp`](../../src/core/shader/spvlink.hpp)を使用） |
+| 実行ファイル | 引数を読み、ライブラリを起動する | [`src/player/main.cpp`](../../src/player/main.cpp#L703)、[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L14)、[`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5)、[`src/spvlink/main.cpp`](../../src/spvlink/main.cpp#L1)（オフラインSPIR-VリンカCLI、[`spvlink.hpp`](../../src/core/shader/spvlink.hpp)を使用） |
 | 純粋ロジック | JSONやテキスト形式のパース・検証・合成。Vulkan不要 | [`src/project/CMakeLists.txt`](../../src/project/CMakeLists.txt#L1) |
 | エンジン本体 | ECS、入力、scene、描画、音声、物理、保存、RPC | [`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt) |
 | ゲーム/検証 | プロジェクト固有コード、fixture、単体・結合・golden test | [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L1)、[`test/CMakeLists.txt`](../../test/CMakeLists.txt#L61) |
@@ -71,7 +71,7 @@ playerは `ENABLE_EXPORTS` と `/WHOLEARCHIVE:pelican_core` でSDKシンボル�
 
 この診断と OS loader の役割分担は DLL の中身で変わります。SDK 入口(`pelican_register_behavior_v2` / `pelican_register_event_v2` / `pelican_emit_v2` / `pelican_register_system_v2`)か epoch anchor を import する DLL なら、旧版は v1 名(`__registerBehavior` / `__registerEvent` / `__emit` / `__registerSystem`。host はもう export しません)が未解決 import になるので OS loader 自身が拒否します。一方 **provider-only の旧 DLL**(`getApiV1` 系を export するだけで SDK 入口を import しないもの)は未解決 import を持たないため loader は止めず、この raw import 診断([`diagnoseGameLogicImports()`](../../src/core/gamelogic/gamelogicimports.cpp#L559) の anchor 不在 = [`game_logic_abi_stale@1`](../../src/core/gamelogic/gamelogicimports.hpp#L40))が唯一の enforcement です。診断は無効化できず(`#ifdef _WIN32` の中で常時)、[`loadCopy()`](../../src/core/gamelogic/gamelogicreload.cpp#L405) が `LoadLibraryW` を呼ぶ**前**に走るので、旧 DLL の constructor は動きません。Linux 側にこの reader は無いので、`RTLD_NOW` が解決に失敗しない provider-only の旧 `.so` を止める仕組みは今のところありません。
 
-ゲームSystemの静的自動登録はDLLロード時に走り、[`RegistrationOwner`](../../src/core/userpublic/details/reload/registrationowner.hpp#L11) 単位で [`unregisterGameSystems()`](../../src/core/userpublic/details/system/registerer.hpp#L169) により登録解除できます。これが実行中ホットリロードの基盤です。
+ゲームSystemの静的自動登録はDLLロード時に走り、[`RegistrationOwner`](../../src/core/userpublic/details/reload/registrationowner.hpp#L11) 単位で [`unregisterGameSystems()`](../../src/core/userpublic/details/system/registerer.hpp#L172) により登録解除できます。これが実行中ホットリロードの基盤です。
 
 ### packageのビルド: `pelican_package_sources()` と `pelican_packages()`（X-1）
 

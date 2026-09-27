@@ -16,7 +16,7 @@
 | light（`render().setDirectionalLightDirection` ほか4本） | `LightContainer` | [`RenderContext::setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.cpp#L289) |
 | physics query（`physics().raycastAll`/`raycastClosest`/`overlapAll`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L78)） | physics service | [`PhysicsContext::raycastAll()`](../../src/core/userpublic/gamecontext.cpp#L402) |
 | camera（`render().setCamera`） | `Camera` | [`RenderContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L471) |
-| 画面の点から ray（`render().screenRay`、GP-4） | `EngineLaunchConfig::xr_active` の検査 → [`Camera::rayThroughPixel()`](../../src/core/renderer/camera.cpp#L391)。戻り値は `Resolved<phys::Ray, RenderError>` | [`RenderContext::screenRay()`](../../src/core/userpublic/gamecontext.cpp#L475) |
+| 画面の点から ray（`render().screenRay`、GP-4） | `EngineLaunchConfig::xr_active` の検査 → [`Camera::rayThroughPixel()`](../../src/core/renderer/camera.cpp#L433)。戻り値は `Resolved<phys::Ray, RenderError>` | [`RenderContext::screenRay()`](../../src/core/userpublic/gamecontext.cpp#L475) |
 | pointer / cursor（`input().pointer` / `setCursorMode`、GP-4） | `InputState::pointer()`（フレーム先頭の `beginFrame()` で換算済みの値）/ `InputState::requestCursorMode()`（窓への適用は次のフレームの [`Window::applyCursorMode()`](../../src/core/os/window.cpp#L343)） | [`InputContext::pointer()`](../../src/core/userpublic/gamecontext.cpp#L489) / [`InputContext::setCursorMode()`](../../src/core/userpublic/gamecontext.cpp#L493) |
 | 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L497) |
 | audio（`audio().playSound` ほか） | `Audio`またはfeature disabled error | [`AudioContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L517) |
@@ -31,7 +31,7 @@
 
 class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport修飾されています。game DLL境界を越えて使われるためです。
 
-`GameContext`自体は状態を持ちません。実体は [`updateFrameState()` のローカル変数1個](../../src/core/appflow/framephase.cpp#L174) で、フレームごとに作られてフレームを抜けると消えます（= 自動記憶域。ヒープにも moduleにも置かれていません）。5フェーズの各所へは参照として渡るだけなので、Systemが`GameContext*`を保存しても次フレームには無効になります。
+`GameContext`自体は状態を持ちません。実体は [`updateFrameState()` のローカル変数1個](../../src/core/appflow/framephase.cpp#L188) で、フレームごとに作られてフレームを抜けると消えます（= 自動記憶域。ヒープにも moduleにも置かれていません）。5フェーズの各所へは参照として渡るだけなので、Systemが`GameContext*`を保存しても次フレームには無効になります。
 
 上の表は**通常フレームでの**委譲先です。**scene load transaction** は、scene の読み込みを prepare から finish までの1つの取引として扱う [第3章 §3.5 の 3](03_project_and_loading.md) の executor のことで、「開いている間」はその段の列を実行中という意味です（[用語集](../manual/14_glossary.md)）。開いている間（behaviorの `onInit` / `onDestroy` や、component JSON loaderから呼ばれた場合）は、同じAPIの行き先がcandidateやoutboxへ差し替わり、一部は拒否されます。分類とその根拠は §5.15 にまとめてあります。
 
@@ -62,18 +62,18 @@ setterは対象ライトのstructを書き換えるだけです（[`LightContain
 
 **要求の時点**（[`RuntimeSpawner::spawn()`](../../src/core/loader/runtimespawn.cpp#L151)）:
 
-1. [`SceneLoader::objectRun()`](../../src/core/loader/scene.cpp#L2084) で「今ゲームコードが見ている scene run」を取ります。scene load の callback の中なら候補の run、それ以外は live の run です（GP-1 の `resolveObject` と同じ [`objectResolutionRun()`](../../src/core/loader/scene.cpp#L2025)）。scene が無ければ `object.spawn_outside_scene@1`。
+1. [`SceneLoader::objectRun()`](../../src/core/loader/scene.cpp#L2088) で「今ゲームコードが見ている scene run」を取ります。scene load の callback の中なら候補の run、それ以外は live の run です（GP-1 の `resolveObject` と同じ [`objectResolutionRun()`](../../src/core/loader/scene.cpp#L2029)）。scene が無ければ `object.spawn_outside_scene@1`。
 2. 位置を決めます: 境界の番号は「追跡中の run と同じなら `boundary_count + 1`、違えば 1」、番号は同じ run の spawn 要求がすでに何件積まれているか。どちらかが attachment_seq の欄（境界 2^28、番号 2^16）を超えるなら `object.spawn_sequence_exhausted@1`。
 3. 名前の検査（authored の名前・同じ run の live と待ち行列の名前）。
 4. [`expandPrefab()`](../../src/core/loader/runtimespawn.cpp#L119) が prefab instance 1 個だけの scene 文書を組み、live run の prefab registry・bindable provider・defaults で `ResolvedSceneResolver::resolve` を通します。scene load と同じ ResolvedScene seam なので、`prefab_*` の名前もそのまま出ます。object 型の parameter の対象は、live scene の同名 object の代役（名前と、parameter が要求する component だけ）を同じ文書に入れて解決させます（[`objectParameterStandIns()`](../../src/core/loader/runtimespawn.cpp#L80)）。
 5. PG-1 の `resolvedObjectFeatureRefusal()`（[spawn からの呼び出し](../../src/core/loader/runtimespawn.cpp#L238)。scene load の prepare と editor の `add_component` / `spawn` と同じ判定）、light / camera の拒否、behavior の準備（`prepareResolvedSceneBehaviorAttachments`）。
 6. 展開済みの `ResolvedObject` と behavior を `Request` として積み、ref を返します。
 
-**境界**: [`RuntimeSpawner::applyBoundary()`](../../src/core/loader/runtimespawn.cpp#L352) は [`updateFrameState()` から、game の 1 歩のフレームに 1 回だけ](../../src/core/appflow/framephase.cpp#L173) 呼ばれます(一時停止中の、歩を取らないフレームでは呼ばれない。✅PM-1a)。置き場所は audio の回収・DLL reload の `applyFrame()`・editor の commit queue hook の**後**（これらは scene run を置き換えうる）、`forEachFramePhase` の最初の相（`freeze_events`）の**前**です。したがって前のフレームのどこで積んだ要求も、このフレームのゲームコードの全部から見えます。`applyBoundary()` は `ProjectBasicConfig::activeSceneAuthority()` が追跡中の run と違えば、run を切り替えて境界の数を 0 に戻し、別の run の `live` を捨ててから数を 1 進めます。待ち行列は swap して要求順に処理し、run が live でない要求（旧 run のもの、失敗した load 候補のもの）は黙って捨てます。1 件の失敗は `LOG_ERROR` に出して次の要求へ進みます。
+**境界**: [`RuntimeSpawner::applyBoundary()`](../../src/core/loader/runtimespawn.cpp#L352) は [`updateFrameState()` から、game の 1 歩のフレームに 1 回だけ](../../src/core/appflow/framephase.cpp#L187) 呼ばれます(一時停止中の、歩を取らないフレームでは呼ばれない。✅PM-1a)。置き場所は audio の回収・DLL reload の `applyFrame()`・editor の commit queue hook の**後**（これらは scene run を置き換えうる）、`forEachFramePhase` の最初の相（`freeze_events`）の**前**です。したがって前のフレームのどこで積んだ要求も、このフレームのゲームコードの全部から見えます。`applyBoundary()` は `ProjectBasicConfig::activeSceneAuthority()` が追跡中の run と違えば、run を切り替えて境界の数を 0 に戻し、別の run の `live` を捨ててから数を 1 進めます。待ち行列は swap して要求順に処理し、run が live でない要求（旧 run のもの、失敗した load 候補のもの）は黙って捨てます。1 件の失敗は `LOG_ERROR` に出して次の要求へ進みます。
 
-**投影**: [`materialize(Request&)`](../../src/core/loader/runtimespawn.cpp#L399) は editor の spawn と同じ `SceneObjectProjectionAdapter` を、文書無しの入口 [`prepareTransientSpawn()`](../../src/core/loader/editorprojectionadapters.hpp#L92) で使います。ECS の entity と描画のインスタンスは editor の spawn と同じ staging、collider と model の衝突 mesh は `runtime_only` の physics binding（名前は `SpawnParams::name` か `spawn:<境界>.<番号>`）になり、scene の runtime object binding・camera・light には触りません。`publish()` の後に [`BehaviorAttachmentArena::attachSpawned()`](../../src/core/gamelogic/behaviorarena.hpp#L289) で behavior を付けて `onInit` を呼び、それが投げたら adapter を `rollback()` します（その spawn だけが戻る）。[`retire()`](../../src/core/loader/runtimespawn.cpp#L449) は逆順で、`preDestroyEntity()`（`onDestroy`）→ [`prepareTransientDestroy()`](../../src/core/loader/editorprojectionadapters.hpp#L94)（physics の binding を外し、entity を消す）です。
+**投影**: [`materialize(Request&)`](../../src/core/loader/runtimespawn.cpp#L399) は editor の spawn と同じ `SceneObjectProjectionAdapter` を、文書無しの入口 [`prepareTransientSpawn()`](../../src/core/loader/editorprojectionadapters.hpp#L92) で使います。ECS の entity と描画のインスタンスは editor の spawn と同じ staging、collider と model の衝突 mesh は `runtime_only` の physics binding（名前は `SpawnParams::name` か `spawn:<境界>.<番号>`）になり、scene の runtime object binding・camera・light には触りません。`publish()` の後に [`BehaviorAttachmentArena::attachSpawned()`](../../src/core/gamelogic/behaviorarena.hpp#L305) で behavior を付けて `onInit` を呼び、それが投げたら adapter を `rollback()` します（その spawn だけが戻る）。[`retire()`](../../src/core/loader/runtimespawn.cpp#L449) は逆順で、`preDestroyEntity()`（`onDestroy`）→ [`prepareTransientDestroy()`](../../src/core/loader/editorprojectionadapters.hpp#L94)（physics の binding を外し、entity を消す）です。
 
-**scene run の終わり**: scene load の behavior participant は arena の reconciliation を `BehaviorSpawnedAttachments::retire` で準備します（[behavior participant の指定](../../src/core/loader/scene.cpp#L1537)）。`runtime_spawned` の attachment は新しい vector へ運ばれず、load の commit 後の finish で旧 scene の behavior と一緒に `onDestroy` を受けます（rollback なら戻ります）。editor の編集の reconciliation（[`editorprojectionadapters.cpp` の呼び出し](../../src/core/loader/editorprojectionadapters.cpp#L1039)）は引数を省くので既定の `carry` で運びます。scene transaction 中の `spawn` / `destroy` の分類は `covered.spawn-queue`（§5.15）です。
+**scene run の終わり**: scene load の behavior participant は arena の reconciliation を `BehaviorSpawnedAttachments::retire` で準備します（[behavior participant の指定](../../src/core/loader/scene.cpp#L1541)）。`runtime_spawned` の attachment は新しい vector へ運ばれず、load の commit 後の finish で旧 scene の behavior と一緒に `onDestroy` を受けます（rollback なら戻ります）。editor の編集の reconciliation（[`editorprojectionadapters.cpp` の呼び出し](../../src/core/loader/editorprojectionadapters.cpp#L1039)）は引数を省くので既定の `carry` で運びます。scene transaction 中の `spawn` / `destroy` の分類は `covered.spawn-queue`（§5.15）です。
 
 残した穴（manual 第8章 §8.4 と同じ）: light / camera を持つ prefab は拒否 / object 型 parameter は代役で解決 / scene load 中の旧 behavior の `onDestroy` からの spawn は `objectRun()` が新しい run を返すので、切り替えを越えて新しい run に積まれる / 大量 spawn の負荷は未測定 / 多 object の prefab は v1。
 
@@ -92,9 +92,9 @@ public:
 PELICAN_REGISTER_SYSTEM(PlayerSystem, 100);
 ```
 
-実例は [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L8) です。継承もvirtual関数も不要で、[`HasGameSystemUpdate`](../../src/core/userpublic/details/system/registerer.hpp#L38) Conceptが`void update(GameContext&)`の存在を検出します。`PELICAN_REGISTER_SYSTEM`の定義は [`PELICAN_REGISTER_SYSTEM()`](../../src/core/userpublic/details/system/registerer.hpp#L200)（IMPLは [L155](../../src/core/userpublic/details/system/registerer.hpp#L182)）です。
+実例は [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L8) です。継承もvirtual関数も不要で、[`HasGameSystemUpdate`](../../src/core/userpublic/details/system/registerer.hpp#L38) Conceptが`void update(GameContext&)`の存在を検出します。`PELICAN_REGISTER_SYSTEM`の定義は [`PELICAN_REGISTER_SYSTEM()`](../../src/core/userpublic/details/system/registerer.hpp#L203)（IMPLは [L155](../../src/core/userpublic/details/system/registerer.hpp#L185)）です。
 
-registryの各登録には [`RegistrationOwner`](../../src/core/userpublic/details/system/registerer.hpp#L33)（engine / game DLL）が付き、game logic reload時にはowner単位で [`unregisterGameSystems()`](../../src/core/userpublic/details/system/registerer.hpp#L169) されます。登録は [`RegistrationToken`](../../src/core/userpublic/details/reload/registrationowner.hpp#L29) を返し、`PELICAN_REGISTER_SYSTEM_IMPL`が生成する静的objectがそれを保持します。個別解除は [`unregisterGameSystem(token)`](../../src/core/userpublic/details/system/registerer.hpp#L168) です。
+registryの各登録には [`RegistrationOwner`](../../src/core/userpublic/details/system/registerer.hpp#L33)（engine / game DLL）が付き、game logic reload時にはowner単位で [`unregisterGameSystems()`](../../src/core/userpublic/details/system/registerer.hpp#L172) されます。登録は [`RegistrationToken`](../../src/core/userpublic/details/reload/registrationowner.hpp#L29) を返し、`PELICAN_REGISTER_SYSTEM_IMPL`が生成する静的objectがそれを保持します。個別解除は [`unregisterGameSystem(token)`](../../src/core/userpublic/details/system/registerer.hpp#L171) です。
 
 ### instanceの寿命
 
@@ -109,7 +109,7 @@ registry実体は [`getGameSystemRegisterer()`](../../src/core/userpublic/detail
 1. `order`昇順
 2. 同じorderなら登録時の型名文字列昇順
 
-従ってtranslation unitの静的初期化順には依存せず、最終実行順は決定的です。組み込み [`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L346) はorder 10000なので、通常のゲームSystemの後に動きます。
+従ってtranslation unitの静的初期化順には依存せず、最終実行順は決定的です。組み込み [`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L417) はorder 10000なので、通常のゲームSystemの後に動きます。
 
 **一時停止中のフレーム(✅PM-1a)。**[`updateRegisteredGameSystems(ctx, scope)`](../../src/core/userpublic/details/system/registerer.cpp#L80) は、game の 1 歩でないフレームには `GameSystemScope::editor_only` で呼ばれ、[`markEditorGameSystem()`](../../src/core/userpublic/details/system/registerer.cpp#L57) で印の付いた system だけを同じ order 順で呼びます。印を付けるのは engine だけで、camera controller と modal transform の登録がそれぞれ `registerSystem<...>()` の token に付けます(公開の登録の形は変えていない)。印の付いた system を呼ぶ間は `ScopedEditorClock` が立ち、`GameContext::deltaTime()` はそのフレーム自身の `dt` を返します。`frameIndex()` はどちらの場合も評価の番号です。behavior(`BehaviorSystem`)・DLL の system・physics trigger には印が無いので、一時停止中は呼ばれません。
 
@@ -244,9 +244,9 @@ eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../
 
 [`parseInputActionsJson()`](../../src/core/os/actionmap.cpp#L885) が`pelican.input_actions` v1を読みます。現対応bindingはkeyboard key/chord、mouse delta/wheel axis、WASD/arrows composite、gamepad（[`gamepad_button` / `gamepad_axis1` / `gamepad_axis2`](../../src/core/os/actionmap.cpp#L26)）などです。プロファイルは `input/profiles/*.json` から選べます（起動オプション`--input-profile`、RPC `set_input_profile`）。
 
-起動時だけ必要な道具の入力は [`applyInputActionOverlays()`](../../src/project/inputactionoverlay.cpp#L194) で project actions の後ろへ合成します。bundle URI は `EngineLaunchConfig::input_action_overlays` にだけあり、`ProjectBasicConfig` には入りません。project profile は project 定義だけ、overlay profile はその overlay 定義だけを相手に検証してから binding を併合するため、片方の profile がもう片方の action を偶然取り込むこともありません。action / action set の同名は衝突名を含む例外です。入力 runtime の project-only 読み込みは [`loadInputActionsRuntimeSourceFromProject()`](../../src/core/userpublic/userinput.cpp#L28)、明示的な startup-overlay 経路は [`loadInputActionsRuntimeSourceWithStartupActionOverlays()`](../../src/core/userpublic/userinput.cpp#L42) に分かれています。
+起動時だけ必要な道具の入力は [`applyInputActionOverlays()`](../../src/project/inputactionoverlay.cpp#L194) で project actions の後ろへ合成します。bundle URI は `EngineLaunchConfig::input_action_overlays` にだけあり、`ProjectBasicConfig` には入りません。project profile は project 定義だけ、overlay profile はその overlay 定義だけを相手に検証してから binding を併合するため、片方の profile がもう片方の action を偶然取り込むこともありません。action / action set の同名は衝突名を含む例外です。入力 runtime の project-only 読み込みは [`loadInputActionsRuntimeSourceFromProject()`](../../src/core/userpublic/userinput.cpp#L37)、明示的な startup-overlay 経路は [`loadInputActionsRuntimeSourceWithStartupActionOverlays()`](../../src/core/userpublic/userinput.cpp#L51) に分かれています。
 
-action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L182) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L315)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1094) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
+action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L182) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L331)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1094) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
 
 Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`pose`型は実装済みで（WP130/132）、[`InputActionFrame::pose()`](../../src/core/os/actionmap.cpp#L873) は`poses` mapから返し、未サンプルならdefaultの`ActionPose`を返します。XR pose providerがない環境（flat）ではpose sampleが来ないため常にdefaultです。
 
@@ -274,7 +274,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 
 ### raw inputとAction消費は別
 
-`InputConsumptionMask`はAction用snapshotのkey/mouseだけをzero化します。公開 [`UserInput`](../../src/core/userpublic/userinput.cpp#L350) が読む元snapshotは変更しません。UIなどがActionだけを抑止しつつ、diagnosticがraw inputを見られる構造です。
+`InputConsumptionMask`はAction用snapshotのkey/mouseだけをzero化します。公開 [`UserInput`](../../src/core/userpublic/userinput.cpp#L388) が読む元snapshotは変更しません。UIなどがActionだけを抑止しつつ、diagnosticがraw inputを見られる構造です。
 
 ### pointer の換算とカーソル（GP-4）
 
@@ -295,21 +295,21 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 - active camera名
 - optional orbit/follow/fly controller定義
 
-加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L112) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L117) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1544)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L587)）です。
+加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L159) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L164) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1544)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L587)）です。
 
-GP-4 の [`rayThroughPixel()`](../../src/core/renderer/camera.cpp#L391) は、framebuffer ピクセルの位置を projection と view の逆行列（double で計算）で world の ray にします。NDC は `2 × px ÷ viewport − 1` で y を反転せず（平面描画のフレームが NDC を framebuffer へ写す向き。コメントは gizmo の `projectPoint` を参照）、深度 0（near 面）と 1（far 面）の2点を戻して、起点を near 面上の点、方向をその差の正規化にします。公開面は `RenderContext::screenRay()` で、XR 中の拒否と有限性の検査はそちらが持ちます。
+GP-4 の [`rayThroughPixel()`](../../src/core/renderer/camera.cpp#L433) は、framebuffer ピクセルの位置を projection と view の逆行列（double で計算）で world の ray にします。NDC は `2 × px ÷ viewport − 1` で y を反転せず（平面描画のフレームが NDC を framebuffer へ写す向き。コメントは gizmo の `projectPoint` を参照）、深度 0（near 面）と 1（far 面）の2点を戻して、起点を near 面上の点、方向をその差の正規化にします。公開面は `RenderContext::screenRay()` で、XR 中の拒否と有限性の検査はそちらが持ちます。
 
 ### scene cameraロード
 
-[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L361) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
+[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L403) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
 
-`RenderContext::setCamera(name)`(`ctx.render().setCamera`)は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L452) を呼び、以後そのcameraのpose/projectionをactiveにします。
+`RenderContext::setCamera(name)`(`ctx.render().setCamera`)は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L533) を呼び、以後そのcameraのpose/projectionをactiveにします。
 
-このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L80)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L375) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L298)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L443) を通るため、このフラグの影響を受けません。
+このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L86)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L417) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L327)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L485) を通るため、このフラグの影響を受けません。
 
 ### controller
 
-[`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L346) がゲームSystemとして毎フレーム処理します。
+[`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L417) がゲームSystemとして毎フレーム処理します。
 
 - orbit: target周りのyaw/pitch/distance
 - follow: target + offsetからlook-at
@@ -337,7 +337,7 @@ controllerは名前bindingからtarget transformを毎回resolveし、scene遷�
 > quat_cast(mat3{right, up, dir})
 > ```
 >
-> **手がかり**: `projectWorldUp()` は `ProjectBasicConfig` が既に読み取った `basic_config.camera.up` を正規化します。`worldUpFor()` はその up と dir がほぼ平行(内積の絶対値が 0.98 超)なら、宣言 up と最も平行でない canonical 軸へ退避します。+Y 規約では従来どおり +Z を選びますが、up 自体が +Z の project では +X を選ぶため、退避先まで平行になることはありません。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L113) 経由で orbit / follow が共有し、fly も直接使います。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L443) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
+> **手がかり**: `projectWorldUp()` は `ProjectBasicConfig` が既に読み取った `basic_config.camera.up` を正規化します。`worldUpFor()` はその up と dir がほぼ平行(内積の絶対値が 0.98 超)なら、宣言 up と最も平行でない canonical 軸へ退避します。+Y 規約では従来どおり +Z を選びますが、up 自体が +Z の project では +X を選ぶため、退避先まで平行になることはありません。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L113) 経由で orbit / follow が共有し、fly も直接使います。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L485) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
 >
 > **不変条件**: 外積の順は `right = cross(up, dir)` / `up = cross(dir, right)`(+Z 前方の巡回順)を保つ。`quat_cast` へ渡す前に必ず直交化する。project up を固定軸へ読み替えず、極点の fallback も宣言 up に対して非平行な軸を選ぶ。
 
@@ -793,7 +793,7 @@ class PELICAN_API Behavior {
 > behavior boundary. A deferred create has no live EntityId yet and
 > therefore returns invalidGameObjectId.
 
-WP380e 以降、遅延は `BehaviorContext` の override だけの性質ではありません。基底の [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L105) / [`createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L118) 自身が [`internal::behaviorCallbackActive()`](../../src/core/gamelogic/behaviorarena.cpp#L1639) を見て、behavior callback の中なら arena へ defer し `invalidGameObjectId` を返します。つまり behavior から `GameContext` として呼んでも即時生成には落ちません（`removeObject` は両者とも [`GameObjects::remove()`](../../src/core/userpublic/gameobjects.cpp#L32) 経由で、遅延するかは同関数の [`routeBehaviorObjectRemoval()`](../../src/core/userpublic/gameobjects.cpp#L41) が決めます）。
+WP380e 以降、遅延は `BehaviorContext` の override だけの性質ではありません。基底の [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L105) / [`createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L118) 自身が [`internal::behaviorCallbackActive()`](../../src/core/gamelogic/behaviorarena.cpp#L1665) を見て、behavior callback の中なら arena へ defer し `invalidGameObjectId` を返します。つまり behavior から `GameContext` として呼んでも即時生成には落ちません（`removeObject` は両者とも [`GameObjects::remove()`](../../src/core/userpublic/gameobjects.cpp#L32) 経由で、遅延するかは同関数の [`routeBehaviorObjectRemoval()`](../../src/core/userpublic/gameobjects.cpp#L41) が決めます）。
 
 ### 登録マクロ
 
@@ -884,10 +884,10 @@ PELICAN_REGISTER_BEHAVIOR(TriggerBehavior, "wp179_trigger_behavior", 1);
 |---|---|
 | scene由来 | `prepareResolvedSceneBehaviorAttachments()` → `prepareSceneReconciliation(desired)` → [`PreparedBehaviorSceneReconciliation`](../../src/core/gamelogic/behaviorarena.hpp#L176) の `publish()`（`noexcept`）/ `activate()`（`onInit`。唯一throwしうる）/ `rollback()` / `finish()`（`noexcept`）。scene load executor（[第3章 §3.5](03_project_and_loading.md)）が段ごとに呼ぶ。`publishSceneAttachments()` / `activatePublished()` は宣言が残っているが scene load からは呼ばれない |
 | 編集RPC由来 | `prepareEditorEdits(edits)` → [`PreparedBehaviorAttachmentEdits`](../../src/core/gamelogic/behaviorarena.hpp#L157) の `publish()` / `rollback()` / `finish()`（全て`noexcept`） |
-| 実行時生成（GP-2） | [`attachSpawned(entity, prepared, boundary, spawn_index)`](../../src/core/gamelogic/behaviorarena.hpp#L289)。`RuntimeSpawner` が境界で呼ぶ。生きている entity に付け、`attachment_seq` 順に `onInit`。投げたら init 済みを逆順に `onDestroy`、この呼び出しが足した attachment とそれらが積んだ deferred mutation を捨てて投げ直す。付いた attachment は `runtime_spawned = true` |
+| 実行時生成（GP-2） | [`attachSpawned(entity, prepared, boundary, spawn_index)`](../../src/core/gamelogic/behaviorarena.hpp#L305)。`RuntimeSpawner` が境界で呼ぶ。生きている entity に付け、`attachment_seq` 順に `onInit`。投げたら init 済みを逆順に `onDestroy`、この呼び出しが足した attachment とそれらが積んだ deferred mutation を捨てて投げ直す。付いた attachment は `runtime_spawned = true` |
 | teardown | `deactivateAllForTeardown()` / `drainDeferredMutationsForTeardown()` / `releaseOwner(owner)` |
 
-attachment identityは [`BehaviorAttachmentIdentity{handle, attachment_seq}`](../../src/core/gamelogic/behaviorarena.hpp#L120) です。scene由来のseqは [`sceneBehaviorAttachmentSeq(object_index, component_index)`](../../src/core/gamelogic/behaviorarena.hpp#L204) が上位32bit/下位32bitへpackして作るので、同じsceneからは常に同じseqが出ます。editorの編集由来は `(commit_seq, command index, attachment index)` を引数に受ける [`reserveRuntimeAttachmentIdentity()`](../../src/core/gamelogic/behaviorarena.cpp#L1209) が予約する単調な値です（引数は今の実装では使っていません）。GP-2 の実行時生成由来は、commit_seq を持たないので組 `(scene run の中の境界の番号, その境界の中の spawn の番号, prefab の中の behavior の番号)` だけから [`runtimeSpawnAttachmentSeq()`](../../src/core/gamelogic/behaviorarena.cpp#L82) が `2^52 | boundary<<24 | spawn_index<<8 | behavior_index`（28 / 16 / 8 bit。超えたら `std::length_error`、spawn 側では先に `object.spawn_sequence_exhausted@1`）として作ります。以前の単調カウンタを置き換えたもので、同じ入力なら2回の実行で同じidになります。2^52 は object が 2^20 個未満のsceneのどの値よりも上、JSON で正確に運べる 2^53 未満で、editor の予約はこの値の手前で `overflow_error` にしてあります（[その判定](../../src/core/gamelogic/behaviorarena.cpp#L1217)）。編集の種別は [`BehaviorAttachmentEditKind`](../../src/core/gamelogic/behaviorarena.hpp#L133) の5種（`attach` / `remove` / `set_params` / `insert_component` / `remove_component`）です。
+attachment identityは [`BehaviorAttachmentIdentity{handle, attachment_seq}`](../../src/core/gamelogic/behaviorarena.hpp#L120) です。scene由来のseqは [`sceneBehaviorAttachmentSeq(object_index, component_index)`](../../src/core/gamelogic/behaviorarena.hpp#L204) が上位32bit/下位32bitへpackして作るので、同じsceneからは常に同じseqが出ます。editorの編集由来は `(commit_seq, command index, attachment index)` を引数に受ける [`reserveRuntimeAttachmentIdentity()`](../../src/core/gamelogic/behaviorarena.cpp#L1230) が予約する単調な値です（引数は今の実装では使っていません）。GP-2 の実行時生成由来は、commit_seq を持たないので組 `(scene run の中の境界の番号, その境界の中の spawn の番号, prefab の中の behavior の番号)` だけから [`runtimeSpawnAttachmentSeq()`](../../src/core/gamelogic/behaviorarena.cpp#L82) が `2^52 | boundary<<24 | spawn_index<<8 | behavior_index`（28 / 16 / 8 bit。超えたら `std::length_error`、spawn 側では先に `object.spawn_sequence_exhausted@1`）として作ります。以前の単調カウンタを置き換えたもので、同じ入力なら2回の実行で同じidになります。2^52 は object が 2^20 個未満のsceneのどの値よりも上、JSON で正確に運べる 2^53 未満で、editor の予約はこの値の手前で `overflow_error` にしてあります（[その判定](../../src/core/gamelogic/behaviorarena.cpp#L1238)）。編集の種別は [`BehaviorAttachmentEditKind`](../../src/core/gamelogic/behaviorarena.hpp#L133) の5種（`attach` / `remove` / `set_params` / `insert_component` / `remove_component`）です。
 
 teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-callbacks`と`deferred-mutations`がこのarenaに対応します。
 
@@ -1046,12 +1046,12 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 ### 退役済みobjectのsnapshot view
 
-`retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1633)）、2つの向きに使います。
+`retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1637)）、2つの向きに使います。
 
 - **読み**: [`retiredComponent(id, component_id)`](../../src/core/loader/effecttransaction.cpp#L464) が destroy token の中のcomponentを返し、`GameContext::localTransform()` / `spriteView()` がそれを**先に**引きます（[`GameContext::localTransform()`](../../src/core/userpublic/gamecontext.cpp#L139)）。だから `onDestroy` から自分の最後のtransformを読めます。
 - **書き**: [`rejectRetiredMutation(api, id)`](../../src/core/loader/effecttransaction.cpp#L475) が同じ列を引き、当たれば `SceneRetiredObjectMutationRejected` を診断へ1件積んで `true` を返します。呼び手のsetterは `false` を返すだけで**throwしません**（`onDestroy` は `noexcept` です）。
 
-`onDestroy` の間だけ phase を切り替えるのが [`EffectDestroyScope`](../../src/core/loader/effecttransaction.cpp#L770) で、使うのは [`BehaviorAttachmentArena::destroyInstance()` の中の1行](../../src/core/gamelogic/behaviorarena.cpp#L910) の1箇所です。phase が `destroy` の間は、各sinkのcatch節が**例外を診断へ変換して飲みます**（それ以外の phase では `throw` し直します。例えば `playSound()` の catch は、先頭の1行 `if (phase_ != CallbackPhase::destroy) throw;` で再送出し、destroy のときだけ [診断を積む `record(sequence, ErrorApi::play_sound, ...)`](../../src/core/loader/effecttransaction.cpp#L163) へ進みます）。`onDestroy` が `noexcept` である以上、そこから投げれば `std::terminate` なので、「捨てる」ではなく「記録して返る」に倒してあります。
+`onDestroy` の間だけ phase を切り替えるのが [`EffectDestroyScope`](../../src/core/loader/effecttransaction.cpp#L770) で、使うのは [`BehaviorAttachmentArena::destroyInstance()` の中の1行](../../src/core/gamelogic/behaviorarena.cpp#L922) の1箇所です。phase が `destroy` の間は、各sinkのcatch節が**例外を診断へ変換して飲みます**（それ以外の phase では `throw` し直します。例えば `playSound()` の catch は、先頭の1行 `if (phase_ != CallbackPhase::destroy) throw;` で再送出し、destroy のときだけ [診断を積む `record(sequence, ErrorApi::play_sound, ...)`](../../src/core/loader/effecttransaction.cpp#L163) へ進みます）。`onDestroy` が `noexcept` である以上、そこから投げれば `std::terminate` なので、「捨てる」ではなく「記録して返る」に倒してあります。
 
 `PELICAN_WITH_AUDIO=OFF` のビルドでは、音の5つの sink（`playSound` / `stopSound` / `setBusVolume` / `busVolume` / `isPlaying`）の本体が [`throwBuildFeatureCallDisabled()`](../../src/core/build_features.hpp#L58) の1行になり、transaction の外の `AudioContext` と同じ [`BuildFeatureCallDisabledError`](../../src/core/build_features.hpp#L45) を投げます（PG-2）。この型は ABI を固定した `BuildFeatureDisabledError` の派生で、`code()` が `build_feature_disabled@1`、`feature()` が `"PELICAN_WITH_AUDIO"` です。散文の message（`This binary was built with PELICAN_WITH_AUDIO=OFF: playSound is unavailable`）は PG-2 の前と同じです。activate 相ではこの例外がそのまま呼び手へ出て、destroy 相では同じ catch が `ErrorCode::build_feature_disabled` として記録します。記録を文字列へ起こす [`effectErrors()` の該当行](../../src/core/loader/effecttransaction.cpp#L645) は `BuildFeatureCallDisabledError::error_code` を返すので、例外の `code()` と `effect_errors` の `error_code` は同じ定数から出ます。同じ理由で `loadScene()` も phase で分かれ、`destroy` 中は [`requestLoadDuringRetire()`](../../src/core/loader/effecttransaction.cpp#L450) 経由になり、拒否されれば `scene_retire_load_rejected@1` が記録されます。
 
@@ -1091,7 +1091,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 - mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L170)）
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L177)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3525)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3561)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 

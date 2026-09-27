@@ -96,8 +96,8 @@ pelican2/
 
 デバッガでステップするならこの順に張ってください。
 
-1. **CLI パース** — [`parseLaunchConfig()`](../../src/player/main.cpp#L333) `parseLaunchConfig`。argparse で全引数を解釈し、[EngineLaunchConfig](../../src/core/launchconfig.hpp) に詰める。`--project` 省略時の暗黙探索は [`findExampleProjectNearExecutable()`](../../src/player/main.cpp#L242) `findExampleProjectNearExecutable`(exe の祖先から `projects/example/project.json` を探す)
-2. **コア生成** — [`main.cpp` 内](../../src/player/main.cpp#L663) `main` → `Pelican::PelicanCore pl{...}`([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp))。モジュールコンテナに LaunchConfig を書き込み、解析済み`ProjectEnvelope`(project.json を検証して分解した構造体。`name` / `engine_min_version` / `basic_config` / `asset_stores` / `prefabs` を持つ — [projectformat.hpp](../../src/project/projectformat.hpp#L22))を[PathResolver](../../src/core/loader/pathresolver.hpp)`.setup()`へ、raw JSONを[ProjectSource](../../src/core/loader/projectsrc.hpp)へ渡す
+1. **CLI パース** — [`parseLaunchConfig()`](../../src/player/main.cpp#L345) `parseLaunchConfig`。argparse で全引数を解釈し、[EngineLaunchConfig](../../src/core/launchconfig.hpp) に詰める。`--project` 省略時の暗黙探索は [`findExampleProjectNearExecutable()`](../../src/player/main.cpp#L254) `findExampleProjectNearExecutable`(exe の祖先から `projects/example/project.json` を探す)
+2. **コア生成** — [`main.cpp` 内](../../src/player/main.cpp#L703) `main` → `Pelican::PelicanCore pl{...}`([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp))。モジュールコンテナに LaunchConfig を書き込み、解析済み`ProjectEnvelope`(project.json を検証して分解した構造体。`name` / `engine_min_version` / `basic_config` / `asset_stores` / `prefabs` を持つ — [projectformat.hpp](../../src/project/projectformat.hpp#L22))を[PathResolver](../../src/core/loader/pathresolver.hpp)`.setup()`へ、raw JSONを[ProjectSource](../../src/core/loader/projectsrc.hpp)へ渡す
 3. **封筒検証と設定合成** — [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L237) がschema(`pelican.project` ちょうど)/version(`1` ちょうど)/engine minimum version(プロジェクトが要求するエンジン版)を検証し(いずれも不一致は起動を止める hard error。engine 版だけは `--ignore-engine-version` で WARN に降格)、[`projectBasicConfigSource()`](../../src/core/loader/basicconfig.cpp#L305) が結果を受けて CLI > project.json > [default_config.json](../../src/core/resources/default_config.json) の 3 段を合成
 4. **ループ開始** — `pl.run()` → [`loop.cpp` 内](../../src/core/appflow/loop.cpp#L772) `Loop::run`。ここがフレーム編成の唯一の場所で、通常 / headless / rpc の 3 経路に分岐する。ウィンドウモードで `--rpc` が付いた場合は `WindowedRpcHost` を生成し、フレーム境界(`processFrameBoundary()`)でのみリクエストを処理します([windowedrpchost.cpp](../../src/core/communication/windowedrpchost.cpp))
 5. **描画** — [renderer.cpp](../../src/core/vkcore/renderer.cpp) `executeRenderingPasses` → `executePlannedFrameGraph`。✅WP64 で一本化済み: 全構成が FramePlan(描画の前に確定させたノード列 + 依存レベル + バリアの計画 — [frameplanner.hpp](../../src/core/renderingpass/frameplanner.hpp#L161))順で実行される。ノード種別(`render` / `compute` / `anchor` / `snapshot_copy` / `output_transform`)の dispatch も同ファイル
@@ -149,7 +149,7 @@ pelican2/
 | pelican.material / `.surface` | [第6章](06_rendering.md) | 純ロジック: [project/materialformat.cpp](../../src/project/materialformat.cpp)・[project/surfaceformat.cpp](../../src/project/surfaceformat.cpp)・[project/materiallowering.cpp](../../src/project/materiallowering.cpp) / 接続: [shader/surfacecompiler.cpp](../../src/core/shader/surfacecompiler.cpp)・[material/](../../src/core/material) |
 | rendering config の `snapshots` / canonical anchor | [第6章](06_rendering.md) | [project/featurecompose.cpp](../../src/project/featurecompose.cpp) |
 | pelican.import(納品 manifest) | [第5章](05_assets.md) | [project/importmanifest.cpp](../../src/project/importmanifest.cpp) `parseImportManifestJson`(利用者: [devcli/importcommand.cpp](../../src/devcli/importcommand.cpp)) |
-| JSON-RPC エンベロープ | [第10章](10_tools.md) | 純ロジック: [project/jsonrpc.cpp](../../src/project/jsonrpc.cpp) / メソッド実装: [communication/rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1394) `configureEngineRpcHandlers`(`setHandler` 群はすべてこの関数の中。エディタ系メソッドの実体は [editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp) ほか) |
+| JSON-RPC エンベロープ | [第10章](10_tools.md) | 純ロジック: [project/jsonrpc.cpp](../../src/project/jsonrpc.cpp) / メソッド実装: [communication/rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1396) `configureEngineRpcHandlers`(`setHandler` 群はすべてこの関数の中。エディタ系メソッドの実体は [editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp) ほか) |
 | pelican.frame_plan(出力専用) | [第6章](06_rendering.md) | 生成: [renderingpass/frameplanner.cpp](../../src/core/renderingpass/frameplanner.cpp) |
 | `test/golden/inventory.json`(pelican.golden_inventory v1 = golden ケースの登録簿) | [第6章](06_rendering.md) | [test/golden_inventory.py](../../test/golden_inventory.py)(生成と検証)/ gate: [test/ci/test_golden_inventory.py](../../test/ci/test_golden_inventory.py)。**golden ケースは inventory への登録が必須** |
 
@@ -205,7 +205,7 @@ pelican2/
    `overflow` を立てる = **順序の観測を黙って捨てない**)、5 つの
    [`SceneLoadRoot`](../../src/core/loader/sceneload.hpp#L82)(startup / rpc / pending / import v1 / v2)、
    import 側の [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275)。
-2. [`scene.cpp`](../../src/core/loader/scene.cpp#L1646) の `SceneLoader::load` —— executor 本体。
+2. [`scene.cpp`](../../src/core/loader/scene.cpp#L1650) の `SceneLoader::load` —— executor 本体。
    phase は `prepare → early_publish → publish → activate → commit_metadata → retire → flush → finish` で、
    **記録するのは executor ではなく各 participant** です(WP380c/d)。
    `load()` 自身は 18 個の [`SceneLoadParticipant`](../../src/core/loader/sceneloadparticipant.hpp#L55) を
@@ -256,7 +256,7 @@ owner の払い出しと builtin 登録は game DLL のヘッダから外れ、
 
 ### RPC(外部ツールの操作面)
 
-エンベロープ検証(JSON-RPC 2.0 / NDJSON)は純ロジック [project/jsonrpc.cpp](../../src/project/jsonrpc.cpp)、メソッド実装とエンジンへのバインドは [`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1394) の `configureEngineRpcHandlers`(`runEngineRpcServer` はこれを組み立てて回すだけの薄いエントリです)。`RpcServer(istream, ostream) + setHandler` の汎用ディスパッチャ構造なので、メソッド追加はハンドラ登録 1 箇所です。OFF ビルド時のスタブは [rpcserver_stub.cpp](../../src/core/communication/rpcserver_stub.cpp)。
+エンベロープ検証(JSON-RPC 2.0 / NDJSON)は純ロジック [project/jsonrpc.cpp](../../src/project/jsonrpc.cpp)、メソッド実装とエンジンへのバインドは [`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1396) の `configureEngineRpcHandlers`(`runEngineRpcServer` はこれを組み立てて回すだけの薄いエントリです)。`RpcServer(istream, ostream) + setHandler` の汎用ディスパッチャ構造なので、メソッド追加はハンドラ登録 1 箇所です。OFF ビルド時のスタブは [rpcserver_stub.cpp](../../src/core/communication/rpcserver_stub.cpp)。
 
 - **エディタ系メソッドの実体は別ファイル**です。`rpcserver.cpp` の `setHandler` は薄い入口で、編集・undo/redo・ジャーナル・preview・アセット問い合わせは [editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp) / [editorjournal.cpp](../../src/core/communication/editorjournal.cpp) / [editorpreviewservice.cpp](../../src/core/communication/editorpreviewservice.cpp) / [editorassetqueryruntime.cpp](../../src/core/communication/editorassetqueryruntime.cpp) にあります(組み立ては [editorruntimefactory.cpp](../../src/core/communication/editorruntimefactory.cpp))
 - **経路が 2 つある**点に注意してください。`--headless --rpc` は stdin を読み切るまでループを占有する blocking 経路、ウィンドウモードの `--rpc` は [windowedrpchost.cpp](../../src/core/communication/windowedrpchost.cpp) がリクエストを有界キューに積み、[loop.cpp](../../src/core/appflow/loop.cpp) が**フレーム境界で** `processFrameBoundary()` を呼んで捌く経路です(→ [第10章](10_tools.md))
@@ -285,12 +285,12 @@ owner の払い出しと builtin 登録は game DLL のヘッダから外れ、
 
 | やりたいこと | 読む / 変える場所 | 参照章 |
 |---|---|---|
-| CLI 引数を足す | [`parseLaunchConfig()`](../../src/player/main.cpp#L333) + [launchconfig.hpp](../../src/core/launchconfig.hpp) | [第10章](10_tools.md) |
+| CLI 引数を足す | [`parseLaunchConfig()`](../../src/player/main.cpp#L345) + [launchconfig.hpp](../../src/core/launchconfig.hpp) | [第10章](10_tools.md) |
 | scene に書ける新コンポーネント | [loader/componentcodec.cpp](../../src/core/loader/componentcodec.cpp) に codec 五つ組を足す(受理の正)+ [userpublic/components/](../../src/core/userpublic/components) のランタイム型 + ComponentInfo 登録 | [第4章](04_scene_ecs.md) |
 | オブジェクトに毎フレーム処理を付ける | プロジェクトの `code/` に `PELICAN_REGISTER_BEHAVIOR` + scene 側に `behavior` コンポーネント(エンジン側は触らない) | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) |
 | ポストエフェクトを足す | feature fragment JSON + stem シェーダ(エンジンコード不要のことが多い) | [第6章](06_rendering.md) |
 | compute パスを足す | config の `buffers`/`compute_tasks` + `.comp` stem(コード不要) | [第6章](06_rendering.md) |
-| rpc メソッドを足す | [`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1394) `configureEngineRpcHandlers` にハンドラ追加 | [第10章](10_tools.md) |
+| rpc メソッドを足す | [`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1396) `configureEngineRpcHandlers` にハンドラ追加 | [第10章](10_tools.md) |
 | エディタ操作を足す | [communication/editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp) に操作を実装 → `rpcserver.cpp` の `setHandler` から呼ぶ(ImGui Inspector も同じ関数を通す) | [第10章](10_tools.md) |
 | GPU デバッグラベルを付ける | [vkcore/debugutils.hpp](../../src/core/vkcore/debugutils.hpp) の `nameImage` / `nameImageView` / `nameBuffer` / `beginCommandLabel`(有効化は `--gpu-labels`。RT には `rt/<name>/surface/<n>/image` という規範名が [rendertargetcontainer.cpp](../../src/core/renderingpass/rendertargetcontainer.cpp) `nameRenderTargetSurfaces()` で自動的に付きます) | [第6章](06_rendering.md) |
 | 新しい交換形式(JSON)を足す | [src/project/](../../src/project) に純ロジックパーサ + fixture + schema/version ゲート | [第1章](01_overview.md) 原則 |

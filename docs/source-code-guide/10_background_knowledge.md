@@ -849,7 +849,7 @@ POSIX と違い、Windows ではファイルを開くときに「他のプロセ
 
 `std::filesystem::canonical(p)` は実在するパスしか正規化できず、存在しなければ例外(または `error_code`)になります。対して `weakly_canonical(p)` は「存在する先頭部分だけを解決し、残りは字句的に正規化する」ので、これから作るファイルのパスにも使えます。Windows 固有の落とし穴が**ルート名**で、`path::has_root_name()` は `C:` や `\\server` の有無を返します。`C:\dir`(ルート名 + ルートディレクトリ)は絶対パスですが、`C:dir` は「ドライブ C の**カレントディレクトリ**からの相対」であり、しかも `current_path()` がドライブごとに存在するため、プロセスのカレントだけでは決まりません。この曖昧な形は受け付けずに拒否するのが安全です。
 
-**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L1017) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L1009) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L961) / [resolveDeclaration()](../../src/core/asset/model.cpp#L248)
+**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L1019) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L1011) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L963) / [resolveDeclaration()](../../src/core/asset/model.cpp#L248)
 
 ## 10.5 アルゴリズムとデータ処理の定番
 
@@ -997,7 +997,7 @@ nlohmann::json は数値を「符号なし整数 / 符号付き整数 / 浮動�
 
 JSON の数値には型の区別が無く、多くの実装(JavaScript の `JSON.parse` を含む)は倍精度浮動小数点で受けます。IEEE 754 の倍精度は仮数部が 53 ビットなので、**絶対値が 2^53 = 9007199254740992 を超える整数は 1 刻みで表せません**。したがって「往復しても壊れない整数」の上限は 2^53−1 = 9007199254740991(JavaScript の `Number.MAX_SAFE_INTEGER`)です。64bit の ID をそのまま JSON に載せる設計は、この値域で切るか、文字列として運ぶかのどちらかを選ぶ必要があります。
 
-**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L69)(`maxExactJsonInteger` を超える値を `invalid_argument`) / [BehaviorAttachmentArena::reserveRuntimeAttachmentIdentity()](../../src/core/gamelogic/behaviorarena.cpp#L1209)(ハンドル空間の枯渇として `overflow_error`) / [max_exact_struct_json_integer の定義](../../src/core/userpublic/details/schema/structfieldjson.hpp#L199)
+**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L69)(`maxExactJsonInteger` を超える値を `invalid_argument`) / [BehaviorAttachmentArena::reserveRuntimeAttachmentIdentity()](../../src/core/gamelogic/behaviorarena.cpp#L1230)(ハンドル空間の枯渇として `overflow_error`) / [max_exact_struct_json_integer の定義](../../src/core/userpublic/details/schema/structfieldjson.hpp#L199)
 
 **このコードベースでの注意**: 境界の取り方が 2 つあります。journal と behavior arena は 2^53−1(9007199254740991)を上限に、スキーマ検証側は 2^53(9007199254740992)を上限にしています。前者が「安全な整数」の定義どおり、後者は 2^53 ちょうどを許す(表現自体は可能な)側です。
 
@@ -1005,7 +1005,7 @@ JSON の数値には型の区別が無く、多くの実装(JavaScript の `JSON
 
 JSON-RPC 2.0 の request は `{"jsonrpc": "2.0", "method": ..., "params": ..., "id": ...}` で、`params` は配列かオブジェクトのみ(スカラーは不可)、`id` を持たないものは **notification** と呼ばれ応答を返してはいけません。response は `result` と `error` の**どちらか一方だけ**を持たなければならず、両方あるものも両方無いものも不正です。この仕様自体には転送方式が定められていないため、行区切り(1 行 1 メッセージ)や `Content-Length` ヘッダ(LSP 方式)といった framing は実装側の取り決めになります。行区切りを採る場合、Windows で生まれたテキストは行末に `\r` が残るので、JSON へ渡す前に落とす必要があります(`\r` は JSON の空白文字なので実害が出ないこともありますが、id の照合や digest には効きます)。予約エラーコードは前掲の項を参照してください。
 
-**使用場所**: [RpcServer::run()](../../src/core/communication/rpcserver.cpp#L1139)(`getline` の後に末尾 `\r` を落として 1 行 1 応答) / [RpcServer::handleLine()](../../src/core/communication/rpcserver.cpp#L1074) / [parseJsonRpcRequest()](../../src/project/jsonrpc.cpp#L148)
+**使用場所**: [RpcServer::run()](../../src/core/communication/rpcserver.cpp#L1141)(`getline` の後に末尾 `\r` を落として 1 行 1 応答) / [RpcServer::handleLine()](../../src/core/communication/rpcserver.cpp#L1076) / [parseJsonRpcRequest()](../../src/project/jsonrpc.cpp#L148)
 
 ## 10.6 座標・数値の約束事
 
@@ -1114,7 +1114,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 `glm::quat` のコンストラクタは **`{w, x, y, z}` の順**で成分を取ります(メンバ変数としての `.x .y .z .w` の並びとは別の話です)。一方 glTF の `rotation`、多くのワイヤ形式、そして人が書く JSON は `[x, y, z, w]` の順で格納します。したがって配列から読むときは必ず並べ替えが要り、忘れると「軸と角度が入れ替わった」ような、しかし一見それらしく見える回転になります。型は同じなのでコンパイラは何も言いません。
 
-**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1489) / [requireQuatField()](../../src/core/communication/rpcserver.cpp#L318)(配列の 0,1,2,3 を x,y,z,w に読んでから `glm::quat{w, x, y, z}` を組む)
+**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1489) / [requireQuatField()](../../src/core/communication/rpcserver.cpp#L319)(配列の 0,1,2,3 を x,y,z,w に読んでから `glm::quat{w, x, y, z}` を組む)
 
 ### TRS の合成順序と world → local の逆算
 
@@ -1228,7 +1228,7 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 **小さな例**: `fps = 60` で `t = 2.0` を指定すると frame 120 になります。`--frames 2` なら出力される 2 枚は、通常実行の 120 枚目・121 枚目と**バイト単位で一致**していなければおかしい。ここで丸めを `floor(t·fps − ε)` に変えると 119 が選ばれ、この一致が壊れます(壊れ方がテストで見えるので、丸めの選択はテストで固定できます)。
 
-**使用場所**: [`parseStartFrame()`](../../src/player/main.cpp#L314)(`llround(seconds * fps)`。テキストとして parse し、綴り違い・非有限・負を 1 つの名前へ集約)/ [replay prologue](../../src/core/appflow/loop.cpp#L672)(`start_frames − 1` フレームを capture 無しで回してから出力を始める)
+**使用場所**: [`parseStartFrame()`](../../src/player/main.cpp#L326)(`llround(seconds * fps)`。テキストとして parse し、綴り違い・非有限・負を 1 つの名前へ集約)/ [replay prologue](../../src/core/appflow/loop.cpp#L672)(`start_frames − 1` フレームを capture 無しで回してから出力を始める)
 
 ## 関連文書
 
