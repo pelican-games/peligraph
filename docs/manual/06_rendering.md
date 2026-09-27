@@ -2334,7 +2334,7 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `render_config.section_unlocated@1` | 同じ理由で `--feature-overlay` の適用先が見つからない([renderfeatureoverlay.cpp:142](../../src/project/renderfeatureoverlay.cpp#L146)) |
 | `graph.operation_unregistered@1` `{node, op}` | ノードの `op` をどの module も登録していない。綴り間違いのほか、**`PELICAN_WITH_ANIMATION=OFF` の build で `pose.*` を書いた**ときもこれ([graphmodule.cpp:257](../../src/project/graphmodule.cpp#L348)。§6.17) |
 | `graph.operation_unexecutable@1` `{backend, op, node}` | op は登録されているのに、それを実行する backend がこの build に無い。rendering 側は `backend: "pelican.render"` で、lowering できる 6 op 以外を rendering 区画に置いたときに出ます([rendergraphcomposition.cpp:58](../../src/project/rendergraphcomposition.cpp#L529))。姿勢側・値側にも同名の拒否があります([posegraph.cpp:91](../../src/core/animation/posegraph.cpp#L91) / [valuegraph.cpp:289](../../src/core/userpublic/valuegraph.cpp#L455)) |
-| `graph.node_duplicate@1` / `graph.node_missing@1` / `graph.input_unknown@1` / `graph.input_referenced@1` / `graph.output_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1` / `graph.definition_immutable@1` / `graph.layout_invalid@1` | `edit_graph_document` の **9 つ**の名前付き拒否(重複 id / 不在 node / 不明な入力 port / まだ供給されている `graph.input` の削除 / まだ参照されている node の削除 / definition の中の `graph.instance` / root の `graph.input` / 編集できない scope)。正は [`editGraphDocument()` の宣言コメント](../../src/project/graphcomposition.hpp#L199)(9 つ全部を列挙しています。9 つ目 `graph.layout_invalid@1` は N-6 の `set_layout`)と throw 箇所([graphcomposition.cpp:363](../../src/project/graphcomposition.cpp#L1327) 〜 [:534](../../src/project/graphcomposition.cpp#L2175))。一覧は [第13章](13_editor.md) |
+| `graph.node_duplicate@1` / `graph.node_missing@1` / `graph.input_unknown@1` / `graph.input_referenced@1` / `graph.output_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1` / `graph.definition_immutable@1` / `graph.layout_invalid@1` | `edit_graph_document` の **9 つ**の名前付き拒否(重複 id / 不在 node / 不明な入力 port / まだ供給されている `graph.input` の削除 / まだ参照されている node の削除 / definition の中の `graph.instance` / root の `graph.input` / 編集できない scope)。正は [`editGraphDocument()` の宣言コメント](../../src/project/graphcomposition.hpp#L201)(9 つ全部を列挙しています。9 つ目 `graph.layout_invalid@1` は N-6 の `set_layout`)と throw 箇所([graphcomposition.cpp:363](../../src/project/graphcomposition.cpp#L1327) 〜 [:534](../../src/project/graphcomposition.cpp#L2175))。一覧は [第13章](13_editor.md) |
 | `graph.override_shadowed@1` `{parameter}` | edge が供給している入力に `setGraphParameter` で実行時の上書きをかけた。**黙って消えない**([scenegraphruntime.cpp:123](../../src/core/loader/scenegraphruntime.cpp#L129)。§6.17) |
 | `unconnected graph input: <node>.<port>` / `unconnected subgraph input: <名前>` | 必須入力に edge も `parameters` も `default` も無い([graphcomposition.cpp:323](../../src/project/graphcomposition.cpp#L1270)、[:59](../../src/project/graphcomposition.cpp#L678)) |
 | `unknown graph definition: <名前>` / `recursive graph definition: <名前>` / `cyclic subgraph connection: <id>` | `graph.instance.definition` の綴り違い / 定義の再帰 / インスタンス同士の循環([graphcomposition.cpp:93](../../src/project/graphcomposition.cpp#L745) / [:108](../../src/project/graphcomposition.cpp#L768) / [:90](../../src/project/graphcomposition.cpp#L742)) |
@@ -2736,7 +2736,7 @@ rendering config のファイルは **`pelican.graph` root** です。最上位�
 }
 ```
 
-**規則は 1 つだけです**: `schema` / `version` / `definitions` / `nodes` / `outputs`(と `layout`)は共通グラフが所有し、**それ以外の rendering config のキーは全部 `rendering` 節に属します**。エンジンは composer の入口でこの文書を平らな rendering config へ lower してからパスを組みます([lowerRenderGraphDocument()](../../src/project/rendergraphcomposition.cpp#L1005))。`rendering` 節は、旧い legacy root(下)を最上位に置いたときと同じ意味で読まれます。
+**規則は 1 つだけです**: `schema` / `version` / `definitions` / `nodes` / `outputs`(と `layout`)は共通グラフが所有し、**それ以外の rendering config のキーは全部 `rendering` 節に属します**。エンジンは composer の入口でこの文書を平らな rendering config へ lower してからパスを組みます([lowerRenderGraphDocument()](../../src/project/rendergraphcomposition.cpp#L1015))。`rendering` 節は、旧い legacy root(下)を最上位に置いたときと同じ意味で読まれます。
 
 - **旧い legacy root は読めません(MG-2b)。**§6.2 の表のキーを最上位に直接並べた形は、起動時の読み込み([読み込みで legacy root を断る所](../../src/core/renderingpass/renderingpassconfigloader.cpp#L24))、`--feature-overlay` の重ね合わせ、レイトレの設定の読み出し、Studio / RPC の編集文書のどれもが `render_config.legacy_root@1` で断ります([`RenderConfigLegacyRoot`](../../src/project/renderconfigdocument.hpp#L37))。v0 は形式ごとに版を 1 つだけ持ち、旧い形は変換せず書き直す方針です。直すには、旧いファイル全体を `rendering` の値にして上の 5 キーを足します(`{"schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {}, "rendering": <旧い root>}`)。MG-2b は出荷の legacy root 5 本(`animgraph_demo` / `sprite_demo` / `vrm_xr_demo` / `raytracing_demo` / `pathtrace_demo`)をこの手で包みました。
 - `buffers` と `compute_tasks` は **グラフが所有します**。lowering は `render.buffer` / `render.compute` などのノードの接続からこの 2 つを作るので、`rendering` 節に書くと `render graph derives field from connections: buffers` のように名前付きで拒否します。buffer と compute task は graph node か task feature で書きます。
@@ -2772,11 +2772,11 @@ op は **module** が登録します。登録済み module はエンジンに最
 
 ### op の契約 — `domain` / `evaluation` / `change`
 
-どの op も、ポートの型のほかに 3 つの分類を宣言します(それぞれ別の enum です: [domain](../../src/project/graphcomposition.hpp#L217) / [evaluation](../../src/project/graphcomposition.hpp#L221) / [change](../../src/project/graphcomposition.hpp#L225))。
+どの op も、ポートの型のほかに 3 つの分類を宣言します(それぞれ別の enum です: [domain](../../src/project/graphcomposition.hpp#L219) / [evaluation](../../src/project/graphcomposition.hpp#L223) / [change](../../src/project/graphcomposition.hpp#L227))。
 
 | 分類 | 値 | 意味 |
 |---|---|---|
-| `domain` | `values` / `rendering` / `animation` | **どの実行段が評価するか**。`animation` は同じフレームの中で `values` より **1 段早く**走ります。だから **姿勢の op は「今フレームのスカラー」を読めて、逆向きは無い**(一方向)([graphcomposition.hpp:102](../../src/project/graphcomposition.hpp#L212)) |
+| `domain` | `values` / `rendering` / `animation` | **どの実行段が評価するか**。`animation` は同じフレームの中で `values` より **1 段早く**走ります。だから **姿勢の op は「今フレームのスカラー」を読めて、逆向きは無い**(一方向)([graphcomposition.hpp:102](../../src/project/graphcomposition.hpp#L214)) |
 | `evaluation` | `direct` / `replay` / `baked` / `recorded` | **評価をまたいで結果がどう作られるか**。`direct` は毎回同じ入力から同じ出力。`replay` は状態を持ち、「ここまでの経過」が要る(時計、ステートマシン、root motion の抽出) |
 | `change` | `value` / `recompile` / `rebuild` | **ノードの `parameters` を変えたときの代償**。`value` は値が変わるだけ、`rebuild` はノードを作り直す |
 
@@ -2900,7 +2900,7 @@ ANIMATION と AUDIO が ON の build では 5 module / 29 op。ANIMATION=OFF で
 | 段 | いつ | 何をする | 拒否が出る時 |
 |---|---|---|---|
 | 形の検査 | 編集のたび・読み込みのたび([`expandGraphDocument()`](../../src/project/graphcomposition.cpp#L1115)) | ループの parameters の形、分岐の入出力、入れ子、段の分類、式の文法と置き場所、展開名の参照 | 編集 RPC がその場で断る |
-| 解決の段 | 組み直し(preset・feature・integration・surface resources・snapshot を合成した後。[`resolveGraphDocumentAfterComposition()`](../../src/project/rendergraphcomposition.cpp#L1133)) | target の参照と history の検査、ループの回数と body の複写、`pass_replacements` の適用 | 組み直しが断る(編集 RPC では ticket の結果、起動では起動エラー) |
+| 解決の段 | 組み直し(preset・feature・integration・surface resources・snapshot を合成した後。[`resolveGraphDocumentAfterComposition()`](../../src/project/rendergraphcomposition.cpp#L1143)) | target の参照と history の検査、ループの回数と body の複写、`pass_replacements` の適用 | 組み直しが断る(編集 RPC では ticket の結果、起動では起動エラー) |
 
 保存されるのは書いた文書だけです。ループの展開結果(複写した pass・target、どの要素がどの分岐に入ったか)は派生物で、文書に書き戻されません。
 
@@ -2918,7 +2918,7 @@ rendering 節・preset・feature が宣言した render target を、グラフ�
 
 - parameters は **`name` と `type` だけ**で、`type`(image の論理型)は必須です。`name` に `@` を含めると断られます(前のフレームは下の `history` で読む)。
 - 名前が合成後に無ければ `graph.target_ref_unknown@1` `{node, name}`。検査は解決の段なので、**編集の時点では後から feature が足す target を名指してよい**のです。
-- `type` の `semantic` が `color_signal` / `depth` のときは、合成後の宣言と突き合わせます。format の先頭が `D` なら depth、それ以外は color で、違えば `graph.target_ref_type_mismatch@1` `{node, name, field: "kind", declared, actual}`。`arguments.topology`(省略は `two_d`)も `cube` / `two_d_array`(layers > 1)/ `two_d` と比べ、違えば `field: "topology"`。`legacy_opaque_image@1` は何も言わない型なので比べません([`checkTargetReference()`](../../src/project/rendergraphcomposition.cpp#L1040))。
+- `type` の `semantic` が `color_signal` / `depth` のときは、合成後の宣言と突き合わせます。format の先頭が `D` なら depth、それ以外は color で、違えば `graph.target_ref_type_mismatch@1` `{node, name, field: "kind", declared, actual}`。`arguments.topology`(省略は `two_d`)も `cube` / `two_d_array`(layers > 1)/ `two_d` と比べ、違えば `field: "topology"`。`legacy_opaque_image@1` は何も言わない型なので比べません([`checkTargetReference()`](../../src/project/rendergraphcomposition.cpp#L1050))。
 
 **前のフレームを読む `history`。**`render.compute` / `render.fullscreen` / `render.raster` の port に `"history": true` を書くと、その image を `<target>@history` として読みます。読みだけで、同じフレームのどの pass も待ちません。
 
@@ -2935,10 +2935,10 @@ graph の render node(`render.fullscreen` / `render.raster` / `render.material_p
 | `"canonical_anchor": "<anchor>"` | `insert: {after: <anchor>}` と同じ。anchor の bucket の中では feature の pass より後ろに入る。anchor は §6.5「canonical anchor」の 8 つ(`sprite` / `post_main` / `tonemap` / `post_ldr` / `pelican_ui` / `debug_draw` / `debug_text` / `imgui`) |
 | `"insert": {"before"｜"after": "<pass>", "declared": true}` | ✅LP-3b。feature を合成する**前**に、rendering 節と preset が宣言した pass の列(と graph が末尾に足した pass)の中へ置く。feature の `insert`・`pass_overrides`・integration の `requires_passes` がこの pass を名指せる。`decompose_material_pass` がこの形を書く。`render.fullscreen` / `render.raster` / `render.material_pass` だけが受ける |
 
-- `insert` と `canonical_anchor` は排他です。形の誤りは編集の時点で断られ、知らない anchor 名の `canonical_anchor` は `graph.insert_anchor_unknown@1` `{node, anchor}`(編集の時点)。`insert` の pass 名は解決の段で探し、どの family にも無ければ `graph.insert_anchor_unknown@1`、node の `pass_set` とは別の family にだけあれば `graph.insert_family_mismatch@1` `{node, anchor}` です([`placeRenderGraphPassRun()`](../../src/project/rendergraphcomposition.cpp#L979))。`declared: true` の置き場で anchor が見つからないときも同じ code で、feature の pass は anchor にできません。
+- `insert` と `canonical_anchor` は排他です。形の誤りは編集の時点で断られ、知らない anchor 名の `canonical_anchor` は `graph.insert_anchor_unknown@1` `{node, anchor}`(編集の時点)。`insert` の pass 名は解決の段で探し、どの family にも無ければ `graph.insert_anchor_unknown@1`、node の `pass_set` とは別の family にだけあれば `graph.insert_family_mismatch@1` `{node, anchor}` です([`placeRenderGraphPassRun()`](../../src/project/rendergraphcomposition.cpp#L989))。`declared: true` の置き場で anchor が見つからないときも同じ code で、feature の pass は anchor にできません。
 - `render.compute` には置き場所を書けません(compute task は常に全 pass の後に宣言されるため): `graph.insert_on_compute@1` `{node}`。body が compute だけのループに `insert` を書いたときも同じです。
 - 同じ family・同じ向き・同じ anchor を名指す graph の pass は **1 つの run** として入り、並びは graph の依存の順(edge と `after` / `before`。同順位は id 順)です。feature の pass のように逆順にはなりません。
-- **置き場所を書かない graph の pass と、置き場所の無いループの展開列**は、rendering 節の scene の pass と同じ扱いで、scene の pass の後・その family の最初の canonical anchor の前に入ります(待つ相手が後ろの bucket にあれば、その直後。✅LP-1e。[`insertAmongScenePasses()`](../../src/project/rendergraphcomposition.cpp#L1602))。ループの展開列は、graph の依存の順で隣にいる graph の pass があればその隣に入ります。
+- **置き場所を書かない graph の pass と、置き場所の無いループの展開列**は、rendering 節の scene の pass と同じ扱いで、scene の pass の後・その family の最初の canonical anchor の前に入ります(待つ相手が後ろの bucket にあれば、その直後。✅LP-1e。[`insertAmongScenePasses()`](../../src/project/rendergraphcomposition.cpp#L1612))。ループの展開列は、graph の依存の順で隣にいる graph の pass があればその隣に入ります。
 - **`pass_set` を省いた** graph の pass とループの body の pass は、合成後の config の**最初の** `rendering_passes` family に入ります(preset があれば preset の最初の family、無ければ rendering 節の最初の family、どちらも無いときだけ `main`。✅LP-1e。[`defaultGraphPassFamily()`](../../src/project/featurecompose.cpp#L3035))。LP-1e の前は常に `main` で、blank 雛形(family `main_render`)では family が 2 つになって断られていました。
 
 ### image node を読む pass の順(✅LP-6)
@@ -3069,7 +3069,7 @@ node の `inputs` は body の `graph.input` へ、`outputs` は body の出力�
 | ループの分岐の `when` の値 | 整数 | `element` / `index` / `count` |
 | ループの入力 edge の `element` | 整数 | 受け手がループなら `element` / `index` / `count`、そうでなければ定数だけ |
 
-変数は `element`(集合の値。`view_axis` では軸の値)、`index`(並べた後の位置)、`count`(並べた後の回数)です。表の外(root の node、instance の definition、body の node の許可されていない field)に式を書くと `field_not_allowed` です([`bodyExpressionPlace()`](../../src/project/graphcomposition.cpp#L574))。`mip_levels_of` / `layers_of` は合成後の target の `mip_levels` / `layers`(省略なら 1、cube の `layers` は 6)で、合成後に無い target、`shadow_depth` の pass が書く target(実行時に layer が伸びる)、extent に従う値は `not_static` です([`composedConstants()`](../../src/project/rendergraphcomposition.cpp#L1384))。body に value node があるループは、回数・`where`・`when` が合成の前に決まらなければなりません(決まらなければ `not_static`)。
+変数は `element`(集合の値。`view_axis` では軸の値)、`index`(並べた後の位置)、`count`(並べた後の回数)です。表の外(root の node、instance の definition、body の node の許可されていない field)に式を書くと `field_not_allowed` です([`bodyExpressionPlace()`](../../src/project/graphcomposition.cpp#L574))。`mip_levels_of` / `layers_of` は合成後の target の `mip_levels` / `layers`(省略なら 1、cube の `layers` は 6)で、合成後に無い target、`shadow_depth` の pass が書く target(実行時に layer が伸びる)、extent に従う値は `not_static` です([`composedConstants()`](../../src/project/rendergraphcomposition.cpp#L1394))。body に value node があるループは、回数・`where`・`when` が合成の前に決まらなければなりません(決まらなければ `not_static`)。
 
 式の拒否はすべて `graph.loop_expression_invalid@1` `{node, pointer, reason}` で、`reason` は `syntax` / `unknown_variable` / `not_integer` / `not_static` / `division_by_zero` / `overflow` / `too_long` / `field_not_allowed`、`pointer` は**書いた文書の中の JSON pointer** です(回ごとの評価で断られても、書いた場所を指します)。
 
@@ -3095,7 +3095,7 @@ node の `inputs` は body の `graph.input` へ、`outputs` は body の出力�
 
 ### expand の展開の規則(✅LP-1a / LP-1b / LP-Vb)
 
-解決の段の [`expandRenderGraphLoops()`](../../src/project/rendergraphcomposition.cpp#L1636) が、ループを依存の順に 1 本ずつ展開します。
+解決の段の [`expandRenderGraphLoops()`](../../src/project/rendergraphcomposition.cpp#L1646) が、ループを依存の順に 1 本ずつ展開します。
 
 1. **要素**: `range` は 0〜count-1、`view_axis` は 0〜軸の長さ-1(長さは組み直し時の provider の値。cascade は `cascade_count`、face は 6)。`where` → `order` → `limit` の順で絞って並べ、回ごとに最初に合った分岐を選びます。
 2. **上限**: 1 つのループの回は 64 まで([`graphLoopIterationLimit`](../../src/project/graphloop.hpp#L164))、graph 全体の pass と compute task は(ループの外の graph node を含めて)128 までで、超えると `graph.loop_expansion_limit@1` `{node, count, limit}`。
@@ -3158,12 +3158,12 @@ feature の instance は object 形で `pass_replacements` を持てます。値
 ]
 ```
 
-- 置き換えた pass・task は feature から外れ、置き換え先(ループなら展開した回の列)がその位置に入ります。`after` / `before`・`snapshot_after`・`frame_node_order`・`surface_resources.producer` の名前も置き換え先へ写ります(`after` は最後の回、`before` は最初の回)。置き換えた名前は `target_planning` から消えます([`applyRenderFeaturePassReplacements()`](../../src/project/rendergraphcomposition.cpp#L2238))。
+- 置き換えた pass・task は feature から外れ、置き換え先(ループなら展開した回の列)がその位置に入ります。`after` / `before`・`snapshot_after`・`frame_node_order`・`surface_resources.producer` の名前も置き換え先へ写ります(`after` は最後の回、`before` は最初の回)。置き換えた名前は `target_planning` から消えます([`applyRenderFeaturePassReplacements()`](../../src/project/rendergraphcomposition.cpp#L2248))。
 - feature の consumer の pass(影を受ける material pass など)を置き換えたときは、その名前が `material_consumers` / `fullscreen_consumers` から外れ、ループの展開の後で consumer がもう一度選ばれます(✅LP-Vb)。置き換え先の material pass も影の map などを受け取ります。
 - 置き換え先は、置き換えた pass が書いていたものを書かなければなりません(ループならどれかの回)。書かなければ `surface_resources` の producer の検査と同じ「no longer writes」の拒否です。
 - feature の pass・task でない名前は `render_feature.pass_replacement_unknown@1` `{feature, pass}`、graph の pass・task・ループでない置き換え先は `graph.node_missing@1` `{node, feature, pass}` です。置き換え先の family にその pass の family の pass が無ければ `graph.insert_family_mismatch@1`。draw_loop の id は書けません(その `render.material_pass` の id を書く)。
 
-**変種で外れる feature への依存。**preview / XR の変種で feature が外れると、その feature に依存する graph の node は同じ変種で**非活性**になります(変種の組み直し全体は落ちません。[`withoutExcludedGraphDependents()`](../../src/project/rendergraphcomposition.cpp#L2065))。理由([`RenderGraphDeactivatedNode`](../../src/project/renderloopreport.hpp#L59))は `target_ref`(その feature の target を指す)/ `insert`(その feature の pass か非活性の graph pass を anchor にする)/ `order`(`after` / `before` がその pass を指す)/ `pass_replacement`(その pass を置き換える)/ `loop_output`(非活性のループの出力を読む、または carry する)です。合成結果の `deactivated_graph_nodes` と、diagnostic の kind `graph_node_deactivated`(detail は `<variant>:<reason>:<feature>`)に出ます(これが RPC のどこに現れるかは未確認)。draw_loop は、その material pass と一緒に非活性になります。
+**変種で外れる feature への依存。**preview / XR の変種で feature が外れると、その feature に依存する graph の node は同じ変種で**非活性**になります(変種の組み直し全体は落ちません。[`withoutExcludedGraphDependents()`](../../src/project/rendergraphcomposition.cpp#L2075))。理由([`RenderGraphDeactivatedNode`](../../src/project/renderloopreport.hpp#L59))は `target_ref`(その feature の target を指す)/ `insert`(その feature の pass か非活性の graph pass を anchor にする)/ `order`(`after` / `before` がその pass を指す)/ `pass_replacement`(その pass を置き換える)/ `loop_output`(非活性のループの出力を読む、または carry する)です。合成結果の `deactivated_graph_nodes` と、diagnostic の kind `graph_node_deactivated`(detail は `<variant>:<reason>:<feature>`)に出ます(これが RPC のどこに現れるかは未確認)。draw_loop は、その material pass と一緒に非活性になります。
 
 ### 出荷する分解版 —— `engine://graphs/*.json`(✅LP-1c / LP-1d / LP-Vb)
 

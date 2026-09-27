@@ -1119,7 +1119,7 @@ P-2a-4b までは、`rendering` 相当の中身を最上位に直接書く **leg
 
 **包む関数はもうありません。** P-2a-4b では `wrapLegacyRenderingConfig()` が5キーを付けて legacy 設定を `rendering` へ入れる唯一の場所でしたが、読み手が graph root しか受けなくなったので MG-2b で撤去されました。雛形の [`rendering_config_json`](../../src/project/projecttemplate.cpp#L200) と [`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L229) は graph root の全文を直接書いています(blank の `present` の fragment は VI-2 から `engine://passthrough` で、雛形は shader を書きません)。
 
-**`rendering` 節には `buffers` / `compute_tasks` を書けません。** graph root の lowering（[`lowerRenderGraphDocument()`](../../src/project/rendergraphcomposition.cpp#L1005)）が、この2つを graph node（`render.buffer` / `render.compute`）の接続から作るため、節にあれば `render graph derives field from connections: <key>` で拒否します。この規則は MG-2b より前からあります。legacy root には lowering が無かったので根に書けましたが、legacy root が無くなったことでその書き方も無くなりました。テストで根に宣言していたものは task feature へ移されています。エディタの「root scope で compute_tasks / buffers を編集する」経路はこれで到達不能になり、後の掃除の WP（台帳の MG-3）に回っています。
+**`rendering` 節には `buffers` / `compute_tasks` を書けません。** graph root の lowering（[`lowerRenderGraphDocument()`](../../src/project/rendergraphcomposition.cpp#L1015)）が、この2つを graph node（`render.buffer` / `render.compute`）の接続から作るため、節にあれば `render graph derives field from connections: <key>` で拒否します。この規則は MG-2b より前からあります。legacy root には lowering が無かったので根に書けましたが、legacy root が無くなったことでその書き方も無くなりました。テストで根に宣言していたものは task feature へ移されています。エディタの「root scope で compute_tasks / buffers を編集する」経路はこれで到達不能になり、後の掃除の WP（台帳の MG-3）に回っています。
 
 編集側の唯一の書き手は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L654) で、graph root 自身の5キー（`schema` / `version` / `definitions` / `nodes` / `outputs`）と editor の `layout` は根へ、それ以外は `rendering.<key>` へ書きます。この関数はJSONを組み直さず、元のバイト列の中で該当メンバの範囲を差し替えます（[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288)）。理由は digest がファイル全体のバイト列に対して取られるためで、詳細は[第6章](06_rendering_vulkan_shader.md)にあります。
 
@@ -1139,13 +1139,13 @@ P-2a-4b までは、`rendering` 相当の中身を最上位に直接書く **leg
 
 ### 展開 — `expandGraphDocument()`
 
-[`expandGraphDocument()`](../../src/project/graphcomposition.hpp#L128) が instance を実体化し、[`ExpandedGraphDocument`](../../src/project/graphcomposition.hpp#L112) を返します。ここで大事なのは**元の文書が正本のまま**という点で、展開後のIDや由来（`origins`）は導出物であって書き戻されません。
+[`expandGraphDocument()`](../../src/project/graphcomposition.hpp#L130) が instance を実体化し、[`ExpandedGraphDocument`](../../src/project/graphcomposition.hpp#L114) を返します。ここで大事なのは**元の文書が正本のまま**という点で、展開後のIDや由来（`origins`）は導出物であって書き戻されません。
 
-instance の入力ポートがどこから値を取るかは `edge > parameters > default` の順で決まり、結果は [`GraphInstanceInput`](../../src/project/graphcomposition.hpp#L94) に記録されます。edge で繋がれたポートは**展開後にノードを残しません**（定義の中の消費側が外の生産者を直接指す）ので、この由来は「展開中の authoring 文書」からしか読めません。
+instance の入力ポートがどこから値を取るかは `edge > parameters > default` の順で決まり、結果は [`GraphInstanceInput`](../../src/project/graphcomposition.hpp#L96) に記録されます。edge で繋がれたポートは**展開後にノードを残しません**（定義の中の消費側が外の生産者を直接指す）ので、この由来は「展開中の authoring 文書」からしか読めません。
 
 ### 編集 — `editGraphDocument()`
 
-[`editGraphDocument()`](../../src/project/graphcomposition.hpp#L199) は op の並びを1本の候補文書へ順に適用し、**最後に1回だけ展開**します。途中で1つでも落ちれば候補ごと捨てられ、呼び手の文書は無傷です。受け付ける op は5種で、**宣言の上のコメントがその5種と8つの名前付き拒否を列挙しています**（`40099e3f` で `set_node_label` と残りの拒否名が追記され、コメントと実装が揃いました）。
+[`editGraphDocument()`](../../src/project/graphcomposition.hpp#L201) は op の並びを1本の候補文書へ順に適用し、**最後に1回だけ展開**します。途中で1つでも落ちれば候補ごと捨てられ、呼び手の文書は無傷です。受け付ける op は5種で、**宣言の上のコメントがその5種と8つの名前付き拒否を列挙しています**（`40099e3f` で `set_node_label` と残りの拒否名が追記され、コメントと実装が揃いました）。
 
 | op | 実装 | 断り方 |
 |---|---|---|
@@ -1159,24 +1159,24 @@ instance の入力ポートがどこから値を取るかは `edge > parameters 
 
 各opは任意で **`scope`** を取ります。省略（または根の名前）なら根の `nodes`、定義名なら `definitions.<名前>.nodes` を編集対象にします（[`resolveEditScope()`](../../src/project/graphcomposition.cpp#L1349)）。scope は op ごとに解決し直します —— 同じ並びの前のopが定義の中身を変えている可能性があるからです。定義の中に居る id を根から触ろうとすると `graph.definition_immutable@1` です。
 
-[`editGraphInstances()`](../../src/project/graphcomposition.hpp#L205)（instance の着脱）は、自分で文書を触らず**上のopへ翻訳してから** `editGraphDocument()` を呼びます。2つの入口が「何が妥当な編集か」で食い違えないようにするためです。
+[`editGraphInstances()`](../../src/project/graphcomposition.hpp#L207)（instance の着脱）は、自分で文書を触らず**上のopへ翻訳してから** `editGraphDocument()` を呼びます。2つの入口が「何が妥当な編集か」で食い違えないようにするためです。
 
 ### ループと合成の後の解決の段 ✅実装済み(LP-0a〜LP-Vb)
 
-`graph.loop`(書き方の正は manual 第6章 §6.18)は `graph.instance` と同じ構造の node で、処理が 2 つの段に分かれます。**形の検査は展開器**([`expandGraphDocument()`](../../src/project/graphcomposition.cpp#L1115) の中のループの展開)が編集と読み込みのたびに行い、各分岐の body を `<loop>/$<branch>/` の名前で 1 回だけ**雛形**として展開します(port の型の検査のため)。**回ごとの複写は合成の後**で、preset と feature の合成が済んでから [`resolveGraphDocumentAfterComposition()`](../../src/project/rendergraphcomposition.cpp#L1133) が [`expandRenderGraphLoops()`](../../src/project/rendergraphcomposition.cpp#L1636) を呼び、雛形の名前 `<loop>/$<branch>/` を `<loop>/<element>/` へ付け替えます。lowering はそのために、合成の後で使うもの(target の参照、history の読み、置き場所待ちの run、ループの body、ループの出力を読む側、draw_loop)を [`LoweredRenderGraphDocument`](../../src/project/rendergraphcomposition.hpp#L157) に残します。
+`graph.loop`(書き方の正は manual 第6章 §6.18)は `graph.instance` と同じ構造の node で、処理が 2 つの段に分かれます。**形の検査は展開器**([`expandGraphDocument()`](../../src/project/graphcomposition.cpp#L1115) の中のループの展開)が編集と読み込みのたびに行い、各分岐の body を `<loop>/$<branch>/` の名前で 1 回だけ**雛形**として展開します(port の型の検査のため)。**回ごとの複写は合成の後**で、preset と feature の合成が済んでから [`resolveGraphDocumentAfterComposition()`](../../src/project/rendergraphcomposition.cpp#L1143) が [`expandRenderGraphLoops()`](../../src/project/rendergraphcomposition.cpp#L1646) を呼び、雛形の名前 `<loop>/$<branch>/` を `<loop>/<element>/` へ付け替えます。lowering はそのために、合成の後で使うもの(target の参照、history の読み、置き場所待ちの run、ループの body、ループの出力を読む側、draw_loop)を [`LoweredRenderGraphDocument`](../../src/project/rendergraphcomposition.hpp#L158) に残します。
 
 | ファイル | 持ち物 |
 |---|---|
 | [`graphloop.hpp`](../../src/project/graphloop.hpp#L122) | ループの形 `GraphLoopShape`、段の分類 `classifyGraphLoopTier()`、要素 `graphLoopElements()`、上限(1 ループ 64 回、graph 全体 128 本) |
 | [`graphloopexpression.hpp`](../../src/project/graphloopexpression.hpp#L20) / `.cpp` | `$expr` / `$format` の文法(冒頭の BNF が正本)、検査と評価。実数は 64 bit 整数の分数で計算し、最後に 1 回だけ double にする |
 | [`renderloopreport.hpp`](../../src/project/renderloopreport.hpp#L15) | `get_frame_plan` の `loops[]` と `loop_origin`、変種で非活性にした graph の node(`RenderGraphDeactivatedNode`) |
-| [`rendergraphcomposition.hpp`](../../src/project/rendergraphcomposition.hpp#L25) / `.cpp` | `render.target_ref` の検査、置き場所の run(`placeRenderGraphPassRun()` / `placeDeclaredRenderGraphPassRuns()`)、expand の展開、`pass_replacements` の適用、変種で外れる feature への依存 |
+| [`rendergraphcomposition.hpp`](../../src/project/rendergraphcomposition.hpp#L26) / `.cpp` | `render.target_ref` の検査、置き場所の run(`placeRenderGraphPassRun()` / `placeDeclaredRenderGraphPassRuns()`)、expand の展開、`pass_replacements` の適用、変種で外れる feature への依存 |
 | [`materialdrawloop.hpp`](../../src/project/materialdrawloop.hpp#L97) / `.cpp` | draw_loop の純粋層: `MaterialDrawStep`、material の照合の鍵、分岐の選び方、`get_frame_plan` の要素と paging、LP-2 の拒否 code |
-| [`materialpassdecompose.hpp`](../../src/project/materialpassdecompose.hpp#L74) / `.cpp` | `decompose_material_pass` の文書の書き換え(editor 側は [`RenderConfigEditorService::decomposeMaterialPass()`](../../src/core/communication/renderconfigeditor.cpp#L2459) が 1 つの transaction に載せる) |
+| [`materialpassdecompose.hpp`](../../src/project/materialpassdecompose.hpp#L74) / `.cpp` | `decompose_material_pass` の文書の書き換え(editor 側は [`RenderConfigEditorService::decomposeMaterialPass()`](../../src/core/communication/renderconfigeditor.cpp#L2450) が 1 つの transaction に載せる) |
 | [`viewselect.hpp`](../../src/project/viewselect.hpp#L21) | `view_select` の 4 つの拒否 code と、座標と選択の照合 |
 | `src/core/resources/graphs/*.json` | 出荷する分解版の雛形 4 本(engine は読まない。`decomposes` を持つ) |
 
-合成の中の順は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3061) の中で、(1) graph の lowering(`pass_set` の既定は [`defaultGraphPassFamily()`](../../src/project/featurecompose.cpp#L3035))→ (2) `insert.declared` の run を宣言の列へ置く → (3) feature・integration の合成 → (4) 変種で外れる feature に依存する node を外す([`withoutExcludedGraphDependents()`](../../src/project/rendergraphcomposition.cpp#L2065))→ (5) 残りの run を置く → (6) surface resources の consumer の選択と snapshot → (7) 解決の段(target の参照の検査 → ループの展開 → draw_loop の報告 → [`applyRenderFeaturePassReplacements()`](../../src/project/rendergraphcomposition.cpp#L2238))→ (8) ループの回の中で consumer を選び直す、です。run を consumer の選択より前に置くのは graph で書いた material pass が影の map を受けるため(LP-3a)、(8) は置き換えた consumer の代わりの回が受けるため(LP-Vb)です。
+合成の中の順は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3061) の中で、(1) graph の lowering(`pass_set` の既定は [`defaultGraphPassFamily()`](../../src/project/featurecompose.cpp#L3035))→ (2) `insert.declared` の run を宣言の列へ置く → (3) feature・integration の合成 → (4) 変種で外れる feature に依存する node を外す([`withoutExcludedGraphDependents()`](../../src/project/rendergraphcomposition.cpp#L2075))→ (5) 残りの run を置く → (6) surface resources の consumer の選択と snapshot → (7) 解決の段(target の参照の検査 → ループの展開 → draw_loop の報告 → [`applyRenderFeaturePassReplacements()`](../../src/project/rendergraphcomposition.cpp#L2248))→ (8) ループの回の中で consumer を選び直す、です。run を consumer の選択より前に置くのは graph で書いた material pass が影の map を受けるため(LP-3a)、(8) は置き換えた consumer の代わりの回が受けるため(LP-Vb)です。
 
 > 🧩 **難所 — 回の順は名前に頼れない**: 展開器は node を id の辞書順に並べるので、`<loop>/10/x` は `<loop>/9/x` より前に来ます。そこで body の外の資源に触る回は、要素の順に明示の `after` でつながれます。回ごとの `render.image` だけに触る回はつながれず、並列にできます。
 
@@ -1198,13 +1198,13 @@ instance の入力ポートがどこから値を取るかは `edge > parameters 
 >     after += writer; downstream[writer] += reader   # 足した待ちも到達に入れる
 > ```
 >
-> **手がかり**: 呼ぶのは fullscreen / raster / compute の `access: "read"` の port と、snapshot_copy の `source` の 2 か所です。表は `render.image` だけを載せ、`render.target_ref` と buffer は対象外です。root の graph の pass は、ループの有無によらず依存の順に並べてから宣言します([その所](../../src/project/rendergraphcomposition.cpp#L791))。ループが無いときに id 順のままだと、`enforceCanonicalOrder` が宣言順で鎖をつなぐので、足した `after` と逆向きの辺ができて循環します。
+> **手がかり**: 呼ぶのは fullscreen / raster / compute の `access: "read"` の port と、snapshot_copy の `source` の 2 か所です。表は `render.image` だけを載せ、`render.target_ref` と buffer は対象外です。root の graph の pass は、ループの有無によらず依存の順に並べてから宣言します([その所](../../src/project/rendergraphcomposition.cpp#L801))。ループが無いときに id 順のままだと、`enforceCanonicalOrder` が宣言順で鎖をつなぐので、足した `after` と逆向きの辺ができて循環します。
 >
 > **不変条件**: 読み手の下流にいる書き手は待たない(到達を見てから足し、足した辺も到達に加える)ので、足した待ちが循環を作りません。規則の一覧は [design_graph_loops.md](../design_graph_loops.md) §5.2 です。
 
 ### 分割 — `partitionGraphDocument()`
 
-[`partitionGraphDocument()`](../../src/project/graphpartition.hpp#L28) は文書全体を検証してから、[`GraphExecutionPartitions`](../../src/project/graphpartition.hpp#L7) の3つへ分けます。どのopがどの領域かは、opを登録したモジュールが宣言します（[`GraphExecutionDomain`](../../src/project/graphcomposition.hpp#L217)）。CPUのスカラopを1つ足しても、分割側に新しいop名を教える必要はありません。
+[`partitionGraphDocument()`](../../src/project/graphpartition.hpp#L28) は文書全体を検証してから、[`GraphExecutionPartitions`](../../src/project/graphpartition.hpp#L7) の3つへ分けます。どのopがどの領域かは、opを登録したモジュールが宣言します（[`GraphExecutionDomain`](../../src/project/graphcomposition.hpp#L219)）。CPUのスカラopを1つ足しても、分割側に新しいop名を教える必要はありません。
 
 ```text
 values     … CPUのスカラ評価（value.* / audio.* / render.scalar）

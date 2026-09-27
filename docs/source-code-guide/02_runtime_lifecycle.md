@@ -425,9 +425,9 @@ ECSCore::update()
 | 走る場所 | 誰が | 何のために | 使う state |
 |---|---|---|---|
 | `update_game`（animation） | [`AnimationSystem::updatePoseGraphs()`](../../src/core/ecs/predefined/animationsystem.cpp#L253) | animation 分割の node が今フレーム消費するスカラを集める | [`poseGraphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L153) |
-| `render()` | [`Renderer` の publish](../../src/core/vkcore/renderer.cpp#L5797) | rendering 分割の sink（バッファ、音声、RT値）へ実際に書く | [`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L149) |
+| `render()` | [`Renderer` の publish](../../src/core/vkcore/renderer.cpp#L5810) | rendering 分割の sink（バッファ、音声、RT値）へ実際に書く | [`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L149) |
 
-**2回評価するのに state を分けているのが要点**です。`value.trigger_clock` のような「前回の評価が何をしたか」に依存する op は state を進めるので、1つの state を共有させると1フレームで2回進んでしまいます。だから `SceneLoader` は同じ文書に対して2つの `EvaluationState` を持ち、グラフ世代の切り替えでも両方を一緒に移送します（片方だけ置いていくと、描画側は走り続けたまま姿勢側のクロックだけが巻き戻ります）。順序は固定で、animation 分割は values 分割の1段後ろに置かれます（[分割の順序](../../src/project/graphpartition.hpp#L10) / [段の定義](../../src/project/graphcomposition.hpp#L214)）。ただし animation 側が描画側の評価結果を受け取っているわけではありません —— animation フェーズは**自分の state で values 分割を自分で評価し直します**（[`evaluateLowered()` の呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L368)）。2つの state が「同じ入力で1フレームに1回ずつ進む」ので、姿勢側と描画側は互いのクロックを進めないまま同じ数値を読みます（[コメントの規範](../../src/core/ecs/predefined/animationsystem.cpp#L355)）。
+**2回評価するのに state を分けているのが要点**です。`value.trigger_clock` のような「前回の評価が何をしたか」に依存する op は state を進めるので、1つの state を共有させると1フレームで2回進んでしまいます。だから `SceneLoader` は同じ文書に対して2つの `EvaluationState` を持ち、グラフ世代の切り替えでも両方を一緒に移送します（片方だけ置いていくと、描画側は走り続けたまま姿勢側のクロックだけが巻き戻ります）。順序は固定で、animation 分割は values 分割の1段後ろに置かれます（[分割の順序](../../src/project/graphpartition.hpp#L10) / [段の定義](../../src/project/graphcomposition.hpp#L216)）。ただし animation 側が描画側の評価結果を受け取っているわけではありません —— animation フェーズは**自分の state で values 分割を自分で評価し直します**（[`evaluateLowered()` の呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L368)）。2つの state が「同じ入力で1フレームに1回ずつ進む」ので、姿勢側と描画側は互いのクロックを進めないまま同じ数値を読みます（[コメントの規範](../../src/core/ecs/predefined/animationsystem.cpp#L355)）。
 
 描画側の評価結果は、描いたその場で [`publishGraphValues()`](../../src/core/loader/scenegraphruntime.cpp#L144) がスナップショットとして置いていきます。読み手が自分でもう一度評価すると**クロックが進みイベントが消費される**ので、値を持ち出せるのはこの1点だけです。詳細は[第3章 §3.5](03_project_and_loading.md)。
 
@@ -522,7 +522,7 @@ ECSCore::update()
 
 ## 2.8 描画フレーム
 
-状態更新後に [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L6388) が呼ばれます（windowedでは [`renderFlatFrameWithOptionalCapture()`](../../src/core/appflow/loop.cpp#L329) 経由）。WP128以降、`render()`は1-viewのアダプタで、実体は [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4932) です。
+状態更新後に [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L6401) が呼ばれます（windowedでは [`renderFlatFrameWithOptionalCapture()`](../../src/core/appflow/loop.cpp#L329) 経由）。WP128以降、`render()`は1-viewのアダプタで、実体は [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4945) です。
 
 1. `DeletionQueue.beginFrame()`で安全になった旧GPU資源を解放。
 2. view数変化・`set_time`・camera不連続を検知してtemporal historyをリセット。
