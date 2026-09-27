@@ -166,6 +166,15 @@
 3. game の event の pending を捨てる。game の時計とフレームを 0 に戻し、`scene_start_time = 0` にする
 4. game logic の DLL が読み込まれていれば、reload する。こうして game の system の static な状態を毎回まっさらにする。そのあと、今の authoring から runtime を作り直し、behavior を作って `onInit` を走らせる(`load_scene` と同じ、ID を保つ経路)
 
+**PM-2 の実装(`src/core/communication/rpcserver.cpp` の `set_play_state`)**。実物の順は次のとおり。
+
+1. `play_busy`(上の 1 と同じ条件。`data` は §10)
+2. game logic の DLL が読み込まれていれば reload する(`edit` の間の reload なので、眠った `edit` の runtime が作り直される)。**input replay(`--replay`)と golden の起動では reload を飛ばす**(reload はその run の決定性を壊すので、それらの driver は reload を断る。DLL は持っているものを使い続ける)。reload が失敗すると、その reload のエラーの code(無ければ `game_logic_reload_failed@1`)で断り、セッションは始まらない(`data` は §10)
+3. **scene のある engine だけ**、セッションを作って保存する(`PlaySession::begin`、`src/core/communication/playsession.hpp`)。保存するのは authoring の文書(全 scene と `AuthoringObjectId`)、`current_scene_id`、editor の履歴(journal・last_writers・undo / redo の stack。editor の無い engine では履歴は無し)と、そのときの journal の長さ(記録の起点)。**authority は保存しない**(§6.3)。scene の無い engine はセッションを作らず、PM-1b と同じく作り直すだけで Play と Stop をする
+4. `internal::changePlayState()` が game の event の pending を捨て、状態を移し、game の時計の時刻を覚えて時計とフレームを 0 に戻し(`EngineTime::beginGameSession`、PM-1b)、behavior の眠りを解き、preview を `scene_transition` で中止してから今の authoring を `load_scene` と同じ経路で作り直す。ここで constructor と `onInit` が走る。作り直しが投げると、セッションを捨てて error を返す
+
+設計の上の 2 の「preview の epoch」は保存しない(番号は戻さないので)。時刻は `EngineTime` が覚える(PlaySession は持たない)。
+
 ### 6.2 再生中
 
 - 編集は今どおり、authoring と runtime の両方に効き、editor の履歴にも積む
@@ -175,6 +184,10 @@
   - `load_scene`
   - `import_scene_snapshot`
 - game のコードが `ctx.loadScene` で scene を替えるのは許す。そのとき editor の今の scene も替わる。その後の編集は、今と同じく gate の epoch が進むので `gate_closed` で断られる(仕様として manual に書く)
+- PM-2 の実装
+  - 記録は別に持たず、journal のうちセッションの起点より後の項目から毎回読む(`PlaySession::recordedEdits`)。`operation_kind` が `undo` / `redo` の項目は、`source_transaction_id` が記録の中の編集を指せばその行を消し(自分は積まない)、指さなければ自分を積む(セッションの前の編集の undo など)。そのため、undo で消した編集を redo すると、行は **redo 自身の transaction_id** で戻る。行は `{transaction_id, actor}`
+  - `play_session_active` は **セッションがあるときだけ** 断る(`data` は §10)。`--start-state` を省いた起動の `playing` のようにセッションが無ければ断らない。`save_scene` と `import_scene_snapshot` は editor の RPC の hook(`refuse_during_play_session`)、`load_scene` は handler の中で断る。ImGui の inspector の Save は RPC を通らないので、断る対象に入っていない
+  - `ctx.loadScene` で替えた scene は、Stop で保存した `current_scene_id` の scene に戻る(test の「each session starts a fresh game DLL, and stopping brings back the first scene and silence」)
 
 ### 6.3 終える(`→ edit`)
 
@@ -190,6 +203,22 @@
    - `EditorEditCoordinator` に、engine 内部の snapshot / restore を足す
 5. `keep` に挙がった編集を当て直す(§7)
 6. game の時計を、始める前の時刻に戻し、`scene_start_time = 0` にする。`edit` の runtime を作り直す(behavior は instance を持たない形)
+
+**PM-2 の実装(`set_play_state` の → `edit`)**。上の順から 2 か所を変えた。実物の順は次のとおり。
+
+1. `keep` の形を調べる(`-32602`。§7)。次に `play_busy`。次に、`keep` が挙げた transaction_id がセッションの記録に無ければ `play_keep_unknown_transaction`(ここまでは何も変えない)
+2. `internal::changePlayState()` が game の event の pending を捨て、状態を `edit` にし、game の時計を始める前の時刻に戻し(`EngineTime::endGameSession`。セッションを経ない起動なら 0)、behavior を眠らせる。続けて渡された関数の中で
+   - preview を `scene_transition` で中止し、audio を全部止める(`Audio::stopAll`、§9)
+   - **セッションがあれば**、保存した authoring を `ProjectBasicConfig::prepareRestoredSceneMetadata`(`src/core/loader/basicconfig.hpp`)で出し直し、保存した `current_scene_id` の scene を `SceneLoadRoot::rpc` の読み込みで読む。この読み込みが今の runtime を片付け(behavior の `onDestroy`。spawn されたものは消える)、戻した authoring から眠った `edit` の runtime を作る
+     - 中身と `AuthoringObjectId` は保存時のまま、`SceneRevision` は今の値 +1(`AuthoringSceneDocument::restagedAuthoring`。巻き戻さない)、`next_authoring_object_id` は保存時と今の大きい方
+     - **`active_authority` は戻さない**。読み込みが新しい authority を与え、その epoch が editor の gate を閉じる(それより前に受け付けたものは commit できない)。上の 3 の「保存時の値に戻し、gate の epoch は進める」は、authority の `scene_epoch` が gate の epoch そのものなので、戻すことと進めることが両立しない(実装者の報告)
+     - ディスクの基準(persistence baseline)は変えない。セッションの間は保存を断るので、ファイルはセッションの始めのまま
+     - セッションが無ければ(`--start-state` を省いた起動の最初の Stop、scene の無い engine)、PM-1b と同じく今の authoring から作り直すだけで、何も戻さない
+   - 作り直しが投げると、状態・時計・眠りを戻して error を返す。セッションは残る
+3. セッションがあれば editor の履歴を戻す(`EditorEditCoordinator::restoreHistory`。journal・last_writers・undo / redo の stack を置き換え、gate の epoch を進める。ticket・txn・preview の番号は戻さない)。ここでセッションを閉じる
+4. `keep` があれば当て直す(§7)
+
+変えた所: 設計の順は「履歴を戻す → keep を当て直す → `edit` の runtime を作り直す」だったが、実物は「戻した authoring から `edit` の runtime を作る → 履歴を戻す → keep を当て直す」。当て直しは authoring だけでなく runtime にも効く(editor の edit と同じ経路)ので、runtime を先に作る。もう 1 つは `active_authority` を戻さないこと(上)。
 
 ### 6.4 戻す範囲
 
@@ -220,6 +249,14 @@
 - game が runtime で変えた値(behavior が動かした位置など)を残したいとき
   - Studio が再生中に runtime の値を読み、その値を書く編集を送る。それを keep に挙げる
   - engine に専用の口は足さない
+- PM-2 の実装
+  - `keep` は `"all"` か transaction_id(空でない文字列)の配列。重複は 1 つにまとめる。形の誤りと、`edit` 以外への移りに `keep` を書くことは `-32602`
+  - 当て直しの production の入口は `EditorEditCoordinator::replayJournalRecords`(`src/core/communication/editorjournal.hpp`)。記録の順に、各項目の forward の操作を今の revision を base に、behavior の handle を今の attachment へ rebind して実行する。spawn は closure の `AuthoringObjectId` で戻る
+  - 当て直せた項目は、journal の 1 項目(`operation_kind` `"play_keep"`)にまとまり、当て直せた最後の項目の actor の undo stack に積まれる(その actor の redo stack は空にする)。その actor の undo 1 回で全部が外れる
+  - 当て直せない項目は、止めた editor のエラーの code 名で `not_kept` に載る(test では、作る編集を残さずにその object を触る編集だけを残すと `closure_unresolvable`)
+  - 返り値: `keep` を書いたときは `not_kept` が必ず付き(全部当て直せたら `[]`)、1 つでも当て直せたら `kept_transaction_id`(上の 1 項目の transaction_id)が付く
+  - セッションが無い → `edit`(`--start-state` を省いた起動の最初の Stop)では記録が空なので、`keep: "all"` は `not_kept: []`、transaction_id を挙げると `play_keep_unknown_transaction`(`data.session` が `false`)
+  - 「作って動かした」を残した後の undo は、同じ transaction で object の transform を書いてから消す。editor の transform の射影は、同じ transaction で消える object を外すようにした(`src/core/communication/editorruntimefactory.cpp`。それまでは 1 回の edit で「transform を書く → object を消す」が失敗していた)
 
 ## 8. RPC
 
@@ -234,6 +271,12 @@
   - `keep` を書くと `-32602`(PM-2 まで)。それ以外の鍵も `-32602`
   - `edit` との間を移るときは、今の scene を `load_scene` と同じ経路(`SceneLoadRoot::rpc`、preview は `scene_transition` で中止)で作り直す。作り直しが投げると、状態・game の時計・behavior の眠りを元に戻し、error を返す
   - 既定の起動(`--start-state` を省いた)でも `edit` へ移れる。そのとき view と editor の overlay は変えない(§4.4)
+- PM-2 の `set_play_state`
+  - 鍵は `state` と `keep` だけ(他は `-32602`)。`keep` は `state: "edit"` のときだけ書ける(§7)
+  - 返り値: `{state, previous}` に、`keep` を書いたときは `not_kept: [{transaction_id, code}]`(必ず)と、当て直せたときは `kept_transaction_id` を足す
+  - `play_busy` は `edit` との間を移るときだけ見る(`playing ↔ paused` と同じ状態への指示は見ない)
+- PM-2 の `get_status.play`: `session` はセッションがあるか、`recorded_edits` は記録の `[{transaction_id, actor}]`(セッションが無ければ `[]`)。undo / redo が記録の編集を指せばその行が消え、指さなければ undo / redo 自身が載る。redo で戻った行の id は redo の transaction_id(§6.2)
+- PM-2 の `start_input_record` / `start_input_replay`: `--start-state edit` で起動した engine では、どの状態でも `offline.mode_conflict@1` で断る(コマンドラインの `--record-input` / `--replay` の拒否と同じ理由。§10)
 - `set_view_camera {camera: "editor" | "game"}`: `edit` / `paused` で使える
   - 返り値(PM-1b): `{camera, previous}`(どちらも `"editor"` / `"game"`)。同じ view への指示は何も変えずに成功する
   - `playing` では `play_state_mismatch`(`data` に `state` と `required: ["edit", "paused"]`)。editor camera の無い起動で `editor` を頼むと `view_camera_unavailable`(`data` に `camera`)。鍵が `camera` だけでない・値が 2 つ以外は `-32602`
@@ -271,7 +314,18 @@
 | `play_keep_unknown_transaction` | `keep` の transaction_id がセッションの記録に無い |
 | `step_frame_windowed` | 窓ありで `step_frame` を使った |
 | `offline.mode_conflict@1`(既存) | `--start-state edit` と両立しない引数 |
+| `offline.mode_conflict@1`(RPC、PM-2) | `--start-state edit` で起動した engine の `start_input_record` / `start_input_replay`(状態を問わない) |
 | (引数の誤り) | `--start-state` の値の誤り、`advance_frames` の `count` が範囲外 |
+
+PM-2 の拒否の `data`(どれも JSON-RPC の `-32000`。`src/core/communication/rpcserver.cpp`)
+
+| code | `data` |
+|---|---|
+| `play_busy` | `{code, state, requested, pending_ticket_ids, open_preview_lease}`(`state` は今の状態、`requested` は頼まれた状態) |
+| `play_session_active` | `{code, method, state}`(`method` は `save_scene` / `load_scene` / `import_scene_snapshot`) |
+| `play_keep_unknown_transaction` | `{code, transaction_id, session, recorded_edits}`(`recorded_edits` は `get_status.play` と同じ形) |
+| `offline.mode_conflict@1`(RPC) | `{code, method, start_state: "edit"}` |
+| Play の始めの DLL の reload の失敗 | `{code, state, requested, error_fields}`(`code` は reload のエラーの code。無ければ `game_logic_reload_failed@1`) |
 
 ## 11. WP の切り方
 
@@ -307,6 +361,19 @@
   - Play の始めに DLL を reload
   - `play_busy` / `play_session_active` / `play_keep_unknown_transaction`
   - audio の全体の停止
+  - **着地 `04666d59`**(2026-09-27)。この節の計画との差
+    - Stop の順を「戻した authoring から `edit` の runtime を作る → 履歴を戻す → keep を当て直す」にした(§6.3。当て直しは runtime にも効くため)
+    - `active_authority` は戻さず、読み直しが与える新しい authority の epoch で gate を閉じる(§6.3)
+    - Play の始めの DLL の reload は、input replay と golden の起動では飛ばす。reload の失敗はその code で断り、セッションは始まらない(§6.1)
+    - scene の無い engine はセッションを作らない(§6.1)
+    - 保存しないもの: preview の epoch(番号は戻さない)。時刻は PM-1b の `EngineTime` が覚える
+    - 返り値に `kept_transaction_id` を足した(§7・§8)
+    - `play_session_active` はセッションがあるときだけ。`--start-state` を省いた `playing` の起動では断らない(§6.2)
+    - PM-1b の残した穴(`edit` 起動での `start_input_record` / `start_input_replay`)は `offline.mode_conflict@1` で塞いだ(§8・§10)
+    - `play_busy`・`play_session_active`・`play_keep_unknown_transaction` は `data.code` を持つ(形は §10)。`load_scene` の `play_session_active` もこの形
+    - 計画に無かった修正: editor の transform の射影から、同じ transaction で消える object を外した(§7。kept の「作って動かした」の undo で当たった既存の穴)
+    - `Audio::stopAll` は backend の仮想関数も足した(null は voice を捨て、miniaudio は各 voice を止めて解放する。全体の一時停止・bus の音量・decode の cache は残す)
+    - test: `pm1b_edit_state_rpc_test` の PM-2 の 4 件(authoring と履歴が戻る / keep / セッションごとに新しい DLL・始めの scene に戻る・音が消える / `edit` 起動での input の記録と再生の拒否)と `audio_test` の 1 件(`stopAll`)
 - **PM-3**(Studio、GUI session): ボタン、表示、keep、`--start-state edit` を渡す
   - Pause / Step のボタンは PM-1a の後に出してよい
   - `--start-state edit` と Stop は、PM-2 の着地を待つ。PM-1b だけで出すと、「停止で戻す」という利用者の決定と逆になるため

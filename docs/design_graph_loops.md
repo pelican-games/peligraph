@@ -478,8 +478,35 @@ graph の変換は、preset と feature の合成より先に走る(§1.1)。一
 
 **外部の資源**(body の外の image・buffer、`render.target_ref`)に触る回は、読みだけの回も含めて、並べた順に**明示の `after`** でつなぐ。
 
-- 理由:展開器は id を辞書順に並べる(`<loop>/10/x` は `<loop>/9/x` より前)。資源 node が producer のとき、lowering は `after` を足さない。宣言順だけに頼ると、10 回以上や `descending` で順が壊れる。
+- 理由:展開器は id を辞書順に並べる(`<loop>/10/x` は `<loop>/9/x` より前)。資源 node が producer のとき、lowering が足す `after` は下の「image node の読み」(LP-6)の分だけで、そこでも別の body の書き手は待たない。宣言順だけに頼ると、10 回以上や `descending` で順が壊れる。
 - 回ごとの `render.image` だけに触る回どうしは、つながない(並列にできる)。
+
+**image node の読みは、その image を書く graph の pass を待つ(LP-6、`03725036`)**
+
+`render.image` node は target を宣言するだけで pass を作らない。そのため LP-6 の前は、image node から読む pass は資源の名前だけを受け取り、その image を書く pass を待たなかった(順は id の順任せ)。root の image を読む body がその書き手より前に置かれると、frame planner が `Pass input target is not produced as an earlier output` で断っていた。id の順が依存と逆になった root の pass 2 本にも同じ穴があった。LP-6 から、lowering([`lowerRenderGraphDocumentForComposition()`](../src/project/rendergraphcomposition.cpp#L147))は image ごとに書き手の表を作り([書き手の表](../src/project/rendergraphcomposition.cpp#L291))、読み手の `after` にその書き手を足す([`waitOnImageWriters`](../src/project/rendergraphcomposition.cpp#L413))。
+
+- **書き手**: 次のものが `resourceName` でその `render.image` を指す graph の pass。ループの出力の endpoint は書き手に数えない(ループの出力を書くのは回の複写で、雛形ではないため)
+  - `render.fullscreen` / `render.raster` / `render.compute` の、`access` が `write` / `read_write` の port と attachment の port
+  - `render.material_pass` の color の socket と `depth`
+  - `render.shadow_depth` の `depth`
+  - `render.snapshot_copy` の `destination`
+  - root の pass は root の image の書き手になる。body の pass は、root の image か自分の body の image の書き手になる
+- **待つ読み**
+  - `render.fullscreen` / `render.raster` / `render.compute` の、`access: "read"` で attachment でない port([呼ぶ所](../src/project/rendergraphcomposition.cpp#L694))。`binding: "input"` の番号付きの入力(LP-1d)もこれに入る
+  - `render.snapshot_copy` の `source`([呼ぶ所](../src/project/rendergraphcomposition.cpp#L502))
+  - carry の最初の値を image node から取るループも、その image の書き手の後に並ぶ(test の 1 件目)
+- **待たないもの**
+  - `history: true` の読み(前のフレームを読む)
+  - 自分自身
+  - 別の body の書き手。root の読み手から見た body の書き手も待たない
+  - 待てない書き手: graphics の pass が待つのは、同じ family の pass と compute task。compute task が待つのは compute task だけ(graphics の pass は待てない)
+  - 読み手の下流にいる書き手: edge、`after` / `before`、`snapshot_after`、body の node からそのループへの順で、読み手から辿り着ける書き手。待ちを 1 つ足すたびにその辺も到達に加えるので、足した待ちが循環を作らない
+  - `read_write` の port の読み(待つのは `access: "read"` だけ)
+- **対象外**
+  - `render.target_ref`: 指す target は graph の外(rendering 節・preset・feature)で宣言され、graph の外の pass も書く。書き手の表は `render.image` の node だけを載せる。順は上の明示の `after` か置き場所で書く
+  - buffer(`render.buffer` / `render.attribute`): planner が buffer を import として扱う今の意味のまま残す(commit の記述)
+- **root の graph pass は、ループの有無にかかわらず依存の順に宣言する**(LP-6)。LP-1a からループのある graph では、graph の pass とループを 1 つの依存の順(edge、`after` / `before`、ループの出力の読み、body から外の pass への edge。同順位は id 順)に並べて宣言していた([その順を作る所](../src/project/rendergraphcomposition.cpp#L791))。LP-6 の前はループが無いと id 順のままで、`enforceCanonicalOrder` が family の pass を宣言順で鎖につなぐため、id 順が依存と逆の 3 本(image node の読み手・間の pass・書き手)で循環になっていた
+- test は [`featurecompose_test.cpp` の LP-6 の 3 件](../test/featurecompose_test.cpp#L6179)(carry の最初の値 / 書き手の後に走る・id 順の間の pass・複数の書き手・history は待たない / 下流の書き手は待たない・id 順によらない)
 
 ### 5.3 一体版との関係
 
@@ -750,6 +777,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | LP-1e | 置き場所の無い graph の pass とループの既定の位置、`pass_set` の既定の family(§6) | LP-1a | `b429f31c` |
 | RD-1 | render 文書の丸ごとの読み取りと、CAS の下での書き戻し(§9 の undo) | LP-3b | `3a0f55b1` |
 | RD-1b | RD-1 の作成と削除(§9 の undo) | RD-1 | `6c77d4f8` |
+| LP-6 | image node の読みが、その image を書く graph の pass を待つ。root の graph pass をループの有無によらず依存の順に宣言する(§5.2) | LP-1a | `03725036` |
 
 **docs**:各 WP で次を更新する。
 

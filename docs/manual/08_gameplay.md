@@ -176,7 +176,16 @@ engine は RPC の `set_play_state` で一時停止でき、`advance_frames` で
 - **走らないもの**: behavior の constructor・`onInit`・`onUpdate`・イベントの受け取り(behavior は instance を作らない「眠った」attachment になります)、game の system、イベントの配送、game DLL が登録した animation の phase。したがって `ctx.spawn` / `ctx.loadScene` を呼ぶコードも走りません
 - **走るもの**: scene のデータを作るための、ゲームの component の JSON の読み込みと `init()`、behavior の params の正規化。`edit` の読み込みでも component はできるので、ここに副作用を書くと `edit` でも起きます
 - **Play(`edit` → `playing` / `paused`)** で engine は scene を作り直し、そこで behavior の constructor と `onInit` が走ります。`ctx.time()` はそのとき 0 から始まります。**Stop(→ `edit`)** では `onDestroy` が走り、spawn した object は消えます
-- game の system の static な状態は Play のたびには初期化されません(Play の始めに DLL を読み直すのは PM-2 の予定です)
+- ✅PM-2 から、Play のたびに game logic の DLL が読み直され、game の system の static な状態は初めからになります(下の「再生のセッションとゲームコード」)
+
+### 再生のセッションとゲームコード(✅PM-2)
+
+`edit` から Play した run は**再生のセッション**で、Stop で scene が Play の前に戻ります(RPC と戻る範囲の表は [第13章](13_editor.md) §13.5 の「再生のセッション」)。ゲームコードから見ると次のとおりです。
+
+- **Play のたびに DLL の新しい写しが読まれます。**game の system の instance は関数ローカルの static(§8.3)なので、メンバに持った数や状態は Play ごとに初めからです(test では、フレームを数える system の数が次のセッションで 1 から数え直します)。読み直しは behavior の `onInit` より前です。`--replay` と golden の起動では読み直しません(その run の決定性を壊すため)。読み直しに失敗すると Play そのものが断られます
+- **Stop で消えるもの**: `ctx.spawn` で作った object(behavior には `onDestroy` が走ります)、鳴っている音(全部止まり、持っていた handle は何も指さなくなります)、`ctx.loadScene` で替えた scene(Play を始めた scene に戻ります)
+- **Stop で戻らないもの**: `saveData` で書いた Persistence(§8.12)。ファイルに書いたものはそのまま残り、次の Play でも読めます
+- `--start-state` を省いて起動した engine(単体の player と今の Studio)は、起動した瞬間から `playing` で、セッションはありません。そこから `edit` へ移ったときは何も戻らず、今の authoring から作り直すだけです
 
 ### ドメインファサード
 
@@ -212,7 +221,7 @@ engine は RPC の `set_play_state` で一時停止でき、`advance_frames` で
 | 同上を `onInit` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | `playSound` / `stopSound` / `setBusVolume` / `busVolume` / `isPlaying` は同じ例外を投げる。`setSoundVolume` / `setSoundPitch` / `setSoundPaused` は build を見る前に `false` を返す(ロード中は ON の build でも `false`) |
 | 同上を `onDestroy` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | 9 本とも例外にならず、空で答える: 無効な `SoundHandle` / `false` / `0.0` / `soundState` は `nullopt`(✅PG-2b。[`soundState` の包み](../../src/core/userpublic/gamecontext.cpp#L673))。拒否は記録に残る: scene のロード/破棄トランザクションの中ではロード結果の `effect_errors` に `build_feature_disabled@1`(`phase` は `destroy`)、トランザクションの無い `onDestroy`(プレイ中の object 削除、ゲーム DLL の解放、`deactivateAll`)では engine log に `build_feature_disabled@1 in a destruction callback: …`。トランザクションの中の `setSoundVolume` / `setSoundPitch` / `setSoundPaused` は、ON の build と同じく build を見る前に `false` を返すので何も記録されない |
 | `ctx.physics()` の 5 本を `onDestroy` の中で呼ぶ | `PELICAN_WITH_PHYSICS=OFF`、または provider が 0 本 | 例外にならず、空で答える: `raycastAll` / `overlapAll` / `shapeCastAll` は空の配列、`raycastClosest` / `shapeCastClosest` は `nullopt`(✅PG-2b)。これは「何にも当たらなかった」と同じ答えで、見分けられるのは記録だけです。記録は audio と同じ場所(トランザクションの中なら `effect_errors`、無ければ engine log)に、`build_feature_disabled@1` か `physics.provider_unavailable@1` で残る |
-| `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=OFF` | `BuildFeatureCallDisabledError`。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_PHYSICS"`。rpc の `raycast` は JSON-RPC の error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b。[受け口](../../src/core/communication/rpcserver.cpp#L1155)) |
+| `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=OFF` | `BuildFeatureCallDisabledError`。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_PHYSICS"`。rpc の `raycast` は JSON-RPC の error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b。[受け口](../../src/core/communication/rpcserver.cpp#L1253)) |
 | `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=ON` で provider が 0 本(`PELICAN_WITH_BUILTIN_PHYSICS` と `PELICAN_WITH_JOLT_PHYSICS` が両方 OFF) | ゲーム DLL がそのクエリの provider を登録していなければ [`phys::ProviderUnavailableError`](../../src/core/phys/physquery.hpp#L102) を投げる。`code()` = `physics.provider_unavailable@1`。空の結果(「何にも当たらなかった」)は返さない。rpc の `raycast` も同じ場合は JSON-RPC の error(code `-32000`、message はこの例外の `what()`)を返す |
 | `ctx.animation().setParameter` / `forceState` | `PELICAN_WITH_ANIMATION=OFF` | 例外ではなく `Animation::Status::not_found`。シーンのロード/破棄トランザクションの中では、ON の build と同じく `phase_order_error` |
 
@@ -339,7 +348,7 @@ PELICAN_REGISTER_SYSTEM(Gun, 100);
 - 境界より前に `materialize` / `worldTransform` を呼ぶと `object.not_materialized@1` です。境界の後のフレームでは、そのフレームのゲームコードの全部から見えます。
 - 1 つの境界の中では、要求を**呼んだ順**に実行します。spawn と destroy も混ぜて呼んだ順です。まだ実体化していない spawn を destroy すると、同じ境界で作ってから消します(`onInit` の後に `onDestroy`)。
 - 境界で起きること: ECS の entity と描画のインスタンスを作り、collider(と model の衝突 mesh)を物理に `runtime_only` で登録し、最後に behavior を付けて `onInit` を呼びます。`onInit` が例外を投げたら、**その spawn だけ**を巻き戻します(init 済みの behavior に `onDestroy`、entity・collider・描画を戻す)。ほかの spawn とシーンには影響しません。失敗は engine log に `runtime spawn of boundary … failed: …` と出て、ref はずっと `object.not_materialized@1` のままです。
-- `destroy` は、behavior の `onDestroy`(後に付いたものから)→ 物理から collider を外す → ECS の entity を消す、の順です([`retire()`](../../src/core/loader/runtimespawn.cpp#L449))。
+- `destroy` は、behavior の `onDestroy`(後に付いたものから)→ 物理から collider を外す → ECS の entity を消す、の順です([`retire()`](../../src/core/loader/runtimespawn.cpp#L452))。
 - `name` を渡すと、その object の collider に raycast が当たったときの名前(`hit->id`)になります。渡さなければ engine が `spawn:<境界>.<番号>` を付けます。
 - `name` はシーン形式の object 名と同じ規則(`[a-zA-Z0-9_]`)で検査されます(prefab の展開がシーン形式を通るため。合わなければ `object.spawn_invalid@1`)。
 - **engine が名前の無い object に付ける名前の接頭辞 `spawn:` と `pelican://` は予約です**(✅GP-2b)。名前の無い spawn は `spawn:<境界>.<番号>`、名前の無い authored object は `pelican://scene/<scene>/authoring-object/<n>` になり、どちらも物理の collider 名と同じ名前の空間に入ります。渡した `name` がこのどちらかで始まると、呼んだ時点で `object.name_reserved_by_engine@1` で拒否します([検査](../../src/core/loader/runtimespawn.cpp#L187)、接頭辞は [`runtime_spawn_name_prefix`](../../src/core/loader/runtimespawn.hpp#L26) と [`runtime_object_identity_prefix`](../../src/project/sceneformat.hpp#L32))。いまは上の形式の規則が `:` を含む名前を先に弾くので、予約が無くても衝突は起きませんが、予約は形式の規則とは独立した防御です(検査の順は予約が先なので、`spawn:2.1` は `object.name_reserved_by_engine@1` になります)。予約は接頭辞だけで、`spawn_3_0` のような名前は使えます。
@@ -754,7 +763,7 @@ if (auto hit = ctx.physics().shapeCastClosest(player, {0, -4, 0})) {
 - **プロバイダの選択はビルド時**です: `PELICAN_WITH_BUILTIN_PHYSICS`(既定 ON)/ `PELICAN_WITH_JOLT_PHYSICS`(既定 OFF。両方 ON なら Jolt が勝つ)。project.json や実行時の切替はありません。クエリ契約(順序・タイブレーク)はプロバイダによらずエンジン側が所有するため、通常は意識不要です。ゲーム DLL から capability 単位で provider をオーバーレイする上級拡張点(`physics/abi_v2.hpp` — raycast だけ独自実装し残りはフォールバック、等)もあります。
 - transform 追従は現行では毎フレーム再収集(BVH = bounding volume hierarchy、形状を包む箱を木に組んで判定候補を絞る加速構造。それを持たないという意味 — 計測してから見直す方針)。capsule の軸はローカル Y、box は OBB(回転対応)です。
 - `debug_draw` feature を rendering config で参照していると collider のワイヤフレームが描画されます([第6章](06_rendering.md))。
-- rpc の query は `raycast`([受け口](../../src/core/communication/rpcserver.cpp#L1155)。`origin` / `direction` / `max_distance` を受けて最近傍 1 件を返す)だけです。provider が 0 本のビルドと `PELICAN_WITH_PHYSICS=OFF` のビルド(✅PG-2b)では、この `raycast` も「当たらなかった」ではなく JSON-RPC の error を返します(§8.4「機能を外した build」)。
+- rpc の query は `raycast`([受け口](../../src/core/communication/rpcserver.cpp#L1253)。`origin` / `direction` / `max_distance` を受けて最近傍 1 件を返す)だけです。provider が 0 本のビルドと `PELICAN_WITH_PHYSICS=OFF` のビルド(✅PG-2b)では、この `raycast` も「当たらなかった」ではなく JSON-RPC の error を返します(§8.4「機能を外した build」)。
 - 📐未実装: rpc の overlap / shapeCast、メッシュコライダ/BVH、剛体シミュレーション。
 
 ### 8.7.1 side-scroller controller(WP109)
@@ -838,7 +847,7 @@ ctx.audio().stopSound(h);
 
 ### どのバックエンドで鳴るか(✅AU-1、起動時の指定は ✅AU-3)
 
-起動で名指ししなければ、起動の形でバックエンドが決まります([`preferredAudioBackend`](../../src/core/audio/audio.cpp#L437)、[`Audio::Audio()`](../../src/core/audio/audio.cpp#L799))。
+起動で名指ししなければ、起動の形でバックエンドが決まります([`preferredAudioBackend`](../../src/core/audio/audio.cpp#L437)、[`Audio::Audio()`](../../src/core/audio/audio.cpp#L807))。
 
 | 起動の形 | バックエンド | 音 |
 |---|---|---|
@@ -860,10 +869,10 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 - **引数があると環境変数は読みません。** 環境変数が空文字列なら未設定と同じ扱いです([`audioBackendEnvironment`](../../src/player/main.cpp#L123))。
 - 値は完全一致です(`Null` や空文字列の引数は通らない。[`audioBackendKindFromName`](../../src/core/audio/audiobackendkind.hpp#L31))。それ以外の値は起動を止め、`audio.backend_unknown@1: --audio-backend must be one of: device, offline, null: <値>` で失敗します(環境変数から来たときは `--audio-backend` の所が `PELICAN_AUDIO_BACKEND` になります。[`parseAudioBackend`](../../src/player/main.cpp#L111))。
 - `device` / `offline` を名指ししても、開けなければ名指ししないときと同じく `null` へ退避し、`fallback_reason` が付きます。
-- **Studio の埋め込み player は Studio の環境を継承します**(QProcess)。Studio を `PELICAN_AUDIO_BACKEND=null` で起動すれば、埋め込み player は音を出しません。Studio の scenario driver(`tools/studio_drive.py`)は、呼び出し側が値を決めていない(未設定か空)ときに `null` を渡します([該当箇所](../../tools/studio_drive.py#L1278)、`d616e35a`)。
+- **Studio の埋め込み player は Studio の環境を継承します**(QProcess)。Studio を `PELICAN_AUDIO_BACKEND=null` で起動すれば、埋め込み player は音を出しません。Studio の scenario driver(`tools/studio_drive.py`)は、呼び出し側が値を決めていない(未設定か空)ときに `null` を渡します([該当箇所](../../tools/studio_drive.py#L1293)、`d616e35a`)。
 - **`PELICAN_WITH_AUDIO=OFF` の build** では `--audio-backend null` だけを受け付けます。`offline` / `device` は `This binary was built with PELICAN_WITH_AUDIO=OFF: --audio-backend <値> is unavailable` で起動を止めます(未知の値は、その前に `audio.backend_unknown@1`)。**環境変数は読みません**(継承した値で OFF の player が止まらないように)。
 
-どれになったかは rpc の **`get_status` の `audio`** で読めます([`audioStatusJson()`](../../src/core/communication/rpcserver.cpp#L187))。
+どれになったかは rpc の **`get_status` の `audio`** で読めます([`audioStatusJson()`](../../src/core/communication/rpcserver.cpp#L192))。
 
 ```json
 "audio": {"available": true, "backend": "device"}
@@ -902,7 +911,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 - `events` も `position` も無いノードは、**owner の最初のフレームで鳴り始め**、そのフレームから `time` 入力の時計で経過時間(写像の elapsed)を数えます([開始](../../src/core/userpublic/valuegraph.cpp#L875))。分解版の「`events` が無ければ owner の最初のフレーム」と同じ規則です。
 - `events` が無いときの `time` は、どの時計から来てもかまいません(`time` でも `scene_time` でも、時計の無い定数でも拒否されない)。
 - `time` は必須のままです。`events` を繋ぐなら `time` は `scene_time` だけから、の検査(`audio.clock_mismatch@1`、下の「状態と拒否」)も変わりません。
-- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L2429)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。
+- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L2495)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。
 
 下の例は `events` で鳴らす形です。
 
@@ -1027,7 +1036,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 ### 長い音の streaming(✅AU-2)
 
-- header が言う長さが **10 秒を超える**音は、WAV でも Ogg Vorbis でも streaming で鳴ります(判定は [`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L856)、10 秒は [`defaultStreamingThresholdSeconds`](../../src/core/audio/audio.cpp#L401))。
+- header が言う長さが **10 秒を超える**音は、WAV でも Ogg Vorbis でも streaming で鳴ります(判定は [`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L864)、10 秒は [`defaultStreamingThresholdSeconds`](../../src/core/audio/audio.cpp#L401))。
 - 全体を decode しません。**rendering config 登録時のアセット検査も header だけを読みます**(WAV は短い WAV と同じ chunk の規則、Ogg Vorbis は decoder で header と長さを読む)。
 - decode の cache が持つのは PCM ではなく **符号化された bytes** で、同じアセットを鳴らす voice の間で 1 つを共有します。voice はそれぞれ自分の decoder(`ma_decoder`)を持ち、再生しながら読みます。
 - 一体版のネイティブループも、分解版の seek も、decode 済みの音と同じ意味で動きます(範囲・ループ点・開始位置は同じ frame 番号で指定します)。

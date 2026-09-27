@@ -549,7 +549,7 @@ typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化�
 **`resolution_error` を含む応答はキー順が保存されます** —— editor 側のハンドラが「応答木のどこかに
 `resolution_error` があるか」を見る述語 `embedsResolutionError` を登録時に添え
 ([editorrpchandlers.cpp](../../src/core/communication/editorrpchandlers.cpp#L50))、`RpcServer` はその述語が真を返した応答だけを
-ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1196))。
+ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1198))。
 
 ### セッションと編集
 
@@ -583,12 +583,12 @@ ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/commu
 
 | メソッド | params | 返すもの | 拒否 |
 |---|---|---|---|
-| `set_play_state` | `{state: "edit" \| "playing" \| "paused"}`(他の鍵は書けない) | `{state, previous}`。同じ状態への指示は何も変えずに成功 | それ以外の値や鍵(`keep` を含む)は `-32602`。`"edit"` との間の移り方は下の「edit 状態」 |
+| `set_play_state` | `{state: "edit" \| "playing" \| "paused", keep?}`(`keep` は ✅PM-2。他の鍵は書けない) | `{state, previous}`。同じ状態への指示は何も変えずに成功 | それ以外の値や鍵は `-32602`。`"edit"` との間の移り方は下の「edit 状態」、`keep` と拒否は「再生のセッション」 |
 | `advance_frames` | `{count}`(1〜600 の整数。鍵は `count` だけ) | 窓あり: すぐに `{scheduled, until_game_frame}` / headless: 歩き終えてから `{scheduled, until_game_frame, frame, t, edit_results}` | `paused` 以外では `-32000` の `play_state_mismatch`(`data` に `state` と `required: "paused"`)/ 範囲外の `count` は `-32602`(`data.code` 無し) |
 | `step_frame` | `{}` | headless だけ。描画のフレームを 1 つ進める。game が進むのは `playing` のときだけ | 窓ありでは `-32000` の `step_frame_windowed`(message が `advance_frames` を示す) |
 
 - **2 つの番号**: `get_status` の `frame`(と `step_frame` / `advance_frames` の `frame`)は**評価の番号**で、描画のフレームごとに必ず 1 増え、一時停止中も進みます。game が何歩進んだかは `get_status` の `play.game_frame` で読みます。`get_status` の `time`(と `t`)は game の時計で、一時停止中は止まります
-- **`get_status.play`** は `{state, game_frame, game_time, pending_steps, view_camera}` です(`view_camera` は ✅PM-1b。下の「edit 状態」)。`pending_steps` は `advance_frames` で頼んでまだ取っていない歩数です。一時停止しているかは `play.state` だけで示し、`get_status.audio` の形は変わりません
+- **`get_status.play`** は `{state, game_frame, game_time, pending_steps, view_camera, session, recorded_edits}` です(`view_camera` は ✅PM-1b。下の「edit 状態」。`session` と `recorded_edits` は ✅PM-2。下の「再生のセッション」)。`pending_steps` は `advance_frames` で頼んでまだ取っていない歩数です。一時停止しているかは `play.state` だけで示し、`get_status.audio` の形は変わりません
 - **窓あり**の `advance_frames` は、次のフレームから 1 フレームに 1 歩ずつ進めます(入れ子のフレームは走らせません)。`until_game_frame` は歩き終えたときの `play.game_frame` なので、`get_status` をポーリングして `play.game_frame` がそこに着き `pending_steps` が 0 になるのを待ちます。**headless** は応答の前に `count` 回、描画のフレームを回します
 - 1 歩の `dt` は `1/fps`(既定 60 fps)です。進み終わっても `paused` のままです
 - 一時停止中に止まるもの: game の event の凍結と配送、`ctx.spawn` / `destroy` の着地、game の system(behavior、DLL の system、physics trigger)、game DLL が登録した animation の phase、`ctx.loadScene` の適用、game の UI の event(ポインタは追うが event を積まない)、音(全体をまとめて一時停止。offline の backend は無音を返し再生位置を進めない)。止まらないもの: 描画、入力の取り込み、RPC、編集の反映、engine 側の animation・seq・graph(止まった時刻で毎フレーム評価し直す)、組み込みの camera controller と modal transform(そのフレーム自身の `dt` で動く)
@@ -600,8 +600,8 @@ ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/commu
 
 | メソッド | params | 返すもの | 拒否 |
 |---|---|---|---|
-| `set_play_state` | `{state: "edit" \| "playing" \| "paused"}` | `{state, previous}` | 上の表と同じ。`keep` は PM-2 まで `-32602` |
-| `set_view_camera` | `{camera: "editor" \| "game"}`(鍵は `camera` だけ) | `{camera, previous}`。同じ view への指示は何も変えずに成功 | `playing` では `-32000` の `play_state_mismatch`(`data` に `state` と `required: ["edit", "paused"]`)/ editor camera の無い起動で `"editor"` は `-32000` の `view_camera_unavailable`(`data` に `camera`)/ それ以外の値や鍵は `-32602`([`set_view_camera` の handler](../../src/core/communication/rpcserver.cpp#L2161)) |
+| `set_play_state` | `{state: "edit" \| "playing" \| "paused", keep?}` | `{state, previous}`(`keep` を書いた Stop は下の「再生のセッション」) | 上の表と同じ。`keep` と PM-2 の拒否は下の「再生のセッション(✅PM-2)」 |
+| `set_view_camera` | `{camera: "editor" \| "game"}`(鍵は `camera` だけ) | `{camera, previous}`。同じ view への指示は何も変えずに成功 | `playing` では `-32000` の `play_state_mismatch`(`data` に `state` と `required: ["edit", "paused"]`)/ editor camera の無い起動で `"editor"` は `-32000` の `view_camera_unavailable`(`data` に `camera`)/ それ以外の値や鍵は `-32602`([`set_view_camera` の handler](../../src/core/communication/rpcserver.cpp#L2228)) |
 
 **`edit` で何が効くか。**
 
@@ -612,12 +612,12 @@ ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/commu
 
 **`edit` から出る(Play)。**`set_play_state {state: "playing"}` か `"paused"` を送ると、まだ配っていない game の event を捨て、そのときの時刻を覚えて game の時計と `game_frame` を 0 に戻し、behavior を起こして、今の scene を `load_scene` と同じ経路で作り直します。ここで constructor と `onInit` が走ります。`"paused"` なら `onInit` まで走って game のフレーム 0 で止まり、`advance_frames` で 1 歩ずつ進められます。
 
-**`edit` へ戻る(Stop)。**`playing` / `paused` から `set_play_state {state: "edit"}` を送ると、game の event を捨て、behavior を眠らせ、game の時計を Play の前の時刻(Play を経ずに起動した engine なら 0)に戻し、**今の authoring から** runtime を作り直します。behavior には `onDestroy` が走り、spawn した object は消えます。
+**`edit` へ戻る(Stop)。**`playing` / `paused` から `set_play_state {state: "edit"}` を送ると、game の event を捨て、behavior を眠らせ、game の時計を Play の前の時刻(Play を経ずに起動した engine なら 0)に戻し、runtime を作り直します。behavior には `onDestroy` が走り、spawn した object は消えます。
 
-- **PM-2 までは、Stop で authoring は戻りません。** 再生中に Inspector などで変えた scene の編集は、Stop の後もそのまま残ります(game のコードが runtime で動かした位置などは、authoring ではないので作り直しで消えます)。「停止すると再生前に戻る」は PM-2 の仕事です
+- **✅PM-2 から、Stop で authoring は再生の前に戻ります。** 再生中に Inspector などで変えた scene の編集は、`keep` で残すと言わない限り消えます。何が戻り何が戻らないかは下の「再生のセッション」です。セッションの無い Stop(`--start-state` を省いて起動した engine の最初の Stop など)だけは、PM-1b のとおり今の authoring から作り直します
 - Stop しても `play.game_frame` は 0 に戻りません。前のセッションの最後の値のまま残り、次の Play で 0 になります
 - 作り直しが失敗したときは、状態・時計・behavior の眠りを元に戻して error を返します
-- 残っている穴: `edit` 中の `start_input_replay` / `start_input_record` は断りません(PM-2 で断ります)
+- PM-1b の時点で残っていた穴(`edit` 中の `start_input_replay` / `start_input_record`)は、✅PM-2 で `offline.mode_conflict@1` で断るようになりました(下の「再生のセッション」)
 
 **見る camera。**`--start-state edit` の engine は editor camera を持ちます(`--free-camera` を付けていなければ、既定の `blender` の free camera とその入力 overlay が足されます。`--editor-transform` は足されません)。`get_status.play.view_camera` が今の view(`"editor"` / `"game"`)です。
 
@@ -625,6 +625,55 @@ ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/commu
 - `edit` と `paused` では `set_view_camera` で見る camera を替えられます。見ていない方の camera は位置と向きを覚えていて、戻すとそのまま出てきます
 - editor camera を見ている間に game のコードの `ctx.render().setCamera(name)` や RPC の `set_camera` が scene の camera を選ぶと、先に game の view へ切り替わってから選ばれます。editor camera の名前を指すと editor の view になります
 - `--start-state` を付けない起動では、`set_play_state` は view も overlay も変えません(`--free-camera` の engine なら `set_view_camera` は使えます)。既定の起動でも `edit` へ移ることはできます
+
+### 再生のセッション(✅PM-2)
+
+`edit` から `playing` / `paused` へ移ると**再生のセッション**が始まり、`edit` へ戻るとセッションが終わって scene が再生の前に戻ります(設計は [design_play_mode.md](../design_play_mode.md) §6・§7。実体は [`set_play_state` の handler](../../src/core/communication/rpcserver.cpp#L2033) と [`PlaySession`](../../src/core/communication/playsession.hpp#L51))。**Studio はまだ Play / Stop のボタンを持ちません**(PM-3b)。
+
+**Play でセッションが始まるとき。**
+
+1. scene の編集の ticket が受け付けたまま commit されていない、または live preview が開いていると、`play_busy` で断ります(何も変わりません)
+2. game logic の DLL を読んでいれば、**新しい写しを読み直します**。game の system の static な状態は、Play のたびに初めからです(第 8 章 §8.4 の「再生のセッションとゲームコード」)。`--replay` と golden の起動では読み直しません(その run の決定性を壊すため)。読み直しに失敗すると、その reload のエラーの code で断り、セッションは始まりません
+3. authoring(全 scene と各 object の `authoring_object_id`)、今の scene、editor の履歴(journal・誰が最後に書いたか・actor ごとの undo / redo の stack)を覚えます。scene を読んでいない engine はセッションを作らず、PM-1b と同じく作り直すだけです
+4. そのあとは上の「`edit` から出る(Play)」のとおりです
+
+**再生中。**Inspector などの編集は今までどおり authoring と runtime の両方に効き、履歴にも積まれます。セッションはこの間に commit された編集を記録し、`get_status.play` に出します。
+
+- `session`: セッションがあるか(bool)
+- `recorded_edits`: 記録した編集の `[{transaction_id, actor}]`(並びは journal の順。セッションが無ければ `[]`)。undo / redo が記録の中の編集を戻すと、その行が消えます。記録に無い編集(セッションの前の編集など)の undo / redo は、それ自身が行になります。undo で消した行を redo すると、行は **redo の transaction_id** で戻ります
+- `save_scene` / `load_scene` / `import_scene_snapshot` は `-32000` の `play_session_active`(`data` は `{code, method, state}`)で断られます。**セッションがあるときだけ**で、`--start-state` を省いて起動した engine の最初の `playing` のようにセッションが無ければ断りません。ImGui の inspector の Save ボタンは RPC を通らないので、この拒否の対象ではありません
+- game のコードが `ctx.loadScene` で scene を替えてもかまいません。Stop ではセッションを始めた scene に戻ります
+
+**Stop でセッションが終わるとき。**
+
+| 戻るもの | 戻らないもの |
+|---|---|
+| scene の authoring の中身と `authoring_object_id`(全 scene) | ファイルへ直接書く編集: render の構成(Frame Plan / Pass Editor の編集、rendering 節、preset、graph 文書、authored pass)、material・shader・code・asset |
+| 今の scene(`ctx.loadScene` で替えていても、始めた scene) | game が書いた Persistence(`saveData`) |
+| editor の履歴(journal・誰が最後に書いたか・undo / redo の stack)。再生の前の編集の undo は Stop の後もそのまま効きます | 番号: `scene_revision` は戻らず、今の値より大きい新しい revision になります。次に振る `authoring_object_id` は、覚えた値と今の値の大きい方です。ticket・transaction の番号も戻りません |
+| game の時計(Play の前の時刻) | |
+
+- 設計(§6.4)は、再生中の `runtime_only_changes`(`update_transforms` / `load_gltf`)も runtime の作り直しで消えるとしています。test では確かめていません(未確認)
+- 音はすべて止まります(`Audio::stopAll`)
+- spawn した object は消え、behavior には `onDestroy` が走ります。runtime は眠った `edit` の runtime として作り直されます
+- 戻したあとは editor の gate の epoch が進むので、Stop の前に受け付けた編集は commit できません
+- Stop のときも、commit されていない ticket か開いた live preview があると `play_busy` です
+
+**残す(`keep`)。**`set_play_state {state: "edit", keep: "all" | ["<transaction_id>", …]}` で、記録した編集のうち挙げたものを、戻した authoring の上に記録の順で当て直します。
+
+- 当て直せた編集は履歴の **1 項目**(`operation_kind` が `play_keep`)にまとまり、当て直せた最後の編集をした actor の undo stack に載ります。その actor の undo 1 回で全部が外れます
+- 再生中に作った object は、作ったときと同じ `authoring_object_id` で残ります
+- 返り値は `{state, previous, not_kept, kept_transaction_id?}` です。`not_kept` は `keep` を書けば必ず付き、当て直せなかった編集を `[{transaction_id, code}]` で挙げます(`code` は当て直しを止めた editor のエラーの名前。例: 作る編集を残さずに、その object を触る編集だけを残すと `closure_unresolvable`)。当て直せないものがあっても Stop は成功します。`kept_transaction_id` は 1 つでも当て直せたときだけ付く、上の 1 項目の transaction_id です
+- 記録に無い transaction_id を挙げると、`-32000` の `play_keep_unknown_transaction`(`data` は `{code, transaction_id, session, recorded_edits}`)で Stop ごと断られ、何も変わりません
+- `keep` は `"all"` か transaction_id の配列だけで、`edit` 以外への移りに書くと `-32602` です
+- game が runtime で動かした値を残したいときは、再生中にその値を読んで書く編集を送り、それを `keep` に挙げます(engine に専用の口はありません)
+
+**`--start-state` を省いて起動した engine。**最初の `playing` はセッションを経ていないので、最初の Stop は何も戻さず、今の authoring から `edit` の runtime を作り直すだけです。このとき `keep: "all"` は `not_kept: []` を返し、transaction_id を挙げると `play_keep_unknown_transaction`(`data.session` が `false`)です。そこから先の Play と Stop は、ふつうのセッションになります。
+
+**その他の拒否。**
+
+- `play_busy` の `data` は `{code, state, requested, pending_ticket_ids, open_preview_lease}` です(`state` は今の状態、`requested` は頼んだ状態)
+- `--start-state edit` で起動した engine では、`start_input_record` / `start_input_replay` がどの状態でも `-32000` の `offline.mode_conflict@1`(`data` は `{code, method, start_state: "edit"}`)で断られます。コマンドラインの `--record-input` / `--replay` と同じ扱いです
 
 ### shader を読み直させる(✅F-5)
 
@@ -635,7 +684,7 @@ ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/commu
 **file watch の gate は開けません。**`--rpc` で動く engine(Studio が起こす engine はすべてそう)は、reload gate が
 `rpc driver` を理由に閉じていて、shader file を保存しても自分では読み直しません。`reload_shaders` はそれを開けずに、
 **頼まれたその 1 回だけ** shader の runtime participant を当てます(`reload_game_logic` と同じ形。
-[handler](../../src/core/communication/rpcserver.cpp#L1388))。閉じた gate を越えるのは明示の要求だけで、
+[handler](../../src/core/communication/rpcserver.cpp#L1390))。閉じた gate を越えるのは明示の要求だけで、
 replay と `--strict-assets` の engine は今までどおり断ります([越えてよいかの判定](../../src/core/watch/reloadservice.cpp#L692) /
 [`ReloadGate::explicitShaderReloadRefusal()`](../../src/core/watch/reloadgate.cpp#L45))。file watch の poll の経路は `--rpc` の下で
 今までどおり何もしません。
@@ -658,7 +707,7 @@ shader の batch、render pipeline の読み直しが shader の変更を一緒�
 
 - **`reload_shaders` の答え**: 読み直し自体は公開されたので `committed: true` のままで(意味は変えていません。shader library は
   compile できた新しい shader を持ち、断られていない pipeline はそれで描きます)、`refused_passes` に断った pass が並びます
-  ([答えを組む所](../../src/core/communication/rpcserver.cpp#L1429))。要素は `{pass, fragment, reason, shader_input_mismatch, declarations}`
+  ([答えを組む所](../../src/core/communication/rpcserver.cpp#L1431))。要素は `{pass, fragment, reason, shader_input_mismatch, declarations}`
   で、`reason` は下の拒否と同じ message、`shader_input_mismatch` は編集の拒否と同じ形(同じ関数で組みます)、`declarations` は
   **断られた新しい shader** の宣言 `[{binding, type, name, variadic}]` です([形](../../src/core/fullscreenpass/shaderinputmismatchjson.cpp#L48))。
   `committed: false` の答え(何も変わっていない)には `refused_passes` は付きません。
@@ -1551,7 +1600,7 @@ LP-4c の着地時はゾーン表示が無く、body は instance と同じく�
 - **carry で前の回の出力を読む**: 線だけで組めます。(1) root の pass の出力を左の縁の `+` へ(ループの入力)、(2) body の pass の出力を右の縁の `+` へ(ループの出力)、(3) 右の縁の内側の端を左の縁の内側の端へ(carry)、(4) 左の縁の内側の端(body の `graph.input`)を body の pass の宣言のソケットへ落とします。(4) で pass がその `graph.input` を番号付きの入力として読み、展開された 2 回目の pass が 1 回目の出力を読みます(frame plan の `loop/1/render_fullscreen` の `reads` に `loop/0/render_fullscreen__color` が入ります。シナリオ `loop_zone_read`)。
   - carry の矢印は左の縁の内側のソケットで終わり、その上に描かれます。Q-19 から、矢印の下のソケットを押すと、carry を選ぶのではなく線を引き始めます([押した所](../../src/devstudio/view/graphcanvaswidget.cpp#L2244))。Q-19 の前は、carry の付いた入力からは線を引けませんでした(実装者の報告)。
 - **分かっている穴**(Q-19 の着地時の記録。実装者の報告):
-  - ✅LP-6(`03725036`)で塞がりました。root の `render.image` から引いた線も通ります。Q-19 の着地時は、root の `render.image` の出力を body の pass のソケットへ引くと、engine が `Pass input target is not produced as an earlier output: <image> in pass: <pass>` で断り([その文を投げる所](../../src/core/renderingpass/frameplanner.cpp#L1822))、シナリオのように root の pass の出力 port から引いて避けていました。
+  - ✅LP-6(`03725036`)で塞がりました。root の `render.image` から引いた線も通ります(engine の規則: image node から読む pass は、その image を書く graph の pass を待つ。待たない場合も含めて [第6章 §6.18](06_rendering.md) の「image node を読む pass の順」と [design_graph_loops.md](../design_graph_loops.md) §5.2)。Q-19 の着地時は、root の `render.image` の出力を body の pass のソケットへ引くと、engine が `Pass input target is not produced as an earlier output: <image> in pass: <pass>` で断り([その文を投げる所](../../src/core/renderingpass/frameplanner.cpp#L1822))、シナリオのように root の pass の出力 port から引いて避けていました。
   - **LP-6 が入るまでの一時的な案内(✅Q-20)**: 上の拒否を Graph タブが受けると、notice の拒否の行の後ろに ` — draw the line from the pass that writes this image instead (a known engine gap, LP-6)` を足します([足す所](../../src/devstudio/model/graphcanvasmodel.cpp#L987))。LP-6(`03725036`)で engine が直ったので、この案内は Q-21 で外します。
     - 足すのは、engine の message が上の文を含み、かつ Studio が送った編集の op 列が `render.image` から読む線を持つときです。読む線とは、`set_input` の source、または `add_node` / `replace_node` の node の `inputs` の source が、文書の `render.image` か同じ列で足す `render.image` であるものです([`GraphCanvasModel::readsRenderImage()`](../../src/devstudio/model/graphcanvasmodel.cpp#L1376))。Undo なら逆の op 列で見ます。op 列が無くて判定できないときも足します。
     - engine はこの拒否に専用の code を付けないので、判定は message の文字列です(Studio のコードの注記では `render_pipeline_preflight_failed` で届きます)。test の文は `Pass input target is not produced as an earlier output: extra in pass: post (render_pipeline_preflight_failed) — draw the line …` です。render target から引いた線の同じ拒否と、別の拒否には付きません([test](../../test/devstudio_graphcanvas_test.cpp#L2390))。
@@ -2620,7 +2669,7 @@ driver の stdout / stderr は、cp932 の console で出せない文字があ�
 
 **回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L1253)(Python 3.11以上、標準ライブラリだけ)が Studio を
 `--automation --project --tab` で起動し、step を順に送り、`report.json` を書きます。ctest からは
-`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3297)) —— **実物の窓が要るので
+`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3322)) —— **実物の窓が要るので
 `QT_QPA_PLATFORM=offscreen` は掛けません**。fixture の project は temp に 2 つ複製されるので、シナリオは
 文書を書き換えてよく、「ディスクから読み直す」も試せます([複製](../../test/run_studio_scenario.cmake#L30))。
 CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが見つかった`AUTO`）が必要です。
@@ -2936,6 +2985,7 @@ Studio 専用の裏口はありません(D0)。
 - **シーン JSON はホットリロードの対象外**です(`get_status.scene_source` が `{hot_reload:false, save_method:"save_scene"}` と明示します)。外部エディタでシーンファイルを書き換えても実行中には反映されません。逆に、エンジンが保存している間に外部がファイルを書き換えていた場合は `external_modification` で拒否されます。
 - ⚠ **落とし穴**: `update_transforms` か `load_gltf` を**一度でも呼んだセッション**では、以後 `save_scene` が永久に `runtime_only_data` で失敗します(それらはオーサリング文書を経由しない「実行時だけの変更」なので、保存すると内容が食い違うため)。復帰するにはシーンを読み込み直します。
 - 未完了の編集チケットやプレビューリースがあると `save_busy` です。
+- 再生のセッションの間(✅PM-2)は、何もする前に `-32000` の `play_session_active`(`data` は `{code, method: "save_scene", state}`)で断られます。Stop で scene が再生の前に戻るので、先に Stop してから保存します(§13.5「再生のセッション」)。ImGui の Save ボタンは RPC を通らないので断られません。
 - 保存ファイルには各 object の `authoring_object_id` と文書直下の `next_authoring_object_id` が入ります。旧文書も最初の保存で ID が記録され、object の削除・並べ替え後に再び開いても graph の装着先が維持されます。非表示のシーンも保存対象です。返される digest と `byte_count` はこの保存ファイルの値です([第4章の ID 規則](04_scene_ecs.md))。
 
 ### スナップショット(✅WP168)
@@ -2943,6 +2993,8 @@ Studio 専用の裏口はありません(D0)。
 `export_scene_snapshot` は文書の意味的なバイト列・ダイジェスト・`prefab_closure` を返し、`import_scene_snapshot` はそれを**検証してから**取り込みます。検証の順序(バージョン → サイズ上限 64 MiB → SHA-256 → パースと意味検証 → `prefab_closure` の照合 → シーンの存在)は契約として固定されています。
 
 `schema_version` は **`2` だけ**です(SnapshotV2)。scene v1 の文書を運んでいた SnapshotV1 は MG-2b で export / import とも撤去され、`schema_version: 1` は他の鍵を見る前に `unsupported_snapshot_version` で断られます([版を断る関数 `rejectSnapshotVersion`](../../src/core/communication/editorcommandservice.cpp#L210))。**どの段階で失敗しても、通常のプロジェクトのシーンファイル・キャッシュ・revision は一切変化しません**。
+
+再生のセッションの間(✅PM-2)は、`import_scene_snapshot` は検証の前に `-32000` の `play_session_active`(`data` は `{code, method: "import_scene_snapshot", state}`)で断られます。`load_scene` も同じ code で断られます(`method: "load_scene"`)。`export_scene_snapshot` は断られません。
 
 snapshot は保存用の object ID を含みません。import は新しい ID を採番する操作で、同じ文書を保存して開き直す操作とは異なります。import 後に graph の装着先を指定するときは、新しい `scene_tree` の `authoring_object_id` を使ってください。snapshot の digest と保存ファイルの digest は、ID メタデータの分だけ異なります。
 
@@ -3037,7 +3089,8 @@ with PelicanRpc("mygame") as rpc:   # 第 1 引数は project の dir。既定�
 | package の install / uninstall(RPC と `pelican_cli package`) | ✅X-1 `64eae566`。**Studio に package の UI はありません**(カタログ経由で見えるだけ) |
 | `get_status.animation` と `get_graph_node_values` | ✅AG-3a `32d9a20b` |
 | 一時停止と 1 歩ずつ(`set_play_state` の `playing` / `paused`、`advance_frames`、`get_status.play`、窓ありの `step_frame` の拒否) | ✅PM-1a `c654e65c` |
-| `edit` 状態(`--start-state edit`、眠った behavior、`set_play_state` の `edit`、`set_view_camera`、`get_status.play.view_camera`) | ✅PM-1b `17938ee3`。Stop で authoring を戻すのは 📐PM-2、Studio の Play / Stop は 📐PM-3b |
+| `edit` 状態(`--start-state edit`、眠った behavior、`set_play_state` の `edit`、`set_view_camera`、`get_status.play.view_camera`) | ✅PM-1b `17938ee3`。Stop で authoring を戻すのは ✅PM-2、Studio の Play / Stop は 📐PM-3b |
+| 再生のセッション(Stop で authoring・今の scene・editor の履歴を戻す、`keep`、`get_status.play` の `session` / `recorded_edits`、Play のたびの DLL の読み直し、`play_busy` / `play_session_active` / `play_keep_unknown_transaction`、`edit` 起動の input の記録と再生の拒否、Stop で音を全部止める) | ✅PM-2 `04666d59`(§13.5「再生のセッション」)。Studio の Play / Stop と keep のボタンは 📐PM-3b |
 | Studio の Pause / Step / Resume と再生の状態の表示(status bar の行、paused の枠と帯の色、`playing` の間は Timeline の scrub を止める) | ✅PM-3a `1eaf28a6`(§13.1「Studio で game を一時停止し、1 歩ずつ進める」) |
 | Studio の render-tools dock に Graph タブ(読む) | ✅N-1 `edafc41d` |
 | ノードの見た目(見出し + 型付きソケット。形は JSON で足す) | ✅N-1b `6c47a8a4` |
@@ -3103,7 +3156,7 @@ scene のロードは 1 つのトランザクションになりました([第4�
 ### `get_status.participants.game_logic` の `error_code` / `error_fields`
 
 `get_status` に `participants.game_logic` が入りました。**まだ 1 度も reload を試していない
-起動直後でも、startup の初期化失敗がここに出ます**([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1295))。
+起動直後でも、startup の初期化失敗がここに出ます**([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1297))。
 
 - 試行済みなら `reload.runtime.game_logic` の内容(`configured` / `loaded` / `reloading` /
   `pending` / `source_busy_retries` / `generation` / `systems` / `source` / `loaded_copy` /
