@@ -17,6 +17,7 @@
 
 #include "../fullscreenpass/fullscreeninputbindingmismatch.hpp"
 #include "../fullscreenpass/shaderinputmismatchjson.hpp"
+#include "../material/materialphysicalcontractchanged.hpp"
 #include "../renderingpass/passshaderdefines.hpp"
 #include "../loader/engineresources.hpp"
 #include "../renderingpass/frameplanner.hpp"
@@ -130,6 +131,28 @@ OrderedJson withPreflightRefusalFields(OrderedJson details,
     } catch (...) {
     }
     return details;
+}
+
+// RS-1: the restart_reason of a runtime refusal that was only a live
+// material's physical rendering contract, or nullopt for any other failure.
+std::optional<OrderedJson> physicalContractRestartReason(
+    const std::exception_ptr &error) {
+    if (!error) return std::nullopt;
+    try {
+        std::rethrow_exception(error);
+    } catch (const MaterialPhysicalContractChanged &change) {
+        const auto &info = change.info();
+        return OrderedJson{
+            {"code", materialPhysicalContractChangedCode},
+            {"material", info.material},
+            {"material_id", info.material_id},
+            {"pass", info.pass},
+            {"detail", info.detail},
+            {"message", change.what()},
+        };
+    } catch (...) {
+    }
+    return std::nullopt;
 }
 
 // A readable message for a carried refusal; the fields stay structured.
@@ -4872,6 +4895,42 @@ void RenderConfigEditorService::completeCommitTransaction(
                   transaction->ticket.base_source_digest}}));
             return;
         }
+        // RS-1: the runtime refused the candidate only because a live
+        // material would be drawn with another physical rendering contract.
+        // The documents are committed for the next engine start (the same
+        // preset CAS and the same multi-file commit the runtime would have
+        // called), the live engine keeps its generation, and the result
+        // says restart_required. Any other failure is refused below.
+        std::optional<OrderedJson> restart_reason;
+        if (!applied.staged && !applied.committed &&
+            !transaction->source_commit_called &&
+            transaction->ticket.candidate_documents) {
+            restart_reason =
+                physicalContractRestartReason(applied.exception);
+            if (restart_reason) {
+                const auto runtime = dependencies_.runtime_snapshot();
+                try {
+                    if (transaction->verify_preset)
+                        transaction->verify_preset();
+                    transaction->source_commit_called = true;
+                    transaction->source_receipt =
+                        commitRenderConfigCandidateDocuments(
+                            dependencies_.project_root,
+                            *transaction->ticket.candidate_documents);
+                } catch (const RenderConfigExternalModification &error) {
+                    finish(rejection(
+                        "external_modification", error.what(),
+                        {{"ticket", transaction->ticket.id},
+                         {"expected_source_digest",
+                          transaction->ticket.base_source_digest}}));
+                    return;
+                }
+                applied.committed = true;
+                applied.published_generation =
+                    runtime.published_generation;
+                applied.post_commit_error.clear();
+            }
+        }
         if (applied.staged || !applied.committed) {
             const auto rollback_error = rollback_source();
             auto details = OrderedJson{
@@ -4993,9 +5052,15 @@ void RenderConfigEditorService::completeCommitTransaction(
             completed["post_commit_error"] =
                 applied.post_commit_error;
         }
-        if (transaction->ticket.restart_required) {
+        if (restart_reason) {
+            // RS-1: committed, not live; the next start builds it.
+            completed["restart_required"] = true;
+            completed["restart_reason"] = std::move(*restart_reason);
+        } else if (transaction->ticket.restart_required) {
             // G-4: material_route_default is read once per engine start.
             completed["restart_required"] = true;
+            completed["restart_reason"] =
+                OrderedJson{{"code", "material_route_default_changed"}};
         }
         finish(std::move(completed));
     } catch (const std::exception &caught) {
@@ -5136,6 +5201,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                     }
                 };
             }
+            transaction->verify_preset = verify_preset;
             const auto source_commit =
                 [transaction, project_root, verify_preset = std::move(verify_preset)] {
                 transaction->source_commit_called = true;

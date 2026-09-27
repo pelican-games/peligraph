@@ -782,6 +782,119 @@ TEST_CASE("G-4 an edit that leaves the engine's materials without a pass is refu
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+// RS-1: the Graph palette's first material pass on a blank project (the
+// template's own rendering section: `present` only). The live engine cannot
+// rebuild its materials' pipelines for the G-buffer, so the edit is committed
+// for the next start and answers restart_required; the next start takes it.
+TEST_CASE("RS-1 a graph edit the live materials cannot take is committed and asks for a restart",
+          "[rs1][primitives][material-routing][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("rs1_restart");
+    const auto root = dir.root / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+
+    // What the palette's render.material_pass (deferred_geometry_v1) sends:
+    // the pass and the six G-buffer images it writes, one op list.
+    const Json color_type{{"semantic", "pelican.render.color_signal@1"},
+                          {"arguments", {{"reference", "scene"}, {"transfer", "linear"},
+                                         {"range", "extended"}}}};
+    const auto image_op = [](const std::string &id, const Json &type, const char *format,
+                             const char *usage) {
+        return Json{{"op", "add_node"},
+                    {"scope", "root"},
+                    {"node", {{"id", id},
+                              {"op", "render.image"},
+                              {"parameters", {{"type", type},
+                                              {"format", format},
+                                              {"extent_scale", 1.0},
+                                              {"usage", Json::array({usage, "SAMPLED"})}}},
+                              {"outputs", Json::array({"resource"})}}}};
+    };
+    Json ops = Json::array();
+    Json inputs = Json::object();
+    for (const auto *socket : {"albedo", "normal", "material", "worldpos", "emissive"}) {
+        const auto id = std::string{"render_material_pass__"} + socket;
+        ops.push_back(image_op(id, color_type,
+                               std::string_view{socket} == "material" ? "R8G8B8A8_UNORM"
+                                                                      : "R16G16B16A16_SFLOAT",
+                               "COLOR_ATTACHMENT"));
+        inputs[socket] = {{"node", id}, {"port", "resource"}};
+    }
+    ops.push_back(image_op("render_material_pass__depth",
+                           Json{{"semantic", "pelican.render.depth@1"},
+                                {"arguments", {{"representation", "device"}, {"space", "projection"}}}},
+                           "D32_SFLOAT", "DEPTH_STENCIL_ATTACHMENT"));
+    inputs["depth"] = {{"node", "render_material_pass__depth"}, {"port", "resource"}};
+    ops.push_back({{"op", "add_node"},
+                   {"scope", "root"},
+                   {"node", {{"id", "render_material_pass"},
+                             {"op", "render.material_pass"},
+                             {"parameters", {{"material_contract", "deferred_geometry_v1"},
+                                             {"pass_set", "main_render"}}},
+                             {"inputs", inputs},
+                             {"outputs", Json::array()}}}});
+
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        GET_MODULE(Renderer).prepareRuntimeModules();
+        (void)rpc.result("step_frame");
+        const auto edit = [&](const Json &edit_ops) {
+            const auto context = rpc.result("get_render_authoring_context");
+            const auto accepted = rpc.result(
+                "edit_graph_document",
+                {{"base_source_digest", context.at("source_digest").at("hex")}, {"ops", edit_ops}});
+            INFO(accepted.dump(2));
+            REQUIRE(accepted.at("status") == "accepted");
+            for (int attempt = 0; attempt < 8; ++attempt) {
+                (void)rpc.result("step_frame");
+                auto result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+                if (result.value("status", std::string{}) != "pending") return result;
+            }
+            FAIL("the graph edit ticket stayed pending");
+            return Json{};
+        };
+
+        const auto committed = edit(ops);
+        INFO(committed.dump(2));
+        REQUIRE(committed.at("status") == "committed");
+        CHECK(committed.at("restart_required") == true);
+        const auto &reason = committed.at("restart_reason");
+        CHECK(reason.at("code") == "material_physical_contract_changed");
+        CHECK(reason.at("pass") == "render_material_pass");
+        CHECK(reason.at("material").is_string());
+        CHECK_FALSE(reason.at("detail").empty());
+        UNSCOPED_INFO("restart_reason = " << reason.dump());
+        // The document holds the pass; the live frame does not.
+        CHECK(readFile(rendering_path).find("render.material_pass") != std::string::npos);
+        CHECK(rpc.result("get_frame_plan").dump().find("render_material_pass") == std::string::npos);
+
+        // Before the restart the next edit meets the same live materials.
+        const auto again = edit(Json::array({{{"op", "set_node_label"}, {"scope", "root"},
+                                              {"node", "render_material_pass"}, {"label", "G-buffer"}}}));
+        INFO(again.dump(2));
+        REQUIRE(again.at("status") == "committed");
+        CHECK(again.at("restart_required") == true);
+        CHECK(again.at("restart_reason").at("code") == "material_physical_contract_changed");
+        (void)rpc.result("render_frame");
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+
+    // The restart: the same documents compose, and the pass is drawn.
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    GET_MODULE(Renderer).prepareRuntimeModules();
+    (void)rpc.result("step_frame");
+    (void)rpc.result("render_frame");
+    CHECK(rpc.result("get_frame_plan").dump().find("render_material_pass") != std::string::npos);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
 namespace {
 
 // Q-14e: the blank template's direct root with three targets `present` can

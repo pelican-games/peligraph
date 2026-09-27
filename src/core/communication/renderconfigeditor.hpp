@@ -154,7 +154,12 @@ class RenderConfigEditorService {
         // takes a ticket and the same CAS; it simply does not go to the runtime.
         bool source_only = false;
         // G-4: the edit changes material_route_default, which the engine
-        // reads once at start. The committed result says restart_required.
+        // reads once at start. The committed result says restart_required,
+        // with restart_reason {code: "material_route_default_changed"}.
+        // RS-1: every ticket that goes to the runtime may also end committed
+        // with restart_required when the only live refusal was a live
+        // material's physical rendering contract (restart_reason
+        // {code: "material_physical_contract_changed", ...}).
         bool restart_required = false;
         // RD-1: restore_render_documents may change which managed fragments
         // the root names, so the baselines are read again after it commits.
@@ -185,6 +190,10 @@ class RenderConfigEditorService {
         bool source_commit_called = false;
         bool completion_arrived = false;
         std::string source_external_modification;
+        // RS-1: the ticket's preset CAS (empty: none), kept so a candidate
+        // the runtime refused only for a live material's physical contract
+        // can still be committed, under the same check, for the next start.
+        std::function<void()> verify_preset;
 
         explicit CommitTransaction(Ticket value)
             : ticket{std::move(value)} {}

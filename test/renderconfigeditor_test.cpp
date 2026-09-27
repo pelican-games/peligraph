@@ -10,6 +10,7 @@
 #include "../src/core/communication/renderconfigtransaction.hpp"
 #include "../src/core/communication/rpcserver.hpp"
 #include "../src/core/fullscreenpass/fullscreeninputbindingmismatch.hpp"
+#include "../src/core/material/materialphysicalcontractchanged.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
@@ -7396,6 +7397,82 @@ TEST_CASE("LP-2 a draw-loop refusal the renderer raises comes back as a named re
     CHECK_THAT(error.at("message").get<std::string>(),
                Catch::Matchers::StartsWith(std::string{refusal.code} + ": "));
     CHECK(readBytes(harness.project.render_config) == root_before);
+}
+
+// RS-1: a candidate the runtime refuses only because a live material would be
+// drawn with another physical rendering contract is committed for the next
+// start, with restart_required and the reason; any other refusal still leaves
+// every document as it was. The running renderer's own case is in
+// engine_primitives_test.
+TEST_CASE("RS-1 a candidate refused live only for a material's physical contract is committed with restart_required",
+          "[render-config-editor][rs1][material-pass]") {
+    RenderTargetHarness harness{true};
+    const auto root_before = readBytes(harness.project.render_config);
+    const auto generation_before = harness.runtime.snapshot.published_generation;
+    harness.runtime.validate_candidate = [](const RenderConfigCandidateDocumentSet &) {
+        throw MaterialPhysicalContractChanged{
+            "render-pipeline candidate pass 'render_material_pass' changes the physical "
+            "rendering contract of live material 0",
+            MaterialPhysicalContractChangeInfo{
+                .material_id = 0,
+                .material = "pelican.builtin.default",
+                .pass = "render_material_pass",
+                .detail = {materialPhysicalContractColorFormats,
+                           materialPhysicalContractDepthFormat}}};
+    };
+    const auto edit = [&](std::string_view name) {
+        const auto accepted = harness.edit(addOp(sceneTarget(name)));
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        harness.service->commitPending();
+        return harness.service->getResult({{"ticket", accepted.at("ticket")}});
+    };
+
+    const auto committed = edit("rs1_color");
+    INFO(committed.dump());
+    REQUIRE(committed.at("status") == "committed");
+    CHECK(committed.at("committed") == true);
+    CHECK(committed.at("restart_required") == true);
+    const auto &reason = committed.at("restart_reason");
+    CHECK(reason.at("code") == "material_physical_contract_changed");
+    CHECK(reason.at("material") == "pelican.builtin.default");
+    CHECK(reason.at("material_id") == 0);
+    CHECK(reason.at("pass") == "render_material_pass");
+    CHECK(Json::parse(reason.at("detail").dump()) ==
+          Json::array({"color_formats", "depth_format"}));
+    // The live engine kept its generation; the documents were written, and
+    // the digests say what.
+    CHECK(committed.at("published_generation") == generation_before);
+    CHECK(harness.runtime.snapshot.published_generation == generation_before);
+    const auto root_after = readBytes(harness.project.render_config);
+    CHECK(root_after != root_before);
+    CHECK(committed.at("source_digest").at("hex") == renderConfigSourceDigest(root_after));
+    REQUIRE(std::filesystem::is_regular_file(harness.fragmentPath()));
+    CHECK_FALSE(committed.at("documents").empty());
+    CHECK(harness.digest() == renderConfigSourceDigest(root_after));
+
+    // Before a restart the next edit is judged against the same live
+    // materials: the same refusal, committed again.
+    const auto again = edit("rs1_second");
+    INFO(again.dump());
+    REQUIRE(again.at("status") == "committed");
+    CHECK(again.at("restart_required") == true);
+    CHECK(again.at("restart_reason").at("code") == "material_physical_contract_changed");
+
+    // Any other runtime refusal is refused as before, and nothing is written.
+    harness.runtime.validate_candidate = [](const RenderConfigCandidateDocumentSet &) {
+        throw std::runtime_error("Shader not found: project://shaders/missing.frag");
+    };
+    const auto root_committed = readBytes(harness.project.render_config);
+    const auto fragment_committed = readBytes(harness.fragmentPath());
+    const auto refused = edit("rs1_third");
+    INFO(refused.dump());
+    REQUIRE(refused.at("status") == "rejected");
+    CHECK(refused.at("committed") == false);
+    CHECK(refused.at("error").at("code") == "render_pipeline_preflight_failed");
+    CHECK_FALSE(refused.contains("restart_required"));
+    CHECK(readBytes(harness.project.render_config) == root_committed);
+    CHECK(readBytes(harness.fragmentPath()) == fragment_committed);
 }
 
 // Q-14e: the renderer's typed input/shader mismatch reaches the ticket's

@@ -1,6 +1,7 @@
 #include "materialgenerationplanner.hpp"
 #include "materialdrawlooptable.hpp"
 #include "materiallimits.hpp"
+#include "materialphysicalcontractchanged.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/materialpassattachments.hpp"
@@ -1202,6 +1203,10 @@ void MaterialGenerationPlanner::validateCompatibility(
     const MaterialContainer &container,
     const RendererRuntimeGeneration &generation) {
     requireEveryMaterialServed(container, generation);
+    // RS-1: a physical-contract change is held until every other check of
+    // every live material has passed, so the typed refusal below means it
+    // was the only thing that kept this candidate off the live engine.
+    std::optional<MaterialPhysicalContractChanged> physical_change;
     container.materials.forEach(
         [&](GlobalMaterialId material_id,
             const MaterialContainer::InternalMaterialInfo
@@ -1247,21 +1252,42 @@ void MaterialGenerationPlanner::validateCompatibility(
                     resolveMaterialPassRenderingBinding(
                         binding,
                         material.shader_contract);
-                if (candidate != live) {
-                    throw std::runtime_error(
+                if (candidate != live && !physical_change) {
+                    MaterialPhysicalContractChangeInfo info{
+                        .material_id = static_cast<std::uint64_t>(material_id.value),
+                        .material = material.name,
+                        .pass = binding.pass_name,
+                    };
+                    if (candidate.color_formats != live.color_formats)
+                        info.detail.emplace_back(materialPhysicalContractColorFormats);
+                    if (candidate.depth_format != live.depth_format)
+                        info.detail.emplace_back(materialPhysicalContractDepthFormat);
+                    if (candidate.rasterization_samples != live.rasterization_samples)
+                        info.detail.emplace_back(materialPhysicalContractSampleCount);
+                    if (candidate.local_read != live.local_read)
+                        info.detail.emplace_back(materialPhysicalContractLocalRead);
+                    if (candidate.output_states != live.output_states)
+                        info.detail.emplace_back(materialPhysicalContractAttachmentState);
+                    std::string changed;
+                    for (const auto &part : info.detail)
+                        changed += (changed.empty() ? "" : ", ") + part;
+                    physical_change.emplace(
                         "render-pipeline candidate pass '" +
-                        binding.pass_name +
-                        "' changes the physical rendering "
-                        "contract of live material " +
-                        std::to_string(material_id.value) +
-                        "; color/depth formats, sample count, "
-                        "local-read mapping, or attachment "
-                        "state require a "
-                        "transactional material pipeline "
-                        "rebuild");
+                            binding.pass_name +
+                            "' changes the physical rendering "
+                            "contract of live material " +
+                            std::to_string(material_id.value) +
+                            " ('" + material.name + "': " + changed +
+                            "); color/depth formats, sample count, "
+                            "local-read mapping, or attachment "
+                            "state require a "
+                            "transactional material pipeline "
+                            "rebuild",
+                        std::move(info));
                 }
             }
         });
+    if (physical_change) throw std::move(*physical_change);
 }
 
 MaterialRuntimeGenerationReloadPlan
