@@ -42,6 +42,14 @@ struct Row {
     Value value;
     bool connected = false;
     bool declared = false;
+    // Q-19: a socket drawn from the pass's shader declarations. `port` is
+    // then its key ("in@0", "in:variadic"); `bound_port` the numbered port
+    // connected there. `band` marks the variadic group's members and its
+    // drop target, which are drawn on one band; `drop` the target itself.
+    QString socket_key;
+    QString bound_port;
+    bool band = false;
+    bool drop = false;
 };
 
 // Borrowed from the model's node snapshot for the duration of one rebuild.

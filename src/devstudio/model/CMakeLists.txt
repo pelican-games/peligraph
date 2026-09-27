@@ -25,6 +25,8 @@ target_include_directories(pelican_studio_inspector_model PUBLIC ${CMAKE_CURRENT
 target_link_libraries(pelican_studio_inspector_model PUBLIC
     pelican_project
     pelican_studio_outliner
+    # Q-19: the Graph tab reads a pass's pass_inputs the way the Frame Plan does.
+    pelican_studio_frame_plan
 )
 
 add_library(pelican_studio_gizmo_model STATIC

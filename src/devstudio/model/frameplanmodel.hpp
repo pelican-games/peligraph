@@ -261,6 +261,12 @@ struct FramePlanFamilyExtent {
 [[nodiscard]] std::optional<FramePlanFamilyExtent> framePlanFamilyExtent(
     const nlohmann::json &node, std::string_view context);
 
+// Q-19: reads one get_frame_plan node's pass_inputs, as the Frame Plan does
+// (`context` names it in the error). Nothing when the node carries none;
+// throws std::runtime_error when it carries one Studio cannot read.
+[[nodiscard]] std::optional<FramePlanPassInputs> framePlanPassInputs(
+    const nlohmann::json &node, std::string_view context);
+
 struct FramePlanNode {
     std::string name;
     std::string authored_name;

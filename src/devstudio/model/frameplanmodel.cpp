@@ -1088,6 +1088,13 @@ FramePlanPassInputs parsePassInputs(const Json &value,
 
 } // namespace
 
+std::optional<FramePlanPassInputs> framePlanPassInputs(const Json &node,
+                                                      std::string_view context) {
+    const auto found = node.find("pass_inputs");
+    if (found == node.end() || found->is_null()) return std::nullopt;
+    return parsePassInputs(*found, std::string{context} + ".pass_inputs");
+}
+
 std::optional<FramePlanFamilyExtent> framePlanFamilyExtent(const Json &node,
                                                            std::string_view context) {
     const auto found = node.find("family_extent");

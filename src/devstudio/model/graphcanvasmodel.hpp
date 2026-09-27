@@ -72,6 +72,46 @@ struct GraphCanvasOutput {
     bool operator==(const GraphCanvasOutput &) const = default;
 };
 
+// Q-19. One input socket of a render node (render.fullscreen, render.raster)
+// whose pass's shader declared its inputs -- get_frame_plan's pass_inputs on
+// the pass the node made -- drawn the way the Frame Plan draws it (VI-3a):
+// one socket per fixed declaration, named by its variable, and the variadic
+// group as a band of its connected members over an empty drop target. What
+// connects there is a numbered port of the node (`"binding": "input"`,
+// `"input_index": n`, LP-1d), and binding n is input n.
+struct GraphCanvasInputSocket {
+    enum class Kind : std::uint8_t {
+        // One fixed declaration: one socket, connected or empty.
+        declared,
+        // One connected member of the variadic group, inside the band.
+        variadic,
+        // The empty drop target at the lower end of the variadic band.
+        variadic_drop,
+        // A numbered port no declaration takes. Drawn so its line has an end.
+        undeclared,
+    };
+    Kind kind = Kind::declared;
+    // The declaration's binding, a member's, or -- for the drop target --
+    // the one the next input takes.
+    std::size_t binding = 0;
+    // The declaration's variable name ("" for variadic members and extras).
+    std::string declaration;
+    // A buffer declaration: a graph pass reads only images by number.
+    bool buffer = false;
+    // The numbered port connected here and what feeds it; "" when empty.
+    std::string port;
+    std::string source_node;
+    std::string source_port;
+    std::string label;
+
+    [[nodiscard]] bool connected() const noexcept { return !port.empty(); }
+    // What the socket is named by: "in@<binding>", "in:variadic", or the
+    // port's own name for an extra.
+    [[nodiscard]] std::string key() const;
+
+    bool operator==(const GraphCanvasInputSocket &) const = default;
+};
+
 struct GraphCanvasNode {
     std::string id;
     std::string op;
@@ -105,6 +145,11 @@ struct GraphCanvasNode {
     nlohmann::json parameters = nlohmann::json::object();
     std::vector<GraphCanvasPort> inputs;
     std::vector<GraphCanvasOutput> outputs;
+    // Q-19: set when the node's pass published its shader's declarations.
+    // The sockets are then these, and the numbered ports are not among
+    // `inputs`; without them the node keeps its rows.
+    bool declared_sockets = false;
+    std::vector<GraphCanvasInputSocket> input_sockets;
 
     // What the heading shows in bold. The id is the fallback, not a second
     // label: a node without one is named by its id.
@@ -560,6 +605,40 @@ class GraphCanvasModel {
     // its passes to, as the plan's family_extent on the family's nodes says.
     std::map<std::string, FramePlanFamilyExtent, std::less<>> family_extents_;
     void readPlanViews(const nlohmann::json &plan);
+    // Q-19: every pass's pass_inputs off the same get_frame_plan, by the
+    // pass's name, and the name of each pass a loop expanded, by its
+    // loop_origin -- a body node's sockets are read off one of its copies.
+    std::map<std::string, FramePlanPassInputs, std::less<>> plan_pass_inputs_;
+    struct PlanLoopCopy {
+        FramePlanLoopOrigin origin;
+        std::string name;
+    };
+    std::vector<PlanLoopCopy> plan_loop_copies_;
+    void readPlanPassInputs(const nlohmann::json &plan);
+    // A new pass has no pipeline until the engine publishes the generation
+    // that holds it, so the plan read right after the edit may not list it.
+    // The plan is read again on the clock, a bounded number of times after
+    // each document read, while a render node's pass is not in it.
+    int plan_retry_budget_ = 0;
+    bool plan_retry_wanted_ = false;
+    static constexpr int planRetryLimit = 40;
+    [[nodiscard]] bool planMissesRenderNode() const;
+    // The render.image type a numbered port reading `source_node.source_port`
+    // in `scope` is declared with: what the source says it is, followed
+    // through a body's graph.input to what feeds the loop or the instance.
+    [[nodiscard]] nlohmann::json imageTypeOf(std::string_view scope, std::string_view node,
+                                             std::string_view port, int depth) const;
+    // Decision 2's list for a source that may not exist yet (the zone's new
+    // graph.input): its `type`, and the `base` a new port's name comes from.
+    [[nodiscard]] nlohmann::json socketOps(std::string_view scope, const std::string &node,
+                                           const std::string &socket,
+                                           const std::string &source_node,
+                                           const std::string &source_port,
+                                           const std::string &base, const nlohmann::json &type,
+                                           std::string *refusal) const;
+    // Q-19, decision 4: a definition a committed edit renamed, so a trail
+    // that stood in it follows it to its new name.
+    std::map<std::string, std::string> committed_renames_;
     [[nodiscard]] const std::vector<FramePlanViewAxis> *familyAxes(std::string_view family) const;
     void requestLoopReports();
     // LP-4e: a draw_loop's report holds its first page of materials. The
@@ -652,7 +731,8 @@ class GraphCanvasModel {
     // False the rest of the time -- and then nothing has to wake up for it.
     [[nodiscard]] bool pollWanted() const noexcept {
         if (!connected_) return false;
-        return !catalog_requested_ || live_ || (!pending_ && !ticket_.empty());
+        return !catalog_requested_ || live_ || (!pending_ && !ticket_.empty()) ||
+               plan_retry_wanted_;
     }
 
     std::vector<InspectorRpcRequest> takeRpcRequests();
@@ -1027,8 +1107,65 @@ class GraphCanvasModel {
     bool submitEdit(nlohmann::json ops);
 
     // LP-0c's three definition ops, for the undo they need (decision 7).
+    // Q-19, decision 4: neither is sent when it would be refused for a
+    // reason Studio can see; the edit notice then says why, in one line.
     bool renameDefinition(const std::string &from, const std::string &to);
     bool removeDefinition(const std::string &name);
+    // Why `to` cannot be `from`'s new name -- empty, a slash, "root" (the
+    // root document's scope token), or a definition already there -- as one
+    // line; empty when it can. The same name is no rename, and says nothing.
+    [[nodiscard]] std::string definitionNameRefusal(std::string_view from,
+                                                    std::string_view to) const;
+    // The root nodes that run a definition (instances, and loops a branch of
+    // which runs it), each once, in document order.
+    [[nodiscard]] std::vector<std::string> definitionReferrers(std::string_view definition) const;
+    // "Definition <name> is used by <node>, <node>: ..." when something runs
+    // it; empty when it can go.
+    [[nodiscard]] std::string definitionRemoveRefusal(std::string_view name) const;
+
+    // --- Q-19: a render node's input sockets, and lines into them.
+
+    // The pass_inputs of the pass the node made, from the last frame plan:
+    // a root node's pass by its id, a body node's through one of the copies a
+    // loop running the body expanded (loop_origin), or an instance's
+    // (`<instance>/<id>`). Null when the plan lists none.
+    [[nodiscard]] const FramePlanPassInputs *passInputs(std::string_view scope,
+                                                        std::string_view node) const;
+    // The ports of a render node that read a pass input by number: its
+    // `input_index` -> the port. (The engine refuses gaps and duplicates.)
+    [[nodiscard]] static std::map<std::int64_t, std::string>
+    numberedPorts(const nlohmann::json &parameters);
+    // A name for a new numbered port of `node`, proposed from `base` (the
+    // source's port, or a graph.input's id): no port or input of the node
+    // has it.
+    [[nodiscard]] std::string suggestInputPortName(std::string_view scope, std::string_view node,
+                                                   std::string_view base) const;
+    // Decision 2. `source_node.source_port` dropped on the socket named
+    // `socket` (GraphCanvasInputSocket::key()) of `node`: a new numbered port
+    // at that binding and the edge into it, in one list, or the edge moved
+    // onto the port already there. Empty -- with `refusal` saying why in one
+    // line when there is a reason to say -- when it cannot be sent: a
+    // skipped binding, a full band, a buffer binding.
+    [[nodiscard]] nlohmann::json socketConnectOps(std::string_view scope, const std::string &node,
+                                                  const std::string &socket,
+                                                  const std::string &source_node,
+                                                  const std::string &source_port,
+                                                  std::string *refusal = nullptr) const;
+    // Sends it, or, refused, puts the line in the edit notice.
+    bool connectSocket(std::string_view scope, const std::string &node, const std::string &socket,
+                       const std::string &source_node, const std::string &source_port);
+    // The numbered port taken out -- its edge and its declaration -- and the
+    // ports after it moved down one input_index, in one list. Empty when
+    // `port` is not a numbered port of the node. disconnectInput() sends this
+    // for such a port: a numbered port without its edge is not a document.
+    [[nodiscard]] nlohmann::json removeInputPortOps(std::string_view scope, const std::string &node,
+                                                    const std::string &port) const;
+    // Decision 3, from outside a zone: a root output dropped on a socket of
+    // a body node -- the loop input, its graph.input in every body, and the
+    // numbered port reading it, in one list.
+    bool addZoneInputToSocket(const std::string &loop, const std::string &source_node,
+                              const std::string &source_port, const std::string &body,
+                              const std::string &target_node, const std::string &socket);
 
     // Decision 5. The loop the current scope was entered through (empty when
     // it was not), its branch the descent opened, and a switch to another

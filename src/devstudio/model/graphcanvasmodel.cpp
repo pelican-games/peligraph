@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <fstream>
 #include <iterator>
@@ -81,6 +82,12 @@ bool isLoop(const Json &node) {
     return node.is_object() && text(node, "op") == "graph.loop";
 }
 
+// Q-19: the render nodes whose pass draws with a fragment shader, which can
+// read numbered inputs (LP-1d) and whose pass publishes its declarations.
+bool isGraphicsPass(std::string_view op) {
+    return op == "render.fullscreen" || op == "render.raster";
+}
+
 // LP-4c. The bodies of a loop's branches, in order; an empty string is a
 // branch with `"body": null` (or none the table can read).
 std::vector<std::string> loopBranchBodies(const Json &node) {
@@ -92,6 +99,12 @@ std::vector<std::string> loopBranchBodies(const Json &node) {
     for (const auto &branch : *branches)
         bodies.push_back(branch.is_object() ? text(branch, "body") : std::string{});
     return bodies;
+}
+
+// Q-19: whether a branch of this loop runs `body`.
+bool runsBody(const Json &loop, std::string_view body) {
+    const auto bodies = loopBranchBodies(loop);
+    return std::ranges::find(bodies, body) != bodies.end();
 }
 
 // The integers of a `when` / `where` list, or nothing when one of them is not
@@ -251,6 +264,107 @@ void collectUiNodes(const Json &node, const std::string &parent,
     const auto children = node.find("children");
     if (children == node.end() || !children->is_array()) return;
     for (const auto &child : *children) collectUiNodes(child, path, out);
+}
+
+// Q-19. Whether a pass's input sockets are drawn from its shader: the engine
+// published the declarations and there is at least one to draw (the Frame
+// Plan's framePlanNodeDeclaresInputs, restated -- the view module has it).
+bool declaresPassInputs(const FramePlanPassInputs &inputs) {
+    return inputs.declared() && (!inputs.declarations.empty() || inputs.variadic_range);
+}
+
+// The image type a new render.fullscreen writes (addNodeOps) and the one a
+// numbered port is given when nothing says what its source carries.
+Json sceneColorType() {
+    return Json{{"semantic", "pelican.render.color_signal@1"},
+                {"arguments", Json{{"reference", "scene"}, {"transfer", "linear"},
+                                   {"range", "extended"}}}};
+}
+
+// Q-19, decision 1: a render node's sockets, from its pass's declarations and
+// its numbered ports -- VI-3a's framePlanInputSockets, with a numbered port
+// where the Frame Plan has a pass's input. Binding n is input n: the numbered
+// inputs come first in the pass's `input` (LP-1d).
+std::vector<GraphCanvasInputSocket> graphInputSockets(const FramePlanPassInputs &declared,
+                                                      const Json &node) {
+    using Kind = GraphCanvasInputSocket::Kind;
+    std::vector<GraphCanvasInputSocket> sockets;
+    const auto parameters = node.value("parameters", Json::object());
+    const auto numbered =
+        GraphCanvasModel::numberedPorts(parameters.is_object() ? parameters : Json::object());
+    const auto inputs = node.value("inputs", Json::object());
+    std::set<std::int64_t> taken;
+    const auto connect = [&](GraphCanvasInputSocket &socket, std::int64_t index) {
+        const auto found = numbered.find(index);
+        if (found == numbered.end()) return;
+        socket.port = found->second;
+        if (inputs.is_object())
+            if (const auto edge = inputs.find(socket.port); edge != inputs.end() && edge->is_object()) {
+                socket.source_node = text(*edge, "node");
+                socket.source_port = text(*edge, "port");
+            }
+    };
+    const auto source = [](const GraphCanvasInputSocket &socket) {
+        return socket.source_node.empty() ? socket.port
+                                          : socket.source_node + "." + socket.source_port;
+    };
+    bool variadic_drawn = false;
+    for (const auto &declaration : declared.declarations) {
+        if (declaration.variadic) {
+            if (variadic_drawn || !declared.variadic_range) continue;
+            variadic_drawn = true;
+            const auto [first, max] = *declared.variadic_range;
+            for (std::size_t slot = 0; slot < max; ++slot) {
+                const auto ordinal = static_cast<std::int64_t>(first + slot);
+                taken.insert(ordinal);
+                if (!numbered.contains(ordinal)) continue;
+                GraphCanvasInputSocket socket;
+                socket.kind = Kind::variadic;
+                socket.binding = first + slot;
+                connect(socket, ordinal);
+                socket.label = "← " + source(socket);
+                sockets.push_back(std::move(socket));
+            }
+            GraphCanvasInputSocket drop;
+            drop.kind = Kind::variadic_drop;
+            drop.binding = std::max(first, numbered.size());
+            drop.label = "+ input";
+            sockets.push_back(std::move(drop));
+            continue;
+        }
+        GraphCanvasInputSocket socket;
+        socket.kind = Kind::declared;
+        socket.binding = declaration.binding;
+        socket.declaration = declaration.name;
+        socket.buffer = declaration.buffer();
+        if (!socket.buffer) {
+            const auto index = static_cast<std::int64_t>(declaration.binding);
+            taken.insert(index);
+            connect(socket, index);
+        }
+        socket.label = socket.connected() ? declaration.name + " ← " + source(socket)
+                                          : declaration.name;
+        sockets.push_back(std::move(socket));
+    }
+    // A numbered port no declaration takes keeps a socket of its own, named
+    // by the port, so its line still has an end.
+    for (const auto &[index, port] : numbered) {
+        if (taken.contains(index)) continue;
+        GraphCanvasInputSocket socket;
+        socket.kind = Kind::undeclared;
+        socket.binding = static_cast<std::size_t>(index);
+        connect(socket, index);
+        socket.label = port + " ← " + source(socket);
+        sockets.push_back(std::move(socket));
+    }
+    return sockets;
+}
+
+// "<from>" or "<from>..<last>", the bindings a skipped drop leaves empty.
+std::string bindingRange(std::size_t from, std::size_t to_exclusive) {
+    return to_exclusive - from == 1
+               ? std::to_string(from)
+               : std::to_string(from) + ".." + std::to_string(to_exclusive - 1);
 }
 } // namespace
 
@@ -412,6 +526,11 @@ void GraphCanvasModel::clearContext() {
     view_families_.clear();
     plan_node_views_.clear();
     plan_targets_.clear();
+    plan_pass_inputs_.clear();
+    plan_loop_copies_.clear();
+    plan_retry_budget_ = 0;
+    plan_retry_wanted_ = false;
+    committed_renames_.clear();
     refusal_marks_.clear();
     values_received_ = false;
     values_published_ = false;
@@ -516,8 +635,15 @@ void GraphCanvasModel::requestLoopReports() {
     // Only a document with a loop has anything in loops[]: a frame plan read
     // for any other would be the whole plan for nothing. LP-4f1: or a root
     // render node, whose View field reads its axes off the plan.
-    const auto wanted = [](const Json &node) {
-        return isLoop(node) || (node.is_object() && takesViewSelect(text(node, "op")));
+    // Q-19: or an instance whose body draws, whose sockets it reads.
+    const auto wanted = [this](const Json &node) {
+        if (isLoop(node) || (node.is_object() && takesViewSelect(text(node, "op"))))
+            return true;
+        if (!node.is_object() || text(node, "op") != "graph.instance") return false;
+        const auto *body = scopeNodes(text(node, "definition"));
+        return body != nullptr && std::ranges::any_of(*body, [](const Json &inner) {
+            return inner.is_object() && isGraphicsPass(text(inner, "op"));
+        });
     };
     if (!connected_ || std::ranges::none_of(nodes_, wanted)) {
         loop_reports_ = Json::object();
@@ -525,6 +651,9 @@ void GraphCanvasModel::requestLoopReports() {
         view_families_.clear();
         plan_node_views_.clear();
         plan_targets_.clear();
+        plan_pass_inputs_.clear();
+        plan_loop_copies_.clear();
+        plan_retry_wanted_ = false;
         return;
     }
     read(RequestKind::Loops, "get_frame_plan", Json::object());
@@ -633,6 +762,11 @@ void GraphCanvasModel::poll() {
     // Live is the only thing that reads on a clock. Off, the overlay follows
     // the document, which is what it did before the switch existed.
     if (live_) requestObservation();
+    // Q-19: a render node whose pass the last plan did not list yet.
+    if (std::exchange(plan_retry_wanted_, false) && plan_retry_budget_ > 0) {
+        --plan_retry_budget_;
+        read(RequestKind::Loops, "get_frame_plan", Json::object());
+    }
     // An accepted edit owns the request slot until the engine says what became
     // of it. Nothing else may take that slot in the meantime.
     if (!pending_ && !ticket_.empty())
@@ -707,7 +841,11 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         try {
             const auto response = Json::parse(json);
             if (response.contains("error")) {
-                if (pending.kind == RequestKind::Loops) return;
+                if (pending.kind == RequestKind::Loops) {
+                    // Q-19: an engine with no plan yet is asked again.
+                    plan_retry_wanted_ = plan_retry_budget_ > 0 && planMissesRenderNode();
+                    return;
+                }
                 if (pending.kind == RequestKind::LoopPage) {
                     // The loop keeps the materials it has; the next loop
                     // is asked for its own.
@@ -731,6 +869,8 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 loop_reports_ = std::move(reports);
                 loop_reports_received_ = true;
                 readPlanViews(response);
+                readPlanPassInputs(response);
+                plan_retry_wanted_ = plan_retry_budget_ > 0 && planMissesRenderNode();
                 // LP-4e: a fresh report starts every loop's pages over.
                 loop_pages_done_.clear();
                 loop_page_node_.clear();
@@ -931,13 +1071,23 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             ++placement_revision_;
             // Q-18: but a commit of anything else is read into the plan
             // however its document reads back.
-            if (std::exchange(plan_after_commit_, false)) requestLoopReports();
+            if (std::exchange(plan_after_commit_, false)) {
+                plan_retry_budget_ = planRetryLimit;
+                requestLoopReports();
+            }
             return;
         }
         // The scope trail can name a definition the new document dropped.
+        // Q-19: one the edit renamed is followed to its new name.
+        const auto renames = std::exchange(committed_renames_, {});
         std::vector<std::string> trail{std::string{}};
-        for (std::size_t index = 1; index < breadcrumb_.size(); ++index)
-            if (definitions_.contains(breadcrumb_[index])) trail.push_back(breadcrumb_[index]);
+        for (std::size_t index = 1; index < breadcrumb_.size(); ++index) {
+            auto step = breadcrumb_[index];
+            if (!definitions_.contains(step))
+                if (const auto renamed = renames.find(step); renamed != renames.end())
+                    step = renamed->second;
+            if (definitions_.contains(step)) trail.push_back(std::move(step));
+        }
         breadcrumb_ = std::move(trail);
         // LP-4c: the loop a body was entered through has to still be there,
         // still running the body on screen.
@@ -960,6 +1110,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         requestValues();
         requestObservation();
         plan_after_commit_ = false;
+        plan_retry_budget_ = planRetryLimit;
         requestLoopReports();
     } catch (const std::exception &error) {
         failure_ = {InspectorNoticeKind::Error, error.what()};
@@ -1520,6 +1671,22 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
             }
         }
         drawn.inputs = std::move(ports);
+        // Q-19, decision 1: a render node whose pass published its shader's
+        // declarations draws them as its input sockets, and its numbered
+        // ports are theirs rather than rows of their own. Without them (no
+        // pipeline yet, a shader that declares nothing) the rows stay.
+        if (isGraphicsPass(drawn.op))
+            if (const auto *declared = passInputs(scope, drawn.id);
+                declared != nullptr && declaresPassInputs(*declared)) {
+                drawn.declared_sockets = true;
+                drawn.input_sockets = graphInputSockets(*declared, node);
+                const auto numbered = numberedPorts(drawn.parameters);
+                std::erase_if(drawn.inputs, [&](const GraphCanvasPort &port) {
+                    return std::ranges::any_of(numbered, [&](const auto &entry) {
+                        return entry.second == port.port;
+                    });
+                });
+            }
 
         if (drawn.instance && definitions_.contains(drawn.definition)) {
             const auto &definition = definitions_.at(drawn.definition);
@@ -1890,6 +2057,12 @@ void GraphCanvasModel::commitHistory(const Json &response) {
     }
     auto pending = std::move(*pending_history_);
     pending_history_.reset();
+    // Q-19: a scope the committed ops renamed, for the trail (an Undo sends
+    // the inverse, which renames it back).
+    for (const auto &op : pending.action == HistoryAction::Undo ? pending.entry.inverse
+                                                                  : pending.entry.forward)
+        if (op.is_object() && text(op, "op") == "rename_definition")
+            committed_renames_[text(op, "from")] = text(op, "to");
     if (pending.action == HistoryAction::Undo) {
         undo_.pop_back();
         redo_.push_back(std::move(pending.entry));
@@ -1969,6 +2142,10 @@ bool GraphCanvasModel::disconnectInput(const std::string &node, const std::strin
 bool GraphCanvasModel::disconnectInput(std::string_view scope, const std::string &node,
                                        const std::string &port) {
     if (!canEdit() || findNode(scope, node) == nullptr) return false;
+    // Q-19, decision 2: a numbered port is its line; taking the line away
+    // takes the port, and the ones after it move down a number.
+    if (auto ops = removeInputPortOps(scope, node, port); !ops.empty())
+        return submitOps(std::move(ops));
     return submitOps(Json::array({Json{
         {"op", "set_input"}, {"scope", scopeToken(scope)}, {"node", node}, {"port", port},
         {"source", nullptr}}}));
@@ -2974,14 +3151,67 @@ std::vector<std::string> GraphCanvasModel::loopBodyChoices(std::string_view id) 
 bool GraphCanvasModel::submitEdit(Json ops) { return submitOps(std::move(ops)); }
 
 bool GraphCanvasModel::renameDefinition(const std::string &from, const std::string &to) {
-    if (!canEdit() || !definitions_.contains(from) || to.empty() || from == to) return false;
+    if (!canEdit() || !definitions_.contains(from) || from == to) return false;
+    // Q-19, decision 4: the node id rule and "root" are checked before
+    // anything is sent. The engine moves every instance's and every loop
+    // branch's name in the same op (visitDefinitionReferences), so the one op
+    // is the whole gesture.
+    if (auto refusal = definitionNameRefusal(from, to); !refusal.empty()) {
+        edit_notice_ = {InspectorNoticeKind::Error, std::move(refusal)};
+        return false;
+    }
     return submitOps(Json::array({Json{
         {"op", "rename_definition"}, {"from", from}, {"to", to}}}));
 }
 
 bool GraphCanvasModel::removeDefinition(const std::string &name) {
     if (!canEdit() || !definitions_.contains(name)) return false;
+    // Decision 4: what still runs it is said, and nothing is sent.
+    if (auto refusal = definitionRemoveRefusal(name); !refusal.empty()) {
+        edit_notice_ = {InspectorNoticeKind::Error, std::move(refusal)};
+        return false;
+    }
     return submitOps(Json::array({Json{{"op", "remove_definition"}, {"name", name}}}));
+}
+
+std::string GraphCanvasModel::definitionNameRefusal(std::string_view from,
+                                                    std::string_view to) const {
+    if (to == from) return {};
+    const std::string name{to};
+    if (name.empty()) return "A definition needs a name.";
+    if (name.find('/') != std::string::npos)
+        return "A definition's name cannot hold a slash: " + name + ".";
+    if (name == "root")
+        return "A definition cannot be named root: that name is the root document's.";
+    if (definitions_.contains(name)) return "A definition named " + name + " already exists.";
+    return {};
+}
+
+std::vector<std::string> GraphCanvasModel::definitionReferrers(std::string_view definition) const {
+    std::vector<std::string> referrers;
+    // Instances and loops stand in the root document only (the engine refuses
+    // either in a body), so the root is where anything that runs it is.
+    for (const auto &node : nodes_) {
+        if (!node.is_object()) continue;
+        const bool runs =
+            (text(node, "op") == "graph.instance" && text(node, "definition") == definition) ||
+            (isLoop(node) && runsBody(node, definition));
+        const auto id = text(node, "id");
+        if (runs && std::ranges::find(referrers, id) == referrers.end()) referrers.push_back(id);
+    }
+    return referrers;
+}
+
+std::string GraphCanvasModel::definitionRemoveRefusal(std::string_view name) const {
+    const auto referrers = definitionReferrers(name);
+    if (referrers.empty()) return {};
+    std::string joined;
+    for (const auto &referrer : referrers) {
+        if (!joined.empty()) joined += ", ";
+        joined += referrer;
+    }
+    return "Definition " + std::string{name} + " is used by " + joined +
+           ": make them run another definition first.";
 }
 
 std::vector<std::pair<std::string, std::string>>
@@ -3544,6 +3774,358 @@ std::string GraphCanvasModel::suggestDrawVariant(std::string_view scope) const {
         }
     }
     return "variant";
+}
+
+// --- Q-19: a render node's input sockets, and lines into them.
+
+std::string GraphCanvasInputSocket::key() const {
+    if (kind == Kind::variadic_drop) return "in:variadic";
+    if (kind == Kind::undeclared) return port;
+    return "in@" + std::to_string(binding);
+}
+
+void GraphCanvasModel::readPlanPassInputs(const Json &plan) {
+    plan_pass_inputs_.clear();
+    plan_loop_copies_.clear();
+    const auto nodes = plan.find("nodes");
+    if (nodes == plan.end() || !nodes->is_array()) return;
+    for (std::size_t index = 0; index < nodes->size(); ++index) {
+        const auto &node = nodes->at(index);
+        if (!node.is_object()) continue;
+        const auto name = text(node, "name");
+        if (name.empty()) continue;
+        try {
+            auto inputs = framePlanPassInputs(
+                node, "get_frame_plan.nodes[" + std::to_string(index) + "]");
+            if (!inputs) continue;
+            plan_pass_inputs_.insert_or_assign(name, std::move(*inputs));
+        } catch (const std::exception &) {
+            // A declaration Studio cannot read leaves the node its rows.
+            continue;
+        }
+        const auto origin = node.find("loop_origin");
+        if (origin == node.end() || !origin->is_object()) continue;
+        const auto element = origin->find("element");
+        if (element == origin->end() || !element->is_number_integer()) continue;
+        FramePlanLoopOrigin read{text(*origin, "loop"), element->get<std::int64_t>(),
+                                 text(*origin, "node")};
+        if (read.loop.empty() || read.node.empty()) continue;
+        plan_loop_copies_.push_back(PlanLoopCopy{std::move(read), name});
+    }
+}
+
+const FramePlanPassInputs *GraphCanvasModel::passInputs(std::string_view scope,
+                                                        std::string_view node) const {
+    const auto find = [&](std::string_view name) -> const FramePlanPassInputs * {
+        const auto found = plan_pass_inputs_.find(name);
+        return found == plan_pass_inputs_.end() ? nullptr : &found->second;
+    };
+    // A root node's pass is named by its id (a copy's name holds slashes,
+    // which an id cannot).
+    if (scope.empty()) return find(node);
+    // A body node: the first copy, in the plan's order, of an element whose
+    // branch runs this body. Every copy draws with the same shader.
+    for (const auto &copy : plan_loop_copies_) {
+        if (copy.origin.node != node) continue;
+        const auto *loop = findNode({}, copy.origin.loop);
+        if (loop == nullptr || !isLoop(*loop)) continue;
+        const auto bodies = loopBranchBodies(*loop);
+        const auto branch = branchForElement(copy.origin.loop, copy.origin.element);
+        const bool runs = branch ? *branch < bodies.size() && bodies[*branch] == scope
+                                 : std::ranges::find(bodies, scope) != bodies.end();
+        if (!runs) continue;
+        if (const auto *found = find(copy.name)) return found;
+    }
+    // Or an instance of it, whose passes are `<instance>/<id>`.
+    for (const auto &candidate : nodes_) {
+        if (!candidate.is_object() || text(candidate, "op") != "graph.instance" ||
+            text(candidate, "definition") != scope)
+            continue;
+        if (const auto *found = find(text(candidate, "id") + "/" + std::string{node}))
+            return found;
+    }
+    return nullptr;
+}
+
+bool GraphCanvasModel::planMissesRenderNode() const {
+    const auto misses = [&](std::string_view scope) {
+        const auto *nodes = scopeNodes(scope);
+        if (nodes == nullptr) return false;
+        return std::ranges::any_of(*nodes, [&](const Json &node) {
+            if (!node.is_object() || !isGraphicsPass(text(node, "op"))) return false;
+            const auto *inputs = passInputs(scope, text(node, "id"));
+            return inputs == nullptr || !inputs->declared();
+        });
+    };
+    if (misses({})) return true;
+    for (const auto &node : nodes_) {
+        if (!node.is_object()) continue;
+        if (text(node, "op") == "graph.instance") {
+            if (misses(text(node, "definition"))) return true;
+            continue;
+        }
+        if (!isLoop(node)) continue;
+        // A loop the report says ran nothing has no copy to read.
+        if (const auto *report = loopReport(text(node, "id"));
+            report != nullptr && report->contains("count") && report->at("count").is_number() &&
+            report->at("count").get<double>() <= 0.0)
+            continue;
+        for (const auto &body : distinctLoopBodies(node, definitions_))
+            if (misses(body)) return true;
+    }
+    return false;
+}
+
+std::map<std::int64_t, std::string> GraphCanvasModel::numberedPorts(const Json &parameters) {
+    std::map<std::int64_t, std::string> numbered;
+    if (!parameters.is_object()) return numbered;
+    const auto ports = parameters.find("ports");
+    if (ports == parameters.end() || !ports->is_object()) return numbered;
+    for (const auto &[port, declaration] : ports->items()) {
+        if (!declaration.is_object() || text(declaration, "binding") != "input") continue;
+        const auto index = declaration.find("input_index");
+        if (index == declaration.end() || !index->is_number_integer() ||
+            index->get<std::int64_t>() < 0)
+            continue;
+        numbered.emplace(index->get<std::int64_t>(), port);
+    }
+    return numbered;
+}
+
+std::string GraphCanvasModel::suggestInputPortName(std::string_view scope, std::string_view node,
+                                                   std::string_view base) const {
+    const auto name = loopPortBase(base, "input");
+    const auto *found = findNode(scope, node);
+    if (found == nullptr) return name;
+    const auto parameters = found->value("parameters", Json::object());
+    const auto ports = parameters.is_object() ? parameters.value("ports", Json::object())
+                                              : Json::object();
+    const auto inputs = found->value("inputs", Json::object());
+    const auto taken = [&](const std::string &candidate) {
+        return (ports.is_object() && ports.contains(candidate)) ||
+               (inputs.is_object() && inputs.contains(candidate));
+    };
+    if (!taken(name)) return name;
+    for (int suffix = 2; suffix < 10000; ++suffix) {
+        auto candidate = name + "_" + std::to_string(suffix);
+        if (!taken(candidate)) return candidate;
+    }
+    return name;
+}
+
+Json GraphCanvasModel::imageTypeOf(std::string_view scope, std::string_view node,
+                                   std::string_view port, int depth) const {
+    const auto *source = depth > 0 ? findNode(scope, node) : nullptr;
+    if (source == nullptr) return sceneColorType();
+    const auto op = text(*source, "op");
+    const auto typed = [](const Json &type) {
+        return type.is_object() && type.contains("semantic") && type.at("semantic").is_string();
+    };
+    // A body's boundary port carries what the loop or the instance running
+    // the body is fed there.
+    if (op == "graph.input" && !scope.empty()) {
+        for (const auto &runner : nodes_) {
+            if (!runner.is_object()) continue;
+            const bool runs =
+                (text(runner, "op") == "graph.instance" && text(runner, "definition") == scope) ||
+                (isLoop(runner) && runsBody(runner, scope));
+            if (!runs) continue;
+            const auto inputs = runner.value("inputs", Json::object());
+            const auto edge = inputs.is_object() ? inputs.value(std::string{node}, Json{}) : Json{};
+            if (edge.is_object())
+                return imageTypeOf({}, text(edge, "node"), text(edge, "port"), depth - 1);
+        }
+        return sceneColorType();
+    }
+    // An instance's or a loop's output is what its body's output is.
+    if (op == "graph.instance" || isLoop(*source)) {
+        const auto body = op == "graph.instance" ? text(*source, "definition")
+                                                 : loopEntryBody(*source);
+        std::string output{port};
+        if (output.ends_with("[]")) output.resize(output.size() - 2);
+        const auto definition = definitions_.find(body);
+        if (definition == definitions_.end()) return sceneColorType();
+        const auto outputs = definition->value("outputs", Json::object());
+        const auto endpoint = outputs.is_object() ? outputs.value(output, Json{}) : Json{};
+        if (!endpoint.is_object()) return sceneColorType();
+        return imageTypeOf(body, text(endpoint, "node"), text(endpoint, "port"), depth - 1);
+    }
+    const auto parameters = source->value("parameters", Json::object());
+    if (parameters.is_object()) {
+        // A pass's port says what it writes there; an image, a target
+        // reference or a history read says what it is.
+        const auto ports = parameters.value("ports", Json::object());
+        if (ports.is_object())
+            if (const auto declared = ports.find(std::string{port});
+                declared != ports.end() && declared->is_object() && declared->contains("type") &&
+                typed(declared->at("type")))
+                return declared->at("type");
+        if (const auto type = parameters.find("type"); type != parameters.end() && typed(*type))
+            return *type;
+    }
+    return sceneColorType();
+}
+
+Json GraphCanvasModel::socketOps(std::string_view scope, const std::string &node,
+                                 const std::string &socket, const std::string &source_node,
+                                 const std::string &source_port, const std::string &base,
+                                 const Json &type, std::string *refusal) const {
+    const auto *target = findNode(scope, node);
+    if (target == nullptr || !isGraphicsPass(text(*target, "op"))) return Json::array();
+    if (source_node.empty() || source_port.empty() || source_node == node) return Json::array();
+    const auto *declared = passInputs(scope, node);
+    if (declared == nullptr || !declaresPassInputs(*declared)) return Json::array();
+    const auto refuse = [&](std::string line) {
+        if (refusal != nullptr) *refusal = std::move(line);
+        return Json::array();
+    };
+    auto parameters = nodeParameters(scope, node);
+    const auto numbered = numberedPorts(parameters);
+    // The inputs fill the bindings in order: the next one is the first
+    // number no port holds.
+    std::size_t count = 0;
+    while (numbered.contains(static_cast<std::int64_t>(count))) ++count;
+    const auto fill_first = [&](std::size_t from, std::size_t to_exclusive) {
+        return refuse("Connect binding " + bindingRange(from, to_exclusive) + " of " + node +
+                      " first: a pass's inputs fill the bindings in order.");
+    };
+    std::size_t binding = 0;
+    std::string existing;
+    if (socket == "in:variadic") {
+        if (!declared->variadic_range) return refuse(node + "'s shader has no variadic group.");
+        const auto [first, max] = *declared->variadic_range;
+        if (count < first) return fill_first(count, first);
+        if (count - first >= max)
+            return refuse(node + "'s shader takes at most " + std::to_string(max) +
+                          " inputs in its variadic group.");
+        binding = count;
+    } else if (socket.starts_with("in@")) {
+        const auto digits = std::string_view{socket}.substr(3);
+        const auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), binding);
+        if (digits.empty() || parsed.ec != std::errc{} || parsed.ptr != digits.data() + digits.size())
+            return Json::array();
+        const auto declaration = std::ranges::find_if(declared->declarations, [&](const auto &entry) {
+            return !entry.variadic && entry.binding == binding;
+        });
+        const bool member =
+            declared->variadic_range && binding >= declared->variadic_range->first &&
+            binding < declared->variadic_range->first + declared->variadic_range->max &&
+            std::ranges::any_of(declared->declarations, &FramePlanPassInputDeclaration::variadic);
+        if (declaration == declared->declarations.end() && !member)
+            return refuse(node + "'s shader declares no binding " + std::to_string(binding) + ".");
+        if (declaration != declared->declarations.end() && declaration->buffer())
+            return refuse("Binding " + std::to_string(binding) + " of " + node +
+                          " takes a buffer: a graph pass reads only images by number.");
+        if (binding > count) return fill_first(count, binding);
+        if (binding < count) existing = numbered.at(static_cast<std::int64_t>(binding));
+    } else {
+        // An extra's socket is named by its port: a line dropped there
+        // feeds that port instead.
+        const auto found = std::ranges::find_if(
+            numbered, [&](const auto &entry) { return entry.second == socket; });
+        if (found == numbered.end()) return Json::array();
+        existing = socket;
+        binding = static_cast<std::size_t>(found->first);
+    }
+    const auto scope_token = scopeToken(scope);
+    const Json source{{"node", source_node}, {"port", source_port}};
+    Json ops = Json::array();
+    if (!existing.empty()) {
+        // In place of what is connected there: the port stays at its number
+        // and its line moves; its type follows the new source.
+        const auto inputs = target->value("inputs", Json::object());
+        if (inputs.is_object() && inputs.value(existing, Json{}) == source) return Json::array();
+        auto &declaration = parameters["ports"][existing];
+        if (declaration.value("type", Json{}) != type) {
+            declaration["type"] = type;
+            ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", scope_token},
+                               {"node", node}, {"parameters", parameters}});
+        }
+        ops.push_back(Json{{"op", "set_input"}, {"scope", scope_token}, {"node", node},
+                           {"port", existing}, {"source", source}});
+        return ops;
+    }
+    const auto name = suggestInputPortName(scope, node, base);
+    parameters["ports"][name] = Json{{"kind", "image"},        {"type", type},
+                                     {"access", "read"},       {"binding", "input"},
+                                     {"input_index", binding}};
+    ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", scope_token}, {"node", node},
+                       {"parameters", std::move(parameters)}});
+    ops.push_back(Json{{"op", "set_input"}, {"scope", scope_token}, {"node", node},
+                       {"port", name}, {"source", source}});
+    return ops;
+}
+
+Json GraphCanvasModel::socketConnectOps(std::string_view scope, const std::string &node,
+                                        const std::string &socket,
+                                        const std::string &source_node,
+                                        const std::string &source_port,
+                                        std::string *refusal) const {
+    const auto *source = findNode(scope, source_node);
+    if (source == nullptr) return Json::array();
+    // A boundary port's one output is `value`; its id says what it is.
+    const auto base = text(*source, "op") == "graph.input" ? source_node : source_port;
+    return socketOps(scope, node, socket, source_node, source_port, base,
+                     imageTypeOf(scope, source_node, source_port, 8), refusal);
+}
+
+bool GraphCanvasModel::connectSocket(std::string_view scope, const std::string &node,
+                                     const std::string &socket, const std::string &source_node,
+                                     const std::string &source_port) {
+    if (!canEdit()) return false;
+    std::string refusal;
+    auto ops = socketConnectOps(scope, node, socket, source_node, source_port, &refusal);
+    if (ops.empty()) {
+        if (!refusal.empty()) edit_notice_ = {InspectorNoticeKind::Error, std::move(refusal)};
+        return false;
+    }
+    return submitOps(std::move(ops));
+}
+
+Json GraphCanvasModel::removeInputPortOps(std::string_view scope, const std::string &node,
+                                          const std::string &port) const {
+    const auto *target = findNode(scope, node);
+    if (target == nullptr || !isGraphicsPass(text(*target, "op"))) return Json::array();
+    auto parameters = nodeParameters(scope, node);
+    const auto numbered = numberedPorts(parameters);
+    const auto found =
+        std::ranges::find_if(numbered, [&](const auto &entry) { return entry.second == port; });
+    if (found == numbered.end()) return Json::array();
+    const auto removed = found->first;
+    parameters["ports"].erase(port);
+    for (const auto &[index, other] : numbered)
+        if (index > removed) parameters["ports"][other]["input_index"] = index - 1;
+    const auto scope_token = scopeToken(scope);
+    return Json::array({
+        Json{{"op", "set_input"}, {"scope", scope_token}, {"node", node}, {"port", port},
+             {"source", nullptr}},
+        Json{{"op", "set_node_parameters"}, {"scope", scope_token}, {"node", node},
+             {"parameters", std::move(parameters)}}});
+}
+
+bool GraphCanvasModel::addZoneInputToSocket(const std::string &loop, const std::string &source_node,
+                                            const std::string &source_port, const std::string &body,
+                                            const std::string &target_node,
+                                            const std::string &socket) {
+    if (!canEdit()) return false;
+    const auto *loop_node = findNode({}, loop);
+    if (loop_node == nullptr || !isLoop(*loop_node)) return false;
+    const auto bodies = distinctLoopBodies(*loop_node, definitions_);
+    if (std::ranges::find(bodies, body) == bodies.end()) return false;
+    auto ops = zoneInputOps(loop, source_node, source_port);
+    if (ops.empty()) return false;
+    // The graph.input the list adds, which the port reads: named as
+    // zoneInputOps names it, and carrying what the root source carries.
+    const auto name = suggestLoopInputName(loop, source_port);
+    std::string refusal;
+    auto socket_ops = socketOps(body, target_node, socket, name, "value", name,
+                                imageTypeOf({}, source_node, source_port, 8), &refusal);
+    if (socket_ops.empty()) {
+        if (!refusal.empty()) edit_notice_ = {InspectorNoticeKind::Error, std::move(refusal)};
+        return false;
+    }
+    for (auto &op : socket_ops) ops.push_back(std::move(op));
+    return submitOps(std::move(ops));
 }
 
 } // namespace PelicanStudio

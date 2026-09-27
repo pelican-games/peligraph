@@ -115,8 +115,12 @@ QGraphicsItem *findSocket(QGraphicsScene &scene, const QString &scope,
         if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasSocketItem} ||
             item->data(GraphCanvasScopeRole).toString() != scope ||
             item->data(NodeGraphNameRole).toString() != node ||
-            item->data(GraphCanvasPortRole).toString() != port ||
             item->data(GraphCanvasSocketDirectionRole).toString() != direction)
+            continue;
+        // Q-19: a socket of the shader's declarations is named by its key;
+        // the numbered port an edge names is the one bound there.
+        if (item->data(GraphCanvasPortRole).toString() != port &&
+            (port.isEmpty() || item->data(GraphCanvasBoundPortRole).toString() != port))
             continue;
         return item;
     }
@@ -2036,6 +2040,7 @@ void GraphCanvasScene::beginConnection(const QGraphicsItem &socket) {
     pending.node = socket.data(NodeGraphNameRole).toString().toStdString();
     pending.port = port.toStdString();
     pending.from_output = direction == QLatin1String{"output"};
+    pending.socket_key = socket.data(GraphCanvasSocketKeyRole).toString().toStdString();
     pending.origin = socket.sceneBoundingRect().center();
     pending_connection_ = std::move(pending);
     pending_edge_ = new QGraphicsPathItem;
@@ -2114,6 +2119,19 @@ void GraphCanvasScene::finishConnection(const QPointF &position) {
         if (itemScope(*item) != pending.scope) {
             const auto body = itemScope(*item);
             const auto loop = zoneLoopOf(body);
+            // Q-19, decision 3: onto a socket of a body pass's shader, the
+            // new graph.input is read through a numbered port.
+            const auto key = item->data(GraphCanvasSocketKeyRole).toString().toStdString();
+            if (pending.from_output && pending.scope.empty() && current.empty() &&
+                !loop.empty() && !item->data(GraphCanvasZoneScopeRole).toString().isEmpty() &&
+                !key.empty()) {
+                const bool submitted = model_->addZoneInputToSocket(
+                    loop, pending.node, pending.port, body,
+                    item->data(NodeGraphNameRole).toString().toStdString(), key);
+                afterEdit(submitted);
+                if (!submitted && noticeChanged) noticeChanged();
+                return;
+            }
             if (pending.from_output && pending.scope.empty() && current.empty() &&
                 !loop.empty() && !item->data(GraphCanvasZoneScopeRole).toString().isEmpty() &&
                 !item->data(GraphCanvasPortRole).toString().isEmpty()) {
@@ -2128,6 +2146,20 @@ void GraphCanvasScene::finishConnection(const QPointF &position) {
         const auto port = item->data(GraphCanvasPortRole).toString();
         if (port.isEmpty()) return; // A folded node names no single port.
         const auto node = item->data(NodeGraphNameRole).toString().toStdString();
+        // Q-19, decision 2: a socket of a render node's shader declarations
+        // takes the line as a numbered port at its binding -- or refuses it
+        // in one line (a skipped binding, a full band).
+        const auto key = item->data(GraphCanvasSocketKeyRole).toString().toStdString();
+        if (!key.empty() || !pending.socket_key.empty()) {
+            const bool submitted =
+                pending.from_output
+                    ? model_->connectSocket(pending.scope, node, key, pending.node, pending.port)
+                    : model_->connectSocket(pending.scope, pending.node, pending.socket_key,
+                                            node, port.toStdString());
+            afterEdit(submitted);
+            if (!submitted && noticeChanged) noticeChanged();
+            return;
+        }
         const auto from_node = pending.from_output ? pending.node : node;
         const auto from_port = pending.from_output ? pending.port : port.toStdString();
         const auto to_node = pending.from_output ? node : pending.node;
@@ -2143,6 +2175,16 @@ void GraphCanvasScene::finishConnection(const QPointF &position) {
     const auto drawn = model_->nodes(pending.scope);
     const auto owner = std::ranges::find(drawn, pending.node, &GraphCanvasNode::id);
     if (owner == drawn.end()) return;
+    // Q-19: a connected socket of the shader's declarations dragged off is
+    // its numbered port taken out (and the ones after it renumbered).
+    if (!pending.socket_key.empty()) {
+        const auto socket = std::ranges::find_if(owner->input_sockets, [&](const auto &each) {
+            return each.key() == pending.socket_key;
+        });
+        if (socket == owner->input_sockets.end() || !socket->connected()) return;
+        afterEdit(model_->disconnectInput(pending.scope, pending.node, socket->port));
+        return;
+    }
     const auto port = std::ranges::find(owner->inputs, pending.port,
                                         &GraphCanvasPort::port);
     if (port == owner->inputs.end() || !port->connected) return;
@@ -2199,6 +2241,14 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
             }
             if (kind == QLatin1String{GraphCanvasZoneCarryItem} ||
                 kind == QLatin1String{GraphCanvasZoneCarryMarkItem}) {
+                // Q-19: the arrow ends on the boundary input's socket and is
+                // drawn over it; a press on the socket is a line from it.
+                const auto under = items(event->scenePos());
+                if (std::ranges::any_of(under, [](const QGraphicsItem *other) {
+                        return nodeGraphItemKind(*other) ==
+                               QLatin1String{GraphCanvasSocketItem};
+                    }))
+                    continue;
                 event->accept();
                 selectCarry(item->data(NodeGraphNameRole).toString().toStdString(),
                             item->data(GraphCanvasFromPortRole).toString().toStdString(),
@@ -2390,6 +2440,32 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
                 Qt::QueuedConnection);
         });
     }
+    // Q-19, decision 4: over the breadcrumb, the definition on screen; over a
+    // zone's heading, the definition its tab shows.
+    std::string definition;
+    if (model_ != nullptr && rename_definition_action_ != nullptr &&
+        delete_definition_action_ != nullptr)
+        for (QGraphicsItem *item : items(event->scenePos())) {
+            const QString kind = nodeGraphItemKind(*item);
+            if (kind == QLatin1String{GraphCanvasBreadcrumbItem}) {
+                definition = model_->currentScope();
+                break;
+            }
+            if (!item->data(GraphCanvasHeadingRole).toBool() || !itemScope(*item).empty() ||
+                !item->data(GraphCanvasZoneScopeRole).toString().isEmpty())
+                continue;
+            const auto found = zones_.find(item->data(NodeGraphNameRole).toString().toStdString());
+            if (found != zones_.end()) definition = found->second;
+            break;
+        }
+    if (!definition.empty()) {
+        menu.addSeparator();
+        if (definition_target_) definition_target_(definition);
+        rename_definition_action_->setEnabled(model_->canEdit());
+        delete_definition_action_->setEnabled(model_->canEdit());
+        menu.addAction(rename_definition_action_);
+        menu.addAction(delete_definition_action_);
+    }
     if (menu.actions().isEmpty()) {
         QGraphicsScene::contextMenuEvent(event);
         return;
@@ -2398,6 +2474,7 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     menu_scope_ = scope;
     menu.exec(event->screenPos());
     menu_scope_.reset();
+    if (!definition.empty() && definition_target_) definition_target_(std::nullopt);
 }
 
 // One editor at a time, over the thing it edits. It owns nothing the scene
@@ -2821,6 +2898,13 @@ void GraphCanvasScene::setAddActions(QAction *add_loop, QAction *add_fullscreen)
     add_fullscreen_action_ = add_fullscreen;
 }
 
+void GraphCanvasScene::setDefinitionActions(
+    QAction *rename, QAction *remove, std::function<void(std::optional<std::string>)> target) {
+    rename_definition_action_ = rename;
+    delete_definition_action_ = remove;
+    definition_target_ = std::move(target);
+}
+
 bool GraphCanvasScene::deleteSelection() {
     if (model_ == nullptr) return false;
     // LP-4d2, decision 3: a picked carry arrow leaves the loop's carry.
@@ -3158,6 +3242,22 @@ struct GraphCanvasWidget::Impl {
     QLabel *shared_mark = nullptr;
     QAction *add_loop_action = nullptr;
     QAction *add_fullscreen_action = nullptr;
+    // Q-19, decision 4: "Rename definition…" and "Delete definition", and
+    // the row they open under the scope controls -- the new name, or the
+    // question -- with the one line that says why a name cannot be sent.
+    QAction *rename_definition_action = nullptr;
+    QAction *delete_definition_action = nullptr;
+    QWidget *definition_row = nullptr;
+    QLabel *definition_caption = nullptr;
+    QLineEdit *definition_name = nullptr;
+    QPushButton *definition_apply = nullptr;
+    QPushButton *definition_cancel = nullptr;
+    QLabel *definition_line = nullptr;
+    // What the row is about, and whether it deletes rather than renames.
+    std::string definition_subject;
+    bool definition_deleting = false;
+    // The definition an open context menu is about.
+    std::optional<std::string> definition_menu_target;
     // LP-4d2, decision 5: what Show in Frame Plan does (the owner's).
     std::function<bool(const QString &)> frame_plan_loop_action;
     // Q-18: who is told that an edit of this tab committed and the plan may
@@ -3255,6 +3355,62 @@ struct GraphCanvasWidget::Impl {
         controls->addWidget(refresh);
         layout->addLayout(controls);
 
+        // Q-19, decision 4: the definition row, hidden until Rename
+        // definition… or Delete definition opens it.
+        definition_row = new QWidget(&view);
+        definition_row->setObjectName(QStringLiteral("pelican.graphCanvasDefinitionRow"));
+        auto *definition_layout = new QHBoxLayout(definition_row);
+        definition_layout->setContentsMargins(0, 0, 0, 0);
+        definition_caption = new QLabel(definition_row);
+        definition_caption->setObjectName(
+            QStringLiteral("pelican.graphCanvasDefinitionCaption"));
+        definition_layout->addWidget(definition_caption);
+        definition_name = new QLineEdit(definition_row);
+        definition_name->setObjectName(QStringLiteral("pelican.graphCanvasDefinitionName"));
+        definition_name->setToolTip(QObject::tr(
+            "The definition's new name: no slash, not \"root\", and no other definition's."));
+        definition_layout->addWidget(definition_name, 1);
+        definition_apply = new QPushButton(definition_row);
+        definition_apply->setObjectName(QStringLiteral("pelican.graphCanvasDefinitionApply"));
+        definition_layout->addWidget(definition_apply);
+        definition_cancel = new QPushButton(QObject::tr("Cancel"), definition_row);
+        definition_cancel->setObjectName(QStringLiteral("pelican.graphCanvasDefinitionCancel"));
+        definition_layout->addWidget(definition_cancel);
+        definition_line = new QLabel(definition_row);
+        definition_line->setObjectName(QStringLiteral("pelican.graphCanvasDefinitionLine"));
+        definition_line->setStyleSheet(QStringLiteral("color: #c0392b;"));
+        definition_line->hide();
+        definition_layout->addWidget(definition_line);
+        layout->addWidget(definition_row);
+        definition_row->hide();
+        QObject::connect(definition_name, &QLineEdit::textChanged, &view,
+                         [this] { validateDefinitionRow(); });
+        QObject::connect(definition_name, &QLineEdit::returnPressed, &view,
+                         [this] { applyDefinitionRow(); });
+        QObject::connect(definition_apply, &QPushButton::clicked, &view,
+                         [this] { applyDefinitionRow(); });
+        QObject::connect(definition_cancel, &QPushButton::clicked, &view,
+                         [this] { closeDefinitionRow(); });
+        auto *definition_escape = new QAction(definition_name);
+        definition_escape->setShortcut(QKeySequence{Qt::Key_Escape});
+        definition_escape->setShortcutContext(Qt::WidgetShortcut);
+        definition_name->addAction(definition_escape);
+        QObject::connect(definition_escape, &QAction::triggered, &view,
+                         [this] { closeDefinitionRow(); });
+        // The Scope combo and the breadcrumb offer them for the definition
+        // they show, on a right-click.
+        scopes->setContextMenuPolicy(Qt::CustomContextMenu);
+        QObject::connect(scopes, &QWidget::customContextMenuRequested, &view,
+                         [this](const QPoint &at) {
+                             definitionMenu(scopes->currentData().toString().toStdString(),
+                                            scopes->mapToGlobal(at));
+                         });
+        breadcrumb->setContextMenuPolicy(Qt::CustomContextMenu);
+        QObject::connect(breadcrumb, &QWidget::customContextMenuRequested, &view,
+                         [this](const QPoint &at) {
+                             definitionMenu(model.currentScope(), breadcrumb->mapToGlobal(at));
+                         });
+
         notice = new QLabel(&view);
         notice->setObjectName(QStringLiteral("pelican.graphCanvasNotice"));
         applyPanelNoticeStyle(notice);
@@ -3346,6 +3502,28 @@ struct GraphCanvasWidget::Impl {
             scene->addFromPalette("render.fullscreen");
         });
         scene->setAddActions(add_loop_action, add_fullscreen_action);
+        // Q-19, decision 4. Named, like the additions: fired by name they
+        // are about the definition on screen, else the one the picked zone
+        // shows; from a menu, about the definition the menu was opened over.
+        rename_definition_action = new QAction(QObject::tr("Rename definition…"), &view);
+        rename_definition_action->setObjectName(
+            QStringLiteral("pelican.graphCanvas.renameDefinition"));
+        rename_definition_action->setEnabled(false);
+        view.addAction(rename_definition_action);
+        QObject::connect(rename_definition_action, &QAction::triggered, &view,
+                         [this] { openDefinitionRow(false); });
+        delete_definition_action = new QAction(QObject::tr("Delete definition"), &view);
+        delete_definition_action->setObjectName(
+            QStringLiteral("pelican.graphCanvas.deleteDefinition"));
+        delete_definition_action->setEnabled(false);
+        view.addAction(delete_definition_action);
+        QObject::connect(delete_definition_action, &QAction::triggered, &view,
+                         [this] { openDefinitionRow(true); });
+        scene->setDefinitionActions(
+            rename_definition_action, delete_definition_action,
+            [this](std::optional<std::string> target) {
+                definition_menu_target = std::move(target);
+            });
         canvas->setDragMode(QGraphicsView::RubberBandDrag);
         canvas->setRenderHint(QPainter::Antialiasing, true);
         // Delete has to reach the scene, and a right-click on the canvas has to
@@ -3503,6 +3681,8 @@ struct GraphCanvasWidget::Impl {
                                       : std::string{});
             showDetails();
             synchronizeTimeline();
+            // Q-19: a picked zone is what the definition actions are about.
+            syncDefinitionActions();
         };
         // Every canvas gesture is applied the moment it finishes, so the only
         // thing left to do here is post what the model already built.
@@ -3758,6 +3938,110 @@ struct GraphCanvasWidget::Impl {
                 model.receiveRpcFailure(request.request_id, error.toStdString());
         }
         synchronize();
+    }
+
+    // --- Q-19, decision 4: renaming and deleting a definition.
+
+    // What the two definition actions are about: the definition an open
+    // menu names; else the one on screen; else the one the picked zone
+    // shows (or whose node is picked). Empty when none.
+    [[nodiscard]] std::string definitionTarget() const {
+        if (definition_menu_target) return *definition_menu_target;
+        if (!model.currentScope().empty()) return model.currentScope();
+        const auto &selected = scene->selectedNode();
+        if (!selected) return {};
+        if (!scene->selectedScope().empty()) return scene->selectedScope();
+        const auto &zones = scene->zones();
+        const auto found = zones.find(*selected);
+        return found == zones.end() ? std::string{} : found->second;
+    }
+
+    void syncDefinitionActions() {
+        const bool available = model.canEdit() && !definitionTarget().empty();
+        rename_definition_action->setEnabled(available);
+        delete_definition_action->setEnabled(available);
+    }
+
+    void definitionMenu(const std::string &definition, const QPoint &global) {
+        if (definition.empty()) return;
+        QMenu menu;
+        definition_menu_target = definition;
+        rename_definition_action->setEnabled(model.canEdit());
+        delete_definition_action->setEnabled(model.canEdit());
+        menu.addAction(rename_definition_action);
+        menu.addAction(delete_definition_action);
+        menu.exec(global);
+        definition_menu_target.reset();
+        synchronize();
+    }
+
+    void openDefinitionRow(bool deleting) {
+        const auto target = definitionTarget();
+        if (target.empty() || !model.canEdit()) return;
+        closeDefinitionRow();
+        // Something still runs it: the notice says what, and nothing is sent
+        // or asked.
+        if (deleting && !model.definitionRemoveRefusal(target).empty()) {
+            model.removeDefinition(target);
+            showNotice();
+            return;
+        }
+        definition_subject = target;
+        definition_deleting = deleting;
+        definition_caption->setText(
+            deleting ? QObject::tr("Delete definition %1? Nothing runs it.").arg(qtext(target))
+                     : QObject::tr("Rename definition %1 to").arg(qtext(target)));
+        definition_name->setVisible(!deleting);
+        definition_apply->setText(deleting ? QObject::tr("Delete") : QObject::tr("Rename"));
+        definition_row->show();
+        if (!deleting) {
+            // The current name, chosen: typing replaces it.
+            definition_name->setText(qtext(target));
+            definition_name->selectAll();
+            definition_name->setFocus(Qt::OtherFocusReason);
+        }
+        validateDefinitionRow();
+    }
+
+    void validateDefinitionRow() {
+        if (definition_subject.empty()) return;
+        std::string refusal;
+        bool changed = true;
+        if (!definition_deleting) {
+            const auto name = definition_name->text().toStdString();
+            refusal = model.definitionNameRefusal(definition_subject, name);
+            changed = name != definition_subject;
+        }
+        definition_line->setText(qtext(refusal));
+        definition_line->setVisible(!refusal.empty());
+        definition_apply->setEnabled(model.canEdit() && refusal.empty() && changed);
+    }
+
+    void applyDefinitionRow() {
+        if (definition_subject.empty()) return;
+        if (!definition_deleting) {
+            const auto name = definition_name->text().toStdString();
+            // Checked before anything is sent: the line says why, and the
+            // row stays open for another name.
+            if (const auto refusal = model.definitionNameRefusal(definition_subject, name);
+                !refusal.empty()) {
+                validateDefinitionRow();
+                return;
+            }
+            if (name != definition_subject) model.renameDefinition(definition_subject, name);
+        } else {
+            model.removeDefinition(definition_subject);
+        }
+        closeDefinitionRow();
+        dispatch();
+        showNotice();
+    }
+
+    void closeDefinitionRow() {
+        definition_subject.clear();
+        definition_line->clear();
+        definition_line->hide();
+        definition_row->hide();
     }
 
     void syncScopeControls() {
@@ -4298,6 +4582,17 @@ struct GraphCanvasWidget::Impl {
         add_fullscreen_action->setEnabled(
             model.canEdit() &&
             !model.paletteOperationsIn(scene->addScope(), "render.fullscreen").empty());
+        // Q-19: the definition actions follow what they would be about.
+        syncDefinitionActions();
+        if (!definition_subject.empty()) {
+            const auto known = model.scopes();
+            if (std::ranges::none_of(known, [&](const GraphCanvasScope &scope) {
+                    return !scope.root && scope.id == definition_subject;
+                }))
+                closeDefinitionRow();
+            else
+                validateDefinitionRow();
+        }
         const bool content_changed = rendered_content != model.contentRevision();
         const bool report_changed = rendered_report != model.reportRevision();
         // A redraw deletes the in-place editor, so it waits for the editor to

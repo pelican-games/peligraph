@@ -838,7 +838,7 @@ struct GraphLoopRefusalText {
     std::string_view code;
     std::string_view sentence;
 };
-constexpr std::array<GraphLoopRefusalText, 25> GraphLoopRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 26> GraphLoopRefusalTexts{{
     {"graph.loop_branch_else_missing@1",
      "Loop {node} has no else: its last branch must have no condition"},
     {"graph.loop_branch_interface@1",
@@ -883,6 +883,21 @@ constexpr std::array<GraphLoopRefusalText, 25> GraphLoopRefusalTexts{{
     {"graph.definition_missing@1", "There is no definition named {definition}"},
     {"graph.definition_immutable@1",
      "{node} is made by an instance or a loop; edit it in its definition"},
+    // Q-19 (LP-1d): a render node's numbered ports run from 0 without a gap;
+    // `reason` says which way they do not (GraphInputIndexReasonTexts).
+    {"graph.input_index_invalid@1",
+     "The numbered inputs of {node} are not 0, 1, 2...: input {input_index} is {reason}"},
+}};
+
+// Q-19: graph.input_index_invalid@1's two reasons, each a sentence of its own.
+struct GraphInputIndexReasonText {
+    std::string_view reason;
+    std::string_view sentence;
+};
+constexpr std::array<GraphInputIndexReasonText, 2> GraphInputIndexReasonTexts{{
+    {"missing",
+     "No port of {node} reads input {input_index}: its numbered inputs run from 0 without a gap"},
+    {"duplicate", "Ports {ports} of {node} all read input {input_index}: each number is one port's"},
 }};
 
 // LP-4e: graph.loop_tier_unsupported@1 says why in `reason`; the draw_loop
@@ -978,6 +993,11 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error) {
     if (entry->code == "graph.loop_tier_unsupported@1") {
         const auto reason = graphRefusalFieldText(fields, "reason");
         for (const auto &candidate : GraphLoopTierReasonTexts)
+            if (candidate.reason == reason) pattern = candidate.sentence;
+    }
+    if (entry->code == "graph.input_index_invalid@1") {
+        const auto reason = graphRefusalFieldText(fields, "reason");
+        for (const auto &candidate : GraphInputIndexReasonTexts)
             if (candidate.reason == reason) pattern = candidate.sentence;
     }
     for (std::size_t index = 0; index < pattern.size();) {

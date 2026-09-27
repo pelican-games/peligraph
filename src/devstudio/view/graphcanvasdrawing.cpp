@@ -13,6 +13,7 @@
 #include <QPen>
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 
 namespace PelicanStudio::GraphCanvasDrawing {
@@ -159,6 +160,20 @@ Node Builder::prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &
             output.has_value ? Value{numberText(output.value), {}}
                              : Value{},
             false, false});
+    // Q-19: the sockets the pass's shader declares come first, in binding
+    // order, the way the Frame Plan draws them; the node's other rows follow.
+    for (const auto &socket : node.input_sockets) {
+        using Kind = GraphCanvasInputSocket::Kind;
+        Row row{qtext(socket.key()), qtext(socket.label), {},
+                socketStyleFor(graphCanvasSocketFacts(model, {})), Value{},
+                socket.connected(), socket.kind != Kind::undeclared};
+        row.socket_key = qtext(socket.key());
+        row.bound_port = qtext(socket.port);
+        row.band = socket.kind == Kind::variadic || socket.kind == Kind::variadic_drop;
+        row.drop = socket.kind == Kind::variadic_drop;
+        if (socket.buffer) row.type = QStringLiteral("buffer");
+        entry.inputs.push_back(std::move(row));
+    }
     for (const auto &port : node.inputs)
         entry.inputs.push_back(Row{
             qtext(port.port), qtext(port.port), qtext(port.type),
@@ -282,6 +297,9 @@ MovableNodeItem *Builder::addNodeItem(const Node &entry, int column,
         input_ports.push_back(portSummary(port));
         if (port.declared) declared_ports.push_back(qtext(port.port));
     }
+    // Q-19: and each socket the shader declares, by its key and label.
+    for (const auto &socket : node.input_sockets)
+        input_ports.push_back(QStringLiteral("%1: %2").arg(qtext(socket.key()), qtext(socket.label)));
     QStringList output_ports;
     for (const auto &output : node.outputs)
         output_ports.push_back(qtext(output.port));
@@ -396,6 +414,17 @@ void Builder::addNodeRows(QGraphicsPathItem *item, const Node &entry) {
                      QString::fromLatin1(direction));
         dot->setData(GraphCanvasSocketShapeRole,
                      static_cast<int>(drawn.style.shape));
+        // Q-19: a socket of the shader's declarations -- its key, and the
+        // numbered port its edge names.
+        if (!drawn.socket_key.isEmpty()) {
+            dot->setData(GraphCanvasSocketKeyRole, drawn.socket_key);
+            dot->setData(GraphCanvasBoundPortRole, drawn.bound_port);
+            dot->setToolTip(drawn.drop ? QObject::tr("Drop a line here: the next input of the "
+                                                     "variadic group")
+                                       : drawn.label);
+            // The empty end of the band, and an empty declaration, are open.
+            if (!drawn.connected) dot->setBrush(theme_.canvas.node_body);
+        }
     };
 
     if (folded) {
@@ -466,8 +495,15 @@ void Builder::addNodeRows(QGraphicsPathItem *item, const Node &entry) {
         }
         cursor_y += GraphCanvasSocketRowHeight;
     }
+    // Q-19: the variadic group's rows, drawn over one long band on the edge.
+    std::optional<qreal> band_top;
+    qreal band_bottom = 0.0;
     for (const auto &drawn : inputs) {
         const qreal centre_y = cursor_y + GraphCanvasSocketRowHeight / 2.0;
+        if (drawn.band) {
+            if (!band_top) band_top = cursor_y + 2.0;
+            band_bottom = cursor_y + GraphCanvasSocketRowHeight - 2.0;
+        }
         auto *name = new QGraphicsSimpleTextItem(drawn.label, item);
         name->setFont(detail_font_);
         // A port the catalog never declared is dimmer than one it did,
@@ -520,6 +556,20 @@ void Builder::addNodeRows(QGraphicsPathItem *item, const Node &entry) {
             if (!full.isEmpty()) value->setToolTip(full);
         }
         cursor_y += GraphCanvasSocketRowHeight;
+    }
+    if (band_top) {
+        const qreal band_width = GraphCanvasSocketSize + 4.0;
+        auto *band = new QGraphicsPathItem(
+            roundedEntityPath(band_width, band_bottom - *band_top, band_width / 2.0), item);
+        band->setPos(-band_width / 2.0, *band_top);
+        band->setZValue(0.5);
+        QColor fill = theme_.canvas.dim_text;
+        fill.setAlphaF(0.25F);
+        band->setBrush(fill);
+        band->setPen(QPen{theme_.canvas.node_border, 0.8});
+        band->setToolTip(QObject::tr("The shader's variadic inputs, in binding order"));
+        tag(band, GraphCanvasNodeLabelItem);
+        band->setData(GraphCanvasPortRole, QStringLiteral("in:band"));
     }
 }
 

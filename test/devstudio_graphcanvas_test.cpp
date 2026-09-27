@@ -2020,3 +2020,350 @@ TEST_CASE("LP-2 the draw-loop refusals the engine names read as sentences, a gra
         CHECK(h.client.node("steps").refused);
     }
 }
+
+// --- Q-19: a render node's input sockets, lines into them, and a
+// definition renamed or deleted from the Graph tab.
+
+namespace {
+
+// The LP-4c document with a root pass `post` drawing with the passthrough
+// into an image of its own, and one more image a line can come from.
+Json q19Document() {
+    auto document = lp4cDocument();
+    const auto type = lp4cColorType();
+    const auto image = [&](const char *id) {
+        return Json{{"id", id}, {"op", "render.image"},
+                    {"parameters", {{"type", type}, {"format", "R16G16B16A16_SFLOAT"},
+                                    {"extent_scale", 1.0}, {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}}},
+                    {"outputs", {"resource"}}};
+    };
+    document["nodes"].push_back(image("post_image"));
+    document["nodes"].push_back(image("extra"));
+    document["nodes"].push_back(
+        {{"id", "post"}, {"op", "render.fullscreen"},
+         {"parameters", {{"pass_set", "main_render"},
+                         {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
+                         {"ports", {{"color", {{"kind", "image"}, {"type", type}, {"access", "write"},
+                                               {"attachment", "color"}, {"location", 0}}}}}}},
+         {"inputs", {{"color", {{"node", "post_image"}, {"port", "resource"}}}}},
+         {"outputs", {"color"}}});
+    return document;
+}
+
+Json q19PassInputs(const Json &declarations, const Json &range = nullptr) {
+    return {{"state", "declared"}, {"fragment", "engine://passthrough"},
+            {"declarations", declarations}, {"variadic_range", range}};
+}
+
+// The plan's word on the two passes: `post` draws with the passthrough, whose
+// inputs are all one variadic group; element 1's copy of `fill` (its branch
+// runs `paint`) with two fixed images and a buffer. No copy of `first_fill`
+// is listed.
+Json q19Plan(std::size_t max = 8) {
+    auto plan = lp4cFramePlan();
+    plan["nodes"] = Json::array({
+        {{"name", "post"}, {"kind", "fullscreen"},
+         {"pass_inputs", q19PassInputs(Json::array({{{"binding", 0}, {"type", "sampler2D"},
+                                                     {"name", "pelican_inputs"}, {"variadic", true}}}),
+                                       {{"first", 0}, {"max", max}})}},
+        {{"name", "steps/1/fill"}, {"kind", "fullscreen"},
+         {"loop_origin", {{"loop", "steps"}, {"element", 1}, {"node", "fill"}}},
+         {"pass_inputs", q19PassInputs(Json::array({
+             {{"binding", 0}, {"type", "sampler2D"}, {"name", "inputTexture"}},
+             {{"binding", 1}, {"type", "sampler2D"}, {"name", "bloomTexture"}},
+             {{"binding", 8}, {"type", "uniform buffer"}, {"name", "settings"}}}))}}});
+    return plan;
+}
+
+Json q19Port(std::int64_t index) {
+    return {{"kind", "image"}, {"type", lp4cColorType()}, {"access", "read"},
+            {"binding", "input"}, {"input_index", index}};
+}
+
+struct Q19Harness : LoopHarness {
+    Q19Harness() { document = q19Document(); }
+    // Every edit reads the document again, and that read asks for the plan.
+    void commitAndReport(const Json &plan = q19Plan()) {
+        commit();
+        report(plan);
+    }
+    // Whether anything asked the engine to edit since the last look.
+    bool sentEdit() {
+        const auto requests = client.model.takeRpcRequests();
+        return std::ranges::any_of(requests, [](const auto &request) {
+            return request.method == "edit_graph_document";
+        });
+    }
+    Json &node(const std::string &scope, const std::string &id) {
+        auto &nodes = scope.empty() ? document.at("nodes")
+                                    : document.at("definitions").at(scope).at("nodes");
+        const auto found = std::ranges::find_if(nodes, [&](const Json &each) {
+            return each.at("id") == id;
+        });
+        REQUIRE(found != nodes.end());
+        return *found;
+    }
+};
+
+} // namespace
+
+TEST_CASE("Q-19 a render node's sockets come from its pass's declarations; without them it keeps "
+          "its rows",
+          "[studio][graph-canvas][q19]") {
+    using Kind = PelicanStudio::GraphCanvasInputSocket::Kind;
+    Q19Harness h;
+    // post already reads lit as its input 0.
+    auto &post = h.node({}, "post");
+    post["parameters"]["ports"]["lit"] = q19Port(0);
+    post["inputs"]["lit"] = {{"node", "lit"}, {"port", "resource"}};
+    REQUIRE_NOTHROW(Pelican::editGraphDocument(h.document, Json::array()));
+    h.open();
+    const auto hasRow = [](const GraphCanvasNode &node, const std::string &port) {
+        return std::ranges::any_of(node.inputs, [&](const auto &row) { return row.port == port; });
+    };
+    // Before the plan says anything, the numbered port is a row like any other.
+    CHECK_FALSE(h.client.node("post").declared_sockets);
+    CHECK(hasRow(h.client.node("post"), "lit"));
+
+    h.report(q19Plan());
+    const auto drawn = h.client.node("post");
+    REQUIRE(drawn.declared_sockets);
+    REQUIRE(drawn.input_sockets.size() == 2);
+    // The variadic band: the member connected at binding 0, then its end.
+    CHECK(drawn.input_sockets[0].kind == Kind::variadic);
+    CHECK(drawn.input_sockets[0].binding == 0);
+    CHECK(drawn.input_sockets[0].key() == "in@0");
+    CHECK(drawn.input_sockets[0].port == "lit");
+    CHECK(drawn.input_sockets[0].source_node == "lit");
+    CHECK(drawn.input_sockets[0].label == "← lit.resource");
+    CHECK(drawn.input_sockets[1].kind == Kind::variadic_drop);
+    CHECK(drawn.input_sockets[1].binding == 1);
+    CHECK(drawn.input_sockets[1].key() == "in:variadic");
+    CHECK_FALSE(drawn.input_sockets[1].connected());
+    // The numbered port is the socket's now; the write port stays a row.
+    CHECK_FALSE(hasRow(drawn, "lit"));
+    CHECK(hasRow(drawn, "color"));
+
+    // A body node's sockets are read off the copy a loop made of it: element
+    // 1's branch runs paint.
+    REQUIRE(h.client.model.selectScope("paint"));
+    const auto fill = h.client.node("fill");
+    REQUIRE(fill.declared_sockets);
+    REQUIRE(fill.input_sockets.size() == 3);
+    CHECK(fill.input_sockets[0].kind == Kind::declared);
+    CHECK(fill.input_sockets[0].declaration == "inputTexture");
+    CHECK(fill.input_sockets[0].key() == "in@0");
+    CHECK(fill.input_sockets[0].label == "inputTexture");
+    CHECK_FALSE(fill.input_sockets[0].connected());
+    CHECK(fill.input_sockets[1].declaration == "bloomTexture");
+    CHECK(fill.input_sockets[1].key() == "in@1");
+    CHECK(fill.input_sockets[2].buffer);
+    CHECK(fill.input_sockets[2].key() == "in@8");
+    // The control: no copy of first's pass is in the plan, so it keeps the
+    // rows it had.
+    REQUIRE(h.client.model.selectScope("first"));
+    CHECK_FALSE(h.client.node("first_fill").declared_sockets);
+    CHECK(h.client.node("first_fill").input_sockets.empty());
+    CHECK(hasRow(h.client.node("first_fill"), "color"));
+
+    // A plan that says the pass has no pipeline: the rows again.
+    auto unavailable = q19Plan();
+    unavailable["nodes"][0]["pass_inputs"] = {{"state", "unavailable"}, {"reason", "no pipeline"}};
+    REQUIRE(h.client.model.selectScope({}));
+    h.client.model.refresh();
+    h.refresh();
+    h.report(unavailable);
+    CHECK_FALSE(h.client.node("post").declared_sockets);
+    CHECK(hasRow(h.client.node("post"), "lit"));
+}
+
+TEST_CASE("Q-19 a line on a socket is a numbered port and its edge in one list; taking it away "
+          "moves the later ones down",
+          "[studio][graph-canvas][q19]") {
+    Q19Harness h;
+    h.open();
+    h.report(q19Plan());
+    const auto post_parameters = h.node({}, "post").at("parameters");
+    const auto edge = [](const char *node) { return Json{{"node", node}, {"port", "resource"}}; };
+
+    // Onto the band's end: a port named after the source's port, at the next
+    // binding, and the edge into it -- one edit.
+    REQUIRE(h.client.model.connectSocket({}, "post", "in:variadic", "lit", "resource"));
+    h.commitAndReport();
+    auto expected = post_parameters;
+    expected["ports"]["resource"] = q19Port(0);
+    CHECK(h.last_ops == Json::array({
+        {{"op", "set_node_parameters"}, {"scope", "root"}, {"node", "post"}, {"parameters", expected}},
+        {{"op", "set_input"}, {"scope", "root"}, {"node", "post"}, {"port", "resource"},
+         {"source", edge("lit")}}}));
+    CHECK(h.node({}, "post").at("inputs").at("resource") == edge("lit"));
+    // Drawn as the band's member at binding 0.
+    CHECK(h.client.node("post").input_sockets.at(0).port == "resource");
+
+    // A second one takes binding 1 and a name of its own.
+    REQUIRE(h.client.model.connectSocket({}, "post", "in:variadic", "extra", "resource"));
+    h.commitAndReport();
+    CHECK(h.node({}, "post").at("parameters").at("ports").at("resource_2") == q19Port(1));
+    CHECK(h.node({}, "post").at("inputs").at("resource_2") == edge("extra"));
+
+    // Onto the connected socket at binding 0: the edge moves, nothing else.
+    REQUIRE(h.client.model.connectSocket({}, "post", "in@0", "extra", "resource"));
+    h.commitAndReport();
+    CHECK(h.last_ops == Json::array({{{"op", "set_input"}, {"scope", "root"}, {"node", "post"},
+                                      {"port", "resource"}, {"source", edge("extra")}}}));
+    const auto replaced = h.document;
+    // The same line again is no edit at all.
+    CHECK_FALSE(h.client.model.connectSocket({}, "post", "in@0", "extra", "resource"));
+    CHECK_FALSE(h.sentEdit());
+
+    // Taking binding 0's line away takes its port, and binding 1 becomes 0.
+    REQUIRE(h.client.model.disconnectInput({}, "post", "resource"));
+    h.commitAndReport();
+    auto renumbered = post_parameters;
+    renumbered["ports"]["resource_2"] = q19Port(0);
+    CHECK(h.last_ops == Json::array({
+        {{"op", "set_input"}, {"scope", "root"}, {"node", "post"}, {"port", "resource"},
+         {"source", nullptr}},
+        {{"op", "set_node_parameters"}, {"scope", "root"}, {"node", "post"},
+         {"parameters", renumbered}}}));
+    CHECK_FALSE(h.node({}, "post").at("inputs").contains("resource"));
+    CHECK(h.node({}, "post").at("parameters") == renumbered);
+
+    // Undo and Redo come back byte for byte.
+    const auto after = h.document;
+    REQUIRE(h.client.model.undo());
+    h.commitAndReport();
+    CHECK(h.document.dump(2) == replaced.dump(2));
+    REQUIRE(h.client.model.redo());
+    h.commitAndReport();
+    CHECK(h.document.dump(2) == after.dump(2));
+}
+
+TEST_CASE("Q-19 a line on a socket past the next binding, on a buffer or on a full band is "
+          "refused in one line, and a body's pass reads its boundary the same way",
+          "[studio][graph-canvas][q19]") {
+    Q19Harness h;
+    h.open();
+    h.report(q19Plan(1));
+
+    // In a body: binding 1 before binding 0 is a skipped binding.
+    CHECK_FALSE(h.client.model.connectSocket("paint", "fill", "in@1", "target", "value"));
+    CHECK_FALSE(h.sentEdit());
+    CHECK(h.client.model.notice().message ==
+          "Connect binding 0 of fill first: a pass's inputs fill the bindings in order.");
+    CHECK_FALSE(h.client.model.connectSocket("paint", "fill", "in@8", "target", "value"));
+    CHECK_FALSE(h.sentEdit());
+    CHECK(h.client.model.notice().message ==
+          "Binding 8 of fill takes a buffer: a graph pass reads only images by number.");
+
+    // Binding 0 is the next: the boundary port target, named by its id and
+    // typed by what the loop is fed there (lit), in the body's scope.
+    REQUIRE(h.client.model.connectSocket("paint", "fill", "in@0", "target", "value"));
+    h.commitAndReport(q19Plan(1));
+    REQUIRE(h.last_ops.size() == 2);
+    CHECK(h.last_ops[0].at("scope") == "paint");
+    CHECK(h.last_ops[0].at("parameters").at("ports").at("target") == q19Port(0));
+    CHECK(h.last_ops[1] == Json{{"op", "set_input"}, {"scope", "paint"}, {"node", "fill"},
+                                {"port", "target"},
+                                {"source", {{"node", "target"}, {"port", "value"}}}});
+    // Now binding 1 is the next one, and the same source a second time is
+    // a port of its own.
+    REQUIRE(h.client.model.connectSocket("paint", "fill", "in@1", "target", "value"));
+    h.commitAndReport(q19Plan(1));
+    CHECK(h.node("paint", "fill").at("parameters").at("ports").at("target_2") == q19Port(1));
+
+    // The root pass's band holds one input at most here.
+    REQUIRE(h.client.model.connectSocket({}, "post", "in:variadic", "lit", "resource"));
+    h.commitAndReport(q19Plan(1));
+    CHECK_FALSE(h.client.model.connectSocket({}, "post", "in:variadic", "extra", "resource"));
+    CHECK_FALSE(h.sentEdit());
+    CHECK(h.client.model.notice().message ==
+          "post's shader takes at most 1 inputs in its variadic group.");
+}
+
+TEST_CASE("Q-19 a definition is renamed and deleted from the Graph tab, checked before it is "
+          "sent, and both come back byte for byte",
+          "[studio][graph-canvas][q19]") {
+    LoopHarness h;
+    h.open();
+    h.report();
+    const auto before = h.document;
+    const auto sentEdit = [&] {
+        const auto requests = h.client.model.takeRpcRequests();
+        return std::ranges::any_of(requests, [](const auto &request) {
+            return request.method == "edit_graph_document";
+        });
+    };
+    // The node id rule and "root", checked before anything is sent.
+    const std::vector<std::pair<std::string, std::string>> refused{
+        {"", "A definition needs a name."},
+        {"a/b", "A definition's name cannot hold a slash: a/b."},
+        {"root", "A definition cannot be named root: that name is the root document's."},
+        {"first", "A definition named first already exists."}};
+    for (const auto &[name, line] : refused) {
+        CHECK(h.client.model.definitionNameRefusal("paint", name) == line);
+        CHECK_FALSE(h.client.model.renameDefinition("paint", name));
+        CHECK_FALSE(sentEdit());
+        CHECK(h.client.model.notice().message == line);
+    }
+    CHECK(h.client.model.definitionNameRefusal("paint", "paint").empty());
+
+    // Rename is the one op; the engine moves the loop's branch with it, and
+    // the trail standing in it follows it.
+    REQUIRE(h.client.model.selectScope("paint"));
+    REQUIRE(h.client.model.renameDefinition("paint", "brush"));
+    h.commit();
+    CHECK(h.last_ops == Json::array({{{"op", "rename_definition"}, {"from", "paint"}, {"to", "brush"}}}));
+    CHECK(h.document.at("nodes").at(1).at("parameters").at("branches").at(1).at("body") == "brush");
+    CHECK(h.client.model.currentScope() == "brush");
+    const auto renamed = h.document;
+    REQUIRE(h.client.model.undo());
+    h.commit();
+    CHECK(h.document.dump(2) == before.dump(2));
+    CHECK(h.client.model.currentScope() == "paint");
+    REQUIRE(h.client.model.redo());
+    h.commit();
+    CHECK(h.document.dump(2) == renamed.dump(2));
+    CHECK(h.client.model.currentScope() == "brush");
+
+    // Delete: a definition something runs is not sent, and the line says what.
+    CHECK(h.client.model.definitionReferrers("brush") == std::vector<std::string>{"steps"});
+    CHECK_FALSE(h.client.model.removeDefinition("brush"));
+    CHECK_FALSE(sentEdit());
+    CHECK(h.client.model.notice().message ==
+          "Definition brush is used by steps: make them run another definition first.");
+    // One nothing runs goes, and comes back with its body.
+    CHECK(h.client.model.definitionReferrers("spare").empty());
+    REQUIRE(h.client.model.removeDefinition("spare"));
+    h.commit();
+    CHECK(h.last_ops == Json::array({{{"op", "remove_definition"}, {"name", "spare"}}}));
+    CHECK_FALSE(h.document.at("definitions").contains("spare"));
+    REQUIRE(h.client.model.undo());
+    h.commit();
+    CHECK(h.document.dump(2) == renamed.dump(2));
+    REQUIRE(h.client.model.redo());
+    h.commit();
+    CHECK_FALSE(h.document.at("definitions").contains("spare"));
+}
+
+TEST_CASE("Q-19 graph.input_index_invalid@1 reads as a sentence for each reason",
+          "[studio][graph-canvas][q19]") {
+    using PelicanStudio::graphLoopRefusalDescription;
+    CHECK(graphLoopRefusalDescription({{"code", "graph.input_index_invalid@1"}, {"node", "post"},
+                                       {"input_index", 1}, {"reason", "missing"},
+                                       {"ports", Json::array()}}) ==
+          "No port of post reads input 1: its numbered inputs run from 0 without a gap "
+          "(graph.input_index_invalid@1).");
+    CHECK(graphLoopRefusalDescription({{"code", "graph.input_index_invalid@1"}, {"node", "post"},
+                                       {"input_index", 0}, {"reason", "duplicate"},
+                                       {"ports", {"a", "b"}}}) ==
+          "Ports a, b of post all read input 0: each number is one port's "
+          "(graph.input_index_invalid@1).");
+    // As the engine quotes it in a message.
+    CHECK(graphLoopRefusalDescription(
+              {{"code", "invalid_graph_document"},
+               {"message", "graph.input_index_invalid@1 "
+                           "{\"input_index\":2,\"node\":\"post\",\"ports\":[],\"reason\":\"missing\"}"}}) ==
+          "No port of post reads input 2: its numbered inputs run from 0 without a gap "
+          "(graph.input_index_invalid@1).");
+}

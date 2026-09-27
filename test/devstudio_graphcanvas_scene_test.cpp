@@ -5524,3 +5524,271 @@ TEST_CASE("Q-18 a render node's View field is off while an edit is in flight, an
     QCoreApplication::processEvents();
     CHECK(edits() == 2);
 }
+
+// --- Q-19: a render node's input sockets on the canvas, lines into them,
+// and a definition renamed or deleted from the Graph tab.
+
+namespace {
+
+// A root image `img` and a loop `steps` (two copies) over `body`: a boundary
+// input `target`, an image `canvas`, and a passthrough `pass` drawing into it,
+// whose color is the body's output and is carried back into `target`.
+Json q19ZoneDocument() {
+    const Json type{{"semantic", "pelican.render.color_signal@1"},
+                    {"arguments", {{"reference", "scene"}, {"transfer", "linear"},
+                                   {"range", "extended"}}}};
+    const auto image = [&](const char *id) {
+        return Json{{"id", id}, {"op", "render.image"},
+                    {"parameters", {{"type", type}, {"format", "R8G8B8A8_UNORM"},
+                                    {"extent_scale", 1.0},
+                                    {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}}},
+                    {"outputs", {"resource"}}};
+    };
+    const Json pass{
+        {"id", "pass"}, {"op", "render.fullscreen"},
+        {"parameters", {{"shader", {{"vertex", "engine://fullscreen"},
+                                    {"fragment", "engine://passthrough"}}},
+                        {"ports", {{"color", {{"kind", "image"}, {"type", type},
+                                              {"access", "write"}, {"attachment", "color"},
+                                              {"location", 0}}}}}}},
+        {"inputs", {{"color", {{"node", "canvas"}, {"port", "resource"}}}}},
+        {"outputs", {"color"}}};
+    const Json body{{"nodes", Json::array({{{"id", "target"}, {"op", "graph.input"}},
+                                           image("canvas"), pass})},
+                    {"outputs", {{"color", {{"node", "pass"}, {"port", "color"}}}}}};
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
+                {"definitions", {{"body", body}}},
+                {"nodes", Json::array({image("img"),
+                                       {{"id", "steps"}, {"op", "graph.loop"},
+                                        {"parameters", {{"over", {{"range", {{"count", 2}}}}},
+                                                        {"branches", Json::array({{{"body", "body"}}})},
+                                                        // Its arrow is drawn over target's socket.
+                                                        {"carry", Json::array({{{"from", "color"},
+                                                                                {"to", "target"}}})}}},
+                                        {"inputs", {{"target", {{"node", "img"}, {"port", "resource"}}}}},
+                                        {"outputs", Json::array({"color"})}}})}};
+}
+
+Json q19ZoneLoops() {
+    return Json::array({{{"node", "steps"}, {"tier", "expand"}, {"count", 2},
+                         {"elements", Json::array({{{"element", 0}, {"index", 0}, {"branch", 0}},
+                                                   {{"element", 1}, {"index", 1}, {"branch", 0}}})},
+                         {"unmatched_branches", Json::array()}}});
+}
+
+// The two copies of `pass`, drawing with the passthrough: one variadic group.
+Json q19ZonePlan() {
+    auto nodes = Json::array();
+    for (int element = 0; element < 2; ++element)
+        nodes.push_back(
+            {{"name", "steps/" + std::to_string(element) + "/pass"}, {"kind", "fullscreen"},
+             {"loop_origin", {{"loop", "steps"}, {"element", element}, {"node", "pass"}}},
+             {"pass_inputs", {{"state", "declared"}, {"fragment", "engine://passthrough"},
+                              {"declarations", Json::array({{{"binding", 0}, {"type", "sampler2D"},
+                                                             {"name", "pelican_inputs"},
+                                                             {"variadic", true}}})},
+                              {"variadic_range", {{"first", 0}, {"max", 8}}}}}});
+    return Json{{"nodes", nodes}};
+}
+
+Json q19ReadPort(std::int64_t index) {
+    return {{"kind", "image"},
+            {"type", {{"semantic", "pelican.render.color_signal@1"},
+                      {"arguments", {{"reference", "scene"}, {"transfer", "linear"},
+                                     {"range", "extended"}}}}},
+            {"access", "read"}, {"binding", "input"}, {"input_index", index}};
+}
+
+} // namespace
+
+TEST_CASE("Q-19 a body pass in a zone draws its shader's sockets, and a line onto them is a "
+          "numbered port",
+          "[devstudio][graph-canvas][scene][q19]") {
+    (void)application();
+    const QString body = QStringLiteral("body");
+
+    SECTION("without the plan's declarations the pass keeps its rows") {
+        ZoneHarness h{q19ZoneDocument()};
+        addRenderOperations(h);
+        h.loops = q19ZoneLoops();
+        h.open();
+        // The document's read asks for the plan; answer that too.
+        h.answerReads();
+        h.scene.repopulate();
+        CHECK(socketOf(h.scene, body, "pass", "in:variadic", "input") == nullptr);
+        CHECK(socketOf(h.scene, body, "pass", "color", "input") != nullptr);
+    }
+
+    ZoneHarness h{q19ZoneDocument()};
+    addRenderOperations(h);
+    h.loops = q19ZoneLoops();
+    h.plan = q19ZonePlan();
+    h.open();
+    h.answerReads();
+    h.scene.repopulate();
+    const auto pass_parameters =
+        h.document.at("definitions").at("body").at("nodes").at(2).at("parameters");
+
+    // The variadic band's end, named by what it is, over a band of its own.
+    QGraphicsItem *drop = socketOf(h.scene, body, "pass", "in:variadic", "input");
+    REQUIRE(drop != nullptr);
+    CHECK(drop->data(PelicanStudio::GraphCanvasSocketKeyRole).toString() ==
+          QStringLiteral("in:variadic"));
+    CHECK(scopedItem(h.scene, PelicanStudio::GraphCanvasNodeLabelItem, body,
+                     QStringLiteral("pass"), QStringLiteral("in:band")) != nullptr);
+    // The write port is still a row of its own.
+    CHECK(socketOf(h.scene, body, "pass", "color", "input") != nullptr);
+
+    // Decision 3: the boundary input, inside the zone, onto the band's end --
+    // from under the carry's arrow, which ends on that socket.
+    QGraphicsItem *target = socketOf(h.scene, body, "target", "value", "output");
+    REQUIRE(target != nullptr);
+    CHECK(std::ranges::any_of(h.scene.items(centreOf(target)), [](const QGraphicsItem *item) {
+        return item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+               QLatin1String{PelicanStudio::GraphCanvasZoneCarryItem};
+    }));
+    drag(h.scene, centreOf(target), centreOf(drop));
+    auto expected = pass_parameters;
+    expected["ports"]["target"] = q19ReadPort(0);
+    CHECK(h.commit() ==
+          Json::array({{{"op", "set_node_parameters"}, {"scope", "body"}, {"node", "pass"},
+                        {"parameters", expected}},
+                       {{"op", "set_input"}, {"scope", "body"}, {"node", "pass"},
+                        {"port", "target"},
+                        {"source", {{"node", "target"}, {"port", "value"}}}}}));
+    // Drawn as the band's member at binding 0, with the edge ending on it.
+    QGraphicsItem *member = socketOf(h.scene, body, "pass", "in@0", "input");
+    REQUIRE(member != nullptr);
+    CHECK(member->data(PelicanStudio::GraphCanvasBoundPortRole).toString() ==
+          QStringLiteral("target"));
+    auto *line = dynamic_cast<QGraphicsPathItem *>(
+        scopedEdge(h.scene, body, QStringLiteral("target"), QStringLiteral("value"),
+                   QStringLiteral("pass"), QStringLiteral("target")));
+    REQUIRE(line != nullptr);
+    const QPointF end = line->mapToScene(line->path().currentPosition());
+    CHECK(QLineF{end, centreOf(member)}.length() < 2.0);
+
+    // Dragged off: the port goes with its line.
+    drag(h.scene, centreOf(member), QPointF{-5000.0, -5000.0});
+    CHECK(h.commit() ==
+          Json::array({{{"op", "set_input"}, {"scope", "body"}, {"node", "pass"},
+                        {"port", "target"}, {"source", nullptr}},
+                       {{"op", "set_node_parameters"}, {"scope", "body"}, {"node", "pass"},
+                        {"parameters", pass_parameters}}}));
+    CHECK(socketOf(h.scene, body, "pass", "in@0", "input") == nullptr);
+
+    // From outside the zone onto the band's end: the loop input, its
+    // graph.input and the port reading it, in one list.
+    drop = socketOf(h.scene, body, "pass", "in:variadic", "input");
+    QGraphicsItem *img = socketOf(h.scene, QString{}, "img", "resource", "output");
+    REQUIRE(drop != nullptr);
+    REQUIRE(img != nullptr);
+    drag(h.scene, centreOf(img), centreOf(drop));
+    expected = pass_parameters;
+    expected["ports"]["resource"] = q19ReadPort(0);
+    CHECK(h.commit() ==
+          Json::array({graphInput("body", "resource"),
+                       {{"op", "set_input"}, {"scope", "root"}, {"node", "steps"},
+                        {"port", "resource"},
+                        {"source", {{"node", "img"}, {"port", "resource"}}}},
+                       {{"op", "set_node_parameters"}, {"scope", "body"}, {"node", "pass"},
+                        {"parameters", expected}},
+                       {{"op", "set_input"}, {"scope", "body"}, {"node", "pass"},
+                        {"port", "resource"},
+                        {"source", {{"node", "resource"}, {"port", "value"}}}}}));
+}
+
+TEST_CASE("Q-19 Rename definition… and Delete definition act on the zone picked, and a name "
+          "that cannot be one is not sent",
+          "[devstudio][graph-canvas][scene][q19]") {
+    (void)application();
+    RecordedCapability transport;
+    PelicanStudio::GraphCanvasWidget widget{transport.capability()};
+    widget.resize(1100, 700);
+    widget.show();
+    QCoreApplication::processEvents();
+    const auto deliver = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        REQUIRE(transport.deliver);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    auto document = q19ZoneDocument();
+    deliver(QStringLiteral("get_graph_instances"), context(document));
+    auto catalog = visualCatalog();
+    for (const char *op : {"render.image", "render.fullscreen"})
+        catalog["modules"][1]["operations"].push_back(
+            {{"op", op}, {"domain", "rendering"}, {"evaluation", "direct"}, {"sink", false},
+             {"ports", "parameter_dependent"}});
+    deliver(QStringLiteral("get_graph_catalog"), catalog);
+
+    auto *rename = widget.findChild<QAction *>(QStringLiteral("pelican.graphCanvas.renameDefinition"));
+    auto *remove = widget.findChild<QAction *>(QStringLiteral("pelican.graphCanvas.deleteDefinition"));
+    auto *row = widget.findChild<QWidget *>(QStringLiteral("pelican.graphCanvasDefinitionRow"));
+    auto *name = widget.findChild<QLineEdit *>(QStringLiteral("pelican.graphCanvasDefinitionName"));
+    auto *apply = widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasDefinitionApply"));
+    auto *line = widget.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasDefinitionLine"));
+    auto *notice = widget.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasNotice"));
+    REQUIRE(rename != nullptr);
+    REQUIRE(remove != nullptr);
+    REQUIRE(row != nullptr);
+    REQUIRE(name != nullptr);
+    REQUIRE(apply != nullptr);
+    REQUIRE(line != nullptr);
+    REQUIRE(notice != nullptr);
+    // Nothing picked in the root: nothing for them to be about.
+    widget.poll();
+    QCoreApplication::processEvents();
+    CHECK_FALSE(rename->isEnabled());
+
+    // The zone picked: about the definition its tab shows.
+    widget.scene().selectNode(std::string{}, "steps");
+    widget.poll();
+    QCoreApplication::processEvents();
+    REQUIRE(rename->isEnabled());
+    rename->trigger();
+    QCoreApplication::processEvents();
+    REQUIRE(row->isVisible());
+    CHECK(name->text() == QStringLiteral("body"));
+    CHECK(name->selectedText() == QStringLiteral("body"));
+    // The same name renames nothing.
+    CHECK_FALSE(apply->isEnabled());
+
+    // "root" names the root document: said, and not sent.
+    name->setText(QStringLiteral("root"));
+    CHECK(line->isVisible());
+    CHECK(line->text() ==
+          QStringLiteral("A definition cannot be named root: that name is the root document's."));
+    CHECK_FALSE(apply->isEnabled());
+    QMetaObject::invokeMethod(name, "returnPressed");
+    QCoreApplication::processEvents();
+    CHECK(transport.countOf(QStringLiteral("edit_graph_document")) == 0);
+    CHECK(row->isVisible());
+
+    name->setText(QStringLiteral("stroke"));
+    CHECK_FALSE(line->isVisible());
+    REQUIRE(apply->isEnabled());
+    apply->click();
+    QCoreApplication::processEvents();
+    REQUIRE(transport.countOf(QStringLiteral("edit_graph_document")) == 1);
+    const auto sent = Json::parse(transport.calls.back().body.toStdString());
+    CHECK(sent == Json::array({{{"op", "rename_definition"}, {"from", "body"}, {"to", "stroke"}}}));
+    CHECK_FALSE(row->isVisible());
+
+    // Delete: the loop still runs it, so the notice says so and nothing goes.
+    deliver(QStringLiteral("edit_graph_document"),
+            Json{{"status", "rejected"}, {"committed", false},
+                 {"error", {{"code", "invalid_graph_document"}, {"message", "not this time"}}}});
+    deliver(QStringLiteral("get_graph_instances"), context(document));
+    widget.scene().selectNode(std::string{}, "steps");
+    widget.poll();
+    QCoreApplication::processEvents();
+    REQUIRE(remove->isEnabled());
+    remove->trigger();
+    QCoreApplication::processEvents();
+    CHECK(transport.countOf(QStringLiteral("edit_graph_document")) == 1);
+    CHECK_FALSE(row->isVisible());
+    CHECK(notice->text() ==
+          QStringLiteral("Definition body is used by steps: make them run another definition first."));
+}

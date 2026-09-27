@@ -265,7 +265,12 @@ QString sceneItemAlias(const QGraphicsView &view, const QGraphicsItem &item) {
     // fullscreen pass's `color`), which `graph_socket#<id>/<port>` cannot tell
     // apart; `.../in:<port>` and `.../out:<port>` can. Resolving only.
     if (itemKind(item) == QLatin1String{GraphCanvasSocketItem}) {
-        const QString port = item.data(GraphCanvasPortRole).toString();
+        // Q-19: a socket of a render node's shader declarations is named by
+        // its binding (`in@0`); `.../in:<port>` finds it by the numbered port
+        // connected there, as VI-3a's `in:<resource>` does.
+        const QString bound = item.data(GraphCanvasBoundPortRole).toString();
+        const QString port =
+            bound.isEmpty() ? item.data(GraphCanvasPortRole).toString() : bound;
         const QString direction = item.data(GraphCanvasSocketDirectionRole).toString();
         const QString node = item.data(NodeGraphNameRole).toString();
         if (port.isEmpty() || node.isEmpty() || direction.isEmpty()) return {};

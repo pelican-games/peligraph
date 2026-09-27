@@ -84,6 +84,13 @@ inline constexpr int GraphCanvasEdgeElementRole = Qt::UserRole + 3146;
 // How tall the line along a zone's bottom is, on the carry arrows that run
 // above it.
 inline constexpr int GraphCanvasZoneFooterRole = Qt::UserRole + 3147;
+// Q-19. An input socket drawn from a render node's shader declarations
+// carries its key here -- "in@<binding>" or "in:variadic", which is also its
+// port role, so its automation name is `graph_socket#<node>/in@0` -- and,
+// when a numbered port is connected there, that port's name, which is what
+// the document's edge names and what the edge is drawn to.
+inline constexpr int GraphCanvasSocketKeyRole = Qt::UserRole + 3148;
+inline constexpr int GraphCanvasBoundPortRole = Qt::UserRole + 3149;
 enum class GraphCanvasZoneAnchor : int {
     none = 0,
     left = 1,
@@ -278,6 +285,13 @@ class GraphCanvasScene final : public QGraphicsScene {
     // LP-4c: the two named additions the canvas menu offers besides the
     // palette ("Add loop", "Add fullscreen pass").
     void setAddActions(QAction *add_loop, QAction *add_fullscreen);
+    // Q-19, decision 4: "Rename definition…" and "Delete definition", which
+    // the canvas menu offers over the breadcrumb (the definition on screen)
+    // and over a zone's heading (the definition its tab shows). `target` is
+    // told which definition the open menu is about, and nothing once it
+    // closes.
+    void setDefinitionActions(QAction *rename, QAction *remove,
+                              std::function<void(std::optional<std::string>)> target);
 
     [[nodiscard]] const std::optional<std::string> &selectedNode() const noexcept {
         return selected_node_;
@@ -486,6 +500,9 @@ class GraphCanvasScene final : public QGraphicsScene {
         // LP-4d2, decision 3: a line from a body output's inside end on a
         // zone's right edge, which lands on a boundary input as a carry.
         std::string carry_loop;
+        // Q-19: grabbed on a socket of a render node's shader declarations
+        // (its key); `port` is then the key too.
+        std::string socket_key;
     };
     // Decision 7: what a zone's frame is drawn around, per body, so the
     // frame can follow a body node through a drag.
@@ -575,6 +592,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     QAction *untie_action_ = nullptr;
     QAction *add_loop_action_ = nullptr;
     QAction *add_fullscreen_action_ = nullptr;
+    QAction *rename_definition_action_ = nullptr;
+    QAction *delete_definition_action_ = nullptr;
+    std::function<void(std::optional<std::string>)> definition_target_;
     QPointF context_position_;
     // Where the next added node goes, when the palette was opened over empty
     // canvas rather than beside a selected node.
