@@ -88,6 +88,7 @@
 - `edit` / `paused` でも animation・seq・graph・VAT は、評価の番号が進むので、止まった game の時計の時刻で毎フレーム評価し直される。Timeline の scrub で見た目が変わるのはこのため
 - `scene_start_time` は、セッションの始めと edit の runtime を作るときに 0 にする。そのため edit では `scene_time` と Timeline の時刻が一致する
 - セッションを始めるときは、game の時計を 0、game のフレームを 0 に戻す。終えるときは、始める前の時刻(Timeline の時刻)に戻す
+  - PM-1b の実装(`EngineTime::endGameSession`): 終えるときに戻すのは時刻だけで、**game のフレームは 0 に戻さない**。`edit` では game のフレームは進まないので、`get_status` の `play.game_frame` は前のセッションの最後の値のまま残り、次のセッションの始めに 0 になる。セッションを経ずに `playing` で起動した engine を `edit` に移すと、時刻は 0 に戻る
 - fixed_step(headless、input replay)の決定性は変えない。`--start-state` を省いた headless は、今と同じ番号の進み方になる(評価の番号と game のフレームは同じ値で進む)
 
 ## 4. 1 フレームの中で止めるもの・止めないもの
@@ -132,12 +133,25 @@
   - 同じ理由で、editor の system は `playing` の間は何もしない
   - `--start-state` を省いた起動(今の Studio と単体の player)では、今どおり overlay を積んだまま動く。PM-1a / PM-3a の間の Studio の挙動は変えない
 - `paused` では game の camera のまま。`set_view_camera {camera: "editor" | "game"}` で切り替えられる(`edit` でも使える。`playing` では `play_state_mismatch`)
+- PM-1b の実装(`src/core/renderer/camera.hpp` の `Camera::ViewCamera`、`src/core/appflow/playmode.cpp`)
+  - editor camera は `--free-camera` の実行時 camera そのもの。`--start-state edit` で `--free-camera` が無ければ、既定の preset(`blender`)の free camera とその input overlay を足す。`--editor-transform` は足さない(Studio が別に渡す)
+  - 見る camera は `editor` / `game` の 2 つの view で、見せていない方の view は位置・向き・投影・active camera ごと取っておき(parked)、戻すとそのまま出てくる。view は engine のもので scene のものではないので、scene の読み込みで変わらない。editor camera が無い起動では、view は常に `game`
+  - 状態が移るたびに view を切り替えるのは `--start-state edit` で起動したときだけ(`edit` → editor、`playing` / `paused` → game)。既定の起動では `set_play_state` は view を変えない
+  - **editor の view の間に game の camera を選んだとき**(game のコードの `ctx.render().setCamera(name)` と RPC の `set_camera`。どちらも `Camera::setActiveCamera`): scene の camera の名前なら、先に `game` の view へ切り替え(editor camera の姿勢は取っておく)、それから選ぶ。つまり選択は game の view に効く。editor camera の名前を指したときは `editor` の view に切り替える
+  - camera controller は 2 つの system に分けた。engine 内部の editor の system `BuiltinCameraControllerSystem`(order 10000)は、`--start-state edit` の起動では editor camera だけを、それが見えている(active の)ときに動かす。game の system `BuiltinGameCameraControllerSystem`(order 10000、印なし)は、`--start-state edit` の起動でだけ scene の制御付き camera を動かす。既定の起動では、PM-1a と同じく editor の system が全部の制御付き camera を動かし、game の system は何もしない。controller の状態は scene の読み込みと view の切り替えをまたいで残る
+  - `--start-state edit` の起動で `playing` の間は、`updateRegisteredGameSystems` を `GameSystemScope::game_only` で呼び、editor の system を走らせない
 
 ## 5. edit の behavior
 
-- `edit` の読み込みでは、behavior の attachment を **眠った形**(handle と seq は振るが、user のコードの instance は作らない)で作る。authoring の behavior の宣言と params は持つ。今ある「DLL が無いときの pending」を土台にする
-- 眠った attachment を起こす入口は 2 つあり(`update` の activation と `dispatchEvent` の入口)、どちらも `edit` では塞ぐ
-- `edit` での behavior の編集(`set_params`、attach、detach、undo / redo)は、authoring と眠った attachment にだけ効く。params の変更は、保存した params を替えるだけにする。`set_params` の「生きた attachment が無ければ拒否」と、journal の behavior op の handle の照合(`rebindJournalBehaviorTargets`)は、眠った attachment を正しい相手として受け入れる
+- `edit` の読み込みでは、behavior の attachment を **眠った形**(handle と seq は振るが、user のコードの instance は作らない)で作る。authoring の behavior の宣言と params は持つ
+- PM-1b の実装: 眠りは「DLL が無いときの pending」を使わず、**arena 全体の flag**(`BehaviorAttachmentArena::setDormant` / `isDormant`、`src/core/gamelogic/behaviorarena.hpp`)にした。眠った attachment は pending ではない(`pending` は「DLL が無い」の意味のまま)ので、editor は編集の相手としてそのまま扱う
+  - 眠っている間に作る attachment(scene の読み込み、editor の attach、scene の reconciliation、spawn)は、handle・attachment_seq・type・owner・正規化した params を持ち、instance を作らない。constructor・`onInit`・`onUpdate`・event・spawn はどれも走らない
+  - 眠りに入るとき・出るときは、game のコードが積んだ object の遅延ミューテーションを捨てる(積んだ run のものなので)
+  - 眠りを解いただけでは何も起きない。次の scene の読み込み(セッションの始めの作り直し)が instance を作り、`onInit` を走らせる
+  - `edit` 中の game logic の reload(F5 / `reload_game_logic`)と `load_scene` は、同じ読み込みの経路を通るので、眠ったまま作り直す
+  - `edit` で作る runtime の `scene_start_time` は 0(`src/core/loader/scene.cpp` の `LoaderStateParticipant::prepare`)
+- 眠った attachment を起こす入口は 2 つあり(`update` の activation と `dispatchEvent` の入口)、どちらも `edit` では塞ぐ(PM-1b: どちらも眠っている間は入口で何もせずに戻る)
+- `edit` での behavior の編集(`set_params`、attach、detach、undo / redo)は、authoring と眠った attachment にだけ効く。params の変更は、保存した params を替えるだけにする。`set_params` の「生きた attachment が無ければ拒否」と、journal の behavior op の handle の照合(`rebindJournalBehaviorTargets`)は、眠った attachment を正しい相手として受け入れる(PM-1b: `set_params` は params の差し替えの準備を飛ばして保存した params だけを替え、attach は constructor を呼ばない。detach と undo / redo の経路には手を入れていない。test は set_params・attach・その undo / redo を見ている)
 - セッションを始めると、instance の無い attachment から instance を作り、`onInit` を走らせる
 
 ## 6. 再生のセッション
@@ -216,11 +230,17 @@
   - 窓あり: 次のフレームの境目から、1 フレームに 1 歩ずつ、game を `count` 回進める(入れ子にしない)。すぐに `{scheduled: count, until_game_frame}` を返す
   - headless: その場で同期して `count` 歩進め、終わってから返す。返り値は `{scheduled, until_game_frame, frame, t, edit_results}`。`until_game_frame` は歩き終えた game のフレーム、`frame` は評価の番号、`t` は game の時計、`edit_results` は `step_frame` と同じ(PM-1a の `rpcserver.cpp`)
   - 進み終わっても `paused` のまま
+- PM-1b の `set_play_state`(`src/core/communication/rpcserver.cpp`、engine 側は `src/core/appflow/playmode.cpp` の `changePlayState`)
+  - `keep` を書くと `-32602`(PM-2 まで)。それ以外の鍵も `-32602`
+  - `edit` との間を移るときは、今の scene を `load_scene` と同じ経路(`SceneLoadRoot::rpc`、preview は `scene_transition` で中止)で作り直す。作り直しが投げると、状態・game の時計・behavior の眠りを元に戻し、error を返す
+  - 既定の起動(`--start-state` を省いた)でも `edit` へ移れる。そのとき view と editor の overlay は変えない(§4.4)
 - `set_view_camera {camera: "editor" | "game"}`: `edit` / `paused` で使える
+  - 返り値(PM-1b): `{camera, previous}`(どちらも `"editor"` / `"game"`)。同じ view への指示は何も変えずに成功する
+  - `playing` では `play_state_mismatch`(`data` に `state` と `required: ["edit", "paused"]`)。editor camera の無い起動で `editor` を頼むと `view_camera_unavailable`(`data` に `camera`)。鍵が `camera` だけでない・値が 2 つ以外は `-32602`
 - `get_status` に `play` を足す
   - 形: `{state, game_frame, game_time, pending_steps, view_camera, session: bool, recorded_edits: [{transaction_id, actor}]}`
   - 今ある `frame` と `engine_time` は評価の番号と game の時計のままにし、意味を manual に書く
-  - PM-1a の時点の `play` は `{state, game_frame, game_time, pending_steps}` の 4 つ(`view_camera` / `session` / `recorded_edits` は PM-1b / PM-2)
+  - PM-1a の時点の `play` は `{state, game_frame, game_time, pending_steps}` の 4 つ(`view_camera` / `session` / `recorded_edits` は PM-1b / PM-2)。PM-1b で `view_camera`(`"editor"` / `"game"`)を足して 5 つ
   - 一時停止しているかは `play.state` だけで示す。`get_status` の `audio` の形は変えない(全体の一時停止は `audio` に出ない)
 - `step_frame`
   - headless 専用にする。窓ありでは `step_frame_windowed` で断り、message で `advance_frames` を示す
@@ -247,6 +267,7 @@
 | `play_busy` | セッションを始める・終えるときに、scene の編集の ticket か preview が未完了 |
 | `play_session_active` | 再生中(`playing` / `paused`)の `save_scene` / `load_scene` / `import_scene_snapshot` |
 | `play_state_mismatch` | `advance_frames` を `paused` 以外で使った。`set_view_camera` を `playing` で使った |
+| `view_camera_unavailable` | editor camera の無い起動(`--start-state edit` も `--free-camera` も無い)で `set_view_camera {camera: "editor"}` を使った(PM-1b で追加。`data` に `camera`) |
 | `play_keep_unknown_transaction` | `keep` の transaction_id がセッションの記録に無い |
 | `step_frame_windowed` | 窓ありで `step_frame` を使った |
 | `offline.mode_conflict@1`(既存) | `--start-state edit` と両立しない引数 |
@@ -271,6 +292,14 @@
   - camera controller の分割と、見る camera(§4.4)
   - event の止め方、F5 を edit で
   - Stop は「今の authoring から edit の runtime を作り直す」だけ(戻さない)
+  - **着地 `17938ee3`**(2026-09-27)。この節の計画との差
+    - 眠りは pending を土台にせず、arena の flag にした(§5)
+    - editor の system の内部登録と editor の時計は PM-1a で入っていた。PM-1b で入れたのは camera controller の分割(game の system `BuiltinGameCameraControllerSystem` を足した)と、`--start-state edit` の起動で `playing` の間は editor の system を走らせない `GameSystemScope::game_only`(§4.4)
+    - event の止め方: `edit` の間は PM-1a の「1 歩でないフレーム」と同じく凍結と配送を止め、`edit` との間を移るたびに pending の event を捨てる。game の UI には `edit` の間は入力を渡さない
+    - F5 を edit で: 専用の分岐は足していない。reload が通る読み込みの経路が眠りの flag を見る(§5)
+    - Stop で `game_frame` を 0 に戻さない(§3)
+    - `set_play_state` の `keep` は `-32602`(§8)。`play_busy` は無く、未完了の preview は `load_scene` と同じく中止する(PM-2 で `play_busy` にする)
+    - 残した穴: `edit` 中の `start_input_replay` / `start_input_record` を断っていない(PM-2 で断る)
 - **PM-2**(engine): セッション
   - 保存と戻し(中身は戻し、番号は進める)
   - 履歴の保存と戻し

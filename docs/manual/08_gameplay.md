@@ -169,6 +169,15 @@ engine は RPC の `set_play_state` で一時停止でき、`advance_frames` で
 - 一時停止しない実行(今までの起動のまま)では、評価の番号と game の歩数は同じ値で進みます
 - 組み込みの camera controller と modal transform は engine 内部で editor の system に印が付いていて、一時停止中も動きます。このとき `deltaTime()` は game の時計ではなく、そのフレーム自身の `dt` を返します。ゲームの system にこの印を付ける公開の口はありません
 
+### edit 状態のときのゲームコード(✅PM-1b)
+
+`--start-state edit` で起動した engine(と `set_play_state {state: "edit"}` の後の engine)は、scene を読み込んで描きますが、game を動かしません(契約は [第13章](13_editor.md) §13.5 の「edit 状態」)。ゲームコードから見ると次のとおりです。
+
+- **走らないもの**: behavior の constructor・`onInit`・`onUpdate`・イベントの受け取り(behavior は instance を作らない「眠った」attachment になります)、game の system、イベントの配送、game DLL が登録した animation の phase。したがって `ctx.spawn` / `ctx.loadScene` を呼ぶコードも走りません
+- **走るもの**: scene のデータを作るための、ゲームの component の JSON の読み込みと `init()`、behavior の params の正規化。`edit` の読み込みでも component はできるので、ここに副作用を書くと `edit` でも起きます
+- **Play(`edit` → `playing` / `paused`)** で engine は scene を作り直し、そこで behavior の constructor と `onInit` が走ります。`ctx.time()` はそのとき 0 から始まります。**Stop(→ `edit`)** では `onDestroy` が走り、spawn した object は消えます
+- game の system の static な状態は Play のたびには初期化されません(Play の始めに DLL を読み直すのは PM-2 の予定です)
+
 ### ドメインファサード
 
 | ファサード | API | 備考 |
@@ -893,7 +902,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 - `events` も `position` も無いノードは、**owner の最初のフレームで鳴り始め**、そのフレームから `time` 入力の時計で経過時間(写像の elapsed)を数えます([開始](../../src/core/userpublic/valuegraph.cpp#L875))。分解版の「`events` が無ければ owner の最初のフレーム」と同じ規則です。
 - `events` が無いときの `time` は、どの時計から来てもかまいません(`time` でも `scene_time` でも、時計の無い定数でも拒否されない)。
 - `time` は必須のままです。`events` を繋ぐなら `time` は `scene_time` だけから、の検査(`audio.clock_mismatch@1`、下の「状態と拒否」)も変わりません。
-- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L2252)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。
+- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L2429)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。
 
 下の例は `events` で鳴らす形です。
 

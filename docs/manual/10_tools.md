@@ -47,6 +47,7 @@
 | `--render-out <path>` | なし | PNG 出力先(sRGB エンコード)。`%04d` 等で毎フレーム連番 |
 | `--fps <f>` | 60.0 | ヘッドレス固定ステップのレート(dt = 1/fps) |
 | `--start-time <秒>` | なし | **ヘッドレス専用**。この時刻の frame から `--frames` 枚を出す(✅O-1)。`llround(秒 × fps)` で **parse 時に frame 番号へ量子化**され、engine には「frame の間の時刻」が渡りません([parseStartFrame()](../../src/player/main.cpp#L326))。`--headless` が無ければ `offline.headless_required@1`、負・非有限・数でない綴りは**すべて** `offline.time_invalid@1`、`--rpc` / `--replay` / `--record-input` / `--bake-camera-output` との併用は `offline.mode_conflict@1`([検査](../../src/player/main.cpp#L627))。`--frames` は併用です |
+| `--start-state <edit\|playing>` | `playing` | 起動時の再生の状態(✅PM-1b、[引数](../../src/player/main.cpp#L368))。`edit` は behavior を眠らせ(instance を作らない)、game の時計を止め、editor camera を用意して、RPC の `set_play_state` を待つ(`--free-camera` が無ければ `blender` の free camera とその overlay を足す。`--editor-transform` は足さない)。`--replay` / `--record-input` / `--bake-camera-output` / `--start-time` / `--rpc` の無い `--headless` との併用は `offline.mode_conflict@1: --start-state edit cannot be combined with <引数>`([併用の拒否](../../src/player/main.cpp#L621))、他の値は `--start-state must be one of: edit, playing`(どちらも引数の誤りとして usage を出して終了コード -1)。edit 状態の中身は [第13章](13_editor.md) §13.5 の「edit 状態」。Studio が渡すのは PM-3b から |
 | `--dump-frame-plan` | off | 解決済みフレームプラン JSON を **stderr** へ出力([第6章](06_rendering.md)) |
 | `--gpu-labels` | off | Vulkan debug object 名と command label を有効化。validation layer の選択とは独立([第6章](06_rendering.md) §6.14) |
 | `--vulkan-validation <off\|on>` | `_DEBUG`: on / それ以外: off | Khronos validation layer と synchronization validation を一体で選択。要求時に `VK_LAYER_KHRONOS_validation` が無ければ名前付き hard error |
@@ -728,7 +729,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 `\\.\pipe\<名前>`)が開き、**改行区切りの JSON 1 行 = 1 命令**で `list` / `click` / `double_click` / `drag` /
 `wheel` / `move` / `press` / `release` / `key` / `type` / `text` / `action` / `menu_list` / `view_state` /
 `wait` / `wait_engine` / `rpc` / `open_project` / `screenshot` / `quit` の **20 命令**を受けます
-([一覧](../../src/devstudio/automation/automationcommands.cpp#L2001))。**flag が無い起動では server object が
+([一覧](../../src/devstudio/automation/automationcommands.cpp#L2006))。**flag が無い起動では server object が
 作られないので socket は存在しません**([構築](../../src/devstudio/view/uimain.cpp#L37)) —— 出荷時の挙動は
 変わりません。listen できたときだけ `automation listening: <endpoint>` を標準出力に出します
 ([その 1 行](../../src/devstudio/view/uimain.cpp#L64))。開けなかったときは理由を出して **終了コード 3** です。
@@ -736,7 +737,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 `wait_engine` は engine が editor RPC に答えた時点で返ります。engine は**最初の frame を出す前に** RPC に
 答えるので、描画済みの frame が要る操作(`capture`、公開済みの frame plan)の前には `frames` を付けます。
 `{"cmd": "wait_engine", "frames": 1}` は `get_status` の `render.published_frames` がその数に届くまで待ち、
-応答に `published_frames` を足します([commandWaitEngine()](../../src/devstudio/automation/automationcommands.cpp#L1743))。
+応答に `published_frames` を足します([commandWaitEngine()](../../src/devstudio/automation/automationcommands.cpp#L1748))。
 `published_frames` は renderer がその起動で公開した logical frame の数で、飛ばした frame は数えません。
 
 回す側は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1238)(`uv run`、標準ライブラリだけ)です。
