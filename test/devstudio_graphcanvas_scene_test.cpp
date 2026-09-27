@@ -5156,6 +5156,29 @@ TEST_CASE("LP-4f3 without family_extent the image is made as before, in the loop
     }
 }
 
+// Q-20: the Graph tab reads family_extent with the Frame Plan's own reader.
+// A node whose value that reader refuses is passed over without a word -- the
+// Frame Plan tab is where it is named -- and the rest of the plan is read: the
+// next node of the same family gives the size, and the other families theirs.
+TEST_CASE("Q-20 a family_extent the Frame Plan's reader refuses is passed over silently, and the "
+          "rest of the plan is read",
+          "[devstudio][graph-canvas][scene][lp4f3][q20]") {
+    (void)application();
+    auto nodes = lp4f3PlanNodes();
+    nodes[0]["family_extent"] = "256x256";
+    nodes[3]["family_extent"] = Json::array({128, 128});
+    ZoneHarness h{lp4f1Document()};
+    addRenderOperations(h);
+    h.plan = Json{{"nodes", nodes}};
+    h.open();
+    h.answerReads();
+    CHECK(h.model.viewFamilyImageExtent("$capture/cube") ==
+          Json{{"width", 128}, {"height", 128}, {"layers", 6}});
+    CHECK(h.model.viewFamilyImageExtent("$shadow/directional") ==
+          Json{{"extent_scale", 0.5}, {"layers", 3}});
+    CHECK(h.model.notice().kind != PelicanStudio::InspectorNoticeKind::Error);
+}
+
 // LP-4f3, decision 3: the size comes with the frame plan the Graph tab reads
 // already. A document holding a loop over a view axis asks for nothing else.
 TEST_CASE("LP-4f3 a view-axis loop does not make the Graph tab read the render authoring "

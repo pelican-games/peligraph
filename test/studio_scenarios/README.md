@@ -326,6 +326,28 @@ puts the pass in the loop's family and makes its image at the size the frame
 plan gives that family (`family_extent`, LP-4f3). `loop_view_axis` is the
 example.
 
+Q-19 draws a render node's inputs from its shader, as the Frame Plan does: once
+the frame plan lists the pass's declarations (through `loop_origin` for a
+loop's body), the node's input sockets are named by binding, and a line dropped
+on one adds a numbered image port and its edge in one edit. A node the frame
+plan has no declarations for keeps its port rows and their names. Inside a
+zone the definition goes in front, as above (`graph_socket#<definition>/<id>/in@0`).
+Rename definition… and Delete definition open a row under the canvas's
+controls. `loop_zone_read` is the example.
+
+| name | what it is |
+|------|------------|
+| `graph_socket#<id>/in@<binding>` | the socket of the declaration at that binding: a fixed input, or a member of the variadic group |
+| `graph_socket#<id>/in:variadic` | the open end of the variadic group: a line dropped here is the next binding |
+| `graph_socket#<id>/in:<port>` | resolving only: the declared socket the numbered port `<port>` is connected at (`list` publishes the `in@<binding>` name) |
+| `graph_node_label#<id>/in:band` | the band drawn behind the variadic group's sockets (drawing only) |
+| `pelican.graphCanvas.renameDefinition`, `.deleteDefinition` | the QActions on the breadcrumb, a zone's header and the Scope combo; fired by name they act on the definition on screen, else the one the picked zone shows. Off while there is no definition to act on |
+| `pelican.graphCanvasDefinitionRow` | the row they open, hidden until then |
+| `pelican.graphCanvasDefinitionCaption` | `Rename definition <name> to` / `Delete definition <name>? Nothing runs it.` |
+| `pelican.graphCanvasDefinitionName` | the new name (Rename only; starts as the old one) |
+| `pelican.graphCanvasDefinitionApply`, `pelican.graphCanvasDefinitionCancel` | `Rename` or `Delete`, and Cancel |
+| `pelican.graphCanvasDefinitionLine` | the one line saying why the new name cannot be sent (empty, a slash, `root`, another definition's name). A definition something still runs opens no row: the Graph tab's notice says what runs it |
+
 LP-4f2 replaces a feature with its shipped loop version:
 
 | name | what it is |
