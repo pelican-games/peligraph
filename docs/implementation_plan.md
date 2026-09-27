@@ -26886,7 +26886,7 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
   - 帯の背景は theme の `play.paused_band`
 - **シナリオ**
   - 新規: `play_mode_roundtrip`([シナリオ](../test/studio_scenarios/play_mode_roundtrip.json)。97 step)。edit 起動で `Mover` が動かない → Play で動き Stop で戻る → Play 中の `Sun` の `intensity` の編集が Stop で戻る → Keep の印を付けた編集が残る(`Stopped: 0 reverted, 1 kept.`)→ Take from game の x が Stop の後も残る → Save Scene が押せず帯が出る → Pass Editor の fragment の変更が Stop の後も残り、画面で分かる
-  - 新規: `play_view_camera`([シナリオ](../test/studio_scenarios/play_view_camera.json)。26 step)。paused で View: Editor にすると絵が game の camera と違い、Stop で `view_camera` が `editor` に戻る
+  - 新規: `play_view_camera`(26 step。✅PM-3d で `play_mode_roundtrip` にまとめて消した)。paused で View: Editor にすると絵が game の camera と違い、Stop で `view_camera` が `editor` に戻る
   - 直した: `play_pause_step`(edit 起動に合わせ、Play から入り、最後に Stop。35 step)
   - 既存で緑(実装者の報告): new_blank_project、whole_frame_first_steps、engine_window_embedded、outliner_edit_roundtrip、add_primitive_object、render_undo_roundtrip、menu_actions、deferred_loop_from_scratch、graph_edit_roundtrip、vulkan_validation_runtime_player
 - **test**
@@ -26935,6 +26935,21 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - **結果**(実装者の報告): `-L studio_cpu -LE gpu` 503。GPU シナリオ `play_runtime_objects` / `play_mode_roundtrip` / `outliner_edit_roundtrip` が緑
 - **テキスト入力**: 増えていない(シナリオの打つ欄は 0。json で確かめた)
 - **穴**: viewport の選択とつながっていない(決定 2)。paused の間は 1 秒おきに読まない(Step の読みだけで動く。コードで確かめた)
+
+### PM-3d: model のある scene で Keep 付きの Stop を GPU シナリオで通し、再生のシナリオを 1 本にまとめる
+
+**下段(Studio のテストだけ)。実装者: Claude(Opus)。**
+
+#### 前提
+- PM-3b は、engine の assert(model のある scene で keep 付きの Stop)を避けるため、GPU シナリオを `play_mode_roundtrip`(model 無し。Keep と Take from game)と `play_view_camera`(model あり。keep の無い Stop と View の切り替え)に分けていた
+- engine の PM-2b(fc7a0eb1)でこの assert が直った
+
+#### 着地(2026-09-27、61c946df)
+- `play_mode_roundtrip` の fixture に箱(`CheckerBox`)と、`pm3a_mover` で動く camera を足し、`play_view_camera` の確認をすべて 1 本に移した(edit は editor camera、View: Game | Editor が edit と paused で出て playing では出ない、paused の Editor の絵が game の camera と違う、Stop で editor camera に戻る)。`play_view_camera` のシナリオと fixture、その game logic の target を消した。step は 97 → 118
+- Keep 付きの Stop の後に `render.published_frames` が 30 以上進むのを待ち、engine が箱を描き続けることを見てから、Keep した `intensity`(5.0)を読む
+- 対照(実装者の報告): engine の `modelinstanceslots.*` を PM-2b の前に戻した build で、Keep 付きの Stop の直後に player が応答しなくなって赤(step 76)。戻して緑。fixture の camera から behavior を外す変異で View の比較(step 36)が赤
+- 結果: `-L studio_cpu -LE gpu` 503/503、`play_mode_roundtrip` 緑(2 回)
+- 利用者がテストの重なりを気にしていたので、分けた 2 本を 1 本に戻した(確認項目の対応表は実装者の報告で確かめた)
 
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
