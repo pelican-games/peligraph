@@ -367,6 +367,7 @@
 ### 12.7 PM-3 の分け方
 
 - **PM-3a**(PM-1a の後): 今の既定の起動(`playing`)のまま、`Pause` / `Step` / Resume のボタンと状態の表示(§12.2 の枠の色と status)。Timeline の scrub を `playing` で押せなくする
+  - ✅着地(1eaf28a6)。穴: Studio には周期の `get_status` の読みが無い(Q-2)ので、既存の読み・状態を変えた直後・Step の追従に乗せた。`playing` の間の `frame N` は最後に読んだ値で止まって見える(`paused` と `Stepping` は正確)
 - **PM-3b**(PM-2 の後): `--start-state edit`、Play / Stop、Play changes の panel と Keep、Take from game、戻らない編集の帯、Save などを押せなくする、見る camera の切り替え、Reload game logic、再起動などの確認、Outliner の runtime の印
 
 ### 12.8 受け入れ(PM-3 の GPU シナリオ)

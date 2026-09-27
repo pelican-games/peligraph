@@ -26766,6 +26766,72 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
   - シナリオは frame plan の node を位置(`nodes[2]` / `nodes[3]`)で見ている(同じ位置の `name` の一致も見る)
   - 「Graph change saved.」の直後の action が、読み直しの途中で disabled になりうる。`loop_zone_wire` も同じ手順
 
+### PM-3a: Pause / Step / Resume のボタンと、再生の状態の表示(PM-1a の上)
+
+**中段(Studio のみ)。実装者: Claude(Opus)。develop 541f9cf4 以降(engine の PM-1a = c654e65c を含む)。設計は `docs/design_play_mode.md` の §2・§3・§8・§12(§12.1・§12.2・§12.6 の Timeline・§12.7 の PM-3a の行)。Studio での見え方は `docs/manual/13_editor.md` の「Studio で game を一時停止し、1 歩ずつ進める」。**
+
+#### 前提
+- 利用者の決定は「編集モードで起動、Play / Pause / Step、停止で戻す(残すボタンあり)」。engine の PM-1a で使えるのは `playing ↔ paused` と `advance_frames` だけで、edit 状態と Stop(戻す)は PM-1b / PM-2 を待つ(PM-3b)。この WP は今の既定の起動(`playing`)のまま、Pause / Step / Resume と状態の表示を入れる
+- engine の契約(PM-1a): `set_play_state {state}` → `{state, previous}`、`advance_frames {count}`(paused のみ。窓ありはすぐ `{scheduled, until_game_frame}` を返し、次のフレームから 1 フレームに 1 歩)、`get_status.play = {state, game_frame, game_time, pending_steps}`。既存の `get_status.frame` は評価の番号で、一時停止中も増える。RPC の詳細は `docs/manual/13_editor.md` §13.5 の「一時停止と 1 歩ずつ進める(✅PM-1a)」
+
+#### 決定
+1. **ボタン**: viewport の上の帯(Move / Rotate / Scale の右)に `❚❚ Pause`(check できる。押した状態 = paused)と `▶| Step`(paused のときだけ。`advance_frames {count:1}`)。Play はこの WP では Resume(= Pause を外す)で、Stop は無い(PM-3b)。キーは Ctrl+Shift+P = Pause の切り替え、Ctrl+Alt+P = Step(Ctrl+P は PM-3b)。テキスト欄に focus があるときは効かない
+2. **状態の表示**(§12.2): `get_status.play` を、Studio が今 `get_status` を読んでいる周期に乗せる(新しい poll を増やさない)。paused の間は viewport の枠と帯を黄系(theme の token。明暗どちらでも読める)、playing は今の色。status bar に `Playing · frame N` / `Paused · frame N`(`pending_steps` があれば `Stepping (k left)`)。N は `play.game_frame`。engine が `play` を返さないときはボタンを出さない
+3. **送信中**: 返事待ちの間は 2 つのボタンを押せない。拒否は読める 1 行(Studio の拒否の表に)
+4. **Timeline**(§12.6): Graph tab の Timeline の scrub は playing では押せない(tooltip: Pause してから)。paused ではその時刻にとどまる
+5. **engine の再起動・project の切替**: 再起動した engine は playing。Studio の表示も playing に戻す(古い paused の表示を残さない)
+
+#### 着地(2026-09-27、1eaf28a6)
+- **新しい部品**: model の [`PlayStateModel`](../src/devstudio/model/playstatemodel.hpp#L55)(play の読み取り・送る列・表示の文・拒否の表)と、view の [`PlayControls`](../src/devstudio/view/playcontrols.cpp#L52)(ボタン・キー・status bar の行)
+- **決定 1**: [`MainWindow::createPlayControls()`](../src/devstudio/view/mainwindow.cpp#L1111) が Gizmo の toolbar(`pelican.gizmoToolbar`)の Scale の右に、区切りの後に `pelican.play.pause` / `pelican.play.step` を置く。Pause は `set_play_state {state: "paused"}`、押した状態からもう一度押すと `{state: "playing"}`。Step は `advance_frames {count: 1}` で、[`canStep()`](../src/devstudio/model/playstatemodel.hpp#L105) が paused を要る。キーは [`textEntryHasFocus()`](../src/devstudio/view/playcontrols.cpp#L41)(読み取り専用でない line edit・text box・spin box と、編集できる combo)の間は効かない
+- **決定 2**: status bar の右の行 `pelican.playStatus` は [`statusText()`](../src/devstudio/model/playstatemodel.cpp#L243)。N は `play.game_frame`。paused の間は、viewport の枠 `pelican.viewportFrame`([`PlayTintFrame`](../src/devstudio/view/mainwindow.cpp#L163)。viewport の少し上から枠の端までの縁。engine の native の窓と `Viewport` の字の行は塗らない)と Gizmo の toolbar の背景を塗る([`updatePlayPresentation()`](../src/devstudio/view/mainwindow.cpp#L1145))。theme の token は `play.paused_frame` / `play.paused_band`(Dark `#e0ac00` / `#5e4b10`、Light `#c99200` / `#f3d98a`。[theme の表](../src/devstudio/resources/studio_themes.json#L79))。`play` の無い読みは [`parsePlayStatus()`](../src/devstudio/model/playstatemodel.cpp#L53) が空を返し、ボタンと行は出ない(Timeline も今までどおり)
+- **決定 3**: 返事を待つ間は `busy()` で 2 つとも押せず、キーも効かない。拒否は [`playRefusalDescription()`](../src/devstudio/model/playstatemodel.cpp#L71)(`play_state_mismatch` は `state` / `required` / `requested` から文を組む。他に `step_frame_windowed`・`play_busy`・`play_session_active`・`play_keep_unknown_transaction` の 4 行)で、status bar に 8 秒。`knownRefusalDescription()` も同じ表を読む([その所](../src/devstudio/model/inspectormodel.cpp#L645))。拒否の後は `get_status` を 1 回読み直す
+- **決定 4**: [`GraphCanvasModel::scrub()`](../src/devstudio/model/graphcanvasmodel.cpp#L761) は理由が入っている間は何も送らない。playing の間、帯の tooltip は `The game is playing, so its clock moves on its own. Pause it (Ctrl+Shift+P) to go to a time.`、cursor は禁止の形
+- **決定 5**: `engineRpcBecameUnavailable` で [`disconnect()`](../src/devstudio/model/playstatemodel.cpp#L105) し、ボタン・行・paused の色を消す。新しい engine が答えたら Playing で出し直す
+- **embeddedviewport**: 誰が送った `get_status` の返事も `engineStatusRead` で配る(engine の準備を確かめる問い合わせを含む。[配る所](../src/devstudio/viewport/embeddedviewport.cpp#L390))。JSON-RPC の error を丸ごと渡す `engineRpcRefused` を足した([その所](../src/devstudio/viewport/embeddedviewport.cpp#L419))
+- **仕様から外れた判断**(実装者の報告。コードで確かめた)
+  - Studio には常に回る `get_status` の読みが無い(Q-2 で止めてある)。そのため、既存の `get_status` の返事・状態を変えた直後の 1 回・Step の追従(40 ms 間隔、上限 40 回。[`FollowReadLimit`](../src/devstudio/model/playstatemodel.hpp#L59))に乗せた。**playing の間の frame N は最後に読んだ値で止まって見える**(paused と Stepping は正確)
+  - キーは QAction の shortcut ではなく別の QShortcut(テキスト欄に focus があるときもボタンのクリックを止めないため。[その注記](../src/devstudio/view/playcontrols.cpp#L62))
+  - シナリオの基盤: `run_studio_scenario.cmake` は `pelican_studio_<name>_game_logic` の target があれば DLL を run の directory に複製し、`PELICAN_STUDIO_PLAYER_ARGUMENTS` の `--game-logic` で渡す([その所](../test/run_studio_scenario.cmake#L47))。`studio_drive.py` の `result` に `plus`(`value_of` に数を足す)と `value_format`(覚えた値から文を作る)を足した([その所](../tools/studio_drive.py#L916))。README に書いた
+  - engine が止まった・再起動した直後はボタンと表示を一度消し、新しい engine が答えたら Playing で出し直す(決定 5 の「playing に戻す」を、消してから出し直す形にした)
+  - `play.state` が `"edit"` の読みは解析できない扱い(表示は前のまま)。PM-3b で扱う
+- **シナリオ**: `play_pause_step`([シナリオ](../test/studio_scenarios/play_pause_step.json)。json の `steps` は 29)。behavior `pm3a_mover`(game の 1 歩ごとに x を 0.25 進める。`test/fixtures/pm3a_mover/`)と fixture `studio_play_pause_step`。起動時は Playing で x が増える。Pause すると `Paused · frame N`(N = `play.game_frame`)、評価の番号が 30 以上進んでも x と `game_frame` は変わらず、枠の左端が `#e0ac00`。Step で `game_frame` がちょうど +1、x がちょうど +0.25。Resume でまた動き、枠の色が戻る
+- **test**: `devstudio_play_controls_test` の 9 件(実物の窓と RPC の transport で、test が PM-1a の engine として答える)
+  - `PM-3a get_status.play is read as the game frame, not the evaluation number`([test](../test/devstudio_play_controls_test.cpp#L345))/ `PM-3a the play refusals read as one line from Studio's table`([test](../test/devstudio_play_controls_test.cpp#L386))/ `PM-3a Pause sends paused, pressing it again sends playing, and the line, the frame and the band follow`([test](../test/devstudio_play_controls_test.cpp#L406))/ `PM-3a Step sends advance_frames count 1, and only while paused`([test](../test/devstudio_play_controls_test.cpp#L443))/ `PM-3a nothing can be pressed while an answer is awaited, and a refusal is one line`([test](../test/devstudio_play_controls_test.cpp#L477))
+  - `PM-3a the play keys do nothing while a person is typing`([test](../test/devstudio_play_controls_test.cpp#L509))/ `PM-3a the Timeline cannot be scrubbed while the game plays`([test](../test/devstudio_play_controls_test.cpp#L526))/ `PM-3a an engine without play gets no buttons, and a restart shows playing again`([test](../test/devstudio_play_controls_test.cpp#L551))/ `PM-3a another panel's get_status moves the line; no clock of its own reads`([test](../test/devstudio_play_controls_test.cpp#L589))
+- **変異**(実装者の報告): すべて赤。常に paused を送る / 枠を塗らない / canStep から paused を外す / count を 2 にする / `status.frame` を読む / 送信中の判定を外す / 拒否の行を消す / 常に表示 / focus の判定を外す / 再起動で disconnect しない / 他の get_status を配らない / scrub の門を外す
+- **結果**(実装者の報告): `-L studio_cpu -LE gpu` 469(統合側で develop を取り込んで 476)。GPU シナリオ `play_pause_step` / `theme_switch` / `graph_observe_roundtrip` / `new_blank_project` / `loop_zone_edit` が緑
+- **テキスト入力**: 増えていない(シナリオの打つ欄は 0)
+- **穴**(実装者の報告)
+  - engine の窓が keyboard の focus を持つ間は、Qt のキーが効かない
+  - playing の間の frame N が止まって見える(上の「仕様から外れた判断」の 1 つ目)
+
+### Q-20: 画像 node から pass へ引いた線の一時的な案内 / family_extent を読む所を 1 つに
+
+**下段(Studio のみ)。実装者: Claude(Opus)。develop fb6053d3 以降。Studio での見え方は `docs/manual/13_editor.md` の「render node の入力は shader の宣言から」の「分かっている穴」。**
+
+#### 前提
+- Q-19 の報告: body の pass が root の `render.image` の出力を読む線を引くと、engine が順序(`after`)を付けず「Pass input target is not produced as an earlier output」で断る。pass の出力 port から引けば通る。engine は LP-6 で直す。Studio の案内は直るまでの一時的なものに留める(engine の依頼)
+- LP-4f3: `family_extent` / `family_layers` / `family_extent_pass` を読む処理が 2 か所(Frame Plan 側の `framePlanFamilyExtent()` と Graph tab 側の緩い `planFamilyExtent`)。当時 Graph tab 側のライブラリが frame plan のライブラリを link していなかったため。Q-19 で `pelican_studio_inspector_model` が `pelican_studio_frame_plan` を link するようになった
+
+#### 決定
+1. **一時的な案内**: 上の拒否(message が "Pass input target is not produced as an earlier output" を含む。code があればそれで)を Graph tab が受けたとき、拒否の行の後ろに `— draw the line from the pass that writes this image instead (a known engine gap, LP-6)` 相当の 1 文を足す。`render.image` の出力から render node の入力へ線を引こうとした場合だけ(判定できなければ、その拒否の文に常に足す)。コードに「LP-6 で engine が直したら消す」と書く
+2. **読む所を 1 つに**: Graph tab 側の `planFamilyExtent` を消し、`framePlanFamilyExtent()` を使う。「読めない値は黙って画面の大きさに戻る」挙動は保つ
+
+#### 着地(2026-09-27、c6158605)
+- **決定 1**: 拒否の message が [`PassInputNotProducedMessage`](../src/devstudio/model/graphcanvasmodel.cpp#L61) を含み、送った op 列が `render.image` から読む線を持つとき([`GraphCanvasModel::readsRenderImage()`](../src/devstudio/model/graphcanvasmodel.cpp#L1376))、notice の拒否の行の後ろに ` — draw the line from the pass that writes this image instead (a known engine gap, LP-6)` を足す([足す所](../src/devstudio/model/graphcanvasmodel.cpp#L987))
+  - 読む線: `set_input` の source、または `add_node` / `replace_node` の node の `inputs` の source が、文書の `render.image` か同じ列で足す `render.image` であるもの。Undo なら逆の op 列で見る。op 列が無い(判定できない)ときも足す
+  - engine は専用の code を付けない(`render_pipeline_preflight_failed` で届く)ので、判定は message の文字列。コードに「LP-6 で消す」の注記がある
+  - **LP-6 が入るまでのもの**: LP-6(03725036)で engine が直り、この拒否はこの形では出なくなった。案内は Q-21 で外す
+- **決定 2**: Graph tab 側の `planFamilyExtent` を消し、[`readPlanViews()`](../src/devstudio/model/graphcanvasmodel.cpp#L2798) が [`framePlanFamilyExtent()`](../src/devstudio/model/frameplanmodel.cpp#L1098) を try/catch で呼ぶ([呼ぶ所](../src/devstudio/model/graphcanvasmodel.cpp#L2815))。例外を投げる node は飛ばし、その family の次の node か、無ければ画面の大きさに戻る。`planFamilyExtent` の名前は src に残っていない(grep で確かめた)
+  - 挙動の違い(実装者の報告。コードで確かめた): Frame Plan 側の読みは `family_layers` / `family_extent_pass` の誤りでも例外を投げるので、`family_extent` が正しくても layers / pass が壊れていれば extent ごと無しになる(前の緩い読みは extent を取った)
+- **README**: シナリオの README に Q-19 の自動化面の名前(`graph_socket#<id>/in@<binding>` ほか、definition の改名・削除の行)を足した
+- **test**
+  - `devstudio_graphcanvas_test`: `Q-20 a line out of a render.image the engine refuses as not yet written says to draw it from the pass that writes it`([test](../test/devstudio_graphcanvas_test.cpp#L2390))。root、ゾーンの縁をまたぐ線、render target から引いた線の同じ拒否(対照。付かない)、render.image の線の別の拒否(対照。付かない)の 4 節
+  - `devstudio_graphcanvas_scene_test`: `Q-20 a family_extent the Frame Plan's reader refuses is passed over silently, and the rest of the plan is read`([test](../test/devstudio_graphcanvas_scene_test.cpp#L5163))
+- **変異**(実装者の報告): M1〜M5 はすべて赤
+- **結果**(実装者の報告): `-L studio_cpu -LE gpu` 469(取り込んで 478)。GPU シナリオ `loop_view_axis` が緑
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
