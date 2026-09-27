@@ -522,6 +522,14 @@ void MainWindow::createWorkspace() {
         docks_[FramePlanDock]->raise();
         return true;
     });
+    // GL-2b, decision 3: a pass row of the Graph tab's Layers section picks
+    // that plan node in the Frame Plan.
+    graph_canvas_->setFramePlanNodeAction([this, render_tabs](const QString &node) {
+        render_tabs->setCurrentWidget(frame_plan_);
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        frame_plan_->showPlanNode(node);
+    });
     // Decision 4: "Expand to edit…" inside a folded view runs the flow that
     // already exists for it, with its confirmation.
     graph_canvas_->setFoldedExpandActions(

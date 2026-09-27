@@ -3740,6 +3740,27 @@ bool FramePlanGraphicsScene::selectLoopGroup(const std::string &loop) {
     return true;
 }
 
+bool FramePlanGraphicsScene::selectPlanNode(const FramePlanNodeKey &node) {
+    if (!current_model_ || node.graph != current_model_->graph ||
+        std::ranges::none_of(current_model_->nodes, [&](const FramePlanNode &candidate) {
+            return candidate.name == node.name;
+        })) {
+        return false;
+    }
+    current_group_scope_.reset();
+    for (const auto &group : discoverGroups(*current_model_, session_groups_)) {
+        if (std::ranges::find(group.members, node.name) == group.members.end()) continue;
+        collapsed_groups_.erase(group.state_key);
+        if (group.key.starts_with("loop:")) seen_loop_groups_.insert(group.state_key);
+    }
+    selected_nodes_ = {node};
+    selected_node_ = node;
+    selected_resource_.reset();
+    group_feedback_.clear();
+    renderCurrentGraph();
+    return true;
+}
+
 bool FramePlanGraphicsScene::leaveGroup() {
     if (!current_model_ || !current_group_scope_) {
         return false;

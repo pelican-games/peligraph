@@ -400,6 +400,29 @@ struct GraphCanvasRefusalMark {
     bool operator==(const GraphCanvasRefusalMark &) const = default;
 };
 
+// GL-2b (design_graph_layers 5.1). Where the graph node that made a pass is
+// authored: get_frame_plan's `origin`. `definition` and `instance_path` are
+// empty for a root node; `loop` is set for one copy of a graph.loop.
+struct GraphCanvasPlanOrigin {
+    std::string graph;
+    std::string node;
+    std::string definition;
+    std::string instance_path;
+    std::string loop;
+    std::optional<std::size_t> loop_branch;
+    std::optional<std::int64_t> element;
+
+    bool operator==(const GraphCanvasPlanOrigin &) const = default;
+};
+
+// GL-2b: one feature pass a graph node's pass took the place of (`replaces`).
+struct GraphCanvasPlanReplace {
+    std::string feature;
+    std::string pass;
+
+    bool operator==(const GraphCanvasPlanReplace &) const = default;
+};
+
 // GL-1 (design_graph_layers 1, 3.3, 3.4). One node of get_frame_plan, as the
 // Graph tab reads it to draw what no graph node made: the rendering
 // section's passes, the features' and the preset's.
@@ -418,6 +441,16 @@ struct GraphCanvasPlanPass {
     std::size_t order = 0;
     // LP-1a: the graph.loop whose copy it is (loop_origin.loop), or empty.
     std::string loop;
+    // And loop_origin's element and body node.
+    std::int64_t loop_element = 0;
+    std::string loop_node;
+    // GL-2b: the graph node that made it; none for a pass of the preset, a
+    // feature or the rendering section (and for any pass of an engine that
+    // predates GL-2a).
+    std::optional<GraphCanvasPlanOrigin> origin;
+    std::vector<GraphCanvasPlanReplace> replaces;
+    // The endpoint the execution plan selected for it, when it says.
+    std::string backend;
     // A material pass: its shader is the materials' (shader_resolution
     // material_owned), or it carries a material filter or variant.
     bool material = false;
@@ -505,6 +538,59 @@ struct GraphCanvasFoldedExpand {
     std::string graph;
     std::string pass;
     std::string feature;
+};
+
+// GL-2b, decision 3 (design_graph_layers 3.2). One row of a node's Layers
+// section: L1 a frame plan node it expanded to (or a feature pass it took the
+// place of), L2 a resource, alias group, scope or barrier those nodes touch,
+// L3 a decision or backend candidate about them.
+struct GraphCanvasLayerRow {
+    // "L1", "L2" or "L3".
+    std::string layer;
+    // "pass", "replaces", "replaced", "deactivated" (L1); "resource",
+    // "alias", "scope", "barrier" (L2); "decision", "backend" (L3).
+    std::string kind;
+    std::string text;
+    // The frame plan node the row stands for (an L1 pass row): a click on
+    // it selects that node in the Frame Plan.
+    std::string plan_node;
+
+    bool operator==(const GraphCanvasLayerRow &) const = default;
+};
+
+// GL-2b, decision 4. Where the Graph tab goes for one frame plan node: a
+// root node (a graph node, or a folded node), `node` in the body `scope` of
+// the instance at `instance_path`, or `node` in the body of `loop`'s copy
+// `element` (the zone's tab on the branch that element ran). `kind` is
+// empty when the plan does not hold the node (or it is an anchor).
+struct GraphCanvasPlanTarget {
+    // "root", "instance", "loop" or empty.
+    std::string kind;
+    std::string node;
+    std::string scope;
+    std::string instance_path;
+    std::string loop;
+    std::int64_t element = 0;
+    bool folded = false;
+
+    bool operator==(const GraphCanvasPlanTarget &) const = default;
+};
+
+// GL-2b: get_frame_plan's diagnostics[] and deactivated_graph_nodes[].
+struct GraphCanvasPlanDiagnostic {
+    std::string kind;
+    std::string subject;
+    std::string detail;
+
+    bool operator==(const GraphCanvasPlanDiagnostic &) const = default;
+};
+
+struct GraphCanvasDeactivatedNode {
+    std::string node;
+    std::string feature;
+    std::string reason;
+
+    bool operator==(const GraphCanvasDeactivatedNode &) const = default;
 };
 
 // One animation sink `get_status.animation` reported for the owner the watched
@@ -768,6 +854,59 @@ class GraphCanvasModel {
     std::vector<GraphCanvasPlanPass> plan_passes_;
     std::string plan_graph_;
     void readPlanPasses(const nlohmann::json &plan);
+    // --- GL-2b: the plan's lower layers, by the frame plan node names each
+    // element carries (from_nodes, a barrier's ends, a scope's nodes).
+    struct PlanBarrier {
+        std::string from;
+        std::string to;
+        std::string resource;
+        std::string kind;
+    };
+    struct PlanResource {
+        std::string name;
+        std::string format;
+        std::vector<std::string> from_nodes;
+    };
+    struct PlanAliasGroup {
+        std::string id;
+        std::vector<std::string> resources;
+        std::vector<std::string> from_nodes;
+    };
+    struct PlanScope {
+        std::string id;
+        std::string kind;
+        std::vector<std::string> nodes;
+    };
+    struct PlanDecision {
+        std::string id;
+        std::string subject;
+        std::string selected;
+        std::vector<std::string> from_nodes;
+    };
+    struct PlanCandidate {
+        std::string candidate;
+        std::string endpoint;
+        bool feasible = false;
+        bool selected = false;
+    };
+    // Whether the engine publishes origin at all (GL-2a): its plan always
+    // carries diagnostics and deactivated_graph_nodes. An older one's is
+    // read by GL-1's name match (graphOwnerOf).
+    bool plan_origin_aware_ = false;
+    std::vector<PlanBarrier> plan_barriers_;
+    std::vector<PlanResource> plan_resources_;
+    std::vector<PlanAliasGroup> plan_alias_groups_;
+    std::vector<PlanScope> plan_scopes_;
+    std::vector<PlanDecision> plan_decisions_;
+    std::vector<PlanCandidate> plan_candidates_;
+    // execution_plan.nodes[].resource_uses: node -> resource -> access.
+    std::map<std::string, std::map<std::string, std::string, std::less<>>, std::less<>>
+        plan_access_;
+    std::vector<GraphCanvasPlanDiagnostic> plan_diagnostics_;
+    std::vector<GraphCanvasDeactivatedNode> deactivated_nodes_;
+    void readPlanLayers(const nlohmann::json &plan);
+    // The endpoint most of the plan's passes run on.
+    [[nodiscard]] std::string graphBackend() const;
     // get_graph_templates, asked once a plan names a feature: feature
     // reference -> the template's document (nodes, definitions, outputs).
     bool templates_requested_ = false;
@@ -1494,6 +1633,33 @@ class GraphCanvasModel {
     // the graph node that made it, or the folded node it is in. Empty when
     // the plan does not list it (or it is an anchor).
     [[nodiscard]] std::string canvasNodeOfPass(std::string_view pass) const;
+
+    // --- GL-2b: the lower layers on the root canvas (design_graph_layers
+    // 3.2, 4 rules 1 and 5).
+
+    // Whether the last plan came from an engine that publishes `origin`.
+    [[nodiscard]] bool planOriginAware() const noexcept { return plan_origin_aware_; }
+    // Decision 4: where Open in Graph lands for one frame plan node.
+    [[nodiscard]] GraphCanvasPlanTarget planNodeTarget(std::string_view plan_node) const;
+    // The frame plan nodes drawn under one root canvas node, in plan order.
+    [[nodiscard]] std::vector<std::string> planNodesOf(std::string_view canvas_node) const;
+    // Decision 2: bands and the Layers section are shown on the real root,
+    // while the domain filter shows one domain only (3.3).
+    [[nodiscard]] bool layersShown() const;
+    // The band under a root node: `×3 copies · 2 barriers · aliased`, the
+    // backend when it is not the graph's, `deactivated: <reason> (<feature>)`.
+    // Only what differs from the default; empty for nothing to say.
+    [[nodiscard]] std::string layerBand(std::string_view canvas_node) const;
+    // A root graph node the composition switched off, or null.
+    [[nodiscard]] const GraphCanvasDeactivatedNode *deactivatedNode(std::string_view node) const;
+    // Decision 3: a root node's Layers section, L1 to L3 in that order.
+    [[nodiscard]] std::vector<GraphCanvasLayerRow> layerRows(std::string_view canvas_node) const;
+    // What concerns no node: the decisions whose from_nodes is empty and the
+    // backend candidates -- the Layers section with nothing picked.
+    [[nodiscard]] std::vector<GraphCanvasLayerRow> graphLayerRows() const;
+    [[nodiscard]] const std::vector<GraphCanvasPlanDiagnostic> &planDiagnostics() const noexcept {
+        return plan_diagnostics_;
+    }
 
     // Decision 3: into a folded node (a feature's fold or a material pass),
     // read only; leaveScope() comes back out one step at a time.

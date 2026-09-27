@@ -420,6 +420,10 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     // descended into) and every copy selected. False when the plan on
     // screen has no copies of that loop.
     bool selectLoopGroup(const std::string &loop);
+    // GL-2b, decision 3: one node of the plan picked, every group that folds
+    // it opened (out of any group the canvas had descended into). False when
+    // the plan on screen has no such node.
+    bool selectPlanNode(const FramePlanNodeKey &node);
 
     // A session group is made from the live WP349 selection and never leaves
     // this scene. A non-convex selection records a visible convex-hull

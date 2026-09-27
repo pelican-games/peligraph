@@ -52,6 +52,7 @@
 #include <QHideEvent>
 #include <QShowEvent>
 #include <QTabWidget>
+#include <QMenu>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QTimer>
@@ -1167,6 +1168,14 @@ struct FramePlanWidget::Impl {
             {owner.tr("Route"), owner.tr("Target pass"), owner.tr("Phase"),
              owner.tr("Contract"), owner.tr("Shader contract")},
             tabs);
+        // GL-2b: named, so a scenario can pick one of their rows.
+        passes->setObjectName(QStringLiteral("pelican.framePlanPasses"));
+        resources->setObjectName(QStringLiteral("pelican.framePlanResources"));
+        physical->setObjectName(QStringLiteral("pelican.framePlanPhysical"));
+        decisions->setObjectName(QStringLiteral("pelican.framePlanDecisions"));
+        backends->setObjectName(QStringLiteral("pelican.framePlanBackends"));
+        barriers->setObjectName(QStringLiteral("pelican.framePlanBarriers"));
+        materials->setObjectName(QStringLiteral("pelican.framePlanMaterials"));
         raw_json = new QPlainTextEdit(tabs);
         raw_json->setObjectName(QStringLiteral("pelican.framePlanRawJson"));
         raw_json->setReadOnly(true);
@@ -1190,6 +1199,38 @@ struct FramePlanWidget::Impl {
         addToolTab(*tabs, raw_json, QStringLiteral("raw-json"),
                    owner.tr("Raw JSON"));
         layout->addWidget(tabs, 1);
+        // GL-2b, decision 4: each tab is a named entry too
+        // (`pelican.framePlan.tab.barriers`), so a scenario brings one
+        // forward the way a click on it does.
+        for (int index = 0; index < tabs->count(); ++index) {
+            QWidget *page = tabs->widget(index);
+            auto *show_tab = new QAction(tabs->tabText(index), &owner);
+            show_tab->setObjectName(QStringLiteral("pelican.framePlan.tab.") + toolTabId(page));
+            owner.addAction(show_tab);
+            QObject::connect(show_tab, &QAction::triggered, &owner,
+                             [this, page] { tabs->setCurrentWidget(page); });
+        }
+        // Every row of these tabs that names a pass (its own, a resource's
+        // readers and writers, a barrier's two ends, a decision's
+        // from_nodes) opens it in the Graph tab; several are offered one
+        // by one. Named, the entry opens the first pass of the row picked.
+        auto *open_row = new QAction(QStringLiteral("Open in Graph"), &owner);
+        open_row->setObjectName(QStringLiteral("pelican.framePlan.openRowInGraph"));
+        owner.addAction(open_row);
+        QObject::connect(open_row, &QAction::triggered, &owner, [this] {
+            auto *tree = qobject_cast<QTreeWidget *>(tabs->currentWidget());
+            const auto names = tree != nullptr ? rowNodes(tree->currentItem()) : QStringList{};
+            if (names.isEmpty()) {
+                showStatus(owner.tr("Select a row that names a pass first."));
+                return;
+            }
+            openRowNode(names.front());
+        });
+        for (QTreeWidget *tree : {passes, resources, physical, decisions, backends, barriers}) {
+            tree->setContextMenuPolicy(Qt::CustomContextMenu);
+            QObject::connect(tree, &QWidget::customContextMenuRequested, &owner,
+                             [this, tree](const QPoint &at) { rowMenu(*tree, at); });
+        }
 
         QObject::connect(tabs, &QTabWidget::currentChanged, &owner,
                          [this](int) { refreshRawJson(); });
@@ -2847,6 +2888,69 @@ struct FramePlanWidget::Impl {
         }
     }
 
+    // GL-2b, decision 4. The frame plan nodes a row of a tab names: its
+    // own, else its nearest parent's. Only passes (not anchors) are kept.
+    static constexpr int RowNodesRole = Qt::UserRole + 71;
+    void setRowNodes(QTreeWidgetItem *item, const std::vector<std::string> &names) const {
+        QStringList kept;
+        for (const auto &name : names)
+            if (model && !kept.contains(text(name)) &&
+                planPassOf(FramePlanNodeKey{model->graph, name}) != nullptr)
+                kept.push_back(text(name));
+        if (!kept.isEmpty()) item->setData(0, RowNodesRole, kept);
+    }
+    QStringList rowNodes(const QTreeWidgetItem *item) const {
+        for (; item != nullptr; item = item->parent()) {
+            const auto names = item->data(0, RowNodesRole).toStringList();
+            if (!names.isEmpty()) return names;
+        }
+        return {};
+    }
+    void openRowNode(const QString &name) {
+        if (!model) return;
+        openInGraph(FramePlanNodeKey{model->graph, name.toStdString()});
+    }
+    // The row's right-click: Open in Graph, a submenu of passes when the
+    // row names several, switched off when it names none (the whole graph).
+    void rowMenu(QTreeWidget &tree, const QPoint &at) {
+        QTreeWidgetItem *item = tree.itemAt(at);
+        if (item == nullptr) return;
+        tree.setCurrentItem(item);
+        const auto names = rowNodes(item);
+        QMenu menu;
+        if (names.size() > 1) {
+            QMenu *each = menu.addMenu(owner.tr("Open in Graph"));
+            for (const auto &name : names) {
+                QAction *open = each->addAction(name);
+                QObject::connect(open, &QAction::triggered, &owner,
+                                 [this, name] { openRowNode(name); });
+            }
+        } else {
+            QAction *open = menu.addAction(owner.tr("Open in Graph"));
+            open->setEnabled(names.size() == 1);
+            if (names.isEmpty())
+                open->setToolTip(owner.tr("This row names no pass: it is about the whole graph."));
+            else
+                QObject::connect(open, &QAction::triggered, &owner,
+                                 [this, name = names.front()] { openRowNode(name); });
+        }
+        menu.exec(tree.viewport()->mapToGlobal(at));
+    }
+    // GL-2b, decision 3: the Graph tab's Layers row picks a plan node here.
+    void showPlanNode(const std::string &name) {
+        tabs->setCurrentWidget(logical_splitter);
+        if (!model || !logical_scene->selectPlanNode(FramePlanNodeKey{model->graph, name})) {
+            showStatus(owner.tr("The frame plan has no node %1: refresh it.").arg(text(name)));
+            return;
+        }
+        QRectF picked;
+        for (QGraphicsItem *item : logical_scene->selectedItems())
+            picked = picked.isValid() ? picked.united(item->sceneBoundingRect())
+                                      : item->sceneBoundingRect();
+        if (picked.isValid()) logical->centerOn(picked.center());
+        showStatus(owner.tr("%1 is picked.").arg(text(name)));
+    }
+
     void openInGraph(const std::optional<FramePlanNodeKey> &node) {
         // Decision 10: an expanded copy opens the body node it copies, in the
         // body its element's branch runs.
@@ -3504,6 +3608,7 @@ struct FramePlanWidget::Impl {
                         std::span<const FramePlanNode> nodes) {
         for (const FramePlanNode &node : nodes) {
             auto *item = new QTreeWidgetItem(tree);
+            setRowNodes(item, {node.name});
             item->setText(0, QString::number(static_cast<qulonglong>(node.order)));
             item->setText(1, text(node.name));
             item->setText(2, text(node.kind));
@@ -3747,6 +3852,11 @@ struct FramePlanWidget::Impl {
     void populateDecisions() {
         for (const auto &group : model->decision_groups) {
             auto *subject = new QTreeWidgetItem(decisions);
+            std::vector<std::string> subject_nodes;
+            for (const auto &decision : group.decisions)
+                subject_nodes.insert(subject_nodes.end(), decision.from_nodes.begin(),
+                                     decision.from_nodes.end());
+            setRowNodes(subject, subject_nodes);
             subject->setText(
                 0, QStringLiteral("%1 (%2)")
                        .arg(group.subject.empty() ? owner.tr("No subject")
@@ -3757,6 +3867,7 @@ struct FramePlanWidget::Impl {
             subject->setFont(0, font);
             for (const auto &decision : group.decisions) {
                 auto *item = new QTreeWidgetItem(subject);
+                setRowNodes(item, decision.from_nodes);
                 item->setText(1, text(decision.id));
                 item->setText(2, text(decision.selected));
                 item->setText(3, text(decision.detail));
@@ -3782,6 +3893,7 @@ struct FramePlanWidget::Impl {
 
         for (const auto &candidate : model->backend_candidates) {
             auto *candidate_item = new QTreeWidgetItem(backends);
+            setRowNodes(candidate_item, candidate.from_nodes);
             candidate_item->setText(0, text(candidate.candidate));
             candidate_item->setText(
                 1, candidate.selected
@@ -3795,6 +3907,7 @@ struct FramePlanWidget::Impl {
 
             for (const auto &failure : candidate.failures) {
                 auto *item = new QTreeWidgetItem(candidate_item);
+                setRowNodes(item, {failure.subject});
                 item->setText(1, owner.tr("Failure"));
                 item->setText(2, text(failure.subject));
                 item->setText(3, text(failure.id));
@@ -3813,6 +3926,14 @@ struct FramePlanWidget::Impl {
     void populateResources() {
         for (const FramePlanResource &resource : model->resources) {
             auto *item = new QTreeWidgetItem(resources);
+            // GL-2a's from_nodes; a plan without them, the writers and readers.
+            if (!resource.from_nodes.empty()) {
+                setRowNodes(item, resource.from_nodes);
+            } else {
+                auto names = resource.writers;
+                names.insert(names.end(), resource.readers.begin(), resource.readers.end());
+                setRowNodes(item, names);
+            }
             item->setText(0, text(resource.name));
             item->setText(1, text(resource.format));
             item->setText(2, joined(resource.writers));
@@ -3925,6 +4046,7 @@ struct FramePlanWidget::Impl {
                         model->physical_plan.alias_groups.size())));
             for (const auto &group : model->physical_plan.alias_groups) {
                 auto *item = new QTreeWidgetItem(aliases);
+                setRowNodes(item, group.from_nodes);
                 item->setText(0, text(group.id));
                 item->setText(1, owner.tr("Adopted"));
                 item->setText(2, joined(group.resources));
@@ -3940,6 +4062,14 @@ struct FramePlanWidget::Impl {
                             .arg(static_cast<qulonglong>(candidates.size())));
                     for (const auto &candidate : candidates) {
                         auto *item = new QTreeWidgetItem(group);
+                        // A pair of passes (fusion, parallel) or of resources
+                        // (alias): the passes, or the resources' passes.
+                        std::vector<std::string> pair_nodes{candidate.first, candidate.second};
+                        for (const auto &resource : model->resources)
+                            if (resource.name == candidate.first || resource.name == candidate.second)
+                                pair_nodes.insert(pair_nodes.end(), resource.from_nodes.begin(),
+                                                  resource.from_nodes.end());
+                        setRowNodes(item, pair_nodes);
                         item->setText(0, label);
                         item->setText(1, candidate.adopted
                                                  ? owner.tr("Adopted")
@@ -3961,6 +4091,7 @@ struct FramePlanWidget::Impl {
                 state, owner.tr("Scopes"), model->physical_plan.scopes.size());
             for (const auto &scope : model->physical_plan.scopes) {
                 auto *item = new QTreeWidgetItem(scope_group);
+                setRowNodes(item, scope.nodes);
                 item->setText(0, text(scope.id));
                 item->setText(1, text(scope.kind));
                 item->setText(2, joined(scope.nodes));
@@ -3982,6 +4113,7 @@ struct FramePlanWidget::Impl {
                 model->physical_plan.lowering_nodes.size());
             for (const auto &node : model->physical_plan.lowering_nodes) {
                 auto *item = new QTreeWidgetItem(lowering_group);
+                setRowNodes(item, node.sources);
                 item->setText(0, text(node.name));
                 item->setText(1,
                               QStringLiteral("%1 / %2")
@@ -4030,6 +4162,7 @@ struct FramePlanWidget::Impl {
                 model->dependencies.size());
             for (const auto &dependency : model->dependencies) {
                 auto *item = new QTreeWidgetItem(dependency_group);
+                setRowNodes(item, {dependency.from, dependency.to});
                 item->setText(
                     0, QStringLiteral("%1 -> %2")
                            .arg(text(dependency.from), text(dependency.to)));
@@ -4070,6 +4203,7 @@ struct FramePlanWidget::Impl {
         for (std::size_t index = 0; index < model->barriers.size(); ++index) {
             const auto &barrier = model->barriers[index];
             auto *item = new QTreeWidgetItem(barriers);
+            setRowNodes(item, {barrier.from, barrier.to});
             item->setText(0, QString::number(static_cast<qulonglong>(index)));
             item->setText(1, text(barrier.from));
             item->setText(2, text(barrier.to));
@@ -4281,6 +4415,10 @@ void FramePlanWidget::showLoopGroup(const QString &loop) {
     if (loop.isEmpty()) return;
     impl_->requested_loop_group = loop;
     impl_->requestRefresh();
+}
+
+void FramePlanWidget::showPlanNode(const QString &node) {
+    impl_->showPlanNode(node.toStdString());
 }
 
 void FramePlanWidget::setGraphPassOpenAction(GraphPassOpenAction action) {

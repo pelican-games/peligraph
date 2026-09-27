@@ -1661,6 +1661,23 @@ void GraphCanvasScene::repopulate() {
                                stub.input ? QStringLiteral("input") : QStringLiteral("output"));
         if (socket != nullptr) drawing.addDomainStub(stub, *socket);
     }
+    // GL-2b, decision 2: under each root node, what its lower layers hold
+    // (only what is not the default), and a node the composition switched
+    // off drawn faint.
+    if (scope.empty() && !model_->foldedView()) {
+        std::vector<QGraphicsItem *> roots;
+        for (QGraphicsItem *item : items())
+            if (item->parentItem() == nullptr &&
+                nodeGraphItemKind(*item) == QLatin1String{GraphCanvasNodeItem} &&
+                item->data(GraphCanvasZoneScopeRole).toString().isEmpty())
+                roots.push_back(item);
+        for (QGraphicsItem *item : roots) {
+            const auto id = item->data(NodeGraphNameRole).toString().toStdString();
+            if (model_->deactivatedNode(id) != nullptr) item->setOpacity(0.45);
+            if (const auto band = model_->layerBand(id); !band.empty())
+                drawing.addLayerBand(*item, qtext(id), qtext(band));
+        }
+    }
 
     // The control points of one scope, drawn by one builder. They go over
     // everything they may come to lie on. A bundle's place is the middle of
@@ -3441,6 +3458,15 @@ struct GraphCanvasWidget::Impl {
     std::function<void(const QString &)> replace_action;
     // Decision 1: what a picked folded node is, in one line.
     QLabel *folded_summary = nullptr;
+    // GL-2b, decision 3: the Layers section over the details (it folds),
+    // and who selects a plan node in the Frame Plan when an L1 row is
+    // clicked. The plan's diagnostics, one line under the notice that
+    // unfolds into the list.
+    QPushButton *layers_toggle = nullptr;
+    QTreeWidget *layers = nullptr;
+    std::function<void(const QString &)> frame_plan_node_action;
+    QPushButton *diagnostics_toggle = nullptr;
+    QLabel *diagnostics_list = nullptr;
     QAction *add_loop_action = nullptr;
     QAction *add_fullscreen_action = nullptr;
     // Q-19, decision 4: "Rename definition…" and "Delete definition", and
@@ -3644,6 +3670,24 @@ struct GraphCanvasWidget::Impl {
         folded_notice->setStyleSheet(QStringLiteral("color: #b9770e;"));
         folded_notice->hide();
         layout->addWidget(folded_notice);
+        // GL-2b, decision 3: the plan's diagnostics, folded to one line.
+        diagnostics_toggle = new QPushButton(&view);
+        diagnostics_toggle->setObjectName(QStringLiteral("pelican.graphCanvasDiagnostics"));
+        diagnostics_toggle->setCheckable(true);
+        diagnostics_toggle->setFlat(true);
+        diagnostics_toggle->setStyleSheet(QStringLiteral("text-align: left;"));
+        diagnostics_toggle->setToolTip(
+            QObject::tr("What the engine decided while it composed the frame plan"));
+        diagnostics_toggle->hide();
+        layout->addWidget(diagnostics_toggle);
+        diagnostics_list = new QLabel(&view);
+        diagnostics_list->setObjectName(QStringLiteral("pelican.graphCanvasDiagnosticsList"));
+        diagnostics_list->setWordWrap(true);
+        diagnostics_list->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        diagnostics_list->hide();
+        layout->addWidget(diagnostics_list);
+        QObject::connect(diagnostics_toggle, &QPushButton::toggled, &view,
+                         [this](bool) { syncDiagnostics(); });
         expand_action = new QAction(QObject::tr("Expand to edit…"), &view);
         expand_action->setObjectName(QStringLiteral("pelican.graphCanvas.expandToEdit"));
         expand_action->setEnabled(false);
@@ -3774,6 +3818,33 @@ struct GraphCanvasWidget::Impl {
         folded_summary->setWordWrap(true);
         folded_summary->hide();
         side_layout->addWidget(folded_summary);
+        // GL-2b, decision 3: what the picked root node became below L0 --
+        // expanded (L1), physically (L2), on the backend (L3) -- or, with
+        // nothing picked, what concerns the whole graph. It folds.
+        layers_toggle = new QPushButton(QObject::tr("Layers"), side);
+        layers_toggle->setObjectName(QStringLiteral("pelican.graphCanvasLayersToggle"));
+        layers_toggle->setCheckable(true);
+        layers_toggle->setChecked(true);
+        layers_toggle->setFlat(true);
+        layers_toggle->setStyleSheet(QStringLiteral("text-align: left; font-weight: bold;"));
+        layers_toggle->hide();
+        side_layout->addWidget(layers_toggle);
+        layers = new QTreeWidget(side);
+        layers->setObjectName(QStringLiteral("pelican.graphCanvasLayers"));
+        layers->setColumnCount(1);
+        layers->setHeaderHidden(true);
+        layers->setRootIsDecorated(true);
+        layers->setToolTip(QObject::tr("Read only. Click a pass to pick it in the Frame Plan."));
+        layers->hide();
+        side_layout->addWidget(layers, 1);
+        QObject::connect(layers_toggle, &QPushButton::toggled, &view,
+                         [this](bool) { syncLayers(); });
+        QObject::connect(layers, &QTreeWidget::itemClicked, &view,
+                         [this](QTreeWidgetItem *item, int) {
+                             if (item == nullptr || !frame_plan_node_action) return;
+                             const auto node = item->data(0, Qt::UserRole).toString();
+                             if (!node.isEmpty()) frame_plan_node_action(node);
+                         });
         auto *label_row = new QHBoxLayout;
         auto *label_caption = new QLabel(QObject::tr("Label"), side);
         label_caption->setFont(studioSmallFont());
@@ -4338,6 +4409,86 @@ struct GraphCanvasWidget::Impl {
             replace_action(qtext(expand.feature));
     }
 
+    // GL-2b, decision 3: the Layers section for the root node picked, or for
+    // the whole graph with nothing picked. Rebuilt only when what it says
+    // changed, so a click on a row is not lost to a poll.
+    std::string layers_shown_key;
+    void syncLayers() {
+        if (layers == nullptr || layers_toggle == nullptr || scene == nullptr) return;
+        const auto &selected = scene->selectedNode();
+        std::vector<GraphCanvasLayerRow> rows;
+        QString heading;
+        if (!selected) {
+            rows = model.graphLayerRows();
+            heading = QObject::tr("Layers: the whole graph");
+        } else if (scene->selectedScope().empty() && model.currentScope().empty()) {
+            rows = model.layerRows(*selected);
+            heading = QObject::tr("Layers: %1").arg(qtext(*selected));
+        }
+        const bool open = layers_toggle->isChecked();
+        layers_toggle->setText((open ? QStringLiteral("▾ ") : QStringLiteral("▸ ")) +
+                               heading);
+        layers_toggle->setVisible(!rows.empty());
+        layers->setVisible(!rows.empty() && open);
+        std::string key = heading.toStdString();
+        for (const auto &row : rows) key += "\n" + row.layer + row.text + "|" + row.plan_node;
+        if (key == layers_shown_key) return;
+        layers_shown_key = std::move(key);
+        layers->clear();
+        const std::pair<const char *, QString> groups[] = {
+            {"L1", QObject::tr("L1 expanded")},
+            {"L2", QObject::tr("L2 physical")},
+            {"L3", QObject::tr("L3 backend")},
+        };
+        for (const auto &[layer, title] : groups) {
+            QTreeWidgetItem *group = nullptr;
+            for (const auto &row : rows) {
+                if (row.layer != layer) continue;
+                if (group == nullptr) {
+                    group = new QTreeWidgetItem(layers);
+                    group->setText(0, title);
+                    QFont font = group->font(0);
+                    font.setBold(true);
+                    group->setFont(0, font);
+                }
+                auto *item = new QTreeWidgetItem(group);
+                item->setText(0, qtext(row.text));
+                item->setToolTip(0, qtext(row.text));
+                if (!row.plan_node.empty()) {
+                    item->setData(0, Qt::UserRole, qtext(row.plan_node));
+                    item->setToolTip(0, QObject::tr("%1\nClick to pick %2 in the Frame Plan.")
+                                            .arg(qtext(row.text), qtext(row.plan_node)));
+                }
+            }
+        }
+        layers->expandAll();
+    }
+
+    // GL-2b, decision 3: the plan's diagnostics, one line that unfolds.
+    void syncDiagnostics() {
+        if (diagnostics_toggle == nullptr || diagnostics_list == nullptr) return;
+        const auto &diagnostics = model.planDiagnostics();
+        if (diagnostics.empty()) {
+            diagnostics_toggle->hide();
+            diagnostics_list->hide();
+            return;
+        }
+        const bool open = diagnostics_toggle->isChecked();
+        diagnostics_toggle->setText(
+            (open ? QStringLiteral("▾ ") : QStringLiteral("▸ ")) +
+            (diagnostics.size() == 1
+                 ? QObject::tr("1 diagnostic")
+                 : QObject::tr("%1 diagnostics").arg(static_cast<qulonglong>(diagnostics.size()))));
+        diagnostics_toggle->show();
+        QStringList lines;
+        for (const auto &diagnostic : diagnostics)
+            lines.push_back(QStringLiteral("%1 · %2: %3")
+                                .arg(qtext(diagnostic.kind), qtext(diagnostic.subject),
+                                     qtext(diagnostic.detail)));
+        diagnostics_list->setText(lines.join(QLatin1Char('\n')));
+        diagnostics_list->setVisible(open);
+    }
+
     // Decision 1: a picked folded node, in one line: what it is, where it
     // comes from, what it reads and hands on.
     void syncFoldedSummary() {
@@ -4735,6 +4886,7 @@ struct GraphCanvasWidget::Impl {
 
     void showDetails() {
         syncFoldedSummary();
+        syncLayers();
         details->clear();
         const auto &selected = scene->selectedNode();
         label_edit->setEnabled(selected.has_value() && model.canEdit());
@@ -4963,6 +5115,10 @@ struct GraphCanvasWidget::Impl {
                                       : QStringLiteral("color: #7f8c8d;"));
             notice->show();
         }
+        // GL-2b: the plan the bands and the Layers section read may have
+        // just arrived.
+        syncDiagnostics();
+        syncLayers();
         // GL-1, decision 4: nothing was sent; the link is the way to edit.
         const auto expand = model.foldedExpand();
         expand_action->setEnabled(model.foldedView() && !expand.kind.empty());
@@ -5005,8 +5161,18 @@ void GraphCanvasWidget::poll() {
 
 bool GraphCanvasWidget::revealPlanPass(const QString &pass) {
     auto &model = impl_->model;
-    const auto id = model.canvasNodeOfPass(pass.toStdString());
-    if (id.empty()) return false;
+    // GL-2b, decision 4: where the plan's origin says the node is -- a loop's
+    // copy in its zone on the element's tab, a node inside an instance
+    // through that instance, else a root node or a folded one.
+    const auto target = model.planNodeTarget(pass.toStdString());
+    if (target.kind.empty()) return false;
+    if (target.kind == "loop")
+        return revealLoopOrigin(qtext(target.loop), static_cast<qint64>(target.element),
+                                qtext(target.node));
+    if (target.kind == "instance")
+        return revealGraphNode(qtext(target.scope), qtext(target.node),
+                               qtext(target.instance_path));
+    const auto &id = target.node;
     // The real root, with the domain the node is in shown.
     model.selectScope({});
     const auto nodes = model.nodes({});
@@ -5032,6 +5198,10 @@ bool GraphCanvasWidget::revealPlanPass(const QString &pass) {
         break;
     }
     return true;
+}
+
+void GraphCanvasWidget::setFramePlanNodeAction(std::function<void(const QString &node)> action) {
+    impl_->frame_plan_node_action = std::move(action);
 }
 
 void GraphCanvasWidget::setFoldedExpandActions(

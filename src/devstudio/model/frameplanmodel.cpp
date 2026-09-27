@@ -503,6 +503,7 @@ FramePlanDecision parseDecision(const Json &value, std::string_view context) {
         .subject = requireStringField(value, "subject", context),
         .selected = requireStringField(value, "selected", context),
         .detail = requireStringField(value, "detail", context),
+        .from_nodes = stringArray(value, "from_nodes", context),
     };
 }
 
@@ -629,6 +630,8 @@ void parseBackendSelection(
             parseOptionalArray<FramePlanPlanningDiagnostic>(
                 value, "diagnostics", candidate_context,
                 parsePlanningDiagnostic);
+        candidate.from_nodes =
+            stringArray(value, "from_nodes", candidate_context);
         model.backend_candidates.push_back(std::move(candidate));
     }
 }
@@ -1447,6 +1450,8 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
                 .id = requireStringField(alias_groups[index], "id", context),
                 .resources = stringArray(alias_groups[index], "resources",
                                          context, true),
+                .from_nodes = stringArray(alias_groups[index], "from_nodes",
+                                          context),
             });
         }
 
@@ -1731,6 +1736,7 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
                 value, "rasterization_samples", context);
             resource.resolve_required =
                 optionalBoolField(value, "resolve_required", context);
+            resource.from_nodes = stringArray(value, "from_nodes", context);
             if (const auto extent = value.find("extent");
                 extent != value.end() && !extent->is_null()) {
                 resource.extent = parseExtent(*extent, context + ".extent");

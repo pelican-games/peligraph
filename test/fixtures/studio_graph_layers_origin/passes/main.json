@@ -1,0 +1,113 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {
+    "paint": {
+      "nodes": [
+        {"id": "canvas", "op": "render.image",
+         "parameters": {
+           "type": {"semantic": "pelican.render.color_signal@1",
+                    "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}},
+           "format": "R8G8B8A8_UNORM", "extent_scale": 1.0,
+           "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+         "outputs": ["resource"]},
+        {"id": "fill", "op": "render.fullscreen",
+         "parameters": {
+           "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"},
+           "ports": {"color": {"kind": "image",
+                               "type": {"semantic": "pelican.render.color_signal@1",
+                                        "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}},
+                               "access": "write", "attachment": "color", "location": 0}}},
+         "inputs": {"color": {"node": "canvas", "port": "resource"}},
+         "outputs": ["color"]}
+      ],
+      "outputs": {}
+    },
+    "near": {
+      "nodes": [
+        {"id": "target", "op": "graph.input"},
+        {"id": "depth", "op": "render.shadow_depth",
+         "parameters": {"pass_set": "main_render", "view_family": "$shadow/directional",
+                        "view_select": {"cascade": {"$expr": "element"}},
+                        "depth_store_op": "store"},
+         "inputs": {"depth": {"node": "target", "port": "value"}},
+         "outputs": []}
+      ],
+      "outputs": {}
+    },
+    "cascade": {
+      "nodes": [
+        {"id": "target", "op": "graph.input"},
+        {"id": "depth", "op": "render.shadow_depth",
+         "parameters": {"pass_set": "main_render", "view_family": "$shadow/directional",
+                        "view_select": {"cascade": {"$expr": "element"}},
+                        "depth_store_op": "store"},
+         "inputs": {"depth": {"node": "target", "port": "value"}},
+         "outputs": []}
+      ],
+      "outputs": {}
+    }
+  },
+  "nodes": [
+    {"id": "tint_image", "op": "render.image",
+     "parameters": {
+       "type": {"semantic": "pelican.render.color_signal@1",
+                "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}},
+       "format": "R8G8B8A8_UNORM", "extent_scale": 1.0,
+       "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+     "outputs": ["resource"]},
+    {"id": "tint", "op": "render.fullscreen",
+     "parameters": {
+       "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"},
+       "ports": {"color": {"kind": "image",
+                           "type": {"semantic": "pelican.render.color_signal@1",
+                                    "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}},
+                           "access": "write", "attachment": "color", "location": 0}}},
+     "inputs": {"color": {"node": "tint_image", "port": "resource"}},
+     "outputs": ["color"]},
+    {"id": "show_image", "op": "render.image",
+     "parameters": {
+       "type": {"semantic": "pelican.render.color_signal@1",
+                "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}},
+       "format": "R8G8B8A8_UNORM", "extent_scale": 1.0,
+       "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+     "outputs": ["resource"]},
+    {"id": "show", "op": "render.fullscreen",
+     "parameters": {
+       "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"},
+       "ports": {"color": {"kind": "image",
+                           "type": {"semantic": "pelican.render.color_signal@1",
+                                    "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}},
+                           "access": "write", "attachment": "color", "location": 0},
+                 "source": {"kind": "image",
+                            "type": {"semantic": "pelican.render.color_signal@1",
+                                     "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}},
+                            "access": "read", "binding": "input", "input_index": 0}}},
+     "inputs": {"color": {"node": "show_image", "port": "resource"},
+                "source": {"node": "tint_image", "port": "resource"}},
+     "outputs": ["color"]},
+    {"id": "left", "op": "graph.instance", "definition": "paint"},
+    {"id": "shadow", "op": "render.target_ref",
+     "parameters": {"name": "shadow_map",
+                    "type": {"semantic": "pelican.render.depth@1",
+                             "arguments": {"topology": "two_d_array", "representation": "device", "space": "projection"}}},
+     "outputs": ["resource"]},
+    {"id": "cascades", "op": "graph.loop",
+     "parameters": {"over": {"range": {"count": 3}},
+                    "branches": [{"when": {"element": 0}, "body": "near"},
+                                 {"body": "cascade"}]},
+     "inputs": {"target": {"node": "shadow", "port": "resource"}},
+     "outputs": []}
+  ],
+  "outputs": {},
+  "rendering": {
+    "pipeline": {
+      "preset": "engine://render_pipelines/hybrid_v1.json"
+    },
+    "features": [
+      {"ref": "engine://features/shadow_directional.json",
+       "parameters": {"cascade_count": 3},
+       "pass_replacements": {"shadow_depth": "cascades"}}
+    ]
+  }
+}

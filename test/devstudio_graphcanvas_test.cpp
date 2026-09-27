@@ -2616,3 +2616,250 @@ TEST_CASE("GL-1 the plan's passes no graph node made are folded nodes, read only
     CHECK_FALSE(model.foldedView());
     CHECK(folded(model.foldedNodes(), "feature:bloom").decomposable);
 }
+
+// GL-2b (design_graph_layers 3.2, 4, 5.1). A frame plan from an engine that
+// publishes origin (GL-2a): a root pass, an instance's pass, a loop's three
+// copies (the first on a branch of its own) that take the place of a
+// feature's pass, the preset's and two features' passes -- one of those
+// named like a root node the feature switched off -- and the physical plan's
+// elements naming the plan nodes they concern.
+namespace {
+Json gl2bDocument() {
+    const Json fullscreen{{"op", "render.fullscreen"}, {"parameters", Json::object()},
+                          {"outputs", Json::array({"color"})}};
+    auto tint = fullscreen;
+    tint["id"] = "tint";
+    auto sky = fullscreen;
+    sky["id"] = "sky";
+    auto fill = fullscreen;
+    fill["id"] = "fill";
+    auto depth = Json{{"id", "depth"}, {"op", "render.shadow_depth"},
+                      {"parameters", Json::object()}, {"outputs", Json::array()}};
+    const Json loop{{"id", "cascades"},
+                    {"op", "graph.loop"},
+                    {"parameters",
+                     {{"over", {{"range", {{"count", 3}}}}},
+                      {"branches", Json::array({{{"when", {{"element", 0}}}, {"body", "near"}},
+                                                {{"body", "cascade"}}})}}},
+                    {"outputs", Json::array()}};
+    return {{"source_reference", "passes/main.json"},
+            {"root_schema", "pelican.graph"},
+            {"source_digest", {{"hex", "gl2b"}}},
+            {"nodes", Json::array({tint, sky,
+                                   {{"id", "left"}, {"op", "graph.instance"}, {"definition", "paint"}},
+                                   loop})},
+            {"definitions",
+             {{"paint", {{"nodes", Json::array({fill})}, {"outputs", Json::object()}}},
+              {"near", {{"nodes", Json::array({depth})}, {"outputs", Json::object()}}},
+              {"cascade", {{"nodes", Json::array({depth})}, {"outputs", Json::object()}}}}}};
+}
+
+Json gl2bPass(const std::string &name, std::size_t order, const std::string &source,
+              const Json &reads, const Json &writes) {
+    return gl1Pass(name, order, source, reads, writes);
+}
+
+Json gl2bPlan() {
+    const std::string graph = "passes/main.json";
+    const std::string shadow = "engine://features/shadow_directional.json";
+    auto gbuffer = gl2bPass("gbuffer", 0, "engine", Json::array(), Json::array({"g_albedo"}));
+    gbuffer["shader_resolution"] = {{"state", "material_owned"}};
+    Json nodes = Json::array({gbuffer});
+    for (std::int64_t element = 0; element < 3; ++element) {
+        const auto name = "cascades/" + std::to_string(element) + "/depth";
+        auto copy = gl2bPass(name, static_cast<std::size_t>(element) + 1, "engine", Json::array(),
+                             Json::array({"shadow_map"}));
+        copy["loop_origin"] = {{"loop", "cascades"}, {"element", element}, {"node", "depth"}};
+        copy["origin"] = {{"graph", graph},        {"node", "depth"},
+                          {"definition", element == 0 ? "near" : "cascade"},
+                          {"loop", "cascades"}, {"loop_branch", element == 0 ? 0 : 1},
+                          {"element", element}};
+        copy["replaces"] = Json::array({{{"feature", "shadow_directional"}, {"pass", "shadow_depth"}}});
+        nodes.push_back(copy);
+    }
+    auto resolve = gl2bPass("shadow_resolve", 4, "feature:shadow_directional",
+                            Json::array({"shadow_map"}), Json::array({"shadow_mask"}));
+    resolve["provider_feature"] = shadow;
+    nodes.push_back(resolve);
+    nodes.push_back(gl2bPass("lighting", 5, "engine", Json::array({"g_albedo", "shadow_mask"}),
+                             Json::array({"scene_color"})));
+    auto tint = gl2bPass("tint", 6, "engine", Json::array({"scene_color"}), Json::array({"tint_image"}));
+    tint["origin"] = {{"graph", graph}, {"node", "tint"}};
+    nodes.push_back(tint);
+    auto fill = gl2bPass("left/fill", 7, "engine", Json::array(), Json::array({"canvas"}));
+    fill["origin"] = {{"graph", graph}, {"node", "fill"}, {"definition", "paint"},
+                      {"instance_path", "left"}};
+    nodes.push_back(fill);
+    // The feature's pass named like the root node it switched off: no origin.
+    auto sky = gl2bPass("sky", 8, "feature:sky", Json::array(), Json::array({"sky_image"}));
+    sky["provider_feature"] = "engine://features/sky.json";
+    nodes.push_back(sky);
+    nodes.push_back(gl2bPass("present", 9, "project", Json::array({"tint_image"}),
+                             Json::array({"display"})));
+    const Json physical{
+        {"resources",
+         Json::array({{{"logical_resource", "shadow_map"}, {"format", "D32_SFLOAT"},
+                       {"from_nodes", Json::array({"cascades/0/depth", "cascades/1/depth",
+                                                   "cascades/2/depth", "shadow_resolve"})}},
+                      {{"logical_resource", "tint_image"}, {"format", "R8G8B8A8_UNORM"},
+                       {"from_nodes", Json::array({"tint", "present"})}},
+                      {{"logical_resource", "canvas"}, {"format", "R8G8B8A8_UNORM"},
+                       {"from_nodes", Json::array({"left/fill"})}},
+                      {{"logical_resource", "scene_color"}, {"format", "R16G16B16A16_SFLOAT"},
+                       {"from_nodes", Json::array({"lighting", "tint"})}}})},
+        {"alias_groups", Json::array({{{"id", "alias_0"},
+                                       {"resources", Json::array({"tint_image", "canvas"})},
+                                       {"from_nodes", Json::array({"tint", "left/fill", "present"})}}})},
+        {"scopes", Json::array({{{"id", "scope_0"}, {"kind", "render_pass"},
+                                 {"nodes", Json::array({"tint"})}}})},
+        {"decisions",
+         Json::array({{{"id", "pelican.plan.serial"}, {"subject", "tint"}, {"selected", "serial"},
+                       {"detail", ""}, {"from_nodes", Json::array({"tint"})}},
+                      {{"id", "pelican.plan.profile"}, {"subject", "main_render"},
+                       {"selected", "default"}, {"detail", ""}, {"from_nodes", Json::array()}}})},
+        {"backend_selection",
+         {{"selected_candidate", "vulkan_raster"},
+          {"decisions", Json::array()},
+          {"candidates", Json::array({{{"candidate", "vulkan_raster"}, {"endpoint", "vulkan"},
+                                       {"feasible", true}, {"from_nodes", Json::array()}}})}}}};
+    const Json execution{
+        {"nodes", Json::array({{{"name", "lighting"}, {"selected_endpoint", "vulkan"},
+                                {"resource_uses", Json::array({{{"resource", "scene_color"},
+                                                                {"access", "write"}}})}},
+                               {{"name", "tint"}, {"selected_endpoint", "vulkan"},
+                                {"resource_uses", Json::array({{{"resource", "scene_color"},
+                                                                {"access", "read"}}})}}})}};
+    return {{"schema", "pelican.frame_plan"},
+            {"version", 1},
+            {"graph", "main_render"},
+            {"loops", Json::array()},
+            {"nodes", nodes},
+            {"barriers",
+             Json::array({{{"from", "cascades/0/depth"}, {"to", "cascades/1/depth"},
+                           {"resource", "shadow_map"}, {"kind", "write_after_write"}},
+                          {{"from", "cascades/2/depth"}, {"to", "shadow_resolve"},
+                           {"resource", "shadow_map"}, {"kind", "read_after_write"}},
+                          {{"from", "lighting"}, {"to", "tint"},
+                           {"resource", "scene_color"}, {"kind", "read_after_write"}}})},
+            {"physical_target_plan", physical},
+            {"execution_plan", execution},
+            {"diagnostics",
+             Json::array({{{"kind", "pipeline_preset_resolved"},
+                           {"subject", "engine://render_pipelines/hybrid_v1.json"},
+                           {"detail", "preset"}},
+                          {{"kind", "graph_node_deactivated"}, {"subject", "sky"},
+                           {"detail", "target_ref"}}})},
+            {"deactivated_graph_nodes",
+             Json::array({{{"node", "sky"}, {"feature", "sky"}, {"reason", "target_ref"}}})}};
+}
+} // namespace
+
+TEST_CASE("GL-2b the plan's origin says which graph node made a pass; bands, Layers "
+          "and Open in Graph read it",
+          "[studio][graph-canvas][gl2b]") {
+    using PelicanStudio::GraphCanvasLayerRow;
+    using PelicanStudio::GraphCanvasPlanTarget;
+    Harness h;
+    h.open(gl2bDocument());
+    h.reply(h.take("get_frame_plan"), gl2bPlan());
+    auto &model = h.model;
+    REQUIRE(model.planOriginAware());
+
+    // Decision 1: origin, not the name, says whose a pass is. The feature's
+    // `sky` stays folded though a root node is called sky; the instance's and
+    // the loop's passes are drawn under their root nodes.
+    std::vector<std::string> ids;
+    for (const auto &node : model.foldedNodes()) ids.push_back(node.id);
+    CHECK(ids == std::vector<std::string>{"gbuffer", "feature:shadow_directional", "lighting",
+                                          "feature:sky", "present"});
+    CHECK(model.canvasNodeOfPass("sky") == "feature:sky");
+    CHECK(model.canvasNodeOfPass("cascades/1/depth") == "cascades");
+    CHECK(model.canvasNodeOfPass("left/fill") == "left");
+    CHECK(model.canvasNodeOfPass("tint") == "tint");
+    CHECK(model.planNodesOf("cascades") ==
+          std::vector<std::string>{"cascades/0/depth", "cascades/1/depth", "cascades/2/depth"});
+
+    // Decision 4: where Open in Graph lands for each kind of plan node.
+    CHECK(model.planNodeTarget("cascades/1/depth") ==
+          GraphCanvasPlanTarget{"loop", "depth", "cascade", "", "cascades", 1, false});
+    CHECK(model.planNodeTarget("left/fill") ==
+          GraphCanvasPlanTarget{"instance", "fill", "paint", "left", "", 0, false});
+    CHECK(model.planNodeTarget("tint") == GraphCanvasPlanTarget{"root", "tint", "", "", "", 0, false});
+    CHECK(model.planNodeTarget("lighting") ==
+          GraphCanvasPlanTarget{"root", "lighting", "", "", "", 0, true});
+    CHECK(model.planNodeTarget("shadow_resolve") ==
+          GraphCanvasPlanTarget{"root", "feature:shadow_directional", "", "", "", 0, true});
+    CHECK(model.planNodeTarget("nothing").kind.empty());
+
+    // Decision 2: bands only with the filter on one domain (Render).
+    CHECK(model.layerBand("cascades").empty());
+    for (const auto &domain : GraphCanvasModel::domainNames())
+        model.setDomainShown(domain, domain == "render");
+    REQUIRE(model.layersShown());
+    CHECK(model.layerBand("cascades") == "\xC3\x97" "3 copies \xC2\xB7 2 barriers");
+    CHECK(model.layerBand("tint") == "1 barrier \xC2\xB7 aliased");
+    CHECK(model.layerBand("left") == "aliased");
+    CHECK(model.layerBand("gbuffer").empty());
+    CHECK(model.layerBand("sky") == "deactivated: target_ref (sky)");
+    REQUIRE(model.deactivatedNode("sky") != nullptr);
+    CHECK(model.deactivatedNode("tint") == nullptr);
+
+    // Decision 3: the Layers section of one node, L1 to L3.
+    CHECK(model.layerRows("tint") ==
+          std::vector<GraphCanvasLayerRow>{
+              {"L1", "pass", "tint \xC2\xB7 render", "tint"},
+              {"L2", "resource", "resource tint_image \xC2\xB7 R8G8B8A8_UNORM \xC2\xB7 alias alias_0", ""},
+              {"L2", "resource", "resource scene_color \xC2\xB7 R16G16B16A16_SFLOAT", ""},
+              {"L2", "alias", "alias group alias_0: tint_image, canvas", ""},
+              {"L2", "scope", "scope scope_0 (render_pass)", ""},
+              {"L2", "barrier",
+               "lighting \xE2\x86\x92 tint \xC2\xB7 scene_color \xC2\xB7 read_after_write \xC2\xB7 "
+               "write \xE2\x86\x92 read",
+               ""},
+              {"L3", "decision", "pelican.plan.serial \xC2\xB7 tint \xE2\x86\x92 serial", ""}});
+    const auto loop_rows = model.layerRows("cascades");
+    REQUIRE(loop_rows.size() >= 2);
+    CHECK(loop_rows[0] == GraphCanvasLayerRow{"L1", "pass",
+                                              "cascades/0/depth \xC2\xB7 render \xC2\xB7 loop cascades [0]",
+                                              "cascades/0/depth"});
+    CHECK(loop_rows[1] == GraphCanvasLayerRow{"L1", "replaces",
+                                              "cascades/0/depth replaces pass shadow_depth of "
+                                              "shadow_directional",
+                                              "cascades/0/depth"});
+    // replaces ties the loop to the feature it stands in for, on the
+    // feature's folded node too -- once, not once a copy.
+    const auto feature_rows = model.layerRows("feature:shadow_directional");
+    CHECK(std::ranges::count(feature_rows,
+                             GraphCanvasLayerRow{"L1", "replaced",
+                                                 "pass shadow_depth is replaced by graph node cascades",
+                                                 "cascades/0/depth"}) == 1);
+    CHECK(model.layerRows("left").front() ==
+          GraphCanvasLayerRow{"L1", "pass", "left/fill \xC2\xB7 render \xC2\xB7 instance left",
+                              "left/fill"});
+    // With nothing picked: what concerns the whole graph.
+    CHECK(model.graphLayerRows() ==
+          std::vector<GraphCanvasLayerRow>{
+              {"L3", "decision", "pelican.plan.profile \xC2\xB7 main_render \xE2\x86\x92 default", ""},
+              {"L3", "backend", "candidate vulkan_raster \xC2\xB7 vulkan \xC2\xB7 selected", ""}});
+    CHECK(model.planDiagnostics().size() == 2);
+    // Two domains: no band, no Layers.
+    model.setDomainShown("value", true);
+    CHECK(model.layerBand("cascades").empty());
+    CHECK(model.layerRows("tint").empty());
+
+    // An engine that predates origin: GL-1's name match, in its one place.
+    auto old = gl2bPlan();
+    old.erase("diagnostics");
+    old.erase("deactivated_graph_nodes");
+    for (auto &node : old["nodes"]) {
+        node.erase("origin");
+        node.erase("replaces");
+    }
+    model.refresh();
+    h.reply(h.take("get_graph_instances"), gl2bDocument());
+    h.reply(h.take("get_frame_plan"), old);
+    CHECK_FALSE(model.planOriginAware());
+    CHECK(model.canvasNodeOfPass("sky") == "sky");
+    CHECK(model.planNodeTarget("cascades/2/depth") ==
+          GraphCanvasPlanTarget{"loop", "depth", "", "", "cascades", 2, false});
+}

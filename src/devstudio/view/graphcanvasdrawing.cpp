@@ -1484,4 +1484,18 @@ void Builder::addFoldedButton(const QString &name, const QString &text, const QP
     label->setData(NodeGraphNameRole, name);
 }
 
+void Builder::addLayerBand(QGraphicsItem &node, const QString &name, const QString &text) {
+    auto *line = new QGraphicsSimpleTextItem(text, &node);
+    line->setFont(detail_font_);
+    line->setBrush(theme_.canvas.dim_text);
+    const QRectF frame = node.boundingRect();
+    line->setPos(frame.left() + 8.0, frame.bottom() + 3.0);
+    line->setZValue(1.0);
+    line->setAcceptedMouseButtons(Qt::NoButton);
+    line->setToolTip(QObject::tr("%1 below the graph: select the node for its Layers").arg(text));
+    line->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasLayerBandItem));
+    tag(line);
+    line->setData(NodeGraphNameRole, name);
+}
+
 } // namespace PelicanStudio::GraphCanvasDrawing

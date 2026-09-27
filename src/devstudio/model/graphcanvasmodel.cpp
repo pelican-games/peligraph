@@ -4342,8 +4342,36 @@ void GraphCanvasModel::readPlanPasses(const Json &plan) {
                 order != node.end() && order->is_number_integer() && order->get<std::int64_t>() >= 0)
                 pass.order = static_cast<std::size_t>(order->get<std::int64_t>());
             if (const auto origin = node.find("loop_origin");
-                origin != node.end() && origin->is_object())
+                origin != node.end() && origin->is_object()) {
                 pass.loop = text(*origin, "loop");
+                pass.loop_node = text(*origin, "node");
+                if (const auto element = origin->find("element");
+                    element != origin->end() && element->is_number_integer())
+                    pass.loop_element = element->get<std::int64_t>();
+            }
+            // GL-2b: the graph node that made it, and the feature passes
+            // it took the place of.
+            if (const auto origin = node.find("origin");
+                origin != node.end() && origin->is_object() && !text(*origin, "node").empty()) {
+                GraphCanvasPlanOrigin from;
+                from.graph = text(*origin, "graph");
+                from.node = text(*origin, "node");
+                from.definition = text(*origin, "definition");
+                from.instance_path = text(*origin, "instance_path");
+                from.loop = text(*origin, "loop");
+                if (const auto branch = origin->find("loop_branch");
+                    branch != origin->end() && branch->is_number_unsigned())
+                    from.loop_branch = branch->get<std::size_t>();
+                if (const auto element = origin->find("element");
+                    element != origin->end() && element->is_number_integer())
+                    from.element = element->get<std::int64_t>();
+                pass.origin = std::move(from);
+            }
+            if (const auto replaces = node.find("replaces");
+                replaces != node.end() && replaces->is_array())
+                for (const auto &entry : *replaces)
+                    if (entry.is_object() && !text(entry, "pass").empty())
+                        pass.replaces.push_back({text(entry, "feature"), text(entry, "pass")});
             pass.material_variant = text(node, "material_variant");
             const auto resolution = node.find("shader_resolution");
             const bool material_owned = resolution != node.end() && resolution->is_object() &&
@@ -4361,6 +4389,7 @@ void GraphCanvasModel::readPlanPasses(const Json &plan) {
         }
     std::ranges::stable_sort(passes, {}, &GraphCanvasPlanPass::order);
     plan_passes_ = std::move(passes);
+    readPlanLayers(plan);
     // Decision 3: which features have a decomposed version, asked once.
     if (connected_ && !templates_requested_ &&
         std::ranges::any_of(plan_passes_, [](const GraphCanvasPlanPass &pass) {
@@ -4377,8 +4406,20 @@ const GraphCanvasPlanPass *GraphCanvasModel::planPass(std::string_view name) con
 }
 
 std::string GraphCanvasModel::graphOwnerOf(const GraphCanvasPlanPass &pass) const {
-    // Which graph node made a pass is read off the document, until the
-    // engine publishes each pass's origin (design_graph_layers 5.2): the
+    // GL-2b (design_graph_layers 5.1): the engine says which graph node made
+    // a pass. The root node it is drawn under is the root instance its
+    // instance path starts at, else the loop whose copy it is, else the node
+    // itself. A pass with no origin is the preset's, a feature's or the
+    // rendering section's -- whatever its name or its `source` says.
+    if (plan_origin_aware_) {
+        if (!pass.origin) return {};
+        const auto &origin = *pass.origin;
+        if (!origin.instance_path.empty())
+            return origin.instance_path.substr(0, origin.instance_path.find('/'));
+        if (!origin.loop.empty()) return origin.loop;
+        return origin.node;
+    }
+    // An engine that predates origin (GL-1): read off the document -- the
     // loop its loop_origin names, the root instance whose expansion named it
     // `<instance>/...`, a root node whose id is its name, or a render node
     // whose id is its authored name. Its `source` cannot say it: under an
@@ -4534,6 +4575,363 @@ std::string GraphCanvasModel::canvasNodeOfPass(std::string_view name) const {
     if (pass == nullptr || pass->kind == "anchor") return {};
     if (auto graph = graphOwnerOf(*pass); !graph.empty()) return graph;
     return foldedOwnerOf(*pass);
+}
+
+// --- GL-2b: the plan's lower layers.
+
+namespace {
+
+bool meets(const std::vector<std::string> &names, const std::vector<std::string> &nodes) {
+    return std::ranges::any_of(names, [&](const std::string &name) { return listed(nodes, name); });
+}
+
+std::string joinedNames(const std::vector<std::string> &names) {
+    std::string result;
+    for (const auto &name : names) result += (result.empty() ? "" : ", ") + name;
+    return result;
+}
+
+// U+00B7 between the parts of one band or row; U+2192 between two ends.
+constexpr std::string_view kDot = " \xC2\xB7 ";
+constexpr std::string_view kArrow = " \xE2\x86\x92 ";
+
+} // namespace
+
+void GraphCanvasModel::readPlanLayers(const Json &plan) {
+    plan_barriers_.clear();
+    plan_resources_.clear();
+    plan_alias_groups_.clear();
+    plan_scopes_.clear();
+    plan_decisions_.clear();
+    plan_candidates_.clear();
+    plan_access_.clear();
+    plan_diagnostics_.clear();
+    deactivated_nodes_.clear();
+    // An engine with GL-2a always publishes these two, empty or not.
+    plan_origin_aware_ = plan.contains("diagnostics") || plan.contains("deactivated_graph_nodes") ||
+                         std::ranges::any_of(plan_passes_, [](const GraphCanvasPlanPass &pass) {
+                             return pass.origin.has_value();
+                         });
+    const auto array = [](const Json &object, const char *key) -> const Json * {
+        const auto found = object.find(key);
+        return found != object.end() && found->is_array() ? &*found : nullptr;
+    };
+    if (const auto *barriers = array(plan, "barriers"))
+        for (const auto &barrier : *barriers)
+            if (barrier.is_object())
+                plan_barriers_.push_back({text(barrier, "from"), text(barrier, "to"),
+                                          text(barrier, "resource"), text(barrier, "kind")});
+    const auto readDecisions = [&](const Json &container) {
+        if (const auto *decisions = array(container, "decisions"))
+            for (const auto &decision : *decisions)
+                if (decision.is_object())
+                    plan_decisions_.push_back({text(decision, "id"), text(decision, "subject"),
+                                               text(decision, "selected"),
+                                               planStrings(decision, "from_nodes")});
+    };
+    if (const auto physical = plan.find("physical_target_plan");
+        physical != plan.end() && physical->is_object()) {
+        if (const auto *resources = array(*physical, "resources"))
+            for (const auto &resource : *resources)
+                if (resource.is_object())
+                    plan_resources_.push_back({text(resource, "logical_resource"),
+                                               text(resource, "format"),
+                                               planStrings(resource, "from_nodes")});
+        if (const auto *groups = array(*physical, "alias_groups"))
+            for (const auto &group : *groups)
+                if (group.is_object())
+                    plan_alias_groups_.push_back({text(group, "id"), planStrings(group, "resources"),
+                                                  planStrings(group, "from_nodes")});
+        if (const auto *scopes = array(*physical, "scopes"))
+            for (const auto &scope : *scopes)
+                if (scope.is_object())
+                    plan_scopes_.push_back(
+                        {text(scope, "id"), text(scope, "kind"), planStrings(scope, "nodes")});
+        readDecisions(*physical);
+        for (const char *key : {"lowering_graph", "planning_opportunities", "backend_selection"})
+            if (const auto found = physical->find(key); found != physical->end() && found->is_object())
+                readDecisions(*found);
+        if (const auto selection = physical->find("backend_selection");
+            selection != physical->end() && selection->is_object()) {
+            const auto selected = text(*selection, "selected_candidate");
+            if (const auto *candidates = array(*selection, "candidates"))
+                for (const auto &candidate : *candidates) {
+                    if (!candidate.is_object()) continue;
+                    PlanCandidate entry;
+                    entry.candidate = text(candidate, "candidate");
+                    entry.endpoint = text(candidate, "endpoint");
+                    const auto feasible = candidate.find("feasible");
+                    entry.feasible = feasible != candidate.end() && feasible->is_boolean() &&
+                                     feasible->get<bool>();
+                    entry.selected = !selected.empty() && entry.candidate == selected;
+                    plan_candidates_.push_back(std::move(entry));
+                }
+        }
+    }
+    if (const auto execution = plan.find("execution_plan");
+        execution != plan.end() && execution->is_object())
+        if (const auto *nodes = array(*execution, "nodes"))
+            for (const auto &node : *nodes) {
+                if (!node.is_object()) continue;
+                const auto name = text(node, "name");
+                if (const auto pass = std::ranges::find(plan_passes_, name, &GraphCanvasPlanPass::name);
+                    pass != plan_passes_.end())
+                    pass->backend = text(node, "selected_endpoint");
+                if (const auto *uses = array(node, "resource_uses"))
+                    for (const auto &use : *uses)
+                        if (use.is_object() && !text(use, "resource").empty())
+                            plan_access_[name][text(use, "resource")] = text(use, "access");
+            }
+    if (const auto *diagnostics = array(plan, "diagnostics"))
+        for (const auto &diagnostic : *diagnostics)
+            if (diagnostic.is_object())
+                plan_diagnostics_.push_back({text(diagnostic, "kind"), text(diagnostic, "subject"),
+                                             text(diagnostic, "detail")});
+    if (const auto *deactivated = array(plan, "deactivated_graph_nodes"))
+        for (const auto &node : *deactivated)
+            if (node.is_object() && !text(node, "node").empty())
+                deactivated_nodes_.push_back(
+                    {text(node, "node"), text(node, "feature"), text(node, "reason")});
+}
+
+std::string GraphCanvasModel::graphBackend() const {
+    // The endpoint most passes run on is the graph's; a pass is marked only
+    // when it runs elsewhere. With no pass saying, the selected candidate's.
+    std::map<std::string, std::size_t, std::less<>> counts;
+    for (const auto &pass : plan_passes_)
+        if (!pass.backend.empty()) ++counts[pass.backend];
+    std::string best;
+    std::size_t most = 0;
+    for (const auto &[backend, count] : counts)
+        if (count > most) {
+            best = backend;
+            most = count;
+        }
+    if (!best.empty()) return best;
+    for (const auto &candidate : plan_candidates_)
+        if (candidate.selected) return candidate.endpoint;
+    return {};
+}
+
+GraphCanvasPlanTarget GraphCanvasModel::planNodeTarget(std::string_view name) const {
+    GraphCanvasPlanTarget target;
+    const auto *pass = planPass(name);
+    if (pass == nullptr || pass->kind == "anchor") return target;
+    if (plan_origin_aware_ && pass->origin) {
+        const auto &origin = *pass->origin;
+        if (!origin.instance_path.empty()) {
+            // Inside an instance: through the instances on its path, into
+            // the body the node is in.
+            target.kind = "instance";
+            target.node = origin.node;
+            target.scope = origin.definition;
+            target.instance_path = origin.instance_path;
+            return target;
+        }
+        if (!origin.loop.empty()) {
+            // One copy of a loop: the body node, in the zone, on the tab of
+            // the branch that element ran.
+            target.kind = "loop";
+            target.node = origin.node;
+            target.scope = origin.definition;
+            target.loop = origin.loop;
+            target.element = origin.element.value_or(pass->loop_element);
+            return target;
+        }
+        target.kind = "root";
+        target.node = origin.node;
+        return target;
+    }
+    // An engine that predates origin: a loop's copy by its loop_origin.
+    if (!plan_origin_aware_ && !pass->loop.empty() && !pass->loop_node.empty()) {
+        target.kind = "loop";
+        target.node = pass->loop_node;
+        target.loop = pass->loop;
+        target.element = pass->loop_element;
+        return target;
+    }
+    const auto id = canvasNodeOfPass(name);
+    if (id.empty()) return target;
+    target.kind = "root";
+    target.node = id;
+    target.folded = graphOwnerOf(*pass).empty();
+    return target;
+}
+
+std::vector<std::string> GraphCanvasModel::planNodesOf(std::string_view canvas_node) const {
+    std::vector<std::string> result;
+    if (canvas_node.empty()) return result;
+    for (const auto &pass : plan_passes_) {
+        if (pass.kind == "anchor") continue;
+        auto owner = graphOwnerOf(pass);
+        if (owner.empty()) owner = foldedOwnerOf(pass);
+        if (owner == canvas_node) result.push_back(pass.name);
+    }
+    return result;
+}
+
+bool GraphCanvasModel::layersShown() const {
+    return currentScope().empty() && !folded_stash_ && domains_shown_.size() == 1 &&
+           domains_shown_.contains("render") && !plan_passes_.empty();
+}
+
+const GraphCanvasDeactivatedNode *GraphCanvasModel::deactivatedNode(std::string_view node) const {
+    const auto found = std::ranges::find(deactivated_nodes_, node, &GraphCanvasDeactivatedNode::node);
+    return found == deactivated_nodes_.end() ? nullptr : &*found;
+}
+
+std::string GraphCanvasModel::layerBand(std::string_view canvas_node) const {
+    if (!layersShown()) return {};
+    const auto nodes = planNodesOf(canvas_node);
+    std::vector<std::string> parts;
+    // L1: how many copies -- a loop's elements, an instance's instances.
+    std::set<std::string, std::less<>> copies;
+    for (const auto &name : nodes) {
+        const auto *pass = planPass(name);
+        if (pass->origin)
+            copies.insert(pass->origin->instance_path + "|" + pass->origin->loop + "|" +
+                          (pass->origin->element ? std::to_string(*pass->origin->element) : ""));
+        else
+            copies.insert(pass->loop + "|" +
+                          (pass->loop.empty() ? std::string{} : std::to_string(pass->loop_element)));
+    }
+    if (copies.size() > 1) parts.push_back("\xC3\x97" + std::to_string(copies.size()) + " copies");
+    // L2: the barriers its passes take part in, and aliasing.
+    const auto barriers = static_cast<std::size_t>(
+        std::ranges::count_if(plan_barriers_, [&](const PlanBarrier &barrier) {
+            return listed(nodes, barrier.from) || listed(nodes, barrier.to);
+        }));
+    if (barriers > 0)
+        parts.push_back(std::to_string(barriers) + (barriers == 1 ? " barrier" : " barriers"));
+    if (std::ranges::any_of(plan_alias_groups_, [&](const PlanAliasGroup &group) {
+            return meets(group.from_nodes, nodes);
+        }))
+        parts.push_back("aliased");
+    // L3: a backend other than the graph's.
+    const auto graph = graphBackend();
+    for (const auto &name : nodes) {
+        const auto *pass = planPass(name);
+        if (!pass->backend.empty() && pass->backend != graph && !listed(parts, pass->backend))
+            parts.push_back(pass->backend);
+    }
+    if (const auto *off = deactivatedNode(canvas_node))
+        parts.push_back("deactivated: " + off->reason +
+                        (off->feature.empty() ? std::string{} : " (" + off->feature + ")"));
+    std::string band;
+    for (const auto &part : parts) band += (band.empty() ? std::string{} : std::string{kDot}) + part;
+    return band;
+}
+
+std::vector<GraphCanvasLayerRow> GraphCanvasModel::layerRows(std::string_view canvas_node) const {
+    std::vector<GraphCanvasLayerRow> rows;
+    if (!layersShown()) return rows;
+    const auto nodes = planNodesOf(canvas_node);
+    const std::string dot{kDot};
+    const std::string arrow{kArrow};
+    // L1: what it expanded to.
+    for (const auto &name : nodes) {
+        const auto *pass = planPass(name);
+        auto line = name + dot + (pass->material ? std::string{"material"} : pass->kind);
+        const auto &loop = pass->origin ? pass->origin->loop : pass->loop;
+        if (!loop.empty()) {
+            const auto element = pass->origin && pass->origin->element ? *pass->origin->element
+                                                                        : pass->loop_element;
+            line += dot + "loop " + loop + " [" + std::to_string(element) + "]";
+        }
+        if (pass->origin && !pass->origin->instance_path.empty())
+            line += dot + "instance " + pass->origin->instance_path;
+        rows.push_back({"L1", "pass", line, name});
+        for (const auto &replaced : pass->replaces)
+            rows.push_back({"L1", "replaces",
+                            name + " replaces pass " + replaced.pass + " of " + replaced.feature, name});
+    }
+    // A feature's folded node: its passes a graph node took the place of.
+    const auto folded = rootFoldedNodes();
+    if (const auto feature = std::ranges::find(folded, canvas_node, &GraphCanvasFoldedNode::id);
+        feature != folded.end() && feature->feature_group) {
+        const auto short_name = featureShortName(feature->feature);
+        std::vector<std::string> said;
+        for (const auto &pass : plan_passes_)
+            for (const auto &replaced : pass.replaces) {
+                if (replaced.feature != short_name && replaced.feature != feature->feature) continue;
+                auto owner = graphOwnerOf(pass);
+                if (owner.empty()) owner = pass.name;
+                const auto line = "pass " + replaced.pass + " is replaced by graph node " + owner;
+                if (listed(said, line)) continue;
+                said.push_back(line);
+                rows.push_back({"L1", "replaced", line, pass.name});
+            }
+    }
+    if (const auto *off = deactivatedNode(canvas_node))
+        rows.push_back({"L1", "deactivated",
+                        "deactivated: " + off->reason +
+                            (off->feature.empty() ? std::string{} : " (feature " + off->feature + ")"),
+                        {}});
+    // L2: resources, alias groups, scopes and barriers.
+    for (const auto &resource : plan_resources_) {
+        if (!meets(resource.from_nodes, nodes)) continue;
+        auto line = "resource " + resource.name;
+        if (!resource.format.empty()) line += dot + resource.format;
+        for (const auto &group : plan_alias_groups_)
+            if (listed(group.resources, resource.name)) line += dot + "alias " + group.id;
+        rows.push_back({"L2", "resource", line, {}});
+    }
+    for (const auto &group : plan_alias_groups_)
+        if (meets(group.from_nodes, nodes))
+            rows.push_back(
+                {"L2", "alias", "alias group " + group.id + ": " + joinedNames(group.resources), {}});
+    for (const auto &scope : plan_scopes_)
+        if (meets(scope.nodes, nodes))
+            rows.push_back({"L2", "scope", "scope " + scope.id + " (" + scope.kind + ")", {}});
+    for (const auto &barrier : plan_barriers_) {
+        if (!listed(nodes, barrier.from) && !listed(nodes, barrier.to)) continue;
+        auto line = barrier.from + arrow + barrier.to + dot + barrier.resource;
+        if (!barrier.kind.empty()) line += dot + barrier.kind;
+        const auto access = [&](const std::string &node) -> std::string {
+            const auto uses = plan_access_.find(node);
+            if (uses == plan_access_.end()) return {};
+            const auto use = uses->second.find(barrier.resource);
+            return use == uses->second.end() ? std::string{} : use->second;
+        };
+        if (const auto from = access(barrier.from), to = access(barrier.to);
+            !from.empty() && !to.empty())
+            line += dot + from + arrow + to;
+        rows.push_back({"L2", "barrier", line, {}});
+    }
+    // L3: the decisions about it, and a backend other than the graph's.
+    for (const auto &decision : plan_decisions_)
+        if (meets(decision.from_nodes, nodes))
+            rows.push_back({"L3", "decision",
+                            decision.id + dot + decision.subject + arrow + decision.selected, {}});
+    const auto graph = graphBackend();
+    for (const auto &name : nodes) {
+        const auto *pass = planPass(name);
+        if (!pass->backend.empty() && pass->backend != graph)
+            rows.push_back({"L3", "backend", "backend " + pass->backend + " (" + name + ")", name});
+    }
+    return rows;
+}
+
+std::vector<GraphCanvasLayerRow> GraphCanvasModel::graphLayerRows() const {
+    std::vector<GraphCanvasLayerRow> rows;
+    if (!layersShown()) return rows;
+    const std::string dot{kDot};
+    for (const auto &decision : plan_decisions_)
+        if (decision.from_nodes.empty())
+            rows.push_back({"L3", "decision",
+                            decision.id + dot + decision.subject + std::string{kArrow} +
+                                decision.selected,
+                            {}});
+    for (const auto &candidate : plan_candidates_)
+        rows.push_back({"L3", "backend",
+                        "candidate " + candidate.candidate +
+                            (candidate.endpoint.empty() ? std::string{} : dot + candidate.endpoint) +
+                            dot +
+                            (candidate.selected   ? "selected"
+                             : candidate.feasible ? "feasible"
+                                                  : "rejected"),
+                        {}});
+    return rows;
 }
 
 bool GraphCanvasModel::foldedDocument(const GraphCanvasFoldedStep &step, Json &nodes,

@@ -169,6 +169,9 @@ inline constexpr auto GraphCanvasDerivedSocketItem = "graph_derived_socket";
 inline constexpr auto GraphCanvasDerivedEdgeItem = "graph_derived_edge";
 inline constexpr auto GraphCanvasDomainStubItem = "graph_domain_stub";
 inline constexpr auto GraphCanvasFoldedButtonItem = "graph_folded_button";
+// GL-2b, decision 2. `graph_layer_band#<id>`: the line under a root node
+// that says what its lower layers hold (`×3 copies · 2 barriers`).
+inline constexpr auto GraphCanvasLayerBandItem = "graph_layer_band";
 
 // The node is a heading band over two socket sections, so its height follows
 // its port count rather than a constant. The numbers are here so the scene
@@ -744,9 +747,15 @@ class GraphCanvasWidget final : public QWidget {
     // GL-1, decision 6. The Frame Plan's Open in Graph on any pass: the
     // real root, with the node the pass is drawn under -- the graph node that
     // made it, its feature's folded node, or its own -- selected and brought
-    // to the middle (its domain shown if the filter hid it). False, with
-    // nothing changed, when the plan the tab last read has no such pass.
+    // to the middle (its domain shown if the filter hid it). GL-2b, decision
+    // 4: read by the plan's origin -- a loop's copy is its body node in the
+    // zone, on the tab of the element's branch; a node inside an instance is
+    // reached through that instance. False, with nothing changed, when the
+    // plan the tab last read has no such pass.
     bool revealPlanPass(const QString &pass);
+    // GL-2b, decision 3: what a click on an L1 row of the Layers section does
+    // -- the owner brings the Frame Plan forward with that plan node picked.
+    void setFramePlanNodeAction(std::function<void(const QString &node)> action);
     // GL-1, decision 4: what "Expand to edit…" runs -- the Frame Plan's
     // Decompose into loop on a material pass (`graph` is the plan's), the
     // Features tab's Replace with loop version on a feature.

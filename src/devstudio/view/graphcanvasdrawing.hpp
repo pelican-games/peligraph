@@ -207,6 +207,10 @@ class Builder {
     // output socket; drawn on the socket's node, so it goes where it goes.
     void addDomainStub(const GraphCanvasDomainStub &stub, QGraphicsItem &socket);
     void addFoldedButton(const QString &name, const QString &text, const QPointF &at);
+    // GL-2b, decision 2: one line under a root node's lower edge, what its
+    // lower layers hold (`×3 copies · 2 barriers`). Read only; clicks go
+    // through it.
+    void addLayerBand(QGraphicsItem &node, const QString &name, const QString &text);
     [[nodiscard]] const QFontMetricsF &headingMetrics() const noexcept { return heading_metrics_; }
     [[nodiscard]] const QFontMetricsF &rowMetrics() const noexcept { return row_metrics_; }
 

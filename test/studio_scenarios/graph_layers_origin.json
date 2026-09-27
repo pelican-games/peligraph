@@ -1,0 +1,44 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_layers_origin",
+  "description": "GL-2b: the Graph tab reads the frame plan's origin (GL-2a). The fixture's root holds two fullscreen passes (tint, and show reading tint's image), an instance, and a loop of three over the shadow cascades whose element 0 runs the body near and the others the else branch's body cascade, taking the place of the shadow_directional feature's pass; the pipeline is the engine's hybrid_v1 preset. The loop's zone carries a band under it saying x3 copies, a preset pass is a folded node, and the plan's diagnostics are one line. From the Frame Plan's Barriers, the row from tint to show opens tint in the Graph tab (its Layers section names it), and the row from the copy of element 2 to the lighting pass opens the body node depth in the zone, whose tab moves from near to the else branch's cascade. Nothing is written.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "steps": [
+    {"label": "the fixture's engine is up", "cmd": "wait_engine", "timeout_ms": 180000},
+    {"label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last", "cmd": "action", "name": "pelican.layout.resetDefault"},
+    {"label": "the Frame Plan tab is in front", "cmd": "action", "name": "pelican.view.renderTools.frame_plan"},
+    {"label": "the first frame plan has arrived", "cmd": "wait", "name": "pelican.framePlanStatus", "contains": "main_render", "timeout_ms": 180000},
+    {"label": "the engine says the copies of cascades came from the loop's body node", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "nodes[2].origin.loop", "value": "cascades"},
+    {"label": "the Graph tab is in front", "cmd": "action", "name": "pelican.view.renderTools.graph"},
+    {"label": "the loop is drawn as a zone", "cmd": "wait", "name": "pelican.graphCanvasView::graph_zone#cascades", "visible": true, "timeout_ms": 120000},
+    {"label": "decision 2: the band under the loop says how many copies it became", "cmd": "wait", "name": "pelican.graphCanvasView::graph_layer_band#cascades", "contains": "×3 copies", "timeout_ms": 60000},
+    {"label": "and the barriers its copies take part in", "cmd": "wait", "name": "pelican.graphCanvasView::graph_layer_band#cascades", "contains": "barriers", "timeout_ms": 10000},
+    {"label": "decision 1: a pass of the preset, with no origin, is a folded node", "cmd": "wait", "name": "pelican.graphCanvasView::graph_node#deferred_geometry", "visible": true, "timeout_ms": 30000},
+    {"label": "decision 3: the plan's diagnostics, one line", "cmd": "wait", "name": "pelican.graphCanvasDiagnostics", "contains": "diagnostics", "visible": true, "timeout_ms": 30000},
+    {"label": "with nothing picked, the Layers section is the whole graph's", "cmd": "wait", "name": "pelican.graphCanvasLayersToggle", "contains": "Layers: the whole graph", "visible": true, "timeout_ms": 30000},
+    {"label": "the zone shows element 0's body to begin with", "cmd": "wait", "name": "pelican.graphCanvasView::graph_node#near/depth", "visible": true, "timeout_ms": 30000},
+    {"label": "a picture of the root canvas with its bands", "expect": "screenshot", "name": "pelican.graphCanvas", "path": "layers_root.png"},
+
+    {"label": "decision 4: to the Frame Plan", "cmd": "action", "name": "pelican.view.renderTools.frame_plan"},
+    {"label": "its Barriers tab", "cmd": "action", "name": "pelican.framePlan.tab.barriers"},
+    {"label": "the plan's barrier 20 is tint's image, from tint to show", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "barriers[20].from", "value": "tint"},
+    {"label": "pick that row", "cmd": "select", "name": "pelican.framePlanBarriers", "text": "20"},
+    {"label": "Open in Graph, fired by name on the row picked (its first pass)", "cmd": "action", "name": "pelican.framePlan.openRowInGraph"},
+    {"label": "the Graph tab has tint selected: its Layers section names it", "cmd": "wait", "name": "pelican.graphCanvasLayersToggle", "contains": "Layers: tint", "visible": true, "timeout_ms": 30000},
+    {"label": "and lists the barrier", "cmd": "wait", "name": "pelican.graphCanvasLayers::row#L2 physical", "visible": true, "timeout_ms": 10000},
+    {"label": "a picture of tint picked", "expect": "screenshot", "name": "pelican.graphCanvas", "path": "layers_tint.png"},
+
+    {"label": "back to the Frame Plan", "cmd": "action", "name": "pelican.view.renderTools.frame_plan"},
+    {"label": "its Barriers tab again", "cmd": "action", "name": "pelican.framePlan.tab.barriers"},
+    {"label": "the plan's barrier 9 is from the copy of element 2", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "barriers[9].from", "value": "cascades/2/depth"},
+    {"label": "pick that row", "cmd": "select", "name": "pelican.framePlanBarriers", "text": "9"},
+    {"label": "Open in Graph on it", "cmd": "action", "name": "pelican.framePlan.openRowInGraph"},
+    {"label": "the zone's tab moved to the else branch: its body cascade is drawn", "cmd": "wait", "name": "pelican.graphCanvasView::graph_node#cascade/depth", "visible": true, "timeout_ms": 30000},
+    {"label": "and element 0's body is not", "cmd": "wait", "name": "pelican.graphCanvasView::graph_node#near/depth", "visible": false, "timeout_ms": 10000},
+    {"label": "a picture of the copy's body node picked", "expect": "screenshot", "name": "pelican.graphCanvas", "path": "layers_copy.png"},
+
+    {"label": "nothing was written: the root holds its seven nodes", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "nodes.$len", "value": 7}
+  ]
+}

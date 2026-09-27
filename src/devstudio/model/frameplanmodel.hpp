@@ -402,6 +402,9 @@ struct FramePlanResource {
     std::vector<std::string> fullscreen_consumers;
     // LP-4c: set for a target or buffer a graph.loop expanded.
     std::optional<FramePlanLoopOrigin> loop_origin;
+    // GL-2a: the frame plan nodes physical_target_plan.resources[] names
+    // for it (its readers, writers and attachments), in the plan's order.
+    std::vector<std::string> from_nodes;
 
     bool operator==(const FramePlanResource &) const = default;
 };
@@ -421,6 +424,9 @@ struct FramePlanDecision {
     std::string subject;
     std::string selected;
     std::string detail;
+    // GL-2a: the frame plan nodes its subject resolves to; empty for a
+    // decision about the whole graph.
+    std::vector<std::string> from_nodes;
 
     bool operator==(const FramePlanDecision &) const = default;
 };
@@ -456,6 +462,8 @@ struct FramePlanBackendCandidate {
     bool selected = false;
     std::vector<FramePlanBackendFailure> failures;
     std::vector<FramePlanPlanningDiagnostic> diagnostics;
+    // GL-2a: the frame plan nodes it concerns (so far always empty).
+    std::vector<std::string> from_nodes;
 
     bool operator==(const FramePlanBackendCandidate &) const = default;
 };
@@ -492,6 +500,8 @@ struct FramePlanPhysicalScope {
 struct FramePlanAliasGroup {
     std::string id;
     std::vector<std::string> resources;
+    // GL-2a: the frame plan nodes its members name, together.
+    std::vector<std::string> from_nodes;
 
     bool operator==(const FramePlanAliasGroup &) const = default;
 };
