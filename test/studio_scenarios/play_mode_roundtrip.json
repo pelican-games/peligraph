@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "play_mode_roundtrip",
-  "description": "PM-3b: Studio starts the engine in edit, where the behavior does not move its object (two readings 30 frames apart agree). Play moves it and Stop puts it back. An Inspector edit made while the game runs goes back on Stop; the same edit marked Keep in Play changes stays. Take from game writes where the game has put the object into the scene and it stays after Stop. While the game runs Save cannot be pressed and the render panels say their edits stay; a Pass Editor edit made then (present draws an inverting fragment) is still there, on screen, after Stop. The scene draws no model (see the fixture's README); the camera view is play_view_camera's.",
+  "description": "PM-3b / PM-3d: Studio starts the engine in edit, where the behavior does not move its object (two readings 30 frames apart agree) and the frame is drawn from the editor camera. Play moves it and Stop puts it back. While the game plays there is no View choice; paused, View: Editor draws the stopped game from the editor camera, which the game's moving camera has left behind, so the picture differs from the game's; View: Game goes back, and Stop returns to the editor camera. An Inspector edit made while the game runs goes back on Stop; the same edit marked Keep in Play changes stays, in a scene that draws a model, and the engine goes on drawing after that Stop. Take from game writes where the game has put the object into the scene and it stays after Stop. While the game runs Save cannot be pressed and the render panels say their edits stay; a Pass Editor edit made then (present draws an inverting fragment) is still there, on screen, after Stop.",
   "steps": [
     {
       "label": "the engine viewport answers editor RPC",
@@ -55,6 +55,27 @@
       "value": false
     },
     {
+      "label": "in edit the frame is drawn from the editor camera",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.view_camera",
+      "value": "editor"
+    },
+    {
+      "label": "in edit, View: Game | Editor is offered",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.play.viewGame"
+      },
+      "path": "widgets[0].visible",
+      "value": true,
+      "retry_ms": 10000
+    },
+    {
       "label": "Play is offered",
       "expect": "result",
       "command": {
@@ -86,7 +107,30 @@
       "value": true
     },
     {
-      "label": "in edit, the background in a corner",
+      "label": "in edit, the box is in the middle",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/edit.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "box_edit",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and the background in a corner",
       "expect": "result",
       "command": {
         "cmd": "screenshot",
@@ -105,8 +149,30 @@
         ]
       },
       "path": "pixels[1]",
-      "remember": "background",
-      "retry_ms": 60000
+      "remember": "background"
+    },
+    {
+      "label": "the box is on screen",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/edit.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "background"
     },
     {
       "label": "where the Mover is in edit",
@@ -217,6 +283,141 @@
       "retry_ms": 5000
     },
     {
+      "label": "no View choice while the game plays",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.play.viewEditor"
+      },
+      "path": "widgets[0].visible",
+      "value": false,
+      "retry_ms": 5000
+    },
+    {
+      "label": "the game has run a while: its camera moved away",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.game_frame",
+      "op": "ge",
+      "value": 90,
+      "retry_ms": 20000
+    },
+    {
+      "label": "press Pause",
+      "cmd": "click",
+      "name": "pelican.play.pause"
+    },
+    {
+      "label": "the status bar says paused",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "timeout_ms": 10000,
+      "contains": "Paused · frame"
+    },
+    {
+      "label": "paused, View: Editor is offered",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.play.viewEditor"
+      },
+      "path": "widgets[0].visible",
+      "value": true,
+      "retry_ms": 5000
+    },
+    {
+      "label": "the paused game is seen through its own camera",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.view_camera",
+      "value": "game"
+    },
+    {
+      "label": "through the game's camera",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/view_game.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "game_center",
+      "retry_ms": 10000
+    },
+    {
+      "label": "View: Editor",
+      "cmd": "click",
+      "name": "pelican.play.viewEditor"
+    },
+    {
+      "label": "the engine draws from the editor camera",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.view_camera",
+      "value": "editor",
+      "retry_ms": 10000
+    },
+    {
+      "label": "the picture is not the game's",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/view_editor.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "game_center",
+      "retry_ms": 30000
+    },
+    {
+      "label": "View: Game",
+      "cmd": "click",
+      "name": "pelican.play.viewGame"
+    },
+    {
+      "label": "the game's camera again",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.view_camera",
+      "value": "game",
+      "retry_ms": 10000
+    },
+    {
       "label": "press Stop",
       "cmd": "click",
       "name": "pelican.play.play"
@@ -251,6 +452,17 @@
       },
       "path": "result.components[0].runtime_json.local_trs.pos[0]",
       "value_of": "x_edit",
+      "retry_ms": 10000
+    },
+    {
+      "label": "Stop brings the editor camera back",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.play.view_camera",
+      "value": "editor",
       "retry_ms": 10000
     },
     {
@@ -505,6 +717,57 @@
       "path": "result.play.session",
       "value": false,
       "retry_ms": 10000
+    },
+    {
+      "label": "the frames the engine has drawn when the Stop with Keep is done",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.render.published_frames",
+      "remember": "frames_after_keep"
+    },
+    {
+      "label": "the engine goes on drawing the model after that Stop (30 frames)",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.render.published_frames",
+      "op": "ge",
+      "value_of": "frames_after_keep",
+      "plus": 30,
+      "retry_ms": 10000
+    },
+    {
+      "label": "and the viewport still holds that engine",
+      "cmd": "wait_engine",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the box is still drawn",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/after_keep.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "value_of": "box_edit",
+      "retry_ms": 30000
     },
     {
       "label": "the kept edit stays after Stop",
