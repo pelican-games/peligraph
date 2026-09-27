@@ -487,8 +487,8 @@ PM-3b が edit での起動・Play / Stop・Keep を、PM-3c が Outliner の ru
 - engine の窓が keyboard の focus を持っている間は、play のキーが効きません(PM-3a)。
 - `playing` の間の `frame N` は止まって見えます(上の「読む時」)。
 - gizmo の drag と Graph attachment の編集は、Studio が送った編集でも Play changes では `Actor N · <transaction_id>` と出ます。
-- **engine の PM-2b が入るまで、model を描く scene で Keep を付けて Stop すると、engine が assert で落ちます**
-  (`modelinstanceslots.cpp` の `ModelInstanceSlots::releaseWithheld`)。そのため GPU シナリオは、model の無い
+- ✅PM-2b(`fc7a0eb1`)の前は、model を描く scene で Keep を付けて Stop すると engine が assert で落ちました
+  (slot の表の写しが free list の予約を落としていた)。そのため PM-3b の GPU シナリオは、model の無い
   `play_mode_roundtrip` と、model があり Keep を使わない `play_view_camera` に分けてあります。
 - 確認のダイアログの CPU の test は、Studio を閉じる場合だけです。
 - セッションの間に自動化面の `quit` を送ると、確認のダイアログで止まります。シナリオは最後に Stop します。
