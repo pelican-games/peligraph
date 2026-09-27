@@ -1857,6 +1857,21 @@ nlohmann::json framePlanToJson(
         render_pipeline != nullptr
             ? renderViewAxisLengthContext(*render_pipeline)
             : RenderViewAxisLengthContext{};
+    const auto findExtentReference =
+        [&](std::string_view family)
+        -> const RenderViewFamilyExtentReference * {
+        if (render_pipeline == nullptr ||
+            family == mainRenderViewFamilyId) {
+            return nullptr;
+        }
+        for (const auto &reference :
+             render_pipeline->view_family_extents) {
+            if (reference.family == family) {
+                return &reference;
+            }
+        }
+        return nullptr;
+    };
     auto nodes_json = nlohmann::json::array();
     for (const auto &node : plan.nodes) {
         auto node_json = nlohmann::json{
@@ -1938,6 +1953,17 @@ nlohmann::json framePlanToJson(
             node.kind == FramePlanNodeKind::snapshot_copy) {
             node_json["view_axes"] =
                 viewAxesJson(node.view_family, axis_context);
+            // VF-2: the extent VF-1 holds the node's secondary family to,
+            // the same reference its refusal names as expected_*. Absent on
+            // `$main`, on a raw plan, and for a family none of whose raster
+            // passes writes a declared target.
+            if (const auto *reference =
+                    findExtentReference(node.view_family)) {
+                node_json["family_extent"] =
+                    renderViewFamilyExtentJson(*reference);
+                node_json["family_layers"] = reference->layers;
+                node_json["family_extent_pass"] = reference->pass;
+            }
         }
         nodes_json.push_back(std::move(node_json));
     }

@@ -510,6 +510,26 @@ struct RenderCompilerProgramSelection {
 
 struct MaterialDrawLoopRules;
 
+// VF-2: the extent the raster passes of one secondary view family (not
+// `$main`) are compared against at recompile (VF-1): the first raster
+// attachment, in declaration order, whose target has a definition. The
+// target's extent and layer count are as authored. Filled by the core's
+// renderViewFamilyExtentReferences; get_frame_plan reports it on the
+// family's nodes.
+struct RenderViewFamilyExtentReference {
+    std::string family;
+    std::string pass;
+    std::string target;
+    // [width, height] when the target is fixed-size; otherwise it is sized
+    // from the output by `extent_scale`.
+    std::optional<std::array<std::uint32_t, 2>> fixed_extent;
+    float extent_scale = 1.0f;
+    std::uint32_t layers = 1;
+
+    bool operator==(const RenderViewFamilyExtentReference &) const =
+        default;
+};
+
 // Immutable after publication.  It deliberately contains neither the
 // normalized authoring JSON nor GPU/container state.  Runtime owners publish
 // it through shared_ptr<const CompiledRenderPipeline>; JSON is reconstructed
@@ -559,6 +579,10 @@ struct CompiledRenderPipeline {
     std::vector<RenderGraphLoopReport> graph_loops;
     // LP-0d: the graph nodes this variant made inactive.
     std::vector<RenderGraphDeactivatedNode> deactivated_graph_nodes;
+    // VF-2: one entry per secondary view family with a raster pass writing a
+    // declared target, in the order the families are first written. Set by
+    // the render compiler next to VF-1's check.
+    std::vector<RenderViewFamilyExtentReference> view_family_extents;
     bool used_features = false;
 };
 

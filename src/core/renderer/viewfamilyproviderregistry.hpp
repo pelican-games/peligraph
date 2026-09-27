@@ -179,10 +179,27 @@ struct RenderTargetDefinition;
 // (project/viewselect.hpp) as "<code>: <JSON>" naming the first pass that
 // disagrees with the family's first pass, in declaration order; a loop copy
 // on either side carries its loop_origin from the pipeline's provenance.
+// The family's first pass is the one renderViewFamilyExtentReferences
+// answers.
 void validateRenderViewFamilyExtents(
     std::span<const FrameGraphDefinition> graphs,
     std::span<const RenderTargetDefinition> targets,
     const CompiledRenderPipeline &pipeline);
+
+// VF-2: the reference VF-1 compares each secondary family against: the first
+// raster attachment of the family, in declaration order, whose target has a
+// definition. A family with no such attachment has no entry. The compiler
+// keeps the answer on CompiledRenderPipeline::view_family_extents for
+// get_frame_plan.
+std::vector<RenderViewFamilyExtentReference>
+renderViewFamilyExtentReferences(
+    std::span<const FrameGraphDefinition> graphs,
+    std::span<const RenderTargetDefinition> targets);
+
+// A declared extent as VF-1's refusal and get_frame_plan write it:
+// [width, height] for a fixed-size target, {"output_scale": s} otherwise.
+nlohmann::json renderViewFamilyExtentJson(
+    const RenderViewFamilyExtentReference &reference);
 
 RenderViewFamilies resolveRuntimeRenderViewFamilies(
     const RenderViewFamilies &authored,

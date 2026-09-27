@@ -10,6 +10,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <map>
 #include <memory>
 #include <optional>
@@ -319,17 +320,8 @@ void validateRenderViewSelects(
 
 namespace {
 
-// VF-1: one raster attachment of a secondary-family pass, with the extent
-// its target is declared at.
-struct ViewFamilyRasterWrite {
-    std::string pass;
-    std::string target;
-    std::optional<vk::Extent2D> fixed_extent;
-    float extent_scale = 1.0f;
-};
-
-bool sameDeclaredExtent(const ViewFamilyRasterWrite &left,
-                        const ViewFamilyRasterWrite &right) {
+bool sameDeclaredExtent(const RenderViewFamilyExtentReference &left,
+                        const RenderViewFamilyExtentReference &right) {
     if (left.fixed_extent || right.fixed_extent) {
         return left.fixed_extent && right.fixed_extent &&
                *left.fixed_extent == *right.fixed_extent;
@@ -337,12 +329,47 @@ bool sameDeclaredExtent(const ViewFamilyRasterWrite &left,
     return left.extent_scale == right.extent_scale;
 }
 
-nlohmann::json declaredExtentJson(const ViewFamilyRasterWrite &write) {
-    if (write.fixed_extent) {
-        return nlohmann::json::array({write.fixed_extent->width,
-                                      write.fixed_extent->height});
+// VF-1 / VF-2: every raster attachment of a secondary-family pass whose
+// target has a definition, in declaration order, with the extent its target
+// is declared at. Attachments naming no definition (the swapchain, frame
+// targets) are skipped, as the renderer skips them.
+template <typename Visit>
+void forEachViewFamilyRasterWrite(
+    std::span<const FrameGraphDefinition> graphs,
+    std::span<const RenderTargetDefinition> targets, Visit &&visit) {
+    std::map<std::string, const RenderTargetDefinition *, std::less<>>
+        definitions;
+    for (const auto &target : targets) {
+        definitions.emplace(target.name, &target);
     }
-    return {{"output_scale", write.extent_scale}};
+    for (const auto &graph : graphs) {
+        for (const auto &node : graph.nodes) {
+            if (node.kind != FramePlanNodeKind::render ||
+                node.view_family == mainRenderViewFamilyId) {
+                continue;
+            }
+            for (const auto &attachment : node.attachments) {
+                const auto found = definitions.find(attachment.resource);
+                if (found == definitions.end()) {
+                    continue;
+                }
+                const auto &definition = *found->second;
+                RenderViewFamilyExtentReference write{
+                    .family = node.view_family,
+                    .pass = node.name,
+                    .target = attachment.resource,
+                    .extent_scale = definition.extent_scale,
+                    .layers = definition.array_layers,
+                };
+                if (definition.fixed_extent) {
+                    write.fixed_extent = std::array<std::uint32_t, 2>{
+                        definition.fixed_extent->width,
+                        definition.fixed_extent->height};
+                }
+                visit(std::move(write));
+            }
+        }
+    }
 }
 
 const RenderLoopOrigin *passLoopOrigin(
@@ -357,67 +384,75 @@ const RenderLoopOrigin *passLoopOrigin(
 
 } // namespace
 
+nlohmann::json renderViewFamilyExtentJson(
+    const RenderViewFamilyExtentReference &reference) {
+    if (reference.fixed_extent) {
+        return nlohmann::json::array({(*reference.fixed_extent)[0],
+                                      (*reference.fixed_extent)[1]});
+    }
+    return {{"output_scale", reference.extent_scale}};
+}
+
+std::vector<RenderViewFamilyExtentReference>
+renderViewFamilyExtentReferences(
+    std::span<const FrameGraphDefinition> graphs,
+    std::span<const RenderTargetDefinition> targets) {
+    std::vector<RenderViewFamilyExtentReference> references;
+    forEachViewFamilyRasterWrite(
+        graphs, targets, [&](RenderViewFamilyExtentReference write) {
+            const bool known = std::any_of(
+                references.begin(), references.end(),
+                [&](const auto &reference) {
+                    return reference.family == write.family;
+                });
+            if (!known) {
+                references.push_back(std::move(write));
+            }
+        });
+    return references;
+}
+
 void validateRenderViewFamilyExtents(
     std::span<const FrameGraphDefinition> graphs,
     std::span<const RenderTargetDefinition> targets,
     const CompiledRenderPipeline &pipeline) {
-    std::map<std::string, const RenderTargetDefinition *, std::less<>>
-        definitions;
-    for (const auto &target : targets) {
-        definitions.emplace(target.name, &target);
+    std::map<std::string, RenderViewFamilyExtentReference, std::less<>>
+        expected_by_family;
+    for (auto &reference :
+         renderViewFamilyExtentReferences(graphs, targets)) {
+        auto family = reference.family;
+        expected_by_family.emplace(std::move(family), std::move(reference));
     }
-    std::map<std::string, ViewFamilyRasterWrite, std::less<>> first_write;
-    for (const auto &graph : graphs) {
-        for (const auto &node : graph.nodes) {
-            if (node.kind != FramePlanNodeKind::render ||
-                node.view_family == mainRenderViewFamilyId) {
-                continue;
+    forEachViewFamilyRasterWrite(
+        graphs, targets, [&](const RenderViewFamilyExtentReference &write) {
+            const auto &expected = expected_by_family.at(write.family);
+            if (sameDeclaredExtent(expected, write)) {
+                return;
             }
-            for (const auto &attachment : node.attachments) {
-                const auto found = definitions.find(attachment.resource);
-                if (found == definitions.end()) {
-                    continue;
-                }
-                ViewFamilyRasterWrite write{
-                    .pass = node.name,
-                    .target = attachment.resource,
-                    .fixed_extent = found->second->fixed_extent,
-                    .extent_scale = found->second->extent_scale,
-                };
-                const auto [expected, inserted] =
-                    first_write.try_emplace(node.view_family, write);
-                if (inserted ||
-                    sameDeclaredExtent(expected->second, write)) {
-                    continue;
-                }
-                nlohmann::json fields{
-                    {"family", node.view_family},
-                    {"pass", write.pass},
-                    {"target", write.target},
-                    {"extent", declaredExtentJson(write)},
-                    {"expected_pass", expected->second.pass},
-                    {"expected_target", expected->second.target},
-                    {"expected_extent",
-                     declaredExtentJson(expected->second)},
-                };
-                const auto originJson = [](const RenderLoopOrigin &origin) {
-                    return nlohmann::json{{"loop", origin.loop},
-                                          {"element", origin.element},
-                                          {"node", origin.node}};
-                };
-                if (const auto *origin =
-                        passLoopOrigin(pipeline, write.pass)) {
-                    fields["loop_origin"] = originJson(*origin);
-                }
-                if (const auto *origin = passLoopOrigin(
-                        pipeline, expected->second.pass)) {
-                    fields["expected_loop_origin"] = originJson(*origin);
-                }
-                throw std::runtime_error(viewSelectRefusalMessage(
-                    viewFamilyExtentMismatchCode, fields));
+            nlohmann::json fields{
+                {"family", write.family},
+                {"pass", write.pass},
+                {"target", write.target},
+                {"extent", renderViewFamilyExtentJson(write)},
+                {"expected_pass", expected.pass},
+                {"expected_target", expected.target},
+                {"expected_extent", renderViewFamilyExtentJson(expected)},
+            };
+            const auto originJson = [](const RenderLoopOrigin &origin) {
+                return nlohmann::json{{"loop", origin.loop},
+                                      {"element", origin.element},
+                                      {"node", origin.node}};
+            };
+            if (const auto *origin = passLoopOrigin(pipeline, write.pass)) {
+                fields["loop_origin"] = originJson(*origin);
             }
-        }
-    }
+            if (const auto *origin =
+                    passLoopOrigin(pipeline, expected.pass)) {
+                fields["expected_loop_origin"] = originJson(*origin);
+            }
+            throw std::runtime_error(viewSelectRefusalMessage(
+                viewFamilyExtentMismatchCode, fields));
+        });
 }
 
 void validateRuntimeRenderViewFamilyProviderContracts(

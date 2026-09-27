@@ -765,6 +765,11 @@ compileDefaultVulkanVariant(
         graph_definitions,
         render_target_definitions,
         logical.compiled_pipeline);
+    // VF-2: the extent VF-1 compared each family against, for
+    // get_frame_plan (Studio sizes a family's images from it).
+    logical.compiled_pipeline.view_family_extents =
+        renderViewFamilyExtentReferences(
+            graph_definitions, render_target_definitions);
     if (input.ray_tracing_project &&
         input.ray_tracing_project->layout.usesRayTables()) {
         std::vector<std::string> graph_names;

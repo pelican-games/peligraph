@@ -12,6 +12,7 @@
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
+#include "../src/core/renderer/viewfamilyproviderregistry.hpp"
 #include "../src/project/renderconfigdocument.hpp"
 #include "../src/project/renderconfigsection.hpp"
 #include "render_graph_root_test_support.hpp"
@@ -1431,6 +1432,89 @@ TEST_CASE("LP-Va2 frame plan nodes carry their family's view axes",
         CHECK_FALSE(main_pass.contains("view_family"));
         CHECK(main_pass.at("view_axes") == nlohmann::json::array());
     }
+}
+
+// VF-2: get_frame_plan's secondary-family nodes carry the extent VF-1 holds
+// the family to (family_extent, family_layers, family_extent_pass).
+TEST_CASE("VF-2 frame plan nodes carry their view family's reference extent",
+          "[rendercompiler][view-family][vf2]") {
+    for (const std::uint32_t cascades : {3u, 2u}) {
+        INFO("cascade_count " << cascades);
+        const auto plan = lpva2FramePlan(cascades);
+        std::size_t cube_nodes = 0;
+        for (const auto &node : plan.at("nodes")) {
+            INFO(node.dump());
+            const auto family =
+                node.value("view_family", std::string{});
+            if (family == "$capture/cube") {
+                // Snapshot copies included: every node of the family.
+                CHECK(node.at("family_extent") ==
+                      nlohmann::json{256, 256});
+                CHECK(node.at("family_layers") == 6);
+                CHECK(node.at("family_extent_pass") ==
+                      "cube_capture_geometry");
+                ++cube_nodes;
+            } else if (family.empty()) {
+                // `$main` has none.
+                CHECK_FALSE(node.contains("family_extent"));
+                CHECK_FALSE(node.contains("family_layers"));
+                CHECK_FALSE(node.contains("family_extent_pass"));
+            }
+        }
+        CHECK(cube_nodes == 8);
+        const auto shadow = lpva2Node(plan, "shadow_depth");
+        CHECK(shadow.at("family_extent") == nlohmann::json{2048, 2048});
+        CHECK(shadow.at("family_layers") == cascades);
+        CHECK(shadow.at("family_extent_pass") == "shadow_depth");
+        CHECK_FALSE(lpva2Node(plan, "deferred_geometry")
+                        .contains("family_extent"));
+    }
+}
+
+TEST_CASE("VF-2 the reported reference is the one VF-1 refuses against",
+          "[rendercompiler][view-family][vf2][diagnostic]") {
+    ProgramInputFixture fixture;
+    fixture.config = vf1CubeFamilyConfig("cube_ao_second");
+    fixture.backend_context = VulkanRenderCompilerBackendContext{
+        vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
+        VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}};
+    const auto output = runRenderCompilerProgram(
+        defaultVulkanRenderCompilerProgram(), fixture.input());
+    const auto &variant = output.variants.front();
+    REQUIRE(variant.compiled_pipeline != nullptr);
+    const auto &plan = variant.frame_plans.at("main");
+    const auto plan_json =
+        framePlanToJson(plan, variant.compiled_pipeline.get());
+    const auto second = lpva2Node(plan_json, "cube_second");
+    CHECK(second.at("family_extent") == nlohmann::json{16, 16});
+    CHECK(second.at("family_layers") == 6);
+    CHECK(second.at("family_extent_pass") == "cube_first");
+    CHECK(lpva2Node(plan_json, "cube_first").at("family_extent") ==
+          second.at("family_extent"));
+    CHECK_FALSE(lpva2Node(plan_json, "present").contains("family_extent"));
+    // A raw plan (no compiled pipeline) has no reference to report.
+    for (const auto &node : framePlanToJson(plan, nullptr).at("nodes")) {
+        CHECK_FALSE(node.contains("family_extent"));
+    }
+    // The refusal of a pass that disagrees names the same reference.
+    for (const auto *other : {"screen_ao", "cube_small"}) {
+        INFO(other);
+        const auto refusal = lpvaCompileRefusal(vf1CubeFamilyConfig(other));
+        REQUIRE(refusal.code == "render.view_family_extent_mismatch@1");
+        CHECK(refusal.fields.at("expected_extent") ==
+              second.at("family_extent"));
+        CHECK(refusal.fields.at("expected_pass") ==
+              second.at("family_extent_pass"));
+    }
+    // The helper both call answers the same.
+    const auto references =
+        variant.compiled_pipeline->view_family_extents;
+    REQUIRE(references.size() == 1);
+    CHECK(references.front().family == "$capture/cube");
+    CHECK(references.front().target == "cube_ao");
+    CHECK(renderViewFamilyExtentJson(references.front()) ==
+          second.at("family_extent"));
 }
 
 // LP-0e: a graph with render.snapshot_copy / render.shadow_depth nodes in the
