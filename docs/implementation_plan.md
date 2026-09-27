@@ -26628,6 +26628,29 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
   - VF-1 の印は、fields が code の横か `error_fields` にあるときだけ付く(message の中だけの fields では文は出るが印は付かない)
   - automation の名前(`pelican.renderFeatures.replaceWithLoop` / `.replaceWithLoopVersion` / `.replaceConfirm`、`pelican.framePlan.replaceWithLoopVersion`)は README の名前の表には足していない
 
+### LP-4f3: family の基準の大きさを engine の family_extent から読む(VF-2 への追従)
+
+**下段(Studio のみ)。実装者: Claude(Opus)。LP-4f2 の上。engine の VF-2(335c9bfd)。**
+
+#### 前提
+- LP-4f2 は view の軸で回すループの body に Add fullscreen pass で置くとき、基準の大きさを Studio 自身が辿っていた(`get_render_authoring_context` の `render_targets` から、family の最初の render node が書く target の宣言)。engine の VF-1 の判定と基準がずれうる
+- VF-2: `get_frame_plan` の二次 family の node に `family_extent`([w,h] か {"output_scale": s})・`family_layers`・`family_extent_pass`。VF-1 の拒否と同じ helper で決める。$main などには key ごと付かない
+
+#### 決定
+1. model が 3 つの key を読む
+2. Add fullscreen pass の image の大きさと layers は `family_extent` / `family_layers` から(固定なら固定の大きさ + `resolution_domain: "independent"`、画面相対なら `extent_scale`)。key が無ければ画面の大きさ
+3. LP-4f2 の自前の辿り(`get_render_authoring_context` の読み取りと `render_targets` の処理)を外す
+4. Frame Plan の二次 family の node の詳細に `Family size: …` の 1 行
+
+#### 着地(2026-09-27、34557966)
+- 外した処理: `requestLoopReports()` の `get_render_authoring_context`、`RequestKind::Targets` の結果処理、`readPlanViews()` の基準の node 探し、`viewFamilyImageExtent()` の辿り、`GraphCanvasReadCapability::requestRenderAuthoringContext`。Graph tab が名前で持つ RPC は 10 個に戻った
+- test: `devstudio_graphcanvas_scene_test` の LP-4f3 の 4 本(固定の大きさ、output_scale、key 無し、authoring context を送らない)、`devstudio_frameplan_graph_test` の 1 本(model の読み込みと詳細の行)
+- 変異(実装者の報告): `family_extent` を読まない → 3 本と GPU シナリオ `loop_view_axis` の step 23 が赤(画面の大きさの pass が engine に断られる)/ output_scale で nullopt → 2 本 / authoring context の読み取りを戻す → 1 本 / 詳細の行を空にする・出さない・model の parse を外す → 赤
+- 結果: `-L studio_cpu -LE gpu` 454/454、`loop_view_axis` 緑(256×256・6 layers)
+- あわせて、`test/studio_scenarios/README.md` の automation の名前の表に、LP-4f1 と LP-4f2 で増えた名前を足した
+- 仕様から外れた判断: Graph tab 側のライブラリは frame plan のライブラリを link していないので、3 つの key を緩く読む関数を Graph tab 側にも置いた(読む所が 2 か所。Frame Plan 側は壊れた値を名指しで拒否、Graph tab 側は読めなければ画面の大きさに戻る)。`family_layers` が 1 より大きければ画面相対の family でも `layers` を付ける(出荷の feature に無い組み合わせで、engine では未確認)
+- 残した穴: `loop_view_axis` は `family_extent` そのものを rpc で見る step を持たない(辿りを外したので 256 は `family_extent` からしか来ない)。Frame Plan の Family size の行は unit test だけ
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
