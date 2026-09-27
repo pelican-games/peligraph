@@ -26451,6 +26451,183 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
   - 新しいループが既存の node に重なる(`placeNewNode` が node の幅を 240 と見て横に置く)
   - `in:` / `out:` の別名に単体の test が無い
 
+### LP-4f1: view の軸で回すループ(cube の 6 面・影の cascade)を Studio で組む + 手打ちを減らす小物
+
+**中段(Studio のみ)。実装者: Claude(Opus)。LP-4d2(3636c7df)の上。engine の契約は LP-Vb(66544252。`over.view_axis`)と LP-Va2(`get_frame_plan` の `view_axes`)、設計は `docs/design_graph_loops.md` §7。Studio での見え方は `docs/manual/13_editor.md` の「view の軸で回す —— Over と View」。**
+
+#### 前提
+- LP-Vb(engine): `graph.loop` の `over` に `{"view_axis": {"family": "<family>", "axis": "<軸>"}}`。回数は組み直し時の軸の長さ、element は軸の値(0 始まり)。body の pass には `"view_select": {"<軸>": {"$expr": "element"}}`。実行時の軸(light)は `graph.loop_tier_unsupported@1 {reason: set_unsupported}`、無い軸は `graph.view_select_axis_unknown@1 {pass: <loop id>, family, axis}`、body に value node があると `graph.loop_expression_invalid@1 {reason: not_static}`
+- LP-Va2: `get_frame_plan` の pass / compute / snapshot_copy の node に `view_axes: [{axis, length, runtime, labels?}]`(family ごとに同じ)
+- LP-4c の Loop の欄の `over` は range だけ。Graph tab の render node の `view_select` は parameters の JSON の pill でしか書けない
+- LP-4c の報告の手打ち: 回数の式、Where の整数の並び、Per iteration の式(既定 `element`)。LP-4d2 の報告: 新しいループが既存の node に重なる(`placeNewNode` が幅 240 固定で横に置く)
+
+#### 決定
+1. **Loop の欄の「回す集合」**: `Count`(range)/ `View axis` の combo(draw_loop は今どおり)。`View axis` では family と軸の combo。候補は今の frame plan の node の `view_axes` を family ごとに集めたもの。`runtime:false` の軸だけ選べ、runtime の軸は灰色で「decided each frame」。回数は軸の長さ(読むだけ。`×6 (face)`)。どの pass も無い family は候補に出ない(その旨を欄の下に 1 行)
+2. **body の render node の View 欄**(Graph tab の side 欄。LP-4b の View 欄と同じ部品): 軸ごとに `All views` / 値(ラベル付き)/ **`Each element (loop)`**。`Each element` は、node が view_axis のループの body にあり、軸がループの軸と同じときだけ出て、`{"$expr": "element"}` を書く。ループの外の render node では、frame plan の node から軸が取れれば出し、取れなければ欄を出さない
+3. **ゾーンの表示**: view_axis のループは見出しに `×6 (face)`、タブの代わりに軸のラベル(+X…)を小さく並べる(分岐が複数ならタブは今どおり)
+4. **手打ちを減らす小物**: Where の整数の並びは、回数が整数なら 0..N-1 の check(式のときは今の欄)/ 分岐表の `element =` は spin、`element in` / `not in` は同じ check / Per iteration の式は `element` / `element - 1` / `element + 1` / `Custom…` の combo / 回数の式の欄に `mip_levels_of(<target>)` / `layers_of(<target>)` の挿入ボタン(target は frame plan の target の combo)
+5. **新しい node の置き場所**: `placeNewNode` が、選んでいる node(ゾーンなら枠)の実際の幅と既存の node の箱を見て、重ならない所に置く
+
+#### 受け入れ
+1. Loop の欄の test(fake の frame plan に cube と directional の node): family と軸の候補、runtime の軸は選べない、選ぶと `over: {view_axis:{family, axis}}` を送る。対照: 候補を集めない変異
+2. body の View 欄の test: `Each element` が view_axis のループの body でだけ出る、選ぶと `view_select: {face: {"$expr":"element"}}`、ループの外で出ない
+3. 小物の payload の test(check → where / when の整数の並び、spin、Per iteration の combo、挿入ボタン)
+4. 置き場所の test: 新しい node の箱が既存の箱と重ならない(対照: 幅 240 固定に戻す変異)
+5. GPU シナリオ `loop_view_axis`: cube capture を持つ fixture → Graph tab で loop を置き `View axis` = `$capture/cube` / `face` → body に pass → View 欄で `Each element` → Frame Plan に `×6` のグループ、展開後の各 pass の `view_select.face` が 0..5(rpc)
+6. 既存のループ・Graph tab のシナリオが緑
+7. `-L studio_cpu -LE gpu` 緑
+8. 報告にテキスト入力の欄(減ったもの / 残ったもの)
+
+#### 着地(2026-09-27、f1395979)
+- **決定 1**: Loop の欄の先頭に **Over**(`pelican.graphCanvasLoop.over`。[置く所](../src/devstudio/view/graphcanvasloopfields.cpp#L203))。View axis を選ぶと、frame plan の最初の選べる軸で `over.view_axis` を送る([`GraphCanvasLoopFields::commitOver()`](../src/devstudio/view/graphcanvasloopfields.cpp#L891))。Count に戻すと、軸の長さ(分からなければ 1)の range を送る
+  - 候補は [`GraphCanvasModel::readPlanViews()`](../src/devstudio/model/graphcanvasmodel.cpp#L2560) が `get_frame_plan` の node の `view_axes` を family ごとに集めたもの(軸を持つ family だけ)。同じ読みで render target の名前(`resources` の `render_target`)も集める
+  - 軸の combo は [`fillViewAxes()`](../src/devstudio/view/graphcanvasloopfields.cpp#L917)。選べる軸は `<軸> ×<長さ>`、runtime の軸は `<軸> (decided each frame)` で押せない項目。文書にあって plan に無い family / 軸は `(not in the frame plan)` を付けて残す
+  - 回数の欄は `×6 (face)` の字だけ(`viewCount`)。送るのは [`GraphCanvasModel::setLoopViewAxis()`](../src/devstudio/model/graphcanvasmodel.cpp#L2663)(`over` を丸ごと置き換え、ほかの parameters は残す)
+- **決定 2**: [`GraphCanvasViewFields`](../src/devstudio/view/graphcanvasloopfields.cpp#L1502) が LP-4b の `ViewSelectField` を `pelican.graphCanvasRender` の名前で側面の欄に置く。何を出すかは [`GraphCanvasModel::viewField()`](../src/devstudio/model/graphcanvasmodel.cpp#L2671): view_axis のループの body ならそのループの family(node が別の family を名指していれば対象外)、root の node なら frame plan のその node の family、どちらでもなければ node 自身の `view_family`。軸が取れなければ欄を出さない
+  - 対象の op は `render.fullscreen` / `render.raster` / `render.compute` / `render.material_pass` / `render.shadow_depth` / `render.snapshot_copy`([`takesViewSelect()`](../src/devstudio/model/graphcanvasmodel.cpp#L2657))
+  - `Each element (loop)` はループの軸の combo にだけ足す。選ぶと [`setViewSelect()`](../src/devstudio/model/graphcanvasmodel.cpp#L2726) が `set_node_parameters` を 1 回送る。欄が出さない値(`element` 以外の式)は残す。全部 All views なら `view_select` を消す
+- **決定 3**: 見出しの段の字を `×<回数> (<軸>)`(報告の前は plan の軸の長さ、それも無ければ `loop (<軸>)`)にし、分岐が 1 つで長さが 1〜32 なら、タブの位置に軸のラベル(ラベルが無い軸は番号)を小さく並べる([段の字を決める所](../src/devstudio/view/graphcanvaswidget.cpp#L1293)、[ラベルを描く所](../src/devstudio/view/graphcanvasdrawing.cpp#L919))。automation の名前は `graph_zone_label#<loop>/axis<i>`
+- **決定 4**:
+  - Where: 回数が分かっていて 1〜64 なら要素ごとの check(`whereValue<i>`。[`rebuildWhereChecks()`](../src/devstudio/view/graphcanvasloopfields.cpp#L981))。view の軸なら `2 (+Y)` の字
+  - 分岐表: `element =` は spin(`branch<i>.value`)、`element in` / `not in` は check(`branch<i>.check<j>`)、回数が式か 64 を超えれば今の整数の欄
+  - Per iteration の Element は [`GraphCanvasElementChoice`](../src/devstudio/view/graphcanvasloopfields.cpp#L1461)(`element` / `element - 1` / `element + 1` / `Custom…`。Custom の欄は `.custom`)
+  - ƒ の欄の下に target の combo(`countTarget`)と `mip_levels_of` / `layers_of` のボタン(`insertMipLevels` / `insertLayers`)。欄が空か整数ならその呼び出しに置き換え、式ならカーソルの位置に挿して送る([`insertCountFunction()`](../src/devstudio/view/graphcanvasloopfields.cpp#L966))
+- **決定 5**: [`GraphCanvasScene::placeNewNode()`](../src/devstudio/view/graphcanvaswidget.cpp#L2712) が選んでいる node / 枠の描かれた箱の右端の隣を起点にし、同じ scope の描かれた箱と重なる間は下へずらす。新しいものの大きさは、ループなら枠の最小、ほかは数行の node と見る
+- **仕様から外れた判断**(実装者の報告。コードで確かめた)
+  1. View 欄は、node に `view_family` が無ければ family も書く(書かない pass は frame の最初の family で走るため)
+  2. 自動配置で描かれていた node は、新しい node を置いた時点でその位置を session に固定する(新しい node が列を取って、ほかの node を押し出さないように)
+  3. check の上限は 64(式や超過のときは今の欄)。ゾーンの軸ラベルは 32 まで
+  4. ループが無くても、root に view_select を取る render node があれば `get_frame_plan` を読む([`requestLoopReports()`](../src/devstudio/model/graphcanvasmodel.cpp#L514))
+  5. Where で check が 1 つも付いていない `element in` / `not in` は送らない(次の check で送る)
+  6. 選べる family が無いときは Over を Count に戻し、欄の下に 1 行(`No pass of the frame plan runs in a view family with an axis a loop can run over.`)
+- **test**: `devstudio_graphcanvas_scene_test` に `[lp4f1]` の 6 本
+  - `LP-4f1 the Loop fields run over a view axis the frame plan lists, never one decided each frame`([test](../test/devstudio_graphcanvas_scene_test.cpp#L4794)。受け入れ 1)
+  - `LP-4f1 a plan without a family with axes offers no view axis, and says so`([test](../test/devstudio_graphcanvas_scene_test.cpp#L4862))
+  - `LP-4f1 where, the branch conditions and the count are chosen, not typed`([test](../test/devstudio_graphcanvas_scene_test.cpp#L4880)。受け入れ 3)
+  - `LP-4f1 a view-axis loop's body offers Each element on its axis, and nothing else does`([test](../test/devstudio_graphcanvas_scene_test.cpp#L4972)。受け入れ 2)
+  - `LP-4f1 a view-axis zone says how many views along which axis, and names them`([test](../test/devstudio_graphcanvas_scene_test.cpp#L5167)。決定 3)
+  - `LP-4f1 a node added beside a zone lands clear of its frame and of every other box`([test](../test/devstudio_graphcanvas_scene_test.cpp#L5198)。受け入れ 4)
+- **変異**(実装者の報告。どれも赤): family の候補を集めない / Each element を常に出す / element を書かない / where の check を出さない / spin を出さない / preset を無効にする / 挿入の後に送らない / 幅 240 固定に戻す / view の見出しを外す
+- **シナリオ(受け入れ 5)**: `loop_view_axis`([シナリオ](../test/studio_scenarios/loop_view_axis.json))と fixture `test/fixtures/studio_loop_view_axis/`(`studio_view_select_field` と同じ文書。`hybrid_v1` と project の feature に写した `cube_capture`)。着地時の json の `steps` は 48、実装者の報告では 50 step で緑
+  - Add loop → Over = View axis → `$capture/cube` / `face`(`×6 (face)`)→ body を fixture の `cube_face` にする → Each element → `loops[0].count` が 6、展開後の node の `view_select.face` が 0〜5、Frame Plan に ×6 のグループ
+  - body の pass に Add fullscreen pass を使わず fixture の `cube_face` を使ったのは、次の engine の不具合のため。LP-4f2 で Add fullscreen pass で組む形に直し、`cube_face` は消した(下の LP-4f2)
+- **engine の不具合の発見**(実装者の報告): cube の face のループの body に画面の大きさの pass を置くと、player が `renderer.cpp:774` で fatal になった(`render view family '$capture/cube' spans multiple raster extents`)。これを受けて engine の VF-1(25561fad)が、組み直しで `render.view_family_extent_mismatch@1` として名前付きで断るようにした
+- **受け入れ 6**: 実装者の報告に記載が無い(未確認)
+- **受け入れ 7**: `-L studio_cpu -LE gpu` 435/435 緑(実装者の報告)
+- **テキスト入力の欄(受け入れ 8)**(実装者の報告)
+  - 減ったもの: Where、分岐の値、Per iteration、回数の式、view_axis の回数、render node の view_select
+  - 残ったもの: 回数の式の残りの部分、回数が式か 64 を超えるときの整数の並び、Custom… の式、draw_loop の tags
+- **穴**: automation の名前(`over`・`viewFamily`・`viewAxis`・`viewCount`・`whereValue<i>`・`branch<i>.value` / `.check<j>`・`countTarget`・`insertMipLevels` / `insertLayers`・`pelican.graphCanvasRender.view.<axis>`・`graph_zone_label#<loop>/axis<i>`)は README の名前の表には足していない
+
+### Q-17: 分岐表の combo の選択が、編集の往復の途中で黙って捨てられる / 「共有」の数え方
+
+**下段(Studio のみ)。実装者: Claude(Opus)。develop f1395979(LP-4f1 まで)の上。Studio での見え方は `docs/manual/13_editor.md` の「Loop の欄は編集の往復の間は押せません」、automation の `select` の規則は `test/studio_scenarios/README.md`。**
+
+#### 前提(再現済み)
+- GPU シナリオ `material_loop_decompose` が 5〜20 回に 1 回ほど赤
+- 落ち方: step 35 `wait pelican.graphCanvasLoop.branch0.body enabled`(ok)→ step 36 `select … "(nothing)"` が 0ms で ok → step 37 で 120 秒待っても `branches[0].body` が `"forward_opaque_draw"` のまま(編集が送られていない)
+- 起票時の見立て: 直前の編集の読み直しで分岐表の combo が作り直され、select が作り直しの前後の combo に当たって選択の signal が出ない(Q-16 と同じ形の競争)
+- 画像: 同じループの 2 つの分岐が同じ body を使っているだけで、枠の見出しに `shared (2 users)` が出る(LP-4d1 の共有の印は、別のループ / instance が同じ definition を使うときのためのもの)
+
+#### 決定
+1. 原因を確かめる(分岐表の作り直し、combo の signal、automation の `select` が何に当たり何を返すか)。見立てが違えば、何を見てそう判断したかを報告する
+2. Studio の側を直す: 行を作り直さずに中身を入れ替えるか、読み直しが終わるまで行を無効にして、終わったら一度だけ有効にする。どちらでも「有効に見えている combo の選択が黙って捨てられる」状態を無くす
+3. automation の `select` を厳しくする: Q-16 の `click` と同じく、無効な widget(祖先を含む)への `select` は名前付きで断る。選んだ後に widget の値が選んだ値でなければ名前付きで失敗(`… did not take "<text>"`)
+4. 共有の数え方: 見出しの「共有」は、その definition を別のループか instance が使っているときだけ出す(同じループの複数の分岐は数えない)。数は使っている node の数
+
+#### 受け入れ
+1. 分岐表の test: 編集の読み直しの途中で body の combo を選ぶ → 送られるか、無効で押せないか(対照: 今の作り直しに戻す変異で、選択が黙って捨てられて赤)
+2. automation の test: 無効な combo への select が断られる / 値が変わらない select が失敗を返す(対照の変異)
+3. 共有の test: 同じループの 2 分岐 → 印なし、別のループも使う → `shared (2 users)`(対照の変異)
+4. `material_loop_decompose` を `--repeat until-fail:20` で緑。可能なら決定 2 を戻した build で、赤が決定 3 の名前付きで落ちることを確かめる
+5. 分岐表を使う他のシナリオを 1 本ずつ緑
+6. `-L studio_cpu -LE gpu` 緑
+7. 報告にテキスト入力の欄
+
+#### 着地(2026-09-27、1b517e39)
+- **原因**(決定 1。実装者の報告): 見立てとは違った。select は生きている combo に当たり、signal も出ていた。ところが model が編集の往復の途中(前の編集を送り、読み直しがまだ)で `canEdit()` が偽だったため、`setLoopBranchBody` が黙って偽を返していた。欄を作り直すのは文書・報告・配置が変わったときだけなので、往復の間も欄は有効のままで、`wait enabled` は素通りだった。一時の記録では、緑の 8 回は busy=0、赤の 9 回目は busy=1
+- **決定 2**: Loop の欄の form と行を 1 つの widget `pelican.graphCanvasLoop.fields` にまとめ、[`GraphCanvasLoopFields::followEditable()`](../src/devstudio/view/graphcanvasloopfields.cpp#L447) が `canEdit()` に合わせて無効 / 有効を切り替える。Graph タブは model が動くたびにこれを呼ぶ(編集や読みの最中は revision が変わらず作り直されないため)。親を無効にするだけなので、欄ごとの理由で無効な欄はそのまま
+  - それでも model が断った分岐の選択は、[`restoreBranch()`](../src/devstudio/view/graphcanvasloopfields.cpp#L1161) が文書の値に戻す(body・条件・draw_loop の条件の combo)
+- **決定 3**: [`commandSelect()`](../src/devstudio/automation/automationcommands.cpp#L1490) は、無効な widget(祖先が無効なものを含む)を `automation.bad_request@1` `the widget named "…" is disabled` で断る。combo は panel が選択を聞いた後に読み直し、別の項目になっていれば `"<name>" did not take "<text>"; it holds "<今の値>"` で失敗する。選んだ項目を欄へ渡して index -1(`Pick...` など)に戻る picker は成功のまま。README に書いた
+- **決定 4**: [`GraphCanvasModel::definitionUseCount()`](../src/devstudio/model/graphcanvasmodel.cpp#L1124) はループを分岐の数でなく node 単位で 1 と数える
+- シナリオ `graph_loop_expand` の 60 手目の `wait`(分岐 0 の body の combo)に `enabled: true` を足した(timeout 10 秒 → 60 秒)
+- **test**
+  - `Q-17 a branch's body picked while an edit is in flight is sent, or the row cannot be picked in`([test](../test/devstudio_graphcanvas_scene_test.cpp#L3474)。受け入れ 1)
+  - `Q-17 a branch choice the model refuses goes back to what the document says`([test](../test/devstudio_graphcanvas_scene_test.cpp#L3601))
+  - `Q-17 a body two branches of one loop run is not shared; another loop running it is`([test](../test/devstudio_graphcanvas_scene_test.cpp#L4558)。受け入れ 3)
+  - `Q-17: select refuses a disabled widget, and fails when the choice does not take`([test](../test/devstudio_automation_input_test.cpp#L818)。受け入れ 2)
+- **受け入れ 4**(実装者の報告): `material_loop_decompose` の repeat 20 回で 20/20 を 2 回。決定 2 を戻した build では 11 回目に `"pelican.graphCanvasLoop.branch0.body" did not take "(nothing)"; it holds "forward_opaque_draw"` で落ちた
+- **受け入れ 5**: select を使うシナリオ 23 本がすべて緑(統合側で確認)
+- **受け入れ 6**: `-L studio_cpu -LE gpu` 439/439 緑(実装者の報告)
+- **テキスト入力の欄(受け入れ 7)**: 実装者の報告に記載が無い(未確認)。この WP は入力の欄を足していない
+- **穴**(実装者の報告): `GraphCanvasDrawFields` と `GraphCanvasViewFields` には同じ問題が残る。二度目の読み直しでは、一度有効になって再び無効になりうる(その場合は決定 3 の名前付きの失敗になる)
+
+### LP-4f2: 同梱の分解版(bloom / planar / cube / cascade)を Studio からボタンで入れる + VF-1 の拒否と画像の大きさ
+
+**下段〜中段(Studio のみ)。実装者: Claude(Opus)。LP-4f1 の上。engine の契約は GT-1(0f85e5be。`get_graph_templates` / `apply_graph_template`)と VF-1(25561fad。`render.view_family_extent_mismatch@1`)。契約は `docs/manual/13_editor.md` の「同梱の分解版を入れる」、Studio での見え方は同じ章の「feature をループ版に置き換える」。**
+
+#### 前提
+- GT-1: `get_graph_templates {}` → `{templates:[{reference, title, description?, decomposes, document}]}`(登録順: bloom / cube_capture / planar_mip_chain / shadow_cascade)。`apply_graph_template {base_source_digest, base_preset_digest?, template}` は雛形の nodes / definitions を root へ写し、`decomposes` に従って feature を外す / `pass_replacements` を書く / `shader_defines` を足すのを 1 transaction で行い、commit の `documents` で RD-1 の undo に乗る
+- VF-1: 二次の view family の raster pass が違う大きさの target に書くと、組み直しで `render.view_family_extent_mismatch@1 {family, pass, target, extent, expected_pass, expected_target, expected_extent, loop_origin?, expected_loop_origin?}`。基準は family の最初の raster pass(宣言順)
+- LP-4e の Decompose into loop(確認 → 送る → Graph tab でループを選ぶ)と RU-1 の render の編集の履歴
+
+#### 決定
+1. **入口**: Render Features の、分解版がある feature の行に `Replace with loop version…`。Frame Plan で feature のグループを右クリックしても同じ。どの feature に分解版があるかは `get_graph_templates` の `decomposes.feature` から(Studio に表を持たない)
+2. **確認のダイアログ**: 雛形の title / description と、何が起きるか(feature を外す / pass を置き換える、足す node と definition の数、足す shader_defines)を 1〜3 行で。「Undo で戻せる」も
+3. **送る**: `apply_graph_template`。`base_preset_digest` は project の preset がその feature を列挙しているときだけ付ける(direct root では付けない)。engine の preset の feature は LP-4e と同じ「先に Fork」
+4. **commit の後**: Graph tab に切り替えて、足したループを選ぶ。status に `Replaced <feature> with <title>. Undo takes it back.`
+5. **Undo**: `renderedithistory.cpp` の undo の対象の method に `apply_graph_template` を足す(項目名 `Replace <feature> with <title>`)
+6. **拒否の文**: `graph_template_unknown` / `graph_template_invalid {reason}` / `graph_template_feature_absent {feature}` / `graph_template_pass_replacement_conflict {feature, pass, current, requested}` / 名前の衝突(`graph.node_duplicate@1` / `graph.definition_duplicate@1`。「同じ雛形がもう入っている」かもしれない、と添える)
+7. **VF-1 の拒否の文**: `render.view_family_extent_mismatch@1` を 1 文に。extent は `256×256` / `screen ×1.0` の形。`loop_origin` があればゾーンのその node に赤い印
+8. **Add fullscreen pass の画像の大きさ**: view_axis のループの body に置くとき、作る `render.image` の大きさをその family の基準の pass の extent に合わせる(固定なら固定の大きさ、画面相対なら `extent_scale`)。基準が読めなければ今どおり作り、拒否の文に任せる
+
+#### 受け入れ
+1. payload の test(fake の RPC): 入口が `decomposes.feature` のある feature にだけ出る(対照: 全 feature に出す変異)、digest の付け方(preset / direct root)、commit 後に Graph tab で loop が選ばれる、拒否の各文
+2. Undo の test: `apply_graph_template` の commit が履歴に積まれ、Undo が restore を送る(対照: 対象の method から外す変異)
+3. GPU シナリオ `graph_template_bloom`: bloom を持つ fixture → Render Features で bloom の `Replace with loop version…` → 確認 → Graph tab にループ、Frame Plan にループのグループ、画面が置き換える前と一致 → Undo で bloom の feature が戻る → Redo。cascade は影のある sample があれば同じ形で、無ければ CPU の test で代える
+4. `-L studio_cpu -LE gpu` 緑
+5. 報告にテキスト入力の欄(増えないはず)
+6. 決定 8: view_axis のループの body に Add fullscreen pass → cube の 256×256 の image(payload の test)。`loop_view_axis` を fixture の `cube_face` ではなく Add fullscreen pass で組める形に直せるなら直す
+
+#### 着地(2026-09-27、63d8ca4f)
+- **決定 1**: Render Features は一覧を読み直すたびに `get_graph_templates` も読み([`graphTemplatesFromResponse()`](../src/devstudio/view/frameplanedit.cpp#L1650)。`decomposes.feature` の無い雛形は捨てる)、選んだ行の feature に雛形があるときだけ、一覧の下に **Replace with loop version…**(`pelican.renderFeatures.replaceWithLoop`)を出す([出し分ける所](../src/devstudio/view/renderfeatureswidget.cpp#L3228))。行の右クリックも同じ action(`pelican.renderFeatures.replaceWithLoopVersion`。[作る所](../src/devstudio/view/renderfeatureswidget.cpp#L2193))。`get_graph_templates` を持たない engine では出さない
+  - Frame Plan の feature のグループの右クリックに同じ名前の項目(`pelican.framePlan.replaceWithLoopVersion`。[項目を足す所](../src/devstudio/view/frameplangraphics.cpp#L4995))。押せるか・理由は Render Features に問い、押すと Features タブを前に出して同じ流れを呼ぶ([つなぐ所](../src/devstudio/view/mainwindow.cpp#L443))
+  - 押せないときは理由を tooltip に: fork していない engine の preset の feature([`graphTemplateRefusal()`](../src/devstudio/view/frameplanedit.cpp#L1699))、編集できない、Apply していない編集がある
+- **決定 2**: [`graphTemplateConfirmation()`](../src/devstudio/view/frameplanedit.cpp#L1715)。`<title>: <description>`、`The feature bloom is removed, and the graph draws what it drew.`(`pass_replacements` なら `The feature <f> stays; N of its passes are replaced by <node>.`)、`The graph gains N nodes and M definitions.`、`Shader defines added: …`、`Undo takes it back (Ctrl+Z here, or Undo on the Frame Plan).`。ダイアログは `pelican.renderFeatures.replaceConfirm`(`.ok` = Replace / `.cancel`、既定は Cancel)。Cancel は `<feature> is left as it is.`
+- **決定 3**: 送る時点の一覧から組む([`submitGraphTemplate()`](../src/devstudio/view/renderfeatureswidget.cpp#L3154)、[`graphTemplateApplyParams()`](../src/devstudio/view/frameplanedit.cpp#L1708))。行の scope が `preset` なら、その行の `source_digest` を `base_preset_digest` に付ける
+- **決定 4**: 受理の応答の `applied.nodes` のうち雛形が `graph.loop` と宣言した最初の id を覚え、commit で owner に渡す。MainWindow が Graph タブを前に出してそのループを選ぶ([つなぐ所](../src/devstudio/view/mainwindow.cpp#L437))。Render Features の notice に `Replaced bloom with Bloom loop. Undo takes it back.` を緑で出し、一覧を読み直す間も残す
+- **決定 5**: [`RecordedMethods`](../src/devstudio/model/renderedithistory.cpp#L24) に `apply_graph_template` を足した。項目名は受理の応答の `applied.feature` と `applied.template` から `Replace bloom with Bloom loop`([`graphTemplateLabel()`](../src/devstudio/model/renderedithistory.cpp#L308))。応答の前は `Replace with <title>`
+- **決定 6**: [`graphTemplateRejection()`](../src/devstudio/view/frameplanedit.cpp#L1748)。`graph_template_unknown` / `graph_template_invalid` / `graph_template_feature_absent` / `graph_template_pass_replacement_conflict` / `project_preset_required` / `graph.node_duplicate@1` / `graph.definition_duplicate@1` の文。ほかは render の編集の拒否の行
+- **決定 7**: [`viewFamilyExtentRefusalDescription()`](../src/devstudio/model/inspectormodel.cpp#L727)。`viewSelectRefusalDescription()` の先頭で読むので、view_select の拒否と同じ所(Frame Plan・Pass Editor・Task Editor・Graph タブ)に出る。field は code の横、`error_fields`、message の中の `<code>: {…}` のどれからでも読む。印は既存の [`GraphCanvasModel::markRefusal()`](../src/devstudio/model/graphcanvasmodel.cpp#L3261) の `loop_origin` の規則(ループと、その要素の分岐の body の node)
+- **決定 8**: Graph タブは、文書に view_axis のループがあるときだけ `get_render_authoring_context` も読み、`render_targets[]` の宣言を持つ(`GraphCanvasReadCapability` に 11 本目として足した)。基準は frame plan の family の最初の render node(`declaration_index` の最小)が書く target。[`viewFamilyImageExtent()`](../src/devstudio/model/graphcanvasmodel.cpp#L2625) が、固定なら `width` / `height`(と `layers` が 2 以上ならそれ)、画面相対なら `extent_scale` を返し、Add fullscreen pass([組む所](../src/devstudio/model/graphcanvasmodel.cpp#L2105))が image に載せる
+- **仕様から外れた判断**(実装者の報告。コードで確かめた)
+  1. 流れの持ち主は Render Features。Frame Plan の右クリックは Features タブに委ねる
+  2. Add fullscreen pass は、view_axis のループの body では pass に `view_family` を書き、固定の大きさなら `resolution_domain: "independent"` も書く。image には `layers` も載せる
+  3. 基準の extent は frame plan に無いので、`get_render_authoring_context` の `render_targets` から辿る。engine が `get_frame_plan` に family の extent を載せる予定で、入ったら置き換える(実装者の報告)。その後 engine の VF-2(335c9bfd)が二次の family の node に `family_extent` / `family_layers` / `family_extent_pass` を載せた。Studio の側の置き換えはこの着地の時点ではまだ
+  4. Undo の項目名の title は雛形のファイル名から作る(engine が title の無い雛形に付けるのと同じ規則。`bloom_loop.json` → `Bloom loop`)
+  5. cascade は CPU の test で代えた(影を持つ fixture が無いため)
+  6. fixture の `cube_face` を消した(`loop_view_axis` は Add fullscreen pass で組む)
+  7. 新しい fixture `test/fixtures/studio_graph_template_bloom/`(`studio_automation_graph` の rendering 文書そのまま。direct root の features に bloom。`checker_box.glb` を engine の OpenPBR の発光する material で光らせる)
+  8. 成功の文は 2 文とも出す
+- **test**
+  - `devstudio_frameplan_graph_test`: `LP-4f2 the templates name the features that have a loop version, and what taking one in does`([test](../test/devstudio_frameplan_graph_test.cpp#L11761))/ `LP-4f2 each refusal of apply_graph_template reads as its sentence`([test](../test/devstudio_frameplan_graph_test.cpp#L11817))/ `LP-4f2 VF-1's refusal names the pass, the sizes and the family's first pass`([test](../test/devstudio_frameplan_graph_test.cpp#L11862))/ `LP-4f2 a feature's group offers its loop version when the Features tab has one`([test](../test/devstudio_frameplan_graph_test.cpp#L11897))
+  - `devstudio_task_editor_digest_test`: `LP-4f2 Replace with loop version is offered on a feature the engine ships one for, and on no other`([test](../test/devstudio_task_editor_digest_test.cpp#L479))/ `… confirms, sends the digests the feature lives under, and hands the loop it added to the Graph tab`([test](../test/devstudio_task_editor_digest_test.cpp#L510))/ `… says why it cannot, before and after it is sent`([test](../test/devstudio_task_editor_digest_test.cpp#L572))
+  - `devstudio_render_history_test`: `LP-4f2 apply_graph_template is recorded as Replace <feature> with <title>, and Undo restores the documents it wrote`([test](../test/devstudio_render_history_test.cpp#L819))/ `LP-4f2 the entry is named for the template until the engine names the feature`([test](../test/devstudio_render_history_test.cpp#L863))
+  - `devstudio_graphcanvas_scene_test`: `LP-4f2 Add fullscreen pass in a view-axis loop's body makes its image at the family's size`([test](../test/devstudio_graphcanvas_scene_test.cpp#L5040))/ `LP-4f2 without the targets' declarations the image is made as before, in the loop's family`([test](../test/devstudio_graphcanvas_scene_test.cpp#L5113))/ `LP-4f2 a view family's size refusal of a loop's copy marks the zone's node`([test](../test/devstudio_graphcanvas_scene_test.cpp#L5137))
+- **変異**(実装者の報告。どれも赤): 全 feature に出す / preset の digest を送らない / ループを渡さない / `definition_duplicate` の文を外す / 分解版の有無を無視する / 履歴の method から外す / VF-1 の文を読まない / 大きさを反映しない
+- **シナリオ(受け入れ 3)**: `graph_template_bloom`([シナリオ](../test/studio_scenarios/graph_template_bloom.json))。json の `steps` は 46
+  - viewport の中央・隅の色と色の数を覚える → Render Features で bloom を選び Replace with loop version… → 確認の文が `Bloom loop`・`The feature bloom is removed`・`Undo takes it back` を含む → Replace
+  - root の features が 0 本、graph に `graph.loop` の `bloom_down` → Graph タブにゾーン、Loop の欄の要約に `bloom_down` → notice が `Replaced bloom with Bloom loop. Undo takes it back.` → 中央・隅・色の数が前と同じ → Frame Plan の Refresh の後にループのグループ
+  - Edit ▸ Undo Render Edit → bloom が features に戻り graph は 2 node、絵が同じ → Redo → ループが戻り、絵が同じ
+  - 実装者の報告では、置き換えの前後・Undo・Redo で中央 `#ffffff`・隅 `#000000`・色数 1016 が一致
+- **決定 8 のシナリオ**: `loop_view_axis` を、body に Add fullscreen pass を置く形に直した(json の `steps` は 54)。image の `width` / `height` が 256、`layers` が 6、pass の `view_family` が `$capture/cube` であることを見てから Each element を選ぶ
+- **受け入れ 4**: `-L studio_cpu -LE gpu` 451/451 緑(実装者の報告)
+- **テキスト入力の欄(受け入れ 5)**: 実装者の報告に記載が無い(未確認)。2 本のシナリオに `type` の step は無い
+- **穴**(実装者の報告)
+  - Frame Plan の feature のグループは lowering graph があるときだけ出る(その入口も同じ)
+  - VF-1 の印は、fields が code の横か `error_fields` にあるときだけ付く(message の中だけの fields では文は出るが印は付かない)
+  - automation の名前(`pelican.renderFeatures.replaceWithLoop` / `.replaceWithLoopVersion` / `.replaceConfirm`、`pelican.framePlan.replaceWithLoopVersion`)は README の名前の表には足していない
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
