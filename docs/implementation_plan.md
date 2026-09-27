@@ -26951,6 +26951,47 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - 結果: `-L studio_cpu -LE gpu` 503/503、`play_mode_roundtrip` 緑(2 回)
 - 利用者がテストの重なりを気にしていたので、分けた 2 本を 1 本に戻した(確認項目の対応表は実装者の報告で確かめた)
 
+### GL-1: Graph に feature と rendering 節の pass を畳んだ node として出す(見せ方だけ、engine 変更なし)
+
+**中段(Studio のみ)。実装者: Claude(Opus)。develop 01b244cd から。設計は `docs/design_graph_layers.md` の §7 の GL-1 の行(§1・§3.3・§3.4・§4)。Studio での見え方は `docs/manual/13_editor.md` の「graph の外から来た pass を畳んだ node で見る(✅GL-1)」。**
+
+#### 前提
+- 利用者の言葉(2026-09-27): 「`deferred_geometry` は中を見るとループゾーンを含む node に見えるべき」「Graph と Frame Plan の行き来が不自由」「Frame Plan で足した pass が Graph に出ない」「全領域を 1 枚に出すべきでない。少なくとも filter は要る」「テストで実装速度を遅くしない」
+- engine の GL-2a(`d3a34869`)の `origin` はまだ読まない。graph の pass かどうかは名前の一致で決め、GL-2b で `origin` に置き換える
+
+#### 決定
+1. root の canvas に、graph の node 以外から来た pass を読むだけの node で出す。feature は 1 つに畳み、それ以外は 1 pass 1 node。位置は保存しない
+2. plan の reads / writes から派生の線を破線で引く。編集できない
+3. ダブルクリックで中を読むだけで見せる(material pass は `render.material_pass` と draw_loop のゾーン、feature はその pass、雛形があれば分解版)
+4. 読むだけの中の編集は何も送らず、1 行と **Expand to edit…**(今の Decompose into loop / Replace with loop version)
+5. 領域の filter `Show:`(既定 Render)と、隠れた node へ向かう線の口
+6. Frame Plan の Open in Graph を全 pass に
+7. test は model の test 1 本と GPU シナリオ 1 本。変異は入れない(利用者の指示)
+
+#### 着地(2026-09-28、4f13a95c)
+- **決定 1**: Graph タブは文書を読むたびに `get_frame_plan` を読む(条件を外した。[`GraphCanvasModel::requestLoopReports()`](../src/devstudio/model/graphcanvasmodel.cpp#L698))。最初の plan が無い間は失敗した読みを最大 480 回繰り返す(コメントでは poll の 2 分ぶん)。plan は [`GraphCanvasModel::readPlanPasses()`](../src/devstudio/model/graphcanvasmodel.cpp#L4310) が読み、畳んだ node は [`GraphCanvasModel::rootFoldedNodes()`](../src/devstudio/model/graphcanvasmodel.cpp#L4411) が作る。`provider_feature` ごとに 1 つ(型は `feature`、帯は `N passes`)、他は 1 pass 1 node(型は plan の `kind`、material pass は `material`)。anchor は出さない。graph の node の左に plan の順で 1 列。drag はセッションの間だけで、文書が変わると戻る。theme の token `derived_border` / `derived_body` を足した([theme の表](../src/devstudio/resources/studio_themes.json#L65))。選ぶと要約の行 `pelican.graphCanvasFoldedSummary`
+- **graph の pass の判定**: [`GraphCanvasModel::graphOwnerOf()`](../src/devstudio/model/graphcanvasmodel.cpp#L4379) の 1 か所。`loop_origin` のループ → root の `graph.instance` の `<id>/` の接頭辞 → pass 名と同じ id の root の node → `authored_name` と同じ id の root の render node。コメントに、engine の `origin` が置き換えると書いてある(GL-2b)
+- **決定 2**: [`GraphCanvasModel::derivedEdges()`](../src/devstudio/model/graphcanvasmodel.cpp#L4459)。reads / writes / reads_history から資源の名前で引き、graph の側は資源を名乗る `render.target_ref`(`parameters.name`)・`render.image` などへ付け替える。同じ 2 node の間は 1 本。破線で、tooltip `<資源>: from the frame plan (read only)`
+- **決定 3**: [`GraphCanvasModel::enterFolded()`](../src/devstudio/model/graphcanvasmodel.cpp#L4667)。パンくずは `root / <pass>`。material pass の中身は [`GraphCanvasModel::foldedDocument()`](../src/devstudio/model/graphcanvasmodel.cpp#L4539) が plan から組む(契約は plan の `material_routing`、ゾーンの段は `draw_loop`、数は `material_filter.resolved_draw_count` があれば)。feature の中はその pass と線。`get_graph_templates` を読む口を `GraphCanvasReadCapability` に足し([読む口](../src/devstudio/view/graphcanvasreadcapability.hpp#L59))、雛形があれば **Show decomposed version**。中の絵は、Studio が組んだ文書を本物と入れ替えて描き、返事を読む間だけ本物に戻す
+- **決定 4**: [`GraphCanvasModel::refuseFoldedEdit()`](../src/devstudio/model/graphcanvasmodel.cpp#L4741)。op は送らず、`pelican.graphCanvasFoldedNotice` に `This is the engine's folded implementation: expand it to edit.` と **Expand to edit…**(`pelican.graphCanvas.expandToEdit`)。`set_layout` だけの列は黙って捨てる。リンクの行き先は [`GraphCanvasModel::foldedExpand()`](../src/devstudio/model/graphcanvasmodel.cpp#L4719)(rendering 節の material pass → Decompose into loop、雛形のある feature → Replace with loop version)
+- **決定 5**: `Show:` の check `pelican.graphCanvasShow.<render|pose|value|audio|ui>`、既定は Render だけ。op の接頭辞で決め(`draw.*` は Render、`event.*` は Value。[`GraphCanvasModel::opDomain()`](../src/devstudio/model/graphcanvasmodel.cpp#L4758))、`graph.instance` と `graph.loop` は常に出す。root だけに効く。隠れた node への線は `← value (N)` / `→ pose (N)` の口になり、押すとその領域を足す([`GraphCanvasModel::domainStubs()`](../src/devstudio/model/graphcanvasmodel.cpp#L4789))。Inspector や Frame Plan から隠れた領域の node を開くと、その領域を足す
+- **決定 6**: Frame Plan は anchor 以外のすべての node に Open in Graph を出す([分ける所](../src/devstudio/view/frameplanwidget.cpp#L2868))。graph の node が作っていない pass は [`GraphCanvasWidget::revealPlanPass()`](../src/devstudio/view/graphcanvaswidget.cpp#L5006) で、feature の pass なら feature の畳んだ node、他はその pass の node を選んで中央に置く(潜らない)
+- **仕様との違い**: 1 pass の node(material でない)のダブルクリックは何もしない(仕様は「Frame Plan でその pass を選ぶ、にしてよい」)
+- **test**
+  - 新規: `devstudio_graphcanvas_test` の `GL-1 the plan's passes no graph node made are folded nodes, read only, with the lines the plan implies and the domain filter's cut ends`([test](../test/devstudio_graphcanvas_test.cpp#L2474))。fake の plan(preset の material pass と lighting pass、3 pass の feature、anchor、graph の render node の pass、rendering 節の present)で、決定 1〜6 の model の側を見る
+  - 直した(plan の読みが 1 つ増えたため): `devstudio_graphcanvas_test` の 3 本(`The graph canvas reads root and definition scopes out of one document` / `The node values overlay reaches a definition body and the root scope` / `Graph history never replays across another writer or a reconnect`)の「読みが無い」を「plan の読みだけ」に。`devstudio_graphcanvas_scene_test` の `A CAS mismatch keeps the notice, drops the gesture and reads again` は plan の読みを除いて数える。同じく `Q-5 a placement save coming back keeps the scene and what is picked on it` は Show: の Value を入れる。`devstudio_frameplan_graph_test` の `Q-12 a graph node's task on the canvas: its sentence, and Open in Graph` は、pass にも Open in Graph が出ることを期待する
+- **シナリオ**
+  - 新規: `graph_folded_features`([シナリオ](../test/studio_scenarios/graph_folded_features.json)。json の step は 29、実装者の報告では 31 手)。fixture `test/fixtures/studio_graph_folded_features/` は `studio_material_loop_decompose` の写し。`forward_opaque` と `present` の畳んだ node と破線 → ダブルクリックでゾーンと body の node → 中の Add loop で 1 行、文書は変わらない → パンくずで戻る → Frame Plan の Open in Graph で node が選ばれる
+  - 直した: `graph_read`(Show: の Value を押し、`clock` と `left` を名前で待つ。node の数は数えない)
+  - 既存で緑(実装者の報告): `loop_zone_edit`、`material_loop_decompose`、`graph_read`。統合側で `graph_canvas_zoom_pan` も緑
+- **変異**: 入れていない(利用者の指示「テストで実装速度を遅くしない」)
+- **テキスト入力**: 増えていない(新しいシナリオの打つ欄は 0。json で確かめた)
+- **穴**
+  - 判定は名前の一致。instance の definition の中の node の `authored_name` には当たらない(比べるのは root の node だけ)。GL-2b で `origin` に置き換える
+  - 設計の受け入れ「Release で `deferred_geometry` が Graph に出て潜れる」は、シナリオでは forward の `forward_opaque` で見た。`deferred_geometry` と Release は未確認
+  - feature の畳んだ node と Show decomposed version は model の test だけ(GPU シナリオの fixture に feature が無い)
+  - 派生の線の上の、ダブルクリック以外の操作で op が出ないことは test で見ていない
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

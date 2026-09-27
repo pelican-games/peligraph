@@ -220,7 +220,7 @@ canvas は 1 枚だが、**見せる領域を選ぶ**。全領域を一度に描
 
 | 段 | 中身 | engine | 受け入れ(要点) |
 |---|---|---|---|
-| **GL-1 見せ方だけ** | Graph に `rendering` 節の pass・preset の pass・feature を畳んだ node として出す。線は frame plan から派生した破線。ダブルクリックで開いた形を読む(material pass はゾーン、雛形のある feature は雛形)。領域 filter(既定 `render`)。Frame Plan の Open in Graph を全 pass に。graph の pass かどうかは名前の一致で判定(GL-2b で `origin` に置き換える) | 無し | Release で `deferred_geometry` が Graph に出て潜れる。GPU シナリオ 1 本 |
+| **✅GL-1 見せ方だけ** | Graph に `rendering` 節の pass・preset の pass・feature を畳んだ node として出す。線は frame plan から派生した破線。ダブルクリックで開いた形を読む(material pass はゾーン、雛形のある feature は雛形)。領域 filter(既定 `render`)。Frame Plan の Open in Graph を全 pass に。graph の pass かどうかは名前の一致で判定(GL-2b で `origin` に置き換える)(`4f13a95c`) | 無し | Release で `deferred_geometry` が Graph に出て潜れる。GPU シナリオ 1 本 |
 | **GL-2a engine の origin** | §5.1 | 有り | graph の pass と preset の pass が `origin` で区別でき、物理 plan の要素から node に戻れる |
 | **GL-2b 層の印** | Studio が `origin` / `from_nodes` を読み、node の帯と詳細欄に L1〜L3 を出す。Frame Plan のどの層のどの行からも Open in Graph。GL-1 の判定を `origin` に置き換える | 無し | Barriers の行から node に戻る |
 | **GL-3 断片と決定** | `fold_groups`、`decisions` の欄(serial / no_alias / physical)、ローカル名を展開名へ写す段 | §5.2・§3.6 | 断片に付けた決定が展開名で効き、L2 の表に出る |
