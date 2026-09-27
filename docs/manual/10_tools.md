@@ -312,12 +312,12 @@ component に `resolution_error`。
 
 2026-09 の追加(GP-4、`c095493c`): `get_status` の `input` に `cursor {requested, effective, embedded}`([組み立て](../../src/core/communication/rpcserver.cpp#L1678))。`requested` はゲームコードが `ctx.input().setCursorMode` で頼んだモード、`effective` は窓に適用したモード(`normal` / `hidden` / `locked`)、`embedded` は窓が別の窓に埋め込まれているか(`--rpc` かつ `WS_CHILD`。Windows だけで判定)。埋め込みでは `locked` を頼んでも `effective` は `normal` です。headless は窓が無いので `effective` は常に `normal`、`embedded` は `false`。
 
-2026-09 の追加(AG-3a、`32d9a20b`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L2920)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L380))。読み取り専用で `edit_*` の CAS には乗らない。
+2026-09 の追加(AG-3a、`32d9a20b`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L2943)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L380))。読み取り専用で `edit_*` の CAS には乗らない。
 
 **`get_graph_values` と `get_graph_node_values` は問いが違います。**前者は `instance` 必須で、その
 **instance の入力 port だけ**を `{port, value, source, connected|parameter}` として返します(`source` は
 `connected` / `parameter` / `default` / `override`)。後者は**展開木のノードを全部**並べ、各ノードの出力値を
-`outputs` に入れます([実装](../../src/core/communication/renderconfigeditor.cpp#L2839))。両方とも
+`outputs` に入れます([実装](../../src/core/communication/renderconfigeditor.cpp#L2862))。両方とも
 **同じ publish snapshot を読むだけ**で再評価しません —— 再評価は graph の時計を進め event を二重に消費するためです。
 `source: "rendering"` は「これは描画側の評価が使った値だ」という明示で、animation phase は同じ文書を
 自分の state で評価するため、event や trigger で駆動される文書では両者が恒久的に違いうることを表します。
@@ -716,7 +716,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 ```
 
 `--tab` が取るのは `frame_plan` / `render_features` / `graph` の 3 つ
-([一覧](../../src/devstudio/view/mainwindow.cpp#L1360))。**未知の名前は window を作る前に console へ
+([一覧](../../src/devstudio/view/mainwindow.cpp#L1368))。**未知の名前は window を作る前に console へ
 理由を出して終了コード 2** です([検査](../../src/devstudio/main.cpp#L36)) —— window を開いて「たまたま前にあった
 タブ」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます
 ([順序](../../src/devstudio/view/uimain.cpp#L71)) —— project を開くとその project のツール配置が復元され、

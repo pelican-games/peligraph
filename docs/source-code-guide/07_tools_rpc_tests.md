@@ -322,7 +322,7 @@ Inspector / Output / Engine Log / Frame Plan / Pass Editor の7パネルを stab
 同じレンダー設定を別の角度から見ているだけだからです。
 
 tab は CLI から選べます。`pelican_studio --project <dir> --tab frame_plan|render_features|graph` で、
-[名前の一覧](../../src/devstudio/view/mainwindow.cpp#L1360)は `MainWindow` の static 関数にあり、
+[名前の一覧](../../src/devstudio/view/mainwindow.cpp#L1368)は `MainWindow` の static 関数にあり、
 **window を作る前**に [`main.cpp`](../../src/devstudio/main.cpp#L36) が綴りを検査して、未知なら console に
 理由を出して **exit 2** します。適用は `openProject()` の**後**です([順序](../../src/devstudio/view/uimain.cpp#L71))
 —— project を開くとその project の tool layout が復元され、前面の tab が変わるためです。
@@ -369,7 +369,7 @@ renderer が `framePlanToJson()` に渡します。物理の層は、`physical_t
 `from_nodes[]` を書き込みます。物理の要素 → node 名 → `origin` → graph の文書、の順に辿れます(形は manual 第13章「`get_frame_plan` に足されたもの」)。
 
 Graph タブが読む応答も同じ読み方をします。1 応答に「今の版」と「文書の 2 つの層」が入っています
-([組み立ては `getGraphInstances()`](../../src/core/communication/renderconfigeditor.cpp#L2333))。
+([組み立ては `getGraphInstances()`](../../src/core/communication/renderconfigeditor.cpp#L2356))。
 
 ```text
 get_graph_instances 応答
@@ -407,10 +407,10 @@ save の文言が **Save preset**(feature 由来なら **Save feature**)に変�
 
 [`FramePlanWidget`](../../src/devstudio/view/frameplanwidget.hpp#L27) はその model を **9 枚の tool tab** に投影します ——
 Logical graph / Passes / Resources / Physical plan / Decisions / Backends / Barriers / Materials / Raw JSON
-([登録](../../src/devstudio/view/frameplanwidget.cpp#L1174))。tab は掴んで並べ替えられ、その順序は保存されます。
+([登録](../../src/devstudio/view/frameplanwidget.cpp#L1183))。tab は掴んで並べ替えられ、その順序は保存されます。
 **読み取り専用でもありません**: toolbar に **Order nodes...** / **Edit task...** / **Edit pass...** があり、
 `Shift-drag: connect resources` のラベルどおり **Shift + 左ドラッグ**で出力元から task / preset pass へ線を引くと、
-その編集画面が開きます([toolbar](../../src/devstudio/view/frameplanwidget.cpp#L658))。保存自体は
+その編集画面が開きます([toolbar](../../src/devstudio/view/frameplanwidget.cpp#L659))。保存自体は
 `RenderFeaturesWidget` と `FullscreenPassWidget` が持つ編集 RPC を通ります。
 初期状態は順序、名前、種別、入力、出力の pass 行だけで、
 attachment ops、resource use、material filter、前後 barrier は折りたたみ配下です。filter も全 tree の
@@ -423,13 +423,13 @@ attachment ops、resource use、material filter、前後 barrier は折りたた
 
 ### 共通グラフの 3 層(N-1 / N-1b / N-2)
 
-[`GraphCanvasModel`](../../src/devstudio/model/graphcanvasmodel.hpp#L556) は **Qt に依存しません**。
+[`GraphCanvasModel`](../../src/devstudio/model/graphcanvasmodel.hpp#L642) は **Qt に依存しません**。
 `GraphAttachmentModel` と同じ「request / read の 2 slot」形で、呼び手が `takeRpcRequests()` を drain し、
 好きな transport で送り、`receiveRpcResult()` / `receiveRpcFailure()` で答えを戻します。slot が 2 つあるのは、
 **値の問い合わせが次の文書再取得を待たせないため**で、遅れて届いた古い答えは捨てられます。
 提供するのは scope 一覧(`root` + definition 名)、scope ごとの node と edge、root scope の `graph.instance` へ
 重ねる値の overlay、そして `contentRevision()` / `reportRevision()` の 2 つの世代です
-([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L1068))。編集側は 6 つの操作
+([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L1207))。編集側は 6 つの操作
 (`connectInput` / `disconnectInput` / `setNodeParameter` / `removeNode` / `setNodeLabel` / `addNode`)で、
 **どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L1945))。
 `addNodeOps()` だけは複数 op を返します —— 必須の scalar 入力を持つ操作は、未接続のままでは engine が受け取らないので、
@@ -475,7 +475,7 @@ Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphic
 
 [`GraphCanvasWidget`](../../src/devstudio/view/graphcanvaswidget.hpp) と `GraphCanvasScene` が view です。
 上段は `Scope:` の combo とパンくず、`Values from:` の combo、`Refresh`
-([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L3523))、本体は左がキャンバス、右が
+([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L3549))、本体は左がキャンバス、右が
 `Field` / `Value` の詳細表です。node は見出し帯 + 出力欄 + 入力欄の 3 段で、見出しの三角はソケット欄を
 折り畳みます(折り畳むと辺は見出し帯の左右中央 1 点へ集まります)。編集はすべて**即時**で Apply ボタンがなく、
 ソケット間ドラッグ = `set_input`、辺の `Delete` = `set_input{null}`、値の帯のその場編集 =
@@ -485,7 +485,7 @@ node の `Delete` = `remove_node` です。位置と折り畳みは `(scope, nod
 engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view/graphcanvasreadcapability.hpp#L31) が
 名前で持つ 5 つ(`get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` /
 `get_edit_result`)だけで、それ以外は `The graph canvas cannot issue %1.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L4137))。規範は struct の宣言そのもの
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L4208))。規範は struct の宣言そのもの
 ([メンバ 5 本](../../src/devstudio/view/graphcanvasreadcapability.hpp#L40))で、その上の宣言コメントは
 **読みを 3 つと数えたまま**です —— メンバは `requestGraphInstances` / `requestGraphCatalog` /
 `requestGraphValues` / `requestEditResult` の 4 読み + `requestEditGraphDocument` の 1 編集なので、
@@ -526,7 +526,7 @@ project と scene 文書を開き、scene と object の木を作ります。obj
 `(scene_id, declaration_index)` で、無名 object の表示名だけを engine と共有する
 `pelican://scene/<id>/authoring-object/<n>` 規則から作ります。
 
-[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L1709) は model の索引を Qt item の
+[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L1717) は model の索引を Qt item の
 data role に保持して Outliner dock へ写すだけです。project 読み込みと 2 scene・46/2 object、無名
 object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L123) が
 GUI なしで検査します。RPC の `scene_tree` / `get_components` も 0 始まりの
@@ -880,7 +880,7 @@ N-2 で **全 op が任意の `scope` を取る**ようになりました
 ([解決](../../src/project/graphcomposition.cpp#L1349))。既定は `"root"`、definition 名を書くとその本体が対象で、
 `root` は予約語なので同名の definition は指せません。これに合わせて
 `edit_graph_document` の書き戻しも 2 段になり、root の `nodes` は常に、`definitions` は
-**変化したときだけ**書き戻します([判定](../../src/core/communication/renderconfigeditor.cpp#L2410)) ——
+**変化したときだけ**書き戻します([判定](../../src/core/communication/renderconfigeditor.cpp#L2433)) ——
 root だけの編集が definition のバイト列を動かさないようにするためです。
 
 名前付きの拒否は `GraphRegistryError` が運びます: `graph.node_duplicate@1` / `graph.node_missing@1` /
@@ -899,11 +899,11 @@ root だけの編集が definition のバイト列を動かさないようにす
 `list_render_features` が返す各 entry には `source` が付きます。値は **`"engine"` と `"package"` の 2 つだけ**で、
 `project://features/*.json` に手で置いた文書は catalog に載りません
 ([entry の定義](../../src/core/communication/renderconfigeditor.hpp#L47))。package 側の列挙は
-[`enumeratePackageRenderFeatureDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L746) で、
+[`enumeratePackageRenderFeatureDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L769) で、
 **`noexcept` で、`std::exception` の失敗を entry として報告します** —— `project.json` が読めなければ package は 0 個、
 package の文書が壊れていれば `available: false` + `unavailable_reason` の行として並びます。ただし
 **「全部の失敗が行になる」わけではありません**: `std::exception` を継承しない例外を捕まえる
-[package の文書を読む `readPackageFeatureDocuments` の呼び出しを包む `catch (...)`](../../src/core/communication/renderconfigeditor.cpp#L763) は `continue` するだけなので、
+[package の文書を読む `readPackageFeatureDocuments` の呼び出しを包む `catch (...)`](../../src/core/communication/renderconfigeditor.cpp#L786) は `continue` するだけなので、
 その package は entry を 1 つも残さずに catalog から落ちます(記録した穴)。
 
 これは行儀の問題ではありません。catalog は **editor service の構築時**に作られるので、ここで例外が抜けると

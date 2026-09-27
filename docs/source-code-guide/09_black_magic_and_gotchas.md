@@ -916,7 +916,7 @@ TEST_CASE("...") {
 
 | skip していたテスト | 握り潰されていた engine の例外 |
 |---|---|
-| [`rpc_color_contract_test.cpp` 内](../../test/rpc_color_contract_test.cpp#L896) | [`MaterialContainer::validateRuntimeGenerationCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1656) の `render-pipeline candidate has no compatible pass for live material 0 (route 'deferred_geometry', shader contract 'gbuffer_v1')` |
+| [`rpc_color_contract_test.cpp` 内](../../test/rpc_color_contract_test.cpp#L896) | [`MaterialContainer::validateRuntimeGenerationCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1682) の `render-pipeline candidate has no compatible pass for live material 0 (route 'deferred_geometry', shader contract 'gbuffer_v1')` |
 | [`materialvaluesreload_test.cpp` 内](../../test/materialvaluesreload_test.cpp#L369) | [`validateMaterialTextureReflection()`](../../src/core/material/materialcontainer.cpp#L485) の `material texture 'albedo_detail' is absent from shader reflection at binding 7` |
 | [`materialvaluesreload_test.cpp` 内](../../test/materialvaluesreload_test.cpp#L491) | 同上 |
 | [`HR1-M watcher gate and 1000 reloads keep resources bounded`](../../test/materialvaluesreload_test.cpp#L766) | 同上 |
@@ -1488,11 +1488,11 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ### 9.23.7 material
 
-#### [`descriptor_abi_changed`](../../src/core/material/materialgenerationplanner.cpp#L1511) — 全 descriptor 破棄と revision
+#### [`descriptor_abi_changed`](../../src/core/material/materialgenerationplanner.cpp#L1537) — 全 descriptor 破棄と revision
 
 **分からなくなること**: なぜ `waitIdle()` してから捨てるのか、revision は誰が読むのか。
 
-**答え**: `pass_inputs` / `resource_interface` が変わると既存の descriptor set はレイアウト・束縛内容と ABI 不一致になります。[commit 側](../../src/core/material/materialgenerationplanner.cpp#L1511)ではまず **`waitIdle()` して in-flight フレームが古い set を参照し終えるのを待ち**、その後 clear して `++descriptor_revision` します。revision は消費側キャッシュの世代無効化用です。同じ理由の待機が [live な `MaterialBuffer` への in-place 書き込み](../../src/core/material/materialcontainer.cpp#L1484)にもあります(こちらはバッファの差し替えではなく、コメントどおり「in-flight フレームが共有する live SSBO の読み手を守る」ための `waitIdle()`)。
+**答え**: `pass_inputs` / `resource_interface` が変わると既存の descriptor set はレイアウト・束縛内容と ABI 不一致になります。[commit 側](../../src/core/material/materialgenerationplanner.cpp#L1537)ではまず **`waitIdle()` して in-flight フレームが古い set を参照し終えるのを待ち**、その後 clear して `++descriptor_revision` します。revision は消費側キャッシュの世代無効化用です。同じ理由の待機が [live な `MaterialBuffer` への in-place 書き込み](../../src/core/material/materialcontainer.cpp#L1484)にもあります(こちらはバッファの差し替えではなく、コメントどおり「in-flight フレームが共有する live SSBO の読み手を守る」ための `waitIdle()`)。
 
 #### [variant 次元と parity 次元](../../src/core/material/materialdescriptorbuilder.cpp#L441) — 2 軸が直交する
 
@@ -1510,7 +1510,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 |---|---|---|---|
 | [`ray_generation` / `ray_lease` の対](../../src/core/material/materialcontainer.cpp#L804) | 世代とリース | 2 つで何を保証するか | `ray_generation` は登録ごとに単調増加する数値 ID(枯渇時は例外)で同一 material id の再登録を区別し、`ray_lease`(型は `shared_ptr<const void>`、実体は `make_shared<const uint64_t>(ray_generation)`)は**その登録実体がまだ生きていることをポインタ同一性で証明**する。不一致なら [`pelican.ray_material_snapshot_stale@1`](../../src/core/material/materialcontainer.cpp#L1682) |
 | [`input_attachment_index` と same_pixel](../../src/core/material/materialcontainer.cpp#L2107) | LogicalReadFootprint の same_pixel | なぜ同一ピクセルだけか | dynamic rendering local read の条件そのもの(→ §9.23.4 / [第6章](06_rendering_vulkan_shader.md))。詳細は**未執筆** |
-| [pass variant 間の ABI 一致検証](../../src/core/material/materialgenerationplanner.cpp#L935) | 同じ shader input の検証 | 何を比べているか | **未執筆**(根拠がコードにない) |
+| [pass variant 間の ABI 一致検証](../../src/core/material/materialgenerationplanner.cpp#L936) | 同じ shader input の検証 | 何を比べているか | **未執筆**(根拠がコードにない) |
 
 ### 9.23.8 vertex / model
 
@@ -1929,13 +1929,13 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **実際は**: 編集は最後まで **byte 列のまま**行われます。[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288) は root のメンバを字句走査する [`locateObjectMembers()`](../../src/project/renderconfigdocument.cpp#L194) を 2 回使い、まず root で `rendering` の値スパンを見つけ、その位置から同じ走査を節の中へ入れ直します。要点は**入れ子にしても offset を相対化しないこと**で、ヘッダのコメントがそれを規範として書いています — 「同じ bytes の中に位置づけるので、offset は絶対のまま、文書 digest は file 全体を覆い続ける」([コメント](../../src/project/renderconfigdocument.cpp#L286))。この性質があるので、節を編集しても CAS の単位([`renderConfigSourceDigest()`](../../src/project/renderconfigdocument.cpp#L410))は文書全体のままで変わりません。書き手は [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L654) 1 本で、graph root 自身のキー(と editor の `layout`)は [`withRootValue()`](../../src/project/renderconfigdocument.cpp#L633) へ落ちます(MG-2b で legacy root は読み手ごと無くなりました)。
 
-読み手と書き手の非対称も意図です。[`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) は節が無ければ `RenderConfigSectionUnlocated` を投げ、[`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49) は空 object を返します。**読みは節が無くても失敗せず、編集だけが `render_config_section_unlocated` という名前で拒否されます**([拒否の実例](../../src/core/communication/renderconfigeditor.cpp#L1253))。
+読み手と書き手の非対称も意図です。[`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) は節が無ければ `RenderConfigSectionUnlocated` を投げ、[`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49) は空 object を返します。**読みは節が無くても失敗せず、編集だけが `render_config_section_unlocated` という名前で拒否されます**([拒否の実例](../../src/core/communication/renderconfigeditor.cpp#L1276))。
 
 **不変条件**: 節の中の offset を「節の先頭からの相対」に変えないこと(digest が節だけを覆う別物になり、CAS の意味が変わります)。読みの経路に `renderingSectionOf()` を使わないこと — 節を持たない graph root を読んだだけで例外になります。authored key の住所判定を各 caller が `if (graph)` で持たないこと。
 
 **読む場所**: [`renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L12) → [`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288) → [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L654)。
 
-> **N-6 の例外**: `edit_graph_document` の op 列が `set_layout` だけのとき、editor は候補文書を `apply_candidate` に通さず(`Ticket::source_only`)、文書を書くだけで commit を終えます。「すべての commit は候補経路を通る」の唯一の例外で、置き場所は engine の挙動に触れないためです([経路](../../src/core/communication/renderconfigeditor.cpp#L2387))。
+> **N-6 の例外**: `edit_graph_document` の op 列が `set_layout` だけのとき、editor は候補文書を `apply_candidate` に通さず(`Ticket::source_only`)、文書を書くだけで commit を終えます。「すべての commit は候補経路を通る」の唯一の例外で、置き場所は engine の挙動に触れないためです([経路](../../src/core/communication/renderconfigeditor.cpp#L2410))。
 
 ### 難所 — 排他 create の committed marker
 
