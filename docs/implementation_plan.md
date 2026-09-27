@@ -24307,6 +24307,7 @@ Vulkan validation は原因ではない(headless `step_frame` +34% のみ)。
 
 #### 決定
 1. **embed は「engine の窓 thread が pump している」ことを確かめてから**: 窓を見つけたら `SendMessageTimeoutW(hwnd, WM_NULL, …, SMTO_ABORTIFHUNG | SMTO_NORMAL, 0〜50 ms)` を UI thread の timer で周期的に打ち、応答したときに `embed()` を呼ぶ。それまでは窓を **見えない位置 / 親無し**で置くのではなく、engine 窓の上に「Loading… `<project>`(engine の起動中)」の overlay label を Studio 側で描く(engine の窓自体はまだ Studio の子でないので、viewport panel の中に label を出す)
+   - 注記(2026-09-27): EW-1 / EW-2 で、engine の窓は非表示で作られるようになった(隠すのは engine の `--embedded`。Loading を Studio で描くのは今どおり。`### EW-2:` の「Q-4 との関係」)
 2. **timeout の再基準化**: `WindowDiscoveryTimeoutMs` は「窓が見つかるまで」にだけ効かせ、「見つかったが pump していない」状態は別の timer(`EngineLoadTimeoutMs`、既定 120 s。process が生きていて stderr が進んでいる間は延長)にする。kill するのは process が死んだ / 応答も log も止まったときだけ。文言: 「engine の起動を待っています(n 秒)」「engine が n 秒応答しないので停止しました」
 3. `rpc_ready_` は embed 後 + RPC の最初の応答で立てる(今日どおりの意味に戻す)
 4. **計測**: Q-2 の方法で project open の UI thread block 時間(`SendMessageW(WM_NULL)` の往復と、Studio の event loop の最大停止時間 = `QElapsedTimer` を 16 ms timer で監視して最大 gap を取る)を before / after、Debug と Release、`example` と `playground_pose` で
@@ -26650,6 +26651,74 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - あわせて、`test/studio_scenarios/README.md` の automation の名前の表に、LP-4f1 と LP-4f2 で増えた名前を足した
 - 仕様から外れた判断: Graph tab 側のライブラリは frame plan のライブラリを link していないので、3 つの key を緩く読む関数を Graph tab 側にも置いた(読む所が 2 か所。Frame Plan 側は壊れた値を名指しで拒否、Graph tab 側は読めなければ画面の大きさに戻る)。`family_layers` が 1 より大きければ画面相対の family でも `layers` を付ける(出荷の feature に無い組み合わせで、engine では未確認)
 - 残した穴: `loop_view_axis` は `family_extent` そのものを rpc で見る step を持たない(辿りを外したので 256 は `family_extent` からしか来ない)。Frame Plan の Family size の行は unit test だけ
+
+### Q-18: Graph tab の編集の後に Frame Plan を自動で読み直す / Draw 欄と View 欄も往復中は押せないように
+
+**下段(Studio のみ)。実装者: Claude(Opus)。develop 73c39d9e 以降(LP-4f3 まで)。Studio での見え方は `docs/manual/13_editor.md` の「Graph タブの編集の後は Frame Plan が自分で読み直します」と「Draw 欄と View 欄も往復の間は押せません」。**
+
+#### 前提
+- LP-4c / LP-4d2 の報告: Graph tab でループの回数などを変えても、Frame Plan tab の `×N` や展開後の pass は Refresh を押すまで古いまま(Frame Plan は自分の編集か digest の通知でしか読み直さない)。Graph tab の中の `×N` の表示も、文書が変わったときにしか frame plan を読み直さない
+- Q-17: Loop の欄は、編集の往復(送った編集の読み直しが返るまで)の間は無効になった(`followEditable()`)。同じ side 欄の `GraphCanvasDrawFields`(draw.* の欄)と `GraphCanvasViewFields`(render node の View 欄)は、まだ往復中でも有効に見え、model が黙って断る
+
+#### 決定
+1. Graph tab の編集が commit したら、Frame Plan tab に知らせて読み直させる(Q-13 の共有 digest の通知と同じ経路が使えるか確かめる。使えなければ MainWindow が仲介)。Frame Plan が開いていなくても、次に見たときに新しい(dirty の印で読み直す)
+2. Graph tab 自身も、編集の commit の後に `get_frame_plan` を読み直し、ゾーンの `×N copies` / draw_loop の数 / タブの数を新しくする(今は文書が変わったときだけ → commit の後にも)
+3. Draw 欄と View 欄は、Q-17 の `followEditable()` と同じ形で、往復中は無効、読み直しで 1 回だけ有効。model が断った選択は文書の値に戻す
+
+#### 着地(2026-09-27、b5f4d20b)
+- **決定 1 の経路**: 共有 digest ではなく MainWindow の仲介にした。digest は配置(`set_layout`)だけの commit でも動き、Frame Plan の node の位置の保存も Graph tab の `set_layout` なので、digest で読み直すと node を drag するたびに plan を丸ごと読み直すことになるため(実装者の報告。コードの注記も同じ)
+  - model が「`set_layout` だけではない commit」の回数を数える([`GraphCanvasModel::planCommitRevision()`](../src/devstudio/model/graphcanvasmodel.hpp#L830)。数える所は [commit の受理](../src/devstudio/model/graphcanvasmodel.cpp#L859))。Graph tab は応答のたびにこの数を前回と比べ、増えていれば `setPlanCommitAction` で渡された action を呼ぶ([`tellPlanCommit()`](../src/devstudio/view/graphcanvaswidget.cpp#L3643))。MainWindow がそれを Frame Plan の `planChangedByCommit()` につなぐ([つなぐ所](../src/devstudio/view/mainwindow.cpp#L430))
+  - Frame Plan の [`planChangedByCommit()`](../src/devstudio/view/frameplanwidget.cpp#L2955): 見えていればすぐ `get_frame_plan` を読む。読みが往復中なら、その返事の後にもう 1 回読む(往復中の読みは commit より前の plan かもしれないため)。見えていなければ dirty の印を付け、次に表示したときに読む。engine の RPC が無ければ何もしない
+- **決定 2**: commit の後の文書の読み直しが「配置だけ違う」と見えても、commit が配置だけでなければ `get_frame_plan` を読み直す([その分岐](../src/devstudio/model/graphcanvasmodel.cpp#L934))
+- **決定 3**: [`GraphCanvasDrawFields::followEditable()`](../src/devstudio/view/graphcanvasloopfields.cpp#L1403) と [`GraphCanvasViewFields::followEditable()`](../src/devstudio/view/graphcanvasloopfields.cpp#L1586) を、Graph tab が model の動くたびに Loop の欄と一緒に呼ぶ
+  - Draw 欄で model が断った選択は [`restore()`](../src/devstudio/view/graphcanvasloopfields.cpp#L1413) が文書の値に戻す(Defines の打ちかけの文字は戻さない)
+  - View 欄は作り直さずに、今の combo で文書の値に戻す([`ViewSelectField::showSelection()`](../src/devstudio/view/viewselectfield.cpp#L162)。[呼ぶ所](../src/devstudio/view/graphcanvasloopfields.cpp#L1614))
+- **シナリオ**: `graph_loop_expand` / `loop_view_axis` / `material_loop_decompose` から、Frame Plan の Refresh の click を外した(json の `steps` は 81 / 53 / 46)。`loop_view_axis` は View 欄の `wait` に `enabled: true` を足した
+- **test**
+  - `devstudio_graphcanvas_scene_test`: `Q-18 a Graph tab commit reads the plan again and tells the owner; a placement tells nobody`([test](../test/devstudio_graphcanvas_scene_test.cpp#L5352))/ `Q-18 the Draw fields are off while an edit is in flight, and a refused choice goes back`([test](../test/devstudio_graphcanvas_scene_test.cpp#L5428))/ `Q-18 a render node's View field is off while an edit is in flight, and a refused pick goes back in the same combo`([test](../test/devstudio_graphcanvas_scene_test.cpp#L5489))
+  - `devstudio_frameplan_graph_test`: `Q-18 a commit elsewhere reads the plan again: now in view, after the read in flight, or when next shown`([test](../test/devstudio_frameplan_graph_test.cpp#L12038))
+- **変異**(実装者の報告): 12 個がすべて赤。MainWindow の配線を消す変異(M1e)は、GPU シナリオ `graph_loop_expand` が赤
+- **結果**(実装者の報告): `-L studio_cpu -LE gpu` 458/458。ループ系の GPU シナリオ 4 本が緑
+- **穴**(実装者の報告)
+  - Draw の Defines は、断られても戻さない
+  - draw.override の欄をすべて (material's) にしたとき(Defines も空)は、送らずに Cull の tooltip に理由を出すだけで、欄は文書の値に戻さない(コードで確かめた)
+  - MainWindow の配線は GPU シナリオでだけ見ている(CPU の test は、Graph tab が知らせることと Frame Plan が読み直すことを別々に見る)
+
+### EW-2: engine の窓を Studio の外に出さない(EW-1 への追従)
+
+**下段(Studio のみ)。実装者: Claude(Opus)。develop b5f4d20b 以降(EW-1 = 0bb34c79 が入っている)。Studio での見え方は `docs/manual/13_editor.md` の「engine の窓は Studio の外に出ません」。**
+
+#### 前提
+- 利用者の報告: engine を起動すると、Studio の外に窓が一度出る。原因は engine が見える top-level 窓を scene の読み込みより前に作り、Studio は読み込みが終わって WM_NULL に応答するまで埋め込まないこと(Q-4 の方針)。Start / Restart / project の切替のたびに起きる
+- EW-1(0bb34c79): `--embedded` で engine は窓を非表示・focus 無しで作る。`--headless` との併用は引数の誤り。render 窓には常に property `Pelican::engineRenderWindowProperty`(`src/core/os/enginewindowproperty.hpp`。header だけで engine の型に依らない)が付く
+- Studio の今: `studioplayerarguments.cpp` が引数を組む。`nativewindowhost.cpp` が `EnumWindows` で「同じ PID・owner 無し・IsWindowVisible」の窓を探す(見えない窓は GLFW の helper とみなして飛ばす)。埋め込みは `WS_CHILD | WS_VISIBLE` と `SWP_SHOWWINDOW` を付ける
+
+#### 決定
+1. Studio が engine を起動するときの引数に `--embedded` を足す(`PELICAN_STUDIO_PLAYER_ARGUMENTS` に `--headless` がある場合は、衝突するなら `--embedded` を付けないか、分かる 1 行で知らせる)
+2. 窓の探し方を property に変える: pid が一致・owner 無し・`GetPropW(hwnd, Pelican::engineRenderWindowProperty)` がある窓。IsWindowVisible は見ない。header を include する(pelican_core を link しない)
+3. 埋め込みの順は今どおり(WM_NULL を待ってから SetParent、表示は埋め込みの時)。読み込みの間は Studio の viewport に Loading を出す(今どおり)
+4. 旧い engine(property を付けない)は扱わない。見つからないまま時間切れになったときの文は今どおり
+
+#### Q-4 との関係
+- Q-4 の決定 1 は「窓を見えない位置 / 親無しで置くのではなく、Loading を Studio 側で描く」とした。EW-2 で窓を隠すのは engine(EW-1 の `--embedded`)で、Studio は窓を動かしも隠しもしない。Loading を描くのは今どおり Studio なので、両立する
+- Q-4 の待ち方(窓を見つけたら WM_NULL を周期的に打ち、応答したら埋め込む。期限は engine の最後の log 行から数える)は変えていない。変えたのは「窓を見つける」条件と、埋め込みで窓を見せる時点だけ
+
+#### 着地(2026-09-27、018a96f6)
+- **決定 1**: [引数の組み立て](../src/devstudio/viewport/studioplayerarguments.cpp#L75)に `--embedded` を足した。設定の引数に `--headless` があるときは付けない(`vulkan_validation_runtime_player` と `project_catalog_smoke` が `--headless` を付けるため。実装者の報告)。設定に `--embedded` があれば二重には付けない。衝突を知らせる 1 行は出さない
+- **決定 2**: [`findProcessWindow()`](../src/devstudio/viewport/nativewindowhost.cpp#L58) は、pid が一致し、owner が無く、`GetPropW(engineRenderWindowProperty)` がある窓を選ぶ。IsWindowVisible は見ない。header は `nativewindowhost.cpp` から相対パスで include する(CMake は変えていない)
+- **仕様から外れた判断**(実装者の報告。コードで確かめた): `embed()` は SetParent の前に `WS_VISIBLE` を立てるのをやめ([その注記](../src/devstudio/viewport/nativewindowhost.cpp#L152))、SetParent の後の `resize()` の `SWP_SHOWWINDOW`([その所](../src/devstudio/viewport/nativewindowhost.cpp#L203))で初めて表示する。まだ top-level の非表示の窓に `WS_VISIBLE` を立てると、SetParent までの間 desktop に見えるため。戻す変異では、新しいシナリオが約 50 ms(2 sample)見える窓を捕まえて赤になった(実装者の報告)
+- **fixture**: `test/process_fixture_child.cpp` の Q-4 の窓に property を付け、`--embedded` のときは非表示で作る
+- **driver**: `tools/studio_drive.py` の [`EngineWindowWatch`](../tools/studio_drive.py#L260)。シナリオが `"watch_engine_windows": true` なら、Studio の起動から監視の thread を回す
+  - Studio を親に持つ process の top-level の窓を列挙し、見える窓を記録する(実装者の報告では約 25 ms ごと。thread は sample の間に 10 ms 待つ)
+  - property 付きで owner の無い非表示の窓を見た sample(読み込み中)を engine ごとに数える
+  - expectation `engine_windows`([判定](../tools/studio_drive.py#L1084)): 見える窓が 1 つも無いこと、`engines` 本以上の engine について非表示の窓を `min_hidden_samples`(既定 3)sample 以上見たこと(監視の空振りで緑にならないため)、最新の engine の窓が見えていて、その root の窓が Studio の pid であること。README に書いた
+- **シナリオ**: `engine_window_embedded`(json の `steps` は 12)。Start / Restart(Stop の後)/ 別の project への切替の 3 回とも、見える窓は 0。最後に `screen` モードの screenshot を撮る。実装者の報告では緑(約 19 秒)。`--embedded` を外す変異では、窓が 144 sample 見えて赤
+- **test**: `devstudio_viewport_test` の `EW-2: Studio starts the engine --embedded, unless it was told to run it headless`([test](../test/devstudio_viewport_test.cpp#L180))/ `EW-2: the engine window is found by its mark, not by being visible`([test](../test/devstudio_viewport_test.cpp#L257))
+- **結果**(実装者の報告): 既存の `new_blank_project` / `whole_frame_first_steps` / `add_primitive_object` / `graph_read` / `vulkan_validation_runtime_player` は緑。`-L studio_cpu -LE gpu` 460/460
+- **穴**(実装者の報告)
+  - 監視の間隔より短い表示は取り逃がしうる
+  - 設定の `--headless` と衝突したとき(`--embedded` を付けないとき)に知らせる 1 行は無い
+  - シナリオの screenshot の viewport は黒だった(fixture の絵としてそれが正しいかは未確認)
 
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
