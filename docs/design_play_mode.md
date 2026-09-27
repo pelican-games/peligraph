@@ -125,6 +125,10 @@
 - `--start-state edit` のとき、engine は editor camera を用意する(今の `--free-camera` と同じ仕組み)
 - `edit` では editor camera で見る
 - `playing` では game の active camera で見る。editor camera の active 固定を外す
+  - `--start-state edit` で起動したときに限り、editor の action set の overlay(`free_camera`、`editor_transform`)を、`playing` の間は action の stack から外す。これで同じ key が game に届く
+  - `edit` / `paused` に戻ると、overlay を stack に積み直す
+  - 同じ理由で、editor の system は `playing` の間は何もしない
+  - `--start-state` を省いた起動(今の Studio と単体の player)では、今どおり overlay を積んだまま動く。PM-1a / PM-3a の間の Studio の挙動は変えない
 - `paused` では game の camera のまま。`set_view_camera {camera: "editor" | "game"}` で切り替えられる(`edit` でも使える。`playing` では `play_state_mismatch`)
 
 ## 5. edit の behavior
