@@ -1635,6 +1635,44 @@ nlohmann::json loopOriginJson(const RenderLoopOrigin &origin) {
     };
 }
 
+// GL-2a: the node's `origin` (see framePlanToJson in the header).
+nlohmann::json graphNodeOriginJson(
+    const RenderPassProvenance &provenance,
+    std::string_view graph_reference) {
+    const auto &origin = *provenance.graph_origin;
+    auto result = nlohmann::json{
+        {"graph", std::string{graph_reference}},
+        {"node", origin.node},
+    };
+    if (!origin.definition.empty()) {
+        result["definition"] = origin.definition;
+    }
+    auto instance = origin.instance_path;
+    while (instance.ends_with('/')) instance.pop_back();
+    if (!instance.empty()) result["instance_path"] = std::move(instance);
+    if (!origin.loop.empty()) result["loop"] = origin.loop;
+    if (origin.loop_branch) result["loop_branch"] = *origin.loop_branch;
+    if (provenance.loop_origin) {
+        result["element"] = provenance.loop_origin->element;
+    }
+    return result;
+}
+
+std::string_view renderPipelineDiagnosticKindName(
+    RenderPipelineDiagnosticKind kind) {
+    switch (kind) {
+    case RenderPipelineDiagnosticKind::graph_variant_selected:
+        return "graph_variant_selected";
+    case RenderPipelineDiagnosticKind::feature_excluded:
+        return "feature_excluded";
+    case RenderPipelineDiagnosticKind::pipeline_preset_resolved:
+        return "pipeline_preset_resolved";
+    case RenderPipelineDiagnosticKind::graph_node_deactivated:
+        return "graph_node_deactivated";
+    }
+    throw std::runtime_error("unknown render pipeline diagnostic kind");
+}
+
 } // namespace
 
 std::string framePlanNodeKindName(FramePlanNodeKind kind) {
@@ -1839,7 +1877,8 @@ std::vector<std::string> framePlanOrder(const FramePlan &plan) {
 
 nlohmann::json framePlanToJson(
     const FramePlan &plan,
-    const CompiledRenderPipeline *render_pipeline) {
+    const CompiledRenderPipeline *render_pipeline,
+    std::string_view graph_reference) {
     std::unordered_map<std::string, const RenderPassProvenance *>
         pass_provenance;
     if (render_pipeline != nullptr) {
@@ -1904,6 +1943,20 @@ nlohmann::json framePlanToJson(
             if (provenance.loop_origin) {
                 node_json["loop_origin"] =
                     loopOriginJson(*provenance.loop_origin);
+            }
+            if (provenance.graph_origin) {
+                node_json["origin"] =
+                    graphNodeOriginJson(provenance, graph_reference);
+            }
+            if (!provenance.replaces.empty()) {
+                auto replaces = nlohmann::json::array();
+                for (const auto &entry : provenance.replaces) {
+                    replaces.push_back(nlohmann::json{
+                        {"feature", entry.feature},
+                        {"pass", entry.pass},
+                    });
+                }
+                node_json["replaces"] = std::move(replaces);
             }
         }
         if (node.kind == FramePlanNodeKind::snapshot_copy) {
@@ -2023,6 +2076,26 @@ nlohmann::json framePlanToJson(
             }
             result["resources"] = std::move(resources);
         }
+        // GL-2a: the pipeline's diagnostics and the graph nodes the variant
+        // made inactive, in the form the compiled pipeline keeps them.
+        auto diagnostics = nlohmann::json::array();
+        for (const auto &diagnostic : render_pipeline->diagnostics) {
+            diagnostics.push_back(nlohmann::json{
+                {"kind", renderPipelineDiagnosticKindName(diagnostic.kind)},
+                {"subject", diagnostic.subject},
+                {"detail", diagnostic.detail},
+            });
+        }
+        result["diagnostics"] = std::move(diagnostics);
+        auto deactivated = nlohmann::json::array();
+        for (const auto &node : render_pipeline->deactivated_graph_nodes) {
+            deactivated.push_back(nlohmann::json{
+                {"node", node.node},
+                {"feature", node.feature},
+                {"reason", node.reason},
+            });
+        }
+        result["deactivated_graph_nodes"] = std::move(deactivated);
         // LP-1a: every graph.loop, including one that expanded nothing.
         // Absent when the composed graph has no loop.
         if (!render_pipeline->graph_loops.empty()) {
@@ -2105,6 +2178,149 @@ void applyMaterialDrawFilterResolutionToFramePlanJson(
         unmatched_exclude;
     metadata["resolution_state"] =
         "resolved";
+}
+
+void appendFramePlanPhysicalNodeReferences(nlohmann::json &plan_json) {
+    if (!plan_json.is_object()) return;
+    const auto physical = plan_json.find("physical_target_plan");
+    if (physical == plan_json.end() || !physical->is_object()) return;
+    using Names = std::set<std::string>;
+    const auto strings = [](const nlohmann::json &holder, const char *key) {
+        std::vector<std::string> result;
+        const auto found = holder.find(key);
+        if (found == holder.end() || !found->is_array()) return result;
+        for (const auto &item : *found)
+            if (item.is_string()) result.push_back(item.get<std::string>());
+        return result;
+    };
+    const auto field = [](const nlohmann::json &holder, const char *key) {
+        const auto found = holder.find(key);
+        return found != holder.end() && found->is_string() ? found->get<std::string>() : std::string{};
+    };
+    // The frame plan's nodes, in its order, and what each touches.
+    std::unordered_map<std::string, std::size_t> node_index;
+    std::unordered_map<std::string, Names> resource_nodes;
+    if (const auto nodes = plan_json.find("nodes"); nodes != plan_json.end() && nodes->is_array()) {
+        for (const auto &node : *nodes) {
+            if (!node.is_object()) continue;
+            const auto name = field(node, "name");
+            if (name.empty()) continue;
+            node_index.emplace(name, node_index.size());
+            for (const auto *key : {"reads", "writes", "reads_history"})
+                for (const auto &resource : strings(node, key)) resource_nodes[resource].insert(name);
+        }
+    }
+    const auto ordered = [&](const Names &names) {
+        std::vector<std::string> sorted(names.begin(), names.end());
+        std::sort(sorted.begin(), sorted.end(), [&](const std::string &left, const std::string &right) {
+            return node_index.at(left) < node_index.at(right);
+        });
+        return nlohmann::json(sorted);
+    };
+    // A lowering node is a frame plan node, or stands for the ones it was
+    // made from (a subgraph replacement's `sources`).
+    std::unordered_map<std::string, Names> lowering_nodes;
+    if (const auto lowering = physical->find("lowering_graph");
+        lowering != physical->end() && lowering->is_object()) {
+        if (const auto nodes = lowering->find("nodes"); nodes != lowering->end() && nodes->is_array()) {
+            for (const auto &node : *nodes) {
+                if (!node.is_object()) continue;
+                const auto name = field(node, "name");
+                auto &names = lowering_nodes[name];
+                if (node_index.contains(name)) names.insert(name);
+                for (const auto &source : strings(node, "sources"))
+                    if (node_index.contains(source)) names.insert(source);
+            }
+        }
+    }
+    const auto loweringNodes = [&](const std::string &name) {
+        if (const auto found = lowering_nodes.find(name); found != lowering_nodes.end()) return found->second;
+        return node_index.contains(name) ? Names{name} : Names{};
+    };
+    // An attachment names its node and resource together.
+    if (const auto attachments = physical->find("attachments");
+        attachments != physical->end() && attachments->is_array()) {
+        for (const auto &attachment : *attachments) {
+            if (!attachment.is_object()) continue;
+            const auto nodes = loweringNodes(field(attachment, "node"));
+            const auto resource = field(attachment, "logical_resource");
+            if (!resource.empty()) resource_nodes[resource].insert(nodes.begin(), nodes.end());
+        }
+    }
+    const auto resourceNodes = [&](const std::string &name) {
+        const auto found = resource_nodes.find(name);
+        return found != resource_nodes.end() ? found->second : Names{};
+    };
+    if (const auto resources = physical->find("resources"); resources != physical->end() && resources->is_array())
+        for (auto &resource : *resources)
+            if (resource.is_object())
+                resource["from_nodes"] = ordered(resourceNodes(field(resource, "logical_resource")));
+    std::unordered_map<std::string, Names> group_nodes;
+    if (const auto groups = physical->find("alias_groups"); groups != physical->end() && groups->is_array()) {
+        for (auto &group : *groups) {
+            if (!group.is_object()) continue;
+            Names names;
+            for (const auto &member : strings(group, "resources")) {
+                const auto nodes = resourceNodes(member);
+                names.insert(nodes.begin(), nodes.end());
+            }
+            group["from_nodes"] = ordered(names);
+            group_nodes.emplace(field(group, "id"), std::move(names));
+        }
+    }
+    std::unordered_map<std::string, Names> scope_nodes;
+    if (const auto scopes = physical->find("scopes"); scopes != physical->end() && scopes->is_array()) {
+        for (const auto &scope : *scopes) {
+            if (!scope.is_object()) continue;
+            Names names;
+            for (const auto &node : strings(scope, "nodes")) {
+                const auto mapped = loweringNodes(node);
+                names.insert(mapped.begin(), mapped.end());
+            }
+            scope_nodes.emplace(field(scope, "id"), std::move(names));
+        }
+    }
+    // What a subject names: a node, a resource, an alias group, a scope --
+    // or the whole graph (nothing).
+    const auto subjectNodes = [&](const std::string &subject) -> Names {
+        if (subject.empty()) return {};
+        if (const auto nodes = loweringNodes(subject); !nodes.empty()) return nodes;
+        if (const auto found = resource_nodes.find(subject); found != resource_nodes.end()) return found->second;
+        if (const auto found = group_nodes.find(subject); found != group_nodes.end()) return found->second;
+        if (const auto found = scope_nodes.find(subject); found != scope_nodes.end()) return found->second;
+        return {};
+    };
+    const auto annotateDecisions = [&](nlohmann::json &container) {
+        if (!container.is_object()) return;
+        const auto decisions = container.find("decisions");
+        if (decisions == container.end() || !decisions->is_array()) return;
+        for (auto &decision : *decisions)
+            if (decision.is_object()) decision["from_nodes"] = ordered(subjectNodes(field(decision, "subject")));
+    };
+    annotateDecisions(*physical);
+    for (const auto *key : {"lowering_graph", "planning_opportunities", "backend_selection"})
+        if (const auto container = physical->find(key); container != physical->end())
+            annotateDecisions(*container);
+    if (const auto selection = physical->find("backend_selection");
+        selection != physical->end() && selection->is_object()) {
+        if (const auto candidates = selection->find("candidates");
+            candidates != selection->end() && candidates->is_array()) {
+            for (auto &candidate : *candidates) {
+                if (!candidate.is_object()) continue;
+                Names names;
+                for (const auto *key : {"failures", "diagnostics"}) {
+                    const auto entries = candidate.find(key);
+                    if (entries == candidate.end() || !entries->is_array()) continue;
+                    for (const auto &entry : *entries) {
+                        if (!entry.is_object()) continue;
+                        const auto nodes = subjectNodes(field(entry, "subject"));
+                        names.insert(nodes.begin(), nodes.end());
+                    }
+                }
+                candidate["from_nodes"] = ordered(names);
+            }
+        }
+    }
 }
 
 } // namespace Pelican

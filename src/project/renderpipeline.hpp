@@ -1,5 +1,6 @@
 #pragma once
 
+#include "graphcomposition.hpp"
 #include "graphvariantpolicy.hpp"
 #include "lightingdata.hpp"
 #include "logicalrendergraph.hpp"
@@ -237,6 +238,15 @@ enum class RenderPipelineProvenanceSource {
     engine,
 };
 
+// GL-2a: a feature's pass or compute task a graph node took the place of
+// (a feature instance's `pass_replacements`).
+struct RenderPassReplacedDeclaration {
+    std::string feature;
+    std::string pass;
+
+    bool operator==(const RenderPassReplacedDeclaration &) const = default;
+};
+
 struct RenderPassProvenance {
     std::string name;
     RenderPipelineProvenanceSource source =
@@ -247,6 +257,17 @@ struct RenderPassProvenance {
     std::string authored_name;
     // LP-1a: set on a pass or compute task a graph.loop expanded.
     std::optional<RenderLoopOrigin> loop_origin;
+    // GL-2a: set on a pass or compute task a node of the rendering graph
+    // made -- a root node, a node of an instance's definition, or (with
+    // loop_origin) a loop body's node. Absent on the preset's, a feature's
+    // and the rendering section's own passes, whatever `source` says. For a
+    // loop's copy, `instance_path` is empty (a body is no instance) and
+    // `loop` / `loop_branch` say which loop and branch; the element is
+    // loop_origin's.
+    std::optional<GraphNodeOrigin> graph_origin;
+    // GL-2a: the feature passes this one took the place of, in the order
+    // the instance named them (one node may replace several).
+    std::vector<RenderPassReplacedDeclaration> replaces;
 
     bool operator==(const RenderPassProvenance &) const = default;
 };

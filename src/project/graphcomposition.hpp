@@ -46,6 +46,8 @@ struct GraphNodeOrigin {
     // `<loop>/<element>/<node>` and its origin is a RenderLoopOrigin.
     std::string loop;
     std::optional<std::size_t> loop_branch;
+
+    bool operator==(const GraphNodeOrigin &) const = default;
 };
 // LP-1a: one branch body of a graph.loop, expanded once as a template. Its
 // nodes are in ExpandedGraphDocument::nodes with ids `<prefix><node>`, so

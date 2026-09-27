@@ -176,9 +176,38 @@ void validateFramePlanPassInputsProduced(
     const FramePlan &plan, const nlohmann::json &pass_set_json,
     const std::unordered_set<std::string> &buffer_names = {});
 std::vector<std::string> framePlanOrder(const FramePlan &plan);
+// GL-2a: a node a graph node made carries
+//   "origin": {"graph", "node", "definition"?, "instance_path"?, "loop"?,
+//              "loop_branch"?, "element"?}
+// where `graph` is `graph_reference` (the rendering root document's
+// reference, as the project names it), `node` the id authored in its scope,
+// `definition` the definition whose body holds it (absent in the root),
+// `instance_path` the instance that placed it (no trailing slash; absent in
+// the root and in a loop body), and for a loop's copy `loop`, `loop_branch`
+// and `element` (the same element as loop_origin). A node that took the
+// place of feature passes also carries "replaces": [{"feature", "pass"}].
+// With a pipeline, the plan also carries the pipeline's `diagnostics`
+// ([{kind, subject, detail}]) and `deactivated_graph_nodes`
+// ([{node, feature, reason}]).
 nlohmann::json framePlanToJson(
     const FramePlan &plan,
-    const CompiledRenderPipeline *render_pipeline = nullptr);
+    const CompiledRenderPipeline *render_pipeline = nullptr,
+    std::string_view graph_reference = {});
+// GL-2a: adds `from_nodes` -- the frame plan node names each element
+// concerns, in the plan's node order -- to the elements of
+// `physical_target_plan` that name no node themselves:
+//   resources[]                    the nodes that read, write or attach it
+//   alias_groups[]                 the nodes of its resources
+//   decisions[] (physical_target_plan, lowering_graph,
+//     planning_opportunities, backend_selection)
+//                                  by `subject`: a node (a lowering node:
+//                                  its sources), a resource, an alias
+//                                  group, a scope; [] for a graph-wide one
+//   backend_selection.candidates[] the nodes its failures' and
+//                                  diagnostics' subjects name; [] when none
+//                                  names one (the candidate is graph-wide)
+// A plan without `physical_target_plan` is left as it is.
+void appendFramePlanPhysicalNodeReferences(nlohmann::json &plan_json);
 void applyMaterialDrawFilterResolutionToFramePlanJson(
     nlohmann::json &plan_json,
     std::string_view pass_name,

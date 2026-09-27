@@ -10,6 +10,7 @@
 #include <string_view>
 #include <vector>
 
+#include "graphcomposition.hpp"
 #include "graphloop.hpp"
 #include "graphmodule.hpp"
 #include "materialdrawloop.hpp"
@@ -174,6 +175,11 @@ struct LoweredRenderGraphDocument {
     // LP-0d: their names (each is its node's id), appended or placed. A
     // feature instance's pass_replacements may name one of these or a loop.
     std::set<std::string> graph_declarations;
+    // GL-2a: where the node that made each pass or compute task is authored
+    // (the expansion's origin), by the name the lowering gave it: the
+    // expanded id for a declaration of the root or an instance, the
+    // template id `<loop>/$<branch>/<node>` for a loop body's.
+    std::map<std::string, GraphNodeOrigin> origins;
 };
 
 // LP-0d: one entry of a feature instance's `pass_replacements`
@@ -216,6 +222,10 @@ struct RenderGraphLoopResolution {
     std::map<std::string, RenderLoopOrigin> passes;
     // Render targets and buffers a loop added, by name.
     std::map<std::string, RenderLoopOrigin> resources;
+    // GL-2a: each graph pass or task that took the place of feature passes
+    // (applyRenderFeaturePassReplacements), with the entries it replaced:
+    // those of its own pass family (tasks: the tasks), in the order named.
+    std::map<std::string, std::vector<RenderFeaturePassReplacement>> replacements;
 };
 
 // LP-0b: places one run in the composed config (see RenderGraphPassRun). The
@@ -310,8 +320,11 @@ LoweredRenderGraphDocument withoutExcludedGraphDependents(nlohmann::json &compos
 //     surface_resources producers (the node's last pass that writes the
 //     contract's resource) follow; the replaced names leave target_planning.
 // `loop_passes` are the expanded copies (RenderGraphLoopResolution::passes).
+// GL-2a: `replaced_by`, when given, receives each moved pass or task of a
+// node with the entries of its family it took the place of.
 void applyRenderFeaturePassReplacements(nlohmann::json &composed, const LoweredRenderGraphDocument &lowered,
-    const std::map<std::string, RenderLoopOrigin> &loop_passes, const RenderGraphFeatureContext &features);
+    const std::map<std::string, RenderLoopOrigin> &loop_passes, const RenderGraphFeatureContext &features,
+    std::map<std::string, std::vector<RenderFeaturePassReplacement>> *replaced_by = nullptr);
 
 // LP-0b / LP-3a: places every run of graph passes at its anchor
 // (placeRenderGraphPassRun); a run may name a pass another run places.

@@ -757,6 +757,16 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             landGraphicsPass(id, std::move(parameters), body);
         } else (body != nullptr ? body->compute_tasks : config["compute_tasks"]).push_back(std::move(parameters));
     }
+    // GL-2a: where each pass or task a node made is authored. Every such
+    // declaration is named after its node's expanded id (a template id in a
+    // loop body), so the expansion's origin is found by that name.
+    for (const auto &node : graph.nodes) {
+        const auto id = node.at("id").get<std::string>();
+        const auto op = node.at("op").get<std::string>();
+        if (inactive(id) || resourceOp(op) || op.starts_with("draw.")) continue;
+        if (const auto origin = graph.origins.find(id); origin != graph.origins.end())
+            lowered.origins.emplace(id, origin->second);
+    }
     lowered.graph_node_count = graph_pass_order.size() + config["compute_tasks"].size();
     lowered.graph_declarations.insert(graph_pass_order.begin(), graph_pass_order.end());
     for (const auto &task : config["compute_tasks"]) lowered.graph_declarations.insert(task.at("name").get<std::string>());
@@ -1159,7 +1169,7 @@ RenderGraphLoopResolution resolveGraphDocumentAfterComposition(Json &composed, c
     }
     // LP-0d: the composer left out the replacements whose node the variant
     // made inactive; the feature keeps its own pass in that variant.
-    applyRenderFeaturePassReplacements(composed, lowered, resolution.passes, features);
+    applyRenderFeaturePassReplacements(composed, lowered, resolution.passes, features, &resolution.replacements);
     return resolution;
 }
 
@@ -2237,7 +2247,8 @@ LoweredRenderGraphDocument withoutExcludedGraphDependents(Json &composed, const 
 
 void applyRenderFeaturePassReplacements(Json &composed, const LoweredRenderGraphDocument &lowered,
                                         const std::map<std::string, RenderLoopOrigin> &loop_passes,
-                                        const RenderGraphFeatureContext &features) {
+                                        const RenderGraphFeatureContext &features,
+                                        std::map<std::string, std::vector<RenderFeaturePassReplacement>> *replaced_by) {
     if (features.replacements.empty()) return;
     std::set<std::string> loop_ids;
     for (const auto &loop : lowered.loops) loop_ids.insert(loop.shape.node);
@@ -2325,6 +2336,10 @@ void applyRenderFeaturePassReplacements(Json &composed, const LoweredRenderGraph
                                          passes.front() + "']: '" + node + "' has no " +
                                          (family.empty() ? "compute task" : "pass") + " to take its place");
             }
+            if (replaced_by != nullptr)
+                for (const auto &name : moving)
+                    for (const auto *entry : entries)
+                        if (replaced_family.at(entry->pass) == family) (*replaced_by)[name].push_back(*entry);
             Json *list = nullptr;
             if (family.empty()) {
                 list = &composed.at("compute_tasks");

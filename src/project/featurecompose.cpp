@@ -3571,6 +3571,8 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     // Every target the rendering section, the preset, the features and the
     // snapshots declare now exists; pass order is not settled yet.
     std::vector<RenderGraphLoopReport> graph_loops;
+    // GL-2a: the graph passes and tasks that took the place of feature passes.
+    std::map<std::string, std::vector<RenderFeaturePassReplacement>> graph_replacements;
     // LP-0d: pass_replacements name a graph node, so they need a graph.
     if (!common_graph && !graph_features.replacements.empty()) {
         const auto &replacement = graph_features.replacements.front();
@@ -3652,6 +3654,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
             });
         }
         graph_loops = std::move(loop_resolution.loops);
+        graph_replacements = std::move(loop_resolution.replacements);
     }
     for (auto &pass_set : ensureArray(composed, "rendering_passes")) {
         enforceCanonicalOrder(pass_set.at("passes"));
@@ -3660,6 +3663,40 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     synchronizeRenderPipelineProvenance(
         composed, pass_provenance,
         resource_provenance);
+    // GL-2a: which graph node made each surviving pass and task. A
+    // declaration of the root or an instance is named after its node's
+    // expanded id; a loop's copy finds its body node through the branch its
+    // element took. A feature's pass is never a node's, even when a node of
+    // the same name was made inactive.
+    if (common_graph) {
+        std::map<std::pair<std::string, std::int64_t>, std::size_t> element_branches;
+        for (const auto &loop : graph_loops)
+            for (const auto &element : loop.elements)
+                element_branches.emplace(std::pair{loop.node, element.element}, element.branch);
+        for (auto &provenance : pass_provenance) {
+            if (provenance.source == RenderPipelineProvenanceSource::feature) continue;
+            if (provenance.loop_origin) {
+                const auto &copy = *provenance.loop_origin;
+                const auto branch = element_branches.find(std::pair{copy.loop, copy.element});
+                if (branch == element_branches.end()) continue;
+                const auto found = active_graph.origins.find(copy.loop + "/$" + std::to_string(branch->second) +
+                                                             "/" + copy.node);
+                if (found == active_graph.origins.end()) continue;
+                auto origin = found->second;
+                // The template's prefix, not an instance.
+                origin.instance_path.clear();
+                provenance.graph_origin = std::move(origin);
+            } else if (active_graph.graph_declarations.contains(provenance.name)) {
+                if (const auto found = active_graph.origins.find(provenance.name);
+                    found != active_graph.origins.end())
+                    provenance.graph_origin = found->second;
+            }
+            if (const auto replaced = graph_replacements.find(provenance.name);
+                replaced != graph_replacements.end() && provenance.graph_origin)
+                for (const auto &entry : replaced->second)
+                    provenance.replaces.push_back({entry.feature, entry.pass});
+        }
+    }
     auto material_routing = resolveMaterialRoutingTable(composed);
     auto draw_sort = composed.contains("draw_sort")
                          ? composed.at("draw_sort")

@@ -2234,23 +2234,11 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
     if (!dependencies_.resolve_authoring_context)
         throw std::logic_error("render authoring context resolver is unavailable");
     const auto context = dependencies_.resolve_authoring_context(currentDocumentSet());
-    // MG-3b: the tasks a render.compute node made. The lowering names each
-    // task after the expanded id of the node that made it (a `name` parameter
-    // is refused there), so the root document's own expansion -- the one the
-    // lowering above partitioned -- says which listed tasks are the graph's,
-    // and where the node that made each one is authored. The composition
-    // appends these after the preset's tasks and refuses a feature task that
-    // reuses one of their names, so a match is the node's task.
-    std::map<std::string, GraphNodeOrigin, std::less<>> graph_tasks;
-    {
-        const auto expanded = expandGraphDocument(Json::parse(document_.bytes()));
-        for (const auto &node : expanded.nodes) {
-            if (node.at("op") != "render.compute") continue;
-            const auto id = node.at("id").get<std::string>();
-            if (const auto origin = expanded.origins.find(id); origin != expanded.origins.end())
-                graph_tasks.emplace(id, origin->second);
-        }
-    }
+    // MG-3b: the tasks a render.compute node made. GL-2a: the composition
+    // says which node made each task (RenderPassProvenance::graph_origin),
+    // and where that node is authored, so the editor no longer expands the
+    // root again to find them. A loop's copy is not listed as a node's task
+    // here (as before GL-2a); its origin is in get_frame_plan.
     auto tasks = OrderedJson::array();
     for (const auto &task : context.config.value("compute_tasks", Json::array())) {
         const auto name = task.at("name").get<std::string>();
@@ -2258,8 +2246,11 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
             [&](const auto &entry) { return entry.name == name; });
         const bool from_feature = provenance != context.pass_provenance.end() &&
             provenance->source == RenderPipelineProvenanceSource::feature;
-        const auto graph_node = from_feature ? graph_tasks.end() : graph_tasks.find(name);
-        const bool from_graph = graph_node != graph_tasks.end();
+        const GraphNodeOrigin *graph_node = !from_feature && provenance != context.pass_provenance.end() &&
+                provenance->graph_origin && provenance->graph_origin->loop.empty()
+            ? &*provenance->graph_origin
+            : nullptr;
+        const bool from_graph = graph_node != nullptr;
         const bool from_preset = !from_feature && !from_graph && context.pipeline_preset.has_value();
         // A node's task is authored in the root document even when the root
         // names a preset: the node is there, not in the preset.
@@ -2275,7 +2266,7 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
             // graph edit ops take ("root", or the definition whose body holds
             // the node), `node` the id authored in that scope, and `instance`
             // the instance path that placed it ("" in the root scope).
-            const auto &source = graph_node->second;
+            const auto &source = *graph_node;
             auto instance = source.instance_path;
             if (instance.ends_with('/')) instance.pop_back();
             entry["graph_node"] = OrderedJson{{"scope", source.definition.empty() ? "root" : source.definition},

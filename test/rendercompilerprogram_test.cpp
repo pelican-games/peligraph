@@ -27,6 +27,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <set>
 
 namespace Pelican {
 TEST_CASE("named scene AS definitions validate mask and preserve metadata", "[rendercompiler][rt6][multi-tlas]") {
@@ -1580,7 +1581,8 @@ nlohmann::json lp0ePlanNode(const nlohmann::json &plan, std::string_view name,
                             const std::string &as) {
     auto node = lpva2Node(plan, name);
     for (const auto *key :
-         {"source", "provider_feature", "provider_ref", "authored_name"}) {
+         {"source", "provider_feature", "provider_ref", "authored_name",
+          "origin", "replaces"}) {
         node.erase(key);
     }
     node["name"] = as;
@@ -1703,6 +1705,232 @@ TEST_CASE("LP-0e graph shadow_depth and snapshot_copy nodes compile in the "
             CHECK(node.at("name") != "shadow_depth");
         }
     }
+}
+
+// GL-2a: every frame plan node a graph node made says which node, and where
+// it is authored (origin); a node that took a feature pass's place says which
+// (replaces); the physical plan's resources, alias groups, decisions and
+// backend candidates name the frame plan nodes they concern (from_nodes).
+// So from any element of any layer, a node name and its origin lead back to
+// the authored graph -- also under an engine:// preset, where every one of
+// these passes has source "engine".
+TEST_CASE("GL-2a frame plan nodes carry the graph node that made them",
+          "[rendercompiler][frame-plan][gl2a]") {
+    using Json = nlohmann::json;
+    const Json scene_color{
+        {"semantic", "pelican.render.color_signal@1"},
+        {"arguments",
+         {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    const auto image = [&](const char *id) {
+        return Json{{"id", id},
+                    {"op", "render.image"},
+                    {"parameters",
+                     {{"type", scene_color},
+                      {"format", "R16G16B16A16_SFLOAT"},
+                      {"extent_scale", 1.0},
+                      {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}}},
+                    {"outputs", {"resource"}}};
+    };
+    const auto fill = [&](const char *id, const char *target) {
+        return Json{
+            {"id", id},
+            {"op", "render.fullscreen"},
+            {"parameters",
+             {{"pass_set", "main_render"},
+              {"shader",
+               {{"vertex", "engine://fullscreen"},
+                {"fragment", "engine://passthrough"}}},
+              {"ports",
+               {{"color",
+                 {{"kind", "image"}, {"type", scene_color}, {"access", "write"},
+                  {"attachment", "color"}, {"location", 0}}}}}}},
+            {"inputs", {{"color", {{"node", target}, {"port", "resource"}}}}},
+            {"outputs", {"color"}}};
+    };
+    const auto compute = [](const char *id, const char *buffer) {
+        return Json{
+            {"id", id},
+            {"op", "render.compute"},
+            {"parameters",
+             {{"shader", "engine://ray_deform"},
+              {"dispatch", {{"groups", {1, 1, 1}}}},
+              {"ports",
+               {{"data",
+                 {{"kind", "buffer"}, {"element", "float"},
+                  {"access", "read_write"}}}}}}},
+            {"inputs", {{"data", {{"node", buffer}, {"port", "resource"}}}}},
+            {"outputs", {"data"}}};
+    };
+    const auto buffer = [](const char *id) {
+        return Json{{"id", id},
+                    {"op", "render.buffer"},
+                    {"parameters", {{"element", "float"}, {"size", 16}}},
+                    {"outputs", {"resource"}}};
+    };
+    const Json cascade{
+        {"nodes",
+         Json::array({
+             {{"id", "target"}, {"op", "graph.input"}},
+             {{"id", "depth"},
+              {"op", "render.shadow_depth"},
+              {"parameters",
+               {{"pass_set", "main_render"},
+                {"view_family", "$shadow/directional"},
+                {"view_select", {{"cascade", {{"$expr", "element"}}}}},
+                {"depth_store_op", "store"}}},
+              {"inputs", {{"depth", {{"node", "target"}, {"port", "value"}}}}},
+              {"outputs", Json::array()}},
+         })},
+        {"outputs", Json::object()}};
+    const Json paint{
+        {"nodes", Json::array({image("canvas"), fill("fill", "canvas"),
+                               buffer("data"), compute("step", "data")})},
+        {"outputs", Json::object()}};
+    const auto nodes = Json::array({
+        image("tint_image"), fill("tint", "tint_image"),
+        buffer("probe_data"), compute("probe", "probe_data"),
+        {{"id", "left"}, {"op", "graph.instance"}, {"definition", "paint"}},
+        lp0eRef("shadow", "shadow_map",
+                lp0eImageType("pelican.render.depth@1", "two_d_array")),
+        {{"id", "cascades"},
+         {"op", "graph.loop"},
+         {"parameters",
+          {{"over", {{"range", {{"count", 3}}}}},
+           {"branches", Json::array({{{"body", "cascade"}}})}}},
+         {"inputs", {{"target", {{"node", "shadow"}, {"port", "resource"}}}}},
+         {"outputs", Json::array()}},
+    });
+    ProgramInputFixture fixture;
+    fixture.config = Json{
+        {"schema", "pelican.graph"},
+        {"version", 1},
+        {"definitions", {{"paint", paint}, {"cascade", cascade}}},
+        {"nodes", nodes},
+        {"outputs", Json::object()},
+        {"rendering",
+         {{"pipeline",
+           {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+          {"features",
+           Json::array({{{"ref", "engine://features/shadow_directional.json"},
+                         {"parameters", {{"cascade_count", 3}}},
+                         {"pass_replacements",
+                          {{"shadow_depth", "cascades"}}}}})}}},
+    };
+    fixture.backend_context = VulkanRenderCompilerBackendContext{
+        vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
+        VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}};
+    auto input = fixture.input();
+    input.runtime_shader_compiler_enabled = true;
+    const auto output = runRenderCompilerProgram(
+        defaultVulkanRenderCompilerProgram(), input);
+    const auto &variant = output.variants.front();
+    REQUIRE(variant.compiled_pipeline != nullptr);
+    const std::string graph = "passes/main.json";
+    auto plan = framePlanToJson(variant.frame_plans.at("main_render"),
+                                variant.compiled_pipeline.get(), graph);
+    REQUIRE(variant.physical_package != nullptr);
+    const auto &physical =
+        requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package);
+    REQUIRE(physical.target_plans.contains("main_render"));
+    plan["physical_target_plan"] =
+        vulkanTargetPlanToJson(*physical.target_plans.at("main_render"));
+    appendFramePlanPhysicalNodeReferences(plan);
+    INFO(plan.dump());
+
+    std::set<std::string> names;
+    for (const auto &node : plan.at("nodes"))
+        names.insert(node.at("name").get<std::string>());
+    const auto node = [&](const std::string &name) { return lpva2Node(plan, name); };
+
+    // A root node's pass and task: the node, nothing else.
+    CHECK(node("tint").at("source") == "engine");
+    CHECK(node("tint").at("origin") == Json{{"graph", graph}, {"node", "tint"}});
+    CHECK(node("probe").at("origin") == Json{{"graph", graph}, {"node", "probe"}});
+    // Inside an instance: the definition and the instance path. The same
+    // place get_compute_task_authoring's graph_node names for the task
+    // ({scope: "paint", node: "step", instance: "left"}).
+    CHECK(node("left/fill").at("origin") ==
+          Json{{"graph", graph}, {"node", "fill"}, {"definition", "paint"},
+               {"instance_path", "left"}});
+    CHECK(node("left/step").at("origin") ==
+          Json{{"graph", graph}, {"node", "step"}, {"definition", "paint"},
+               {"instance_path", "left"}});
+    // A loop's copies: the body node, the loop, its branch and the element
+    // (the element loop_origin names), and the feature pass they replace.
+    for (std::int64_t element = 0; element < 3; ++element) {
+        const auto name = "cascades/" + std::to_string(element) + "/depth";
+        INFO(name);
+        const auto copy = node(name);
+        CHECK(copy.at("origin") ==
+              Json{{"graph", graph}, {"node", "depth"}, {"definition", "cascade"},
+                   {"loop", "cascades"}, {"loop_branch", 0}, {"element", element}});
+        CHECK(copy.at("loop_origin").at("element") == element);
+        CHECK(copy.at("replaces") ==
+              Json::array({{{"feature", "shadow_directional"}, {"pass", "shadow_depth"}}}));
+    }
+    CHECK_FALSE(names.contains("shadow_depth"));
+    // The preset's and the feature's passes carry none, though the preset's
+    // are "engine" as the graph's are.
+    for (const auto &entry : plan.at("nodes")) {
+        const auto name = entry.at("name").get<std::string>();
+        INFO(name);
+        const bool graph_node = name == "tint" || name == "probe" ||
+                                name.starts_with("left/") ||
+                                name.starts_with("cascades/");
+        CHECK(entry.contains("origin") == graph_node);
+        CHECK(entry.contains("replaces") == name.starts_with("cascades/"));
+    }
+    CHECK(node("deferred_geometry").at("source") == "engine");
+
+    // The physical plan: every element that names no node itself names the
+    // frame plan nodes it concerns, and every such name is a frame plan node.
+    const auto &physical_plan = plan.at("physical_target_plan");
+    const auto checkNames = [&](const Json &element) {
+        REQUIRE(element.contains("from_nodes"));
+        for (const auto &name : element.at("from_nodes"))
+            CHECK(names.contains(name.get<std::string>()));
+    };
+    bool shadow_map_found = false;
+    for (const auto &resource : physical_plan.at("resources")) {
+        INFO(resource.at("logical_resource").dump());
+        checkNames(resource);
+        if (resource.at("logical_resource") == "shadow_map") {
+            shadow_map_found = true;
+            const auto &from = resource.at("from_nodes");
+            for (const auto *copy :
+                 {"cascades/0/depth", "cascades/1/depth", "cascades/2/depth"})
+                CHECK(std::find(from.begin(), from.end(), copy) != from.end());
+        }
+        if (resource.at("logical_resource") == "tint_image")
+            CHECK(resource.at("from_nodes") == Json::array({"tint"}));
+    }
+    CHECK(shadow_map_found);
+    for (const auto &group : physical_plan.at("alias_groups")) checkNames(group);
+    std::size_t decisions = 0;
+    for (const auto *container : {&physical_plan, &physical_plan.at("lowering_graph"),
+                                  &physical_plan.at("planning_opportunities"),
+                                  &physical_plan.at("backend_selection")})
+        for (const auto &decision : container->at("decisions")) {
+            INFO(decision.dump());
+            checkNames(decision);
+            ++decisions;
+        }
+    CHECK(decisions > 0);
+    for (const auto &candidate :
+         physical_plan.at("backend_selection").at("candidates"))
+        checkNames(candidate);
+
+    // The pipeline's diagnostics and the nodes the variant made inactive.
+    CHECK(plan.at("deactivated_graph_nodes") == Json::array());
+    const auto &diagnostics = plan.at("diagnostics");
+    CHECK(std::find(diagnostics.begin(), diagnostics.end(),
+                    Json{{"kind", "graph_variant_selected"}, {"subject", "flat"},
+                         {"detail", "selected_by_environment"}}) != diagnostics.end());
+    CHECK(std::any_of(diagnostics.begin(), diagnostics.end(), [](const Json &entry) {
+        return entry.at("kind") == "pipeline_preset_resolved" &&
+               entry.at("subject") == "engine://render_pipelines/hybrid_v1.json";
+    }));
 }
 #endif
 } // namespace

@@ -7041,7 +7041,8 @@ nlohmann::json lp0eComparablePlan(const nlohmann::json &plan, const std::string 
     };
     Json result{{"nodes", plan.at("nodes")}, {"barriers", plan.at("barriers")}, {"levels", plan.at("levels")}};
     for (auto &node : result["nodes"]) {
-        for (const auto *key : {"source", "provider_feature", "provider_ref", "authored_name"}) node.erase(key);
+        for (const auto *key : {"source", "provider_feature", "provider_ref", "authored_name", "origin", "replaces"})
+            node.erase(key);
         rename(node["name"]);
         if (node.contains("snapshot_after")) rename(node["snapshot_after"]);
     }
@@ -7868,7 +7869,17 @@ TEST_CASE("LP-3b a decomposed pass composes where the declared one stood, featur
             CHECK(lp3aPassFields(decomposed.config, pass) == lp3aPassFields(one_piece.config, pass));
         }
         CHECK(decomposed.surface_resource_contracts == one_piece.surface_resource_contracts);
-        CHECK(decomposed.pass_provenance == one_piece.pass_provenance);
+        // GL-2a: the same provenance, but for the graph node that made each
+        // decomposed pass.
+        auto provenance = decomposed.pass_provenance;
+        for (auto &entry : provenance) {
+            const bool decomposed_pass = entry.name == "deferred_geometry" || entry.name == "forward_opaque" ||
+                                         entry.name == "forward_transparent";
+            CHECK(entry.graph_origin.has_value() == decomposed_pass);
+            if (entry.graph_origin) CHECK(entry.graph_origin->node == entry.name);
+            entry.graph_origin.reset();
+        }
+        CHECK(provenance == one_piece.pass_provenance);
         REQUIRE(decomposed.material_draw_loops != nullptr);
         CHECK(decomposed.material_draw_loops->passes.size() == 3);
         REQUIRE_NOTHROW(compileComposition(decomposed));

@@ -4009,8 +4009,18 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     if (frame_graph == nullptr) {
         throw std::runtime_error("Current frame plan is not registered");
     }
+    // GL-2a: a graph node's `origin.graph` is the rendering root document,
+    // named as the project names it (get_compute_task_authoring's
+    // source_reference for a node's task).
+    const auto *project_config =
+        FastModuleContainer::tryGet<ProjectBasicConfig>();
+    const auto graph_reference =
+        project_config != nullptr
+            ? project_config->renderingConfigReference()
+            : std::string{};
     auto result = framePlanToJson(frame_graph->plan,
-                                  frame_graph->render_pipeline.get());
+                                  frame_graph->render_pipeline.get(),
+                                  graph_reference);
     appendShaderResolution(
         result, program->rendering_pass,
         GET_MODULE(PathResolver));
@@ -4224,6 +4234,9 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     if (frame_graph->target_plan != nullptr) {
         result["physical_target_plan"] =
             vulkanTargetPlanToJson(*frame_graph->target_plan);
+        // GL-2a: resources, alias groups, decisions and backend candidates
+        // name the frame plan nodes they concern (from_nodes).
+        appendFramePlanPhysicalNodeReferences(result);
         if (frame_graph->target_plan->resolution_plan) {
             const auto *render_targets =
                 FastModuleContainer::tryGet<

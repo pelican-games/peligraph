@@ -76,7 +76,8 @@ inline nlohmann::json lp1cComparablePlan(const nlohmann::json &plan, const std::
     };
     Json result{{"nodes", Json::array()}, {"barriers", Json::array()}, {"levels", Json::array()}};
     for (auto node : plan.at("nodes")) {
-        for (const auto *key : {"source", "provider_feature", "provider_ref", "authored_name", "loop_origin"})
+        for (const auto *key :
+             {"source", "provider_feature", "provider_ref", "authored_name", "loop_origin", "origin", "replaces"})
             node.erase(key);
         node["name"] = lp1cRenamed(names, node.at("name").get<std::string>());
         for (const auto *key : {"reads", "reads_history", "writes"}) node[key] = renamedList(node.at(key));
