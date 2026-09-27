@@ -26832,6 +26832,25 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - **変異**(実装者の報告): M1〜M5 はすべて赤
 - **結果**(実装者の報告): `-L studio_cpu -LE gpu` 469(取り込んで 478)。GPU シナリオ `loop_view_axis` が緑
 
+### Q-21: LP-6 が入ったので Q-20 の一時的な案内を外す
+
+**下段(Studio のみ)。実装者: Claude(Opus)。**
+
+#### 前提
+- Q-20 は、engine の「Pass input target is not produced as an earlier output」の拒否を受けたとき、送った op 列が `render.image` から読む線を持てば、拒否の行に「その image を書く pass から線を引く(LP-6)」案内を足していた
+- engine の LP-6(03725036)で、image node から読む pass は、その image を書く graph の pass を待つ(`after` に入る)ようになり、この形の拒否は出なくなった
+
+#### 決定
+1. Q-20 の案内(判定・文・注記)とその test を消す。family_extent を Frame Plan の読み手で読む部分(Q-20 の後半)は残す
+2. `loop_zone_read` に、root の `render.image` から body の pass へ直接線を引く手順を足して、engine が受け入れることを確かめる
+
+#### 着地(2026-09-27、5b4b3737)
+- 消したもの: `graphcanvasmodel.cpp` の案内の定数・判定・`readsRenderImage`・拒否に案内を足す分岐、hpp の宣言、`devstudio_graphcanvas_test` の案内の test(1 本、4 section)
+- シナリオ `loop_zone_read` の最後(既存の Undo の後)に、root の `render.image` のソケットをゾーンの縁をまたいで body の pass の帯へ引く手順を足した。通知が「Graph change saved.」になり、loop の入力・body の port(`input_index` 0)・frame plan の並び(書き手の root pass の後に `loop/0` と `loop/1`、どちらも `reads` にその image)を rpc で確かめる。96 step 緑
+- 対照(実装者の報告): engine の LP-6 を無効にする変異(`waitOnImageWriters` の先頭で return)で、新しい step が「Pass input target is not produced as an earlier output」で赤。戻して緑
+- `-L studio_cpu -LE gpu` 477/477
+- 13 章の Q-20 の案内の段落は、engine 側(8f9e99a3)が「Q-20 の案内、Q-21 で外した」の短い記録に置き換えた
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
