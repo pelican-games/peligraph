@@ -83,6 +83,7 @@ void updateRegisteredGameSystems(GameContext &ctx, GameSystemScope scope) {
         if (system.update == nullptr) continue;
         const bool editor = isEditorGameSystem(system.token);
         if (scope == GameSystemScope::editor_only && !editor) continue;
+        if (scope == GameSystemScope::game_only && editor) continue;
         ScopedRegistrationOwner owner_scope{system.owner};
         if (editor) {
             ScopedEditorClock editor_clock;

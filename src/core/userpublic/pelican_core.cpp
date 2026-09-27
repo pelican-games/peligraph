@@ -1,5 +1,6 @@
 #include "pelican_core.hpp"
 #include "../appflow/loop.hpp"
+#include "../appflow/playmode.hpp"
 #include "../appflow/teardown.hpp"
 #include "../terminalshutdown.hpp"
 #include "../asset/model.hpp"
@@ -128,6 +129,8 @@ bool PelicanCore::run() {
         // Invalid material routes must remain the first startup failure and
         // must not consume the vertex pool.
         (void)GET_MODULE(Renderer);
+        // PM-1b: --start-state edit makes the startup scene an edit runtime.
+        internal::applyLaunchStartState();
         {
             auto &config = GET_MODULE(ProjectBasicConfig);
             auto request = SceneLoadRequest::borrowed(

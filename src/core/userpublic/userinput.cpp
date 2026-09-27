@@ -17,6 +17,15 @@ namespace Pelican {
 
 namespace {
 
+// PM-1b: the overlays an editor launch brings (--free-camera and
+// --editor-transform), as opposed to a tool's own --input-action-overlay.
+bool isEditorOverlayReference(std::string_view reference) noexcept {
+    return reference == freeCameraBlenderInputActionOverlayReference ||
+           reference == freeCameraUnityInputActionOverlayReference ||
+           reference == editorTransformBlenderInputActionOverlayReference ||
+           reference == editorTransformGrabInputActionOverlayReference;
+}
+
 struct InputActionsRuntimeSource {
     std::optional<std::string> authored_actions_json;
     std::optional<std::string> effective_actions_json;
@@ -67,6 +76,8 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
     std::vector<InputBindingProfile> fixed_overlay_profiles;
     std::optional<std::string> active_profile;
     std::vector<std::string> action_set_stack;
+    // PM-1b: the action sets of the editor's startup overlays.
+    std::vector<std::string> editor_overlay_sets;
     InputActionFrame current_frame;
     InputActionFrame backend_frame;
     std::uint64_t frozen_generation = std::numeric_limits<std::uint64_t>::max();
@@ -227,6 +238,11 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
             action_set_stack.insert(action_set_stack.end(),
                                     overlay.action_set_names.begin(),
                                     overlay.action_set_names.end());
+            if (isEditorOverlayReference(overlay.reference)) {
+                editor_overlay_sets.insert(editor_overlay_sets.end(),
+                                           overlay.action_set_names.begin(),
+                                           overlay.action_set_names.end());
+            }
         }
 
         if (source.selected_project_profile) {
@@ -329,6 +345,28 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
 
     void clearStack() {
         action_set_stack.clear();
+    }
+
+    const std::vector<std::string> &editorOverlaySets() const noexcept {
+        return editor_overlay_sets;
+    }
+
+    void setEditorOverlaysStacked(bool stacked) {
+        const auto is_editor_set = [&](const std::string &name) {
+            return std::find(editor_overlay_sets.begin(), editor_overlay_sets.end(),
+                             name) != editor_overlay_sets.end();
+        };
+        if (!stacked) {
+            std::erase_if(action_set_stack, is_editor_set);
+        } else {
+            for (const auto &name : editor_overlay_sets) {
+                if (std::find(action_set_stack.begin(), action_set_stack.end(), name) ==
+                    action_set_stack.end()) {
+                    action_set_stack.push_back(name);
+                }
+            }
+        }
+        frozen_generation = std::numeric_limits<std::uint64_t>::max();
     }
 
     std::vector<std::string> stack() const {
@@ -448,6 +486,14 @@ std::vector<std::string> poseInputActionNames() {
 
 void setInputActionBackendFrame(InputActionFrame frame) {
     GET_MODULE(InputActionsRuntime).setBackendFrame(std::move(frame));
+}
+
+std::vector<std::string> editorInputOverlayActionSets() {
+    return GET_MODULE(InputActionsRuntime).editorOverlaySets();
+}
+
+void setEditorInputOverlaysStacked(bool stacked) {
+    GET_MODULE(InputActionsRuntime).setEditorOverlaysStacked(stacked);
 }
 
 } // namespace internal

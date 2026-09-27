@@ -140,9 +140,12 @@ std::vector<GameSystemRegistration> sortGameSystemRegistrations(std::vector<Game
 void updateRegisteredGameSystems(GameContext &ctx);
 // PM-1a. Which registered systems a frame updates. A frame that is not a game
 // step (paused) updates only the engine's editor systems.
+// PM-1b: game_only is a playing frame of an engine launched with
+// --start-state edit, where the editor systems do nothing.
 enum class GameSystemScope {
     all,
     editor_only,
+    game_only,
 };
 void updateRegisteredGameSystems(GameContext &ctx, GameSystemScope scope);
 // PM-1a. Engine-internal: the systems marked here are editor systems. They

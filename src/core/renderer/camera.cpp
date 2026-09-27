@@ -153,13 +153,41 @@ std::string runtimeFreeCameraName(
     return name;
 }
 
+Camera::ParkedView preparedView(const Camera::PreparedSceneState &prepared) {
+    return Camera::ParkedView{
+        .valid = true,
+        .pos = prepared.pos,
+        .dir = prepared.dir,
+        .up = prepared.up,
+        .projection = prepared.projection,
+        .sprite_policy = prepared.sprite_policy,
+        .active_camera_name = prepared.active_camera_name,
+        .active_scene_camera_locked = prepared.active_scene_camera_locked,
+    };
+}
+
+void applyPreparedView(Camera::PreparedSceneState &prepared,
+                       const Camera::ParkedView &view) {
+    prepared.pos = view.pos;
+    prepared.dir = view.dir;
+    prepared.up = view.up;
+    prepared.projection = view.projection;
+    prepared.sprite_policy = view.sprite_policy;
+    prepared.active_camera_name = view.active_camera_name;
+    prepared.active_scene_camera_locked = view.active_scene_camera_locked;
+    rebuildPreparedProjection(prepared);
+}
+
 void applyRuntimeFreeCameraOverlay(
     Camera::PreparedSceneState &prepared,
-    const std::optional<Camera::SceneCamera> &scene_camera_basis) {
+    const std::optional<Camera::SceneCamera> &scene_camera_basis,
+    Camera::ViewCamera view) {
     const auto &launch = GET_MODULE(EngineLaunchConfig);
     if (!launch.free_camera) {
         return;
     }
+    // PM-1b: what the game view is, before the editor camera takes over.
+    const auto game_view = preparedView(prepared);
     if (!std::isfinite(launch.free_camera->orbit_distance) ||
         launch.free_camera->orbit_distance <= 0.0f) {
         throw std::runtime_error("runtime free camera orbit distance must be positive and finite");
@@ -198,7 +226,15 @@ void applyRuntimeFreeCameraOverlay(
     prepared.active_camera_name = free_camera.name;
     prepared.active_scene_camera_locked = true;
     prepared.controlled_scene_camera_order.push_back(free_camera.name);
+    prepared.editor_camera_name = free_camera.name;
     prepared.scene_cameras.emplace(free_camera.name, std::move(free_camera));
+    // PM-1b: the prepared state shows the view the engine shows now.
+    if (view == Camera::ViewCamera::game) {
+        prepared.parked_view = preparedView(prepared);
+        applyPreparedView(prepared, game_view);
+    } else {
+        prepared.parked_view = game_view;
+    }
 }
 
 } // namespace
@@ -239,6 +275,8 @@ void Camera::resetToConfigDefaults() {
     controlled_scene_camera_order.clear();
     active_camera_name.clear();
     active_scene_camera_locked = false;
+    editor_camera_name.clear();
+    parked_view = {};
     rebuildProjectionMatrix();
 }
 
@@ -258,6 +296,8 @@ Camera::PreparedSceneState Camera::snapshotPrepared() const {
         .active_camera_name = active_camera_name,
         .active_scene_camera_locked = active_scene_camera_locked,
         .discontinuity_revision = discontinuity_revision,
+        .editor_camera_name = editor_camera_name,
+        .parked_view = parked_view,
     };
 }
 
@@ -287,7 +327,7 @@ Camera::PreparedSceneState
 Camera::prepareSceneCameras(std::string_view scene_id) const {
     auto prepared = makeDefaultPreparedSceneState();
     if (!GET_MODULE(PathResolver).isSetup()) {
-        applyRuntimeFreeCameraOverlay(prepared, std::nullopt);
+        applyRuntimeFreeCameraOverlay(prepared, std::nullopt, view_camera);
         return prepared;
     }
 
@@ -300,7 +340,7 @@ Camera::PreparedSceneState Camera::prepareSceneCameras(
     auto prepared = makeDefaultPreparedSceneState();
     const auto *scene = resolved.findScene(scene_id);
     if (scene == nullptr) {
-        applyRuntimeFreeCameraOverlay(prepared, std::nullopt);
+        applyRuntimeFreeCameraOverlay(prepared, std::nullopt, view_camera);
         return prepared;
     }
 
@@ -329,7 +369,7 @@ Camera::PreparedSceneState Camera::prepareSceneCameras(
                                                      std::move(scene_camera));
         }
     }
-    applyRuntimeFreeCameraOverlay(prepared, first_scene_camera);
+    applyRuntimeFreeCameraOverlay(prepared, first_scene_camera, view_camera);
     return prepared;
 }
 
@@ -350,6 +390,8 @@ void Camera::publishPrepared(PreparedSceneState &&prepared) noexcept {
     active_camera_name.swap(prepared.active_camera_name);
     swap(active_scene_camera_locked, prepared.active_scene_camera_locked);
     swap(discontinuity_revision, prepared.discontinuity_revision);
+    editor_camera_name.swap(prepared.editor_camera_name);
+    swap(parked_view, prepared.parked_view);
 }
 
 void Camera::publishPrepared(PreparedSceneState &&prepared,
@@ -449,10 +491,60 @@ void Camera::applyControllerPose(std::string_view name, glm::vec3 new_pos, glm::
     up = glm::normalize(new_up);
 }
 
+Camera::ParkedView Camera::shownView() const {
+    return ParkedView{
+        .valid = true,
+        .pos = pos,
+        .dir = dir,
+        .up = up,
+        .projection = projection,
+        .sprite_policy = sprite_policy,
+        .active_camera_name = active_camera_name,
+        .active_scene_camera_locked = active_scene_camera_locked,
+    };
+}
+
+void Camera::showView(const ParkedView &view) {
+    pos = view.pos;
+    dir = view.dir;
+    up = view.up;
+    projection = view.projection;
+    sprite_policy = view.sprite_policy;
+    active_camera_name = view.active_camera_name;
+    active_scene_camera_locked = view.active_scene_camera_locked;
+    rebuildProjectionMatrix();
+}
+
+void Camera::setViewCamera(ViewCamera view) {
+    if (editor_camera_name.empty()) {
+        if (view == ViewCamera::editor) {
+            throw std::logic_error("this launch has no editor camera");
+        }
+        return;
+    }
+    if (view == view_camera) return;
+    const auto shown = shownView();
+    if (parked_view.valid) showView(parked_view);
+    parked_view = shown;
+    view_camera = view;
+    ++discontinuity_revision;
+}
+
 void Camera::setActiveCamera(std::string_view name) {
     const auto camera_it = scene_cameras.find(std::string{name});
     if (camera_it == scene_cameras.end()) {
         throw std::runtime_error("unknown camera name: " + std::string{name});
+    }
+    // PM-1b: the editor camera is a view, not a scene camera to choose.
+    if (!editor_camera_name.empty()) {
+        if (camera_it->first == editor_camera_name) {
+            setViewCamera(ViewCamera::editor);
+            return;
+        }
+        if (view_camera == ViewCamera::editor) {
+            parked_view = shownView();
+            view_camera = ViewCamera::game;
+        }
     }
 
     applySceneCamera(camera_it->second);

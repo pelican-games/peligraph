@@ -14,6 +14,7 @@
 #include <vector>
 #include <pelican_core.hpp>
 
+#include "../core/appflow/playmode.hpp"
 #include "../core/build_features.hpp"
 #include "../core/communication/projectmigrationrpc.hpp"
 #include "../core/container.hpp"
@@ -148,6 +149,17 @@ Pelican::EngineLaunchFreeCameraPreset parseFreeCameraPreset(const std::string &v
         return Pelican::EngineLaunchFreeCameraPreset::Unity;
     }
     throw std::runtime_error("--free-camera must be one of: blender, unity");
+}
+
+// PM-1b: the play state the engine starts in.
+Pelican::EngineStartState parseStartState(const std::string &value) {
+    if (value == "playing") {
+        return Pelican::EngineStartState::playing;
+    }
+    if (value == "edit") {
+        return Pelican::EngineStartState::edit;
+    }
+    throw std::runtime_error("--start-state must be one of: edit, playing");
 }
 
 Pelican::EditorTransformInputPreset
@@ -353,6 +365,11 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(3)
         .scan<'i', int>()
         .help("headless frame count; an explicit value also limits windowed runs");
+    program.add_argument("--start-state")
+        .default_value(std::string{"playing"})
+        .metavar("edit|playing")
+        .help("the play state to start in (default: playing); edit keeps behaviors dormant "
+              "and the game clock stopped until set_play_state, and prepares an editor camera");
     program.add_argument("--start-time")
         .default_value(std::string{})
         .metavar("seconds")
@@ -582,6 +599,29 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
                 throw std::runtime_error("--bake-camera-output requires --headless and --replay");
             }
             config.camera_bake_output = std::filesystem::path{camera_bake_output};
+        }
+
+        // PM-1b: an engine that starts in edit waits for a client to start the
+        // game, so everything that drives a run from its first frame -- a
+        // replay, a recording, a camera bake, a start time, a headless run
+        // with no RPC to leave edit by -- is a conflict, refused by name the
+        // way --start-time refuses its own.
+        config.start_state = parseStartState(program.get<std::string>("--start-state"));
+        if (config.start_state == Pelican::EngineStartState::edit) {
+            const std::pair<const char *, bool> conflicts[]{
+                {"--bake-camera-output", config.camera_bake_output.has_value()},
+                {"--replay", config.input_replay_path.has_value()},
+                {"--record-input", config.input_record.has_value()},
+                {"--start-time", !program.get<std::string>("--start-time").empty()},
+                {"--headless without --rpc", config.headless && !config.rpc},
+            };
+            for (const auto &[flag, used] : conflicts) {
+                if (!used) continue;
+                throw std::runtime_error(
+                    std::string{"offline.mode_conflict@1: --start-state edit cannot be combined with "} +
+                    flag);
+            }
+            Pelican::internal::completeEditStartLaunch(config);
         }
 
         // `--start-time` counts frames on the fixed-step timeline, which only

@@ -236,6 +236,8 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
     std::uint64_t next_attachment_seq = 1;
     std::size_t callback_depth = 0;
     internal::RegistrationOwner callback_owner = internal::engineRegistrationOwner;
+    // PM-1b: the edit state's attachments are dormant (see setDormant).
+    bool dormant_ = false;
 
     Attachment *findAttachment(BehaviorAttachmentHandle handle) noexcept;
     const Attachment *findAttachment(BehaviorAttachmentHandle handle) const noexcept;
@@ -251,6 +253,20 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
   public:
     BehaviorAttachmentArena() = default;
     ~BehaviorAttachmentArena();
+
+    // PM-1b (docs/design_play_mode.md section 5). While dormant -- the edit
+    // state -- an attachment is made with its handle, attachment_seq, type,
+    // owner and canonical params, and no instance: no constructor, no onInit,
+    // no onUpdate, no event. Scene loads, editor attaches and scene
+    // reconciliations make such attachments; set_params replaces the stored
+    // params only; update() and dispatchEvent() are shut, so nothing wakes
+    // one. A dormant attachment is not a pending one (pending is "no DLL"):
+    // the editor treats it as the live target of its edits. Leaving dormancy
+    // wakes nothing by itself; the next scene load (the play session's start)
+    // makes instances and runs onInit. Either change drops the deferred object
+    // mutations game code queued.
+    void setDormant(bool dormant) noexcept;
+    bool isDormant() const noexcept { return dormant_; }
 
     void publishSceneAttachments(std::vector<BoundSceneBehaviorAttachment> prepared);
     void activatePublished();

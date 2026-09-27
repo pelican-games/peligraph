@@ -577,6 +577,8 @@ void PreparedBehaviorSceneReconciliation::activate() {
     auto &arena = *impl_->tx.arena;
     impl_->deferred_base = arena.deferred_mutations.size();
     impl_->activated.clear();
+    // PM-1b: a load in the edit state activates nothing.
+    if (arena.dormant_) return;
     try {
         for (std::size_t index = 0; index < arena.attachments.size(); ++index) {
             auto &attachment = arena.attachments[index];
@@ -709,7 +711,9 @@ BehaviorAttachmentArena::prepareSceneReconciliation(
             const auto &current = attachments[*reusable];
             handle = current.info.handle;
             impl->tx.reused.push_back(handle);
-            if (!current.info.pending &&
+            // PM-1b: a dormant attachment has no instance to take the
+            // params; the canonical params below are all it keeps.
+            if (!current.info.pending && !dormant_ &&
                 current.info.canonical_params !=
                     bound.prepared.canonical_params) {
                 const auto *registration =
@@ -768,7 +772,8 @@ BehaviorAttachmentArena::prepareSceneReconciliation(
             },
             .raw_component = std::move(bound.prepared.raw_component),
         };
-        if (!reusable && !next.info.pending) {
+        // PM-1b: dormant, the attachment is made without an instance.
+        if (!reusable && !next.info.pending && !dormant_) {
             const auto *registration =
                 internal::getBehaviorRegisterer().findByNameAndOwner(
                     next.info.stable_name, next.info.owner);
@@ -808,6 +813,13 @@ BehaviorAttachmentArena::prepareSceneReconciliation(
 
 BehaviorAttachmentArena::~BehaviorAttachmentArena() {
     deactivateAll();
+}
+
+void BehaviorAttachmentArena::setDormant(bool dormant) noexcept {
+    if (dormant_ == dormant) return;
+    dormant_ = dormant;
+    // What game code queued belongs to the run it queued it in.
+    deferred_mutations.clear();
 }
 
 void BehaviorAttachmentArena::publishSceneAttachments(
@@ -926,6 +938,8 @@ void BehaviorAttachmentArena::destroyInstance(Attachment &attachment,
 }
 
 void BehaviorAttachmentArena::activatePublished() {
+    // PM-1b: dormant, the published attachments stay without instances.
+    if (dormant_) return;
     const auto deferred_base = deferred_mutations.size();
     std::vector<std::size_t> activated;
     activated.reserve(attachments.size());
@@ -1016,7 +1030,7 @@ void BehaviorAttachmentArena::attachSpawned(
                 },
                 .raw_component = std::move(behavior.raw_component),
             };
-            if (!next.info.pending) {
+            if (!next.info.pending && !dormant_) {
                 const auto *registration =
                     internal::getBehaviorRegisterer().findByNameAndOwner(
                         next.info.stable_name, next.info.owner);
@@ -1058,6 +1072,8 @@ void BehaviorAttachmentArena::attachSpawned(
         attachments.insert(position, std::move(attachment));
     }
 
+    // PM-1b: dormant, a spawned object's behaviors stay without instances.
+    if (dormant_) return;
     const auto deferred_base = deferred_mutations.size();
     std::vector<BehaviorAttachmentHandle> initialized;
     initialized.reserve(handles.size());
@@ -1155,6 +1171,9 @@ void BehaviorAttachmentArena::activateReadyEditorAttachments() {
 }
 
 void BehaviorAttachmentArena::update(GameContext &ctx) {
+    // PM-1b: one of the two ways a dormant attachment could wake (the
+    // activation below), shut in the edit state.
+    if (dormant_) return;
     applyDeferredMutations();
     activateReadyEditorAttachments();
     std::vector<BehaviorAttachmentHandle> snapshot_handles;
@@ -1185,6 +1204,8 @@ void BehaviorAttachmentArena::update(GameContext &ctx) {
 
 void BehaviorAttachmentArena::dispatchEvent(const internal::QueuedEvent &event,
                                             GameContext &ctx) {
+    // PM-1b: the other way in, shut in the edit state as well.
+    if (dormant_) return;
     applyDeferredMutations();
     activateReadyEditorAttachments();
     std::vector<BehaviorAttachmentHandle> snapshot_handles;
@@ -1292,8 +1313,10 @@ BehaviorAttachmentArena::prepareEditorEdits(
                 throw std::runtime_error(
                     "behavior editor attach requires a reserved identity");
             }
+            // PM-1b: dormant, an attach runs no constructor.
+            const bool make_instance = registration != nullptr && !dormant_;
             internal::RawBehaviorInstance instance;
-            if (registration != nullptr) {
+            if (make_instance) {
                 instance = registration->create(current.canonical_params);
             }
             for (auto &candidate : impl->tx.detached) {
@@ -1344,11 +1367,10 @@ BehaviorAttachmentArena::prepareEditorEdits(
                 },
                 .raw_component = std::move(current.raw_component),
                 .instance = instance,
-                .destroy = registration != nullptr ? registration->destroy
-                                                   : nullptr,
+                .destroy = make_instance ? registration->destroy : nullptr,
                 .initialized = false,
             };
-            next.info.activation_delay = registration != nullptr ? 1 : 0;
+            next.info.activation_delay = make_instance ? 1 : 0;
             impl->tx.detached.push_back(std::move(next));
             break;
         }
@@ -1411,28 +1433,32 @@ BehaviorAttachmentArena::prepareEditorEdits(
                 throw std::runtime_error(
                     "behavior registration owner changed before params apply");
             }
-            BehaviorAttachmentTransaction::ParamsUpdate update{
-                .handle = found->info.handle,
-                .apply_params = registration->apply_prepared_params,
-                .destroy_params = registration->destroy_prepared_params,
-                .activation_failed = false,
-                .activation_error = found->info.activation_failed
-                                        ? std::string{}
-                                        : found->info.activation_error,
-                .activation_delay = found->info.activation_failed
-                                        ? std::uint8_t{1}
-                                        : found->info.activation_delay,
-            };
-            update.params =
-                registration->prepare_params(current.canonical_params);
-            try {
-                impl->tx.params_updates.push_back(std::move(update));
-            } catch (...) {
-                if (update.params.value != nullptr &&
-                    update.destroy_params != nullptr) {
-                    update.destroy_params(update.params);
+            // PM-1b: a dormant attachment has no instance whose params to
+            // swap; the edit replaces the stored params only.
+            if (!dormant_) {
+                BehaviorAttachmentTransaction::ParamsUpdate update{
+                    .handle = found->info.handle,
+                    .apply_params = registration->apply_prepared_params,
+                    .destroy_params = registration->destroy_prepared_params,
+                    .activation_failed = false,
+                    .activation_error = found->info.activation_failed
+                                            ? std::string{}
+                                            : found->info.activation_error,
+                    .activation_delay = found->info.activation_failed
+                                            ? std::uint8_t{1}
+                                            : found->info.activation_delay,
+                };
+                update.params =
+                    registration->prepare_params(current.canonical_params);
+                try {
+                    impl->tx.params_updates.push_back(std::move(update));
+                } catch (...) {
+                    if (update.params.value != nullptr &&
+                        update.destroy_params != nullptr) {
+                        update.destroy_params(update.params);
+                    }
+                    throw;
                 }
-                throw;
             }
             found->info.canonical_params =
                 std::move(current.canonical_params);

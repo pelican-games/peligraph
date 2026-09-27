@@ -10,6 +10,7 @@
 #include "../appflow/framephase.hpp"
 
 #include "../appflow/enginetime.hpp"
+#include "../appflow/playmode.hpp"
 #include "../asset/model.hpp"
 #include "../ecs/archetypemigration.hpp"
 #include "../ecs/core.hpp"
@@ -932,31 +933,32 @@ nlohmann::json frameResult(const EngineTime &engine_time) {
     };
 }
 
-// PM-1a. The play state (docs/design_play_mode.md sections 2 and 8).
+// PM-1a / PM-1b. The play state (docs/design_play_mode.md sections 2 and 8).
 std::string_view playStateName(EngineTime::PlayState state) {
-    return state == EngineTime::PlayState::playing ? "playing" : "paused";
+    switch (state) {
+    case EngineTime::PlayState::playing: return "playing";
+    case EngineTime::PlayState::paused: return "paused";
+    case EngineTime::PlayState::edit: return "edit";
+    }
+    return "playing";
 }
 
-nlohmann::json playStatusJson(const EngineTime &engine_time) {
+// PM-1b: which camera the frame is drawn from (Camera::ViewCamera).
+std::string_view viewCameraName(Camera::ViewCamera view) {
+    return view == Camera::ViewCamera::editor ? "editor" : "game";
+}
+
+nlohmann::json playStatusJson(const EngineTime &engine_time, const Camera &camera) {
     return nlohmann::json{
         {"state", playStateName(engine_time.playState())},
         {"game_frame", engine_time.frameIndex()},
         {"game_time", engine_time.now()},
         {"pending_steps", engine_time.pendingSteps()},
+        {"view_camera", viewCameraName(camera.viewCamera())},
     };
 }
 
 constexpr std::uint64_t maxAdvanceFrames = 600;
-
-// Paused, the whole mix is held; playing again, it goes on from where it was.
-void applyAudioPlayState(EngineTime::PlayState state) {
-#if PELICAN_WITH_AUDIO
-    if (auto *audio = FastModuleContainer::tryGet<Audio>())
-        audio->setAllPaused(state == EngineTime::PlayState::paused);
-#else
-    (void)state;
-#endif
-}
 
 std::string projectRootString(const PathResolver &path_resolver) {
     const auto resolved = path_resolver.resolveProjectRef(".");
@@ -1477,7 +1479,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             // clock are under `play`.
             {"frame", modules.engine_time.evaluationIndex()},
             {"time", modules.engine_time.now()},
-            {"play", playStatusJson(modules.engine_time)},
+            {"play", playStatusJson(modules.engine_time, modules.camera)},
             // AG-3a. What the frame that just ran drove, from what it
             // recorded: a sink's frame_revision is that frame's, which is the
             // one below `frame` here, since the RPC runs at the boundary after
@@ -1837,46 +1839,112 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         return result;
     });
 
-    // PM-1a. playing <-> paused. "edit" is the PM-1b state; this build does
-    // not have it. The same state again is a success that changes nothing.
-    server.setHandler("set_play_state", [&modules](const nlohmann::json &params) {
+    // PM-1a / PM-1b. edit, playing and paused (internal::changePlayState).
+    // Between edit and the other two the runtime is made again from the
+    // current authoring, through load_scene's path: behaviors wake and run
+    // onInit on the way out of edit, and get onDestroy on the way back, when
+    // spawned objects go. The same state again is a success that changes
+    // nothing. `keep` (what to carry out of a session) is PM-2's and refused.
+    server.setHandler("set_play_state", [&pending_transforms, &modules, &editor_rpc](
+                                            const nlohmann::json &params) {
         constexpr auto method = "set_play_state";
         const auto &object = requireObjectParams(params, method);
         if (!object.contains("state") || !object.at("state").is_string()) {
             throw JsonRpcHandlerError(
                 JsonRpcErrorCodes::invalidParams,
-                "set_play_state requires the string field 'state' (\"playing\" or \"paused\")");
+                "set_play_state requires the string field 'state' (\"edit\", \"playing\" or \"paused\")");
         }
-        const auto &requested = object.at("state").get_ref<const std::string &>();
-        auto &time = modules.engine_time;
-        if (requested == "edit") {
+        if (object.contains("keep")) {
             throw JsonRpcHandlerError(
-                JsonRpcErrorCodes::applicationError,
-                "set_play_state: this build has no edit state; the states are \"playing\" and \"paused\"",
-                {{"code", "play_state_mismatch"},
-                 {"state", playStateName(time.playState())},
-                 {"requested", requested}});
+                JsonRpcErrorCodes::invalidParams,
+                "set_play_state: 'keep' is not available in this build; stopping keeps nothing "
+                "and makes the edit runtime from the current authoring");
         }
         if (object.size() != 1) {
             throw JsonRpcHandlerError(
                 JsonRpcErrorCodes::invalidParams,
                 "set_play_state accepts only the field 'state'");
         }
+        const auto &requested = object.at("state").get_ref<const std::string &>();
         EngineTime::PlayState target{};
         if (requested == "playing") {
             target = EngineTime::PlayState::playing;
         } else if (requested == "paused") {
             target = EngineTime::PlayState::paused;
+        } else if (requested == "edit") {
+            target = EngineTime::PlayState::edit;
         } else {
             throw JsonRpcHandlerError(
                 JsonRpcErrorCodes::invalidParams,
-                "set_play_state state must be \"playing\" or \"paused\", not \"" + requested + "\"");
+                "set_play_state state must be \"edit\", \"playing\" or \"paused\", not \"" +
+                    requested + "\"");
         }
-        const auto previous = time.setPlayState(target);
-        applyAudioPlayState(target);
+        const auto change = internal::changePlayState(target, [&] {
+            editor_rpc.forceAbortPreview("scene_transition");
+            const auto scene = modules.scene_loader.currentScene();
+            if (scene.empty()) return;
+            internal::loadSceneResolutionBoundary(
+                scene, [&modules](std::string_view scene_name) {
+                    auto request = SceneLoadRequest::borrowed(
+                        std::string{scene_name},
+                        modules.project_config.sceneProjectionState(),
+                        SceneLoadRoot::rpc);
+                    (void)requireSceneLoadCommitted(
+                        modules.scene_loader.load(std::move(request)));
+                });
+            pending_transforms.clear();
+        });
         return nlohmann::json{
-            {"state", playStateName(target)},
-            {"previous", playStateName(previous)},
+            {"state", playStateName(change.state)},
+            {"previous", playStateName(change.previous)},
+        };
+    });
+
+    // PM-1b. The camera the frame is drawn from, in edit or paused: the
+    // editor camera, or the game's camera as the scene and game code chose
+    // it. Playing, it is always the game's.
+    server.setHandler("set_view_camera", [&modules](const nlohmann::json &params) {
+        constexpr auto method = "set_view_camera";
+        const auto &object = requireObjectParams(params, method);
+        if (object.size() != 1 || !object.contains("camera") || !object.at("camera").is_string()) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "set_view_camera requires exactly the string field 'camera' (\"editor\" or \"game\")");
+        }
+        const auto &requested = object.at("camera").get_ref<const std::string &>();
+        Camera::ViewCamera view{};
+        if (requested == "editor") {
+            view = Camera::ViewCamera::editor;
+        } else if (requested == "game") {
+            view = Camera::ViewCamera::game;
+        } else {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "set_view_camera camera must be \"editor\" or \"game\", not \"" + requested + "\"");
+        }
+        const auto state = modules.engine_time.playState();
+        if (state == EngineTime::PlayState::playing) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::applicationError,
+                "set_view_camera: a playing game is seen through its own camera; "
+                "pause it or stop it first (set_play_state)",
+                {{"code", "play_state_mismatch"},
+                 {"state", playStateName(state)},
+                 {"required", nlohmann::json::array({"edit", "paused"})}});
+        }
+        auto &camera = modules.camera;
+        if (view == Camera::ViewCamera::editor && camera.editorCameraName().empty()) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::applicationError,
+                "set_view_camera: this engine has no editor camera; launch it with "
+                "--start-state edit or --free-camera",
+                {{"code", "view_camera_unavailable"}, {"camera", requested}});
+        }
+        const auto previous = camera.viewCamera();
+        camera.setViewCamera(view);
+        return nlohmann::json{
+            {"camera", viewCameraName(camera.viewCamera())},
+            {"previous", viewCameraName(previous)},
         };
     });
 

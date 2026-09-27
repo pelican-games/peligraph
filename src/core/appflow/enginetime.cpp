@@ -28,6 +28,8 @@ void EngineTime::setup(Mode mode, double fixed_dt) {
     time_set_revision = 0;
     pending_steps = 0;
     step_frame = false;
+    session_started = false;
+    time_before_session = 0.0;
     last_tick = Clock::now();
 }
 
@@ -90,13 +92,43 @@ EngineTime::PlayState EngineTime::setPlayState(PlayState state) {
     if (state == previous) return previous;
     play_state = state;
     step_frame = false;
-    if (previous == PlayState::paused) {
+    if (previous != PlayState::playing) {
         pending_steps = 0;
         // The resume's first frame measures from here, not from the last
         // frame before it.
         last_tick = Clock::now();
     }
     return previous;
+}
+
+void EngineTime::beginGameSession() {
+    const auto before = current_time;
+    setTime(0.0);
+    frame_index = 0;
+    session_started = true;
+    time_before_session = before;
+}
+
+void EngineTime::endGameSession() {
+    setTime(session_started ? time_before_session : 0.0);
+    session_started = false;
+    time_before_session = 0.0;
+}
+
+EngineTime::GameClock EngineTime::gameClock() const {
+    return GameClock{
+        .time = current_time,
+        .frame = frame_index,
+        .session_started = session_started,
+        .time_before_session = time_before_session,
+    };
+}
+
+void EngineTime::restoreGameClock(const GameClock &clock) {
+    setTime(clock.time);
+    frame_index = clock.frame;
+    session_started = clock.session_started;
+    time_before_session = clock.time_before_session;
 }
 
 void EngineTime::requestSteps(uint64_t count) {

@@ -38,9 +38,20 @@ struct EngineLaunchFreeCamera {
     float sensitivity = 1.5f;
 };
 
+// PM-1b (--start-state). The play state an engine starts in. `edit` is the
+// editor's: behaviors dormant, game clock stopped, an editor camera prepared
+// (docs/design_play_mode.md sections 2 and 4.4).
+enum class EngineStartState {
+    playing,
+    edit,
+};
+
 DECLARE_MODULE(EngineLaunchConfig) {
   public:
     bool headless = false;
+    // PM-1b: --start-state. Only `edit` changes anything; an omitted flag and
+    // `playing` are the same launch.
+    EngineStartState start_state = EngineStartState::playing;
     bool rpc = false;
     // EW-1 (--embedded): another process's window will host this one, so the
     // window is created hidden, unfocused and never fullscreen. Nothing else

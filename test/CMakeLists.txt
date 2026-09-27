@@ -2012,6 +2012,30 @@ if(COMMAND pelican_copy_shaderc_runtime)
     pelican_copy_test_shaderc_runtime(pelican_test_pm1a_play_state_rpc_test)
 endif()
 endif()
+# PM-1b: the edit state over the headless RPC. The behaviors are a game DLL's,
+# built against the SDK this test executable exports (as gp2_spawn_test does).
+if(WIN32 AND COMMAND pelican_configure_game_logic_target)
+pelican_define_test(pm1b_edit_state_rpc_test GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+target_link_libraries(pelican_test_pm1b_edit_state_rpc_test PRIVATE pelican_shaderc)
+if(COMMAND pelican_copy_shaderc_runtime)
+    pelican_copy_test_shaderc_runtime(pelican_test_pm1b_edit_state_rpc_test)
+endif()
+set_target_properties(pelican_test_pm1b_edit_state_rpc_test PROPERTIES
+  ENABLE_EXPORTS TRUE)
+if(MSVC)
+  target_link_options(pelican_test_pm1b_edit_state_rpc_test PRIVATE
+    "/WHOLEARCHIVE:$<TARGET_LINKER_FILE:pelican_core>")
+endif()
+add_library(pelican_pm1b_edit_fixture SHARED
+  fixtures/pm1b_edit/behavior.cpp)
+set_target_properties(pelican_pm1b_edit_fixture PROPERTIES
+  OUTPUT_NAME "pelican_pm1b_edit_fixture")
+pelican_configure_game_logic_target(pelican_pm1b_edit_fixture
+  HOST_TARGET pelican_test_pm1b_edit_state_rpc_test
+  ROLE pm1b-edit NO_INVENTORY)
+target_compile_definitions(pelican_test_pm1b_edit_state_rpc_test PRIVATE
+  PELICAN_PM1B_EDIT_FIXTURE="$<TARGET_FILE:pelican_pm1b_edit_fixture>")
+endif()
 endif()
 endif()
 if(PELICAN_WITH_EXR)
@@ -2844,6 +2868,18 @@ add_test(
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_offline_start_time_headless.cmake
 )
 pelican_gpu_test_properties(offline_start_time_headless_player 300)
+
+# PM-1b: what --start-state edit cannot be combined with, refused by name
+# while the command line is read, so no run reaches the GPU.
+add_test(
+    NAME pm1b_start_state_args_player
+    COMMAND ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/pm1b_start_state_args
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_pm1b_start_state_args.cmake
+)
+set_tests_properties(pm1b_start_state_args_player PROPERTIES TIMEOUT 120)
 
 pelican_define_test(importmanifest_test GROUP project_formats pelican_project)
 pelican_define_test(importrules_test GROUP project_formats pelican_project)

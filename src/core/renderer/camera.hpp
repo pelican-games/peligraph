@@ -47,6 +47,29 @@ DECLARE_MODULE(Camera) {
         std::optional<SceneCameraController> controller;
     };
 
+    // PM-1b (docs/design_play_mode.md section 4.4). Which camera the frame is
+    // drawn from when the launch made an editor camera (the runtime free
+    // camera of --free-camera or --start-state edit): `editor` is that
+    // camera, locked active; `game` is the camera the scene and game code
+    // chose, as it would be without an editor camera. The view not shown is
+    // parked with its pose and its active camera, and comes back as it was.
+    // Without an editor camera the view is always `game`.
+    enum class ViewCamera : std::uint8_t {
+        editor,
+        game,
+    };
+
+    struct ParkedView {
+        bool valid = false;
+        glm::vec3 pos{0.0f, 0.0f, 0.0f};
+        glm::vec3 dir{1.0f, 0.0f, 0.0f};
+        glm::vec3 up{0.0f, 1.0f, 0.0f};
+        CameraProjectionSpec projection;
+        CameraSpritePolicySpec sprite_policy;
+        std::string active_camera_name;
+        bool active_scene_camera_locked = false;
+    };
+
     struct PreparedSceneState {
         glm::vec3 pos{0.0f, 0.0f, 0.0f};
         glm::vec3 dir{1.0f, 0.0f, 0.0f};
@@ -62,6 +85,10 @@ DECLARE_MODULE(Camera) {
         std::string active_camera_name;
         bool active_scene_camera_locked = false;
         std::uint64_t discontinuity_revision = 0;
+        // PM-1b: the editor camera's name (empty without one), and the view
+        // the prepared state does not show.
+        std::string editor_camera_name;
+        ParkedView parked_view;
     };
 
   private:
@@ -79,8 +106,15 @@ DECLARE_MODULE(Camera) {
     std::string active_camera_name;
     bool active_scene_camera_locked = false;
     std::uint64_t discontinuity_revision = 0;
+    // PM-1b: see ViewCamera. The view is the engine's, not the scene's: a
+    // scene load keeps it.
+    std::string editor_camera_name;
+    ParkedView parked_view;
+    ViewCamera view_camera = ViewCamera::editor;
 
     void rebuildProjectionMatrix();
+    ParkedView shownView() const;
+    void showView(const ParkedView &view);
     // The project-config defaults both prepareSceneCameras overloads start
     // from, with the projection matrix already rebuilt.
     PreparedSceneState makeDefaultPreparedSceneState() const;
@@ -107,8 +141,21 @@ DECLARE_MODULE(Camera) {
     void publishPrepared(PreparedSceneState &&prepared,
                          SceneLoadPhaseTrace &phase_trace) noexcept;
     void loadSceneCameras(std::string_view scene_id);
+    // Makes `name` the active camera, locked. Naming a scene camera while the
+    // editor camera is shown switches to the game view first (the editor
+    // camera is parked), so the choice is the game's; naming the editor
+    // camera shows the editor view.
     void setActiveCamera(std::string_view name);
     const std::string &activeCameraName() const { return active_camera_name; }
+    // PM-1b.
+    const std::string &editorCameraName() const { return editor_camera_name; }
+    ViewCamera viewCamera() const noexcept {
+        return editor_camera_name.empty() ? ViewCamera::game : view_camera;
+    }
+    // Shows the other view and parks this one. Asking for the editor view
+    // with no editor camera throws std::logic_error; the same view again, or
+    // the game view without an editor camera, changes nothing.
+    void setViewCamera(ViewCamera view);
     std::uint64_t discontinuityRevision() const { return discontinuity_revision; }
     const std::vector<std::string> &controlledSceneCameraNames() const { return controlled_scene_camera_order; }
     const SceneCameraController *sceneCameraController(std::string_view name) const;

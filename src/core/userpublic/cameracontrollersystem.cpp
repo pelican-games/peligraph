@@ -343,19 +343,43 @@ CameraPose updateFly(GameContext &ctx, std::string_view camera_name, const Contr
     return state.pose;
 }
 
-class BuiltinCameraControllerSystem {
-    std::unordered_map<std::string, ControllerState> states;
+// PM-1b: which of the controlled cameras one update drives. The editor camera
+// (the runtime free camera) is driven only while it is the active camera --
+// the editor view -- and the rest are the game's cameras.
+enum class ControlledCameras {
+    all,
+    editor_camera,
+    game_cameras,
+};
 
-  public:
-    void update(GameContext &ctx) {
+// Controller state outlives a scene load and a change of view: the editor
+// camera comes back where it was left.
+std::unordered_map<std::string, ControllerState> &controllerStates() {
+    static std::unordered_map<std::string, ControllerState> states;
+    return states;
+}
+
+bool launchedInEditState() {
+    return GET_MODULE(EngineLaunchConfig).start_state == EngineStartState::edit;
+}
+
+void updateControlledCameras(GameContext &ctx, ControlledCameras which) {
+    auto &states = controllerStates();
+    {
         auto &camera = GET_MODULE(Camera);
         const auto &controlled_cameras = camera.controlledSceneCameraNames();
         const auto active_camera = camera.activeCameraName();
+        const auto &editor_camera = camera.editorCameraName();
 
         for (const auto &camera_name : controlled_cameras) {
             if (!active_camera.empty() && camera_name != active_camera) {
                 continue;
             }
+            const bool is_editor_camera =
+                !editor_camera.empty() && camera_name == editor_camera;
+            if (is_editor_camera && active_camera != camera_name) continue;
+            if (which == ControlledCameras::editor_camera && !is_editor_camera) continue;
+            if (which == ControlledCameras::game_cameras && is_editor_camera) continue;
 
             const auto *controller = camera.sceneCameraController(camera_name);
             if (controller == nullptr) {
@@ -383,6 +407,29 @@ class BuiltinCameraControllerSystem {
                 break;
             }
         }
+    }
+}
+
+// The editor half: an editor system (it runs while the game is stopped, on the
+// editor clock). A launch with --start-state edit gives it the editor camera
+// alone; any other launch keeps the one system PM-1a had, driving every
+// controlled camera, and leaves the game half idle.
+class BuiltinCameraControllerSystem {
+  public:
+    void update(GameContext &ctx) {
+        updateControlledCameras(ctx, launchedInEditState()
+                                         ? ControlledCameras::editor_camera
+                                         : ControlledCameras::all);
+    }
+};
+
+// The game half: a game system, so it stops with the game. It drives the
+// scene's controlled cameras in a --start-state edit launch.
+class BuiltinGameCameraControllerSystem {
+  public:
+    void update(GameContext &ctx) {
+        if (!launchedInEditState()) return;
+        updateControlledCameras(ctx, ControlledCameras::game_cameras);
     }
 };
 
@@ -429,6 +476,9 @@ struct BuiltinCameraControllerSystemRegistration {
         internal::markEditorGameSystem(
             internal::getGameSystemRegisterer().registerSystem<BuiltinCameraControllerSystem>(
                 "BuiltinCameraControllerSystem", 10000, {}));
+        // PM-1b: unmarked, a game system.
+        (void)internal::getGameSystemRegisterer().registerSystem<BuiltinGameCameraControllerSystem>(
+            "BuiltinGameCameraControllerSystem", 10000, {});
     }
 };
 const BuiltinCameraControllerSystemRegistration builtinCameraControllerSystem_registration;

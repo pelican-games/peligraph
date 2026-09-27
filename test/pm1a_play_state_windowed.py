@@ -71,9 +71,9 @@ def check(player: Path, project: Path) -> None:
         # while playing.
         refused(client, "step_frame", {}, "step_frame_windowed")
         refused(client, "advance_frames", {"count": 1}, "play_state_mismatch")
-        edit = refused(client, "set_play_state", {"state": "edit"}, "play_state_mismatch")
-        if edit.get("requested") != "edit":
-            raise AssertionError(f"set_play_state edit: {edit!r}")
+        # PM-1b: set_play_state edit is a real move now (its windowed
+        # scenario is PM-3's); the view camera cannot change while playing.
+        refused(client, "set_view_camera", {"camera": "game"}, "play_state_mismatch")
 
         answer = client.call("set_play_state", {"state": "paused"})
         if answer != {"state": "paused", "previous": "playing"}:

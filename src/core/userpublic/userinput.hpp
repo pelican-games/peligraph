@@ -202,6 +202,12 @@ void selectInputProfile(std::string_view profile_name);
 const InputActionMap *inputActionMap();
 std::vector<std::string> poseInputActionNames();
 void setInputActionBackendFrame(InputActionFrame frame);
+// PM-1b (docs/design_play_mode.md section 4.4). The action sets the editor's
+// startup overlays (free camera, editor transform) brought, in overlay order.
+std::vector<std::string> editorInputOverlayActionSets();
+// Takes those sets off the action set stack (false), or puts back the ones
+// not on it at its top (true). Game-set entries stay where they are.
+void setEditorInputOverlaysStacked(bool stacked);
 
 } // namespace internal
 

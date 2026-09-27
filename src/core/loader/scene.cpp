@@ -867,7 +867,11 @@ struct LoaderStateParticipant final : TransactionParticipant {
         return false;
     }
     void prepare() override {
-        t.candidate_scene_start_time = GET_MODULE(EngineTime).now();
+        // PM-1b: a runtime made in the edit state starts at 0, so there
+        // scene_time is the game clock's time (the Timeline's).
+        const auto &time = GET_MODULE(EngineTime);
+        t.candidate_scene_start_time =
+            time.playState() == EngineTime::PlayState::edit ? 0.0 : time.now();
     }
     void publish() noexcept override {
         t.publishLoaderState();

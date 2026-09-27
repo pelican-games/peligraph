@@ -29,8 +29,8 @@
 #if PELICAN_WITH_IMGUI
 #include "../imgui/imguiruntime.hpp"
 #include "../imgui/imguisystem.hpp"
-#include "../launchconfig.hpp"
 #endif
+#include "../launchconfig.hpp"
 
 #include <cassert>
 
@@ -151,10 +151,16 @@ void invokeEditorCommitQueueHook() noexcept {
 
 void updateFrameState() {
     auto modules = resolveFrameStateModules();
+    const auto play_state = modules.engine_time.playState();
     // Audio completion happens asynchronously. Reap it at the common frame
     // boundary before game code can observe this frame's state.
 #if PELICAN_WITH_AUDIO
-    if (modules.audio != nullptr) modules.audio->update();
+    if (modules.audio != nullptr) {
+        // PM-1b: the whole mix is held whenever the game does not play --
+        // including an engine that started in edit, before any RPC.
+        modules.audio->setAllPaused(play_state != EngineTime::PlayState::playing);
+        modules.audio->update();
+    }
 #endif
     // Reload publication is a frame-boundary operation and happens before any
     // phase can observe game/runtime state.
@@ -166,6 +172,14 @@ void updateFrameState() {
     // graph at the stopped game time and draws; what it leaves out is game
     // code and what only game code causes (docs/design_play_mode.md 4.1).
     const bool game_step = modules.engine_time.gameStepping();
+    // PM-1b: an engine launched with --start-state edit gives the game the
+    // whole frame while it plays: the editor systems do nothing then.
+    const auto system_scope =
+        !game_step ? internal::GameSystemScope::editor_only
+        : play_state == EngineTime::PlayState::playing &&
+                GET_MODULE(EngineLaunchConfig).start_state == EngineStartState::edit
+            ? internal::GameSystemScope::game_only
+            : internal::GameSystemScope::all;
     // GP-2: the boundary where GameContext::spawn / destroy land -- after the
     // other boundary operations above, which may replace the scene run, and
     // before any game code of this frame, so a request made anywhere during
@@ -189,7 +203,9 @@ void updateFrameState() {
             if (modules.imgui_system != nullptr)
                 modules.imgui_system->routeInputAndBeginFrame(modules.input_state);
 #endif
-            if (modules.ui_module != nullptr) {
+            // PM-1b: in edit the game UI takes no input at all.
+            if (modules.ui_module != nullptr &&
+                play_state != EngineTime::PlayState::edit) {
                 // Paused, the game UI still follows the pointer but queues
                 // no event for game code.
                 modules.ui_module->setEventsSuppressed(!game_step);
@@ -209,9 +225,7 @@ void updateFrameState() {
             break;
         case FramePhase::update_game:
             modules.ecs.update();
-            internal::updateRegisteredGameSystems(
-                game_context, game_step ? internal::GameSystemScope::all
-                                        : internal::GameSystemScope::editor_only);
+            internal::updateRegisteredGameSystems(game_context, system_scope);
 #if PELICAN_WITH_ANIMATION
             // Retire animation sinks whose scene entity or renderer instance
             // was replaced before invoking any registered pose callbacks.

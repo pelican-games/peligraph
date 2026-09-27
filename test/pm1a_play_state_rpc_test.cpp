@@ -195,11 +195,10 @@ TEST_CASE("PM-1a paused, headless frames evaluate the animated scene again and a
         REQUIRE(out_of_range.at("code") == -32602);
         REQUIRE(dataCode(out_of_range).empty());
     }
-    // This build has no edit state.
-    const auto edit = rpc.error("set_play_state", {{"state", "edit"}});
-    REQUIRE(dataCode(edit) == "play_state_mismatch");
-    REQUIRE(edit.at("data").at("state") == "paused");
-    REQUIRE(edit.at("data").at("requested") == "edit");
+    // PM-1b: the edit state exists now (pm1b_edit_state_rpc_test); what a
+    // session would keep is PM-2's, refused before anything changes.
+    REQUIRE(rpc.error("set_play_state", {{"state", "edit"}, {"keep", "all"}}).at("code") == -32602);
+    REQUIRE(rpc.result("get_status").at("play").at("state") == "paused");
     REQUIRE(rpc.error("set_play_state", {{"state", "stopped"}}).at("code") == -32602);
 
     // Playing again: every frame is a game step once more.

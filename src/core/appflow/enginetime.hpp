@@ -34,9 +34,21 @@ DECLARE_MODULE(EngineTime) {
         realtime,
         fixed_step,
     };
+    // PM-1b adds edit: the game clock stands (dt 0) and no game code runs, as
+    // while paused, and no step can be asked for. Between edit and the other
+    // two lies a play session (beginGameSession / endGameSession).
     enum class PlayState {
         playing,
         paused,
+        edit,
+    };
+    // PM-1b. The game clock and frame as they stand, to put back when a
+    // change of state fails halfway.
+    struct GameClock {
+        double time = 0.0;
+        uint64_t frame = 0;
+        bool session_started = false;
+        double time_before_session = 0.0;
     };
 
   private:
@@ -54,6 +66,10 @@ DECLARE_MODULE(EngineTime) {
     uint64_t pending_steps = 0;
     // Whether the frame the last advance() opened took a requested step.
     bool step_frame = false;
+    // PM-1b: the game clock's time when the running play session began (the
+    // Timeline's time in edit), put back when the session ends.
+    bool session_started = false;
+    double time_before_session = 0.0;
     Clock::time_point last_tick;
 
   public:
@@ -81,11 +97,19 @@ DECLARE_MODULE(EngineTime) {
     bool gameStepping() const;
 
     PlayState playState() const;
-    // Returns the state before the change. Moving from paused to playing sets
-    // the realtime reference tick to now, so the first frame after a resume
-    // does not measure the time spent paused. Leaving playing drops nothing;
-    // leaving paused drops the steps not yet taken.
+    // Returns the state before the change. Moving from paused or edit to
+    // playing sets the realtime reference tick to now, so the first frame
+    // after a resume does not measure the time spent stopped. Leaving playing
+    // drops nothing; leaving paused drops the steps not yet taken.
     PlayState setPlayState(PlayState state);
+    // PM-1b. A play session starts (edit -> playing / paused): the game clock
+    // and the game frame go back to 0, and the time the clock had is kept.
+    void beginGameSession();
+    // The session ends (-> edit): the clock goes back to the time kept when it
+    // began, or to 0 when none began (a launch that started playing).
+    void endGameSession();
+    GameClock gameClock() const;
+    void restoreGameClock(const GameClock &clock);
     // Paused only: `count` more game steps, taken one per advance() from the
     // next one on, each with the step delta (1 / fps).
     void requestSteps(uint64_t count);
