@@ -96,6 +96,8 @@ DECLARE_MODULE(Audio) {
     };
 
     std::unique_ptr<Backend> backend;
+    // PM-1a: the whole mix held while the game is paused.
+    bool all_paused = false;
     // Why the preferred backend did not open, when the null one stands in.
     std::string fallback_reason;
     std::unordered_map<SoundHandle, Voice, SoundHandle::Hash> voices;
@@ -158,6 +160,13 @@ DECLARE_MODULE(Audio) {
     void driveVoice(SoundHandle handle, const VoiceDrive &drive);
     // The source length of a graph voice in seconds; 0 when there is none.
     double voiceLengthSeconds(SoundHandle handle) const noexcept;
+
+    // PM-1a. Holds (true) or resumes (false) the whole mix at once, graph
+    // voices included: the device backend stops and starts its device, the
+    // offline one mixes silence without moving any voice on, the null one has
+    // nothing to hold. Each voice keeps its own paused state underneath.
+    void setAllPaused(bool paused);
+    bool allPaused() const noexcept { return all_paused; }
 
     // Called at the shared logical-frame boundary. Completed backend voices
     // are destroyed here rather than accumulating until Audio teardown.

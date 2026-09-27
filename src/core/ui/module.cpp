@@ -229,6 +229,7 @@ const DocumentNode *UiModule::findNode(std::string_view path) const {
 
 void UiModule::emitBindings(const DocumentNode &node, std::string_view trigger,
                             const RoutedPointerEvent &event) {
+    if (events_suppressed) return;
     for (const auto &binding : node.emits) {
         if (binding.trigger != trigger) continue;
         nlohmann::json payload = nlohmann::json::object();

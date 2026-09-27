@@ -138,6 +138,32 @@ class UserGameSystemRegistererTemplatePublic {
 PELICAN_API UserGameSystemRegistererTemplatePublic &getGameSystemRegisterer();
 std::vector<GameSystemRegistration> sortGameSystemRegistrations(std::vector<GameSystemRegistration> systems);
 void updateRegisteredGameSystems(GameContext &ctx);
+// PM-1a. Which registered systems a frame updates. A frame that is not a game
+// step (paused) updates only the engine's editor systems.
+enum class GameSystemScope {
+    all,
+    editor_only,
+};
+void updateRegisteredGameSystems(GameContext &ctx, GameSystemScope scope);
+// PM-1a. Engine-internal: the systems marked here are editor systems. They
+// run on every frame, paused or not, and read the editor clock through
+// GameContext while they run. Only the engine marks (modal transform and the
+// camera controller); the public registration shape is unchanged.
+void markEditorGameSystem(RegistrationToken token);
+bool isEditorGameSystem(RegistrationToken token) noexcept;
+// While one of these is alive, GameContext's deltaTime() reads the editor
+// clock (the frame's own delta). frameIndex() is the evaluation index either
+// way.
+class ScopedEditorClock {
+    bool previous_;
+
+  public:
+    ScopedEditorClock() noexcept;
+    ~ScopedEditorClock();
+    ScopedEditorClock(const ScopedEditorClock &) = delete;
+    ScopedEditorClock &operator=(const ScopedEditorClock &) = delete;
+};
+bool editorClockActive() noexcept;
 void dispatchEventToRegisteredGameSystems(const QueuedEvent &event, GameContext &ctx);
 void unregisterGameSystem(RegistrationToken token);
 void unregisterGameSystems(RegistrationOwner owner) noexcept;

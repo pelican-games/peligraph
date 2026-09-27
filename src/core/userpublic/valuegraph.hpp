@@ -110,7 +110,7 @@ struct PublishedInstanceInputs {
     bool published = false;
     // RendererRuntimeGeneration::generation: the version of the graph structure.
     std::uint64_t generation = 0;
-    // EngineTime::frameIndex(): the frame that evaluated these values.
+    // EngineTime::evaluationIndex(): the frame that evaluated these values.
     std::uint64_t frame = 0;
     InstanceInputValues inputs;
     // The graph `node_values` is ordered by. Held, not borrowed: a reader that

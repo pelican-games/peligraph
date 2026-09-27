@@ -1,6 +1,7 @@
 #include "api.hpp"
 
 #include <behavior.hpp>
+#include <gamesystem.hpp>
 
 #include <algorithm>
 #include <cstring>
@@ -86,6 +87,11 @@ struct InsideSpawn {
 
 std::vector<InsideSpawn> inside_pending;
 std::vector<Request> inside_results;
+// PM-1a: what game code ran. A paused frame runs neither.
+std::uint64_t spawner_updates = 0;
+std::uint64_t system_updates = 0;
+std::uint64_t system_last_frame = 0;
+double system_last_dt = -1.0;
 
 struct SpawnerParams {
     std::string label;
@@ -101,6 +107,7 @@ class SpawnerBehavior final : public Pelican::Behavior {
     using Params = SpawnerParams;
 
     void onUpdate(Pelican::BehaviorContext &) override {
+        ++spawner_updates;
         auto pending = std::move(inside_pending);
         inside_pending.clear();
         for (const auto &spawn : pending) {
@@ -111,8 +118,18 @@ class SpawnerBehavior final : public Pelican::Behavior {
     }
 };
 
+// PM-1a: a game system of the DLL, with what it last saw of the game clock.
+struct Gp2TickSystem {
+    void update(Pelican::GameContext &ctx) {
+        ++system_updates;
+        system_last_frame = ctx.frameIndex();
+        system_last_dt = ctx.deltaTime();
+    }
+};
+
 } // namespace
 
+PELICAN_REGISTER_SYSTEM(Gp2TickSystem, 60);
 PELICAN_REGISTER_BEHAVIOR(ProbeBehavior, "gp2_probe", 1);
 PELICAN_REGISTER_BEHAVIOR(SpawnerBehavior, "gp2_spawner", 1);
 
@@ -180,6 +197,13 @@ PELICAN_GP2_FIXTURE_API void pelican_gp2_clear() {
     trace.clear();
     inside_pending.clear();
     inside_results.clear();
+}
+
+PELICAN_GP2_FIXTURE_API void pelican_gp2_game_code(Pelican::Gp2Fixture::GameCodeProbe *probe) {
+    probe->spawner_updates = spawner_updates;
+    probe->system_updates = system_updates;
+    probe->system_last_frame = system_last_frame;
+    probe->system_last_dt = system_last_dt;
 }
 
 PELICAN_GP2_FIXTURE_API void pelican_gp2_queue_inside(const char *prefab,

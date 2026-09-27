@@ -338,7 +338,7 @@ void renderFlatFrameWithOptionalCapture(LoopModules &modules, Window &window) {
         const auto raw_instance = reinterpret_cast<void *>(
             static_cast<VkInstance>(modules.vulkan.getInstance()));
         const auto result = capture.captureArmedFrame(
-            modules.engine_time.frameIndex(),
+            modules.engine_time.evaluationIndex(),
             renderDocDevicePointerFromVulkanInstance(raw_instance),
             window.renderDocCaptureHandle(), [&] {
                 rendered = true;
@@ -423,7 +423,7 @@ class FrameStep {
         advance_is_measured_ = timing == AdvanceTiming::measured;
         if (advance_is_measured_) update_start_ = Clock::now();
         engine_time_.advance();
-        vulkan_.setCurrentFrameIndex(engine_time_.frameIndex());
+        vulkan_.setCurrentFrameIndex(engine_time_.evaluationIndex());
     }
 
     // Step 2: everything between the advance and the first render call.

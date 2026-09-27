@@ -43,11 +43,51 @@ std::vector<GameSystemRegistration> sortGameSystemRegistrations(std::vector<Game
     return systems;
 }
 
+namespace {
+
+std::vector<RegistrationToken> &editorGameSystems() {
+    static std::vector<RegistrationToken> tokens;
+    return tokens;
+}
+
+bool editor_clock_active = false;
+
+} // namespace
+
+void markEditorGameSystem(RegistrationToken token) {
+    auto &tokens = editorGameSystems();
+    if (std::find(tokens.begin(), tokens.end(), token) == tokens.end())
+        tokens.push_back(token);
+}
+
+bool isEditorGameSystem(RegistrationToken token) noexcept {
+    const auto &tokens = editorGameSystems();
+    return std::find(tokens.begin(), tokens.end(), token) != tokens.end();
+}
+
+ScopedEditorClock::ScopedEditorClock() noexcept : previous_{editor_clock_active} {
+    editor_clock_active = true;
+}
+
+ScopedEditorClock::~ScopedEditorClock() { editor_clock_active = previous_; }
+
+bool editorClockActive() noexcept { return editor_clock_active; }
+
 void updateRegisteredGameSystems(GameContext &ctx) {
+    updateRegisteredGameSystems(ctx, GameSystemScope::all);
+}
+
+void updateRegisteredGameSystems(GameContext &ctx, GameSystemScope scope) {
     auto systems = sortGameSystemRegistrations(getGameSystemRegisterer().registeredSystems());
     for (const auto &system : systems) {
-        if (system.update != nullptr) {
-            ScopedRegistrationOwner owner_scope{system.owner};
+        if (system.update == nullptr) continue;
+        const bool editor = isEditorGameSystem(system.token);
+        if (scope == GameSystemScope::editor_only && !editor) continue;
+        ScopedRegistrationOwner owner_scope{system.owner};
+        if (editor) {
+            ScopedEditorClock editor_clock;
+            system.update(ctx);
+        } else {
             system.update(ctx);
         }
     }
@@ -78,6 +118,7 @@ void unregisterGameSystem(RegistrationToken token) {
         throw std::runtime_error("stale game system registration token");
     }
     systems.erase(found);
+    std::erase(editorGameSystems(), token);
     (void)releaseRegistrationToken(token, RegistrationKind::system);
 }
 

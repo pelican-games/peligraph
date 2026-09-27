@@ -726,7 +726,9 @@ struct AnimationServiceRuntime::Impl {
     //    nothing erases (see releaseOwner), so the pointers stay valid. A
     //    register_phase from inside a callback therefore does not join the
     //    pass that is running; it is picked up by the next one.
-    Status runPhases(AnimationSinkHandle sink_handle, std::uint64_t revision) noexcept {
+    Status runPhases(AnimationSinkHandle sink_handle, std::uint64_t revision,
+                     AnimationServiceRuntime::PhaseOwners owners =
+                         AnimationServiceRuntime::PhaseOwners::all) noexcept {
         const auto clear_active = [this]() {
             sink_registry.stagedFrame().reset();
             phase_scheduler.clearActive();
@@ -743,6 +745,10 @@ struct AnimationServiceRuntime::Impl {
                 phase_scheduler.beginRun(sink->handle, revision);
                 sink_registry.stagedFrame().reset();
                 ordered = phase_scheduler.orderedActivePhases();
+                if (owners == AnimationServiceRuntime::PhaseOwners::engine_only)
+                    std::erase_if(ordered, [](const PhaseScheduler::PhaseRecord *phase) {
+                        return phase->owner.identity - 1 != internal::engineRegistrationOwner;
+                    });
             }
             for (const auto *phase : ordered) {
                 AnimationPhaseContextV1 context{};
@@ -812,7 +818,9 @@ struct AnimationServiceRuntime::Impl {
         }
     }
 
-    Status runAllPhases(std::uint64_t revision) noexcept {
+    Status runAllPhases(std::uint64_t revision,
+                        AnimationServiceRuntime::PhaseOwners owners =
+                            AnimationServiceRuntime::PhaseOwners::all) noexcept {
         try {
             std::vector<AnimationSinkHandle> active_sinks;
             {
@@ -823,7 +831,7 @@ struct AnimationServiceRuntime::Impl {
                 return left.identity < right.identity;
             });
             for (const auto sink : active_sinks) {
-                const auto status = runPhases(sink, revision);
+                const auto status = runPhases(sink, revision, owners);
                 if (status != Status::ok) return status;
             }
             return Status::ok;
@@ -1790,6 +1798,11 @@ Status AnimationServiceRuntime::runPhases(AnimationSinkHandle sink, std::uint64_
 
 Status AnimationServiceRuntime::runAllPhases(std::uint64_t frame_revision) noexcept {
     return impl_->runAllPhases(frame_revision);
+}
+
+Status AnimationServiceRuntime::runAllPhases(std::uint64_t frame_revision,
+                                             PhaseOwners owners) noexcept {
+    return impl_->runAllPhases(frame_revision, owners);
 }
 
 std::uint64_t AnimationServiceRuntime::registrationGeneration() const noexcept {

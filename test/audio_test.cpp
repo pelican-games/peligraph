@@ -1386,4 +1386,36 @@ TEST_CASE("AU-3 the backend a launch names is the one Audio opens", "[audio][au3
     }
 }
 
+// PM-1a acceptance 6. Held, the device-less engine mixes silence and moves no
+// voice on; released, the voice goes on from exactly where it was held.
+TEST_CASE("PM-1a the whole mix held mixes silence and moves no voice on", "[audio][pm1a]") {
+    VoiceRig rig;
+    writeConstantWav(rig.sandbox.root / "level.wav", 2.0, 0.5);
+    auto &audio = rig.audio();
+    REQUIRE(audio.backendKind() == AudioBackendKind::offline);
+    const auto voice = audio.playSound("project://level.wav");
+    const auto position = [&] {
+        const auto state = audio.soundState(voice);
+        REQUIRE(state);
+        REQUIRE(state->position_seconds);
+        return *state->position_seconds;
+    };
+
+    REQUIRE(peak(rig.mix()) > 0.1);
+    const auto playing_at = position();
+    REQUIRE(playing_at > 0.0);
+
+    REQUIRE_FALSE(audio.allPaused());
+    audio.setAllPaused(true);
+    REQUIRE(audio.allPaused());
+    for (int frame = 0; frame < 3; ++frame) REQUIRE(peak(rig.mix()) == 0.0);
+    REQUIRE(position() == playing_at);
+    REQUIRE(audio.isPlaying(voice));
+
+    audio.setAllPaused(false);
+    REQUIRE_FALSE(audio.allPaused());
+    REQUIRE(peak(rig.mix()) > 0.1);
+    REQUIRE(position() > playing_at);
+}
+
 } // namespace Pelican

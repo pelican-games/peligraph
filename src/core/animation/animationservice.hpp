@@ -56,8 +56,16 @@ class AnimationServiceRuntime {
                      const SkeletalModelData *replacement);
     void reset();
     void releaseOwner(internal::RegistrationOwner owner) noexcept;
+    // PM-1a. Which phase callbacks a run calls. A frame that is not a game
+    // step (paused) runs only the phases the engine registered: the ones a
+    // game DLL registered belong to game code, which does not run then.
+    enum class PhaseOwners {
+        all,
+        engine_only,
+    };
     Status runPhases(AnimationSinkHandle sink, std::uint64_t frame_revision) noexcept;
     Status runAllPhases(std::uint64_t frame_revision) noexcept;
+    Status runAllPhases(std::uint64_t frame_revision, PhaseOwners owners) noexcept;
     std::uint64_t registrationGeneration() const noexcept;
 
     // C-4. How large the four handle tables a game-DLL reload churns have

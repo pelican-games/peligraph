@@ -1189,7 +1189,7 @@ struct EditorRuntimeState {
                               {"catalog_frozen", event_snapshot.catalog_frozen}}},
             {"engine_time", {{"now", modules.engine_time.now()},
                              {"delta", modules.engine_time.dt()},
-                             {"frame_index", modules.engine_time.frameIndex()},
+                             {"frame_index", modules.engine_time.evaluationIndex()},
                              {"set_revision", modules.engine_time.timeSetRevision()}}},
             {"reload_generation", {{"enabled", reload.enabled},
                                    {"epoch", reload.epoch}, {"reason", reload.reason},
@@ -2437,7 +2437,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                 return PreviewEngineTimeSnapshot{
                     .time = runtime->modules.engine_time.now(),
                     .delta = runtime->modules.engine_time.dt(),
-                    .frame_index = runtime->modules.engine_time.frameIndex(),
+                    .frame_index = runtime->modules.engine_time.evaluationIndex(),
                 };
             },
             .shared_state_snapshot = [runtime] {

@@ -98,7 +98,7 @@ void AnimationSystem::process(QueryComponents components, size_t count) {
     auto animations = std::get<AnimationComponent *>(components);
     auto model_views = std::get<SimpleModelViewComponent *>(components);
     const auto time = engine_time->now();
-    const auto frame_revision = engine_time->frameIndex();
+    const auto frame_revision = engine_time->evaluationIndex();
     thread_local Animation::ProbeRuntime pose_runtime;
     const auto arena = pose_runtime.beginFrame(frame_revision);
     if (!Animation::isValid(arena)) throw std::runtime_error("animation pose arena is unavailable on this thread");
@@ -243,7 +243,7 @@ void AnimationSystem::updateGraphs() {
             if (status != Animation::Status::ok) throw std::runtime_error("animation graph clock reset failed");
             binding.time_set_revision = time.timeSetRevision();
         }
-        if (binding.evaluator->prepareTick(time.now(), time.dt(), time.frameIndex()) != Animation::Status::ok)
+        if (binding.evaluator->prepareTick(time.now(), time.dt(), time.evaluationIndex()) != Animation::Status::ok)
             throw std::runtime_error("animation graph tick preparation failed");
     }
     std::erase_if(state->graphs, [&](const auto &entry) { return !live.contains(entry.first); });
@@ -279,7 +279,7 @@ void AnimationSystem::updatePoseGraphs() {
         Animation::PoseGraphFrame frame;
         frame.time = time.now();
         frame.delta_seconds = time.dt();
-        frame.frame_revision = time.frameIndex();
+        frame.frame_revision = time.evaluationIndex();
         frame.time_set_revision = time.timeSetRevision();
         frame.object_name = [&](const GraphInstanceOwner &instance) -> std::optional<std::string> {
             const auto object = scene.graphOwnerObject(instance);
@@ -350,7 +350,7 @@ void AnimationSystem::updatePoseGraphs() {
             const auto writer = GET_MODULE(PolygonInstanceContainer)
                                     .animationFrameWriter(*view->model_instance_id);
             return writer.kind == AnimationFrameWriterKind::animation_component_clip &&
-                   writer.frame_revision == time.frameIndex();
+                   writer.frame_revision == time.evaluationIndex();
         };
         // The scalars this frame, from the values partition of the same
         // document. A separate evaluation state -- owned by the scene beside
@@ -411,7 +411,7 @@ std::vector<AnimationComponentTrace> AnimationSystem::componentTrace() {
         AnimationComponentTrace trace;
         trace.object = entity;
         trace.object_name = scene.objectName(entity).value_or(std::string{});
-        trace.frame_revision = time.frameIndex();
+        trace.frame_revision = time.evaluationIndex();
         if (!animation->graph.empty()) {
             const auto found = state->graphs.find(entity);
             if (found == state->graphs.end() || found->second->reference != animation->graph ||

@@ -420,6 +420,18 @@ glm::vec3 panOrbitTarget(glm::vec3 target, glm::vec3 camera_offset, ActionAxis2 
 
 } // namespace
 
-PELICAN_REGISTER_SYSTEM(BuiltinCameraControllerSystem, 10000);
+// PM-1a: an editor system. It runs on every frame, paused or not, and reads
+// the editor clock while it runs. The mark is engine-internal: the system is
+// registered through the same public shape PELICAN_REGISTER_SYSTEM uses.
+namespace {
+struct BuiltinCameraControllerSystemRegistration {
+    BuiltinCameraControllerSystemRegistration() {
+        internal::markEditorGameSystem(
+            internal::getGameSystemRegisterer().registerSystem<BuiltinCameraControllerSystem>(
+                "BuiltinCameraControllerSystem", 10000, {}));
+    }
+};
+const BuiltinCameraControllerSystemRegistration builtinCameraControllerSystem_registration;
+} // namespace
 
 } // namespace Pelican

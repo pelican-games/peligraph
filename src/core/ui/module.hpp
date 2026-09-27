@@ -74,6 +74,8 @@ DECLARE_MODULE(UiModule) {
     std::optional<WidgetId> hovered_widget;
     CommitStatus last_commit;
     RouteFrameResult last_route;
+    // PM-1a: while the game is paused the UI routes input but emits no event.
+    bool events_suppressed = false;
     std::size_t parser_invocations = 0;
 
     void loadVisuals(const DocumentNode &node);
@@ -111,6 +113,8 @@ DECLARE_MODULE(UiModule) {
 
     DrawBatch buildFrame(vk::Extent2D extent, double ui_scale = 1.0) const;
     RouteFrameResult routeFrameInput(Pelican::InputState &input, vk::Extent2D extent, double ui_scale = 1.0);
+    void setEventsSuppressed(bool suppressed) noexcept { events_suppressed = suppressed; }
+    bool eventsSuppressed() const noexcept { return events_suppressed; }
     const std::vector<UiTexturePage> &pages() const noexcept { return texture_pages; }
     const UiDocument &uiDocument() const noexcept { return document; }
     std::size_t parserInvocationsForTesting() const noexcept { return parser_invocations; }

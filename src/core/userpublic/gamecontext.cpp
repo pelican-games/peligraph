@@ -9,6 +9,7 @@
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "components/predefined.hpp"
 #include "deterministicrng.hpp"
+#include "details/system/registerer.hpp"
 #if PELICAN_WITH_AUDIO
 #include "../audio/audio.hpp"
 #endif
@@ -70,12 +71,23 @@ double GameContext::time() const {
     return GET_MODULE(EngineTime).now();
 }
 
+// PM-1a: game code reads the game clock's delta; an engine editor system
+// (modal transform, camera controller) reads the editor clock's -- the
+// frame's own delta -- so it keeps working while the game is paused. The time
+// is the game clock's for both.
 double GameContext::deltaTime() const {
-    return GET_MODULE(EngineTime).dt();
+    const auto &time = GET_MODULE(EngineTime);
+    return internal::editorClockActive() ? time.editorDt() : time.dt();
 }
 
+// PM-1a: the evaluation index, for game code and editor systems alike. The
+// public animation ABI expects the revision game code hands to prepareTick --
+// which it takes from here -- to be the one the engine runs the phases with,
+// so after a pause the value game code sees jumps by the paused frames (its
+// clock, time(), does not). The game frame that restarts from 0 is only
+// get_status's play.game_frame.
 std::uint64_t GameContext::frameIndex() const {
-    return GET_MODULE(EngineTime).frameIndex();
+    return GET_MODULE(EngineTime).evaluationIndex();
 }
 
 void GameContext::logInfo(std::string_view message) const {

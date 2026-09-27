@@ -923,11 +923,39 @@ std::vector<InputEvent> bindInjectedInputEvents(const std::vector<RpcInputInject
     return events;
 }
 
+// `frame` is the evaluation index (one per drawn frame, paused or not) and `t`
+// the game clock, as in get_status.
 nlohmann::json frameResult(const EngineTime &engine_time) {
     return nlohmann::json{
         {"t", engine_time.now()},
-        {"frame", engine_time.frameIndex()},
+        {"frame", engine_time.evaluationIndex()},
     };
+}
+
+// PM-1a. The play state (docs/design_play_mode.md sections 2 and 8).
+std::string_view playStateName(EngineTime::PlayState state) {
+    return state == EngineTime::PlayState::playing ? "playing" : "paused";
+}
+
+nlohmann::json playStatusJson(const EngineTime &engine_time) {
+    return nlohmann::json{
+        {"state", playStateName(engine_time.playState())},
+        {"game_frame", engine_time.frameIndex()},
+        {"game_time", engine_time.now()},
+        {"pending_steps", engine_time.pendingSteps()},
+    };
+}
+
+constexpr std::uint64_t maxAdvanceFrames = 600;
+
+// Paused, the whole mix is held; playing again, it goes on from where it was.
+void applyAudioPlayState(EngineTime::PlayState state) {
+#if PELICAN_WITH_AUDIO
+    if (auto *audio = FastModuleContainer::tryGet<Audio>())
+        audio->setAllPaused(state == EngineTime::PlayState::paused);
+#else
+    (void)state;
+#endif
 }
 
 std::string projectRootString(const PathResolver &path_resolver) {
@@ -1444,8 +1472,12 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             {"scene", modules.scene_loader.currentScene()},
             {"scene_source", {{"hot_reload", false},
                               {"save_method", "save_scene"}}},
-            {"frame", modules.engine_time.frameIndex()},
+            // `frame` is the evaluation index, which goes on while the game
+            // is paused; `time` is the game clock. The game's own frame and
+            // clock are under `play`.
+            {"frame", modules.engine_time.evaluationIndex()},
             {"time", modules.engine_time.now()},
+            {"play", playStatusJson(modules.engine_time)},
             // AG-3a. What the frame that just ran drove, from what it
             // recorded: a sink's frame_revision is that frame's, which is the
             // one below `frame` here, since the RPC runs at the boundary after
@@ -1781,14 +1813,120 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         };
     });
 
+    // Headless only. One drawn frame: the evaluation index goes up by one and
+    // the game moves only while it is playing. In a window the engine's own
+    // loop draws every frame, and a frame run from inside it would be a
+    // nested one.
     server.setHandler("step_frame", [&pending_transforms, &modules, &editor_rpc](const nlohmann::json &params) {
         requireObjectParams(params, "step_frame");
+        if (!modules.launch_config.headless) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::applicationError,
+                "step_frame is headless only: a windowed engine draws every frame itself. "
+                "To step the game, pause it (set_play_state {\"state\": \"paused\"}) and use "
+                "advance_frames {\"count\": n}",
+                {{"code", "step_frame_windowed"}});
+        }
         flushPendingTransforms(pending_transforms, modules.scene_loader);
         modules.engine_time.advance();
-        modules.vulkan.setCurrentFrameIndex(modules.engine_time.frameIndex());
+        modules.vulkan.setCurrentFrameIndex(modules.engine_time.evaluationIndex());
         updateFrameState();
         modules.renderer.render();
         auto result = frameResult(modules.engine_time);
+        result["edit_results"] = editor_rpc.takeCompletedEditResults();
+        return result;
+    });
+
+    // PM-1a. playing <-> paused. "edit" is the PM-1b state; this build does
+    // not have it. The same state again is a success that changes nothing.
+    server.setHandler("set_play_state", [&modules](const nlohmann::json &params) {
+        constexpr auto method = "set_play_state";
+        const auto &object = requireObjectParams(params, method);
+        if (!object.contains("state") || !object.at("state").is_string()) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "set_play_state requires the string field 'state' (\"playing\" or \"paused\")");
+        }
+        const auto &requested = object.at("state").get_ref<const std::string &>();
+        auto &time = modules.engine_time;
+        if (requested == "edit") {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::applicationError,
+                "set_play_state: this build has no edit state; the states are \"playing\" and \"paused\"",
+                {{"code", "play_state_mismatch"},
+                 {"state", playStateName(time.playState())},
+                 {"requested", requested}});
+        }
+        if (object.size() != 1) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "set_play_state accepts only the field 'state'");
+        }
+        EngineTime::PlayState target{};
+        if (requested == "playing") {
+            target = EngineTime::PlayState::playing;
+        } else if (requested == "paused") {
+            target = EngineTime::PlayState::paused;
+        } else {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "set_play_state state must be \"playing\" or \"paused\", not \"" + requested + "\"");
+        }
+        const auto previous = time.setPlayState(target);
+        applyAudioPlayState(target);
+        return nlohmann::json{
+            {"state", playStateName(target)},
+            {"previous", playStateName(previous)},
+        };
+    });
+
+    // PM-1a. `count` game steps of 1 / fps each, while paused. In a window the
+    // steps are taken one per frame from the next frame boundary on and the
+    // answer comes at once; headless, they are taken here, one drawn frame
+    // each, before the answer. Either way the game stays paused.
+    server.setHandler("advance_frames", [&pending_transforms, &modules, &editor_rpc](
+                                            const nlohmann::json &params) {
+        constexpr auto method = "advance_frames";
+        const auto &object = requireObjectParams(params, method);
+        if (object.size() != 1 || !object.contains("count")) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "advance_frames requires exactly the integer field 'count' (1 to 600)");
+        }
+        const auto count = requireUnsignedIntegerParam(object, "count", method);
+        if (count < 1 || count > maxAdvanceFrames) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::invalidParams,
+                "advance_frames count must be between 1 and 600, not " + std::to_string(count));
+        }
+        auto &time = modules.engine_time;
+        if (time.playState() != EngineTime::PlayState::paused) {
+            throw JsonRpcHandlerError(
+                JsonRpcErrorCodes::applicationError,
+                "advance_frames steps a paused game, and the game is " +
+                    std::string{playStateName(time.playState())} +
+                    ": pause it first (set_play_state {\"state\": \"paused\"})",
+                {{"code", "play_state_mismatch"},
+                 {"state", playStateName(time.playState())},
+                 {"required", "paused"}});
+        }
+        time.requestSteps(count);
+        if (!modules.launch_config.headless) {
+            return nlohmann::json{
+                {"scheduled", count},
+                {"until_game_frame", time.frameIndex() + time.pendingSteps()},
+            };
+        }
+        flushPendingTransforms(pending_transforms, modules.scene_loader);
+        while (time.pendingSteps() > 0) {
+            time.advance();
+            modules.vulkan.setCurrentFrameIndex(time.evaluationIndex());
+            updateFrameState();
+            modules.renderer.render();
+        }
+        auto result = frameResult(time);
+        result["scheduled"] = count;
+        result["until_game_frame"] = time.frameIndex();
         result["edit_results"] = editor_rpc.takeCompletedEditResults();
         return result;
     });
@@ -1809,7 +1947,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             const auto raw_instance = reinterpret_cast<void *>(
                 static_cast<VkInstance>(modules.vulkan.getInstance()));
             const auto result = modules.renderdoc_capture.captureArmedFrame(
-                modules.engine_time.frameIndex(),
+                modules.engine_time.evaluationIndex(),
                 renderDocDevicePointerFromVulkanInstance(raw_instance), nullptr, [&] {
                     flushPendingTransforms(pending_transforms, modules.scene_loader);
                     modules.seq_player.update(modules.engine_time.now());

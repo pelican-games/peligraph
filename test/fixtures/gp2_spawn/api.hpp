@@ -44,6 +44,16 @@ struct RayProbe {
 
 enum class TraceKind : std::uint32_t { init = 1, destroy = 2 };
 
+// PM-1a: how often the DLL's game code ran -- the spawner behavior's onUpdate
+// and the DLL's game system -- and what the system last read of the game
+// frame and dt.
+struct GameCodeProbe {
+    std::uint64_t spawner_updates = 0;
+    std::uint64_t system_updates = 0;
+    std::uint64_t system_last_frame = 0;
+    double system_last_dt = -1.0;
+};
+
 // One lifecycle callback of the probe behavior a spawned object carries.
 struct TraceEntry {
     TraceKind kind = TraceKind::init;
@@ -75,5 +85,6 @@ using PelicanGp2ClearFn = void (*)();
 using PelicanGp2QueueInsideFn = void (*)(const char *prefab, const char *tag,
                                          float x, float y, float z);
 // The answers the spawner behavior's spawns got, in the order it made them.
+using PelicanGp2GameCodeFn = void (*)(Pelican::Gp2Fixture::GameCodeProbe *probe);
 using PelicanGp2InsideResultsFn =
     std::size_t (*)(Pelican::Gp2Fixture::Request *out, std::size_t capacity);

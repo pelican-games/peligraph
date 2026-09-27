@@ -409,7 +409,8 @@ void ImGuiSystem::routeInputAndBeginFrame(InputState &input) {
         logical.width == 0 ? 1.0f : static_cast<float>(framebuffer.width) / logical.width,
         logical.height == 0 ? 1.0f : static_cast<float>(framebuffer.height) / logical.height,
     };
-    const auto dt = GET_MODULE(EngineTime).dt();
+    // PM-1a: the editor clock, so the developer UI keeps its pace while paused.
+    const auto dt = GET_MODULE(EngineTime).editorDt();
     io.DeltaTime = dt > 0.0 ? static_cast<float>(dt) : 1.0f / 60.0f;
 
     ImGui_ImplVulkan_NewFrame();
@@ -443,7 +444,7 @@ void ImGuiSystem::routeInputAndBeginFrame(InputState &input) {
             ImGui::Text("F1: toggle developer UI");
             ImGui::Separator();
             ImGui::Text("FPS %.1f", io.Framerate);
-            ImGui::Text("Frame %llu", static_cast<unsigned long long>(GET_MODULE(EngineTime).frameIndex()));
+            ImGui::Text("Frame %llu", static_cast<unsigned long long>(GET_MODULE(EngineTime).evaluationIndex()));
             ImGui::Text("Frame time %.3f ms", io.DeltaTime * 1000.0f);
             drawGpuTimingTable();
             drawMemoryTables();

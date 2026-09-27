@@ -152,6 +152,18 @@ class BuiltinModalTransformSystem {
 // Camera controllers run at 10000. Modal view-plane motion intentionally sees
 // their current-frame pose so middle-button orbit remains active underneath
 // the editor action set.
-PELICAN_REGISTER_SYSTEM(BuiltinModalTransformSystem, 10010);
+// PM-1a: an editor system. It runs on every frame, paused or not, and reads
+// the editor clock while it runs. The mark is engine-internal: the system is
+// registered through the same public shape PELICAN_REGISTER_SYSTEM uses.
+namespace {
+struct BuiltinModalTransformSystemRegistration {
+    BuiltinModalTransformSystemRegistration() {
+        internal::markEditorGameSystem(
+            internal::getGameSystemRegisterer().registerSystem<BuiltinModalTransformSystem>(
+                "BuiltinModalTransformSystem", 10010, {}));
+    }
+};
+const BuiltinModalTransformSystemRegistration builtinModalTransformSystem_registration;
+} // namespace
 
 } // namespace Pelican

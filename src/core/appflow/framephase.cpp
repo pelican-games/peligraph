@@ -160,16 +160,24 @@ void updateFrameState() {
     // phase can observe game/runtime state.
     if (modules.reload_service != nullptr) modules.reload_service->applyFrame();
     invokeEditorCommitQueueHook();
+    // PM-1a: whether this frame is a game step (playing, or one of the steps
+    // advance_frames asked for while paused). A frame that is not one still
+    // takes input, runs the editor systems, evaluates the animation, seq and
+    // graph at the stopped game time and draws; what it leaves out is game
+    // code and what only game code causes (docs/design_play_mode.md 4.1).
+    const bool game_step = modules.engine_time.gameStepping();
     // GP-2: the boundary where GameContext::spawn / destroy land -- after the
     // other boundary operations above, which may replace the scene run, and
     // before any game code of this frame, so a request made anywhere during
     // the previous frame is in place for all of this one.
-    modules.runtime_spawner.applyBoundary();
+    if (game_step) modules.runtime_spawner.applyBoundary();
     GameContext game_context;
     forEachFramePhase([&](FramePhase phase) {
         switch (phase) {
         case FramePhase::freeze_events:
-            internal::freezePendingEventsForFrame();
+            // Frozen and delivered together or not at all: freezing without
+            // delivering trips the event registerer's frame check.
+            if (game_step) internal::freezePendingEventsForFrame();
             break;
         case FramePhase::freeze_input:
             modules.input_sequence.prepareFrame(modules.input_state, livePointerTransform());
@@ -182,6 +190,9 @@ void updateFrameState() {
                 modules.imgui_system->routeInputAndBeginFrame(modules.input_state);
 #endif
             if (modules.ui_module != nullptr) {
+                // Paused, the game UI still follows the pointer but queues
+                // no event for game code.
+                modules.ui_module->setEventsSuppressed(!game_step);
                 const auto &mask = modules.input_state.consumptionMask();
                 const bool tool_owns_pointer = mask.pointer_motion ||
                     mask.consumesControl(KeyCode::MouseLeft) ||
@@ -194,11 +205,13 @@ void updateFrameState() {
             internal::freezeInputActionsFrame();
             break;
         case FramePhase::deliver_events:
-            internal::dispatchFrozenEvents(game_context);
+            if (game_step) internal::dispatchFrozenEvents(game_context);
             break;
         case FramePhase::update_game:
             modules.ecs.update();
-            internal::updateRegisteredGameSystems(game_context);
+            internal::updateRegisteredGameSystems(
+                game_context, game_step ? internal::GameSystemScope::all
+                                        : internal::GameSystemScope::editor_only);
 #if PELICAN_WITH_ANIMATION
             // Retire animation sinks whose scene entity or renderer instance
             // was replaced before invoking any registered pose callbacks.
@@ -212,7 +225,9 @@ void updateFrameState() {
                     "VRM application phase registration failed");
             }
             if (const auto status = Animation::animationServiceRuntime().runAllPhases(
-                    modules.engine_time.frameIndex());
+                    modules.engine_time.evaluationIndex(),
+                    game_step ? Animation::AnimationServiceRuntime::PhaseOwners::all
+                              : Animation::AnimationServiceRuntime::PhaseOwners::engine_only);
                 status != Animation::Status::ok) {
                 // A phase callback answers with a status because an exception
                 // cannot cross the C boundary. The pose graph kept the
@@ -224,7 +239,8 @@ void updateFrameState() {
             }
 #endif
             modules.seq_player.update(modules.engine_time.now());
-            modules.scene_loader.applyPendingLoad();
+            // A ctx.loadScene request is game code's; paused, it waits.
+            if (game_step) modules.scene_loader.applyPendingLoad();
             break;
         default:
             assert(false && "unknown frame phase");

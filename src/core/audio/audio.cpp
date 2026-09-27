@@ -473,6 +473,8 @@ class Audio::Backend {
     }
     virtual std::uint32_t sampleRate() const noexcept { return 0; }
     virtual std::uint32_t channels() const noexcept { return 0; }
+    // PM-1a: the whole mix held or resumed. Nothing to hold by default (null).
+    virtual void setAllPaused(bool paused) { (void)paused; }
 };
 
 class NullAudioBackend final : public Audio::Backend {
@@ -579,6 +581,7 @@ class MiniaudioBackend final : public Audio::Backend {
     bool engine_initialized = false;
     std::uint64_t next_voice = 1;
     std::unordered_map<std::uint64_t, std::unique_ptr<MiniaudioVoice>> voices;
+    bool all_paused_ = false;
 
     MiniaudioVoice &voice(std::uint64_t voice_id) const {
         return *voices.at(voice_id);
@@ -765,9 +768,23 @@ class MiniaudioBackend final : public Audio::Backend {
         return voices.size();
     }
 
+    void setAllPaused(bool paused) override {
+        if (paused == all_paused_) return;
+        all_paused_ = paused;
+        // Offline, the mix itself is the clock: mix() answers silence and
+        // reads nothing while held. On a device the device is stopped.
+        if (kind_ == AudioBackendKind::offline) return;
+        const auto result = paused ? ma_engine_stop(&engine) : ma_engine_start(&engine);
+        if (result != MA_SUCCESS)
+            LOG_WARNING(logger, "audio: {}",
+                        maErrorMessage(paused ? "ma_engine_stop" : "ma_engine_start", result));
+    }
+
     std::vector<float> mix(std::uint64_t frames) override {
         if (kind_ != AudioBackendKind::offline) return Backend::mix(frames);
         std::vector<float> samples(static_cast<std::size_t>(frames) * offlineChannels);
+        // Held: silence, and no voice moves on.
+        if (all_paused_) return samples;
         ma_uint64 read = 0;
         const auto result = ma_engine_read_pcm_frames(&engine, samples.data(), frames, &read);
         // Nothing playing reads as nothing: the frames are silence, not missing.
@@ -1164,6 +1181,12 @@ void Audio::update() {
 
 AudioBackendKind Audio::backendKind() const noexcept {
     return backend->kind();
+}
+
+void Audio::setAllPaused(bool paused) {
+    if (paused == all_paused) return;
+    backend->setAllPaused(paused);
+    all_paused = paused;
 }
 
 std::vector<float> Audio::mixOffline(std::uint64_t frames) {

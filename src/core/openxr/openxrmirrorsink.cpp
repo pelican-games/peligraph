@@ -290,7 +290,7 @@ void XrMirrorSink::tryPresent() noexcept {
         auto &frame_graph_runtime = GET_MODULE(FrameGraphRuntimeContainer);
         auto &render_targets = GET_MODULE(RenderTargetContainer);
         const auto &debug_utils = GET_MODULE(VulkanManageCore).getDebugUtils();
-        const auto frame_index = GET_MODULE(EngineTime).frameIndex();
+        const auto frame_index = GET_MODULE(EngineTime).evaluationIndex();
         auto &fullscreen_renderer = GET_MODULE(FullscreenPassRenderer);
         auto &fullscreen_passes = GET_MODULE(FullscreenPassContainer);
         auto &frame_resources = GET_MODULE(FrameResources);

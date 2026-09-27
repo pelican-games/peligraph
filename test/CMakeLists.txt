@@ -2001,6 +2001,17 @@ target_link_libraries(pelican_test_vi1_variadic_inputs_test PRIVATE pelican_shad
 if(COMMAND pelican_copy_shaderc_runtime)
     pelican_copy_test_shaderc_runtime(pelican_test_vi1_variadic_inputs_test)
 endif()
+# PM-1a: playing <-> paused, advance_frames and the evaluation index over the
+# headless RPC, with the shipped posegraph_demo as the animated scene.
+if(PELICAN_WITH_ANIMATION)
+pelican_define_test(pm1a_play_state_rpc_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+target_compile_definitions(pelican_test_pm1a_play_state_rpc_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_link_libraries(pelican_test_pm1a_play_state_rpc_test PRIVATE pelican_shaderc)
+if(COMMAND pelican_copy_shaderc_runtime)
+    pelican_copy_test_shaderc_runtime(pelican_test_pm1a_play_state_rpc_test)
+endif()
+endif()
 endif()
 endif()
 if(PELICAN_WITH_EXR)
@@ -3572,6 +3583,14 @@ if(PELICAN_PYTHON_TESTS_AVAILABLE)
             pelican_define_gpu_python_test(
                 ew1_engine_window_embedded
                 ${CMAKE_CURRENT_SOURCE_DIR}/engine_window_embedded.py
+                --repo-root ${CMAKE_SOURCE_DIR}
+                --player $<TARGET_FILE:pelican_player>
+            )
+            # PM-1a: playing <-> paused and advance_frames in a windowed
+            # engine; step_frame is refused there.
+            pelican_define_gpu_python_test(
+                pm1a_play_state_windowed
+                ${CMAKE_CURRENT_SOURCE_DIR}/pm1a_play_state_windowed.py
                 --repo-root ${CMAKE_SOURCE_DIR}
                 --player $<TARGET_FILE:pelican_player>
             )

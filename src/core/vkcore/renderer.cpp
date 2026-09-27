@@ -851,7 +851,7 @@ FrameUniformData updateFrameResources(
     std::uint32_t view_index,
     std::uint32_t view_count,
     std::string_view view_family) {
-    const auto frame_index = engine_time.frameIndex();
+    const auto frame_index = engine_time.evaluationIndex();
     const auto family_token =
         renderViewFamilyToken(
             view_family);
@@ -5468,7 +5468,7 @@ void Renderer::LogicalFrameRecorder::prepareViewFamilyStates(
                         modifiers,
                         graph_variant_policy,
                         engine_time
-                            .frameIndex(),
+                            .evaluationIndex(),
                         family_resolution_extents
                             .render.width,
                         family_resolution_extents
@@ -5818,7 +5818,7 @@ void Renderer::LogicalFrameRecorder::publishFrameValueGraph() {
         // consume its events, so the values leave the draw path here or not at
         // all.
         scene.publishGraphValues({.generation = runtime_generation->generation,
-                                  .frame = engine_time.frameIndex(),
+                                  .frame = engine_time.evaluationIndex(),
                                   .inputs = std::move(published.instance_inputs),
                                   // AG-3a: the same evaluation's node values,
                                   // with the graph that names them. A reader
@@ -6163,7 +6163,7 @@ void Renderer::LogicalFrameRecorder::recordOneExecution(
                 },
             .inactive_graph_scopes = inactive_graph_scopes,
             .frame_target_format = frame_target_format,
-            .logical_frame = engine_time.frameIndex(),
+            .logical_frame = engine_time.evaluationIndex(),
             .graph_variant = renderPipelineGraphVariantName(
                 graph_variant_policy.variant),
             .view_index = view_index,
@@ -6194,7 +6194,7 @@ void Renderer::LogicalFrameRecorder::recordOneExecution(
             render_ctx, frame_graph, modules,
             renderer.render_target_layout_tracker,
             node_trace_ptr,
-            engine_time.frameIndex());
+            engine_time.evaluationIndex());
     }
 #endif
     if (is_view_family) {
@@ -6286,7 +6286,7 @@ void Renderer::LogicalFrameRecorder::retainPickingSnapshot() {
                 .getMetadata(picking_target)
                 .extent;
         renderer.last_picking_frame_index =
-            engine_time.frameIndex();
+            engine_time.evaluationIndex();
         renderer.last_picking_model_instances =
             std::move(picking_model_instances);
     } else {

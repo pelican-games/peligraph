@@ -1,3 +1,4 @@
+#include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/appflow/framephase.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/core.hpp"
@@ -12,6 +13,7 @@
 #include "../src/core/loader/scene.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/phys/physworld.hpp"
+#include "../src/core/userpublic/details/system/registerer.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
 #include "scene_load_test_support.hpp"
 
@@ -166,6 +168,7 @@ struct Dll {
     PelicanGp2ClearFn clear = nullptr;
     PelicanGp2QueueInsideFn queue_inside = nullptr;
     PelicanGp2InsideResultsFn inside_results = nullptr;
+    PelicanGp2GameCodeFn game_code = nullptr;
 };
 
 template <class Fn> Fn exportOf(HMODULE module, const char *name) {
@@ -192,6 +195,7 @@ Dll fixtureExports() {
         .queue_inside = exportOf<PelicanGp2QueueInsideFn>(module, "pelican_gp2_queue_inside"),
         .inside_results =
             exportOf<PelicanGp2InsideResultsFn>(module, "pelican_gp2_inside_results"),
+        .game_code = exportOf<PelicanGp2GameCodeFn>(module, "pelican_gp2_game_code"),
     };
 }
 
@@ -323,6 +327,47 @@ RunRecord previewRun(Fixture &fixture) {
     }
     record.authority = outside_a.ref.authority();
     return record;
+}
+
+// PM-1a: an editor system of the host (engine-owned and marked the way the
+// modal transform and the camera controller are), with what it last read of
+// the clock through GameContext.
+struct EditorProbe {
+    std::uint64_t updates = 0;
+    std::uint64_t last_frame = 0;
+    double last_dt = -1.0;
+};
+EditorProbe editor_probe;
+
+struct Pm1aEditorProbeSystem {
+    void update(GameContext &ctx) {
+        ++editor_probe.updates;
+        editor_probe.last_frame = ctx.frameIndex();
+        editor_probe.last_dt = ctx.deltaTime();
+    }
+};
+
+struct Pm1aEditorProbeRegistration {
+    Pm1aEditorProbeRegistration() {
+        internal::markEditorGameSystem(
+            internal::getGameSystemRegisterer().registerSystem<Pm1aEditorProbeSystem>(
+                "Pm1aEditorProbeSystem", 10020, {}));
+    }
+};
+const Pm1aEditorProbeRegistration pm1a_editor_probe_registration;
+
+bool registeredAsEditorSystem(std::string_view name) {
+    for (const auto &system : internal::getGameSystemRegisterer().registeredSystems()) {
+        if (system.name == name) return internal::isEditorGameSystem(system.token);
+    }
+    FAIL("no registered system is named " << name);
+    return false;
+}
+
+Gp2Fixture::GameCodeProbe gameCodeOf(const Dll &dll) {
+    Gp2Fixture::GameCodeProbe probe;
+    dll.game_code(&probe);
+    return probe;
 }
 
 } // namespace
@@ -622,6 +667,87 @@ TEST_CASE("GP-2 a spawn the engine cannot carry out is refused at the call by na
     } catch (const SpawnError &error) {
         REQUIRE(error.code() == "prefab_parameter_unknown");
     }
+}
+
+// PM-1a acceptance 3, through the production frame (advance + updateFrameState)
+// with the game DLL loaded. Paused, the DLL's behavior onUpdate and its game
+// system are not called, a spawn waits at the boundary, and the editor
+// systems still run on the editor clock. A requested step runs the game once;
+// playing again runs it every frame.
+TEST_CASE("PM-1a a paused frame runs no game code and lands no spawn, and the editor systems still run",
+          "[gp2][pm1a][game-logic]") {
+    Fixture fixture;
+    auto &dll = fixture.dll;
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    const auto frame = [&] {
+        time.advance();
+        updateFrameState();
+    };
+
+    // The engine's two editor systems carry the mark; game systems do not.
+    REQUIRE(registeredAsEditorSystem("BuiltinModalTransformSystem"));
+    REQUIRE(registeredAsEditorSystem("BuiltinCameraControllerSystem"));
+    REQUIRE_FALSE(registeredAsEditorSystem("BehaviorSystem"));
+    REQUIRE_FALSE(registeredAsEditorSystem("Gp2TickSystem"));
+
+    frame();
+    frame();
+    const auto playing = gameCodeOf(dll);
+    REQUIRE(playing.spawner_updates == 2U);
+    REQUIRE(playing.system_updates == 2U);
+    REQUIRE(playing.system_last_frame == 2U);
+    REQUIRE(playing.system_last_dt == Catch::Approx(1.0 / 60.0));
+    const auto editor_before = editor_probe.updates;
+
+    time.setPlayState(EngineTime::PlayState::paused);
+    (void)spawnOutside(dll, "paused", 1.0f);
+    dll.queue_inside("probe", "inside", 2.0f, 0.0f, 0.0f);
+    for (int paused_frame = 0; paused_frame < 3; ++paused_frame) frame();
+    const auto paused = gameCodeOf(dll);
+    REQUIRE(paused.spawner_updates == playing.spawner_updates);
+    REQUIRE(paused.system_updates == playing.system_updates);
+    REQUIRE(traceOf(dll).empty());
+    REQUIRE(spawnedAttachments() == 0U);
+    REQUIRE(GET_MODULE(RuntimeSpawner).stats().queued == 1U);
+    REQUIRE(time.frameIndex() == 2U);
+    REQUIRE(time.evaluationIndex() == 5U);
+    // The editor systems ran on every paused frame, on the editor clock: the
+    // evaluation index and the frame's own dt, not the stopped game clock.
+    REQUIRE(editor_probe.updates == editor_before + 3U);
+    REQUIRE(editor_probe.last_frame == time.evaluationIndex());
+    REQUIRE(editor_probe.last_dt == Catch::Approx(1.0 / 60.0));
+    REQUIRE(time.dt() == 0.0);
+
+    // One requested step: the spawn lands at its boundary, the behavior and
+    // the system run once and read the step dt. ctx.frameIndex() is the
+    // evaluation index for game code too -- the revision the engine runs the
+    // animation phases with, which game code hands to prepareTick -- so after
+    // the pause it has jumped by the paused frames while the game frame has
+    // not.
+    time.requestSteps(1);
+    frame();
+    const auto stepped = gameCodeOf(dll);
+    REQUIRE(stepped.spawner_updates == playing.spawner_updates + 1U);
+    REQUIRE(stepped.system_updates == playing.system_updates + 1U);
+    REQUIRE(time.frameIndex() == 3U);
+    REQUIRE(stepped.system_last_frame == time.evaluationIndex());
+    REQUIRE(stepped.system_last_frame == 6U);
+    REQUIRE(stepped.system_last_dt == Catch::Approx(1.0 / 60.0));
+    REQUIRE(spawnedAttachments() == 1U);
+    REQUIRE(time.evaluationIndex() == 6U);
+    frame();
+    REQUIRE(gameCodeOf(dll).system_updates == stepped.system_updates);
+
+    // Playing again: the spawn the behavior made in the step lands.
+    time.setPlayState(EngineTime::PlayState::playing);
+    frame();
+    const auto resumed = gameCodeOf(dll);
+    REQUIRE(resumed.system_updates == stepped.system_updates + 1U);
+    REQUIRE(resumed.system_last_frame == time.evaluationIndex());
+    REQUIRE(resumed.system_last_frame == 8U);
+    REQUIRE(time.frameIndex() == 4U);
+    REQUIRE(spawnedAttachments() == 2U);
 }
 } // namespace Pelican
 #endif
