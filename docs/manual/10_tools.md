@@ -773,7 +773,7 @@ overlay 付きの
 Qt host へ再親付けします。player が自分の swapchain へ描いて OS が合成するため、pixel readback、
 copy、process 間 frame 転送はありません。player が終了しても Studio は残り、`Restart Engine`
 から再起動できます。既定では Studio と同じ directory の
-`pelican_player.exe` を使います。project、`--rpc`、`--feature-overlay` は Studio が所有し、
+`pelican_player.exe` を使います。project、`--rpc`、`--feature-overlay`、`--embedded`(✅EW-2。窓を非表示で作らせ、埋め込んだ後に Studio が見せる。追加引数に `--headless` があるときは付けない)は Studio が所有し、
 `PELICAN_STUDIO_PLAYER_ARGUMENTS` 内の同名指定は除去します。開発時の executable と追加引数の
 override は次です:
 

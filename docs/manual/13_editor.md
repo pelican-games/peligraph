@@ -2802,7 +2802,7 @@ snapshot は保存用の object ID を含みません。import は新しい ID �
 ```python
 from tools.pelican_rpc import PelicanRpc   # (例)
 
-with PelicanRpc(["pelican_player", "--headless", "--rpc", "--project", "mygame"]) as rpc:
+with PelicanRpc("mygame") as rpc:   # 第 1 引数は project の dir。既定は --headless --rpc(窓ありは headless=False)
     session = rpc.call("open_editor_session", {"display_name": "script"})
     rev = rpc.call("get_scene_revision")["scene_revision"]
     ticket = rpc.call("edit", {
