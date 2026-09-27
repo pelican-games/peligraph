@@ -12029,4 +12029,64 @@ TEST_CASE("LP-4f3 the model reads family_extent, and the details say the family'
         CHECK(refusal.find("family_extent") != std::string::npos);
     }
 }
+
+// --- Q-18. A Graph tab edit that committed (anything but a placement) can
+// change the plan -- a loop's count, a branch, a view axis. The window tells
+// the Frame Plan, which reads get_frame_plan again: at once when it is in
+// view, after a read already in flight (which may predate the commit), and
+// otherwise when it is next shown. Refresh is not needed.
+TEST_CASE("Q-18 a commit elsewhere reads the plan again: now in view, after the read in flight, "
+          "or when next shown",
+          "[devstudio][frame-plan][q18]") {
+    application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    std::vector<qint64> reads;
+    qint64 next = 9000;
+    widget.setPlanRequest([&](QString *) {
+        reads.push_back(next);
+        return next++;
+    });
+    widget.resize(900, 600);
+    widget.show();
+    QApplication::processEvents();
+    // Shown, with nothing committed anywhere: nothing is read.
+    REQUIRE(reads.empty());
+    const auto answer = [&](qint64 id) {
+        Q_EMIT viewport.inspectorRpcSucceeded(id, QByteArray::fromStdString(mixedEditingWire().dump()));
+        QApplication::processEvents();
+    };
+
+    // In view: at once.
+    widget.planChangedByCommit();
+    QApplication::processEvents();
+    REQUIRE(reads.size() == 1);
+    // Another commit while that read is out: not a second read beside it...
+    widget.planChangedByCommit();
+    QApplication::processEvents();
+    CHECK(reads.size() == 1);
+    // ...but one after it, since the read out may have been answered before
+    // the commit.
+    answer(reads[0]);
+    REQUIRE(reads.size() == 2);
+    answer(reads[1]);
+    CHECK(reads.size() == 2);
+
+    // Out of view: nothing now, once when shown again.
+    widget.hide();
+    QApplication::processEvents();
+    widget.planChangedByCommit();
+    QApplication::processEvents();
+    CHECK(reads.size() == 2);
+    widget.show();
+    QApplication::processEvents();
+    REQUIRE(reads.size() == 3);
+    answer(reads[2]);
+    // Shown again with nothing new: nothing more.
+    widget.hide();
+    QApplication::processEvents();
+    widget.show();
+    QApplication::processEvents();
+    CHECK(reads.size() == 3);
+}
 } // namespace PelicanStudio

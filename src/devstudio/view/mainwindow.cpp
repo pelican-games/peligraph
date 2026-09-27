@@ -422,6 +422,12 @@ void MainWindow::createWorkspace() {
         frame_plan_->showLoopGroup(loop);
         return true;
     });
+    // Q-18: a Graph tab edit that committed (a loop's count, a branch, a view
+    // axis) reads the Frame Plan again, now or when it is next shown. Not
+    // through the shared digest: that moves on every placement too -- the
+    // Frame Plan's own node positions are the Graph tab's set_layout -- and
+    // would read the whole plan again after each drag.
+    graph_canvas_->setPlanCommitAction([this] { frame_plan_->planChangedByCommit(); });
     // LP-4e: a decomposed material pass is edited as its loop, so the Graph
     // tab comes to the front with that loop selected.
     frame_plan_->setLoopDecomposedAction([this, render_tabs](const QString &loop) {

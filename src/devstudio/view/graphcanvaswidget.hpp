@@ -690,6 +690,10 @@ class GraphCanvasWidget final : public QWidget {
     // the Frame Plan forward with the loop's copies picked. False when it
     // could not.
     void setFramePlanLoopAction(std::function<bool(const QString &loop)> action);
+    // Q-18. Called once for each edit of this tab that committed and can
+    // change the frame plan (anything but a placement), when the engine says
+    // it committed: the owner has the Frame Plan read the plan again.
+    void setPlanCommitAction(std::function<void()> action);
     // LP-4e. Show a root node another panel's edit just made (Decompose into
     // loop's graph.loop): the document is read again, and the node is
     // selected as soon as a document that holds it arrives -- at once when

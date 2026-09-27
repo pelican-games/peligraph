@@ -53,6 +53,14 @@ class ViewSelectField final : public QWidget {
     // LP-4f1: the axis whose combo is on Each element, or nothing. That
     // axis is not in selection().
     [[nodiscard]] std::optional<std::string> elementAxis() const;
+    // Q-18. Puts the rows already shown back on `view_select` (and Each
+    // element on `element_axis` when `element_chosen`) without building them
+    // again and without telling `changed`: a pick its owner could not send
+    // goes back in the same combo, so the combo a person (or automation's
+    // select) just used reads the value that stands. A removed row comes
+    // back.
+    void showSelection(const std::vector<FramePlanViewSelectAxis> &view_select,
+                       const std::string &element_axis = {}, bool element_chosen = false);
 
     // A person changed a row (a pick, or Remove).
     std::function<void()> changed;

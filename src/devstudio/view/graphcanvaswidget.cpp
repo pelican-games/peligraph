@@ -3160,6 +3160,10 @@ struct GraphCanvasWidget::Impl {
     QAction *add_fullscreen_action = nullptr;
     // LP-4d2, decision 5: what Show in Frame Plan does (the owner's).
     std::function<bool(const QString &)> frame_plan_loop_action;
+    // Q-18: who is told that an edit of this tab committed and the plan may
+    // have changed with it, and the last commit they were told of.
+    std::function<void()> plan_commit_action;
+    std::uint64_t told_plan_commit = 0;
     QLineEdit *label_edit = nullptr;
     QPushButton *apply_label = nullptr;
     QPushButton *add_node = nullptr;
@@ -3628,7 +3632,18 @@ struct GraphCanvasWidget::Impl {
                              static_cast<std::size_t>(result_json.size())));
         followDocument();
         dispatch();
+        tellPlanCommit();
         revealPending();
+    }
+
+    // Q-18. The digest the panels share moves on a placement too -- the
+    // Frame Plan's own node positions included -- and says nothing of what
+    // changed, so the plan is not read again on it: this names the commits
+    // that can change the plan.
+    void tellPlanCommit() {
+        if (model.planCommitRevision() == told_plan_commit) return;
+        told_plan_commit = model.planCommitRevision();
+        if (plan_commit_action) plan_commit_action();
     }
 
     // LP-4e: a root node another panel made, shown once it is here.
@@ -4315,6 +4330,9 @@ struct GraphCanvasWidget::Impl {
         // Q-17: an edit or a read in flight changes no revision, so the Loop
         // fields are not rebuilt for it; they follow it here instead.
         if (loop_fields != nullptr) loop_fields->followEditable();
+        // Q-18: and so do the draw.* fields and a render node's View field.
+        if (draw_fields != nullptr) draw_fields->followEditable();
+        if (view_fields != nullptr) view_fields->followEditable();
         showNotice();
         refresh->setEnabled(model.canRefresh());
         synchronizeTimeline();
@@ -4516,6 +4534,10 @@ bool GraphCanvasWidget::revealLoopOrigin(const QString &loop, qint64 element,
 
 void GraphCanvasWidget::setFramePlanLoopAction(std::function<bool(const QString &loop)> action) {
     impl_->frame_plan_loop_action = std::move(action);
+}
+
+void GraphCanvasWidget::setPlanCommitAction(std::function<void()> action) {
+    impl_->plan_commit_action = std::move(action);
 }
 
 bool openGraphNodeInTabs(QTabWidget &tabs, GraphCanvasWidget &graph,

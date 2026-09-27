@@ -201,9 +201,13 @@ class GraphCanvasViewFields final : public QWidget {
                           QWidget *parent = nullptr);
     // The node to show and the scope it stands in, or null to hide.
     void showNode(const GraphCanvasNode *node, const std::string &scope);
+    // Q-18: off while the model cannot take an edit, as the Draw fields.
+    void followEditable();
 
   private:
+    // A pick the model refuses goes back to what the document says.
     void commit();
+    void load();
 
     GraphCanvasModel &model_;
     std::function<void()> submitted_;
@@ -231,12 +235,21 @@ class GraphCanvasDrawFields final : public QWidget {
     void showNode(const GraphCanvasNode *node);
     void showNode(const GraphCanvasNode *node, const std::string &scope);
 
+    // Q-18, as GraphCanvasLoopFields::followEditable(): the fields take an
+    // edit only while the model can send one -- off from the moment an edit
+    // (or a read of the document) is in flight until the document is read
+    // back, on again once after. Called by the owner whenever the model moved.
+    void followEditable();
+
     // "A=1\nB" -> {"A=1", "B"}: one define a line, blank lines dropped.
     static std::vector<std::string> parseDefines(const QString &text);
 
   private:
+    // A choice the model refused goes back to the document's value.
     void after(bool submitted);
     void commitOverride();
+    void showParameters(const nlohmann::json &parameters, bool keep_variant, bool keep_defines);
+    void restore();
 
     GraphCanvasModel &model_;
     std::function<void()> submitted_;

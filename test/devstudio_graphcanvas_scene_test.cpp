@@ -49,6 +49,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <functional>
@@ -5267,4 +5268,259 @@ TEST_CASE("LP-4f1 a node added beside a zone lands clear of its frame and of eve
                 QLatin1String{PelicanStudio::GraphCanvasNodeItem} &&
             item->data(PelicanStudio::GraphCanvasScopeRole).toString().isEmpty())
             CHECK_FALSE(node->sceneBoundingRect().intersects(item->sceneBoundingRect()));
+}
+
+// --- Q-18. A Graph tab edit that commits can change the frame plan: the tab
+// reads the plan again after it, and tells its owner (who has the Frame Plan
+// read it too). A placement changes no plan, and tells nobody. The Draw
+// fields and a render node's View field follow the edit's round trip as the
+// Loop fields do (Q-17).
+
+namespace {
+
+Json q18Plan(int count) {
+    Json elements = Json::array();
+    for (int element = 0; element < count; ++element)
+        elements.push_back({{"element", element}, {"index", element}, {"branch", element == 0 ? 0 : 1}});
+    return Json{{"loops", Json::array({{{"node", "steps"}, {"tier", "expand"}, {"count", count},
+                                        {"elements", elements},
+                                        {"unmatched_branches", Json::array()}}})}};
+}
+
+Json q18Context(const Json &document, const std::string &digest) {
+    auto read = context(document);
+    read["source_digest"]["hex"] = digest;
+    return read;
+}
+
+// The widget over a RecordedCapability that also reads the frame plan.
+struct Q18Tab {
+    RecordedCapability transport;
+    std::unique_ptr<PelicanStudio::GraphCanvasWidget> widget;
+    int told = 0;
+
+    Q18Tab() {
+        auto capability = transport.capability();
+        capability.requestFramePlan = [this](QString *) {
+            transport.calls.push_back({QStringLiteral("get_frame_plan")});
+            return transport.next++;
+        };
+        widget = std::make_unique<PelicanStudio::GraphCanvasWidget>(capability);
+        widget->setPlanCommitAction([this] { ++told; });
+        widget->resize(1100, 700);
+        widget->show();
+        QCoreApplication::processEvents();
+    }
+    void answer(const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        REQUIRE(transport.deliver);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    }
+    [[nodiscard]] int reads(const char *method) const {
+        return transport.countOf(QString::fromLatin1(method));
+    }
+    // The edit just sent is accepted and committed at `digest`.
+    void commit(const std::string &digest) {
+        answer(QStringLiteral("edit_graph_document"), Json{{"status", "accepted"}, {"ticket", "q18"}});
+        answer(QStringLiteral("get_edit_result"),
+               Json{{"status", "committed"}, {"committed", true},
+                    {"source_digest", {{"hex", digest}}}});
+    }
+    [[nodiscard]] QString expansion() {
+        auto *line = dynamic_cast<QGraphicsSimpleTextItem *>(
+            scopedItem(widget->scene(), PelicanStudio::GraphCanvasZoneLabelItem, QString{},
+                       QStringLiteral("steps"), QStringLiteral("expansion")));
+        REQUIRE(line != nullptr);
+        return line->text();
+    }
+    template <typename T> T *field(const char *name) {
+        auto *found = widget->findChild<T *>(QString::fromLatin1(name));
+        REQUIRE(found != nullptr);
+        return found;
+    }
+};
+
+Json withCount(Json document, int count) {
+    document["nodes"][2]["parameters"]["over"] = {{"range", {{"count", count}}}};
+    return document;
+}
+
+} // namespace
+
+TEST_CASE("Q-18 a Graph tab commit reads the plan again and tells the owner; a placement tells "
+          "nobody",
+          "[devstudio][graph-canvas][scene][q18]") {
+    (void)application();
+    Q18Tab tab;
+    auto document = zoneDocument();
+    tab.answer(QStringLiteral("get_graph_instances"), q18Context(document, "q18-0"));
+    tab.answer(QStringLiteral("get_graph_catalog"), visualCatalog());
+    REQUIRE(tab.reads("get_frame_plan") == 1);
+    tab.answer(QStringLiteral("get_frame_plan"), q18Plan(2));
+    CHECK(tab.expansion() == QStringLiteral("×2 copies"));
+
+    // The count, from the Loop fields: one edit.
+    tab.widget->scene().selectNode("steps");
+    QCoreApplication::processEvents();
+    auto *count = tab.field<QSpinBox>("pelican.graphCanvasLoop.count");
+    count->setValue(3);
+    Q_EMIT count->editingFinished();
+    QCoreApplication::processEvents();
+    REQUIRE(tab.reads("edit_graph_document") == 1);
+    // Accepted is not committed: nobody is told yet.
+    tab.answer(QStringLiteral("edit_graph_document"), Json{{"status", "accepted"}, {"ticket", "q18"}});
+    CHECK(tab.told == 0);
+    // Committed: the owner is told once, at the commit.
+    const int plans = tab.reads("get_frame_plan");
+    tab.answer(QStringLiteral("get_edit_result"),
+               Json{{"status", "committed"}, {"committed", true},
+                    {"source_digest", {{"hex", "q18-1"}}}});
+    CHECK(tab.told == 1);
+    // The document read back, the plan follows it, and the zone says so.
+    document = withCount(document, 3);
+    tab.answer(QStringLiteral("get_graph_instances"), q18Context(document, "q18-1"));
+    REQUIRE(tab.reads("get_frame_plan") == plans + 1);
+    tab.answer(QStringLiteral("get_frame_plan"), q18Plan(3));
+    CHECK(tab.expansion() == QStringLiteral("×3 copies"));
+
+    // A placement -- the Frame Plan's node positions are written this way --
+    // commits, and changes no plan: nobody is told, and the plan is not read.
+    const Json placed{{"main_render", {{"nodes", {{"pass", {{"x", 12.0}, {"y", 4.0}}}}}}}};
+    tab.widget->scene().setLayoutMember("frame_plan", placed);
+    tab.widget->scene().flushLayout();
+    tab.widget->poll();
+    QCoreApplication::processEvents();
+    REQUIRE(tab.reads("edit_graph_document") == 2);
+    for (const auto &op : Json::parse(tab.transport.calls.back().body.toStdString()))
+        REQUIRE(op.at("op") == "set_layout");
+    const int before_placement = tab.reads("get_frame_plan");
+    tab.commit("q18-2");
+    CHECK(tab.told == 1);
+    document["layout"] = {{"frame_plan", placed}};
+    tab.answer(QStringLiteral("get_graph_instances"), q18Context(document, "q18-2"));
+    CHECK(tab.reads("get_frame_plan") == before_placement);
+
+    // Decision 2: it is the commit, not the read, that says the plan may
+    // have moved. The count goes to 4, and the document reads back with its
+    // nodes as they were and only a placement changed -- the read the tab
+    // otherwise takes for a drag's echo, which reads no plan.
+    tab.widget->scene().selectNode("steps");
+    QCoreApplication::processEvents();
+    count = tab.field<QSpinBox>("pelican.graphCanvasLoop.count");
+    REQUIRE(count->isEnabled());
+    count->setValue(4);
+    Q_EMIT count->editingFinished();
+    QCoreApplication::processEvents();
+    REQUIRE(tab.reads("edit_graph_document") == 3);
+    const int before_count = tab.reads("get_frame_plan");
+    tab.commit("q18-3");
+    CHECK(tab.told == 2);
+    document["layout"] = {
+        {"frame_plan", {{"main_render", {{"nodes", {{"pass", {{"x", 30.0}, {"y", 4.0}}}}}}}}}};
+    tab.answer(QStringLiteral("get_graph_instances"), q18Context(document, "q18-3"));
+    REQUIRE(tab.reads("get_frame_plan") == before_count + 1);
+    tab.answer(QStringLiteral("get_frame_plan"), q18Plan(4));
+    CHECK(tab.expansion() == QStringLiteral("×4 copies"));
+}
+
+TEST_CASE("Q-18 the Draw fields are off while an edit is in flight, and a refused choice goes back",
+          "[devstudio][graph-canvas][scene][q18]") {
+    (void)application();
+    const Json color{{"semantic", "pelican.render.color_signal@1"},
+                     {"arguments", {{"reference", "scene"}, {"transfer", "linear"},
+                                    {"range", "extended"}}}};
+    const auto documentFor = [&](const std::string &contract) {
+        return Json{
+            {"definitions", Json::object()},
+            {"nodes", Json::array({
+                {{"id", "scene_color_ref"}, {"op", "render.target_ref"},
+                 {"parameters", {{"name", "scene_color"}, {"type", color}}}, {"outputs", {"resource"}}},
+                {{"id", "forward_opaque"}, {"op", "render.material_pass"},
+                 {"parameters", {{"material_contract", contract}, {"pass_set", "main_render"}}},
+                 {"inputs", {{"color", {{"node", "scene_color_ref"}, {"port", "resource"}}}}},
+                 {"outputs", Json::array()}}})}};
+    };
+    Json catalog = visualCatalog();
+    for (const char *op : {"render.target_ref", "render.material_pass"})
+        catalog["modules"][1]["operations"].push_back(
+            {{"op", op}, {"domain", "rendering"}, {"evaluation", "direct"}, {"sink", false},
+             {"ports", "parameter_dependent"}});
+    Q18Tab tab;
+    tab.answer(QStringLiteral("get_graph_instances"),
+               q18Context(documentFor("forward_opaque_v1"), "draw-0"));
+    tab.answer(QStringLiteral("get_graph_catalog"), catalog);
+    tab.widget->scene().selectNode("forward_opaque");
+    QCoreApplication::processEvents();
+    const auto edits = [&] { return tab.reads("edit_graph_document"); };
+    auto *contract = tab.field<QComboBox>("pelican.graphCanvasDraw.contract");
+    REQUIRE(contract->isVisible());
+    REQUIRE(contract->isEnabled());
+    CHECK(contract->currentData().toString() == QStringLiteral("forward_opaque_v1"));
+
+    contract->setCurrentIndex(contract->findData(QStringLiteral("deferred_geometry_v1")));
+    QCoreApplication::processEvents();
+    REQUIRE(edits() == 1);
+    // Sent: off until it is read back.
+    CHECK_FALSE(contract->isEnabled());
+    // A choice made anyway (a script sets the index of an off combo) is
+    // refused by the model, and the combo says what the document says.
+    contract->setCurrentIndex(contract->findData(QStringLiteral("forward_transparent_v1")));
+    QCoreApplication::processEvents();
+    CHECK(edits() == 1);
+    CHECK(contract->currentData().toString() == QStringLiteral("forward_opaque_v1"));
+    tab.answer(QStringLiteral("edit_graph_document"), Json{{"status", "accepted"}, {"ticket", "draw"}});
+    CHECK_FALSE(contract->isEnabled());
+    tab.answer(QStringLiteral("get_edit_result"),
+               Json{{"status", "committed"}, {"committed", true}, {"source_digest", {{"hex", "draw-1"}}}});
+    // Committed, the document not yet read back.
+    CHECK_FALSE(contract->isEnabled());
+    tab.answer(QStringLiteral("get_graph_instances"),
+               q18Context(documentFor("deferred_geometry_v1"), "draw-1"));
+    // Read back: on once, and a choice goes out.
+    REQUIRE(contract->isEnabled());
+    CHECK(contract->currentData().toString() == QStringLiteral("deferred_geometry_v1"));
+    contract->setCurrentIndex(contract->findData(QStringLiteral("forward_transparent_v1")));
+    QCoreApplication::processEvents();
+    CHECK(edits() == 2);
+}
+
+TEST_CASE("Q-18 a render node's View field is off while an edit is in flight, and a refused pick "
+          "goes back in the same combo",
+          "[devstudio][graph-canvas][scene][q18]") {
+    (void)application();
+    Q18Tab tab;
+    auto document = lp4f1Document();
+    tab.answer(QStringLiteral("get_graph_instances"), q18Context(document, "view-0"));
+    tab.answer(QStringLiteral("get_graph_catalog"), visualCatalog());
+    REQUIRE(tab.reads("get_frame_plan") == 1);
+    tab.answer(QStringLiteral("get_frame_plan"), lp4f1Plan());
+    tab.widget->scene().selectNode("outside");
+    QCoreApplication::processEvents();
+    const auto edits = [&] { return tab.reads("edit_graph_document"); };
+    auto *face = tab.field<QComboBox>("pelican.graphCanvasRender.view.face");
+    REQUIRE(face->isVisible());
+    REQUIRE(face->isEnabled());
+    CHECK(face->currentText() == QStringLiteral("All views"));
+
+    face->setCurrentIndex(face->findText(QStringLiteral("2 (+Y)")));
+    QCoreApplication::processEvents();
+    REQUIRE(edits() == 1);
+    CHECK_FALSE(face->isEnabled());
+    // Picked anyway: refused, and the same combo holds the document's value.
+    face->setCurrentIndex(face->findText(QStringLiteral("5 (-Z)")));
+    QCoreApplication::processEvents();
+    CHECK(edits() == 1);
+    CHECK(face->currentText() == QStringLiteral("All views"));
+    tab.commit("view-1");
+    CHECK_FALSE(tab.field<QComboBox>("pelican.graphCanvasRender.view.face")->isEnabled());
+    document["nodes"][2]["parameters"]["view_select"] = {{"face", 2}};
+    tab.answer(QStringLiteral("get_graph_instances"), q18Context(document, "view-1"));
+    face = tab.field<QComboBox>("pelican.graphCanvasRender.view.face");
+    REQUIRE(face->isEnabled());
+    CHECK(face->currentText() == QStringLiteral("2 (+Y)"));
+    face->setCurrentIndex(face->findText(QStringLiteral("5 (-Z)")));
+    QCoreApplication::processEvents();
+    CHECK(edits() == 2);
 }

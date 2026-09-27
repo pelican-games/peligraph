@@ -206,6 +206,7 @@
       "cmd": "wait",
       "name": "pelican.graphCanvasRender.view.face",
       "visible": true,
+      "enabled": true,
       "text": "All views",
       "timeout_ms": 60000
     },
@@ -366,14 +367,9 @@
       "path": "loop_view_axis_graph.png"
     },
     {
-      "label": "the Frame Plan tab is in front",
+      "label": "the Frame Plan tab is in front; it read the plan again after the Graph tab's edits (Q-18), without Refresh",
       "cmd": "action",
       "name": "pelican.view.renderTools.frame_plan"
-    },
-    {
-      "label": "the Frame Plan is a snapshot: read it again after the Graph tab's edits",
-      "cmd": "click",
-      "name": "pelican.framePlanRefresh"
     },
     {
       "label": "the six copies are one group",

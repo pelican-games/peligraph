@@ -404,6 +404,7 @@ void GraphCanvasModel::clearContext() {
     layout_ = Json::object();
     definitions_reported_ = false;
     context_received_ = false;
+    plan_after_commit_ = false;
     breadcrumb_ = {std::string{}};
     entered_loop_.clear();
     loop_reports_ = Json::object();
@@ -851,6 +852,14 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             layout_retrying_ = false;
             refusal_marks_.clear();
             edit_notice_ = {InspectorNoticeKind::Success, "Graph change saved."};
+            // Q-18: the engine published the edit before it said committed,
+            // so the plan it holds now is the edit's. The read of the
+            // document below brings the plan with it (see receiveRpcResult),
+            // and the other panels hear of it through planCommitRevision().
+            if (!std::exchange(pending_placement_only_, false)) {
+                plan_after_commit_ = true;
+                ++plan_commit_revision_;
+            }
             refresh();
         } catch (const std::exception &error) {
             ticket_.clear();
@@ -920,6 +929,9 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             // drawn, so the values reported against them still stand: asking
             // again would blank every value on the canvas for a round trip.
             ++placement_revision_;
+            // Q-18: but a commit of anything else is read into the plan
+            // however its document reads back.
+            if (std::exchange(plan_after_commit_, false)) requestLoopReports();
             return;
         }
         // The scope trail can name a definition the new document dropped.
@@ -947,6 +959,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         ++report_revision_;
         requestValues();
         requestObservation();
+        plan_after_commit_ = false;
         requestLoopReports();
     } catch (const std::exception &error) {
         failure_ = {InspectorNoticeKind::Error, error.what()};
@@ -1850,6 +1863,10 @@ Json GraphCanvasModel::inverseOps(const Json &ops) const {
 bool GraphCanvasModel::submitHistory(HistoryAction action, HistoryEntry entry) {
     if (!canEdit()) return false;
     Json ops = action == HistoryAction::Undo ? entry.inverse : entry.forward;
+    pending_placement_only_ =
+        ops.is_array() && !ops.empty() && std::ranges::all_of(ops, [](const Json &op) {
+            return op.is_object() && op.value("op", std::string{}) == "set_layout";
+        });
     pending_history_ = PendingHistory{action, std::move(entry)};
     edit_notice_ = {InspectorNoticeKind::Information, "Saving the graph change..."};
     request(RequestKind::Submit, "edit_graph_document",

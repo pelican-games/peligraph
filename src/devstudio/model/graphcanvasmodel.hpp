@@ -519,6 +519,14 @@ class GraphCanvasModel {
     // before, because it was built from the nodes the old revision held.
     std::optional<nlohmann::json> layout_retry_;
     bool layout_retrying_ = false;
+    // Q-18. Whether the edit in flight is a placement only (see
+    // planCommitRevision()), and whether a commit that was not is still
+    // waiting for the document read after it -- which then reads the frame
+    // plan whatever the read shows, a read that looks like a placement only
+    // included.
+    bool pending_placement_only_ = false;
+    bool plan_after_commit_ = false;
+    std::uint64_t plan_commit_revision_ = 0;
     // History belongs to exactly one committed document. A refresh showing
     // another writer's revision invalidates it instead of overwriting them.
     std::string history_digest_;
@@ -814,6 +822,12 @@ class GraphCanvasModel {
     // those nodes stay, and a canvas already drawing that placement has no
     // reason to throw its items away and draw them again.
     auto placementRevision() const noexcept { return placement_revision_; }
+    // Q-18. How many of this tab's edits have committed that can change the
+    // frame plan: every edit but a placement (an op list of set_layout only,
+    // which the Frame Plan's own node positions are written as too). The
+    // owner compares it before and after a reply to tell the other panels
+    // that show the plan to read it again.
+    auto planCommitRevision() const noexcept { return plan_commit_revision_; }
     bool busy() const noexcept { return pending_.has_value() || !ticket_.empty(); }
     bool canRefresh() const noexcept { return connected_ && !busy(); }
     // An edit needs a digest to compare against: without one there is nothing

@@ -46,6 +46,15 @@ class FramePlanWidget final : public QWidget {
     // widget materializes it with the same pelican_project resolver only when
     // the user presses Open.
     void refresh();
+    // Q-18. Another panel's edit committed and can have changed the plan (the
+    // Graph tab's, other than a placement): read it again now when in view --
+    // after a read already in flight, which may predate the commit -- or
+    // when next shown.
+    void planChangedByCommit();
+    // Q-18. What asks the engine for the plan (get_frame_plan). The embedded
+    // viewport's RPC unless named here; a test names one to count the reads,
+    // and hands the replies in through the viewport's inspectorRpcSucceeded.
+    void setPlanRequest(std::function<qint64(QString *error)> request);
     void openTasksForHitGroup(const QString &group);
     void setNodeOrderAction(std::function<void(const QString &, const QStringList &, quint64)> action);
     void setTaskConnectionAction(std::function<void(const QString &, const QStringList &)> action);

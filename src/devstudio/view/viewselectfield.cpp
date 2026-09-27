@@ -4,8 +4,10 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <utility>
 
 namespace PelicanStudio {
@@ -155,6 +157,28 @@ std::vector<FramePlanViewSelectAxis> ViewSelectField::selection() const {
         if (value) axes.push_back(FramePlanViewSelectAxis{row.axis, *value});
     }
     return axes;
+}
+
+void ViewSelectField::showSelection(const std::vector<FramePlanViewSelectAxis> &view_select,
+                                    const std::string &element_axis, bool element_chosen) {
+    for (auto &row : rows_) {
+        if (row.removed) {
+            row.removed = false;
+            row.widget->show();
+        }
+        if (row.combo == nullptr) continue;
+        int index = 0;
+        if (element_chosen && row.axis == element_axis) {
+            index = row.combo->findData(QStringLiteral("element"));
+        } else {
+            const auto chosen = std::ranges::find(view_select, row.axis,
+                                                  &FramePlanViewSelectAxis::axis);
+            if (chosen != view_select.end())
+                index = row.combo->findData(QVariant::fromValue<qulonglong>(chosen->value));
+        }
+        const QSignalBlocker block{row.combo};
+        row.combo->setCurrentIndex(std::max(0, index));
+    }
 }
 
 std::optional<std::string> ViewSelectField::elementAxis() const {

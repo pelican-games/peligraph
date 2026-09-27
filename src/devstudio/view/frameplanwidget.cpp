@@ -474,6 +474,15 @@ struct FramePlanWidget::Impl {
     std::function<void(const QString &, const QString &, const QStringList &)> pass_connection_action;
     std::function<void(const QString &, const QStringList &, quint64)> node_order_action;
     qint64 pending_request = 0;
+    // Q-18. Another panel's edit that committed can change the plan (the
+    // Graph tab's loop count, a branch, a view axis). In view, the plan is
+    // read again at once -- after the read in flight, which may predate the
+    // commit; out of view, when the panel is next shown.
+    bool plan_stale = false;
+    bool plan_reread = false;
+    // What asks for the plan: the viewport's RPC, unless setPlanRequest
+    // named another (a test counts the reads there).
+    std::function<qint64(QString *error)> plan_request;
     // A ray-tracing project's first generation stays private until its first
     // submitted frame, and the engine answers RPC before that. While
     // get_frame_plan names that state, ask again instead of showing a failure.
@@ -1352,6 +1361,7 @@ struct FramePlanWidget::Impl {
 
     void showUnavailable(const QString &reason) {
         pending_request = 0;
+        plan_reread = false;
         pending_gpu_timing_request = 0;
         gpu_timing_poll->stop();
         model.reset();
@@ -1384,6 +1394,7 @@ struct FramePlanWidget::Impl {
 
     void showEngineFailure(const QString &fatal_error_line) {
         pending_request = 0;
+        plan_reread = false;
         pending_gpu_timing_request = 0;
         gpu_timing_poll->stop();
         model.reset();
@@ -2933,18 +2944,46 @@ struct FramePlanWidget::Impl {
         }
     }
 
+    [[nodiscard]] bool planReadable() const {
+        return plan_request ? true : viewport.rpcReady();
+    }
+
+    // Q-18. Read the plan because a commit may have changed it: now when in
+    // view and nothing is being read, after the read in flight, or when the
+    // panel is next shown. Without an engine there is nothing to read; the
+    // engine coming back reads the plan anyway.
+    void planChangedByCommit() {
+        if (!planReadable()) return;
+        if (!owner.isVisible()) {
+            plan_stale = true;
+            return;
+        }
+        readPlanAgain();
+    }
+
+    void readPlanAgain() {
+        if (pending_request != 0) {
+            plan_reread = true;
+            return;
+        }
+        requestRefresh();
+    }
+
     void requestRefresh() {
         if (pending_request != 0) {
             return;
         }
-        if (!viewport.rpcReady()) {
+        if (!planReadable()) {
             showUnavailable(owner.tr("the engine RPC connection is not ready."));
             return;
         }
 
         QString error;
-        pending_request = viewport.requestRpc(
-            QStringLiteral("get_frame_plan"), QJsonObject{}, &error);
+        plan_stale = false;
+        pending_request = plan_request
+                              ? plan_request(&error)
+                              : viewport.requestRpc(QStringLiteral("get_frame_plan"),
+                                                    QJsonObject{}, &error);
         if (pending_request == 0) {
             showFailure(error);
             return;
@@ -2997,6 +3036,8 @@ struct FramePlanWidget::Impl {
         pending_request = 0;
         unpublished_plan_retries = 0;
         owner.receiveResult(result_json);
+        // Q-18: a commit landed while this read was out; it may predate it.
+        if (std::exchange(plan_reread, false)) requestRefresh();
     }
 
     void consumeGpuTimingResult(const QByteArray &result_json) {
@@ -3111,6 +3152,12 @@ struct FramePlanWidget::Impl {
             return;
         }
         pending_request = 0;
+        // Q-18: the read a commit was waiting behind is gone; the one after
+        // it is what the panel shows.
+        if (std::exchange(plan_reread, false)) {
+            requestRefresh();
+            return;
+        }
         if (message.contains(QStringLiteral("Current frame plan is not registered")) &&
             unpublished_plan_retries < max_unpublished_plan_retries &&
             viewport.rpcReady()) {
@@ -4051,6 +4098,8 @@ void FramePlanWidget::showEvent(QShowEvent *event) {
     impl_->requestTaskAuthoring();
     impl_->refreshRawJson();
     if (impl_->model) impl_->loadPlacement();
+    // Q-18: a commit elsewhere while out of view left the plan behind.
+    if (impl_->plan_stale && impl_->planReadable()) impl_->readPlanAgain();
 }
 
 void FramePlanWidget::hideEvent(QHideEvent *event) {
@@ -4088,6 +4137,12 @@ void FramePlanWidget::setProjectRoot(
 }
 
 void FramePlanWidget::refresh() { impl_->requestRefresh(); }
+
+void FramePlanWidget::planChangedByCommit() { impl_->planChangedByCommit(); }
+
+void FramePlanWidget::setPlanRequest(std::function<qint64(QString *error)> request) {
+    impl_->plan_request = std::move(request);
+}
 
 void FramePlanWidget::receiveShaderReloadStatus(const QByteArray &status_json) {
     impl_->reload_follower->consume(status_json);

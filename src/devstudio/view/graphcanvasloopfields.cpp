@@ -1307,6 +1307,7 @@ GraphCanvasDrawFields::GraphCanvasDrawFields(GraphCanvasModel &model, std::funct
 }
 
 void GraphCanvasDrawFields::after(bool submitted) {
+    if (!submitted) restore();
     if (submitted && submitted_) submitted_();
 }
 
@@ -1328,28 +1329,38 @@ void GraphCanvasDrawFields::showNode(const GraphCanvasNode *node, const std::str
     node_ = node->id;
     op_ = node->op;
     scope_ = scope;
-    const bool editable = model_.canEdit();
-    const auto &parameters = node->parameters;
+    contract_row_->setVisible(op_ == "render.material_pass");
+    variant_row_->setVisible(op_ == "draw.variant");
+    override_rows_->setVisible(op_ == "draw.override");
+    if (op_ == "render.material_pass")
+        heading_->setText(tr("Material pass %1").arg(qtext(node_)));
+    else if (op_ == "draw.variant")
+        heading_->setText(tr("Draw %1 with a named variant").arg(qtext(node_)));
+    else
+        heading_->setText(tr("Draw %1 with another render state").arg(qtext(node_)));
+    // What is being typed into the node on screen stays.
+    showParameters(node->parameters, same && variant_->lineEdit()->hasFocus(),
+                   same && defines_->hasFocus());
+    followEditable();
+    show();
+}
+
+void GraphCanvasDrawFields::showParameters(const nlohmann::json &parameters, bool keep_variant,
+                                           bool keep_defines) {
     const auto string = [&](const nlohmann::json &object, const char *key) {
         const auto found = object.is_object() ? object.find(key) : object.end();
         return object.is_object() && found != object.end() && found->is_string()
                    ? qtext(found->get<std::string>())
                    : QString{};
     };
-    contract_row_->setVisible(op_ == "render.material_pass");
-    variant_row_->setVisible(op_ == "draw.variant");
-    override_rows_->setVisible(op_ == "draw.override");
     if (op_ == "render.material_pass") {
-        heading_->setText(tr("Material pass %1").arg(qtext(node_)));
         const QSignalBlocker block{contract_};
         const auto contract = string(parameters, "material_contract");
         if (contract_->findData(contract) < 0 && !contract.isEmpty())
             contract_->addItem(contract, contract);
         contract_->setCurrentIndex(contract_->findData(contract));
-        contract_->setEnabled(editable);
     } else if (op_ == "draw.variant") {
-        heading_->setText(tr("Draw %1 with a named variant").arg(qtext(node_)));
-        if (!(same && variant_->lineEdit()->hasFocus())) {
+        if (!keep_variant) {
             const QSignalBlocker block{variant_};
             variant_->clear();
             const auto suggested = qtext(model_.suggestDrawVariant(scope_));
@@ -1359,9 +1370,7 @@ void GraphCanvasDrawFields::showNode(const GraphCanvasNode *node, const std::str
             variant_->setCurrentIndex(variant_->findText(current));
             variant_->setEditText(current);
         }
-        variant_->setEnabled(editable);
-    } else {
-        heading_->setText(tr("Draw %1 with another render state").arg(qtext(node_)));
+    } else if (op_ == "draw.override") {
         const auto state = parameters.is_object() ? parameters.value("render_state", nlohmann::json::object())
                                                   : nlohmann::json::object();
         const auto pick = [&](QComboBox *combo, const char *key, bool boolean) {
@@ -1375,13 +1384,12 @@ void GraphCanvasDrawFields::showNode(const GraphCanvasNode *node, const std::str
                                 : (stored.is_string() ? qtext(stored.get<std::string>()) : QString{});
             }
             combo->setCurrentIndex(std::max(0, combo->findData(value)));
-            combo->setEnabled(editable);
         };
         pick(cull_, "cull", false);
         pick(depth_test_, "depth_test", true);
         pick(depth_write_, "depth_write", true);
         pick(blend_, "blend", false);
-        if (!(same && defines_->hasFocus())) {
+        if (!keep_defines) {
             QStringList lines;
             if (parameters.is_object())
                 for (const auto &define : parameters.value("defines", nlohmann::json::array()))
@@ -1389,10 +1397,25 @@ void GraphCanvasDrawFields::showNode(const GraphCanvasNode *node, const std::str
             const QSignalBlocker block{defines_};
             defines_->setPlainText(lines.join(QLatin1Char{'\n'}));
         }
-        defines_->setEnabled(editable);
-        apply_defines_->setEnabled(editable);
     }
-    show();
+}
+
+void GraphCanvasDrawFields::followEditable() {
+    // Q-18, as the Loop fields (Q-17): the rows were filled for a model that
+    // could edit then; an edit in flight does not fill them again, so they
+    // are switched off from the moment it goes out until it is read back.
+    const bool editable = model_.canEdit();
+    contract_row_->setEnabled(editable);
+    variant_row_->setEnabled(editable);
+    override_rows_->setEnabled(editable);
+}
+
+void GraphCanvasDrawFields::restore() {
+    // Q-18: a choice the model refused goes back to what the document says,
+    // so the field never shows a value that was not sent. Defines being
+    // typed stay: they are text, and Apply defines sends them again.
+    if (node_.empty()) return;
+    showParameters(model_.nodeParameters(scope_, node_), false, true);
 }
 
 void GraphCanvasDrawFields::commitOverride() {
@@ -1528,10 +1551,11 @@ void GraphCanvasViewFields::showNode(const GraphCanvasNode *node, const std::str
     }
     node_ = node->id;
     scope_ = scope;
+    // Q-18: whether the model can edit is not part of what is shown -- the
+    // field follows it (followEditable) without being loaded again.
     QStringList parts{qtext(scope), qtext(node_), qtext(field_->family), qtext(field_->loop),
                       qtext(field_->element_axis),
-                      field_->element_chosen ? QStringLiteral("e") : QString{},
-                      model_.canEdit() ? QStringLiteral("w") : QStringLiteral("r")};
+                      field_->element_chosen ? QStringLiteral("e") : QString{}};
     for (const auto &axis : field_->axes) {
         parts << qtext(axis.axis)
               << (axis.length ? QString::number(*axis.length) : QStringLiteral("-"))
@@ -1547,11 +1571,22 @@ void GraphCanvasViewFields::showNode(const GraphCanvasNode *node, const std::str
                               ? tr("View (%1)").arg(qtext(field_->family))
                               : tr("View (%1) · in loop %2")
                                     .arg(qtext(field_->family), qtext(field_->loop)));
-        view_->load(field_->axes, field_->view_select, field_->family, field_->element_axis,
-                    field_->element_chosen);
+        load();
     }
-    view_->setEnabled(model_.canEdit());
+    followEditable();
     show();
+}
+
+void GraphCanvasViewFields::load() {
+    if (!field_) return;
+    view_->load(field_->axes, field_->view_select, field_->family, field_->element_axis,
+                field_->element_chosen);
+}
+
+void GraphCanvasViewFields::followEditable() {
+    // Q-18: an edit in flight changes nothing the field shows, so it is not
+    // loaded again for it; it follows the model here instead.
+    view_->setEnabled(model_.canEdit());
 }
 
 void GraphCanvasViewFields::commit() {
@@ -1571,10 +1606,15 @@ void GraphCanvasViewFields::commit() {
     for (const auto &chosen : view_->selection()) select[chosen.axis] = chosen.value;
     if (const auto axis = view_->elementAxis())
         select[*axis] = nlohmann::json{{"$expr", "element"}};
-    if (model_.setViewSelect(scope_, node_, select,
-                             field_->writes_family ? field_->family : std::string{}) &&
-        submitted_)
-        submitted_();
+    if (!model_.setViewSelect(scope_, node_, select,
+                              field_->writes_family ? field_->family : std::string{})) {
+        // Q-18: refused (an edit in flight, or nothing changed): the field
+        // shows the document's choice again, not the one that was not sent,
+        // in the combo that was just used.
+        view_->showSelection(field_->view_select, field_->element_axis, field_->element_chosen);
+        return;
+    }
+    if (submitted_) submitted_();
 }
 
 } // namespace PelicanStudio

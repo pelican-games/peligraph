@@ -292,14 +292,9 @@
       "path": "graph_loop_expand_graph.png"
     },
     {
-      "label": "the Frame Plan tab is in front",
+      "label": "the Frame Plan tab is in front; it read the plan again after the Graph tab's edits (Q-18), without Refresh",
       "cmd": "action",
       "name": "pelican.view.renderTools.frame_plan"
-    },
-    {
-      "label": "the Frame Plan is a snapshot: read it again after the Graph tab's edits",
-      "cmd": "click",
-      "name": "pelican.framePlanRefresh"
     },
     {
       "label": "the three copies are one folded group",
