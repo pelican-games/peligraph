@@ -1110,10 +1110,12 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 std::string line = "Restarting the engine to apply this change";
                 if (const auto reason = response.find("restart_reason");
                     reason != response.end() && reason->is_object()) {
-                    const auto code = reason->value("code", std::string{});
-                    const auto detail = reason->value("detail", std::string{});
-                    if (!code.empty() || !detail.empty())
-                        line += " (" + (code.empty() ? detail : code) + ")";
+                    // RS-1: `detail` is a list (color_formats, depth_format,
+                    // ...); the code says enough for one line.
+                    const auto found = reason->find("code");
+                    if (found != reason->end() && found->is_string() &&
+                        !found->get<std::string>().empty())
+                        line += " (" + found->get<std::string>() + ")";
                 }
                 line += "...";
                 edit_notice_ = {InspectorNoticeKind::Information, line};

@@ -6004,10 +6004,14 @@ TEST_CASE("GL-1b a Graph commit that asks for a restart goes to the owner's rest
                     {"source_digest", {{"hex", "gl1b-1"}}},
                     {"restart_required", true},
                     {"restart_reason",
+                     // The engine's own answer (RS-1): `detail` is a list.
                      {{"code", "material_physical_contract_changed"},
-                      {"material", 0},
+                      {"material", "pelican.builtin.transparent"},
+                      {"material_id", 0},
                       {"pass", "render_material_pass"},
-                      {"detail", "material 0 changes its physical rendering contract"}}}});
+                      {"detail", Json::array({"color_formats"})},
+                      {"message", "render-pipeline candidate pass 'render_material_pass' "
+                                  "changes the physical rendering contract of live material 0"}}}});
     REQUIRE(restarts.size() == 1);
     CHECK(restarts.front() ==
           QStringLiteral("Restarting the engine to apply this change "
