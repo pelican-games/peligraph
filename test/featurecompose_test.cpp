@@ -42,6 +42,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <unordered_set>
 #include <vector>
 
 #ifndef PELICAN_TEST_SOURCE_DIR
@@ -6129,6 +6130,139 @@ TEST_CASE("LP-1b carry hands each element's output to the next element's input",
         auto unfed = lp1bChainLoop(2);
         unfed["inputs"] = Json::object();
         CHECK_THROWS_AS(partitionGraphDocument(lp1bChainGraph(unfed, definitions)), std::invalid_argument);
+    }
+}
+
+namespace {
+// LP-6: what the runtime refuses when the graph recompiles: a pass input no
+// earlier pass of main_render produced.
+void lp6RequireInputsProduced(const RenderFeatureComposeResult &composed) {
+    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    const auto graph = std::find_if(graphs.begin(), graphs.end(),
+        [](const auto &candidate) { return candidate.name == "main_render"; });
+    REQUIRE(graph != graphs.end());
+    const auto &families = composed.config.at("rendering_passes");
+    const auto family = std::find_if(families.begin(), families.end(),
+        [](const nlohmann::json &candidate) { return candidate.value("name", std::string{}) == "main_render"; });
+    REQUIRE(family != families.end());
+    std::unordered_set<std::string> buffers;
+    for (const auto &buffer : composed.config.value("buffers", nlohmann::json::array()))
+        buffers.insert(buffer.at("name").get<std::string>());
+    REQUIRE_NOTHROW(validateFramePlanPassInputsProduced(planFrameGraph(*graph), *family, buffers));
+}
+
+// `shared` is an image `z_write` draws; `a_read` reads it from the image node
+// and draws into an image of its own.
+nlohmann::json lp6ReadWriteGraph(const nlohmann::json &extra = nlohmann::json::array()) {
+    using Json = nlohmann::json;
+    auto nodes = Json::array({lp0bImage("shared"), lp0bImage("a_image"),
+                              lp1bStep("a_read", {{"node", "shared"}, {"port", "resource"}},
+                                       {{"node", "a_image"}, {"port", "resource"}}),
+                              lp1aFullscreen("z_write", {{"node", "shared"}, {"port", "resource"}})});
+    for (const auto &node : extra) nodes.push_back(node);
+    return lp1aGraph(nodes);
+}
+
+// `fill` draws `shared`; `read` reads it from the image node into
+// `read_image`; `back` reads what `read` drew and draws it back into `shared`.
+nlohmann::json lp6WriteBackGraph(const std::string &fill, const std::string &read, const std::string &back) {
+    using Json = nlohmann::json;
+    return lp1aGraph(Json::array({
+        lp0bImage("shared"), lp0bImage("read_image"),
+        lp1aFullscreen(fill, {{"node", "shared"}, {"port", "resource"}}),
+        lp1bStep(read, {{"node", "shared"}, {"port", "resource"}}, {{"node", "read_image"}, {"port", "resource"}}),
+        lp1bStep(back, {{"node", read}, {"port", "color"}}, {{"node", "shared"}, {"port", "resource"}},
+                 {{"color_load_op", "Load"}})}));
+}
+} // namespace
+
+TEST_CASE("LP-6 a loop's carried input read from an image node waits for the pass that draws the image",
+          "[render-feature][graph-composition][lp6]") {
+    // lp1bChainLoop reads `seed`'s color port; here the carry starts from the
+    // image node `seed` draws. The loop's id sorts before `seed`, so only the
+    // writer's order puts `seed` first.
+    auto loop = lp1bChainLoop(3);
+    loop["inputs"]["source"] = {{"node", "seed_image"}, {"port", "resource"}};
+    const auto composed = lp0aCompose(lp1bChainGraph(loop, {{"chain_body", lp1bChainBody()}}));
+    const auto &config = composed.config;
+    CHECK(lp1bSource(config, "chain/0/step") == "seed_image");
+    CHECK(lp0bListed(passByName(config, "chain/0/step").at("after"), "seed"));
+    const auto declared = lp0bDeclared(config);
+    CHECK(lp0bIndex(declared, "seed") < lp0bIndex(declared, "chain/0/step"));
+    REQUIRE_NOTHROW(compileComposition(composed));
+    lp6RequireInputsProduced(composed);
+    const auto order = lp0bPlanOrder(composed);
+    for (int element = 0; element < 3; ++element)
+        CHECK(lp0bIndex(order, "seed") < lp0bIndex(order, "chain/" + std::to_string(element) + "/step"));
+}
+
+TEST_CASE("LP-6 a pass that reads an image node runs after the graph's passes that draw it",
+          "[render-feature][graph-composition][lp6]") {
+    using Json = nlohmann::json;
+    const auto composed = lp0aCompose(lp6ReadWriteGraph());
+    CHECK(lp0bListed(passByName(composed.config, "a_read").at("after"), "z_write"));
+    // The writer does not wait on the reader.
+    CHECK_FALSE(lp0bListed(passByName(composed.config, "z_write").value("after", Json::array()), "a_read"));
+    REQUIRE_NOTHROW(compileComposition(composed));
+    lp6RequireInputsProduced(composed);
+    const auto order = lp0bPlanOrder(composed);
+    CHECK(lp0bIndex(order, "z_write") < lp0bIndex(order, "a_read"));
+
+    SECTION("with an unrelated pass between them in id order") {
+        const auto middle = lp0aCompose(lp6ReadWriteGraph(Json::array({
+            lp0bImage("m_image"), lp1aFullscreen("m_middle", {{"node", "m_image"}, {"port", "resource"}})})));
+        REQUIRE_NOTHROW(compileComposition(middle));
+        lp6RequireInputsProduced(middle);
+        const auto ordered = lp0bPlanOrder(middle);
+        CHECK(lp0bIndex(ordered, "z_write") < lp0bIndex(ordered, "a_read"));
+    }
+    SECTION("every writer of the image, when there are several") {
+        auto second = lp1aFullscreen("y_write", {{"node", "shared"}, {"port", "resource"}},
+                                     {{"color_load_op", "Load"}, {"after", Json::array({"z_write"})}});
+        const auto both = lp0aCompose(lp6ReadWriteGraph(Json::array({second})));
+        const auto &after = passByName(both.config, "a_read").at("after");
+        CHECK(lp0bListed(after, "z_write"));
+        CHECK(lp0bListed(after, "y_write"));
+        REQUIRE_NOTHROW(compileComposition(both));
+        lp6RequireInputsProduced(both);
+        const auto ordered = lp0bPlanOrder(both);
+        CHECK(lp0bIndex(ordered, "z_write") < lp0bIndex(ordered, "y_write"));
+        CHECK(lp0bIndex(ordered, "y_write") < lp0bIndex(ordered, "a_read"));
+    }
+    SECTION("a read of the previous frame waits for no writer") {
+        auto document = lp6ReadWriteGraph();
+        document["nodes"][0]["parameters"]["history"] = true;
+        document["nodes"][2]["parameters"]["ports"]["source"]["history"] = true;
+        const auto previous = lp0aCompose(document);
+        CHECK_FALSE(lp0bListed(passByName(previous.config, "a_read").value("after", Json::array()), "z_write"));
+    }
+}
+
+TEST_CASE("LP-6 a writer downstream of the reader is not waited on, so no cycle is made",
+          "[render-feature][graph-composition][lp6]") {
+    // `write_back` runs after `read` by its edge, so `read` waits for `fill`
+    // only: the order the graph had before LP-6.
+    const auto composed = lp0aCompose(lp6WriteBackGraph("fill", "read", "write_back"));
+    const auto &after = passByName(composed.config, "read").at("after");
+    CHECK(lp0bListed(after, "fill"));
+    CHECK_FALSE(lp0bListed(after, "write_back"));
+    CHECK(lp0bListed(passByName(composed.config, "write_back").at("after"), "read"));
+    REQUIRE_NOTHROW(compileComposition(composed));
+    lp6RequireInputsProduced(composed);
+    const auto order = lp0bPlanOrder(composed);
+    CHECK(lp0bIndex(order, "fill") < lp0bIndex(order, "read"));
+    CHECK(lp0bIndex(order, "read") < lp0bIndex(order, "write_back"));
+
+    SECTION("whatever the ids' order") {
+        // `back` sorts first: the graph's passes are declared in their
+        // dependency order, not the id order.
+        const auto reversed = lp0aCompose(lp6WriteBackGraph("fill", "read", "back"));
+        CHECK_FALSE(lp0bListed(passByName(reversed.config, "read").at("after"), "back"));
+        REQUIRE_NOTHROW(compileComposition(reversed));
+        lp6RequireInputsProduced(reversed);
+        const auto ordered = lp0bPlanOrder(reversed);
+        CHECK(lp0bIndex(ordered, "fill") < lp0bIndex(ordered, "read"));
+        CHECK(lp0bIndex(ordered, "read") < lp0bIndex(ordered, "back"));
     }
 }
 

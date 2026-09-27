@@ -273,6 +273,159 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             if (duplicate == lowered.loop_output_reads.end()) lowered.loop_output_reads.push_back(std::move(entry));
         }
     };
+    // LP-6: a render.image node declares a target and runs nothing, so an
+    // edge from it carries only the name, and a pass that read it waited on
+    // no pass (the id order decided, and a loop could land before the writer).
+    // A read of an image node waits on the graph's passes that write it -- an
+    // attachment, a write port, a shadow depth, a copy's destination -- the
+    // root's for any reader, a loop body's for its own body's readers only.
+    // `downstream` is what runs after what among the graph's nodes (edges,
+    // after / before, a body node before its loop), so a writer that runs
+    // after the reader is not waited on; each wait added joins it.
+    struct ImageWriter {
+        std::string node;
+        const RenderGraphLoopBody *body = nullptr;
+        // Empty for a compute task.
+        std::string family;
+    };
+    std::map<std::string, std::vector<ImageWriter>> image_writers;
+    std::map<std::string, std::set<std::string>> downstream;
+    const auto resourceOp = [](const std::string &op) {
+        return op == "render.buffer" || op == "render.attribute" || op == "render.image" || op == "render.target_ref";
+    };
+    const auto passFamily = [&](const Json &node) {
+        if (node.at("op") == "render.compute") return std::string{};
+        const auto parameters = node.find("parameters");
+        if (parameters == node.end() || !parameters->is_object()) return default_pass_family;
+        const auto family = parameters->find("pass_set");
+        return family != parameters->end() && family->is_string() ? family->get<std::string>() : default_pass_family;
+    };
+    const auto eachEndpoint = [](const Json &holder, const std::function<void(const Json &)> &visit) {
+        if (!holder.is_object()) return;
+        for (const auto &[port, value] : holder.items()) {
+            (void)port;
+            if (value.is_object()) visit(value);
+            else if (value.is_array())
+                for (const auto &item : value)
+                    if (item.is_object()) visit(item);
+        }
+    };
+    const auto producerOf = [&](const Json &endpoint) -> std::string {
+        const auto producer = endpoint.find("node");
+        if (producer == endpoint.end() || !producer->is_string()) return {};
+        const auto found = nodes.find(producer->get<std::string>());
+        return found != nodes.end() && !resourceOp(found->second->at("op").get<std::string>()) ? found->first
+                                                                                               : std::string{};
+    };
+    for (const auto &node : graph.nodes) {
+        const auto id = node.at("id").get<std::string>();
+        if (inactive(id)) continue;
+        if (const auto inputs = node.find("inputs"); inputs != node.end())
+            eachEndpoint(*inputs, [&](const Json &endpoint) {
+                if (const auto producer = producerOf(endpoint); !producer.empty()) downstream[producer].insert(id);
+            });
+        if (const auto parameters = node.find("parameters"); parameters != node.end() && parameters->is_object()) {
+            for (const auto &name : orderNames(*parameters, "after")) downstream[name].insert(id);
+            for (const auto &name : orderNames(*parameters, "before")) downstream[id].insert(name);
+            if (const auto snapshot = parameters->find("snapshot_after");
+                snapshot != parameters->end() && snapshot->is_string())
+                downstream[snapshot->get<std::string>()].insert(id);
+        }
+        if (const auto origin = graph.origins.find(id); origin != graph.origins.end() && !origin->second.loop.empty())
+            downstream[id].insert(origin->second.loop);
+    }
+    for (const auto &[id, expansion] : graph.loops) {
+        for (const auto &name : expansion.shape.after) downstream[name].insert(id);
+        for (const auto &name : expansion.shape.before) downstream[id].insert(name);
+        eachEndpoint(expansion.inputs, [&, &loop = id](const Json &endpoint) {
+            if (const auto producer = producerOf(endpoint); !producer.empty()) downstream[producer].insert(loop);
+        });
+    }
+    // The image node an endpoint writes into, however far up the chain of
+    // passes it was handed down. A loop's output is a copy's, not the
+    // template's; a carried input is a placeholder.
+    const auto writtenImage = [&](const Json &endpoint) -> std::optional<std::string> {
+        if (!endpoint.is_object() || !endpoint.contains("node") || endpoint.contains(graphLoopOutputMarker))
+            return std::nullopt;
+        try {
+            const auto name = resourceName(endpoint);
+            if (const auto found = nodes.find(name); found != nodes.end() && found->second->at("op") == "render.image")
+                return name;
+        } catch (const std::exception &) {
+            // The lowering below refuses the same endpoint by name.
+            resolving.clear();
+        }
+        return std::nullopt;
+    };
+    for (const auto &node : graph.nodes) {
+        const auto id = node.at("id").get<std::string>();
+        const auto inputs = node.find("inputs");
+        if (inactive(id) || inputs == node.end() || !inputs->is_object()) continue;
+        const auto op = node.at("op").get<std::string>();
+        const auto parameters = node.value("parameters", Json::object());
+        std::vector<std::string> ports;
+        if (op == "render.shadow_depth") {
+            ports.push_back("depth");
+        } else if (op == "render.snapshot_copy") {
+            ports.push_back("destination");
+        } else if (op == "render.material_pass") {
+            ports = renderMaterialPassColorPorts(parameters);
+            ports.push_back("depth");
+        } else if (op == "render.fullscreen" || op == "render.raster" || op == "render.compute") {
+            const auto declared = parameters.find("ports");
+            if (declared != parameters.end() && declared->is_object())
+                for (const auto &[port, declaration] : declared->items()) {
+                    if (!declaration.is_object()) continue;
+                    const auto access = declaration.find("access");
+                    const bool writes = access != declaration.end() && access->is_string() &&
+                                        (*access == "write" || *access == "read_write");
+                    if (writes || declaration.contains("attachment")) ports.push_back(port);
+                }
+        }
+        const auto *const body = bodyOf(id);
+        for (const auto &port : ports) {
+            if (!inputs->contains(port)) continue;
+            const auto image = writtenImage(inputs->at(port));
+            // A root pass writes a root image; a body's pass, a root image or
+            // one of its own body.
+            if (!image || (bodyOf(*image) != nullptr && bodyOf(*image) != body)) continue;
+            auto &writers = image_writers[*image];
+            if (std::none_of(writers.begin(), writers.end(), [&](const ImageWriter &writer) { return writer.node == id; }))
+                writers.push_back({id, body, passFamily(node)});
+        }
+    }
+    const auto reaches = [&](const std::string &from, const std::string &to) {
+        std::set<std::string> seen{from};
+        std::vector<std::string> pending{from};
+        while (!pending.empty()) {
+            const auto next = pending.back();
+            pending.pop_back();
+            if (next == to) return true;
+            if (const auto found = downstream.find(next); found != downstream.end())
+                for (const auto &later : found->second)
+                    if (seen.insert(later).second) pending.push_back(later);
+        }
+        return false;
+    };
+    // `reader` reads `endpoint` this frame (not its history): when that is an
+    // image node, it waits on the image's writers it may be ordered against
+    // (a pass: a pass of its own family or a task; a task: a task).
+    const auto waitOnImageWriters = [&](const std::string &reader, const Json &endpoint, Json &after) {
+        if (!endpoint.is_object() || endpoint.contains(graphLoopOutputMarker)) return;
+        const auto producer = endpoint.find("node");
+        if (producer == endpoint.end() || !producer->is_string()) return;
+        const auto writers = image_writers.find(producer->get<std::string>());
+        if (writers == image_writers.end()) return;
+        const auto *const body = bodyOf(reader);
+        const auto family = passFamily(*nodes.at(reader));
+        for (const auto &writer : writers->second) {
+            if (writer.node == reader || (writer.body != nullptr && writer.body != body)) continue;
+            if (!writer.family.empty() && writer.family != family) continue;
+            if (reaches(reader, writer.node)) continue;
+            if (std::find(after.begin(), after.end(), writer.node) == after.end()) after.push_back(writer.node);
+            downstream[writer.node].insert(reader);
+        }
+    };
     // A lowered graphics pass joins a loop body, waits for its anchor, or is
     // appended to its family (LP-3a: a render.material_pass the same way).
     const auto landGraphicsPass = [&](const std::string &id, Json parameters, RenderGraphLoopBody *body) {
@@ -346,6 +499,8 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                     producer_op != "render.image" && producer_op != "render.target_ref" &&
                     std::find(after.begin(), after.end(), producer) == after.end())
                     after.push_back(producer);
+                // LP-6: a copy's source read from an image node.
+                if (port == "source") waitOnImageWriters(id, endpoint, after);
                 return resourceName(endpoint);
             };
             const auto graph_pass = [&](const std::string &name) {
@@ -536,6 +691,9 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             const auto access = declaration.at("access").get<std::string>();
             if (access != "read" && access != "write" && access != "read_write")
                 throw std::invalid_argument("unknown compute port access: " + access);
+            // LP-6: a read of an image node this frame waits on its writers.
+            if (!history && access == "read" && !declaration.contains("attachment"))
+                waitOnImageWriters(id, endpoint, after);
             if (graphics && declaration.contains("attachment")) {
                 if (declaration.value("kind", std::string{"buffer"}) != "image" || access != "write")
                     throw std::invalid_argument("render attachment requires a write image port: " + port);
@@ -623,12 +781,17 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             loop.carried.emplace(pair.to, std::move(input));
         }
     }
-    if (!lowered.loops.empty()) {
+    {
         // LP-1a: the graph's appended passes and its loops in one dependency
         // order (edges, after / before, reads of a loop's output, a body's
         // edges to an outside pass; ties in id order). The appended passes
         // are declared in it, and each loop remembers its neighbour there,
         // so its copies land where the order puts it.
+        //
+        // LP-6: with no loop too. The canonical order chains a family's
+        // passes in declaration order (enforceCanonicalOrder), so an id order
+        // against the edges -- a reader of an image node before its writer,
+        // with a pass between them -- would close a cycle.
         std::vector<std::string> units = graph_pass_order;
         for (const auto &loop : lowered.loops) units.push_back(loop.shape.node);
         std::sort(units.begin(), units.end());
