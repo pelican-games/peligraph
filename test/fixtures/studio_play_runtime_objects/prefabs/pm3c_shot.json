@@ -1,0 +1,11 @@
+{
+  "schema": "pelican.prefab",
+  "version": 1,
+  "name": "pm3c_shot",
+  "components": [
+    {
+      "name": "behavior",
+      "type": "pm3c_shot"
+    }
+  ]
+}

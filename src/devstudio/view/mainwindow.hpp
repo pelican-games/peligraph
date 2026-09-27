@@ -53,6 +53,7 @@ class PlayControls;
 class ProjectMigrationWidget;
 class RenderConfigDigest;
 class RenderFeaturesWidget;
+class RuntimeOutliner;
 enum class AddObjectKind : std::uint8_t;
 struct SceneEditOutcome;
 enum class SceneEditKind : std::uint8_t;
@@ -188,6 +189,8 @@ class MainWindow : public QMainWindow {
     PlayControls *play_controls_ = nullptr;
     QFrame *viewport_frame_ = nullptr;
     QToolBar *gizmo_toolbar_ = nullptr;
+    // PM-3c: the Outliner's rows for what the running game spawned.
+    RuntimeOutliner *runtime_outliner_ = nullptr;
     // PM-3b: Save waits for Stop (12.4); the render panels say their edits
     // stay (12.4); whether the last reading had a session, to read the
     // scene again when it ends.
@@ -271,6 +274,8 @@ class MainWindow : public QMainWindow {
                              const QByteArray &result_json);
     void failOutlinerRpc(qint64 request_id, const QString &message);
     void selectOutlinerItem(QTreeWidgetItem *item);
+    // PM-3c: the runtime rows were read again.
+    void runtimeObjectsChanged();
     void beginViewportPick(const QPoint &pixel_position);
     void completeViewportPick(qint64 request_id,
                               const QByteArray &result_json);

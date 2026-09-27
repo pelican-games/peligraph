@@ -45,6 +45,8 @@ add_library(pelican_studio_view STATIC
     inspectorwidget.hpp
     outlinertree.cpp
     outlinertree.hpp
+    runtimeoutliner.cpp
+    runtimeoutliner.hpp
     componentaddlist.cpp
     componentaddlist.hpp
     graphattachmentwidget.cpp

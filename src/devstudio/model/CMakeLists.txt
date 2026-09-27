@@ -20,6 +20,9 @@ add_library(pelican_studio_inspector_model STATIC
     renderedithistory.hpp
     playstatemodel.cpp
     playstatemodel.hpp
+    # PM-3c: reads the play state through playstatemodel's parsePlayStatus.
+    runtimeobjects.cpp
+    runtimeobjects.hpp
 )
 
 set_target_properties(pelican_studio_inspector_model PROPERTIES CXX_STANDARD 20)

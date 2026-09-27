@@ -1,0 +1,259 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "play_runtime_objects",
+  "description": "PM-3c: Studio starts the engine in edit, where the spawner's behavior sleeps: nothing is spawned and the Outliner has no runtime row. Play runs it, and it spawns one object, Shot, on its first step. The Outliner lists it after the scene's own objects as \"Shot (runtime)\"; selected, the Inspector shows its runtime Transform read-only and the Outliner's Delete and Duplicate are off. Stop empties the list and the row goes; Play again spawns it again and the row comes back.",
+  "steps": [
+    {
+      "label": "the engine viewport answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "Studio started the engine in edit: the status bar says Edit",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "text": "Edit",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "in edit the behavior sleeps: the engine lists nothing",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_runtime_objects"
+      },
+      "path": "result.objects",
+      "value": []
+    },
+    {
+      "label": "and the Outliner has no runtime row",
+      "cmd": "wait",
+      "name": "pelican.outliner::row#Shot (runtime)",
+      "missing": true,
+      "timeout_ms": 5000
+    },
+    {
+      "label": "Play is offered",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.play.play"
+      },
+      "path": "widgets[0].enabled",
+      "value": true,
+      "retry_ms": 10000
+    },
+    {
+      "label": "press Play",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "the status bar says the game is playing",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "contains": "Playing · frame",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the behavior spawns Shot on the run's first step: the engine lists one object",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_runtime_objects"
+      },
+      "path": "result.objects.$len",
+      "value": 1,
+      "retry_ms": 30000
+    },
+    {
+      "label": "it is Shot",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_runtime_objects"
+      },
+      "path": "result.objects[0].name",
+      "value": "Shot"
+    },
+    {
+      "label": "from the prefab it named",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_runtime_objects"
+      },
+      "path": "result.objects[0].spawned_by.prefab",
+      "value": "pm3c_shot"
+    },
+    {
+      "label": "the Outliner shows it as a runtime row",
+      "cmd": "wait",
+      "name": "pelican.outliner::row#Shot (runtime)",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the scene's own objects are still there before it",
+      "cmd": "wait",
+      "name": "pelican.outliner::row#Spawner",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "click the runtime row",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "Shot (runtime)"
+    },
+    {
+      "label": "the Inspector says what is selected: the spawned object, and its prefab",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Shot (runtime)\nspawned from pm3c_shot",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Inspector shows its runtime position, where the behavior put it",
+      "cmd": "wait",
+      "name": "pelican.inspectorRuntime.position",
+      "text": "1.5, 2, -0.5",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and its world position (a spawn has no parent)",
+      "cmd": "wait",
+      "name": "pelican.inspectorRuntime.worldPosition",
+      "text": "1.5, 2, -0.5",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "no field to edit is shown",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.inspectorProperties"
+      },
+      "path": "widgets[0].visible",
+      "value": false
+    },
+    {
+      "label": "no component can be added",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.inspectorAddComponent"
+      },
+      "path": "widgets[0].visible",
+      "value": false
+    },
+    {
+      "label": "the Outliner's Delete is off for it",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.outliner.delete"
+      },
+      "path": "widgets[0].enabled",
+      "value": false
+    },
+    {
+      "label": "and so is Duplicate",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.outliner.duplicate"
+      },
+      "path": "widgets[0].enabled",
+      "value": false
+    },
+    {
+      "label": "the window with the runtime row selected",
+      "expect": "screenshot",
+      "path": "play_runtime_objects_window.png"
+    },
+    {
+      "label": "press Stop",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "the status bar says Edit again",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "text": "Edit",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the engine lists nothing now",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_runtime_objects"
+      },
+      "path": "result.objects",
+      "value": [],
+      "retry_ms": 10000
+    },
+    {
+      "label": "the runtime row is gone",
+      "cmd": "wait",
+      "name": "pelican.outliner::row#Shot (runtime)",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "and the Inspector shows nothing",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "text": "None",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the scene's own objects stay",
+      "cmd": "wait",
+      "name": "pelican.outliner::row#Spawner",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "press Play again",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "the status bar says the game is playing again",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "contains": "Playing · frame",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the new run spawns Shot again, and its row comes back",
+      "cmd": "wait",
+      "name": "pelican.outliner::row#Shot (runtime)",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "press Stop, so Studio closes on a scene in edit",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "the status bar says Edit",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "text": "Edit",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and the runtime row is gone again",
+      "cmd": "wait",
+      "name": "pelican.outliner::row#Shot (runtime)",
+      "missing": true,
+      "timeout_ms": 10000
+    }
+  ]
+}

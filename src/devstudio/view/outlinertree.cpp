@@ -49,6 +49,17 @@ std::optional<OutlinerObjectKey> outlinerObjectKey(const QTreeWidgetItem *item) 
     };
 }
 
+std::optional<RuntimeObjectEntity> outlinerRuntimeEntity(const QTreeWidgetItem *item) {
+    if (item == nullptr) return std::nullopt;
+    const QVariant packed = item->data(0, OutlinerRuntimeEntityRole);
+    if (!packed.isValid()) return std::nullopt;
+    bool valid = false;
+    const qulonglong value = packed.toULongLong(&valid);
+    if (!valid) return std::nullopt;
+    return RuntimeObjectEntity{.index = static_cast<std::uint32_t>(value >> 32U),
+                               .generation = static_cast<std::uint32_t>(value & 0xffffffffULL)};
+}
+
 OutlinerTree::OutlinerTree(QWidget *parent) : QTreeWidget(parent) {
     // The drag below is the tree's own; Qt's would start a QDrag.
     setDragDropMode(QAbstractItemView::NoDragDrop);
@@ -60,14 +71,22 @@ OutlinerTree::OutlinerTree(QWidget *parent) : QTreeWidget(parent) {
     duplicate_->setObjectName(QStringLiteral("pelican.outliner.duplicate"));
     duplicate_->setShortcut(QKeySequence{Qt::CTRL | Qt::Key_D});
     duplicate_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-    duplicate_->setToolTip(tr("Copy the selected object and everything under it"));
     delete_ = new QAction(tr("Delete"), this);
     delete_->setObjectName(QStringLiteral("pelican.outliner.delete"));
     delete_->setShortcut(QKeySequence{QKeySequence::Delete});
     delete_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
-    delete_->setToolTip(tr("Delete the selected object and everything under it"));
+    setEditRefusal({});
     addAction(duplicate_);
     addAction(delete_);
+}
+
+void OutlinerTree::setEditRefusal(const QString &refusal) {
+    duplicate_->setToolTip(refusal.isEmpty()
+                               ? tr("Copy the selected object and everything under it")
+                               : refusal);
+    delete_->setToolTip(refusal.isEmpty()
+                            ? tr("Delete the selected object and everything under it")
+                            : refusal);
 }
 
 void OutlinerTree::setDropAction(std::function<void(const Drop &)> action) {
@@ -84,6 +103,8 @@ OutlinerTree::DropTarget OutlinerTree::dropTargetAt(const QTreeWidgetItem *dragg
     QTreeWidgetItem *row = itemAt(position);
     // Below the last row: the root, as a line between rows is.
     if (row == nullptr) return {.place = DropPlace::Root};
+    // PM-3c: a runtime row carries no scene, so it is refused here too -- a
+    // spawned object takes no child the scene declares.
     if (sceneOf(row) != sceneOf(dragged)) return {.place = DropPlace::Refused, .row = row};
     if (!isObjectRow(row)) return {.place = DropPlace::Root, .row = row};
     // The quarter of a row nearest each of its edges is the line between two
@@ -155,7 +176,8 @@ void OutlinerTree::mouseReleaseEvent(QMouseEvent *event) {
     setState(QAbstractItemView::NoState);
     if (!dragged) return;
     Drop drop{.dragged = *dragged, .onto = outlinerObjectKey(target.row),
-              .preserve_local = preserve_local};
+              .preserve_local = preserve_local,
+              .onto_runtime = outlinerRuntimeEntity(target.row).has_value()};
     switch (target.place) {
     case DropPlace::Onto:
         if (drop_action_) drop_action_(drop);

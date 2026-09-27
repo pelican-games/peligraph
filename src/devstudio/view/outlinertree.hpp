@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../model/project.hpp"
+#include "../model/runtimeobjects.hpp"
 
 #include <QPoint>
 #include <QTreeWidget>
@@ -21,9 +22,14 @@ namespace PelicanStudio {
 inline constexpr int OutlinerSceneIdRole = Qt::UserRole;
 inline constexpr int OutlinerDeclarationIndexRole = Qt::UserRole + 1;
 inline constexpr int OutlinerAuthoringIdRole = Qt::UserRole + 2;
+// PM-3c: a row for an object the running game spawned carries its entity
+// ((index << 32) | generation) and none of the three roles above.
+inline constexpr int OutlinerRuntimeEntityRole = Qt::UserRole + 3;
 
-// The object a row stands for; empty for a scene row or no row.
+// The object a row stands for; empty for a scene row, a runtime row or no row.
 [[nodiscard]] std::optional<OutlinerObjectKey> outlinerObjectKey(const QTreeWidgetItem *item);
+// PM-3c: the spawned object a runtime row stands for; empty for any other row.
+[[nodiscard]] std::optional<RuntimeObjectEntity> outlinerRuntimeEntity(const QTreeWidgetItem *item);
 
 // OL-1: the Outliner's tree. It is a QTreeWidget with two things of its own:
 // Duplicate (Ctrl+D) and Delete (Del) as actions that answer while the tree
@@ -36,8 +42,10 @@ inline constexpr int OutlinerAuthoringIdRole = Qt::UserRole + 2;
 // object. Let go on the line between two rows, on the scene's row, or below
 // the last row, it goes to its scene's root. Alt held keeps the object's own
 // transform (it moves with the new parent) instead of keeping it where it is.
-// A row under the dragged one, and a row of another scene, cannot take it: the
-// cursor says so while it is over one, and letting go there sends nothing.
+// A row under the dragged one, a row of another scene, and a runtime row
+// (PM-3c: an object the game spawned is not the scene's to edit) cannot take
+// it: the cursor says so while it is over one, and letting go there sends
+// nothing. A runtime row cannot be dragged.
 class OutlinerTree final : public QTreeWidget {
   public:
     enum class DropPlace : std::uint8_t {
@@ -55,12 +63,17 @@ class OutlinerTree final : public QTreeWidget {
         // Empty: to the scene root.
         std::optional<OutlinerObjectKey> onto;
         bool preserve_local = false;
+        // PM-3c: let go over a runtime row (always Refused).
+        bool onto_runtime = false;
     };
 
     explicit OutlinerTree(QWidget *parent = nullptr);
 
     [[nodiscard]] QAction *duplicateAction() const noexcept { return duplicate_; }
     [[nodiscard]] QAction *deleteAction() const noexcept { return delete_; }
+    // PM-3c: why Duplicate and Delete are off for the current row, as their
+    // tooltip; empty gives them back their own.
+    void setEditRefusal(const QString &refusal);
     void setDropAction(std::function<void(const Drop &)> action);
     // A drag let go over a row that cannot take it.
     void setRefusedDropAction(std::function<void(const Drop &)> action);

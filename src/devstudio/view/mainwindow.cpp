@@ -14,6 +14,7 @@
 #include "projectmigrationwidget.hpp"
 #include "renderconfigdigest.hpp"
 #include "renderfeatureswidget.hpp"
+#include "runtimeoutliner.hpp"
 #include "studiotheme.hpp"
 #include "../viewport/embeddedviewport.hpp"
 
@@ -305,6 +306,12 @@ void MainWindow::createWorkspace() {
         moveObject(drop.dragged, drop.onto, drop.preserve_local);
     });
     outliner_->setRefusedDropAction([this](const OutlinerTree::Drop &drop) {
+        if (drop.onto_runtime) {
+            const QString message = RuntimeOutliner::editRefusal();
+            statusBar()->showMessage(message, 8000);
+            setPanelNotice(outliner_notice_, message);
+            return;
+        }
         refuseObjectMove(drop.dragged, drop.onto);
     });
     updateOutlinerActions();
@@ -327,6 +334,10 @@ void MainWindow::createWorkspace() {
     docks_[InspectorDock] = makeDock(this, tr("Inspector"),
                                      QStringLiteral("pelican.inspectorDock"),
                                      inspector_);
+    // PM-3c: the objects the running game spawned, as greyed "(runtime)"
+    // rows of the Outliner, shown read-only in the Inspector.
+    runtime_outliner_ = new RuntimeOutliner(*viewport_, *outliner_,
+                                            [this] { runtimeObjectsChanged(); }, this);
 
     auto *output = new QPlainTextEdit(this);
     output->setReadOnly(true);
@@ -1733,6 +1744,8 @@ void MainWindow::populateOutliner() {
             expanded.contains(identity) ||
             (!collapsed.contains(identity) && (*row)->parent() == nullptr));
     }
+    // PM-3c: after the scene's own objects.
+    if (runtime_outliner_ != nullptr) runtime_outliner_->appendRows();
 }
 
 void MainWindow::createAddObjectMenu() {
@@ -1868,6 +1881,10 @@ void MainWindow::updateOutlinerActions() {
                             project_model_->findObject(*selected) != nullptr;
     outliner_->duplicateAction()->setEnabled(has_object);
     outliner_->deleteAction()->setEnabled(has_object);
+    // PM-3c: a runtime row is selected, and they are off because of it.
+    const bool runtime = runtime_outliner_ != nullptr && !has_object &&
+                         runtime_outliner_->model().selectedObject() != nullptr;
+    outliner_->setEditRefusal(runtime ? RuntimeOutliner::editRefusal() : QString{});
 }
 
 bool MainWindow::submitOutlinerEdit(SceneEditKind kind, const OutlinerObject &subject,
@@ -2121,6 +2138,11 @@ void MainWindow::failOutlinerRpc(qint64 request_id,
 }
 
 void MainWindow::selectOutlinerItem(QTreeWidgetItem *item) {
+    // PM-3c: a runtime row is no declared object: the declared selection is
+    // cleared (the gizmo goes), and the Inspector shows the spawned one.
+    const auto runtime = outlinerRuntimeEntity(item);
+    if (runtime && !runtime_outliner_->model().select(*runtime)) return;
+    if (!runtime) runtime_outliner_->model().clearSelection();
     const SelectionUpdate update =
         selection_model_.selectFromOutliner(outlinerObjectKey(item));
     if (update.kind == SelectionUpdateKind::failed) {
@@ -2129,6 +2151,15 @@ void MainWindow::selectOutlinerItem(QTreeWidgetItem *item) {
     }
     viewport_->setPickingNotice({});
     refreshSelectionViews();
+}
+
+void MainWindow::runtimeObjectsChanged() {
+    // The rows were put back (with the selected one current): show the
+    // selection again -- a new reading of the spawned object, or, when it is
+    // gone (Stop), nothing.
+    if (selection_model_.selected()) return;
+    if (runtime_outliner_->model().selectedObject() != nullptr || inspector_->showsRuntimeObject())
+        refreshSelectionViews();
 }
 
 void MainWindow::beginViewportPick(const QPoint &pixel_position) {
@@ -2166,6 +2197,10 @@ void MainWindow::completeViewportPick(qint64 request_id,
         presentPickingFailure(QString::fromStdString(update.message));
         return;
     }
+    // PM-3c: a pick answers for the whole selection. It does not land on a
+    // spawned object's row: pick_object names a model instance, not the
+    // entity get_runtime_objects lists.
+    runtime_outliner_->model().clearSelection();
     viewport_->setPickingNotice({});
     refreshSelectionViews();
 }
@@ -2396,11 +2431,26 @@ void MainWindow::refreshSelectionViews() {
     dispatchGizmoModel();
     updateOutlinerActions();
     if (!selection) {
+        // PM-3c: a spawned object, read-only.
+        if (const RuntimeObject *runtime = runtime_outliner_ != nullptr
+                                               ? runtime_outliner_->model().selectedObject()
+                                               : nullptr) {
+            // Each reading comes here; the tree is scrolled only when the
+            // row is not already the current one.
+            QTreeWidgetItem *row = runtime_outliner_->rowOf(runtime->entity);
+            if (row != nullptr && outliner_->currentItem() != row) {
+                outliner_->setCurrentItem(row);
+                outliner_->scrollToItem(row);
+            }
+            inspector_->showRuntimeObject(*runtime);
+            return;
+        }
         outliner_->setCurrentItem(nullptr);
         outliner_->clearSelection();
         inspector_->setSelection(std::nullopt, tr("None"));
         return;
     }
+    if (runtime_outliner_ != nullptr) runtime_outliner_->model().clearSelection();
 
     QTreeWidgetItem *selected_item = nullptr;
     for (QTreeWidgetItemIterator iterator{outliner_}; *iterator != nullptr;

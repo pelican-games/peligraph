@@ -3,6 +3,7 @@
 #include "../model/gizmomodel.hpp"
 #include "../model/inspectormodel.hpp"
 #include "../model/project.hpp"
+#include "../model/runtimeobjects.hpp"
 
 #include <QWidget>
 
@@ -29,6 +30,11 @@ class InspectorWidget final : public QWidget {
 
     void setSelection(std::optional<OutlinerObjectKey> selection,
                       const QString &display_text);
+    // PM-3c: an object the running game spawned, read-only: its runtime
+    // Transform and the prefab it came from, and no field to edit. Called
+    // again with each new reading; setSelection leaves it.
+    void showRuntimeObject(const RuntimeObject &object);
+    [[nodiscard]] bool showsRuntimeObject() const noexcept;
     std::optional<GizmoTransformBinding> gizmoTransformBinding() const;
     bool beginGizmoEdit(std::string_view field_key);
     bool previewGizmoEdit(std::string_view field_key,

@@ -747,6 +747,29 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   add_dependencies(pelican_test_devstudio_play_controls_test
     pelican_test_process_fixture_child)
 
+  # PM-3c: the Outliner's rows for what the running game spawned, and the
+  # Inspector's read-only view of one, on the real window over the real RPC
+  # transport, with the test answering as an RO-1 engine.
+  pelican_define_test(devstudio_runtime_objects_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+  target_compile_definitions(pelican_test_devstudio_runtime_objects_test PRIVATE
+    PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
+  )
+  add_dependencies(pelican_test_devstudio_runtime_objects_test
+    pelican_test_process_fixture_child)
+
   # RU-1: Ctrl+Z by where the keyboard is -- the render history in the Frame
   # Plan and the Pass Editor, the graph's in the Graph tab, the scene's in the
   # Inspector -- on the real window over the real RPC transport.
@@ -3319,6 +3342,13 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio AND WIN32 AND
     set_target_properties(pelican_studio_play_pause_step_game_logic PROPERTIES
         OUTPUT_NAME "pelican_pm3a_mover_fixture")
     pelican_configure_game_logic_target(pelican_studio_play_pause_step_game_logic)
+    # PM-3c: play_runtime_objects's spawner spawns one object when the game
+    # steps, for the Outliner's runtime rows.
+    add_library(pelican_studio_play_runtime_objects_game_logic SHARED
+        fixtures/pm3c_spawner/behavior.cpp)
+    set_target_properties(pelican_studio_play_runtime_objects_game_logic PROPERTIES
+        OUTPUT_NAME "pelican_pm3c_spawner_fixture")
+    pelican_configure_game_logic_target(pelican_studio_play_runtime_objects_game_logic)
     add_library(pelican_studio_play_mode_roundtrip_game_logic SHARED
         fixtures/pm3a_mover/behavior.cpp)
     set_target_properties(pelican_studio_play_mode_roundtrip_game_logic PROPERTIES

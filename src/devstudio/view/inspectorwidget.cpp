@@ -81,6 +81,15 @@ QLabel *plainLabel(const QString &text, QWidget *parent) {
     return label;
 }
 
+// PM-3c: "1.5, 2, 0" -- a runtime reading, as the numbers it is.
+template <std::size_t N>
+QString runtimeNumbers(const std::optional<std::array<double, N>> &values) {
+    if (!values) return QStringLiteral("-");
+    QStringList parts;
+    for (const double value : *values) parts << QString::number(value, 'g', 6);
+    return parts.join(QStringLiteral(", "));
+}
+
 } // namespace
 
 struct InspectorWidget::Impl {
@@ -111,6 +120,13 @@ struct InspectorWidget::Impl {
     QHash<qint64, quint64> graph_transport_requests;
     QLabel *selection_label = nullptr;
     QLabel *notice_label = nullptr;
+    // PM-3c: the read-only view of a spawned object, in place of the fields.
+    QGroupBox *runtime_box = nullptr;
+    QLabel *runtime_position = nullptr;
+    QLabel *runtime_rotation = nullptr;
+    QLabel *runtime_scale = nullptr;
+    QLabel *runtime_world_position = nullptr;
+    bool runtime_shown = false;
     QScrollArea *scroll = nullptr;
     QPushButton *refresh_button = nullptr;
     QPushButton *add_component_button = nullptr;
@@ -296,6 +312,26 @@ struct InspectorWidget::Impl {
             synchronize();
         });
 
+        runtime_box = new QGroupBox(owner.tr("Transform (runtime, read-only)"), &owner);
+        runtime_box->setObjectName(QStringLiteral("pelican.inspectorRuntime"));
+        auto *runtime_form = new QFormLayout(runtime_box);
+        const auto runtime_row = [&](const QString &label, const char *name) {
+            QLabel *value = plainLabel({}, runtime_box);
+            value->setObjectName(QStringLiteral("pelican.inspectorRuntime.") +
+                                 QLatin1String(name));
+            runtime_form->addRow(label, value);
+            return value;
+        };
+        runtime_position = runtime_row(owner.tr("Position"), "position");
+        runtime_rotation = runtime_row(owner.tr("Rotation (x, y, z, w)"), "rotation");
+        runtime_scale = runtime_row(owner.tr("Scale"), "scale");
+        runtime_world_position = runtime_row(owner.tr("World position"), "worldPosition");
+        // In the fields' place, and taking the room they had: its rows at
+        // the top, not floated down the panel.
+        runtime_form->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
+        runtime_box->hide();
+        layout->addWidget(runtime_box, 1);
+
         scroll = new QScrollArea(&owner);
         scroll->setObjectName(QStringLiteral("pelican.inspectorProperties"));
         scroll->setWidgetResizable(true);
@@ -449,10 +485,45 @@ struct InspectorWidget::Impl {
 
     void setSelection(std::optional<OutlinerObjectKey> selection,
                       const QString &display_text) {
+        showRuntimeView(false);
         selection_label->setText(display_text);
         model.selectObject(std::move(selection));
         synchronize();
         dispatchRequests();
+    }
+
+    // PM-3c. The read-only view takes the fields' place: nothing that edits,
+    // adds or attaches is on screen while it is.
+    void showRuntimeView(bool shown) {
+        if (runtime_shown == shown) return;
+        runtime_shown = shown;
+        runtime_box->setVisible(shown);
+        scroll->setVisible(!shown);
+        add_component_button->setVisible(!shown);
+        ray_occurrences_button->setVisible(!shown);
+        graph_attachments->setVisible(!shown);
+    }
+
+    void showRuntimeObject(const RuntimeObject &object) {
+        if (!runtime_shown) {
+            // No declared object is selected while a spawned one is.
+            model.selectObject(std::nullopt);
+            showRuntimeView(true);
+            synchronize();
+            dispatchRequests();
+        }
+        QString text = owner.tr("%1 (runtime)").arg(QString::fromStdString(object.name));
+        if (!object.prefab.empty())
+            text += QLatin1Char('\n') + owner.tr("spawned from %1 while the game runs")
+                                            .arg(QString::fromStdString(object.prefab));
+        selection_label->setText(text);
+        const RuntimeObjectTrs none;
+        const RuntimeObjectTrs &local = object.local ? *object.local : none;
+        runtime_position->setText(runtimeNumbers(local.pos));
+        runtime_rotation->setText(runtimeNumbers(local.rotation));
+        runtime_scale->setText(runtimeNumbers(local.scale));
+        runtime_world_position->setText(runtimeNumbers(object.world ? object.world->pos
+                                                                     : none.pos));
     }
 
     std::optional<GizmoTransformBinding> gizmoTransformBinding() const {
@@ -1299,8 +1370,10 @@ struct InspectorWidget::Impl {
         setPanelNotice(notice_label, oneLine(notice_text) + stop_note, notice_text + stop_note);
         keep_button->setVisible(session_edit && !kept_edit);
         if (take_from_game) {
-            take_from_game->setVisible(in_session);
-            take_from_game->setEnabled(in_session && model.canTakeTransformFromGame());
+            // PM-3c: never for a spawned object's read-only view.
+            const bool offered = in_session && !runtime_shown;
+            take_from_game->setVisible(offered);
+            take_from_game->setEnabled(offered && model.canTakeTransformFromGame());
         }
         switch (notice.kind) {
         case InspectorNoticeKind::Error:
@@ -2219,6 +2292,12 @@ void InspectorWidget::setSelection(
     const QString &display_text) {
     impl_->setSelection(std::move(selection), display_text);
 }
+
+void InspectorWidget::showRuntimeObject(const RuntimeObject &object) {
+    impl_->showRuntimeObject(object);
+}
+
+bool InspectorWidget::showsRuntimeObject() const noexcept { return impl_->runtime_shown; }
 
 std::optional<GizmoTransformBinding>
 InspectorWidget::gizmoTransformBinding() const {

@@ -507,4 +507,43 @@ TEST_CASE("PM-3b Take from game writes the game's Transform back as one edit mar
     CHECK(play.committed.back().keep);
 }
 
+TEST_CASE("PM-3c a spawned object's read-only view offers no Take from game",
+          "[devstudio][inspector][pm3c][take][negative-contrast]") {
+    Rig rig;
+    PlaySession play;
+    rig.inspector->setPlaySessionHooks(play.hooks());
+    rig.inspector->playSessionChanged();
+    rig.pumpFor(100);
+    const auto take = [&] {
+        return rig.inspector->findChild<QPushButton *>(
+            QStringLiteral("pelican.inspectorTakeFromGame"));
+    };
+    // The contrast: a declared object while the game runs is offered it.
+    REQUIRE(take() != nullptr);
+    REQUIRE(take()->isVisible());
+    REQUIRE(take()->isEnabled());
+
+    RuntimeObject spawned{.name = "Shot",
+                          .entity = {.index = 7, .generation = 1},
+                          .prefab = "pm3c_shot"};
+    spawned.local = RuntimeObjectTrs{.pos = std::array<double, 3>{1.5, 2.0, -0.5}};
+    rig.inspector->showRuntimeObject(spawned);
+    rig.pumpFor(300);
+    // Gone or switched off, and so it stays while the session goes on.
+    rig.inspector->playSessionChanged();
+    rig.pumpFor(100);
+    QPushButton *button = take();
+    if (button != nullptr) {
+        CHECK_FALSE(button->isVisibleTo(rig.inspector.get()));
+        CHECK_FALSE(button->isEnabled());
+    }
+    CHECK(rig.inspector->showsRuntimeObject());
+
+    // A declared object again: it is offered again.
+    rig.inspector->setSelection(OutlinerObjectKey{.scene_id = "main", .declaration_index = 2},
+                                QStringLiteral("Plane"));
+    REQUIRE(rig.pumpUntil([&] { return take() != nullptr && take()->isEnabled(); }));
+    CHECK(take()->isVisible());
+}
+
 } // namespace PelicanStudio
