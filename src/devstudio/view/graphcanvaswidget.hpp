@@ -91,6 +91,11 @@ inline constexpr int GraphCanvasZoneFooterRole = Qt::UserRole + 3147;
 // the document's edge names and what the edge is drawn to.
 inline constexpr int GraphCanvasSocketKeyRole = Qt::UserRole + 3148;
 inline constexpr int GraphCanvasBoundPortRole = Qt::UserRole + 3149;
+// GL-1: true on a folded node (a feature, a pass no graph node made) and on
+// everything drawn for it. Such a node is read only: nothing on it edits.
+inline constexpr int GraphCanvasDerivedRole = Qt::UserRole + 3150;
+// GL-1, decision 5: the domain a stub's hidden nodes are in.
+inline constexpr int GraphCanvasStubDomainRole = Qt::UserRole + 3151;
 enum class GraphCanvasZoneAnchor : int {
     none = 0,
     left = 1,
@@ -153,6 +158,17 @@ inline constexpr auto GraphCanvasZoneCarryItem = "graph_zone_carry";
 inline constexpr auto GraphCanvasZoneCarryMarkItem = "graph_zone_carry_mark";
 inline constexpr auto GraphCanvasZoneButtonItem = "graph_zone_button";
 inline constexpr auto GraphCanvasEdgeLabelItem = "graph_edge_label";
+// GL-1. A folded node is a `graph_node` (named by its id: the pass's name, or
+// `feature:<name>`) carrying GraphCanvasDerivedRole; its rows' ends are
+// `graph_derived_socket#<id>/<resource>`; `graph_derived_edge#<from>-><to>`
+// is a line the frame plan implies (dashed, read only);
+// `graph_domain_stub#<node>/<port>` the cut end of a line to a node the
+// domain filter hides; `graph_folded_button#show_decomposed` the button under
+// a feature's breadcrumb.
+inline constexpr auto GraphCanvasDerivedSocketItem = "graph_derived_socket";
+inline constexpr auto GraphCanvasDerivedEdgeItem = "graph_derived_edge";
+inline constexpr auto GraphCanvasDomainStubItem = "graph_domain_stub";
+inline constexpr auto GraphCanvasFoldedButtonItem = "graph_folded_button";
 
 // The node is a heading band over two socket sections, so its height follows
 // its port count rather than a constant. The numbers are here so the scene
@@ -476,6 +492,12 @@ class GraphCanvasScene final : public QGraphicsScene {
     // LP-4c: descend into an instance's definition or a loop's body, as a
     // double-click on the node does.
     void enterNode(const std::string &id) { enterInstanceScope(id); }
+    // GL-1, decision 3: into a folded node, read only, as a double-click on
+    // it does; and a feature's decomposed version, as its button does.
+    bool enterFolded(const std::string &id);
+    bool showDecomposed();
+    // GL-1, decision 5: a stub added its domain to the filter.
+    std::function<void()> domainFilterChanged;
     [[nodiscard]] const QPointF &lastContextPosition() const noexcept {
         return context_position_;
     }
@@ -719,6 +741,18 @@ class GraphCanvasWidget final : public QWidget {
     // selected as soon as a document that holds it arrives -- at once when
     // the one in hand already does.
     void revealNodeWhenPresent(const QString &node);
+    // GL-1, decision 6. The Frame Plan's Open in Graph on any pass: the
+    // real root, with the node the pass is drawn under -- the graph node that
+    // made it, its feature's folded node, or its own -- selected and brought
+    // to the middle (its domain shown if the filter hid it). False, with
+    // nothing changed, when the plan the tab last read has no such pass.
+    bool revealPlanPass(const QString &pass);
+    // GL-1, decision 4: what "Expand to edit…" runs -- the Frame Plan's
+    // Decompose into loop on a material pass (`graph` is the plan's), the
+    // Features tab's Replace with loop version on a feature.
+    void setFoldedExpandActions(
+        std::function<void(const QString &graph, const QString &pass)> decompose,
+        std::function<void(const QString &feature)> replace);
     // The same ingestion boundary the production RPC callback uses.
     void receiveResult(qint64 request_id, const QByteArray &result_json);
     void receiveFailure(qint64 request_id, const QString &message);

@@ -70,6 +70,10 @@ GraphCanvasReadCapability graphCanvasReadCapability(EmbeddedViewport &viewport) 
                                          {QStringLiteral("limit"), limit}}}},
                 error);
         },
+        .requestGraphTemplates = [&viewport](QString *error) {
+            return viewport.requestRpc(QStringLiteral("get_graph_templates"),
+                                       QJsonObject{}, error);
+        },
         .requestSetTime = [&viewport](double time, QString *error) {
             return viewport.requestRpc(
                 QStringLiteral("set_time"),

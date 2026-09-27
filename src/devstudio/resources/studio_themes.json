@@ -61,7 +61,9 @@
         "node_border": "#11161b",
         "heading_text": "#f4f7fa",
         "dim_text": "#cfdae4",
-        "pill_bg": "#3a444f"
+        "pill_bg": "#3a444f",
+        "derived_border": "#7d8a97",
+        "derived_body": "#22282f"
       },
       "domain_tint": {
         "values": "#3d6b4d",
@@ -103,7 +105,9 @@
         "node_border": "#93a1ae",
         "heading_text": "#10161c",
         "dim_text": "#3a4650",
-        "pill_bg": "#d3dce5"
+        "pill_bg": "#d3dce5",
+        "derived_border": "#7a8794",
+        "derived_body": "#eef2f6"
       },
       "domain_tint": {
         "values": "#9fcbaf",

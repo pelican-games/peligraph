@@ -25,6 +25,11 @@ struct StudioCanvasColors {
     QColor heading_text;
     QColor dim_text;
     QColor pill_bg;
+    // GL-1: a node the canvas draws for what no graph node made (a
+    // feature, a pass of the rendering section) -- read only, so its frame
+    // is this colour, dashed, around a body a step dimmer than a node's.
+    QColor derived_border;
+    QColor derived_body;
 };
 
 // What every Studio panel sets its text in. One table, so two panels cannot

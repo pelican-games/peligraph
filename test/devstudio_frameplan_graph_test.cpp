@@ -8000,9 +8000,10 @@ TEST_CASE("Q-12 a graph node's task on the canvas: its sentence, and Open in Gra
     CHECK(fixture.recorder.submits == 0);
     CHECK(statusText(fixture.widget) == reason);
 
-    // Offered on the task only.
+    // Offered on the task -- and, GL-1 decision 6, on every other pass too,
+    // whose node on the Graph canvas is a folded one.
     CHECK(contextMenuTexts(logical, *task).contains(QStringLiteral("Open in Graph")));
-    CHECK_FALSE(contextMenuTexts(logical, *pass).contains(QStringLiteral("Open in Graph")));
+    CHECK(contextMenuTexts(logical, *pass).contains(QStringLiteral("Open in Graph")));
 
     // Chosen: the node MG-3b named goes to the Graph tab's reveal.
     QStringList opened;

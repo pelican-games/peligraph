@@ -513,6 +513,26 @@ void MainWindow::createWorkspace() {
             render_features_->replaceWithLoopVersion(feature);
         });
     render_features_->setGraphNodeOpenAction(open_graph_node);
+    // GL-1, decision 6: the Frame Plan's Open in Graph on any other pass
+    // selects the node it is drawn under on the Graph canvas.
+    frame_plan_->setGraphPassOpenAction([this, render_tabs](const QString &pass) {
+        render_tabs->setCurrentWidget(graph_canvas_);
+        if (!graph_canvas_->revealPlanPass(pass)) return false;
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        return true;
+    });
+    // Decision 4: "Expand to edit…" inside a folded view runs the flow that
+    // already exists for it, with its confirmation.
+    graph_canvas_->setFoldedExpandActions(
+        [this, render_tabs](const QString &graph, const QString &pass) {
+            render_tabs->setCurrentWidget(frame_plan_);
+            frame_plan_->decomposeMaterialPass(graph, pass);
+        },
+        [this, render_tabs](const QString &feature) {
+            render_tabs->setCurrentWidget(render_features_);
+            render_features_->replaceWithLoopVersion(feature);
+        });
     inspector_->setRayGroupAction([this, render_tabs](const QString &group) {
         docks_[FramePlanDock]->show();
         docks_[FramePlanDock]->raise();

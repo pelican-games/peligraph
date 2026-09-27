@@ -72,6 +72,11 @@ class FramePlanWidget final : public QWidget {
     using GraphLoopNodeOpenAction = std::function<bool(
         const QString &loop, qint64 element, const QString &node)>;
     void setGraphLoopNodeOpenAction(GraphLoopNodeOpenAction action);
+    // GL-1, decision 6. "Open in Graph" on any other pass: the Graph tab
+    // selects the node the pass is drawn under (a graph node, its feature's
+    // folded node, or its own). False when the Graph tab could not.
+    using GraphPassOpenAction = std::function<bool(const QString &pass)>;
+    void setGraphPassOpenAction(GraphPassOpenAction action);
     // LP-4d2, decision 5: the Graph tab's Show in Frame Plan. The plan is read
     // again (the loop was just edited), and once it is here the loop's group
     // is opened with its copies picked. The status line says so when the

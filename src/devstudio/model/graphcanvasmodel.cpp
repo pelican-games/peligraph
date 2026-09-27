@@ -482,6 +482,63 @@ std::vector<std::string> GraphCanvasModel::uiNodeChoices(std::string_view op) co
     return choices;
 }
 
+// GL-1, decision 3. A reply is always about the real document: while it is
+// read, the folded view on screen gives the real one back, and afterwards is
+// built again from its trail -- as far down the trail as the new document and
+// plan still hold. A view that comes out the same keeps the scope entered in
+// it, and draws nothing again.
+struct GraphCanvasModel::FoldedSuspend {
+    GraphCanvasModel &model;
+    std::vector<GraphCanvasFoldedStep> trail;
+    std::vector<std::string> inner;
+    std::string entered_loop;
+    Json nodes;
+    Json definitions;
+
+    explicit FoldedSuspend(GraphCanvasModel &owner) : model{owner} {
+        if (!model.folded_stash_) return;
+        trail = model.folded_trail_;
+        inner = model.breadcrumb_;
+        entered_loop = model.entered_loop_;
+        nodes = model.nodes_;
+        definitions = model.definitions_;
+        model.restoreFoldedStash();
+    }
+    FoldedSuspend(const FoldedSuspend &) = delete;
+    FoldedSuspend &operator=(const FoldedSuspend &) = delete;
+    ~FoldedSuspend() {
+        if (trail.empty() || model.folded_stash_) return;
+        // Leaving and entering around a reply is not the user's doing:
+        // whether an edit was refused in here stays as it was.
+        const bool refused = model.folded_refused_;
+        const auto content = model.content_revision_;
+        model.folded_trail_ = trail;
+        while (!model.folded_trail_.empty() && !model.showFoldedTop())
+            model.folded_trail_.pop_back();
+        if (model.folded_trail_.empty()) {
+            // Nothing it showed is there any more: the real root it is.
+            model.folded_refused_ = false;
+            ++model.content_revision_;
+            ++model.report_revision_;
+            return;
+        }
+        model.folded_refused_ = refused;
+        if (model.folded_trail_ != trail || model.nodes_ != nodes ||
+            model.definitions_ != definitions)
+            return;
+        // The same view: the scope entered inside it stands, and the canvas
+        // has nothing new to draw.
+        if (std::ranges::all_of(inner.begin() + (inner.empty() ? 0 : 1), inner.end(),
+                                [&](const std::string &scope) {
+                                    return model.definitions_.contains(scope);
+                                })) {
+            model.breadcrumb_ = inner;
+            model.entered_loop_ = entered_loop;
+        }
+        model.content_revision_ = content;
+    }
+};
+
 void GraphCanvasModel::request(RequestKind kind, std::string method, Json params) {
     const auto id = next_request_++;
     pending_ = PendingRequest{id, kind};
@@ -528,6 +585,8 @@ void GraphCanvasModel::clearContext() {
     plan_targets_.clear();
     plan_pass_inputs_.clear();
     plan_loop_copies_.clear();
+    plan_passes_.clear();
+    plan_graph_.clear();
     plan_retry_budget_ = 0;
     plan_retry_wanted_ = false;
     committed_renames_.clear();
@@ -565,7 +624,12 @@ void GraphCanvasModel::setWatchedInstance(std::string instance) {
 
 void GraphCanvasModel::setConnected(bool connected) {
     if (connected_ == connected) return;
+    // GL-1: a folded view is built from the document and the plan it is
+    // about to lose.
+    leaveFolded();
     connected_ = connected;
+    templates_requested_ = false;
+    templates_ = Json::object();
     pending_.reset();
     reads_.clear();
     scrubbing_ = false;
@@ -632,20 +696,10 @@ void GraphCanvasModel::requestObservation() {
 }
 
 void GraphCanvasModel::requestLoopReports() {
-    // Only a document with a loop has anything in loops[]: a frame plan read
-    // for any other would be the whole plan for nothing. LP-4f1: or a root
-    // render node, whose View field reads its axes off the plan.
-    // Q-19: or an instance whose body draws, whose sockets it reads.
-    const auto wanted = [this](const Json &node) {
-        if (isLoop(node) || (node.is_object() && takesViewSelect(text(node, "op"))))
-            return true;
-        if (!node.is_object() || text(node, "op") != "graph.instance") return false;
-        const auto *body = scopeNodes(text(node, "definition"));
-        return body != nullptr && std::ranges::any_of(*body, [](const Json &inner) {
-            return inner.is_object() && isGraphicsPass(text(inner, "op"));
-        });
-    };
-    if (!connected_ || std::ranges::none_of(nodes_, wanted)) {
+    // GL-1, decision 1: the plan is read with every document, whatever the
+    // root holds -- the passes no graph node made are drawn from it (LP-4c
+    // read it only for a loop, a render node or an instance that draws).
+    if (!connected_) {
         loop_reports_ = Json::object();
         loop_reports_received_ = false;
         view_families_.clear();
@@ -653,6 +707,8 @@ void GraphCanvasModel::requestLoopReports() {
         plan_targets_.clear();
         plan_pass_inputs_.clear();
         plan_loop_copies_.clear();
+        plan_passes_.clear();
+        plan_graph_.clear();
         plan_retry_wanted_ = false;
         return;
     }
@@ -786,11 +842,15 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
         ++report_revision_;
         return;
     }
+    // GL-1: a folded view on screen stands aside while the reply is read.
+    const FoldedSuspend suspend{*this};
     if (const auto pending = takeRead(id)) {
         const auto kind = pending->kind;
         // LP-4c: the loop report only adds marks to what the document
         // already draws. Without it the canvas says "loop" and nothing else.
-        if (kind == RequestKind::Loops) return;
+        // GL-1: an engine without get_graph_templates has no decomposed
+        // version to show, which is not an error.
+        if (kind == RequestKind::Loops || kind == RequestKind::Templates) return;
         if (kind == RequestKind::LoopPage) {
             loop_pages_done_.insert(std::exchange(loop_page_node_, {}));
             requestNextLoopPage();
@@ -837,14 +897,26 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         ++report_revision_;
         return;
     }
+    // GL-1: a folded view on screen stands aside while the reply is read,
+    // and is built again from what the reply left.
+    const FoldedSuspend suspend{*this};
     if (const auto slot = takeRead(id)) {
         const auto pending = *slot;
         try {
             const auto response = Json::parse(json);
             if (response.contains("error")) {
+                if (pending.kind == RequestKind::Templates) return;
                 if (pending.kind == RequestKind::Loops) {
-                    // Q-19: an engine with no plan yet is asked again.
-                    plan_retry_wanted_ = plan_retry_budget_ > 0 && planMissesRenderNode();
+                    // Q-19: an engine with no plan yet is asked again --
+                    // GL-1: also when the folded nodes have none to come
+                    // from, for as long as an engine takes to build its
+                    // first plan.
+                    if (plan_passes_.empty() && plan_wait_budget_ > 0) {
+                        --plan_wait_budget_;
+                        plan_retry_budget_ = std::max(plan_retry_budget_, 1);
+                    }
+                    plan_retry_wanted_ = plan_retry_budget_ > 0 &&
+                                         (planMissesRenderNode() || plan_passes_.empty());
                     return;
                 }
                 if (pending.kind == RequestKind::LoopPage) {
@@ -871,6 +943,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 loop_reports_received_ = true;
                 readPlanViews(response);
                 readPlanPassInputs(response);
+                readPlanPasses(response);
                 plan_retry_wanted_ = plan_retry_budget_ > 0 && planMissesRenderNode();
                 // LP-4e: a fresh report starts every loop's pages over.
                 loop_pages_done_.clear();
@@ -881,6 +954,24 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             }
             if (pending.kind == RequestKind::LoopPage) {
                 receiveLoopPage(response);
+                ++report_revision_;
+                return;
+            }
+            if (pending.kind == RequestKind::Templates) {
+                // Only what a feature's fold needs: which feature each
+                // template is the decomposed version of, and its document.
+                auto templates = Json::object();
+                for (const auto &entry : response.value("templates", Json::array())) {
+                    if (!entry.is_object()) continue;
+                    const auto decomposes = entry.find("decomposes");
+                    if (decomposes == entry.end() || !decomposes->is_object()) continue;
+                    const auto feature = text(*decomposes, "feature");
+                    const auto document = entry.find("document");
+                    if (feature.empty() || document == entry.end() || !document->is_object())
+                        continue;
+                    templates[feature] = *document;
+                }
+                templates_ = std::move(templates);
                 ++report_revision_;
                 return;
             }
@@ -926,7 +1017,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             failure_ = {};
             ++report_revision_;
         } catch (const std::exception &error) {
-            if (pending.kind == RequestKind::Loops) return;
+            if (pending.kind == RequestKind::Loops || pending.kind == RequestKind::Templates) return;
             if (pending.kind == RequestKind::LoopPage) {
                 loop_pages_done_.insert(std::exchange(loop_page_node_, {}));
                 requestNextLoopPage();
@@ -1074,6 +1165,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             // however its document reads back.
             if (std::exchange(plan_after_commit_, false)) {
                 plan_retry_budget_ = planRetryLimit;
+                plan_wait_budget_ = planWaitLimit;
                 requestLoopReports();
             }
             return;
@@ -1112,6 +1204,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         requestObservation();
         plan_after_commit_ = false;
         plan_retry_budget_ = planRetryLimit;
+        plan_wait_budget_ = planWaitLimit;
         requestLoopReports();
     } catch (const std::exception &error) {
         failure_ = {InspectorNoticeKind::Error, error.what()};
@@ -1130,6 +1223,8 @@ std::vector<GraphCanvasScope> GraphCanvasModel::scopes() const {
 }
 
 bool GraphCanvasModel::selectScope(std::string_view scope) {
+    // GL-1: the Scope combo names the real document's scopes.
+    leaveFolded();
     entered_loop_.clear();
     if (scope.empty()) {
         breadcrumb_ = {std::string{}};
@@ -1192,7 +1287,9 @@ bool GraphCanvasModel::enterInstance(std::string_view node_id) {
         return true;
     }
     const auto definition = text(*node, "definition");
-    const bool watch = currentScope().empty() &&
+    // GL-1: an instance of a folded view is Studio's drawing, never the
+    // engine's: nothing answers for its values.
+    const bool watch = !folded_stash_ && currentScope().empty() &&
                        node->find("owner") != node->end() &&
                        values_instance_ != node_id;
     if (watch) setWatchedInstance(std::string{node_id});
@@ -1203,6 +1300,14 @@ bool GraphCanvasModel::enterInstance(std::string_view node_id) {
 }
 
 bool GraphCanvasModel::leaveScope() {
+    // GL-1: out of a folded view one step at a time -- the scope entered
+    // inside it first, then the folded steps, then back to the real root.
+    if (breadcrumb_.size() <= 1 && folded_stash_) {
+        folded_trail_.pop_back();
+        if (folded_trail_.empty() || !showFoldedTop()) leaveFolded();
+        enteredScope();
+        return true;
+    }
     if (breadcrumb_.size() <= 1) return false;
     breadcrumb_.pop_back();
     entered_loop_.clear();
@@ -1283,6 +1388,8 @@ std::size_t GraphCanvasModel::definitionUseCount(std::string_view definition) co
 
 bool GraphCanvasModel::enterLoopOrigin(std::string_view loop, std::int64_t element,
                                        std::string_view node) {
+    // GL-1: a copy of the real document's loop, never a folded view's.
+    leaveFolded();
     const auto *found = findNode({}, loop);
     if (found == nullptr || !isLoop(*found)) return false;
     const auto bodies = loopBranchBodies(*found);
@@ -1838,6 +1945,7 @@ std::string GraphCanvasModel::scopeToken(std::string_view scope) {
 bool GraphCanvasModel::submitOps(Json ops) {
     if (!canEdit()) return false;
     if (!ops.is_array() || ops.empty()) return false;
+    if (folded_stash_) return refuseFoldedEdit(ops);
     return submitHistory(HistoryAction::Edit, {ops, inverseOps(ops)});
 }
 
@@ -2031,6 +2139,7 @@ Json GraphCanvasModel::inverseOps(const Json &ops) const {
 bool GraphCanvasModel::submitHistory(HistoryAction action, HistoryEntry entry) {
     if (!canEdit()) return false;
     Json ops = action == HistoryAction::Undo ? entry.inverse : entry.forward;
+    if (folded_stash_) return refuseFoldedEdit(ops);
     pending_placement_only_ =
         ops.is_array() && !ops.empty() && std::ranges::all_of(ops, [](const Json &op) {
             return op.is_object() && op.value("op", std::string{}) == "set_layout";
@@ -3452,6 +3561,7 @@ bool GraphCanvasModel::removeLoopCarry(const std::string &loop, const std::strin
 
 std::string GraphCanvasModel::showLoopOrigin(std::string_view loop, std::int64_t element,
                                              std::string_view node) {
+    leaveFolded();
     const auto *found = findNode({}, loop);
     if (found == nullptr || !isLoop(*found)) return {};
     const auto bodies = loopBranchBodies(*found);
@@ -4110,6 +4220,625 @@ bool GraphCanvasModel::addZoneInputToSocket(const std::string &loop, const std::
     }
     for (auto &op : socket_ops) ops.push_back(std::move(op));
     return submitOps(std::move(ops));
+}
+
+// --- GL-1: features and the rendering section as folded nodes.
+
+namespace {
+
+std::vector<std::string> planStrings(const Json &node, const char *key) {
+    std::vector<std::string> result;
+    const auto found = node.find(key);
+    if (found == node.end() || !found->is_array()) return result;
+    for (const auto &value : *found)
+        if (value.is_string()) result.push_back(value.get<std::string>());
+    return result;
+}
+
+// "bloom" for "engine://features/bloom.json" -- frameplanedit's
+// graphTemplateFeatureName, which this library does not link.
+std::string featureShortName(const std::string &feature) {
+    const auto slash = feature.rfind('/');
+    auto name = slash == std::string::npos ? feature : feature.substr(slash + 1);
+    if (name.ends_with(".json")) name.resize(name.size() - 5);
+    return name.empty() ? feature : name;
+}
+
+void appendUnique(std::vector<std::string> &list, const std::string &value) {
+    if (std::ranges::find(list, value) == list.end()) list.push_back(value);
+}
+
+bool listed(const std::vector<std::string> &list, const std::string &value) {
+    return std::ranges::find(list, value) != list.end();
+}
+
+// What a folded node reads from outside itself (a read no earlier pass of
+// it wrote) and hands on (a write something outside it reads, or nothing
+// reads at all).
+void foldedBoundary(GraphCanvasFoldedNode &node, const std::vector<GraphCanvasPlanPass> &plan) {
+    const std::set<std::string, std::less<>> inside(node.passes.begin(), node.passes.end());
+    std::set<std::string, std::less<>> written;
+    for (const auto &pass : plan) {
+        if (!inside.contains(pass.name)) continue;
+        for (const auto *reads : {&pass.reads, &pass.history_reads})
+            for (const auto &resource : *reads)
+                if (!written.contains(resource)) appendUnique(node.reads, resource);
+        written.insert(pass.writes.begin(), pass.writes.end());
+    }
+    for (const auto &pass : plan) {
+        if (!inside.contains(pass.name)) continue;
+        for (const auto &resource : pass.writes) {
+            bool read = false;
+            bool outside = false;
+            for (const auto &other : plan)
+                if (listed(other.reads, resource) || listed(other.history_reads, resource)) {
+                    read = true;
+                    if (!inside.contains(other.name)) outside = true;
+                }
+            if (outside || !read) appendUnique(node.writes, resource);
+        }
+    }
+}
+
+GraphCanvasFoldedNode singlePassNode(const GraphCanvasPlanPass &pass) {
+    GraphCanvasFoldedNode node;
+    node.id = pass.name;
+    node.label = pass.name;
+    node.type = pass.material ? "material" : pass.kind;
+    node.source = pass.source;
+    node.feature = pass.feature;
+    node.material = pass.material;
+    node.passes.push_back(pass.name);
+    return node;
+}
+
+} // namespace
+
+std::string GraphCanvasFoldedNode::tooltip() const {
+    return "From the rendering section (" + source +
+           "): read only here. Frame Plan and Features edit it.";
+}
+
+std::string GraphCanvasDomainStub::text() const {
+    return std::string{input ? "\xE2\x86\x90 " : "\xE2\x86\x92 "} + domain + " (" +
+           std::to_string(count) + ")";
+}
+
+void GraphCanvasModel::readPlanPasses(const Json &plan) {
+    plan_graph_ = text(plan, "graph");
+    // The contract each material pass draws with, as material_routing says.
+    std::map<std::string, std::string, std::less<>> contracts;
+    if (const auto routing = plan.find("material_routing");
+        routing != plan.end() && routing->is_object())
+        if (const auto routes = routing->find("routes");
+            routes != routing->end() && routes->is_object())
+            for (const auto &[route, value] : routes->items()) {
+                (void)route;
+                if (!value.is_object()) continue;
+                const auto pass = text(value, "pass");
+                if (!pass.empty() && !contracts.contains(pass))
+                    contracts[pass] = text(value, "contract");
+            }
+    std::vector<GraphCanvasPlanPass> passes;
+    const auto nodes = plan.find("nodes");
+    if (nodes != plan.end() && nodes->is_array())
+        for (std::size_t index = 0; index < nodes->size(); ++index) {
+            const auto &node = nodes->at(index);
+            if (!node.is_object() || text(node, "name").empty()) continue;
+            GraphCanvasPlanPass pass;
+            pass.name = text(node, "name");
+            pass.authored_name = text(node, "authored_name");
+            pass.kind = text(node, "kind");
+            pass.source = text(node, "source");
+            pass.feature = text(node, "provider_feature");
+            pass.reads = planStrings(node, "reads");
+            pass.history_reads = planStrings(node, "reads_history");
+            pass.writes = planStrings(node, "writes");
+            pass.order = index;
+            if (const auto order = node.find("order");
+                order != node.end() && order->is_number_integer() && order->get<std::int64_t>() >= 0)
+                pass.order = static_cast<std::size_t>(order->get<std::int64_t>());
+            if (const auto origin = node.find("loop_origin");
+                origin != node.end() && origin->is_object())
+                pass.loop = text(*origin, "loop");
+            pass.material_variant = text(node, "material_variant");
+            const auto resolution = node.find("shader_resolution");
+            const bool material_owned = resolution != node.end() && resolution->is_object() &&
+                                        text(*resolution, "state") == "material_owned";
+            const auto filter = node.find("material_filter");
+            const bool filtered = filter != node.end() && filter->is_object();
+            pass.material = material_owned || filtered || !pass.material_variant.empty();
+            if (filtered)
+                if (const auto count = filter->find("resolved_draw_count");
+                    count != filter->end() && count->is_number_unsigned())
+                    pass.draw_count = count->get<std::size_t>();
+            if (const auto contract = contracts.find(pass.name); contract != contracts.end())
+                pass.contract = contract->second;
+            passes.push_back(std::move(pass));
+        }
+    std::ranges::stable_sort(passes, {}, &GraphCanvasPlanPass::order);
+    plan_passes_ = std::move(passes);
+    // Decision 3: which features have a decomposed version, asked once.
+    if (connected_ && !templates_requested_ &&
+        std::ranges::any_of(plan_passes_, [](const GraphCanvasPlanPass &pass) {
+            return !pass.feature.empty();
+        })) {
+        templates_requested_ = true;
+        read(RequestKind::Templates, "get_graph_templates", Json::object());
+    }
+}
+
+const GraphCanvasPlanPass *GraphCanvasModel::planPass(std::string_view name) const {
+    const auto found = std::ranges::find(plan_passes_, name, &GraphCanvasPlanPass::name);
+    return found == plan_passes_.end() ? nullptr : &*found;
+}
+
+std::string GraphCanvasModel::graphOwnerOf(const GraphCanvasPlanPass &pass) const {
+    // Which graph node made a pass is read off the document, until the
+    // engine publishes each pass's origin (design_graph_layers 5.2): the
+    // loop its loop_origin names, the root instance whose expansion named it
+    // `<instance>/...`, a root node whose id is its name, or a render node
+    // whose id is its authored name. Its `source` cannot say it: under an
+    // engine:// preset a graph node's pass reads "engine" as the preset's own
+    // do. A pass none of these match reads as the rendering section's.
+    if (!pass.loop.empty()) return pass.loop;
+    const auto &root = realNodes();
+    for (const auto &node : root) {
+        if (!node.is_object() || text(node, "op") != "graph.instance") continue;
+        const auto id = text(node, "id");
+        if (!id.empty() && pass.name.starts_with(id + "/")) return id;
+    }
+    for (const auto &node : root)
+        if (node.is_object() && !text(node, "id").empty() && text(node, "id") == pass.name)
+            return pass.name;
+    if (!pass.authored_name.empty())
+        for (const auto &node : root)
+            if (node.is_object() && text(node, "id") == pass.authored_name &&
+                takesViewSelect(text(node, "op")))
+                return pass.authored_name;
+    return {};
+}
+
+std::string GraphCanvasModel::foldedOwnerOf(const GraphCanvasPlanPass &pass) const {
+    // An anchor places passes; it is not one.
+    if (pass.kind == "anchor" || !graphOwnerOf(pass).empty()) return {};
+    return pass.feature.empty() ? pass.name : "feature:" + featureShortName(pass.feature);
+}
+
+std::vector<GraphCanvasFoldedNode> GraphCanvasModel::rootFoldedNodes() const {
+    std::vector<GraphCanvasFoldedNode> result;
+    for (const auto &pass : plan_passes_) {
+        const auto id = foldedOwnerOf(pass);
+        if (id.empty()) continue;
+        auto found = std::ranges::find(result, id, &GraphCanvasFoldedNode::id);
+        if (found == result.end()) {
+            if (pass.feature.empty()) {
+                result.push_back(singlePassNode(pass));
+                continue;
+            }
+            GraphCanvasFoldedNode node;
+            node.id = id;
+            node.label = featureShortName(pass.feature);
+            node.type = "feature";
+            node.source = pass.source;
+            node.feature = pass.feature;
+            node.feature_group = true;
+            node.decomposable = templates_.contains(pass.feature);
+            result.push_back(std::move(node));
+            found = std::prev(result.end());
+        }
+        found->passes.push_back(pass.name);
+    }
+    for (auto &node : result) foldedBoundary(node, plan_passes_);
+    return result;
+}
+
+std::vector<GraphCanvasFoldedNode> GraphCanvasModel::featurePassNodes(std::string_view feature) const {
+    std::vector<GraphCanvasFoldedNode> result;
+    for (const auto &pass : plan_passes_) {
+        if (pass.feature != feature || pass.kind == "anchor") continue;
+        result.push_back(singlePassNode(pass));
+        foldedBoundary(result.back(), plan_passes_);
+    }
+    return result;
+}
+
+std::vector<GraphCanvasFoldedNode> GraphCanvasModel::foldedNodes() const {
+    if (!currentScope().empty()) return {};
+    if (folded_stash_) {
+        if (folded_trail_.empty() || folded_trail_.back().kind != "feature") return {};
+        return featurePassNodes(folded_trail_.back().feature);
+    }
+    if (!domainShown("render")) return {};
+    return rootFoldedNodes();
+}
+
+std::vector<GraphCanvasDerivedEdge> GraphCanvasModel::derivedEdges() const {
+    std::vector<GraphCanvasDerivedEdge> result;
+    if (!currentScope().empty()) return result;
+    const bool root = !folded_stash_;
+    std::string feature;
+    if (!root) {
+        if (folded_trail_.empty() || folded_trail_.back().kind != "feature") return result;
+        feature = folded_trail_.back().feature;
+    }
+    std::set<std::string, std::less<>> derived;
+    for (const auto &node : foldedNodes()) derived.insert(node.id);
+    if (derived.empty()) return result;
+    // The root's graph nodes on screen, and the ones a resource is named by.
+    std::set<std::string, std::less<>> shown;
+    std::map<std::string, std::string, std::less<>> resource_nodes;
+    if (root)
+        for (const auto &node : nodes({})) {
+            if (!nodeShown({}, node)) continue;
+            shown.insert(node.id);
+            if (node.op == "render.target_ref") {
+                const auto name = node.parameters.find("name");
+                if (name != node.parameters.end() && name->is_string())
+                    resource_nodes.emplace(name->get<std::string>(), node.id);
+            } else if (node.op == "render.image" || node.op == "render.buffer" ||
+                       node.op == "render.attribute") {
+                resource_nodes.emplace(node.id, node.id);
+            }
+        }
+    const auto owner = [&](const GraphCanvasPlanPass &pass) -> std::string {
+        if (pass.kind == "anchor") return {};
+        if (!root) return pass.feature == feature ? pass.name : std::string{};
+        if (auto graph = graphOwnerOf(pass); !graph.empty())
+            return shown.contains(graph) ? graph : std::string{};
+        const auto id = foldedOwnerOf(pass);
+        return derived.contains(id) ? id : std::string{};
+    };
+    const auto add = [&](const std::string &from, const std::string &to,
+                         const std::string &resource) {
+        const auto found = std::ranges::find_if(result, [&](const GraphCanvasDerivedEdge &edge) {
+            return edge.from == from && edge.to == to;
+        });
+        if (found == result.end()) result.push_back({from, to, {resource}});
+        else appendUnique(found->resources, resource);
+    };
+    for (const auto &reader : plan_passes_) {
+        const auto reader_owner = owner(reader);
+        if (reader_owner.empty()) continue;
+        const auto read = [&](const std::string &resource, bool history) {
+            // The pass that wrote what this one reads: the last before it,
+            // or -- for last frame's -- the last of the frame.
+            const GraphCanvasPlanPass *writer = nullptr;
+            for (const auto &candidate : plan_passes_) {
+                if (!history && candidate.order >= reader.order) break;
+                if (listed(candidate.writes, resource)) writer = &candidate;
+            }
+            auto from = writer != nullptr ? owner(*writer) : std::string{};
+            const auto resource_node = resource_nodes.find(resource);
+            if (from.empty() && resource_node != resource_nodes.end()) from = resource_node->second;
+            if (from.empty()) return;
+            // A graph node reads the resource through the node that names it.
+            auto to = reader_owner;
+            if (!derived.contains(to) && resource_node != resource_nodes.end() &&
+                resource_node->second != from)
+                to = resource_node->second;
+            if (from == to || (!derived.contains(from) && !derived.contains(to))) return;
+            add(from, to, resource);
+        };
+        for (const auto &resource : reader.reads) read(resource, false);
+        for (const auto &resource : reader.history_reads) read(resource, true);
+    }
+    return result;
+}
+
+std::string GraphCanvasModel::canvasNodeOfPass(std::string_view name) const {
+    const auto *pass = planPass(name);
+    if (pass == nullptr || pass->kind == "anchor") return {};
+    if (auto graph = graphOwnerOf(*pass); !graph.empty()) return graph;
+    return foldedOwnerOf(*pass);
+}
+
+bool GraphCanvasModel::foldedDocument(const GraphCanvasFoldedStep &step, Json &nodes,
+                                      Json &definitions, Json &reports) const {
+    reports = Json::object();
+    definitions = Json::object();
+    nodes = Json::array();
+    if (step.kind == "feature")
+        return std::ranges::any_of(plan_passes_, [&](const GraphCanvasPlanPass &pass) {
+            return pass.feature == step.feature;
+        });
+    if (step.kind == "decomposed") {
+        const auto found = templates_.find(step.feature);
+        if (found == templates_.end() || !found->is_object()) return false;
+        if (const auto held = found->find("nodes"); held != found->end() && held->is_array())
+            nodes = *held;
+        if (const auto held = found->find("definitions");
+            held != found->end() && held->is_object())
+            definitions = *held;
+        return true;
+    }
+    if (step.kind != "pass") return false;
+    const auto *pass = planPass(step.id);
+    if (pass == nullptr || !pass->material) return false;
+    // design_graph_loops 4.3: a material pass means a render.material_pass
+    // taking the draws of an else-only draw_loop over its materials, whose
+    // body draws each material (or its variant). Studio builds that here, as
+    // decompose_material_pass would write it, and never writes it anywhere.
+    const auto loop = pass->name + "_draws";
+    const auto body = pass->name + "_draw";
+    Json step_node{{"id", "step"}, {"outputs", Json::array({"draws"})}};
+    if (pass->material_variant.empty()) {
+        step_node["op"] = "draw.material";
+        step_node["parameters"] = Json::object();
+    } else {
+        step_node["op"] = "draw.variant";
+        step_node["parameters"] = Json{{"variant", pass->material_variant}};
+    }
+    Json draw_items = Json::object();
+    if (!pass->contract.empty()) draw_items["contract"] = pass->contract;
+    Json branch = Json::object();
+    branch["body"] = body;
+    Json loop_parameters = Json::object();
+    loop_parameters["over"] = Json{{"draw_items", draw_items}};
+    loop_parameters["tier"] = "draw_loop";
+    loop_parameters["branches"] = Json::array({branch});
+    Json loop_node{{"id", loop}, {"op", "graph.loop"}, {"outputs", Json::array({"draws"})}};
+    loop_node["parameters"] = std::move(loop_parameters);
+    Json pass_parameters = Json::object();
+    if (!pass->contract.empty()) pass_parameters["contract"] = pass->contract;
+    if (!pass->material_variant.empty()) pass_parameters["material_variant"] = pass->material_variant;
+    Json draws_edge = Json::object();
+    draws_edge["node"] = loop;
+    draws_edge["port"] = "draws";
+    Json pass_inputs = Json::object();
+    pass_inputs["draws"] = draws_edge;
+    Json pass_node{{"id", pass->name}, {"op", std::string{kMaterialPass}}, {"outputs", Json::array()}};
+    pass_node["parameters"] = std::move(pass_parameters);
+    pass_node["inputs"] = std::move(pass_inputs);
+    nodes = Json::array({std::move(loop_node), std::move(pass_node)});
+    Json body_output = Json::object();
+    body_output["node"] = "step";
+    body_output["port"] = "draws";
+    Json body_outputs = Json::object();
+    body_outputs["draws"] = body_output;
+    Json body_definition = Json::object();
+    body_definition["nodes"] = Json::array({std::move(step_node)});
+    body_definition["outputs"] = std::move(body_outputs);
+    definitions[body] = std::move(body_definition);
+    // No loops[] entry names it (the engine runs no loop here): the zone's
+    // stage is the draw_loop's, with the plan's count when it resolved one.
+    Json report{{"node", loop}, {"tier", "draw_loop"}, {"pass", pass->name},
+                {"elements", Json::array()}, {"unmatched_branches", Json::array()}};
+    if (pass->draw_count) {
+        report["count"] = *pass->draw_count;
+        report["total"] = *pass->draw_count;
+    }
+    reports[loop] = std::move(report);
+    return true;
+}
+
+bool GraphCanvasModel::showFoldedTop() {
+    if (folded_trail_.empty()) return false;
+    Json nodes;
+    Json definitions;
+    Json reports;
+    if (!foldedDocument(folded_trail_.back(), nodes, definitions, reports)) return false;
+    if (!folded_stash_)
+        folded_stash_ = FoldedStash{nodes_,         definitions_,           layout_,
+                                    loop_reports_,  loop_reports_received_, breadcrumb_,
+                                    entered_loop_,  loop_branch_};
+    nodes_ = std::move(nodes);
+    definitions_ = std::move(definitions);
+    layout_ = Json::object();
+    loop_reports_ = std::move(reports);
+    loop_reports_received_ = !loop_reports_.empty();
+    breadcrumb_ = {std::string{}};
+    entered_loop_.clear();
+    loop_branch_.clear();
+    ++content_revision_;
+    ++report_revision_;
+    return true;
+}
+
+void GraphCanvasModel::restoreFoldedStash() {
+    if (!folded_stash_) return;
+    auto stash = std::move(*folded_stash_);
+    folded_stash_.reset();
+    nodes_ = std::move(stash.nodes);
+    definitions_ = std::move(stash.definitions);
+    layout_ = std::move(stash.layout);
+    loop_reports_ = std::move(stash.loop_reports);
+    loop_reports_received_ = stash.loop_reports_received;
+    breadcrumb_ = std::move(stash.breadcrumb);
+    entered_loop_ = std::move(stash.entered_loop);
+    loop_branch_ = std::move(stash.loop_branch);
+}
+
+void GraphCanvasModel::leaveFolded() {
+    folded_refused_ = false;
+    if (!folded_stash_) {
+        folded_trail_.clear();
+        return;
+    }
+    restoreFoldedStash();
+    folded_trail_.clear();
+    ++content_revision_;
+    ++report_revision_;
+}
+
+bool GraphCanvasModel::enterFolded(std::string_view id) {
+    if (!currentScope().empty()) return false;
+    const auto nodes = foldedNodes();
+    const auto found = std::ranges::find(nodes, id, &GraphCanvasFoldedNode::id);
+    if (found == nodes.end() || !found->enterable()) return false;
+    folded_trail_.push_back(GraphCanvasFoldedStep{found->feature_group ? "feature" : "pass",
+                                                  found->id, found->label, found->feature});
+    if (!showFoldedTop()) {
+        folded_trail_.pop_back();
+        return false;
+    }
+    folded_refused_ = false;
+    enteredScope();
+    return true;
+}
+
+bool GraphCanvasModel::canShowDecomposed() const {
+    return folded_stash_ && currentScope().empty() && !folded_trail_.empty() &&
+           folded_trail_.back().kind == "feature" &&
+           templates_.contains(folded_trail_.back().feature);
+}
+
+bool GraphCanvasModel::showDecomposed() {
+    if (!canShowDecomposed()) return false;
+    const auto &feature = folded_trail_.back();
+    folded_trail_.push_back(GraphCanvasFoldedStep{"decomposed", feature.id,
+                                                  feature.label + " (decomposed)", feature.feature});
+    if (!showFoldedTop()) {
+        folded_trail_.pop_back();
+        return false;
+    }
+    folded_refused_ = false;
+    enteredScope();
+    return true;
+}
+
+std::vector<std::string> GraphCanvasModel::displayTrail() const {
+    std::vector<std::string> trail{"root"};
+    if (folded_stash_)
+        for (const auto &step : folded_trail_) trail.push_back(step.label);
+    for (std::size_t index = 1; index < breadcrumb_.size(); ++index)
+        trail.push_back(breadcrumb_[index]);
+    return trail;
+}
+
+std::string GraphCanvasModel::viewKey() const {
+    if (!folded_stash_) return currentScope();
+    std::string key = "\x1f";
+    for (const auto &step : folded_trail_) key += step.kind + ":" + step.id + "/";
+    return key + currentScope();
+}
+
+GraphCanvasFoldedExpand GraphCanvasModel::foldedExpand() const {
+    GraphCanvasFoldedExpand expand;
+    if (!folded_stash_) return expand;
+    for (auto step = folded_trail_.rbegin(); step != folded_trail_.rend(); ++step) {
+        // A material pass of the rendering section is decomposed; one a
+        // feature made is expanded with its feature.
+        if (step->kind == "pass" && step->feature.empty()) {
+            expand.kind = "decompose";
+            expand.graph = plan_graph_;
+            expand.pass = step->id;
+            return expand;
+        }
+        if ((step->kind == "feature" || step->kind == "decomposed") &&
+            templates_.contains(step->feature)) {
+            expand.kind = "replace";
+            expand.feature = step->feature;
+            return expand;
+        }
+    }
+    return expand;
+}
+
+bool GraphCanvasModel::refuseFoldedEdit(const Json &ops) {
+    // A drag inside the view moves nothing that is kept, and says nothing.
+    const bool placement = ops.is_array() && std::ranges::all_of(ops, [](const Json &op) {
+        return op.is_object() && text(op, "op") == "set_layout";
+    });
+    if (!placement) {
+        folded_refused_ = true;
+        ++report_revision_;
+    }
+    return false;
+}
+
+const std::vector<std::string> &GraphCanvasModel::domainNames() {
+    static const std::vector<std::string> names{"render", "pose", "value", "audio", "ui"};
+    return names;
+}
+
+std::string GraphCanvasModel::opDomain(std::string_view op) {
+    const auto dot = op.find('.');
+    if (dot == std::string_view::npos) return {};
+    const auto prefix = op.substr(0, dot);
+    // design_graph_layers 3.3: draw.* is drawn with render.*, and event.*
+    // is shown with the values it drives.
+    if (prefix == "render" || prefix == "draw") return "render";
+    if (prefix == "value" || prefix == "event") return "value";
+    if (prefix == "pose" || prefix == "audio" || prefix == "ui") return std::string{prefix};
+    return {};
+}
+
+bool GraphCanvasModel::domainShown(std::string_view domain) const {
+    return domain.empty() || domains_shown_.contains(domain);
+}
+
+bool GraphCanvasModel::setDomainShown(const std::string &domain, bool shown) {
+    if (!listed(domainNames(), domain) || domains_shown_.contains(domain) == shown) return false;
+    if (shown) domains_shown_.insert(domain);
+    else domains_shown_.erase(domain);
+    ++report_revision_;
+    return true;
+}
+
+bool GraphCanvasModel::nodeShown(std::string_view scope, const GraphCanvasNode &node) const {
+    // A graph.instance and a graph.loop are structure: whatever domain their
+    // body is in, they stay (opDomain answers nothing for graph.*).
+    if (!scope.empty() || folded_stash_) return true;
+    return domainShown(opDomain(node.op));
+}
+
+std::vector<GraphCanvasDomainStub> GraphCanvasModel::domainStubs() const {
+    std::vector<GraphCanvasDomainStub> result;
+    if (folded_stash_ || !currentScope().empty()) return result;
+    const auto drawn = nodes({});
+    std::map<std::string, std::string, std::less<>> domain_of;
+    std::set<std::string, std::less<>> hidden;
+    for (const auto &node : drawn) {
+        domain_of[node.id] = opDomain(node.op);
+        if (!nodeShown({}, node)) hidden.insert(node.id);
+    }
+    const auto all = edges({});
+    struct Cut {
+        GraphCanvasDomainStub stub;
+        std::set<std::string, std::less<>> nodes;
+    };
+    std::vector<Cut> cuts;
+    const auto cut = [&](const std::string &node, const std::string &port, bool input,
+                         const std::string &domain) -> Cut & {
+        const auto found = std::ranges::find_if(cuts, [&](const Cut &entry) {
+            return entry.stub.node == node && entry.stub.port == port &&
+                   entry.stub.input == input && entry.stub.domain == domain;
+        });
+        if (found != cuts.end()) return *found;
+        cuts.push_back(Cut{GraphCanvasDomainStub{node, port, input, domain, 0}, {}});
+        return cuts.back();
+    };
+    for (const auto &edge : all) {
+        const bool from_hidden = hidden.contains(edge.from_node);
+        const bool to_hidden = hidden.contains(edge.to_node);
+        if (from_hidden == to_hidden) continue;
+        if (from_hidden) {
+            // The hidden producer and the hidden nodes of its domain it
+            // reads from, however far up.
+            const auto domain = domain_of[edge.from_node];
+            auto &entry = cut(edge.to_node, edge.to_port, true, domain);
+            std::vector<std::string> stack{edge.from_node};
+            std::set<std::string, std::less<>> seen;
+            while (!stack.empty()) {
+                auto id = std::move(stack.back());
+                stack.pop_back();
+                if (!seen.insert(id).second) continue;
+                if (domain_of[id] == domain) entry.nodes.insert(id);
+                for (const auto &upstream : all)
+                    if (upstream.to_node == id && hidden.contains(upstream.from_node))
+                        stack.push_back(upstream.from_node);
+            }
+        } else {
+            cut(edge.from_node, edge.from_port, false, domain_of[edge.to_node])
+                .nodes.insert(edge.to_node);
+        }
+    }
+    for (auto &entry : cuts) {
+        entry.stub.count = entry.nodes.size();
+        result.push_back(std::move(entry.stub));
+    }
+    return result;
 }
 
 } // namespace PelicanStudio

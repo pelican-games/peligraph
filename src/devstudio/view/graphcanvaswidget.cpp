@@ -224,8 +224,52 @@ void routeZoneLink(QGraphicsScene &scene, QGraphicsPathItem &link) {
     link.setPath(link.mapFromScene(geometry.path));
 }
 
+// GL-1, decision 2: a line the frame plan implies, from the row of the
+// resource it names on a folded node (or the heading of a graph node) to the
+// row that reads it. Drawing only: nothing about it is kept or sent.
+void routeDerivedEdge(QGraphicsScene &scene, QGraphicsPathItem &line) {
+    const QString scope = line.data(GraphCanvasScopeRole).toString();
+    const QString resource = line.data(GraphCanvasFromPortRole).toString();
+    const auto end = [&](const QString &name, bool output) -> std::optional<QPointF> {
+        QGraphicsItem *node = nullptr;
+        for (QGraphicsItem *item : scene.items()) {
+            if (item->data(NodeGraphNameRole).toString() != name ||
+                item->data(GraphCanvasScopeRole).toString() != scope ||
+                !item->data(GraphCanvasZoneScopeRole).toString().isEmpty())
+                continue;
+            const QString kind = nodeGraphItemKind(*item);
+            if (kind == QLatin1String{GraphCanvasDerivedSocketItem} &&
+                item->data(GraphCanvasPortRole).toString() == resource &&
+                item->data(GraphCanvasSocketDirectionRole).toString() ==
+                    (output ? QLatin1String{"output"} : QLatin1String{"input"}))
+                return item->sceneBoundingRect().center();
+            if (kind == QLatin1String{GraphCanvasNodeItem}) node = item;
+        }
+        if (node == nullptr) return std::nullopt;
+        const QRectF box = node->sceneBoundingRect();
+        return QPointF{output ? box.right() : box.left(), box.top() + GraphCanvasHeaderHeight / 2.0};
+    };
+    const auto start = end(line.data(NodeGraphFromNameRole).toString(), true);
+    const auto tip = end(line.data(NodeGraphToNameRole).toString(), false);
+    if (!start || !tip) return;
+    line.setPath(line.mapFromScene(curveGeometryBetween(*start, *tip).path));
+}
+
+void rerouteDerivedEdges(QGraphicsScene &scene, const std::string &node) {
+    const QString name = qtext(node);
+    for (QGraphicsItem *item : scene.items()) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasDerivedEdgeItem} ||
+            (item->data(NodeGraphFromNameRole).toString() != name &&
+             item->data(NodeGraphToNameRole).toString() != name))
+            continue;
+        if (auto *line = dynamic_cast<QGraphicsPathItem *>(item)) routeDerivedEdge(scene, *line);
+    }
+}
+
 void rerouteGraphCanvasEdges(QGraphicsScene &scene, const std::string &scope,
                              const std::string &node) {
+    // GL-1: the lines the plan implies follow a root node too.
+    if (scope.empty()) rerouteDerivedEdges(scene, node);
     const QString expected_scope = qtext(scope);
     const QString expected_node = qtext(node);
     for (QGraphicsItem *item : scene.items()) {
@@ -660,6 +704,9 @@ void GraphCanvasScene::pruneLayout(const std::string &scope) {
 }
 
 void GraphCanvasScene::noteLayoutChange(const std::string &scope) {
+    // GL-1: a folded view is Studio's drawing; where its nodes sit is not
+    // kept anywhere.
+    if (model_ != nullptr && model_->foldedView()) return;
     auto &placed = placement(scope);
     placed.dirty = true;
     // The canvas is now ahead of anything that has gone out. Forgetting what
@@ -1178,12 +1225,29 @@ void GraphCanvasScene::repopulate() {
     loadLayout(scope);
     pruneLayout(scope);
     const QString scope_text = qtext(scope);
-    const auto nodes = model_->nodes(scope);
-    const auto edges = model_->edges(scope);
+    auto nodes = model_->nodes(scope);
+    auto edges = model_->edges(scope);
+    // GL-1, decision 5: the root draws the domains the filter holds; a line
+    // to a node it hides is cut at the shown end (the stubs, below).
+    if (scope.empty()) {
+        std::set<std::string, std::less<>> hidden;
+        for (const auto &node : nodes)
+            if (!model_->nodeShown(scope, node)) hidden.insert(node.id);
+        std::erase_if(nodes, [&](const GraphCanvasNode &node) { return hidden.contains(node.id); });
+        std::erase_if(edges, [&](const GraphCanvasEdge &edge) {
+            return hidden.contains(edge.from_node) || hidden.contains(edge.to_node);
+        });
+    }
+    // Decision 1: and, left of them, what no graph node made, folded.
+    const auto folded_nodes = model_->foldedNodes();
+    const auto derived_edges = model_->derivedEdges();
 
-    const qreal top = model_->breadcrumb().size() > 1
-                          ? NodeGraphBreadcrumbHeight + 18.0
-                          : 0.0;
+    // Decision 3: the breadcrumb names the folded steps too, and a feature's
+    // fold has its decomposed version's button under it.
+    const auto display_trail = model_->displayTrail();
+    const bool decomposable = model_->canShowDecomposed();
+    const qreal crumb_top = display_trail.size() > 1 ? NodeGraphBreadcrumbHeight + 18.0 : 0.0;
+    const qreal top = crumb_top + (decomposable ? NodeGraphBreadcrumbHeight : 0.0);
     GraphCanvasDrawing::Builder drawing{*this, scope_text};
 
     // LP-4d1: every root loop is drawn as a zone around the body its tab
@@ -1393,7 +1457,7 @@ void GraphCanvasScene::repopulate() {
             // LP-4d2. The edges' empty slots, for a document that can be
             // edited (decisions 1, 2); the carry's arrows (decision 3); and
             // what the loop became, along the bottom (decision 5).
-            zone.edge_slots = !model_->digest().empty();
+            zone.edge_slots = !model_->digest().empty() && !model_->foldedView();
             if (loop) {
                 for (const auto &carry : loop->carry) {
                     GraphCanvasDrawing::ZoneCarry drawn_carry;
@@ -1412,7 +1476,12 @@ void GraphCanvasScene::repopulate() {
                         selected_carry_->from == carry.from && selected_carry_->to == carry.to;
                     zone.carries.push_back(std::move(drawn_carry));
                 }
-                if (draw_loop_report) {
+                if (draw_loop_report && model_->foldedView() && loop->reported_total == 0 &&
+                    loop->reported_count <= 0) {
+                    // GL-1, decision 3: a material pass's inside, with no
+                    // count the plan resolved -- the stage, and no number.
+                    zone.stage = QObject::tr("draw_loop");
+                } else if (draw_loop_report) {
                     const auto materials = loop->reported_total > 0
                                                ? loop->reported_total
                                                : static_cast<std::size_t>(std::max<std::int64_t>(
@@ -1462,6 +1531,9 @@ void GraphCanvasScene::repopulate() {
     const GraphCanvasLayout &root_placement = this->layout(scope);
     std::set<std::string, std::less<>> drawn_nodes;
     std::vector<std::pair<std::string, QGraphicsItem *>> zone_bodies;
+    // GL-1: the left edge of the graph's nodes, which the folded ones keep to
+    // the left of.
+    std::optional<qreal> graph_left;
     for (const auto &entry : drawn) {
         const GraphCanvasNode &node = *entry.node;
         const auto column_entry = layout.columns.find(node.id);
@@ -1518,6 +1590,36 @@ void GraphCanvasScene::repopulate() {
             drawing.addNode(entry, column, position, std::move(moved));
         }
         drawn_nodes.insert(node.id);
+        const qreal left = position.x() + frameOffset(node.id).x();
+        graph_left = graph_left ? std::min(*graph_left, left) : left;
+    }
+
+    // GL-1, decision 1: the folded nodes, one column in the plan's order left
+    // of the graph's nodes. Where they sit is not kept (a drag holds for the
+    // session), and nothing about them goes to the document.
+    std::set<std::string, std::less<>> derived_drawn;
+    if (!folded_nodes.empty()) {
+        qreal column_width = 0.0;
+        for (const auto &folded : folded_nodes)
+            column_width = std::max(column_width, drawing.derivedNodeSize(folded).width());
+        const qreal x = graph_left ? *graph_left - column_width - 110.0 : 0.0;
+        qreal y = top;
+        for (const auto &folded : folded_nodes) {
+            const auto key = std::pair{std::string{"\x01" "derived"}, model_->viewKey() + "|" + folded.id};
+            QPointF position{x, y};
+            if (const auto kept = session_node_positions_.find(key);
+                kept != session_node_positions_.end())
+                position = kept->second;
+            y += drawing.derivedNodeSize(folded).height() + NodeGraphVerticalGap;
+            const std::string id = folded.id;
+            drawing.addDerivedNode(folded, position, [this, key, id](const QPointF &at) {
+                if (rebuilding_) return;
+                session_node_positions_[key] = at;
+                rerouteDerivedEdges(*this, id);
+                scheduleSceneRectUpdate();
+            });
+            derived_drawn.insert(folded.id);
+        }
     }
 
     for (std::size_t index = 0; index < edges.size(); ++index) {
@@ -1541,6 +1643,23 @@ void GraphCanvasScene::repopulate() {
         // No edge label: the socket rows already name both ends, and a box in
         // the middle of every line repeated them.
         routeGraphCanvasEdge(*this, *line);
+    }
+
+    // GL-1, decision 2: the lines the frame plan implies, dashed, read only.
+    for (const auto &edge : derived_edges) {
+        const auto drawn_end = [&](const std::string &id) {
+            return derived_drawn.contains(id) || drawn_nodes.contains(id);
+        };
+        if (!drawn_end(edge.from) || !drawn_end(edge.to)) continue;
+        routeDerivedEdge(*this, *drawing.addDerivedEdge(edge));
+    }
+    // Decision 5: where a line to a hidden node is cut, the socket it ends on
+    // says where it goes.
+    for (const auto &stub : model_->domainStubs()) {
+        QGraphicsItem *socket =
+            findSocketOrAnchor(*this, scope_text, qtext(stub.node), qtext(stub.port),
+                               stub.input ? QStringLiteral("input") : QStringLiteral("output"));
+        if (socket != nullptr) drawing.addDomainStub(stub, *socket);
     }
 
     // The control points of one scope, drawn by one builder. They go over
@@ -1633,7 +1752,8 @@ void GraphCanvasScene::repopulate() {
     }
     const auto scopeNodesDrawn = [&](const std::string &id) {
         if (selection_scope_ == scope)
-            return std::ranges::any_of(nodes, [&](const GraphCanvasNode &node) { return node.id == id; });
+            return derived_drawn.contains(id) ||
+                   std::ranges::any_of(nodes, [&](const GraphCanvasNode &node) { return node.id == id; });
         for (const auto &[loop, plan] : plans) {
             if (plan.body != selection_scope_) continue;
             return std::ranges::any_of(plan.nodes, [&](const GraphCanvasNode &node) { return node.id == id; }) ||
@@ -1691,14 +1811,17 @@ void GraphCanvasScene::repopulate() {
     applyEdgeEmphasis();
 
     QStringList trail;
-    for (const auto &step : model_->breadcrumb())
-        trail.push_back(step.empty() ? QStringLiteral("root") : qtext(step));
+    for (const auto &step : display_trail) trail.push_back(qtext(step));
     if (trail.size() > 1)
-        drawing.addBreadcrumb(trail, top, [this] {
+        drawing.addBreadcrumb(trail, crumb_top, [this] {
             // Leave after this item's mouse event finishes dispatching.
             QMetaObject::invokeMethod(this, [this] { leaveCurrentScope(); },
                                       Qt::QueuedConnection);
         });
+    if (decomposable)
+        drawing.addFoldedButton(QStringLiteral("show_decomposed"),
+                                QObject::tr("Show decomposed version"),
+                                QPointF{0.0, crumb_top - 12.0});
 
     setProperty("pelicanGraphScope",
                 scope.empty() ? QStringLiteral("root") : scope_text);
@@ -1706,6 +1829,8 @@ void GraphCanvasScene::repopulate() {
     setProperty("pelicanGraphNodeCount", static_cast<qulonglong>(nodes.size()));
     setProperty("pelicanGraphEdgeCount", static_cast<qulonglong>(edges.size()));
     setProperty("pelicanGraphZoneCount", static_cast<qulonglong>(zones_.size()));
+    setProperty("pelicanGraphFoldedCount", static_cast<qulonglong>(derived_drawn.size()));
+    setProperty("pelicanGraphFoldedView", model_->foldedView());
     setProperty("pelicanGraphNotice", qtext(model_->notice().message));
     // What the automatic placement achieved, so `layout_stats` can ask a live
     // window how tangled it is rather than a reader having to look at it.
@@ -2253,6 +2378,27 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
                 selectCarry(item->data(NodeGraphNameRole).toString().toStdString(),
                             item->data(GraphCanvasFromPortRole).toString().toStdString(),
                             item->data(GraphCanvasToPortRole).toString().toStdString());
+                return;
+            }
+            // GL-1, decision 5: a cut end shows the domain it leads to.
+            if (kind == QLatin1String{GraphCanvasDomainStubItem}) {
+                event->accept();
+                const auto domain = item->data(GraphCanvasStubDomainRole).toString().toStdString();
+                QMetaObject::invokeMethod(
+                    this,
+                    [this, domain] {
+                        if (model_ == nullptr || !model_->setDomainShown(domain, true)) return;
+                        repopulate();
+                        if (domainFilterChanged) domainFilterChanged();
+                    },
+                    Qt::QueuedConnection);
+                return;
+            }
+            // Decision 3: a feature's decomposed version, read only.
+            if (kind == QLatin1String{GraphCanvasFoldedButtonItem}) {
+                event->accept();
+                QMetaObject::invokeMethod(
+                    this, [this] { showDecomposed(); }, Qt::QueuedConnection);
                 return;
             }
             if (kind == QLatin1String{GraphCanvasCollapseItem}) {
@@ -2969,8 +3115,42 @@ void GraphCanvasScene::enterInstanceScope(const std::string &id) {
     if (scopeChanged) scopeChanged();
 }
 
+bool GraphCanvasScene::enterFolded(const std::string &id) {
+    if (model_ == nullptr) return false;
+    // A drag of the real root still in the air goes before the view does.
+    flushLayout();
+    if (!model_->enterFolded(id)) return false;
+    repopulate();
+    if (scopeChanged) scopeChanged();
+    return true;
+}
+
+bool GraphCanvasScene::showDecomposed() {
+    if (model_ == nullptr || !model_->showDecomposed()) return false;
+    repopulate();
+    if (scopeChanged) scopeChanged();
+    return true;
+}
+
 void GraphCanvasScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) {
     if (model_ != nullptr && event->button() == Qt::LeftButton) {
+        // GL-1, decision 3: a folded node is looked inside, read only. Its
+        // heading renames nothing, and a line the plan implies takes no
+        // control point.
+        for (QGraphicsItem *item : items(event->scenePos())) {
+            const QString kind = nodeGraphItemKind(*item);
+            if (kind == QLatin1String{GraphCanvasEditorItem}) break;
+            if (!item->data(GraphCanvasDerivedRole).toBool()) {
+                if (isNodeSurface(kind)) break;
+                continue;
+            }
+            event->accept();
+            if (kind == QLatin1String{GraphCanvasDerivedEdgeItem}) return;
+            const auto id = item->data(NodeGraphNameRole).toString().toStdString();
+            QMetaObject::invokeMethod(
+                this, [this, id] { enterFolded(id); }, Qt::QueuedConnection);
+            return;
+        }
         // N-6 first: a control point and a bundle are drawn over the lines and
         // under the nodes, so they are the topmost thing a double-click on one
         // of them can mean.
@@ -3251,6 +3431,16 @@ struct GraphCanvasWidget::Impl {
     GraphCanvasViewFields *view_fields = nullptr;
     QComboBox *loop_branch = nullptr;
     QLabel *shared_mark = nullptr;
+    // GL-1, decision 5: Show: one box per domain the root canvas can draw.
+    std::vector<std::pair<std::string, QCheckBox *>> domain_boxes;
+    // Decision 4: the line an edit inside a folded view gets, with its
+    // "Expand to edit…" link (the named action), and the owner's two flows.
+    QLabel *folded_notice = nullptr;
+    QAction *expand_action = nullptr;
+    std::function<void(const QString &, const QString &)> decompose_action;
+    std::function<void(const QString &)> replace_action;
+    // Decision 1: what a picked folded node is, in one line.
+    QLabel *folded_summary = nullptr;
     QAction *add_loop_action = nullptr;
     QAction *add_fullscreen_action = nullptr;
     // Q-19, decision 4: "Rename definition…" and "Delete definition", and
@@ -3348,6 +3538,25 @@ struct GraphCanvasWidget::Impl {
         shared_mark->setStyleSheet(QStringLiteral("color: #b9770e;"));
         shared_mark->hide();
         controls->addWidget(shared_mark);
+        // GL-1, decision 5: which domains the root canvas draws. Render only
+        // to begin with; session state, never written to the document.
+        for (const auto &domain : GraphCanvasModel::domainNames())
+            if (domain != "render") model.setDomainShown(domain, false);
+        controls->addWidget(new QLabel(QObject::tr("Show:"), &view));
+        for (const auto &domain : GraphCanvasModel::domainNames()) {
+            const QString label = domain == "ui" ? QStringLiteral("UI")
+                                                 : qtext(domain).left(1).toUpper() + qtext(domain).mid(1);
+            auto *box = new QCheckBox(label, &view);
+            box->setObjectName(QStringLiteral("pelican.graphCanvasShow.") + qtext(domain));
+            box->setToolTip(QObject::tr("Draw the root's %1 nodes").arg(qtext(domain)));
+            box->setChecked(model.domainShown(domain));
+            controls->addWidget(box);
+            domain_boxes.emplace_back(domain, box);
+            QObject::connect(box, &QCheckBox::toggled, &view, [this, domain](bool on) {
+                if (!model.setDomainShown(domain, on)) return;
+                dispatch();
+            });
+        }
         controls->addStretch(1);
         controls->addWidget(new QLabel(QObject::tr("Values from:"), &view));
         value_instances = new QComboBox(&view);
@@ -3427,6 +3636,21 @@ struct GraphCanvasWidget::Impl {
         applyPanelNoticeStyle(notice);
         notice->hide();
         layout->addWidget(notice);
+        // GL-1, decision 4.
+        folded_notice = new QLabel(&view);
+        folded_notice->setObjectName(QStringLiteral("pelican.graphCanvasFoldedNotice"));
+        folded_notice->setTextFormat(Qt::RichText);
+        folded_notice->setTextInteractionFlags(Qt::LinksAccessibleByMouse);
+        folded_notice->setStyleSheet(QStringLiteral("color: #b9770e;"));
+        folded_notice->hide();
+        layout->addWidget(folded_notice);
+        expand_action = new QAction(QObject::tr("Expand to edit…"), &view);
+        expand_action->setObjectName(QStringLiteral("pelican.graphCanvas.expandToEdit"));
+        expand_action->setEnabled(false);
+        view.addAction(expand_action);
+        QObject::connect(expand_action, &QAction::triggered, &view, [this] { expandToEdit(); });
+        QObject::connect(folded_notice, &QLabel::linkActivated, &view,
+                         [this](const QString &) { expand_action->trigger(); });
 
         auto *splitter = new QSplitter(Qt::Horizontal, &view);
         scene = new GraphCanvasScene(&view);
@@ -3545,6 +3769,11 @@ struct GraphCanvasWidget::Impl {
         auto *side = new QWidget(splitter);
         auto *side_layout = new QVBoxLayout(side);
         side_layout->setContentsMargins(0, 0, 0, 0);
+        folded_summary = new QLabel(side);
+        folded_summary->setObjectName(QStringLiteral("pelican.graphCanvasFoldedSummary"));
+        folded_summary->setWordWrap(true);
+        folded_summary->hide();
+        side_layout->addWidget(folded_summary);
         auto *label_row = new QHBoxLayout;
         auto *label_caption = new QLabel(QObject::tr("Label"), side);
         label_caption->setFont(studioSmallFont());
@@ -3733,7 +3962,12 @@ struct GraphCanvasWidget::Impl {
         // after a document arrives -- is fitted; one being returned to keeps
         // the zoom and scroll it was left at.
         scene->repopulated = [this] {
-            canvas->showScope(qtext(model.currentScope()));
+            // GL-1: a folded view is a view of its own, fitted the first time.
+            canvas->showScope(qtext(model.viewKey()));
+        };
+        scene->domainFilterChanged = [this] {
+            syncDomainFilter();
+            dispatch();
         };
 
         QObject::connect(refresh, &QPushButton::clicked, &view, [this] {
@@ -3745,7 +3979,8 @@ struct GraphCanvasWidget::Impl {
                 if (index < 0) return;
                 const auto scope =
                     scopes->itemData(index).toString().toStdString();
-                if (scope == model.currentScope()) return;
+                // GL-1: "root" from inside a folded view is the real one.
+                if (scope == model.currentScope() && !model.foldedView()) return;
                 model.selectScope(scope);
                 scene->repopulate();
                 syncScopeControls();
@@ -3848,6 +4083,7 @@ struct GraphCanvasWidget::Impl {
             return false;
         const auto id = std::exchange(pending_reveal, {});
         model.selectScope({});
+        showDomainOf({}, id);
         scene->repopulate();
         scene->selectNode(id);
         syncScopeControls();
@@ -3925,6 +4161,8 @@ struct GraphCanvasWidget::Impl {
                 }
             } else if (request.method == "get_frame_plan" && graph.requestFramePlan)
                 transport = graph.requestFramePlan(&error);
+            else if (request.method == "get_graph_templates" && graph.requestGraphTemplates)
+                transport = graph.requestGraphTemplates(&error);
             else if (request.method == "set_time" && graph.requestSetTime)
                 transport = graph.requestSetTime(
                     request.params.value("t", 0.0), &error);
@@ -4064,10 +4302,70 @@ struct GraphCanvasWidget::Impl {
         const int index = scopes->findData(current);
         scopes->setCurrentIndex(index < 0 ? 0 : index);
         QStringList trail;
-        for (const auto &step : model.breadcrumb())
-            trail.push_back(step.empty() ? QStringLiteral("root") : qtext(step));
+        for (const auto &step : model.displayTrail()) trail.push_back(qtext(step));
         breadcrumb->setText(trail.join(QStringLiteral(" / ")));
         syncLoopBranch();
+        syncDomainFilter();
+    }
+
+    // GL-1, decision 5: a root node another panel reveals is drawn, whatever
+    // the filter held -- its domain is added to it.
+    void showDomainOf(const std::string &scope, const std::string &id) {
+        if (!scope.empty()) return;
+        const auto nodes = model.nodes({});
+        const auto found = std::ranges::find(nodes, id, &GraphCanvasNode::id);
+        if (found != nodes.end() && !model.nodeShown({}, *found))
+            model.setDomainShown(GraphCanvasModel::opDomain(found->op), true);
+        syncDomainFilter();
+    }
+
+    // GL-1, decision 5: the boxes say what the model shows (a stub adds a
+    // domain from the canvas).
+    void syncDomainFilter() {
+        for (const auto &[domain, box] : domain_boxes) {
+            const QSignalBlocker block{box};
+            box->setChecked(model.domainShown(domain));
+        }
+    }
+
+    // Decision 4: the Frame Plan's Decompose into loop, or the Features
+    // tab's Replace with loop version -- each with its own confirmation.
+    void expandToEdit() {
+        const auto expand = model.foldedExpand();
+        if (expand.kind == "decompose" && decompose_action)
+            decompose_action(qtext(expand.graph), qtext(expand.pass));
+        else if (expand.kind == "replace" && replace_action)
+            replace_action(qtext(expand.feature));
+    }
+
+    // Decision 1: a picked folded node, in one line: what it is, where it
+    // comes from, what it reads and hands on.
+    void syncFoldedSummary() {
+        const auto &selected = scene->selectedNode();
+        std::optional<GraphCanvasFoldedNode> found;
+        if (selected && scene->selectedScope() == model.currentScope())
+            for (auto &node : model.foldedNodes())
+                if (node.id == *selected) found = std::move(node);
+        if (!found) {
+            folded_summary->clear();
+            folded_summary->hide();
+            return;
+        }
+        const auto join = [](const std::vector<std::string> &list) {
+            QStringList names;
+            for (const auto &name : list) names.push_back(qtext(name));
+            return names.isEmpty() ? QObject::tr("nothing") : names.join(QStringLiteral(", "));
+        };
+        QString text = QObject::tr("%1 (%2): ").arg(qtext(found->label), qtext(found->type));
+        if (found->feature_group)
+            text += QObject::tr("%1 passes of %2. ")
+                        .arg(static_cast<qulonglong>(found->passes.size()))
+                        .arg(qtext(found->feature));
+        text += QObject::tr("Reads %1; writes %2. ").arg(join(found->reads), join(found->writes));
+        text += qtext(found->tooltip());
+        if (found->enterable()) text += QObject::tr(" Double-click to look inside.");
+        folded_summary->setText(text);
+        folded_summary->show();
     }
 
     // LP-4c, decision 5: inside a loop's body, the branches that have one to
@@ -4436,6 +4734,7 @@ struct GraphCanvasWidget::Impl {
     }
 
     void showDetails() {
+        syncFoldedSummary();
         details->clear();
         const auto &selected = scene->selectedNode();
         label_edit->setEnabled(selected.has_value() && model.canEdit());
@@ -4664,6 +4963,25 @@ struct GraphCanvasWidget::Impl {
                                       : QStringLiteral("color: #7f8c8d;"));
             notice->show();
         }
+        // GL-1, decision 4: nothing was sent; the link is the way to edit.
+        const auto expand = model.foldedExpand();
+        expand_action->setEnabled(model.foldedView() && !expand.kind.empty());
+        if (model.foldedView() && model.foldedEditRefused()) {
+            QString line = qtext(std::string{GraphCanvasModel::foldedEditNotice}).toHtmlEscaped();
+            if (!expand.kind.empty())
+                line += QStringLiteral(" <a href=\"expand\">%1</a>")
+                            .arg(QObject::tr("Expand to edit…").toHtmlEscaped());
+            folded_notice->setText(line);
+            folded_notice->setToolTip(expand.kind == "decompose"
+                                          ? QObject::tr("Decompose into loop… (the Frame Plan's)")
+                                      : expand.kind == "replace"
+                                          ? QObject::tr("Replace with loop version… (the Features tab's)")
+                                          : QString{});
+            folded_notice->show();
+        } else {
+            folded_notice->clear();
+            folded_notice->hide();
+        }
     }
 };
 
@@ -4685,6 +5003,44 @@ void GraphCanvasWidget::poll() {
     impl_->dispatch();
 }
 
+bool GraphCanvasWidget::revealPlanPass(const QString &pass) {
+    auto &model = impl_->model;
+    const auto id = model.canvasNodeOfPass(pass.toStdString());
+    if (id.empty()) return false;
+    // The real root, with the domain the node is in shown.
+    model.selectScope({});
+    const auto nodes = model.nodes({});
+    if (const auto graph = std::ranges::find(nodes, id, &GraphCanvasNode::id); graph != nodes.end()) {
+        if (!model.nodeShown({}, *graph))
+            model.setDomainShown(GraphCanvasModel::opDomain(graph->op), true);
+    } else {
+        model.setDomainShown("render", true);
+    }
+    impl_->scene->repopulate();
+    impl_->scene->selectNode(id);
+    impl_->syncScopeControls();
+    impl_->syncValueControls();
+    impl_->showDetails();
+    impl_->dispatch();
+    for (QGraphicsItem *item : impl_->scene->items()) {
+        if (item->data(NodeGraphItemKindRole).toString() != QLatin1String{GraphCanvasNodeItem} ||
+            !item->data(GraphCanvasScopeRole).toString().isEmpty() ||
+            !item->data(GraphCanvasZoneScopeRole).toString().isEmpty() ||
+            item->data(NodeGraphNameRole).toString().toStdString() != id)
+            continue;
+        impl_->canvas->centerOn(item);
+        break;
+    }
+    return true;
+}
+
+void GraphCanvasWidget::setFoldedExpandActions(
+    std::function<void(const QString &graph, const QString &pass)> decompose,
+    std::function<void(const QString &feature)> replace) {
+    impl_->decompose_action = std::move(decompose);
+    impl_->replace_action = std::move(replace);
+}
+
 bool GraphCanvasWidget::revealNode(const QString &node) {
     const auto id = node.toStdString();
     // The Inspector names a producer in the root document, so the trail comes
@@ -4695,6 +5051,7 @@ bool GraphCanvasWidget::revealNode(const QString &node) {
             return drawn.id == id;
         }))
         return false;
+    impl_->showDomainOf({}, id);
     impl_->scene->repopulate();
     impl_->scene->selectNode(id);
     impl_->syncScopeControls();
@@ -4716,6 +5073,9 @@ std::string canvasScopeId(const QString &scope) {
 
 bool GraphCanvasWidget::canRevealGraphNode(const QString &scope,
                                            const QString &node) const {
+    // GL-1: the question is about the real document; a folded view on
+    // screen gives way to it (the reveal that follows draws the scene).
+    impl_->model.leaveFolded();
     const auto &model = impl_->model;
     const auto target = canvasScopeId(scope);
     const auto id = node.toStdString();
@@ -4766,6 +5126,7 @@ bool GraphCanvasWidget::revealGraphNode(const QString &scope,
             std::ranges::find(offered, root_instance) != offered.end())
             model.watchInstance(root_instance);
     }
+    impl_->showDomainOf(model.currentScope(), id);
     impl_->scene->repopulate();
     impl_->scene->selectNode(id);
     impl_->syncScopeControls();

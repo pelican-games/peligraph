@@ -157,6 +157,15 @@ struct Harness {
     std::vector<GraphCanvasNode> nodes_;
 };
 
+// GL-1, decision 1: a document read is followed by the plan read, whatever
+// the document holds. Nothing else is asked.
+bool onlyPlanRead(GraphCanvasModel &model) {
+    const auto requests = model.takeRpcRequests();
+    return std::ranges::all_of(requests, [](const PelicanStudio::InspectorRpcRequest &request) {
+        return request.method == "get_frame_plan";
+    });
+}
+
 const PelicanStudio::GraphCanvasPort &port(const GraphCanvasNode &node,
                                            const std::string &name) {
     const auto found = std::ranges::find(node.inputs, name,
@@ -171,8 +180,9 @@ TEST_CASE("The graph canvas reads root and definition scopes out of one document
     Harness h;
     h.open();
 
-    // Only the three reads the canvas can justify ever leave it.
-    REQUIRE(h.model.takeRpcRequests().empty());
+    // Only the three reads the canvas can justify ever leave it (and, GL-1,
+    // the plan its folded nodes are drawn from).
+    REQUIRE(onlyPlanRead(h.model));
 
     auto scopes = h.model.scopes();
     REQUIRE(scopes.size() == 2);
@@ -530,8 +540,8 @@ TEST_CASE("The node values overlay reaches a definition body and the root scope"
     Harness h;
     h.open();
     // Naming the instance is what turns the overlay on. Nothing is read for a
-    // canvas nobody asked to observe.
-    REQUIRE(h.model.takeRpcRequests().empty());
+    // canvas nobody asked to observe (GL-1: but the plan, with the document).
+    REQUIRE(onlyPlanRead(h.model));
     h.model.watchInstance("left");
 
     SECTION("a definition body, read through the instance that owns it") {
@@ -993,7 +1003,7 @@ TEST_CASE("Graph history never replays across another writer or a reconnect",
     REQUIRE_FALSE(h.client.model.canUndo());
     REQUIRE_FALSE(h.client.model.canRedo());
     REQUIRE_FALSE(h.client.model.undo());
-    REQUIRE(h.client.model.takeRpcRequests().empty());
+    REQUIRE(onlyPlanRead(h.client.model));
 }
 
 TEST_CASE("Q-10 a sound refused while a graph edit is prepared reads as one sentence",
@@ -2366,4 +2376,243 @@ TEST_CASE("Q-19 graph.input_index_invalid@1 reads as a sentence for each reason"
                            "{\"input_index\":2,\"node\":\"post\",\"ports\":[],\"reason\":\"missing\"}"}}) ==
           "No port of post reads input 2: its numbered inputs run from 0 without a gap "
           "(graph.input_index_invalid@1).");
+}
+
+// GL-1 (design_graph_layers 3.3, 3.4). A frame plan read from nothing but
+// JSON: a preset's material pass and lighting pass, a feature of three
+// passes, an anchor, a pass the graph's own render node made, and a present
+// of the rendering section. The root holds that render node, the target_ref
+// it reads through, and a value node feeding it.
+namespace {
+Json gl1Document() {
+    Json blur_inputs = Json::object();
+    blur_inputs["source"] = Json{{"node", "bloomed"}, {"port", "resource"}};
+    blur_inputs["strength"] = Json{{"node", "gain"}, {"port", "value"}};
+    return {{"source_reference", "fixture"},
+            {"root_schema", "pelican.graph"},
+            {"source_digest", {{"hex", "gl1"}}},
+            {"nodes", Json::array({
+                 {{"id", "gain"}, {"op", "value.input"}, {"parameters", {{"name", "scene_time"}}},
+                  {"outputs", Json::array({"value"})}},
+                 {{"id", "bloomed"}, {"op", "render.target_ref"},
+                  {"parameters", {{"name", "scene_color_bloomed"}}},
+                  {"outputs", Json::array({"resource"})}},
+                 {{"id", "blur"}, {"op", "render.fullscreen"}, {"parameters", Json::object()},
+                  {"inputs", blur_inputs}, {"outputs", Json::array({"color"})}}})},
+            {"definitions", Json::object()}};
+}
+
+Json gl1Pass(const std::string &name, std::size_t order, const std::string &source,
+             const Json &reads, const Json &writes, const std::string &feature = {}) {
+    Json node{{"name", name},       {"kind", "render"}, {"order", order},  {"level", order},
+              {"source", source},   {"reads", reads},   {"writes", writes}, {"reads_history", Json::array()},
+              {"declaration_index", order}};
+    if (!feature.empty()) node["provider_feature"] = feature;
+    return node;
+}
+
+Json gl1Plan() {
+    const std::string bloom = "engine://features/bloom.json";
+    auto gbuffer = gl1Pass("gbuffer", 0, "engine", Json::array(), Json::array({"g_albedo", "g_depth"}));
+    gbuffer["shader_resolution"] = {{"state", "material_owned"}};
+    auto anchor = gl1Pass("post", 5, "engine", Json::array(), Json::array());
+    anchor["kind"] = "anchor";
+    return {{"schema", "pelican.frame_plan"},
+            {"version", 1},
+            {"graph", "main_render"},
+            {"material_routing",
+             {{"routes", {{"deferred", {{"pass", "gbuffer"}, {"contract", "gbuffer_v1"}}}}}}},
+            {"loops", Json::array()},
+            {"nodes", Json::array({
+                 gbuffer,
+                 gl1Pass("lighting", 1, "engine", Json::array({"g_albedo", "g_depth"}),
+                         Json::array({"scene_color"})),
+                 gl1Pass("bloom_down", 2, "feature:bloom", Json::array({"scene_color"}),
+                         Json::array({"bloom_0"}), bloom),
+                 gl1Pass("bloom_up", 3, "feature:bloom", Json::array({"bloom_0"}),
+                         Json::array({"bloom_1"}), bloom),
+                 gl1Pass("bloom_mix", 4, "feature:bloom", Json::array({"scene_color", "bloom_1"}),
+                         Json::array({"scene_color_bloomed"}), bloom),
+                 anchor,
+                 // The graph's own render node made this one: its name is the
+                 // node's id, and its source says nothing about that.
+                 gl1Pass("blur", 6, "engine", Json::array({"scene_color_bloomed"}),
+                         Json::array({"blur_image"})),
+                 gl1Pass("present", 7, "project", Json::array({"blur_image"}),
+                         Json::array({"display"}))})}};
+}
+
+Json gl1Templates() {
+    Json body{{"nodes", Json::array({{{"id", "down"}, {"op", "render.fullscreen"}}})},
+              {"outputs", Json::object()}};
+    Json loop{{"id", "bloom_steps"}, {"op", "graph.loop"},
+              {"parameters", {{"over", {{"range", {{"count", 3}}}}},
+                              {"branches", Json::array({{{"body", "bloom_step"}}})}}}};
+    return {{"templates", Json::array({
+                {{"reference", "engine://graphs/bloom_loop.json"},
+                 {"title", "Bloom as a loop"},
+                 {"decomposes", {{"feature", "engine://features/bloom.json"}}},
+                 {"document", {{"nodes", Json::array({loop})},
+                               {"definitions", {{"bloom_step", body}}}}}}})}};
+}
+
+const PelicanStudio::GraphCanvasFoldedNode &folded(
+    const std::vector<PelicanStudio::GraphCanvasFoldedNode> &nodes, const std::string &id) {
+    const auto found = std::ranges::find(nodes, id, &PelicanStudio::GraphCanvasFoldedNode::id);
+    REQUIRE(found != nodes.end());
+    return *found;
+}
+
+bool asked(GraphCanvasModel &model, std::string_view method) {
+    const auto requests = model.takeRpcRequests();
+    return std::ranges::any_of(requests, [&](const PelicanStudio::InspectorRpcRequest &request) {
+        return request.method == method;
+    });
+}
+} // namespace
+
+TEST_CASE("GL-1 the plan's passes no graph node made are folded nodes, read only, "
+          "with the lines the plan implies and the domain filter's cut ends",
+          "[studio][graph-canvas][gl1]") {
+    Harness h;
+    h.open(gl1Document());
+    // Decision 1: the plan is read with the document, loop or no loop.
+    h.reply(h.take("get_frame_plan"), gl1Plan());
+    // A plan that names a feature asks, once, which have a decomposed version.
+    const auto templates = h.take("get_graph_templates");
+    auto &model = h.model;
+    CHECK(model.planGraph() == "main_render");
+
+    // One node per feature, one per other pass, in the plan's order; neither
+    // the anchor nor the pass the graph's own node made.
+    auto nodes = model.foldedNodes();
+    std::vector<std::string> ids;
+    for (const auto &node : nodes) ids.push_back(node.id);
+    CHECK(ids == std::vector<std::string>{"gbuffer", "lighting", "feature:bloom", "present"});
+    const auto &bloom = folded(nodes, "feature:bloom");
+    CHECK(bloom.feature_group);
+    CHECK(bloom.label == "bloom");
+    CHECK(bloom.type == "feature");
+    CHECK(bloom.passes == std::vector<std::string>{"bloom_down", "bloom_up", "bloom_mix"});
+    // What it reads and hands on; bloom_0 and bloom_1 stay inside.
+    CHECK(bloom.reads == std::vector<std::string>{"scene_color"});
+    CHECK(bloom.writes == std::vector<std::string>{"scene_color_bloomed"});
+    CHECK(bloom.tooltip() == "From the rendering section (feature:bloom): read only here. "
+                             "Frame Plan and Features edit it.");
+    const auto &gbuffer = folded(nodes, "gbuffer");
+    CHECK(gbuffer.material);
+    CHECK(gbuffer.type == "material");
+    CHECK(folded(nodes, "lighting").type == "render");
+    CHECK_FALSE(folded(nodes, "lighting").enterable());
+
+    // Decision 2: the lines, one per pair of nodes, the resources listed. A
+    // graph node reads through the target_ref that names the resource.
+    const auto edges = model.derivedEdges();
+    using Edge = PelicanStudio::GraphCanvasDerivedEdge;
+    CHECK(edges == std::vector<Edge>{
+                       {"gbuffer", "lighting", {"g_albedo", "g_depth"}},
+                       {"lighting", "feature:bloom", {"scene_color"}},
+                       {"feature:bloom", "bloomed", {"scene_color_bloomed"}},
+                       {"blur", "present", {"blur_image"}}});
+
+    // Decision 6: where each pass is drawn on the root canvas.
+    CHECK(model.canvasNodeOfPass("bloom_up") == "feature:bloom");
+    CHECK(model.canvasNodeOfPass("blur") == "blur");
+    CHECK(model.canvasNodeOfPass("gbuffer") == "gbuffer");
+    CHECK(model.canvasNodeOfPass("post").empty());
+
+    // Decision 5: Render only. The value node is not drawn; the render node's
+    // input it fed says where the line went.
+    for (const auto &domain : GraphCanvasModel::domainNames())
+        model.setDomainShown(domain, domain == "render");
+    const auto root = model.nodes();
+    const auto gain = std::ranges::find(root, std::string{"gain"}, &GraphCanvasNode::id);
+    REQUIRE(gain != root.end());
+    CHECK_FALSE(model.nodeShown({}, *gain));
+    const auto stubs = model.domainStubs();
+    REQUIRE(stubs.size() == 1);
+    CHECK(stubs[0].node == "blur");
+    CHECK(stubs[0].port == "strength");
+    CHECK(stubs[0].input);
+    CHECK(stubs[0].count == 1);
+    CHECK(stubs[0].text() == "\xE2\x86\x90 value (1)");
+    // Without Render, no folded node either.
+    model.setDomainShown("render", false);
+    CHECK(model.foldedNodes().empty());
+    model.setDomainShown("render", true);
+
+    // Decision 3: inside the material pass, Studio's own drawing of it -- a
+    // render.material_pass taking an else-only draw_loop whose body draws
+    // each material.
+    REQUIRE(model.enterFolded("gbuffer"));
+    CHECK(model.foldedView());
+    CHECK(model.displayTrail() == std::vector<std::string>{"root", "gbuffer"});
+    CHECK(model.foldedNodes().empty());
+    auto inside = model.nodes();
+    REQUIRE(inside.size() == 2);
+    const auto pass = std::ranges::find(inside, std::string{"render.material_pass"}, &GraphCanvasNode::op);
+    REQUIRE(pass != inside.end());
+    CHECK(pass->id == "gbuffer");
+    const auto zone = model.loop("gbuffer_draws");
+    REQUIRE(zone);
+    CHECK(zone->draw_items);
+    CHECK(zone->contract == "gbuffer_v1");
+    CHECK(zone->tier == "draw_loop");
+    CHECK(zone->reported_tier == "draw_loop");
+    CHECK(zone->branches.size() == 1);
+    CHECK(zone->branches[0].when == "else");
+    CHECK(model.loopZoneBody("gbuffer_draws") == "gbuffer_draw");
+    const auto body = model.nodes("gbuffer_draw");
+    REQUIRE(body.size() == 1);
+    CHECK(body[0].op == "draw.material");
+
+    // Decision 4: a drag says nothing; an edit sends nothing and says so.
+    CHECK_FALSE(model.setLayout({}, Json::object()));
+    CHECK_FALSE(model.foldedEditRefused());
+    CHECK_FALSE(model.removeNode("gbuffer"));
+    CHECK(model.foldedEditRefused());
+    CHECK_FALSE(asked(model, "edit_graph_document"));
+    const auto expand = model.foldedExpand();
+    CHECK(expand.kind == "decompose");
+    CHECK(expand.graph == "main_render");
+    CHECK(expand.pass == "gbuffer");
+
+    // A document read while inside is the real one's; the view stands.
+    model.refresh();
+    h.reply(h.take("get_graph_instances"), gl1Document());
+    CHECK(model.foldedView());
+    CHECK(model.nodes().size() == 2);
+    CHECK(model.foldedEditRefused());
+    // The breadcrumb comes back out, to the real root.
+    REQUIRE(model.leaveScope());
+    CHECK_FALSE(model.foldedView());
+    CHECK_FALSE(model.foldedEditRefused());
+    CHECK(model.nodes().size() == 3);
+
+    // A feature's fold: its passes one by one, and the lines between them.
+    REQUIRE(model.enterFolded("feature:bloom"));
+    std::vector<std::string> passes;
+    for (const auto &node : model.foldedNodes()) passes.push_back(node.id);
+    CHECK(passes == std::vector<std::string>{"bloom_down", "bloom_up", "bloom_mix"});
+    CHECK(model.derivedEdges() == std::vector<Edge>{{"bloom_down", "bloom_up", {"bloom_0"}},
+                                                     {"bloom_up", "bloom_mix", {"bloom_1"}}});
+    // No template read yet: no decomposed version, and no link.
+    CHECK_FALSE(model.canShowDecomposed());
+    CHECK(model.foldedExpand().kind.empty());
+    h.reply(templates, gl1Templates());
+    REQUIRE(model.canShowDecomposed());
+    REQUIRE(model.showDecomposed());
+    CHECK(model.displayTrail() ==
+          std::vector<std::string>{"root", "bloom", "bloom (decomposed)"});
+    const auto decomposed = model.nodes();
+    REQUIRE(decomposed.size() == 1);
+    CHECK(decomposed[0].loop);
+    CHECK(model.loopZoneBody("bloom_steps") == "bloom_step");
+    CHECK(model.foldedExpand().kind == "replace");
+    CHECK(model.foldedExpand().feature == "engine://features/bloom.json");
+    REQUIRE(model.leaveScope());
+    CHECK(model.displayTrail() == std::vector<std::string>{"root", "bloom"});
+    REQUIRE(model.leaveScope());
+    CHECK_FALSE(model.foldedView());
+    CHECK(folded(model.foldedNodes(), "feature:bloom").decomposable);
 }

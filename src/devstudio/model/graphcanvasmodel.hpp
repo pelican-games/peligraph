@@ -400,6 +400,113 @@ struct GraphCanvasRefusalMark {
     bool operator==(const GraphCanvasRefusalMark &) const = default;
 };
 
+// GL-1 (design_graph_layers 1, 3.3, 3.4). One node of get_frame_plan, as the
+// Graph tab reads it to draw what no graph node made: the rendering
+// section's passes, the features' and the preset's.
+struct GraphCanvasPlanPass {
+    std::string name;
+    std::string authored_name;
+    // The plan's kind: render, compute, anchor, snapshot_copy, ...
+    std::string kind;
+    // "project", "feature:<name>" or "engine".
+    std::string source;
+    // provider_feature: the feature reference that made it, or empty.
+    std::string feature;
+    std::vector<std::string> reads;
+    std::vector<std::string> history_reads;
+    std::vector<std::string> writes;
+    std::size_t order = 0;
+    // LP-1a: the graph.loop whose copy it is (loop_origin.loop), or empty.
+    std::string loop;
+    // A material pass: its shader is the materials' (shader_resolution
+    // material_owned), or it carries a material filter or variant.
+    bool material = false;
+    std::string material_variant;
+    // The contract material_routing names for it, when it names one.
+    std::string contract;
+    // material_filter.resolved_draw_count, when the engine resolved it.
+    std::optional<std::size_t> draw_count;
+
+    bool operator==(const GraphCanvasPlanPass &) const = default;
+};
+
+// GL-1, decision 1. A read-only node on the Graph canvas standing for passes
+// no graph node made: every pass of one feature folded into one node, or one
+// pass of the rendering section (or the engine's preset) on its own.
+struct GraphCanvasFoldedNode {
+    // The pass's name, or "feature:<name>" for a feature's fold.
+    std::string id;
+    std::string label;
+    // What the heading shows where a graph node shows its operation:
+    // "feature", or the pass's kind ("material" for a material pass).
+    std::string type;
+    // The plan's source ("project", "feature:<name>", "engine").
+    std::string source;
+    // The feature reference (a fold, or a pass inside a feature's fold).
+    std::string feature;
+    std::vector<std::string> passes;
+    // What it reads from outside itself and what it hands on, by resource.
+    std::vector<std::string> reads;
+    std::vector<std::string> writes;
+    bool feature_group = false;
+    // One material pass: its inside is a render.material_pass and a draw_loop.
+    bool material = false;
+    // A feature with a shipped decomposed version (get_graph_templates).
+    bool decomposable = false;
+
+    [[nodiscard]] bool enterable() const noexcept { return feature_group || material; }
+    // "From the rendering section (<source>): read only here. ..."
+    [[nodiscard]] std::string tooltip() const;
+    bool operator==(const GraphCanvasFoldedNode &) const = default;
+};
+
+// GL-1, decision 2. A line the frame plan's reads and writes imply between
+// two nodes of the canvas, one of them at least a folded node. Read only;
+// several resources between the same two nodes are one line.
+struct GraphCanvasDerivedEdge {
+    std::string from;
+    std::string to;
+    std::vector<std::string> resources;
+
+    bool operator==(const GraphCanvasDerivedEdge &) const = default;
+};
+
+// GL-1, decision 5. Where a line to a node the domain filter hides is cut:
+// on the socket of the node that is shown, `← value (N)` on an input or
+// `→ pose (N)` on an output. N counts the hidden nodes of that domain.
+struct GraphCanvasDomainStub {
+    std::string node;
+    std::string port;
+    bool input = true;
+    std::string domain;
+    std::size_t count = 0;
+
+    [[nodiscard]] std::string text() const;
+    bool operator==(const GraphCanvasDomainStub &) const = default;
+};
+
+// GL-1, decision 3. One step into a folded node: a feature's fold ("feature"),
+// a material pass ("pass"), or a feature's decomposed version ("decomposed").
+struct GraphCanvasFoldedStep {
+    std::string kind;
+    std::string id;
+    std::string label;
+    std::string feature;
+
+    bool operator==(const GraphCanvasFoldedStep &) const = default;
+};
+
+// GL-1, decision 4: what "Expand to edit…" runs for the folded view on
+// screen -- the Frame Plan's Decompose into loop for a material pass, the
+// Features tab's Replace with loop version for a feature with a template.
+struct GraphCanvasFoldedExpand {
+    // "decompose", "replace", or empty (no link).
+    std::string kind;
+    std::string graph;
+    std::string pass;
+    std::string feature;
+};
+
 // One animation sink `get_status.animation` reported for the owner the watched
 // instance names. Read-only: the Timeline draws it beside the value traces so
 // "what the pose side is doing" and "what the values partition produced" are
@@ -460,6 +567,9 @@ class GraphCanvasModel {
         // LP-4e: get_frame_plan {loop_elements}, one more page of a
         // draw_loop's materials.
         LoopPage,
+        // GL-1: get_graph_templates, which features have a decomposed
+        // version to show.
+        Templates,
     };
     struct PendingRequest {
         std::uint64_t id = 0;
@@ -623,6 +733,10 @@ class GraphCanvasModel {
     int plan_retry_budget_ = 0;
     bool plan_retry_wanted_ = false;
     static constexpr int planRetryLimit = 40;
+    // GL-1: how many more times a plan that failed, while none has arrived
+    // yet, is asked for -- two minutes of polls.
+    int plan_wait_budget_ = 0;
+    static constexpr int planWaitLimit = 480;
     [[nodiscard]] bool planMissesRenderNode() const;
     // The render.image type a numbered port reading `source_node.source_port`
     // in `scope` is declared with: what the source says it is, followed
@@ -650,6 +764,57 @@ class GraphCanvasModel {
     void requestNextLoopPage();
     void receiveLoopPage(const nlohmann::json &plan);
     const nlohmann::json *loopReport(std::string_view id) const;
+    // --- GL-1: what the frame plan holds besides the graph's own nodes.
+    std::vector<GraphCanvasPlanPass> plan_passes_;
+    std::string plan_graph_;
+    void readPlanPasses(const nlohmann::json &plan);
+    // get_graph_templates, asked once a plan names a feature: feature
+    // reference -> the template's document (nodes, definitions, outputs).
+    bool templates_requested_ = false;
+    nlohmann::json templates_ = nlohmann::json::object();
+    // Decision 5: the domains the root canvas shows (session state).
+    std::set<std::string, std::less<>> domains_shown_{"render", "pose", "value", "audio", "ui"};
+    // Decision 3. A folded view is a document Studio builds and draws in
+    // place of the real one, read only: the real one waits in the stash,
+    // and every reply is read against it (FoldedSuspend) before the view
+    // is built again from the trail.
+    struct FoldedStash {
+        nlohmann::json nodes;
+        nlohmann::json definitions;
+        nlohmann::json layout;
+        nlohmann::json loop_reports;
+        bool loop_reports_received = false;
+        std::vector<std::string> breadcrumb;
+        std::string entered_loop;
+        std::map<std::string, std::size_t, std::less<>> loop_branch;
+    };
+    std::optional<FoldedStash> folded_stash_;
+    std::vector<GraphCanvasFoldedStep> folded_trail_;
+    bool folded_refused_ = false;
+    struct FoldedSuspend;
+    friend struct FoldedSuspend;
+    [[nodiscard]] const nlohmann::json &realNodes() const noexcept {
+        return folded_stash_ ? folded_stash_->nodes : nodes_;
+    }
+    // The canvas node a pass of the plan stands under at the root: the
+    // graph node that made it, or its folded node. Empty for an anchor.
+    [[nodiscard]] std::string graphOwnerOf(const GraphCanvasPlanPass &pass) const;
+    [[nodiscard]] std::string foldedOwnerOf(const GraphCanvasPlanPass &pass) const;
+    [[nodiscard]] std::vector<GraphCanvasFoldedNode> rootFoldedNodes() const;
+    [[nodiscard]] std::vector<GraphCanvasFoldedNode> featurePassNodes(std::string_view feature) const;
+    [[nodiscard]] const GraphCanvasPlanPass *planPass(std::string_view name) const;
+    // The document a step shows; false when the plan (or the templates) no
+    // longer holds what it names.
+    [[nodiscard]] bool foldedDocument(const GraphCanvasFoldedStep &step, nlohmann::json &nodes,
+                                      nlohmann::json &definitions,
+                                      nlohmann::json &reports) const;
+    // Show the trail's last step (stashing the real document first).
+    bool showFoldedTop();
+    void restoreFoldedStash();
+    // Decision 4: an edit inside a folded view is refused here, before
+    // anything is built into a request; a placement only is dropped quietly.
+    bool refuseFoldedEdit(const nlohmann::json &ops);
+
     // Decision 9: what the last refusal pointed at.
     std::vector<GraphCanvasRefusalMark> refusal_marks_;
     void markRefusal(const nlohmann::json &error, const std::string &reason);
@@ -1307,6 +1472,70 @@ class GraphCanvasModel {
     // The variant a new draw.variant is given: the material_variant of the
     // pass the scope's loop draws in, when it names one, else "variant".
     [[nodiscard]] std::string suggestDrawVariant() const;
+
+    // --- GL-1: features and the rendering section as folded nodes.
+
+    // The last frame plan's passes, in its order, and its graph's name.
+    [[nodiscard]] const std::vector<GraphCanvasPlanPass> &planPasses() const noexcept {
+        return plan_passes_;
+    }
+    [[nodiscard]] const std::string &planGraph() const noexcept { return plan_graph_; }
+    // Decision 1. The folded nodes the canvas draws: at the root, one per
+    // feature and one per other pass no graph node made (not the anchors),
+    // in the plan's order -- none while the Render domain is hidden; inside
+    // a feature's fold, its passes one by one; elsewhere none.
+    [[nodiscard]] std::vector<GraphCanvasFoldedNode> foldedNodes() const;
+    // Decision 2. The lines the plan's reads and writes imply between the
+    // folded nodes, and between them and the root's graph nodes (a
+    // render.target_ref or render.image of the resource's name, else the
+    // render node whose pass reads or writes it).
+    [[nodiscard]] std::vector<GraphCanvasDerivedEdge> derivedEdges() const;
+    // The root canvas node a pass of the plan is drawn under (decision 6):
+    // the graph node that made it, or the folded node it is in. Empty when
+    // the plan does not list it (or it is an anchor).
+    [[nodiscard]] std::string canvasNodeOfPass(std::string_view pass) const;
+
+    // Decision 3: into a folded node (a feature's fold or a material pass),
+    // read only; leaveScope() comes back out one step at a time.
+    bool enterFolded(std::string_view id);
+    [[nodiscard]] bool foldedView() const noexcept { return folded_stash_.has_value(); }
+    [[nodiscard]] const std::vector<GraphCanvasFoldedStep> &foldedTrail() const noexcept {
+        return folded_trail_;
+    }
+    // Inside a feature's fold whose feature has a template: its decomposed
+    // version, read only (the template's nodes and definitions).
+    [[nodiscard]] bool canShowDecomposed() const;
+    bool showDecomposed();
+    // Back to the real document's root, whatever the view.
+    void leaveFolded();
+    // What the breadcrumb says: "root", the folded steps, then the scopes
+    // entered inside the view.
+    [[nodiscard]] std::vector<std::string> displayTrail() const;
+    // A key for the view on screen that tells a folded view from the root.
+    [[nodiscard]] std::string viewKey() const;
+    // Decision 4: an edit was tried inside the folded view (cleared on
+    // leaving it), and what "Expand to edit…" runs from here.
+    [[nodiscard]] bool foldedEditRefused() const noexcept { return folded_refused_; }
+    [[nodiscard]] GraphCanvasFoldedExpand foldedExpand() const;
+    static constexpr std::string_view foldedEditNotice =
+        "This is the engine's folded implementation: expand it to edit.";
+
+    // Decision 5: the domain filter of the root canvas. `render` (with
+    // draw.*), `pose`, `value` (with event.*), `audio`, `ui`.
+    [[nodiscard]] static const std::vector<std::string> &domainNames();
+    // The domain an operation belongs to; empty for graph.* and anything
+    // else, which is always shown.
+    [[nodiscard]] static std::string opDomain(std::string_view op);
+    [[nodiscard]] bool domainShown(std::string_view domain) const;
+    // False when nothing changed.
+    bool setDomainShown(const std::string &domain, bool shown);
+    // Whether the canvas draws this node of `scope`: a root node of a hidden
+    // domain is not drawn; a graph.instance and a graph.loop always are, and
+    // so is every node of a definition or a folded view.
+    [[nodiscard]] bool nodeShown(std::string_view scope, const GraphCanvasNode &node) const;
+    // The cut ends of the root's lines to hidden nodes, one per socket and
+    // domain.
+    [[nodiscard]] std::vector<GraphCanvasDomainStub> domainStubs() const;
 };
 
 } // namespace PelicanStudio

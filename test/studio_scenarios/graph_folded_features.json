@@ -1,0 +1,197 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_folded_features",
+  "description": "GL-1: the passes no graph node made are folded, read-only nodes on the Graph tab's root canvas. The fixture's root holds no graph node; its rendering section's material pass forward_opaque and its present are drawn as folded nodes, with the frame plan's scene_color between them as a dashed line. A double-click looks inside forward_opaque: a render.material_pass and a draw_loop zone whose body draws each material (draw.material), which Studio builds and never writes. An edit tried there sends nothing and says so, with Expand to edit; the breadcrumb comes back out; and the Frame Plan's Open in Graph on forward_opaque selects its node on the Graph canvas. The document is the same at the end.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "the Graph tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the root holds no graph node",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 0,
+      "retry_ms": 60000
+    },
+    {
+      "label": "decision 1: the rendering section's material pass is a folded node on the root canvas",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#forward_opaque",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "and so is its present",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#present",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "decision 2: the frame plan's scene_color is a dashed line between them",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_derived_edge#forward_opaque->present",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "decision 5: the filter shows Render to begin with",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasShow.render",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "a picture of the root canvas with its folded nodes",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "folded_root.png"
+    },
+    {
+      "label": "decision 3: a double-click looks inside the material pass",
+      "cmd": "double_click",
+      "name": "pelican.graphCanvasView::graph_node#forward_opaque"
+    },
+    {
+      "label": "the breadcrumb names the pass",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasBreadcrumb",
+      "text": "root / forward_opaque",
+      "timeout_ms": 20000
+    },
+    {
+      "label": "inside: a draw_loop zone",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#forward_opaque_draws",
+      "visible": true,
+      "timeout_ms": 20000
+    },
+    {
+      "label": "whose body draws each material: draw.material",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#forward_opaque_draw/step",
+      "visible": true,
+      "timeout_ms": 20000
+    },
+    {
+      "label": "a picture of the inside",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "folded_inside.png"
+    },
+    {
+      "label": "decision 4: an edit tried inside (Add loop, fired by name)",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addLoop"
+    },
+    {
+      "label": "sends nothing and says so, offering Expand to edit",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFoldedNotice",
+      "contains": "This is the engine's folded implementation: expand it to edit.",
+      "timeout_ms": 20000
+    },
+    {
+      "label": "the link is there: the pass decomposes from the Frame Plan",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFoldedNotice",
+      "contains": "Expand to edit",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the document holds no node: nothing was written",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 0
+    },
+    {
+      "label": "the breadcrumb comes back out",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_breadcrumb#trail"
+    },
+    {
+      "label": "to the root",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasBreadcrumb",
+      "text": "root",
+      "timeout_ms": 20000
+    },
+    {
+      "label": "where the folded node is again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#forward_opaque",
+      "visible": true,
+      "timeout_ms": 20000
+    },
+    {
+      "label": "and the notice has gone with the view",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFoldedNotice",
+      "visible": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "decision 6: to the Frame Plan",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "the frame plan has the forward pass",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#forward_opaque",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "pick it",
+      "cmd": "click",
+      "name": "pelican.framePlanLogicalView::node#forward_opaque"
+    },
+    {
+      "label": "Open in Graph, fired by name on the pass picked",
+      "cmd": "action",
+      "name": "pelican.framePlan.openInGraph"
+    },
+    {
+      "label": "the Graph tab is in front with the pass's node selected",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFoldedSummary",
+      "contains": "forward_opaque (material)",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and the node on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#forward_opaque",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "still nothing written",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 0
+    }
+  ]
+}

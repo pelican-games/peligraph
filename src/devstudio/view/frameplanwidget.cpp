@@ -456,6 +456,7 @@ struct FramePlanWidget::Impl {
     std::function<void(const QString &)> task_edit_action;
     FramePlanWidget::GraphNodeOpenAction graph_node_open_action;
     FramePlanWidget::GraphLoopNodeOpenAction graph_loop_node_open_action;
+    FramePlanWidget::GraphPassOpenAction graph_pass_open_action;
     // LP-4e: who hears that a decompose committed, and the loop it made.
     std::function<void(const QString &loop)> loop_decomposed_action;
     std::string decomposed_loop;
@@ -1011,7 +1012,10 @@ struct FramePlanWidget::Impl {
         logical_scene->setOpenInGraphAction(open_in_graph);
         logical_scene->openInGraphOffered =
             [this](const FramePlanNodeKey &node) {
-                return graphNodeOf(node) != nullptr || loopOriginOf(node) != nullptr;
+                // GL-1, decision 6: every pass of the plan is on the Graph
+                // canvas, a graph node's or folded.
+                return graphNodeOf(node) != nullptr || loopOriginOf(node) != nullptr ||
+                       planPassOf(node) != nullptr;
             };
         // LP-4e: a material pass becomes a loop over its materials. Named
         // like the others; acts on the node right-clicked (or picked).
@@ -2727,6 +2731,13 @@ struct FramePlanWidget::Impl {
         return row != nullptr && row->graph_node ? &*row->graph_node : nullptr;
     }
 
+    // GL-1. A node of this plan that is a pass (not an anchor).
+    const FramePlanNode *planPassOf(const FramePlanNodeKey &node) const {
+        if (!model || node.graph != model->graph) return nullptr;
+        const auto found = std::ranges::find(model->nodes, node.name, &FramePlanNode::name);
+        return found != model->nodes.end() && found->kind != "anchor" ? &*found : nullptr;
+    }
+
     // LP-4c. The loop_origin of a pass or task a graph.loop expanded.
     const FramePlanLoopOrigin *loopOriginOf(const FramePlanNodeKey &node) const {
         if (!model || node.graph != model->graph) return nullptr;
@@ -2853,7 +2864,18 @@ struct FramePlanWidget::Impl {
         }
         const auto *source = node ? graphNodeOf(*node) : nullptr;
         if (source == nullptr) {
-            showStatus(owner.tr("Select a task a graph node made first."));
+            // GL-1, decision 6: any other pass, on the Graph canvas.
+            if (const auto *pass = node ? planPassOf(*node) : nullptr) {
+                if (!graph_pass_open_action) {
+                    showStatus(owner.tr("Opening the Graph tab is unavailable."));
+                    return;
+                }
+                if (!graph_pass_open_action(text(pass->name)))
+                    showStatus(owner.tr("The Graph tab has not read pass %1 yet: refresh it.")
+                                   .arg(text(pass->name)));
+                return;
+            }
+            showStatus(owner.tr("Select a pass first."));
             return;
         }
         if (!graph_node_open_action) {
@@ -4259,6 +4281,10 @@ void FramePlanWidget::showLoopGroup(const QString &loop) {
     if (loop.isEmpty()) return;
     impl_->requested_loop_group = loop;
     impl_->requestRefresh();
+}
+
+void FramePlanWidget::setGraphPassOpenAction(GraphPassOpenAction action) {
+    impl_->graph_pass_open_action = std::move(action);
 }
 
 void FramePlanWidget::setGraphLoopNodeOpenAction(GraphLoopNodeOpenAction action) {

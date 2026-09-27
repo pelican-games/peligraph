@@ -60,10 +60,23 @@
       "value": "root"
     },
     {
-      "label": "the canvas drew two nodes",
-      "expect": "list_count",
-      "pattern": "pelican.graphCanvasView::graph_node#",
-      "value": 2
+      "label": "GL-1: the root shows Render to begin with, so the scene clock (a value node) waits behind Show: Value",
+      "cmd": "click",
+      "name": "pelican.graphCanvasShow.value"
+    },
+    {
+      "label": "the canvas drew the root's two graph nodes: the instance and the clock (the folded nodes beside them are the plan's, GL-1)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#clock",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and the instance still",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 30000
     },
     {
       "label": "the engine holds the same two root nodes",

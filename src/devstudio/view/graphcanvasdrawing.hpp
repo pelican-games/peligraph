@@ -191,6 +191,22 @@ class Builder {
     void addTie(const GraphCanvasTie &tie, std::size_t index, Moved moved);
     void addBreadcrumb(const QStringList &trail, qreal top,
                        std::function<void()> leave_scope);
+
+    // --- GL-1: folded nodes, the lines the frame plan implies, the cut ends
+    // of lines to hidden domains, and a folded view's button.
+
+    // The size a folded node is drawn at: its heading, its band (a feature
+    // says how many passes), and one row per resource it hands on or reads.
+    [[nodiscard]] QSizeF derivedNodeSize(const GraphCanvasFoldedNode &node) const;
+    // Dashed and a step dimmer than a graph node, with the plan's source in
+    // its tooltip. Movable for the session only (`moved`).
+    QGraphicsItem *addDerivedNode(const GraphCanvasFoldedNode &node, const QPointF &position,
+                                  Moved moved);
+    QGraphicsPathItem *addDerivedEdge(const GraphCanvasDerivedEdge &edge);
+    // `<- value (N)` beside an input socket, or `-> pose (N)` beside an
+    // output socket; drawn on the socket's node, so it goes where it goes.
+    void addDomainStub(const GraphCanvasDomainStub &stub, QGraphicsItem &socket);
+    void addFoldedButton(const QString &name, const QString &text, const QPointF &at);
     [[nodiscard]] const QFontMetricsF &headingMetrics() const noexcept { return heading_metrics_; }
     [[nodiscard]] const QFontMetricsF &rowMetrics() const noexcept { return row_metrics_; }
 

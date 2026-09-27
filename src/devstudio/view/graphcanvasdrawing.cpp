@@ -4,6 +4,7 @@
 #include "studiotheme.hpp"
 
 #include <QBrush>
+#include <QCursor>
 #include <QGraphicsPathItem>
 #include <QGraphicsPolygonItem>
 #include <QGraphicsRectItem>
@@ -1261,6 +1262,9 @@ void Builder::addBreadcrumb(const QStringList &trail, qreal top,
     crumb->setData(NodeGraphItemKindRole,
                    QString::fromLatin1(GraphCanvasBreadcrumbItem));
     crumb->setData(GraphCanvasScopeRole, scope_text_);
+    // GL-1: named (`graph_breadcrumb#trail`), so a scenario can come back
+    // out of a folded view the way a person does.
+    crumb->setData(NodeGraphNameRole, QStringLiteral("trail"));
     auto *crumb_label = new QGraphicsSimpleTextItem(
         QStringLiteral("%1   (click to leave)").arg(text), crumb);
     crumb_label->setFont(label_font_);
@@ -1268,6 +1272,216 @@ void Builder::addBreadcrumb(const QStringList &trail, qreal top,
     crumb_label->setPos(12.0, 8.0);
     crumb_label->setData(NodeGraphItemKindRole,
                          QString::fromLatin1(GraphCanvasBreadcrumbItem));
+}
+
+// --- GL-1.
+
+namespace {
+
+// The band under a folded node's heading: a feature says what it folds.
+QString derivedBand(const GraphCanvasFoldedNode &node) {
+    if (!node.feature_group) return {};
+    return node.passes.size() == 1
+               ? QObject::tr("1 pass")
+               : QObject::tr("%1 passes").arg(static_cast<qulonglong>(node.passes.size()));
+}
+
+// "feature" for "feature:bloom": the Frame Plan's source tint.
+QString derivedSourceKind(const std::string &source) {
+    const auto colon = source.find(':');
+    return qtext(colon == std::string::npos ? source : source.substr(0, colon));
+}
+
+} // namespace
+
+QSizeF Builder::derivedNodeSize(const GraphCanvasFoldedNode &node) const {
+    qreal width = GraphCanvasNodeMinimumWidth;
+    width = std::max(width, 18.0 + heading_metrics_.horizontalAdvance(qtext(node.label)) + 12.0 +
+                                row_metrics_.horizontalAdvance(qtext(node.type)) + 14.0);
+    for (const auto *list : {&node.reads, &node.writes})
+        for (const auto &resource : *list)
+            width = std::max(width, row_metrics_.horizontalAdvance(qtext(resource)) + 34.0);
+    width = std::min(width, GraphCanvasNodeMaximumWidth);
+    const auto rows = static_cast<qreal>(node.reads.size() + node.writes.size() +
+                                         (derivedBand(node).isEmpty() ? 0 : 1));
+    return QSizeF{width, GraphCanvasHeaderHeight + GraphCanvasSectionPadding +
+                             rows * GraphCanvasSocketRowHeight + GraphCanvasSectionPadding};
+}
+
+QGraphicsItem *Builder::addDerivedNode(const GraphCanvasFoldedNode &node, const QPointF &position,
+                                       Moved moved) {
+    const QSizeF size = derivedNodeSize(node);
+    const qreal width = size.width();
+    const QString name = qtext(node.id);
+    const QString tip = qtext(node.tooltip()) +
+                        (node.enterable() ? QObject::tr("\nDouble-click to look inside.")
+                                          : QString{});
+    auto *item = new MovableNodeItem(
+        roundedEntityPath(width, size.height(), GraphCanvasNodeCornerRadius), std::move(moved));
+    place(item);
+    item->setPos(position);
+    item->setZValue(2.0);
+    item->setBrush(theme_.canvas.derived_body);
+    QPen frame{theme_.canvas.derived_border, 1.3};
+    frame.setStyle(Qt::DashLine);
+    item->setPen(frame);
+    item->setFlag(QGraphicsItem::ItemIsMovable, true);
+    item->setFlag(QGraphicsItem::ItemIsSelectable, true);
+    item->setFlag(QGraphicsItem::ItemSendsGeometryChanges, true);
+    item->setToolTip(tip);
+    const auto tag = [&](QGraphicsItem *child, const char *kind) {
+        child->setData(NodeGraphItemKindRole, QString::fromLatin1(kind));
+        this->tag(child);
+        child->setData(NodeGraphNameRole, name);
+        child->setData(GraphCanvasDerivedRole, true);
+    };
+    tag(item, GraphCanvasNodeItem);
+    item->setData(GraphCanvasLabelRole, qtext(node.label));
+    item->setData(GraphCanvasOpRole, qtext(node.type));
+    item->setData(GraphCanvasDomainRole, QStringLiteral("render"));
+    item->setData(GraphCanvasColumnRole, -1);
+
+    // The heading band carries the plan's source tint, a step down.
+    auto *band = new QGraphicsPathItem(
+        headerBandPath(width, GraphCanvasHeaderHeight, GraphCanvasNodeCornerRadius), item);
+    QColor tint = theme_.sourceTint(derivedSourceKind(node.source));
+    tint.setAlphaF(0.55F);
+    band->setBrush(tint);
+    band->setPen(Qt::NoPen);
+    band->setToolTip(tip);
+    tag(band, GraphCanvasNodeHeaderItem);
+    auto *title = new QGraphicsSimpleTextItem(qtext(node.label), band);
+    title->setFont(heading_font_);
+    title->setBrush(theme_.canvas.heading_text);
+    title->setPos(12.0, (GraphCanvasHeaderHeight - heading_metrics_.height()) / 2.0);
+    title->setToolTip(tip);
+    tag(title, GraphCanvasNodeLabelItem);
+    title->setData(GraphCanvasLabelRole, qtext(node.label));
+    auto *kind = new QGraphicsSimpleTextItem(qtext(node.type), band);
+    kind->setFont(detail_font_);
+    kind->setBrush(theme_.canvas.dim_text);
+    kind->setOpacity(0.78);
+    kind->setPos(width - 10.0 - row_metrics_.horizontalAdvance(qtext(node.type)),
+                 (GraphCanvasHeaderHeight - row_metrics_.height()) / 2.0);
+    tag(kind, GraphCanvasNodeLabelItem);
+    kind->setData(GraphCanvasOpRole, qtext(node.type));
+
+    qreal cursor_y = GraphCanvasHeaderHeight + GraphCanvasSectionPadding;
+    if (const QString text = derivedBand(node); !text.isEmpty()) {
+        auto *line = new QGraphicsSimpleTextItem(text, item);
+        line->setFont(detail_font_);
+        line->setBrush(theme_.canvas.dim_text);
+        line->setPos(14.0, cursor_y + (GraphCanvasSocketRowHeight - row_metrics_.height()) / 2.0);
+        tag(line, GraphCanvasNodeLabelItem);
+        cursor_y += GraphCanvasSocketRowHeight;
+    }
+    const auto row = [&](const std::string &resource, bool output) {
+        const qreal centre_y = cursor_y + GraphCanvasSocketRowHeight / 2.0;
+        const QString label = qtext(resource);
+        auto *text = new QGraphicsSimpleTextItem(label, item);
+        text->setFont(detail_font_);
+        text->setBrush(theme_.canvas.dim_text);
+        text->setPos(output ? width - 14.0 - row_metrics_.horizontalAdvance(label) : 14.0,
+                     centre_y - row_metrics_.height() / 2.0);
+        tag(text, GraphCanvasNodeLabelItem);
+        text->setData(GraphCanvasPortRole, label);
+        auto *dot = new QGraphicsPathItem(socketPath(SocketShape::circle, GraphCanvasSocketSize - 2.0),
+                                          item);
+        dot->setPos(output ? width : 0.0, centre_y);
+        dot->setZValue(1.0);
+        dot->setBrush(theme_.canvas.derived_body);
+        dot->setPen(QPen{theme_.canvas.derived_border, 1.1});
+        dot->setToolTip(output ? QObject::tr("%1: written here (read only)").arg(label)
+                               : QObject::tr("%1: read here (read only)").arg(label));
+        tag(dot, GraphCanvasDerivedSocketItem);
+        dot->setData(GraphCanvasPortRole, label);
+        dot->setData(GraphCanvasSocketDirectionRole,
+                     output ? QStringLiteral("output") : QStringLiteral("input"));
+        cursor_y += GraphCanvasSocketRowHeight;
+    };
+    for (const auto &resource : node.writes) row(resource, true);
+    for (const auto &resource : node.reads) row(resource, false);
+    return item;
+}
+
+QGraphicsPathItem *Builder::addDerivedEdge(const GraphCanvasDerivedEdge &edge) {
+    auto *line = new GraphEdgeItem;
+    place(line);
+    line->setZValue(0.0);
+    QPen pen{theme_.canvas.derived_border, 1.4};
+    pen.setStyle(Qt::DashLine);
+    line->setPen(pen);
+    line->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasDerivedEdgeItem));
+    tag(line);
+    line->setData(GraphCanvasDerivedRole, true);
+    line->setData(NodeGraphFromNameRole, qtext(edge.from));
+    line->setData(NodeGraphToNameRole, qtext(edge.to));
+    QStringList resources;
+    for (const auto &resource : edge.resources) resources.push_back(qtext(resource));
+    // The first resource names the rows the line runs between.
+    line->setData(GraphCanvasFromPortRole, resources.value(0));
+    line->setData(GraphCanvasToPortRole, resources.value(0));
+    line->setToolTip(QObject::tr("%1: from the frame plan (read only)")
+                         .arg(resources.join(QStringLiteral(", "))));
+    return line;
+}
+
+void Builder::addDomainStub(const GraphCanvasDomainStub &stub, QGraphicsItem &socket) {
+    const QString text = qtext(stub.text());
+    const qreal height = GraphCanvasSocketRowHeight - 4.0;
+    const qreal width = row_metrics_.horizontalAdvance(text) + 14.0;
+    auto *pill = new QGraphicsPathItem(roundedEntityPath(width, height, height / 2.0));
+    QGraphicsItem *owner = socket.parentItem();
+    if (owner != nullptr) pill->setParentItem(owner);
+    else place(pill);
+    const QPointF at = socket.pos();
+    pill->setZValue(2.5);
+    pill->setPos(stub.input ? at.x() - 10.0 - width : at.x() + 10.0, at.y() - height / 2.0);
+    pill->setBrush(theme_.canvas.pill_bg);
+    QPen pen{theme_.canvas.derived_border, 0.9};
+    pen.setStyle(Qt::DashLine);
+    pill->setPen(pen);
+    pill->setCursor(Qt::PointingHandCursor);
+    const QString tip = QObject::tr("%1 %2 node(s) the filter hides: click to show %2")
+                            .arg(static_cast<qulonglong>(stub.count))
+                            .arg(qtext(stub.domain));
+    pill->setToolTip(tip);
+    const auto mark = [&](QGraphicsItem *item) {
+        item->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasDomainStubItem));
+        tag(item);
+        item->setData(NodeGraphNameRole, qtext(stub.node));
+        item->setData(GraphCanvasPortRole, qtext(stub.port));
+        item->setData(GraphCanvasStubDomainRole, qtext(stub.domain));
+    };
+    mark(pill);
+    auto *label = new QGraphicsSimpleTextItem(text, pill);
+    label->setFont(detail_font_);
+    label->setBrush(theme_.canvas.heading_text);
+    label->setPos(7.0, (height - row_metrics_.height()) / 2.0);
+    label->setToolTip(tip);
+    mark(label);
+}
+
+void Builder::addFoldedButton(const QString &name, const QString &text, const QPointF &at) {
+    const qreal height = NodeGraphBreadcrumbHeight - 6.0;
+    const qreal width = row_metrics_.horizontalAdvance(text) + 28.0;
+    auto *button = new QGraphicsPathItem(roundedEntityPath(width, height, 6.0));
+    scene_.addItem(button);
+    button->setPos(at);
+    button->setZValue(3.0);
+    button->setBrush(theme_.canvas.pill_bg);
+    button->setPen(QPen{theme_.canvas.edge, 1.0});
+    button->setCursor(Qt::PointingHandCursor);
+    button->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasFoldedButtonItem));
+    button->setData(NodeGraphNameRole, name);
+    button->setData(GraphCanvasScopeRole, scope_text_);
+    button->setToolTip(QObject::tr("Show the feature's shipped decomposed version, read only"));
+    auto *label = new QGraphicsSimpleTextItem(text, button);
+    label->setFont(label_font_);
+    label->setBrush(theme_.canvas.heading_text);
+    label->setPos(14.0, (height - row_metrics_.height()) / 2.0 - 1.0);
+    label->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasFoldedButtonItem));
+    label->setData(NodeGraphNameRole, name);
 }
 
 } // namespace PelicanStudio::GraphCanvasDrawing

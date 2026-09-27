@@ -39,6 +39,8 @@ StudioCanvasColors builtInCanvas() {
     canvas.heading_text = QColor{QStringLiteral("#f4f7fa")};
     canvas.dim_text = QColor{QStringLiteral("#cfdae4")};
     canvas.pill_bg = QColor{QStringLiteral("#3a444f")};
+    canvas.derived_border = QColor{QStringLiteral("#7d8a97")};
+    canvas.derived_body = QColor{QStringLiteral("#22282f")};
     return canvas;
 }
 
@@ -169,6 +171,8 @@ StudioTheme themeFromJson(const QString &name, const Json &entry) {
         readColor(canvas, "heading_text", &theme.canvas.heading_text);
         readColor(canvas, "dim_text", &theme.canvas.dim_text);
         readColor(canvas, "pill_bg", &theme.canvas.pill_bg);
+        readColor(canvas, "derived_border", &theme.canvas.derived_border);
+        readColor(canvas, "derived_body", &theme.canvas.derived_body);
     }
     readFonts(entry.value("font", Json::object()), &theme.font);
     readTints(entry.value("domain_tint", Json::object()), &theme.domain_tint);

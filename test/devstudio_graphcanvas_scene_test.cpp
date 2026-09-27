@@ -1494,6 +1494,10 @@ TEST_CASE("A CAS mismatch keeps the notice, drops the gesture and reads again",
     REQUIRE(scene.commitInlineEdit());
 
     auto requests = model.takeRpcRequests();
+    // GL-1: the plan read that follows every document read is not the edit.
+    std::erase_if(requests, [](const PelicanStudio::InspectorRpcRequest &request) {
+        return request.method == "get_frame_plan";
+    });
     REQUIRE(requests.size() == 1);
     REQUIRE(requests.front().method == "edit_graph_document");
     // The engine read a different document than the canvas did.
@@ -2533,6 +2537,13 @@ TEST_CASE("Q-5 a placement save coming back keeps the scene and what is picked o
         QStringLiteral("pelican.graphCanvas.tieTogether"));
     REQUIRE(notice != nullptr);
     REQUIRE(tie != nullptr);
+    // GL-1, decision 5: the root shows Render to begin with; the clock this
+    // test draws lines from is a value node, shown the way a person does.
+    auto *show_values =
+        widget.findChild<QCheckBox *>(QStringLiteral("pelican.graphCanvasShow.value"));
+    REQUIRE(show_values != nullptr);
+    show_values->setChecked(true);
+    QCoreApplication::processEvents();
 
     // One save the way the engine answers it: accepted, then committed. The
     // read of the document that follows is left to the caller, so what the
