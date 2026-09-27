@@ -385,6 +385,7 @@ struct EngineRpcModules {
     VulkanManageCore &vulkan;
     FrameGraphRuntimeContainer &frame_graph;
     PipelineFactory &pipelines;
+    RuntimeSpawner &runtime_spawner;
 };
 
 EngineRpcModules resolveEngineRpcModules() {
@@ -418,6 +419,7 @@ EngineRpcModules resolveEngineRpcModules() {
         GET_MODULE(VulkanManageCore),
         GET_MODULE(FrameGraphRuntimeContainer),
         GET_MODULE(PipelineFactory),
+        GET_MODULE(RuntimeSpawner),
     };
 }
 
@@ -1736,7 +1738,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             return nlohmann::json{{"index", entity.index},
                                   {"generation", entity.generation}};
         };
-        const auto spawned = GET_MODULE(RuntimeSpawner).runtimeObjects();
+        const auto spawned = modules.runtime_spawner.runtimeObjects();
         auto &ecs = modules.ecs_core.getTemplatePublicModule();
         auto objects = nlohmann::json::array();
         for (const auto &spawn : spawned) {
