@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "loop_zone_read",
-  "description": "Q-19: a body pass reads what the loop's previous element drew, with lines only. From a Blank project: a fullscreen pass in the root (its image is the outside node), a loop over a new body with a fullscreen pass of its own, count 2. The root pass's output onto the zone's left slot makes the loop input color (read from the pass's port, so the copies wait on it); the body pass's output onto the right slot makes the body's output color, carried back into the input. The body pass draws with engine://passthrough, so its input sockets are its shader's: one variadic band. The boundary input color, dropped on the band's end, is the pass's numbered input 0 -- a port the Graph tab writes, with no JSON typed. The engine's second copy then reads the first copy's image. Rename definition... on the zone gives the body a new name the loop follows, and Undo takes it back.",
+  "description": "Q-19: a body pass reads what the loop's previous element drew, with lines only. From a Blank project: a fullscreen pass in the root (its image is the outside node), a loop over a new body with a fullscreen pass of its own, count 2. The root pass's output onto the zone's left slot makes the loop input color (read from the pass's port, so the copies wait on it); the body pass's output onto the right slot makes the body's output color, carried back into the input. The body pass draws with engine://passthrough, so its input sockets are its shader's: one variadic band. The boundary input color, dropped on the band's end, is the pass's numbered input 0 -- a port the Graph tab writes, with no JSON typed. The engine's second copy then reads the first copy's image. Rename definition... on the zone gives the body a new name the loop follows, and Undo takes it back. Q-21: with LP-6 the root image itself, dropped on the band's end across the zone's edge, is taken too (Q-19 drew from the pass's port because the engine refused it), and the copies read that image.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -97,6 +97,23 @@
     {"label": "Undo the read line", "cmd": "action", "name": "pelican.graphCanvas.undo"},
     {"label": "the undo is saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 60000},
     {"label": "the definitions are what they were before the read line", "expect": "result", "command": {"cmd": "rpc", "method": "get_graph_instances", "params": {}}, "path": "result.definitions", "value_of": "definitions_before", "retry_ms": 10000},
-    {"label": "a picture after the Undos", "expect": "screenshot", "name": "pelican.graphCanvas", "path": "loop_zone_read_undone.png"}
+    {"label": "a picture after the Undos", "expect": "screenshot", "name": "pelican.graphCanvas", "path": "loop_zone_read_undone.png"},
+
+    {"label": "Q-21: the whole drawing in view", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
+    {"label": "Q-21: before the line, the plan's first copy is the second node", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "nodes[1].name", "value": "loop/0/render_fullscreen", "retry_ms": 60000},
+    {"label": "and it does not read the root image", "expect": "result", "command": {"cmd": "rpc", "method": "get_frame_plan", "params": {}}, "path": "result.nodes[1].reads", "op": "excludes", "value": "render_fullscreen__color"},
+    {"label": "Q-21 (LP-6): the root image itself, not the pass that writes it, onto the band's end across the zone's edge", "cmd": "drag",
+     "from": {"name": "pelican.graphCanvasView::graph_socket#render_fullscreen__color/resource"},
+     "to": {"name": "pelican.graphCanvasView::graph_socket#loop_body/render_fullscreen/in:variadic"}, "steps": 8},
+    {"label": "the engine takes the line: the edit is saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 60000},
+    {"label": "the loop has an input named after the image's port, fed by the root image", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "nodes[2].inputs.resource.node", "value": "render_fullscreen__color", "retry_ms": 10000},
+    {"label": "the body pass has a port that reads input 0", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.loop_body.nodes[1].parameters.ports.resource.input_index", "value": 0},
+    {"label": "fed by the new boundary input", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.loop_body.nodes[1].inputs.resource.node", "value": "resource"},
+    {"label": "the root pass that draws the image now comes before the copies: the first copy is the third node", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "nodes[2].name", "value": "loop/0/render_fullscreen", "retry_ms": 60000},
+    {"label": "the root pass is the second node", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "nodes[1].name", "value": "render_fullscreen"},
+    {"label": "the first copy reads the root image", "expect": "result", "command": {"cmd": "rpc", "method": "get_frame_plan", "params": {}}, "path": "result.nodes[2].reads", "op": "contains", "value": "render_fullscreen__color"},
+    {"label": "the plan's second copy", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "nodes[3].name", "value": "loop/1/render_fullscreen"},
+    {"label": "and so does the second", "expect": "result", "command": {"cmd": "rpc", "method": "get_frame_plan", "params": {}}, "path": "result.nodes[3].reads", "op": "contains", "value": "render_fullscreen__color"},
+    {"label": "a picture of the line from the root image", "expect": "screenshot", "name": "pelican.graphCanvas", "path": "loop_zone_read_image_line.png"}
   ]
 }

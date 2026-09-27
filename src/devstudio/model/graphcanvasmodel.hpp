@@ -701,12 +701,6 @@ class GraphCanvasModel {
                                      std::string_view port, int depth) const;
     const nlohmann::json *findNode(std::string_view scope,
                                    std::string_view id) const;
-    // Q-20, a temporary hint (remove with LP-6): whether an op list draws a
-    // line out of a render.image -- a set_input, or a node added or replaced
-    // with an input, whose source is one in the document or one the same
-    // list adds. True when `ops` is no list, so an edit that cannot be told
-    // is given the hint.
-    [[nodiscard]] bool readsRenderImage(const nlohmann::json &ops) const;
     // Q-11. The id of the scope's first value.input reading scene_time, or
     // empty. A placed audio.playback reads its time from it.
     [[nodiscard]] std::string sceneTimeNode(std::string_view scope) const;

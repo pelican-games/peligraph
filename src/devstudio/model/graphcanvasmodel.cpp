@@ -53,23 +53,6 @@ std::string text(const Json &value, const char *key) {
     return found->get<std::string>();
 }
 
-// Q-20, a temporary hint: remove it once LP-6 lands and the engine orders a
-// pass after the pass that writes the render.image it reads. Until then the
-// render pipeline refuses such a line with this message and no code of its
-// own (it arrives as render_pipeline_preflight_failed), while the same line
-// drawn from the writing pass's output port goes through.
-constexpr std::string_view PassInputNotProducedMessage =
-    "Pass input target is not produced as an earlier output";
-constexpr std::string_view PassInputNotProducedHint =
-    " — draw the line from the pass that writes this image instead (a known engine gap, LP-6)";
-
-bool isPassInputNotProduced(const Json &error) {
-    const auto message = error.is_string()   ? error.get<std::string>()
-                         : error.is_object() ? text(error, "message")
-                                             : std::string{};
-    return message.find(PassInputNotProducedMessage) != std::string::npos;
-}
-
 // The node ids of a definition's graph.input nodes, in declaration order. An
 // instance's input ports are exactly those: the catalog cannot declare them,
 // because they follow the definition rather than the operation.
@@ -981,18 +964,8 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                                                    "set_layout";
                                         }))
                     layout_retry_ = pending_history_->entry.forward;
-                // Q-20 (remove with LP-6): whether the refused edit drew a
-                // line out of a render.image. An edit that cannot be told is
-                // given the hint all the same.
-                const bool image_hint =
-                    isPassInputNotProduced(error) &&
-                    (!pending_history_ ||
-                     readsRenderImage(pending_history_->action == HistoryAction::Undo
-                                          ? pending_history_->entry.inverse
-                                          : pending_history_->entry.forward));
                 pending_history_.reset();
                 edit_notice_ = {InspectorNoticeKind::Error, diagnostic(response)};
-                if (image_hint) edit_notice_.message += PassInputNotProducedHint;
                 // LP-4c, decision 9: and where the refusal points.
                 markRefusal(error, edit_notice_.message);
                 ++content_revision_;
@@ -1371,44 +1344,6 @@ const Json *GraphCanvasModel::findNode(std::string_view scope, std::string_view 
     for (const auto &node : *nodes)
         if (node.is_object() && std::string_view{text(node, "id")} == id) return &node;
     return nullptr;
-}
-
-bool GraphCanvasModel::readsRenderImage(const Json &ops) const {
-    // Q-20 (remove with LP-6). Nothing to go by: told as a yes.
-    if (!ops.is_array()) return true;
-    // A render.image the same list adds is one too.
-    std::set<std::pair<std::string, std::string>> added;
-    const auto isImage = [&](const std::string &scope, const std::string &id) {
-        if (added.contains({scope, id})) return true;
-        const auto *node = findNode(scope, id);
-        return node != nullptr && text(*node, "op") == "render.image";
-    };
-    const auto readsImage = [&](const std::string &scope, const Json &source) {
-        return source.is_object() && isImage(scope, text(source, "node"));
-    };
-    for (const auto &op : ops) {
-        if (!op.is_object()) continue;
-        const auto kind = text(op, "op");
-        const auto token = text(op, "scope");
-        const std::string scope = token == "root" ? std::string{} : token;
-        if (kind == "set_input") {
-            if (const auto source = op.find("source");
-                source != op.end() && readsImage(scope, *source))
-                return true;
-            continue;
-        }
-        if (kind != "add_node" && kind != "replace_node") continue;
-        const auto node = op.find("node");
-        if (node == op.end() || !node->is_object()) continue;
-        if (const auto inputs = node->find("inputs");
-            inputs != node->end() && inputs->is_object())
-            for (const auto &[port, source] : inputs->items()) {
-                (void)port;
-                if (readsImage(scope, source)) return true;
-            }
-        if (text(*node, "op") == "render.image") added.emplace(scope, text(*node, "id"));
-    }
-    return false;
 }
 
 const Json *GraphCanvasModel::nodeOutputs(std::string_view scope,
