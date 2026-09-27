@@ -421,11 +421,11 @@ attachment ops、resource use、material filter、前後 barrier は折りたた
 **値の問い合わせが次の文書再取得を待たせないため**で、遅れて届いた古い答えは捨てられます。
 提供するのは scope 一覧(`root` + definition 名)、scope ごとの node と edge、root scope の `graph.instance` へ
 重ねる値の overlay、そして `contentRevision()` / `reportRevision()` の 2 つの世代です
-([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L909))。編集側は 6 つの操作
+([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L903))。編集側は 6 つの操作
 (`connectInput` / `disconnectInput` / `setNodeParameter` / `removeNode` / `setNodeLabel` / `addNode`)で、
-**どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L1903))。
+**どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L1838))。
 `addNodeOps()` だけは複数 op を返します —— 必須の scalar 入力を持つ操作は、未接続のままでは engine が受け取らないので、
-**同じ ops 列で `value.constant` を先に足して**そこへ繋ぎます([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L2311))。
+**同じ ops 列で `value.constant` を先に足して**そこへ繋ぎます([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L2246))。
 種の定数は後で本物の producer を繋いでも自動では消えません(記録された穴)。
 
 [`view/nodegraphics.{hpp,cpp}`](../../src/devstudio/view/nodegraphics.hpp#L35) は
@@ -755,6 +755,7 @@ engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/commu
 |---|---|---|
 | `reload_game_logic` | [再ロード](../../src/core/communication/rpcserver.cpp#L1325) | game DLL(`pelican_game_logic`)を再ロード |
 | `get_status` | [状態取得](../../src/core/communication/rpcserver.cpp#L1566) | instance、project、scene、frame/time、seed、store 状態と各種診断を返す |
+| `get_runtime_objects` | [spawn された object の一覧](../../src/core/communication/rpcserver.cpp#L1727) | 今の scene で spawn された生きている object を spawn 順に返す(RO-1。`name`、`entity`、`parent`、`spawned_by`、`transform`) |
 | `get_gpu_timing` | [GPU 時間平均](../../src/core/communication/rpcserver.cpp#L1784) | 直近 30 フレームの node 別 `body_ms` / `barriers_ms` 平均と対応状況を軽量に返す |
 | `set_seed` | [seed 設定](../../src/core/communication/rpcserver.cpp#L1856) | deterministic RNG を reseed |
 | `set_input_profile` | [profile 切替](../../src/core/communication/rpcserver.cpp#L1864) | input profile を切替 |
