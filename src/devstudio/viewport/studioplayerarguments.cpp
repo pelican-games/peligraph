@@ -19,6 +19,8 @@ std::vector<std::string> studioPlayerArgumentStrings(
     additional.reserve(configured.size());
     bool has_editor_transform_preset = false;
     bool has_log_file = false;
+    bool has_headless = false;
+    bool has_embedded = false;
     for (std::size_t index = 0; index < configured.size(); ++index) {
         const auto &argument = configured[index];
         if (argument == "--rpc") {
@@ -49,6 +51,12 @@ std::vector<std::string> studioPlayerArgumentStrings(
         if (argument == "--log-file" || startsWith(argument, "--log-file=")) {
             has_log_file = true;
         }
+        if (argument == "--headless") {
+            has_headless = true;
+        }
+        if (argument == "--embedded") {
+            has_embedded = true;
+        }
         additional.push_back(argument);
     }
 
@@ -59,6 +67,14 @@ std::vector<std::string> studioPlayerArgumentStrings(
         "--feature-overlay",
         std::string{Pelican::editorFeatureOverlayReference},
     };
+    // EW-2: the engine's window belongs inside Studio from its first frame.
+    // --embedded makes the engine create it hidden and unfocused, so nothing
+    // shows outside Studio while the project loads; Studio shows it when it
+    // embeds it. A configured --headless run has no window to host, and the
+    // engine refuses the two together, so the flag is left out then.
+    if (!has_headless && !has_embedded) {
+        arguments.emplace_back("--embedded");
+    }
     if (!has_editor_transform_preset) {
         arguments.emplace_back("--editor-transform");
     }

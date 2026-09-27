@@ -254,6 +254,203 @@ class Studio:
 
 
 # ---------------------------------------------------------------------------
+# EW-2: the engine's windows, watched from outside
+
+
+class EngineWindowWatch(threading.Thread):
+    """Every top-level window a process Studio started puts on the desktop.
+
+    Studio embeds the engine's window only once the project has loaded, so
+    whether a window shows outside Studio before then is a question about the
+    time between two steps, not about any one moment a step could look at.
+    This thread asks it from the moment Studio is launched: every few
+    milliseconds it lists the top-level windows of Studio's child processes
+    and writes down each one that is visible.  An embedded window is Studio's
+    child and is no longer top-level, so it drops out of the list by itself.
+
+    It also counts, per engine, the samples in which the engine's marked render
+    window (EW-1) was still top-level -- the load, before the embed.  A pass
+    needs a few of those, so a watch that never saw the load cannot pass.
+    """
+
+    MARK = "PelicanEngineRenderWindow"
+    INTERVAL_S = 0.01
+
+    def __init__(self, studio_pid: int) -> None:
+        super().__init__(daemon=True)
+        import ctypes
+        from ctypes import wintypes
+
+        self._ctypes = ctypes
+        self._wintypes = wintypes
+        self._user32 = ctypes.WinDLL("user32", use_last_error=True)
+        self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._user32.GetPropW.restype = wintypes.HANDLE
+        self._user32.GetPropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
+        self._user32.GetWindow.restype = wintypes.HWND
+        self._user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+        self._user32.IsWindowVisible.argtypes = [wintypes.HWND]
+        self._user32.IsWindow.argtypes = [wintypes.HWND]
+        self._user32.GetAncestor.restype = wintypes.HWND
+        self._user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+        self._user32.GetWindowThreadProcessId.argtypes = [
+            wintypes.HWND, ctypes.POINTER(wintypes.DWORD)
+        ]
+        self._user32.GetWindowTextW.argtypes = [
+            wintypes.HWND, wintypes.LPWSTR, ctypes.c_int
+        ]
+        self._enum_proc = ctypes.WINFUNCTYPE(
+            wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+        )
+        self._kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        self._kernel32.CreateToolhelp32Snapshot.argtypes = [
+            wintypes.DWORD, wintypes.DWORD
+        ]
+        self._kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        class ProcessEntry(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
+        self._process_entry = ProcessEntry
+        for walk in (self._kernel32.Process32FirstW, self._kernel32.Process32NextW):
+            walk.restype = wintypes.BOOL
+            walk.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry)]
+        self._user32.EnumWindows.argtypes = [self._enum_proc, wintypes.LPARAM]
+        self.studio_pid = studio_pid
+        self._lock = threading.Lock()
+        self._stop_requested = threading.Event()
+        self._origin = time.monotonic()
+        self.samples = 0
+        self.errors: list[str] = []
+        # pid -> {"exe", "hidden_samples", "visible": {hwnd: {...}}}
+        self.engines: dict[int, dict[str, Any]] = {}
+
+    def stop(self) -> None:
+        self._stop_requested.set()
+
+    def run(self) -> None:
+        while not self._stop_requested.is_set():
+            try:
+                self._sample()
+            except Exception as error:  # noqa: BLE001 - a report, not a crash
+                with self._lock:
+                    if len(self.errors) < 10:
+                        self.errors.append(repr(error))
+            self._stop_requested.wait(self.INTERVAL_S)
+
+    def _children(self) -> dict[int, str]:
+        ctypes = self._ctypes
+        snapshot = self._kernel32.CreateToolhelp32Snapshot(0x2, 0)  # PROCESS
+        if snapshot in (None, self._wintypes.HANDLE(-1).value):
+            return {}
+        children: dict[int, str] = {}
+        try:
+            entry = self._process_entry()
+            entry.dwSize = ctypes.sizeof(entry)
+            more = self._kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+            while more:
+                if entry.th32ParentProcessID == self.studio_pid:
+                    children[int(entry.th32ProcessID)] = entry.szExeFile
+                more = self._kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+        finally:
+            self._kernel32.CloseHandle(snapshot)
+        return children
+
+    def _sample(self) -> None:
+        children = self._children()
+        if not children:
+            with self._lock:
+                self.samples += 1
+            return
+        ctypes = self._ctypes
+        wintypes = self._wintypes
+        user32 = self._user32
+        seen: list[tuple[int, int, bool, bool, bool, str]] = []
+
+        def visit(hwnd: Any, _: Any) -> bool:
+            pid = wintypes.DWORD(0)
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value in children:
+                marked = bool(user32.GetPropW(hwnd, self.MARK))
+                owned = bool(user32.GetWindow(hwnd, 4))  # GW_OWNER
+                visible = bool(user32.IsWindowVisible(hwnd))
+                title = ""
+                if visible:
+                    buffer = ctypes.create_unicode_buffer(256)
+                    user32.GetWindowTextW(hwnd, buffer, 256)
+                    title = buffer.value
+                seen.append((int(pid.value), int(hwnd or 0), marked, owned, visible, title))
+            return True
+
+        user32.EnumWindows(self._enum_proc(visit), 0)
+        at_ms = round((time.monotonic() - self._origin) * 1000)
+        with self._lock:
+            self.samples += 1
+            for pid, hwnd, marked, owned, visible, title in seen:
+                engine = self.engines.setdefault(
+                    pid,
+                    {"exe": children.get(pid, ""), "hidden_samples": 0,
+                     "visible": {}, "marked": set()},
+                )
+                if marked and not owned:
+                    engine["marked"].add(hwnd)
+                if marked and not owned and not visible:
+                    engine["hidden_samples"] += 1
+                if visible:
+                    shown = engine["visible"].setdefault(
+                        hwnd,
+                        {"hwnd": hwnd, "title": title, "marked": marked,
+                         "owned": owned, "first_ms": at_ms, "samples": 0},
+                    )
+                    shown["samples"] += 1
+                    shown["last_ms"] = at_ms
+
+    def _shown_in_studio(self, windows: set[int]) -> bool:
+        """One of these windows is on screen now, as a child of Studio's."""
+
+        wintypes = self._wintypes
+        for hwnd in windows:
+            if not self._user32.IsWindow(hwnd) or not self._user32.IsWindowVisible(hwnd):
+                continue
+            root = self._user32.GetAncestor(hwnd, 2)  # GA_ROOT
+            if not root or root == hwnd:
+                continue
+            pid = wintypes.DWORD(0)
+            self._user32.GetWindowThreadProcessId(root, self._ctypes.byref(pid))
+            if pid.value == self.studio_pid:
+                return True
+        return False
+
+    def reading(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "samples": self.samples,
+                "errors": list(self.errors),
+                "engines": [
+                    {
+                        "pid": pid,
+                        "exe": engine["exe"],
+                        "hidden_samples": engine["hidden_samples"],
+                        "visible_windows": [dict(item) for item in engine["visible"].values()],
+                        "shown_in_studio": self._shown_in_studio(engine["marked"]),
+                    }
+                    for pid, engine in self.engines.items()
+                ],
+            }
+
+
+# ---------------------------------------------------------------------------
 # Reading a value out of an RPC result
 
 
@@ -368,6 +565,8 @@ class Run:
         # is the view's business, and a scenario that hard-codes it is testing
         # the arithmetic instead of the gesture.
         self.remembered: dict[str, Any] = {}
+        # EW-2: set when the scenario asks for `watch_engine_windows`.
+        self.window_watch: EngineWindowWatch | None = None
 
     # -- recording -----------------------------------------------------------
 
@@ -882,6 +1081,61 @@ def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
             )
             return True
 
+        if kind == "engine_windows":
+            # EW-2: since Studio was launched, no process it started has shown
+            # a top-level window, and the watch saw each engine's load (its
+            # marked window still top-level) often enough to have been looking.
+            watch = run.window_watch
+            if watch is None:
+                return _fail(
+                    run, kind, label, step, None,
+                    "the scenario does not set watch_engine_windows", started,
+                )
+            reading = watch.reading()
+            minimum = int(step.get("min_hidden_samples", 3))
+            watched = [
+                engine for engine in reading["engines"]
+                if engine["hidden_samples"] >= minimum
+            ]
+            shown = [
+                f"pid {engine['pid']} ({engine['exe']}): \"{window['title']}\" "
+                f"visible from {window['first_ms']} ms for {window['samples']} samples"
+                for engine in reading["engines"]
+                for window in engine["visible_windows"]
+            ]
+            reasons = []
+            if shown:
+                reasons.append("a window showed outside Studio: " + "; ".join(shown))
+            if len(watched) < int(step["engines"]):
+                reasons.append(
+                    f"saw {len(watched)} engine load(s) with at least {minimum} "
+                    f"samples each, expected {step['engines']}"
+                )
+            if reading["errors"]:
+                reasons.append("the watch failed: " + "; ".join(reading["errors"]))
+            # The window is hidden until Studio embeds it; this says Studio
+            # did show it then, inside its own window, for the newest engine.
+            if not reading["engines"] or not reading["engines"][-1]["shown_in_studio"]:
+                reasons.append("the newest engine's window is not on screen inside Studio")
+            if reasons:
+                return _fail(run, kind, label, step, reading, " / ".join(reasons), started)
+            run.record(
+                "expect",
+                label,
+                ok=True,
+                request=step,
+                response=reading,
+                detail=(
+                    f"{reading['samples']} samples, no window outside Studio; loads seen: "
+                    + ", ".join(
+                        f"pid {engine['pid']} x{engine['hidden_samples']}"
+                        for engine in watched
+                    )
+                ),
+                started=started,
+            )
+            return True
+
         if kind == "screenshot":
             path = Path(step.get("path") or f"{step.get('name', 'window')}.png")
             if not path.is_absolute():
@@ -1064,6 +1318,13 @@ def main() -> int:
     try:
         studio = Studio(command, artifacts / "studio.log", env)
         watchdog.on_trip = studio.stop
+        if scenario.get("watch_engine_windows"):
+            if sys.platform != "win32":
+                raise AutomationError("watch_engine_windows is Windows only")
+            # From the launch on: the first engine starts with Studio, before
+            # the automation channel is even open.
+            run.window_watch = EngineWindowWatch(studio.process.pid)
+            run.window_watch.start()
         listening = studio.wait_for_line("automation listening:", arguments.launch_timeout)
         if listening is None:
             raise AutomationError(
@@ -1103,6 +1364,8 @@ def main() -> int:
         launch_error = str(error)
         run.record("launch", " ".join(command), ok=False, detail=launch_error, started=started)
 
+    if run.window_watch is not None:
+        run.window_watch.stop()
     exit_code: int | None = None
     forced_shutdown = False
     if studio is not None:

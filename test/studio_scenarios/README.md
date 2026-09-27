@@ -80,6 +80,16 @@ step green only when the command is refused with exactly that code; or an
 | `list_count`  | `pattern`, `value`                 | `list` matched exactly `value` things         |
 | `result`      | `command`, `path`, and see below   | the command's own reply has what `path` says  |
 | `screenshot`  | `name?`, `path?`, `mode?`          | always -- it only saves the picture           |
+| `engine_windows` | `engines`, `min_hidden_samples?` | see below (needs `watch_engine_windows`)   |
+
+`engine_windows` (EW-2) asks about the time between steps rather than about
+one moment. A scenario with `"watch_engine_windows": true` has the driver list
+the top-level windows of Studio's child processes from the launch on, many
+times a second. The step passes when none of them was ever visible (nothing
+showed outside Studio), when at least `engines` engines were seen loading --
+their marked render window (EW-1) hidden and still top-level in at least
+`min_hidden_samples` (default 3) samples -- and when the newest engine's window
+is now on screen as a child of Studio's. `engine_window_embedded` uses it.
 
 `path` walks the JSON reply: `nodes[1].parameters.gain`, and `$len` for the
 length of a list or object (`definitions.$len`).

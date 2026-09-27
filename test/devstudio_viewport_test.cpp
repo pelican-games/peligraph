@@ -4,7 +4,9 @@
 #include "engineattach.hpp"
 #include "enginelogbuffer.hpp"
 #include "engineprocess.hpp"
+#include "nativewindowhost.hpp"
 #include "viewportgeometry.hpp"
+#include "../src/core/os/enginewindowproperty.hpp"
 #include "../src/project/renderfeatureoverlay.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -29,6 +31,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <vector>
 
 #ifdef Q_OS_WIN
 #define NOMINMAX
@@ -147,6 +150,7 @@ TEST_CASE("Studio player arguments force public editor feature and input overlay
                         QStringLiteral("--project"),
                         QStringLiteral("C:/projects/example"),
                         QStringLiteral("--feature-overlay"), expected_overlay,
+                        QStringLiteral("--embedded"),
                         QStringLiteral("--editor-transform"),
                         QStringLiteral("--log-file"),
                         QStringLiteral("C:/projects/example/.pelican/logs/player.log"),
@@ -169,6 +173,120 @@ TEST_CASE("Studio player arguments force public editor feature and input overlay
         QStringLiteral("--editor-transform")));
     REQUIRE(handle_only != arguments);
 }
+
+// EW-2. The engine Studio starts creates its window hidden (--embedded), so
+// nothing appears outside Studio while the project loads. A configured
+// --headless run has no window, and the engine refuses the two together.
+TEST_CASE("EW-2: Studio starts the engine --embedded, unless it was told to "
+          "run it headless",
+          "[devstudio][viewport][ew2]") {
+    const QString project = QStringLiteral("C:/projects/example");
+    const auto plain = studioPlayerArguments({}, project);
+    REQUIRE(plain.count(QStringLiteral("--embedded")) == 1);
+
+    const auto headless = studioPlayerArguments(
+        {QStringLiteral("--headless"), QStringLiteral("--frames"),
+         QStringLiteral("0")},
+        project);
+    REQUIRE(headless.contains(QStringLiteral("--headless")));
+    REQUIRE_FALSE(headless.contains(QStringLiteral("--embedded")));
+
+    // Asked for already: passed on once, not twice.
+    const auto configured = studioPlayerArguments(
+        {QStringLiteral("--embedded")}, project);
+    REQUIRE(configured.count(QStringLiteral("--embedded")) == 1);
+}
+
+#ifdef Q_OS_WIN
+namespace {
+
+class FixtureWindows {
+  public:
+    FixtureWindows() {
+        WNDCLASSEXW window_class{};
+        window_class.cbSize = sizeof(WNDCLASSEXW);
+        window_class.lpfnWndProc = DefWindowProcW;
+        window_class.hInstance = GetModuleHandleW(nullptr);
+        window_class.lpszClassName = className();
+        registered_ = RegisterClassExW(&window_class) != 0;
+    }
+    ~FixtureWindows() {
+        for (auto it = windows_.rbegin(); it != windows_.rend(); ++it) {
+            DestroyWindow(*it);
+        }
+        if (registered_) {
+            UnregisterClassW(className(), GetModuleHandleW(nullptr));
+        }
+    }
+    bool registered() const noexcept { return registered_; }
+
+    // Off every monitor: these are facts about HWNDs, not something to flash
+    // at whoever is at the desktop.
+    HWND create(HWND owner, bool marked, bool visible) {
+        HWND window = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, className(),
+            L"pelican ew2 fixture", WS_OVERLAPPEDWINDOW, -32000, -32000, 64,
+            64, owner, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (window == nullptr) {
+            return nullptr;
+        }
+        windows_.push_back(window);
+        if (marked) {
+            SetPropW(window, Pelican::engineRenderWindowProperty,
+                     reinterpret_cast<HANDLE>(1));
+        }
+        if (visible) {
+            ShowWindow(window, SW_SHOWNOACTIVATE);
+        }
+        return window;
+    }
+
+  private:
+    static const wchar_t *className() noexcept {
+        return L"PelicanEw2WindowSearchFixture";
+    }
+    bool registered_ = false;
+    std::vector<HWND> windows_;
+};
+
+} // namespace
+
+// EW-2. What Studio embeds is the process's top-level, ownerless window that
+// carries the engine's mark (EW-1) -- visible or not, since an --embedded
+// engine's window is hidden until Studio shows it.
+TEST_CASE("EW-2: the engine window is found by its mark, not by being visible",
+          "[devstudio][viewport][ew2][attach]") {
+    FixtureWindows fixture;
+    REQUIRE(fixture.registered());
+    const HWND marked_hidden =
+        fixture.create(nullptr, /*marked=*/true, /*visible=*/false);
+    const HWND unmarked_visible =
+        fixture.create(nullptr, /*marked=*/false, /*visible=*/true);
+    const HWND owned_marked =
+        fixture.create(unmarked_visible, /*marked=*/true, /*visible=*/true);
+    REQUIRE(marked_hidden != nullptr);
+    REQUIRE(unmarked_visible != nullptr);
+    REQUIRE(owned_marked != nullptr);
+    REQUIRE_FALSE(IsWindowVisible(marked_hidden));
+    REQUIRE(IsWindowVisible(unmarked_visible));
+    // The two wrong answers come first in EnumWindows' (z-)order, so a search
+    // that stops at the first visible window, or the first window at all,
+    // returns one of them.
+    for (const HWND ahead : {unmarked_visible, owned_marked}) {
+        SetWindowPos(ahead, HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
+
+    const auto process_id = static_cast<qint64>(GetCurrentProcessId());
+    REQUIRE(NativeWindowHost::findTopLevelWindow(process_id) ==
+            reinterpret_cast<NativeWindowHandle>(marked_hidden));
+
+    // Without the mark there is nothing to embed yet: a visible window and an
+    // owned one are not the engine's.
+    RemovePropW(marked_hidden, Pelican::engineRenderWindowProperty);
+    REQUIRE(NativeWindowHost::findTopLevelWindow(process_id) == 0);
+}
+#endif
 
 TEST_CASE("Continuous embedded viewport resizes stay frozen and apply only the trailing extent",
           "[devstudio][viewport][resize]") {

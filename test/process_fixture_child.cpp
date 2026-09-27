@@ -13,6 +13,8 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+
+#include "../src/core/os/enginewindowproperty.hpp"
 #endif
 
 namespace {
@@ -130,7 +132,7 @@ int runMigrationGateFixture() {
 #ifdef _WIN32
 
 // Q-4. What the engine does to Studio, in one fixture: a real top-level window
-// that is visible almost at once, on a thread that does not take a single
+// that exists almost at once, on a thread that does not take a single
 // message until its "project" has finished loading. Re-parenting such a window
 // blocks the caller for the rest of that load, which is the freeze Q-4 is
 // about; with the wait in place nothing is re-parented until this process
@@ -144,7 +146,7 @@ LRESULT CALLBACK fixtureWindowProc(HWND window, UINT message, WPARAM wparam,
     return DefWindowProcW(window, message, wparam, lparam);
 }
 
-int runViewportWindowFixture() {
+int runViewportWindowFixture(bool embedded) {
     // Qt runs per-monitor aware, and NativeWindowHost refuses to embed across
     // a DPI-awareness boundary. Match it, or the test would measure that
     // refusal instead of the wait.
@@ -168,7 +170,13 @@ int runViewportWindowFixture() {
         WS_OVERLAPPEDWINDOW, -32000, -32000, 320, 200, nullptr, nullptr,
         window_class.hInstance, nullptr);
     if (window == nullptr) return 7;
-    ShowWindow(window, SW_SHOWNOACTIVATE);
+    // EW-1/EW-2: the engine's mark, on every run, and a window that stays
+    // hidden under --embedded until its host shows it.
+    SetPropW(window, Pelican::engineRenderWindowProperty,
+             reinterpret_cast<HANDLE>(1));
+    if (!embedded) {
+        ShowWindow(window, SW_SHOWNOACTIVATE);
+    }
     std::cout << "viewport-window-ready\n" << std::flush;
 
     // The load. Not one message is taken off the queue for this long -- and
@@ -212,7 +220,11 @@ int runViewportWindowFixture() {
 int main(int argc, char *argv[]) {
 #ifdef _WIN32
     if (childMode() == "viewport-window") {
-        return runViewportWindowFixture();
+        bool embedded = false;
+        for (int index = 1; index < argc; ++index) {
+            embedded = embedded || std::string_view{argv[index]} == "--embedded";
+        }
+        return runViewportWindowFixture(embedded);
     }
 #endif
     if (childMode() == "migration-gate") {

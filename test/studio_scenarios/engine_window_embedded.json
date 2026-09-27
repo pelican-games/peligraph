@@ -1,0 +1,75 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "engine_window_embedded",
+  "description": "EW-2: the engine Studio starts never shows a window outside Studio. Studio starts it --embedded (EW-1), so the engine creates its window hidden and unfocused; Studio finds it by the engine's mark rather than by its being visible, waits out the load as before, and shows it only once it is Studio's child. The driver watches every top-level window of Studio's child processes from the launch on, many times a second, and each check below requires that none was ever visible and that the watch saw each engine's load (its marked window hidden and still top-level) in at least three samples, and that the newest engine's window is now on screen as a child of Studio's window. Checked for the engine Studio starts with the project, for Restart Engine after a stop, and for a switch to another project.",
+  "watch_engine_windows": true,
+  "steps": [
+    {
+      "label": "the engine Studio started with the project answers editor RPC (it is embedded)",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start: no window showed outside Studio while the engine loaded",
+      "expect": "engine_windows",
+      "engines": 1
+    },
+    {
+      "label": "Stop Engine",
+      "cmd": "click",
+      "name": "pelican.viewportStop"
+    },
+    {
+      "label": "the engine has stopped, and the button offers Restart Engine",
+      "cmd": "wait",
+      "name": "pelican.viewportRestart",
+      "text": "Restart Engine",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Restart Engine",
+      "cmd": "click",
+      "name": "pelican.viewportRestart"
+    },
+    {
+      "label": "the restarted engine answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "restart: no window showed outside Studio while the second engine loaded",
+      "expect": "engine_windows",
+      "engines": 2
+    },
+    {
+      "label": "switch to another project",
+      "cmd": "open_project",
+      "dir": "{other_project}"
+    },
+    {
+      "label": "that project's engine answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "switch: no window showed outside Studio while the third engine loaded",
+      "expect": "engine_windows",
+      "engines": 3
+    },
+    {
+      "label": "the engine has presented frames since",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the engine's picture is in the viewport, read off the screen",
+      "expect": "screenshot",
+      "name": "pelican.viewportHost",
+      "mode": "screen",
+      "path": "embedded_window.png"
+    }
+  ]
+}

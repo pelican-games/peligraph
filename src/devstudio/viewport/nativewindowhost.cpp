@@ -2,6 +2,9 @@
 
 #ifdef Q_OS_WIN
 
+// EW-2: header-only, no engine types; Studio does not link the engine.
+#include "../../core/os/enginewindowproperty.hpp"
+
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -49,7 +52,7 @@ bool setWindowStyle(HWND window, int index, LONG_PTR style, const QString &opera
 
 struct WindowSearch {
     DWORD process_id = 0;
-    HWND visible_window = nullptr;
+    HWND render_window = nullptr;
 };
 
 BOOL CALLBACK findProcessWindow(HWND window, LPARAM parameter) {
@@ -60,10 +63,11 @@ BOOL CALLBACK findProcessWindow(HWND window, LPARAM parameter) {
         return TRUE;
     }
 
-    // GLFW creates an invisible helper HWND before the render window. Wait for
-    // the visible top-level window instead of accidentally embedding that helper.
-    if (IsWindowVisible(window)) {
-        search.visible_window = window;
+    // EW-2: the engine marks its render window (EW-1), and an --embedded
+    // engine creates it hidden, so visibility says nothing here. GLFW's own
+    // hidden helper window carries no mark and is passed over.
+    if (GetPropW(window, Pelican::engineRenderWindowProperty) != nullptr) {
+        search.render_window = window;
         return FALSE;
     }
     return TRUE;
@@ -98,7 +102,7 @@ NativeWindowHandle NativeWindowHost::findTopLevelWindow(qint64 process_id) noexc
 
     WindowSearch search{static_cast<DWORD>(process_id)};
     EnumWindows(findProcessWindow, reinterpret_cast<LPARAM>(&search));
-    return asHandle(search.visible_window);
+    return asHandle(search.render_window);
 }
 
 bool NativeWindowHost::windowThreadAnswers(NativeWindowHandle window_handle,
@@ -145,10 +149,14 @@ bool NativeWindowHost::embed(NativeWindowHandle child_handle, NativeWindowHandle
         setError(error, windowsError(QStringLiteral("GetWindowLongPtrW(GWL_STYLE)")));
         return false;
     }
+    // EW-2: no WS_VISIBLE here. An --embedded engine's window is still hidden
+    // and still top-level at this point; marking it visible before SetParent
+    // would show it on the desktop for that moment. resize() below shows it
+    // (SWP_SHOWWINDOW) once it is Studio's child.
     const LONG_PTR child_style =
         (current_style & ~(WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX |
                            WS_MAXIMIZEBOX | WS_SYSMENU)) |
-        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
+        WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
     if (!setWindowStyle(child, GWL_STYLE, child_style,
                         QStringLiteral("SetWindowLongPtrW(GWL_STYLE)"), error)) {
         return false;
