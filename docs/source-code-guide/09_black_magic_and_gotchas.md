@@ -1921,7 +1921,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ## 9.24 v0 で足した機構の難所(共通グラフ・package・節 locator・オフライン時刻)
 
-ここに並ぶ 11 件は、v0(AG / P / O / X / R 群)で入った機構のうち、**素朴に読むと逆の結論に着地する**箇所です。他章の `🧩 難所` ブロックと同じ役割なので、書式もそれに合わせて「素朴に読むと / 実際は / 不変条件 / 読む場所」の 4 つで書いてあります。**この節だけは実装が新しいぶん、既存の設計文書側に説明が無い**ものが多く、根拠はすべてコードとヘッダのコメントです。
+ここに並ぶ 12 件は、v0(AG / P / O / X / R 群と、V0-ADD の RS-1)で入った機構のうち、**素朴に読むと逆の結論に着地する**箇所です。他章の `🧩 難所` ブロックと同じ役割なので、書式もそれに合わせて「素朴に読むと / 実際は / 不変条件 / 読む場所」の 4 つで書いてあります。**この節だけは実装が新しいぶん、既存の設計文書側に説明が無い**ものが多く、根拠はすべてコードとヘッダのコメントです。
 
 ### 難所 — byte 正確な節 locator と絶対 offset
 
@@ -2060,6 +2060,20 @@ seek が無い代わりに置かれているのが **replay prologue** です。
 **不変条件**: 既定値を評価側やスキーマ側で言い直さないこと。文書だけで決まる誤りに名前付きコードを与えないこと(逆に、rig / clip / オブジェクトを要する誤りを素の例外にしないこと)。
 
 **読む場所**: [`posegraphmodule.hpp`](../../src/project/posegraphmodule.hpp#L28) → [`PoseGraphNode` の 3 メンバ](../../src/core/animation/posegraph.hpp#L37) → [rig 依存の拒否](../../src/core/animation/posegraph.hpp#L101)。
+
+### 難所 — 物理の契約の拒否は最後に投げ、editor はそれだけを commit する(RS-1)
+
+**素朴に読むと**: runtime が候補を断ったら editor は必ず巻き戻す、また [`MaterialGenerationPlanner::validateCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1202) の検査は見つけた順に投げる、と読めます。
+
+**実際は**: 物理の描画の契約(color / depth の format・sample 数・local read・attachment state)の違いだけは、見つけてもすぐには投げません。最初の 1 件を `std::optional<MaterialPhysicalContractChanged>` に取っておき([取っておく所](../../src/core/material/materialgenerationplanner.cpp#L1209))、受け皿の検査(`requireEveryMaterialServed()`)と、全 material・全 pass の output schema と `ray_query` の検査が通った後に投げます([投げる所](../../src/core/material/materialgenerationplanner.cpp#L1290))。型は [`MaterialPhysicalContractChanged`](../../src/core/material/materialphysicalcontractchanged.hpp#L46)(`std::runtime_error` の派生。`info()` が `{material_id, material, pass, detail[]}`)で、code は [`materialPhysicalContractChangedCode`](../../src/core/material/materialphysicalcontractchanged.hpp#L13) です。**この順があるので、editor はこの型を見たら「これが唯一の拒否だった」と読めます。**
+
+editor の側では、runtime の完了が [`completeCommitTransaction()`](../../src/core/communication/renderconfigeditor.cpp#L4858) に戻ったとき、staged でも committed でもなく source commit も呼ばれていない結果の例外を、[`physicalContractRestartReason()`](../../src/core/communication/renderconfigeditor.cpp#L138) が rethrow して型を見ます。この型のときだけ、editor 自身が ticket の preset の CAS(`CommitTransaction::verify_preset`。[`commitPending()` で取っておく所](../../src/core/communication/renderconfigeditor.cpp#L5204))と複数ファイルの commit(`commitRenderConfigCandidateDocuments`)を行い、`applied.committed = true`、`published_generation` を runtime の今の世代にして、成功の経路へ合流します([合流する所](../../src/core/communication/renderconfigeditor.cpp#L4904))。結果に `restart_required` と `restart_reason` を付けるのは最後の 1 か所で、G-4 の `material_route_default_changed` より先に見ます([結果に載せる所](../../src/core/communication/renderconfigeditor.cpp#L5058))。runtime に行く ticket はすべて [`commitPending()`](../../src/core/communication/renderconfigeditor.cpp#L5089) → `apply_candidate` → `completeCommitTransaction()` を通るので、この 1 か所が graph の編集・`add_authored_pass`・restore などのすべてに効きます。`set_layout` だけの ticket(`source_only`)はここを通りません。
+
+live の material を見るのは authored の経路だけです。[`Renderer::applyRenderPipelineAuthoringCandidate()`](../../src/core/vkcore/renderer.cpp#L3698) は `validate_live_materials = true`、ディスクからの [`reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3505) は reload service がいるとき `false` で、material の組み直しは reload service の companion reload(`MaterialContainer::prepareRuntimeGenerationReload()`)に任せます。検査は flat の variant の `validate_prepared_generation` の中にあり、XR の variant の検査と `before_publish`(publish の直前の準備と source commit)はその後です([variant ごとに検査を呼ぶ所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1381))。だから RS-1 の経路ではそれらは走りません。
+
+**不変条件**: 物理の契約の拒否より後ろで新しい検査を走らせないこと —— RS-1 の経路はそこで止まるので、その検査が見るはずの誤りを抱えた候補が commit されます。足すなら `validateCompatibility()` の中で、`physical_change` を投げる前に。editor で型付きの拒否以外を commit に回さないこと。
+
+**読む場所**: [`materialphysicalcontractchanged.hpp`](../../src/core/material/materialphysicalcontractchanged.hpp#L39) → [`validateCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1202) → [`physicalContractRestartReason()`](../../src/core/communication/renderconfigeditor.cpp#L138) → [`completeCommitTransaction()` の RS-1 の枝](../../src/core/communication/renderconfigeditor.cpp#L4904)。利用者から見た結果の形は manual の第13章 §13.5。
 
 ---
 

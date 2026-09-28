@@ -1855,6 +1855,12 @@ flat / XR variant は同じ route に同一スキーマを要求します。grap
 候補世代を拒否して旧世代を維持します。これは不整合 pipeline を公開しないための境界で、
 graph と material surface を同時に再構築する将来の coordinated transaction とは別です。
 
+編集 RPC の候補では、変わるのが format・MSAA・local-read・attachment state だけで、ほかの検査がすべて通るとき、
+editor は断らずに文書を commit し、`restart_required: true` と `restart_reason`(`code: "material_physical_contract_changed"`)を
+返します(✅RS-1)。live の世代はそのままで、engine を起動し直すと commit した文書で組み直します
+([第13章](13_editor.md) §13.5 の「live の material が受けられない編集は、書いてから再起動を求めます」)。
+schema の変更は今までどおり断られます。ディスクからの reload の扱いは同じ所の「残した穴」を見てください。
+
 outputごとにblendまたは書き込みchannelを変える場合は、同じpassへ
 `material_output_states`を追加します。キーはRT名やlocation番号ではなく
 `material_outputs.outputs[].name`です。書かなかったoutputは`.surface`ヘッダの

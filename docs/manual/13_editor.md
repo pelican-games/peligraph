@@ -1067,8 +1067,8 @@ G-buffer の target を HDR / SDR のどちらの format にするかを決め�
   下の受け皿の検査は、新しい既定で計算し直した route で行います。今の値と同じなら key は書かず、再起動も求めません。
 - `set_material_route_default` は既定だけを変えます(上の表)。
 - engine はこの key を**起動時に 1 回しか読まない**ので、値を変えた ticket の commit の結果(`get_edit_result` /
-  `step_frame` の `edit_results[]`)に **`restart_required: true`** が付きます
-  ([commit の結果に付ける restart_required](../../src/core/communication/renderconfigeditor.cpp#L5057))。engine を起動し直すまで、
+  `step_frame` の `edit_results[]`)に **`restart_required: true`** と `restart_reason: {code: "material_route_default_changed"}`(✅RS-1 から)が付きます
+  ([G-4 の restart_required と restart_reason を付ける所](../../src/core/communication/renderconfigeditor.cpp#L5059))。engine を起動し直すまで、
   route が変わる material は今の pipeline のまま描かれます。⚠ commit から再起動までの間に登録された material は、
   古い既定で lowering されます。
 - runtime shader compiler の無い build で `"forward"` を頼むと、ticket を作る前に **`material_route_default_unavailable@1`**
@@ -1094,6 +1094,50 @@ route ごとの hint は 3 つです([route ごとの hint の文](../../src/pro
 material pass を足す。`message` は load 時の fatal と同じ読める 1 文です。code と fields は renderer の文字列の経路を
 `<code>: <JSON>` の形で通り、editor の completion handler が名前付きの拒否に戻します
 ([文字列から拒否に戻す所](../../src/core/communication/renderconfigeditor.cpp#L4943))。
+
+**live の material が受けられない編集は、書いてから再起動を求めます(✅RS-1)。**runtime に行く ticket(`edit_graph_document`・
+`add_authored_pass`・`set_material_route_default`・`restore_render_documents` など、候補を engine に渡して組み直すもの)は、組み直した
+候補を生きている material にも当てます([`MaterialGenerationPlanner::validateCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1202))。候補の pass が生きている
+material を別の**物理の描画の契約**(color の format・depth の format・sample 数・local read の割り当て・attachment の state)で描く
+ことになると、material の pipeline をその場で作り直せないので live には載せられません。RS-1 の前はこれを
+`render_pipeline_preflight_failed` で断っていたので、blank の project に Graph の palette から最初の material pass を足す編集は
+必ず断られました。RS-1 からは、**それが唯一の拒否のときだけ**、editor は文書を commit し、live の pipeline は今のまま残して、
+ticket を次の結果で終えます([型付きの拒否のときだけ commit する所](../../src/core/communication/renderconfigeditor.cpp#L4904))。
+
+| field | 中身 |
+|---|---|
+| `status` / `committed` | `"committed"` / `true` |
+| `published_generation` | live の今の世代のまま(新しい世代を publish しません) |
+| `restart_required` | `true` |
+| `restart_reason` | `code: "material_physical_contract_changed"`・`material`(live の material の名前。空のことがあります)・`material_id`・`pass`(その material を別の契約で描く候補の pass)・`detail`(違う所の配列。`color_formats` / `depth_format` / `sample_count` / `local_read` / `attachment_state` のうち当たるものをこの順で)・`message`(拒否の文) |
+| `documents` | RD-1 と同じく、書いた文書の `{reference: sha256 hex}`。`restore_render_documents` で戻せます |
+
+- `restart_reason` は、最初に見つかった 1 つの material と 1 つの pass だけを言います。
+- engine は物理の契約の拒否を、ほかの material の検査(受け皿の `material_route_unserved@1`、output schema の変更、`ray_query` の
+  宣言漏れ)がすべての material で通った後にだけ投げます([最後に投げる所](../../src/core/material/materialgenerationplanner.cpp#L1290))。別の拒否が隠れたまま commit される
+  ことはありません。ただしこの検査より後ろの検査 —— XR の variant の default pass と、publish の直前の準備(active な XR の
+  variant が残っているか、graph の runtime の引き継ぎの準備)—— は、この経路では走りません。
+- ほかの失敗は今までどおり断って、文書を元に戻します。
+- commit は editor 自身が、runtime が呼ぶはずだったのと同じ preset の CAS と複数ファイルの commit で行います。その間に文書が外から
+  変わっていれば `external_modification` で断ります。
+- 再起動を待つ間の状態は持ちません。文書は commit した内容に進むので、次の編集も同じ live の material に当たり、同じ拒否で
+  もう一度 commit と `restart_required` になります。material pass を消して live と合う形に戻せば、普通に live に載ります。engine を
+  起動し直すまで、`get_frame_plan` は古い live の世代を言います。
+- 上の G-4 の route の既定の再起動と両方が当たる ticket では、`restart_reason` は `material_physical_contract_changed` の方です
+  ([RS-1 の restart_reason を載せる所](../../src/core/communication/renderconfigeditor.cpp#L5058))。
+- `set_layout` だけの `edit_graph_document`(N-6。runtime に行かない)は対象外です。
+- Studio がこの結果を受けて engine を起動し直す流れは、[Studio のノードキャンバス](#studio-のノードキャンバスgraph-タブ)の
+  「engine の再起動が要る graph の編集(✅GL-1b)」にあります。
+- ⚠ 残した穴: ディスクからの reload([`Renderer::reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3505))は live の material の検査を
+  切り([`validate_live_materials = false` の所](../../src/core/vkcore/renderer.cpp#L3537))、material の pipeline を reload service の側で組み直します。file
+  watcher が開いていれば、RS-1 が commit したファイルを拾って live に載せる可能性があります(未確認)。authored の経路でもこの
+  組み直しを使う案は、利用者の判断待ちです。
+- test: `renderconfigeditor_test` の
+  [「RS-1 a candidate refused live only for a material's physical contract is committed with restart_required」](../../test/renderconfigeditor_test.cpp#L7407)
+  (runtime を差し替えて、結果の field・2 回目の編集・ほかの拒否が何も書かないことを見る)と、`engine_primitives_test` の
+  [「RS-1 a graph edit the live materials cannot take is committed and asks for a restart」](../../test/engine_primitives_test.cpp#L789)
+  (GPU。blank の project に palette と同じ op で `render.material_pass`(deferred_geometry_v1)と G-buffer の image 6 枚を足し、
+  起動し直すと frame plan にその pass が出ることまで見る)。
 
 Render Featuresの **Parameters...**で、選択中 feature instance の scalar パラメータを編集できます
 (`edit_render_features` の `set_parameters`)。欄は engine の `parameters` 宣言から作られ、
