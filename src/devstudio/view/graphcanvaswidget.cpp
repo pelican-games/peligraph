@@ -1352,6 +1352,26 @@ void GraphCanvasScene::repopulate() {
                     name != node.parameters.end() && name->is_string())
                     resource_nodes.emplace(name->get<std::string>(), node.id);
         }
+        // The graph node and output that hand on the image a pass reads: of
+        // the plan's passes that write it before that pass, the last whose
+        // node has an output resolving to it.
+        const auto writerOutput = [&](const std::string &reader, const std::string &resource)
+            -> std::optional<std::pair<std::string, std::string>> {
+            std::optional<std::pair<std::string, std::string>> found;
+            for (const auto &pass : model_->planPasses()) {
+                if (pass.name == reader) break;
+                if (std::ranges::find(pass.writes, resource) == pass.writes.end()) continue;
+                const auto owner = model_->canvasNodeOfPass(pass.name);
+                const auto drawn = std::ranges::find(nodes, owner, &GraphCanvasNode::id);
+                if (owner.empty() || drawn == nodes.end()) continue;
+                for (const auto &output : drawn->outputs)
+                    if (model_->outputResource(owner, output.port) == resource) {
+                        found = std::pair{owner, output.port};
+                        break;
+                    }
+            }
+            return found;
+        };
         for (auto &folded : folded_nodes) {
             if (folded.feature_group) continue;
             const auto sockets = passInputSockets(folded.id);
@@ -1375,8 +1395,14 @@ void GraphCanvasScene::repopulate() {
                 folded.input_sockets.push_back(row);
                 if (!row.input_index) continue;
                 PassLine line{{}, {}, folded.id, socket.resource, *row.input_index};
-                if (const auto named = resource_nodes.find(socket.resource);
-                    named != resource_nodes.end()) {
+                // GL-1f, decision 3: from the graph pass's output that hands
+                // the image on (a material pass's `color`), when one does --
+                // the last such pass before this one in the plan.
+                if (const auto writer = writerOutput(folded.id, socket.resource)) {
+                    line.from = writer->first;
+                    line.from_port = writer->second;
+                } else if (const auto named = resource_nodes.find(socket.resource);
+                           named != resource_nodes.end()) {
                     line.from = named->second;
                     line.from_port = "resource";
                 } else {

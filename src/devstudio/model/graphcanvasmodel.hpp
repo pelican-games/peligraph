@@ -1052,6 +1052,17 @@ class GraphCanvasModel {
     // One gesture is one op list, one ticket and one CAS: two edits in the same
     // frame cannot both land.
     bool submitOps(nlohmann::json ops);
+    // GL-1f (RS-4): the list with the writers' `outputs` kept in step -- a
+    // forwarded output (a material pass's colour or depth, a shadow_depth's
+    // depth, a snapshot_copy's destination) a set_input, an add_node or a
+    // body's outputs reads is listed first (replace_node before the op); one
+    // the list stopped reading, and nothing else reads, is taken out after.
+    [[nodiscard]] nlohmann::json withWriterOutputs(nlohmann::json ops) const;
+    // The type of the edge into a node's input: what the node on the other
+    // end says it is, through the writers that hand on what they wrote.
+    // Null when nothing says.
+    [[nodiscard]] nlohmann::json forwardedImageType(std::string_view scope, std::string_view node,
+                                                    std::string_view input, int depth) const;
     // The scope token the engine understands: the root document is "root", a
     // definition body is its own name.
     [[nodiscard]] std::string scopeToken() const;

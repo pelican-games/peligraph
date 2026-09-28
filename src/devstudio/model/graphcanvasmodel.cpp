@@ -12,6 +12,7 @@
 #include <iterator>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 namespace PelicanStudio {
@@ -258,6 +259,34 @@ constexpr std::string_view kFullscreenTemplate = "render.fullscreen";
 // LP-4e: what a draw step hands on and a material pass's `draws` takes.
 constexpr std::string_view kDrawStreamType = "pelican.render.draw_stream@1";
 constexpr std::string_view kMaterialPass = "render.material_pass";
+
+// GL-1f (engine RS-4): a pass that hands on the image it wrote as an output
+// port of its input socket's name -- a material pass's colour sockets and
+// depth, a shadow_depth's depth, a snapshot_copy's destination. The input a
+// port hands on, or empty when the node forwards no such port.
+std::string forwardedInputOf(const Json &node, std::string_view port) {
+    if (!node.is_object() || port.empty()) return {};
+    const auto op = text(node, "op");
+    if (op == kMaterialPass) {
+        if (port == "depth") return "depth";
+        const auto sockets =
+            GraphCanvasModel::materialPassColorSockets(node.value("parameters", Json::object()));
+        return std::ranges::find(sockets, port) != sockets.end() ? std::string{port}
+                                                                 : std::string{};
+    }
+    if (op == "render.shadow_depth" && port == "depth") return "depth";
+    if (op == "render.snapshot_copy" && port == "destination") return "destination";
+    return {};
+}
+
+// Whether the node's authored `outputs` array lists the port.
+bool listsOutput(const Json &node, std::string_view port) {
+    const auto outputs = node.find("outputs");
+    return outputs != node.end() && outputs->is_array() &&
+           std::ranges::any_of(*outputs, [&](const Json &output) {
+               return output.is_string() && output.get<std::string>() == port;
+           });
+}
 
 void collectUiNodes(const Json &node, const std::string &parent,
                     std::vector<GraphCanvasUiNode> &out) {
@@ -1902,7 +1931,16 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
             // LP-4e: a draw step hands the list on.
             drawn.outputs.push_back(GraphCanvasOutput{"draws", std::string{kDrawStreamType}});
         } else if (drawn.op == kMaterialPass) {
-            // No output port: what it wrote is read through a target_ref.
+            // GL-1f (RS-4): what it wrote, handed on as an output of each
+            // attachment socket's name, typed as the image on that socket.
+            // A reader adds the port to the node's `outputs` (withWriterOutputs).
+            auto names = materialPassColorSockets(drawn.parameters);
+            names.push_back("depth");
+            for (auto &name : names) {
+                const auto type = forwardedImageType(scope, drawn.id, name, 8);
+                drawn.outputs.push_back(GraphCanvasOutput{
+                    std::move(name), type.is_object() ? text(type, "semantic") : std::string{}});
+            }
         } else if (drawn.op == "graph.input") {
             // The structural boundary port. Its single output is the scalar
             // the expansion produces, which no catalog entry can say.
@@ -1910,9 +1948,17 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
         } else if (declared) {
             for (const auto &output : contract->value("outputs", Json::array())) {
                 const auto name = text(output, "port");
-                if (!name.empty())
-                    drawn.outputs.push_back(
-                        GraphCanvasOutput{name, semanticTypeName(output, "type")});
+                if (name.empty()) continue;
+                // GL-1f (RS-4): `type_from_input` -- no type of its own; the
+                // type of the edge into that input (shadow_depth's depth,
+                // snapshot_copy's destination).
+                if (const auto from = text(output, "type_from_input"); !from.empty()) {
+                    const auto type = forwardedImageType(scope, drawn.id, from, 8);
+                    drawn.outputs.push_back(GraphCanvasOutput{
+                        name, type.is_object() ? text(type, "semantic") : std::string{}});
+                    continue;
+                }
+                drawn.outputs.push_back(GraphCanvasOutput{name, semanticTypeName(output, "type")});
             }
         } else {
             const auto authored = node.find("outputs");
@@ -2022,7 +2068,229 @@ bool GraphCanvasModel::submitOps(Json ops) {
     if (!canEdit()) return false;
     if (!ops.is_array() || ops.empty()) return false;
     if (folded_stash_) return refuseFoldedEdit(ops);
+    // GL-1f: a pass's forwarded output is listed in its `outputs` while
+    // something reads it, in the same list (one Undo).
+    ops = withWriterOutputs(std::move(ops));
     return submitHistory(HistoryAction::Edit, {ops, inverseOps(ops)});
+}
+
+Json GraphCanvasModel::withWriterOutputs(Json ops) const {
+    // The document as the ops leave it, walked op by op: enough of it to know
+    // who reads what (nodes and their inputs, definitions' outputs).
+    Json nodes = nodes_;
+    Json definitions = definitions_.is_object() ? definitions_ : Json::object();
+    const auto scopeNodes = [&](const std::string &scope) -> Json * {
+        if (scope.empty()) return &nodes;
+        const auto found = definitions.find(scope);
+        if (found == definitions.end() || !found->is_object()) return nullptr;
+        if (!found->contains("nodes") || !found->at("nodes").is_array())
+            (*found)["nodes"] = Json::array();
+        return &found->at("nodes");
+    };
+    const auto locate = [&](const std::string &scope, const std::string &id) -> Json * {
+        auto *list = scopeNodes(scope);
+        if (list == nullptr) return nullptr;
+        for (auto &node : *list)
+            if (node.is_object() && text(node, "id") == id) return &node;
+        return nullptr;
+    };
+    const auto scopeOf = [](const Json &op) {
+        const auto scope = op.contains("scope") && op.at("scope").is_string()
+                               ? op.at("scope").get<std::string>()
+                               : std::string{"root"};
+        return scope == "root" ? std::string{} : scope;
+    };
+    const auto tokenOf = [](const std::string &scope) {
+        return scope.empty() ? std::string{"root"} : scope;
+    };
+    // The forwarded outputs an edit stopped reading (scope, node, port).
+    std::set<std::tuple<std::string, std::string, std::string>> released;
+    Json result = Json::array();
+    // Before an op that reads `source` in `scope`: the writer lists the port.
+    const auto list = [&](const std::string &scope, const Json &source) {
+        if (!source.is_object()) return;
+        const auto writer = text(source, "node");
+        const auto port = text(source, "port");
+        auto *node = locate(scope, writer);
+        if (node == nullptr || forwardedInputOf(*node, port).empty() || listsOutput(*node, port))
+            return;
+        if (!node->contains("outputs") || !node->at("outputs").is_array())
+            (*node)["outputs"] = Json::array();
+        (*node)["outputs"].push_back(port);
+        result.push_back(Json{{"op", "replace_node"}, {"scope", tokenOf(scope)}, {"node", *node}});
+    };
+    const auto release = [&](const std::string &scope, const Json &source) {
+        if (source.is_object())
+            released.emplace(scope, text(source, "node"), text(source, "port"));
+    };
+    for (auto &op : ops) {
+        if (!op.is_object()) {
+            result.push_back(op);
+            continue;
+        }
+        const auto kind = text(op, "op");
+        const auto scope = scopeOf(op);
+        if (kind == "set_input") {
+            auto *node = locate(scope, text(op, "node"));
+            const auto port = text(op, "port");
+            if (node != nullptr)
+                if (const auto inputs = node->find("inputs");
+                    inputs != node->end() && inputs->is_object())
+                    if (const auto was = inputs->find(port); was != inputs->end())
+                        release(scope, *was);
+            list(scope, op.value("source", Json{}));
+            result.push_back(op);
+            if (node == nullptr) node = locate(scope, text(op, "node"));
+            if (node != nullptr) {
+                const auto &source = op.value("source", Json{});
+                if (source.is_null()) {
+                    if (node->contains("inputs") && node->at("inputs").is_object())
+                        (*node)["inputs"].erase(port);
+                } else {
+                    (*node)["inputs"][port] = source;
+                }
+            }
+            continue;
+        }
+        if (kind == "add_node" && op.contains("node") && op.at("node").is_object()) {
+            const auto inputs = op.at("node").value("inputs", Json::object());
+            if (inputs.is_object())
+                for (const auto &[name, source] : inputs.items()) {
+                    (void)name;
+                    list(scope, source);
+                }
+            result.push_back(op);
+            if (auto *list_nodes = scopeNodes(scope)) list_nodes->push_back(op.at("node"));
+            continue;
+        }
+        if (kind == "remove_node") {
+            auto *list_nodes = scopeNodes(scope);
+            const auto id = text(op, "node");
+            if (list_nodes != nullptr) {
+                for (const auto &node : *list_nodes) {
+                    if (!node.is_object() || text(node, "id") != id) continue;
+                    const auto inputs = node.value("inputs", Json::object());
+                    for (const auto &[name, source] : inputs.items()) {
+                        (void)name;
+                        release(scope, source);
+                    }
+                }
+                Json kept = Json::array();
+                for (auto &node : *list_nodes)
+                    if (!(node.is_object() && text(node, "id") == id)) kept.push_back(node);
+                *list_nodes = std::move(kept);
+            }
+            result.push_back(op);
+            continue;
+        }
+        if (kind == "replace_node" && op.contains("node") && op.at("node").is_object()) {
+            if (auto *node = locate(scope, text(op.at("node"), "id"))) *node = op.at("node");
+            result.push_back(op);
+            continue;
+        }
+        if (kind == "set_outputs" && !scope.empty() && op.contains("outputs") &&
+            op.at("outputs").is_object()) {
+            for (const auto &[name, source] : op.at("outputs").items()) {
+                (void)name;
+                list(scope, source);
+            }
+            if (const auto found = definitions.find(scope);
+                found != definitions.end() && found->is_object()) {
+                const auto previous = found->value("outputs", Json::object());
+                for (const auto &[name, source] : previous.items()) {
+                    (void)name;
+                    release(scope, source);
+                }
+                (*found)["outputs"] = op.at("outputs");
+            }
+            result.push_back(op);
+            continue;
+        }
+        if (kind == "add_definition") {
+            definitions[text(op, "name")] = op.value("definition", Json::object());
+        } else if (kind == "remove_definition") {
+            definitions.erase(text(op, "name"));
+        } else if (kind == "rename_definition") {
+            const auto from = text(op, "from");
+            if (const auto found = definitions.find(from); found != definitions.end()) {
+                auto body = *found;
+                definitions.erase(from);
+                definitions[text(op, "to")] = std::move(body);
+            }
+        }
+        result.push_back(op);
+    }
+    // After the list: a released port nothing in its scope reads any more
+    // leaves the writer's `outputs` (the engine would take it either way).
+    for (const auto &[scope, writer, port] : released) {
+        auto *node = locate(scope, writer);
+        if (node == nullptr || forwardedInputOf(*node, port).empty() || !listsOutput(*node, port))
+            continue;
+        const auto reads = [&](const Json &source) {
+            return source.is_object() && text(source, "node") == writer &&
+                   text(source, "port") == port;
+        };
+        bool read = false;
+        if (const auto *list_nodes = scopeNodes(scope))
+            for (const auto &other : *list_nodes) {
+                if (!other.is_object()) continue;
+                const auto inputs = other.value("inputs", Json::object());
+                for (const auto &[name, source] : inputs.items()) {
+                    (void)name;
+                    read = read || reads(source);
+                }
+            }
+        if (!scope.empty())
+            if (const auto found = definitions.find(scope);
+                found != definitions.end() && found->is_object()) {
+                const auto outputs = found->value("outputs", Json::object());
+                for (const auto &[name, source] : outputs.items()) {
+                    (void)name;
+                    read = read || reads(source);
+                }
+            }
+        if (read) continue;
+        Json kept = Json::array();
+        for (const auto &output : (*node)["outputs"])
+            if (!(output.is_string() && output.get<std::string>() == port)) kept.push_back(output);
+        (*node)["outputs"] = std::move(kept);
+        result.push_back(Json{{"op", "replace_node"}, {"scope", tokenOf(scope)}, {"node", *node}});
+    }
+    return result;
+}
+
+Json GraphCanvasModel::forwardedImageType(std::string_view scope, std::string_view node,
+                                          std::string_view input, int depth) const {
+    // The type of the edge into `input`: what the node on the other end
+    // says it is, followed through writers that hand on what they wrote.
+    const auto *writer = depth > 0 ? findNode(scope, node) : nullptr;
+    if (writer == nullptr) return nullptr;
+    const auto inputs = writer->value("inputs", Json::object());
+    const auto edge = inputs.is_object() ? inputs.value(std::string{input}, Json{}) : Json{};
+    if (!edge.is_object()) return nullptr;
+    const auto source_node = text(edge, "node");
+    const auto source_port = text(edge, "port");
+    const auto *source = findNode(scope, source_node);
+    if (source == nullptr) return nullptr;
+    if (const auto forwarded = forwardedInputOf(*source, source_port); !forwarded.empty())
+        return forwardedImageType(scope, source_node, forwarded, depth - 1);
+    const auto typed = [](const Json &type) {
+        return type.is_object() && type.contains("semantic") && type.at("semantic").is_string();
+    };
+    const auto op = text(*source, "op");
+    if (op == "graph.input" || op == "graph.instance" || isLoop(*source))
+        return imageTypeOf(scope, source_node, source_port, depth - 1);
+    const auto parameters = source->value("parameters", Json::object());
+    if (!parameters.is_object()) return nullptr;
+    const auto ports = parameters.value("ports", Json::object());
+    if (ports.is_object())
+        if (const auto declared = ports.find(source_port);
+            declared != ports.end() && declared->is_object() && declared->contains("type") &&
+            typed(declared->at("type")))
+            return declared->at("type");
+    if (const auto type = parameters.find("type"); type != parameters.end() && typed(*type))
+        return *type;
+    return nullptr;
 }
 
 Json GraphCanvasModel::inverseOps(const Json &ops) const {
@@ -3577,6 +3845,8 @@ bool givesOutput(const Json &node, std::string_view port) {
     const auto op = text(node, "op");
     if (op == "graph.input") return port == "value";
     if (op == "graph.instance" || op == "graph.loop") return true;
+    // GL-1f: listed in `outputs` once something reads it.
+    if (!forwardedInputOf(node, port).empty()) return true;
     const auto outputs = node.find("outputs");
     return outputs != node.end() && outputs->is_array() &&
            std::ranges::any_of(*outputs, [&](const Json &output) {
@@ -4249,6 +4519,11 @@ Json GraphCanvasModel::imageTypeOf(std::string_view scope, std::string_view node
         const auto endpoint = outputs.is_object() ? outputs.value(output, Json{}) : Json{};
         if (!endpoint.is_object()) return sceneColorType();
         return imageTypeOf(body, text(endpoint, "node"), text(endpoint, "port"), depth - 1);
+    }
+    // GL-1f: a pass that hands on what it wrote is what its input is fed.
+    if (!forwardedInputOf(*source, port).empty()) {
+        const auto type = forwardedImageType(scope, node, forwardedInputOf(*source, port), depth);
+        return typed(type) ? type : sceneColorType();
     }
     const auto parameters = source->value("parameters", Json::object());
     if (parameters.is_object()) {

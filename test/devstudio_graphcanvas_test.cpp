@@ -1750,7 +1750,10 @@ TEST_CASE("LP-4e a material pass's sockets come from its contract, and the palet
     CHECK_FALSE(port(forward, "draws").required);
     CHECK(port(forward, "draws").type == "pelican.render.draw_stream@1");
     CHECK(port(forward, "draws").source_node == "forward_opaque_draws");
-    CHECK(forward.outputs.empty());
+    // GL-1f (RS-4): what it wrote is handed on, a port per attachment.
+    REQUIRE(forward.outputs.size() == 2);
+    CHECK(forward.outputs[0].port == "color");
+    CHECK(forward.outputs[1].port == "depth");
     CHECK(portNames(h.client.node("gbuffer")) ==
           std::vector<std::string>{"albedo", "normal", "material", "worldpos", "emissive", "depth",
                                    "draws"});
@@ -3090,4 +3093,143 @@ TEST_CASE("GL-2b the plan's origin says which graph node made a pass; bands, Lay
     CHECK(model.canvasNodeOfPass("sky") == "sky");
     CHECK(model.planNodeTarget("cascades/2/depth") ==
           GraphCanvasPlanTarget{"loop", "depth", "", "", "cascades", 2, false});
+}
+
+// --- GL-1f (engine RS-4): a material pass, a shadow_depth and a
+// snapshot_copy hand on the images they wrote as output ports of their input
+// sockets' names, typed as the image on that socket (decision 1). A line from
+// one is a set_input and the writer's `outputs` gaining the port, in one list
+// and one Undo (decision 2); taking the last reader away takes the port out.
+
+namespace {
+
+Json gl1fCatalog() {
+    auto reply = lp4eCatalog();
+    auto &render = reply["modules"][1]["operations"];
+    const Json any_image{{"semantic", "pelican.render.color_signal@1"}};
+    render.push_back({{"op", "render.shadow_depth"}, {"domain", "rendering"},
+                      {"evaluation", "direct"}, {"sink", false}, {"ports", "declared"},
+                      {"inputs", Json::array({{{"port", "depth"}, {"required", true},
+                                               {"accepted_type", lp4eDepthType()}}})},
+                      {"outputs", Json::array({{{"port", "depth"}, {"type_from_input", "depth"}}})}});
+    render.push_back({{"op", "render.snapshot_copy"}, {"domain", "rendering"},
+                      {"evaluation", "direct"}, {"sink", false}, {"ports", "declared"},
+                      {"inputs", Json::array({{{"port", "source"}, {"required", true},
+                                               {"accepted_type", any_image}},
+                                              {{"port", "destination"}, {"required", true},
+                                               {"accepted_type", any_image}}})},
+                      {"outputs", Json::array({{{"port", "destination"},
+                                                {"type_from_input", "destination"}}})}});
+    return reply;
+}
+
+// lp4e's forward pass, a shadow_depth on the scene depth, and two copies:
+// `snap` into a history image, `copy` with nothing on its source yet.
+Json gl1fDocument() {
+    auto document = lp4eDocument();
+    auto &nodes = document["nodes"];
+    nodes.push_back({{"id", "history_ref"}, {"op", "render.target_ref"},
+                     {"parameters", {{"name", "history"}, {"type", lp4cColorType()}}},
+                     {"outputs", {"resource"}}});
+    nodes.push_back({{"id", "shadow"}, {"op", "render.shadow_depth"},
+                     {"parameters", Json::object()},
+                     {"inputs", {{"depth", {{"node", "scene_depth_ref"}, {"port", "resource"}}}}},
+                     {"outputs", Json::array()}});
+    nodes.push_back({{"id", "snap"}, {"op", "render.snapshot_copy"},
+                     {"parameters", Json::object()},
+                     {"inputs", {{"source", {{"node", "scene_color_ref"}, {"port", "resource"}}},
+                                 {"destination", {{"node", "history_ref"}, {"port", "resource"}}}}},
+                     {"outputs", Json::array()}});
+    nodes.push_back({{"id", "copy"}, {"op", "render.snapshot_copy"},
+                     {"parameters", Json::object()},
+                     {"inputs", {{"destination", {{"node", "history_ref"}, {"port", "resource"}}}}},
+                     {"outputs", Json::array()}});
+    return document;
+}
+
+std::vector<std::string> outputNames(const GraphCanvasNode &node) {
+    std::vector<std::string> names;
+    for (const auto &each : node.outputs) names.push_back(each.port);
+    return names;
+}
+
+Json nodeIn(const Json &document, const std::string &id) {
+    for (const auto &node : document.at("nodes"))
+        if (node.at("id") == id) return node;
+    FAIL("no node " << id);
+    return {};
+}
+
+} // namespace
+
+TEST_CASE("GL-1f a material pass, a shadow_depth and a snapshot_copy hand on what they wrote; "
+          "a line from one lists the port in the writer's outputs, and the last one gone takes "
+          "it out",
+          "[studio][graph-canvas][gl1f]") {
+    DrawLoopHarness h;
+    h.document = gl1fDocument();
+    h.client.catalog_reply = gl1fCatalog();
+    h.open();
+
+    // Decision 1: the three kinds, typed as the image on the socket.
+    const auto forward = h.client.node("forward_opaque");
+    CHECK(outputNames(forward) == std::vector<std::string>{"color", "depth"});
+    CHECK(output(forward, "color").type == "pelican.render.color_signal@1");
+    CHECK(output(forward, "depth").type == "pelican.render.depth@1");
+    const auto shadow = h.client.node("shadow");
+    CHECK(outputNames(shadow) == std::vector<std::string>{"depth"});
+    CHECK(output(shadow, "depth").type == "pelican.render.depth@1");
+    const auto snap = h.client.node("snap");
+    CHECK(outputNames(snap) == std::vector<std::string>{"destination"});
+    CHECK(output(snap, "destination").type == "pelican.render.color_signal@1");
+    CHECK(h.client.model.canConnect({}, "forward_opaque", "color", "copy", "source"));
+    // A type the reader does not take is not a line.
+    CHECK_FALSE(h.client.model.canConnect({}, "forward_opaque", "depth", "copy", "source"));
+
+    // Decision 2: the line, and the port listed before it, in one list.
+    REQUIRE(h.client.model.connectInput({}, "copy", "source", "forward_opaque", "color"));
+    h.commit();
+    REQUIRE(h.last_ops.size() == 2);
+    CHECK(h.last_ops[0].at("op") == "replace_node");
+    CHECK(h.last_ops[0].at("node").at("id") == "forward_opaque");
+    CHECK(h.last_ops[0].at("node").at("outputs") == Json::array({"color"}));
+    CHECK(h.last_ops[1] == Json{{"op", "set_input"}, {"scope", "root"}, {"node", "copy"},
+                                {"port", "source"},
+                                {"source", {{"node", "forward_opaque"}, {"port", "color"}}}});
+    CHECK(nodeIn(h.document, "forward_opaque").at("outputs") == Json::array({"color"}));
+    // Through the pass: the copy's destination is a history image, typed.
+    CHECK(output(h.client.node("copy"), "destination").type == "pelican.render.color_signal@1");
+
+    // One Undo takes both back.
+    REQUIRE(h.client.model.canUndo());
+    REQUIRE(h.client.model.undo());
+    h.commit();
+    CHECK(nodeIn(h.document, "forward_opaque").at("outputs") == Json::array());
+    CHECK_FALSE(nodeIn(h.document, "copy").at("inputs").contains("source"));
+
+    // A second reader of a port already listed adds nothing to the list.
+    REQUIRE(h.client.model.connectInput({}, "copy", "source", "forward_opaque", "color"));
+    h.commit();
+    REQUIRE(h.client.model.connectInput({}, "snap", "source", "forward_opaque", "color"));
+    h.commit();
+    REQUIRE(h.last_ops.size() == 1);
+    CHECK(h.last_ops[0].at("op") == "set_input");
+
+    // Taking one line away leaves the port while the other reads it ...
+    REQUIRE(h.client.model.disconnectInput({}, "snap", "source"));
+    h.commit();
+    REQUIRE(h.last_ops.size() == 1);
+    CHECK(nodeIn(h.document, "forward_opaque").at("outputs") == Json::array({"color"}));
+    // ... and the last one takes it out, after the line, in the same list.
+    REQUIRE(h.client.model.disconnectInput({}, "copy", "source"));
+    h.commit();
+    REQUIRE(h.last_ops.size() == 2);
+    CHECK(h.last_ops[0].at("op") == "set_input");
+    CHECK(h.last_ops[1].at("op") == "replace_node");
+    CHECK(nodeIn(h.document, "forward_opaque").at("outputs") == Json::array());
+
+    // shadow_depth's depth, the same way.
+    REQUIRE(h.client.model.connectInput({}, "forward_opaque", "depth", "shadow", "depth"));
+    h.commit();
+    CHECK(nodeIn(h.document, "shadow").at("outputs") == Json::array({"depth"}));
 }

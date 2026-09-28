@@ -6490,19 +6490,37 @@ TEST_CASE("GL-1e a rendering-section pass takes lines: + input, replace, append,
         CHECK(sent[1].params == gl1eSaved({"old_image", "shade__color"}));
     }
 
-    SECTION("present reads the image: one solid line from its output, no dashed one; Delete") {
+    SECTION("GL-1f: the pass's own output onto + input names the image it resolves to") {
+        openGl1e(model, scene, {});
+        QGraphicsItem *from = socketItem(scene, QStringLiteral("shade"), QStringLiteral("color"),
+                                         QStringLiteral("output"));
+        QGraphicsItem *slot = passSocket(scene, QStringLiteral("present"), QStringLiteral("in:+"));
+        REQUIRE(from != nullptr);
+        REQUIRE(slot != nullptr);
+        drag(scene, from->sceneBoundingRect().center(), slot->sceneBoundingRect().center());
+        REQUIRE(sent.size() == 1);
+        CHECK(sent[0].params == gl1eSaved({"shade__color"}));
+    }
+
+    SECTION("present reads the image: one solid line from the pass that wrote it; Delete") {
         openGl1e(model, scene, {"shade__color"});
         const auto lines = itemsOfKind(scene, PelicanStudio::GraphCanvasPassInputEdgeItem);
         REQUIRE(lines.size() == 1);
         auto *line = dynamic_cast<QGraphicsPathItem *>(lines.front());
         REQUIRE(line != nullptr);
+        // GL-1f, decision 3: from the pass's output that hands the image on,
+        // not from the image node.
         CHECK(line->data(PelicanStudio::NodeGraphFromNameRole).toString() ==
-              QStringLiteral("shade__color"));
+              QStringLiteral("shade"));
         CHECK(line->data(PelicanStudio::NodeGraphToNameRole).toString() ==
               QStringLiteral("present"));
         CHECK(line->pen().style() == Qt::SolidLine);
-        // It runs from the image's output to present's socket.
-        CHECK(QLineF(line->mapToScene(line->path().pointAtPercent(0.0)), image()).length() < 1.0);
+        QGraphicsItem *writer = socketItem(scene, QStringLiteral("shade"), QStringLiteral("color"),
+                                           QStringLiteral("output"));
+        REQUIRE(writer != nullptr);
+        CHECK(QLineF(line->mapToScene(line->path().pointAtPercent(0.0)),
+                     writer->sceneBoundingRect().center())
+                  .length() < 1.0);
         QGraphicsItem *end =
             passSocket(scene, QStringLiteral("present"), QStringLiteral("shade__color"));
         REQUIRE(end != nullptr);
