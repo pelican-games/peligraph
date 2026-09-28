@@ -716,7 +716,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 ```
 
 `--tab` が取るのは `frame_plan` / `render_features` / `graph` の 3 つ
-([一覧](../../src/devstudio/view/mainwindow.cpp#L1371))。**未知の名前は window を作る前に console へ
+([一覧](../../src/devstudio/view/mainwindow.cpp#L1374))。**未知の名前は window を作る前に console へ
 理由を出して終了コード 2** です([検査](../../src/devstudio/main.cpp#L36)) —— window を開いて「たまたま前にあった
 タブ」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます
 ([順序](../../src/devstudio/view/uimain.cpp#L75)) —— project を開くとその project のツール配置が復元され、
@@ -898,7 +898,7 @@ C++ を触りません。読むだけでなく**編集もここで完結しま�
 [第13章](13_editor.md) §13.5。
 
 このタブが engine へ出せる RPC は型で絞られています。`GraphCanvasReadCapability`
-([定義](../../src/devstudio/view/graphcanvasreadcapability.hpp#L31))は汎用の RPC メソッドを**表現できない**形で、
+([定義](../../src/devstudio/view/graphcanvasreadcapability.hpp#L34))は汎用の RPC メソッドを**表現できない**形で、
 `get_graph_instances`(N-6 からは scope ごとの `layout`、N-8 からは `root_schema` も返す)/ `get_graph_catalog` / `get_graph_values` の 3 つの読みと、編集の
 `edit_graph_document`、結果引き取りの `get_edit_result` だけを名前で持ちます。それ以外を要求すると
 `The graph canvas cannot issue <method>.` になります。Frame Plan 側も同じ作りで、

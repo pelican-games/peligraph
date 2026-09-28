@@ -536,11 +536,36 @@ v0 では feature の JSON はループに書き換えない。一体版は、�
 | 仕組み | 内容 | 理由 |
 |---|---|---|
 | **既存の target の参照** `render.target_ref {name}` | rendering 節・preset・feature が宣言した target を、graph から指す。解決は §5.1 の解決の段で行う。所有はしない(作らず、aliasing と history は元の宣言に従う)。port に `history: true` を書くと `X@history`(前のフレームの資源)を読める。`X@history` へ書く port は断る(history を持つ target そのものへ書くことは、一体版と同じく許す。LP-0a)。無い名前は `graph.target_ref_unknown@1` | 分解版が `lit_color`・G-buffer・`scene_depth`・feature の target を読み書きするため |
-| **graph の pass の挿入位置** | graph の render node と `graph.loop` に、feature の pass と同じ `insert`(`{after｜before: "<pass 名>"}`、`canonical_anchor`)を足す。解決の段で、feature の合成の後に入れる。展開した列は、先頭の 1 本を anchor に入れ、残りを宣言順で連続して並べる(`enforceCanonicalOrder` が宣言順の依存を足すので、明示の edge は要らない。LP-0b で実測)。`canonical_anchor: X` は `insert: {after: X}` と同じで、anchor の bucket の中では feature の pass より後ろに入る。anchor は node の `pass_set` の family の中だけで探す。compute の body には `insert` を書けない(compute task は常に pass の後に宣言されるため。`graph.insert_on_compute@1`)。anchor と `pass_set` の family が違えば `graph.insert_family_mismatch@1` | 分解版が一体版と同じ場所に入るため。置き場所の無い graph の pass とループの展開列は、rendering 節の scene の pass と同じく scene の pass の後・最初の anchor の前に入る(待つ相手が後ろの bucket にあればその直後。LP-1e)。`pass_set` を省いた graph の pass は、合成後の config の最初の family に入る(family が無ければ `main`。LP-1e) |
+| **graph の pass の挿入位置** | graph の render node と `graph.loop` に、feature の pass と同じ `insert`(`{after｜before: "<pass 名>"}`、`canonical_anchor`)を足す。解決の段で、feature の合成の後に入れる。展開した列は、先頭の 1 本を anchor に入れ、残りを宣言順で連続して並べる(`enforceCanonicalOrder` が宣言順の依存を足すので、明示の edge は要らない。LP-0b で実測)。`canonical_anchor: X` は `insert: {after: X}` と同じで、anchor の bucket の中では feature の pass より後ろに入る。anchor は node の `pass_set` の family の中だけで探す。compute の body には `insert` を書けない(compute task は常に pass の後に宣言されるため。`graph.insert_on_compute@1`)。anchor と `pass_set` の family が違えば `graph.insert_family_mismatch@1` | 分解版が一体版と同じ場所に入るため。置き場所の無い graph の pass とループの展開列は、rendering 節の scene の pass と同じく scene の pass の後・最初の anchor の前に入る(待つ相手が後ろの bucket にあればその直後。LP-1e)。`pass_set` を省いた graph の pass は、合成後の config の最初の family に入る(family が無ければ `main`。LP-1e)。rendering 節の pass がその出力を読むときの例外は表の下(RS-3) |
 | **definition の編集 op** | `add_definition` / `remove_definition` / `rename_definition`(逆 op を作れる形)。参照されている definition を消すと `graph.definition_referenced@1`。`graph.input_referenced@1` / `graph.input_unknown@1` の対象に、`graph.loop` の `inputs`・`carry`・`branches[].body` を足す | branch の body になる definition を、Studio とエージェントが作れるようにするため。`edit_graph_document` の op の列は今も 1 つの候補に順に当てて最後にまとめて確定するので、「ループの `inputs` に 1 つ足す」と「全分岐の definition に `graph.input` を 1 つ足す」は、既存の列 1 回で送れる(新しい op は作らない)。ただし `graph.loop` の構造の検査(分岐の入出力の一致など)は、op ごとではなく**列の最後に 1 回**だけ行う。途中の op で分岐どうしの入出力が一時的に食い違っても断らない。`graph.definition_referenced@1`・`graph.input_unknown@1`・`graph.input_referenced@1` も列の最後に検査する(LP-0c)。`remove_definition` の逆 op の本体は、Studio が `get_graph_instances` の `definitions` から事前に読む(`base_source_digest` の CAS で一致が保証される)。definition の名前 `"root"` は op の `scope` と紛れるので断る |
 | **feature の pass の置き換え** | feature の instance の設定に `pass_replacements: {"<feature の pass / task 名>": "<graph の node か loop の id>"}` を足す。置き換えた pass は feature から外れる。`surface_resources.producer` などの名前の参照は、置き換え先へ写す。置き換え先が同じ資源を書かなければ、今の `producer … no longer writes` と同じく断る。置き換えた名前を他から参照すると、置き換え先に写す | 分解版が一体版の pass を置き換えられない。feature を残すと pass が二重になり、外すと provider が cascade 数と target を失う |
-| **graph で書く pass の種類** | `render.shadow_depth`・`render.snapshot_copy` を足す(pass の JSON の同名の type と同じ意味)。`render.material_pass` は LP-3a | cube の 8 pass と影の pass を graph で書くため |
+| **graph で書く pass の種類** | `render.shadow_depth`・`render.snapshot_copy` を足す(pass の JSON の同名の type と同じ意味)。`render.material_pass` は LP-3a。書いた socket は RS-4 から出力 port になる(表の下) | cube の 8 pass と影の pass を graph で書くため |
 | **変種で外れる feature への依存** | preview / XR の変種で feature が外れたとき、その feature の target を `render.target_ref` で指す node と、その pass を `insert` で指す node は、同じ変種で非活性にする。これも今の依存の伝わり方と同じく、報告に出す | 依存が伝わらないと、変種の組み直し全体が落ちる。LP-0d で、`after` / `before` で外れた feature の pass を指す node、非活性の loop の出力を読む node と carry する loop、非活性の pass を anchor にする run も非活性にした。報告は `deactivated_graph_nodes` と diagnostics の kind `graph_node_deactivated`(detail `<variant>:<reason>:<feature>`)。変種の preflight の graph の拒否は、graph の code のまま `variant` を添えて返す |
+
+**置き場所の無い graph の pass を rendering 節の pass が読むとき(RS-3、`1b4f7527`)**
+
+LP-1e の既定の位置(scene の pass の後)のままだと、graph の pass が書く image の名前を rendering 節の `present` の `input` に書いた構成は、`Pass input target is not produced as an earlier output: <image> in pass: present` で断られていた。RS-3 から、置き場所の無い graph の pass の塊(graph が family に足した pass と、その隣に入るループの展開列)は、同じ family の rendering 節の pass(rendering 節と preset の scene の pass)のうち、塊が書く image を読むものがあれば、その最初のものの直前に入る([`graphPassRunReaderPosition()`](../src/project/rendergraphcomposition.cpp#L1296)、graph の pass の塊から[呼ぶ所](../src/project/featurecompose.cpp#L3158))。graph の pass の無い family に入る置き場所の無いループの展開列にも同じ規則を当てる([`insertAmongScenePasses()`](../src/project/rendergraphcomposition.cpp#L1686))。
+
+- 塊の中の順(LP-6 の依存の順)は変えない
+- 「読む」は LP-6 の数え方: `input`、`reads`、書かない `resource_ports`、`snapshot_copy` の `source`。`@history` の読みは除く([`declarationFrameReads()`](../src/project/rendergraphcomposition.cpp#L1271))。「書く」は `output.color` / `output.depth`、`writes`、snapshot の `destination`
+- 動くのは、読み手より前に同じ image の書き手(scene の pass、compute task)がいない場合だけ。それは今まで frame planner が断っていた構成なので、通っていた構成の順序・出荷物は変わらない
+- canonical の並べ替えで最初の anchor より後ろに行く pass(swapchain に書く pass、`canonical_anchor` を持つ pass、type が `ui` / `debug_draw` / `gizmo` / `debug_text` の pass)は読み手の候補にしない([判定](../src/project/featurecompose.cpp#L3152))
+- **明示が勝つ**: `insert` / `canonical_anchor` / `insert.declared` の pass と、置き場所を書いたループは対象外。塊が読み手かそれより後ろの pass を待つ(塊の `after` がその pass を名指す、その pass の `before` が塊を名指す、塊が読む image をその pass が書く)ときは動かさず、今どおり断られる
+- 残した穴(実装者の報告): feature の pass が読み手より前で同じ image を書く構成は考えていない。graph の compute task が書いた image を読む場合は対象外
+- test: `featurecompose_test.cpp` の「RS-3 an unplaced graph pass whose output a scene pass reads stands before that pass」([4 SECTION](../test/featurecompose_test.cpp#L8485)。fullscreen とその隣のループ / graph の pass の無いループ / 読み手が無ければ LP-1e のまま / scene が先に書く読み手なら動かない)
+
+**書いた image を出力 port で渡す(RS-4、`010c038f`)**
+
+`render.fullscreen` / `render.raster` は書いた attachment を出力 port として出し、読む側はその pass を待つ。`render.material_pass` / `render.shadow_depth` / `render.snapshot_copy` は出力を持たず、読む側は同じ target を名前で指し直していた。RS-4 から、この 3 つは書いた socket を同名の出力 port として渡す。
+
+- `render.material_pass`: color の socket(forward は `color`、deferred は `albedo` / `normal` / `material` / `worldpos` / `emissive`、`material_outputs` があればその名前)と `depth`。`draws` は出さない([contract](../src/project/graphmodule.cpp#L258))
+- `render.shadow_depth`: `depth`。`render.snapshot_copy`: `destination`(`source` は出さない)([`renderPassKindWrittenSockets()`](../src/project/graphmodule.cpp#L41))
+- port の型は、その socket に入る edge の型(pass の出力 port を経た連鎖も辿る)。契約では `GraphOperationContract::forwarded_outputs`(出力 port → 入力 socket。[宣言](../src/project/graphcomposition.hpp#L237))、型は [`validateGraphPorts()`](../src/project/graphcomposition.cpp#L1224) が辿る。辿って同じ port に戻れば `cyclic graph output forwarding: <node>.<port>`、socket が未接続なら `unconnected graph input: <node>.<socket>`
+- 読む node はその port を自分の `outputs` に書く。書いていない port を読むと `unknown graph output port`。読まないなら書かなくてよい(`outputs: []` の既存の文書がそのまま通る。fullscreen と違い `missing graph output` にならない)
+- 読む側の順序は fullscreen と同じ: 書いた pass が読み手の `after` に入り、読む資源は socket につないだ image の名前。ループの body の中、ループの出力 `p` を経る読み、RS-3 の置き場所も同じ規則
+- catalog: `render.shadow_depth` / `render.snapshot_copy` の `outputs` に `{port, type_from_input}`(`type` の鍵は無い。[載せる所](../src/project/graphmodule.cpp#L413))。`render.material_pass` は `parameter_dependent` のまま
+- rendering 節の pass は名前で読むので、`present` の `input` に「つなぐ」とは、その port が解決される image の名前を書くこと
+- test: `featurecompose_test.cpp` の「RS-4 a graph pass hands on the images it wrote as output ports」([3 SECTION](../test/featurecompose_test.cpp#L8604)。forward の `color` を fullscreen と present が読む / deferred の `albedo`・影の `depth`・copy の `destination` / ループの出力 `p`)
 
 ## 7. view の軸を選ぶ(cascade と cube の 6 面)
 
@@ -778,6 +803,8 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | RD-1 | render 文書の丸ごとの読み取りと、CAS の下での書き戻し(§9 の undo) | LP-3b | `3a0f55b1` |
 | RD-1b | RD-1 の作成と削除(§9 の undo) | RD-1 | `6c77d4f8` |
 | LP-6 | image node の読みが、その image を書く graph の pass を待つ。root の graph pass をループの有無によらず依存の順に宣言する(§5.2) | LP-1a | `03725036` |
+| RS-3 | 置き場所の無い graph の pass の塊を、その出力を読む rendering 節の最初の pass の直前へ(§6 の表の下) | LP-1e | `1b4f7527` |
+| RS-4 | `render.material_pass` / `render.shadow_depth` / `render.snapshot_copy` の書いた socket を出力 port にする(§6 の表の下) | LP-0e、LP-3a | `010c038f` |
 
 **docs**:各 WP で次を更新する。
 
