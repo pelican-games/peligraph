@@ -27084,6 +27084,39 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - **シナリオ**: 新規 `graph_from_blank`(deferred_geometry_v1。json の step は 35、実装者の報告では 37 手)と `graph_from_blank_forward`(forward_opaque_v1。統合側が足した。json の step は 35)。Blank の project → Add → 絞り込みに `material_pass` → Contract → Enter → ゾーンと pass と `draw.material` → 文書のループ・body・`draws` の線 → `loops[0].tier` が `draw_loop` → Frame Plan に pass。2 本とも仮想モニタ(`PELICAN_STUDIO_SCREEN=1`)で緑。シナリオは 40 → 42 本。統合側の報告では、forward の方を走らせた後の project の rendering に `material_route_default: "forward"` があり、engine の log に `LOG_ERROR` が無い(シナリオの step では見ていない)
 - **残る穴**: 「付けない」の記憶は Studio の session の間続く。deferred のシナリオは engine の再起動を見ていない(どちらも統合側の報告)。viewport の色は見ていない
 
+### GL-1e: Graph から画面に出す(読むだけの present の入力へ graph の画像の線を落とす)
+
+**Studio のみ(engine の RS-3 と並走)。実装者: Claude(Opus)。設計は `docs/design_graph_layers.md` の §4 の 3・4 と §7 の GL-1e の行。Studio での見え方は `docs/manual/13_editor.md` の「Graph から画面に出す(✅GL-1e)」、RPC の数の段落、シナリオの `graph_from_blank_forward` / `graph_folded_features`。**
+
+#### 前提
+- 利用者の指摘(2026-09-29): 「追加した render node をこの後どう繋げば出力できるのかよく分からない」
+- Blank の画面に書くのは rendering 節の `present`(fullscreen、`engine://passthrough`、`input: []`)で、Graph では読むだけの畳んだ node だった。graph の material pass の image を `present` の `input` に書くと、LP-1e の置き場所で graph の pass が `present` の後ろに入り、`Pass input target is not produced as an earlier output` で断られた。engine の RS-3 で、置き場所の無い graph の pass はそれを読む rendering 節の pass の前に入る(Studio は置き場所を書かない)
+
+#### 着地(2026-09-29、38da763e)
+- **決定 1(ソケット)**: 本物の root で、plan の `source` が `project`、feature の外、自分の畳んだ node で描かれ、authoring context の行が `editable_root_pass` で宣言の `type` が `fullscreen` の pass は、読む資源の行の代わりに `input` の各項目をソケットで出す。可変の組があれば末尾に `+ input`(自動操作の名前 `graph_derived_socket#<pass>/in:+`)。並びは Frame Plan の VI-3a と同じ `framePlanInputSockets`。plan が宣言を出さない pass は `input` を順に並べ、`+ input` は出さない([`GraphCanvasScene::passInputSockets()`](../src/devstudio/view/graphcanvaswidget.cpp#L3496))。authoring context は、rendering 節の pass を持つ plan を読むたびに読む([`GraphCanvasModel::requestRenderAuthoring()`](../src/devstudio/model/graphcanvasmodel.cpp#L5067))。持たない engine では線を受けない
+- **決定 2(落とす・外す)**: graph の node の出力を落とすと、Frame Plan の `framePlanSocketConnectRequest` が作る `edit_preset_pass` を Graph タブが送る(第二の書き手は無い。[呼ぶ所](../src/devstudio/view/graphcanvaswidget.cpp#L3539))。つながっている口は置き換え、`+ input` は末尾に追加。資源は [`GraphCanvasModel::outputResource()`](../src/devstudio/model/graphcanvasmodel.cpp#L5104) が決める。線は実線 `graph_pass_input_edge#<from>-><pass>` で、同じ資源の派生の破線は引かない。選んで Delete(か右クリックの Delete)で、`framePlanSocketDisconnectRequest` の編集を送る。commit の後の notice は `Pass inputs saved.`。`external_modification` なら読み直して 1 回だけ作り直して送る
+- **Undo**: 送った編集は RU-1 の render の履歴に積まれる。Graph タブの Undo は、Graph タブが最後に送った編集が pass の編集である間だけ、その履歴の Undo を呼ぶ(`render_edits_` を数え、graph の編集を送ると 0 に戻す。[`GraphCanvasScene::undoEdit()`](../src/devstudio/view/graphcanvaswidget.cpp#L3440))。window の Undo / Redo Render Edit の action を `GraphCanvasWidget::setRenderHistoryActions` で渡す
+- **決定 3(古い engine の拒否)**: `Pass input target is not produced as an earlier output` の文に ` — the graph pass that draws it runs after this pass` を足し、notice の 1 行の切り詰めでも残す([句](../src/devstudio/view/graphcanvaswidget.cpp#L3957))
+- `GraphCanvasReadCapability` に `get_render_authoring_context` と `edit_preset_pass` を足した(13 本)
+- **test**: 新規 `devstudio_graphcanvas_scene_test` の `GL-1e a rendering-section pass takes lines: + input, replace, append, the solid line, Delete` と `GL-1e the Graph tab sends a pass's input edit, its Undo reaches the render history, and an engine before RS-3 says why it refused`
+- **シナリオ**: `graph_from_blank_forward` の末尾に足した(json の step は 35 → 51、統合側の報告では 53 手)。Add Object の Cube と Save Scene → Graph → material pass の colour を `present` の `+ input` へ → commit → 実線 → viewport の中央の画素がグラデーション(`#bcbcbc`)から pass の絵(`#746e62`)へ変わる(統合側の実測)→ 撮影。`graph_folded_features` は、`present` の `input` が `scene_color` を名指すので、破線 `graph_derived_edge#forward_opaque->present` を待つ step を実線 `graph_pass_input_edge#forward_opaque->present` に替えた(json の 7 番目、統合側の数え方では step 8)。`render_undo_roundtrip` は一度 step 76 で落ち、再実行で緑(既知の間欠。統合側の報告)
+- **残る穴**: 線の Delete と Undo は scene の test だけで、GPU シナリオでは通していない。Graph タブの pass の編集の後に別のパネルで render の編集をしたとき、Graph タブの Undo が何を戻すかは test していない
+
+### GL-1f: material pass / shadow_depth / snapshot_copy の出力のソケット(engine RS-4 の Studio 側)
+
+**Studio のみ。実装者: Claude(Opus)。engine の契約は `docs/manual/06_rendering.md` §6.18 の「グラフで書く pass」(RS-4)。Studio での見え方は `docs/manual/13_editor.md` の「pass の出力のソケット(✅GL-1f)」と、LP-4e の material pass の項。**
+
+#### 前提
+- 利用者の指摘(2026-09-29): 「render.material_pass から出力するソケットが追加される?」「それまでの形式(出力が無く、image node から横に線を引く)はかなり分かりにくいし変じゃない?」→ 合意: fullscreen と同じく「書いた attachment = 出力のソケット」に揃える。engine は RS-4 で対応済み
+
+#### 着地(2026-09-29、7a3ea86c)
+- **決定 1(ソケット)**: `render.material_pass` は color のソケットと同名の出力と `depth`、`render.shadow_depth` は `depth`、`render.snapshot_copy` は `destination`(catalog の `type_from_input`)。型はその入力につないだ image / target_ref の型で、pass の出力を経る連鎖も辿る([`GraphCanvasModel::forwardedImageType()`](../src/devstudio/model/graphcanvasmodel.cpp#L2262))。つながっていなければ型は空。`outputs` に書いていなくても出ている port として扱う
+- **決定 2(`outputs` を揃える)**: `submitOps` のすべての列に [`GraphCanvasModel::withWriterOutputs()`](../src/devstudio/model/graphcanvasmodel.cpp#L2077) を掛ける。`set_input` / `add_node` の入力 / body の `set_outputs` がこの port を読み、書き手の `outputs` に無ければ、その op の前に足す `replace_node`(同じ列、Undo 1 回)。2 本目の読みは `set_input` だけ。線を消す・読む node を消す・body の出力を替えることで同じ scope に読むものが無くなれば、列の後ろに外す `replace_node`
+- **決定 3(present へ)**: この出力も `present` の入力のソケットへ落とせる。書くのは出力が解決される image の名前で、graph の文書は変えない。`present` への実線は、plan の順で `present` より前にその image を書いた最後の graph の pass の出力から引く(fullscreen の出力も同じ)
+- **決定 4・5**: palette の material pass は `outputs: []` のまま来る。image node の `resource` から読む既存の文書はそのまま描き、編集できる
+- **test**: 新規 `devstudio_graphcanvas_test` の `GL-1f a material pass, a shadow_depth and a snapshot_copy hand on what they wrote; a line from one lists the port in the writer's outputs, and the last one gone takes it out`。`LP-4e a material pass's sockets come from its contract, and the palette places one` を「出力が空」から「`color` / `depth`」に直した。GL-1e の scene の test の線の元を pass の出力に直し、pass の出力を `present` に落とす節を足した
+- **シナリオ**: `graph_from_blank_forward` の drag を material pass の `graph_socket#render_material_pass/out:color` からにした。`graph_from_blank_forward`(53 手)/ `graph_from_blank` / `graph_folded_features` / `loop_zone_read` / `material_loop_decompose` が仮想モニタで緑(統合側の報告)
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
