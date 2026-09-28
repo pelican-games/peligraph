@@ -345,6 +345,23 @@ void placeRenderGraphPassRuns(nlohmann::json &composed, const LoweredRenderGraph
 // otherwise, as for any run): a feature's pass cannot be one.
 void placeDeclaredRenderGraphPassRuns(nlohmann::json &config, LoweredRenderGraphDocument &lowered);
 
+// RS-3: where a run of graph passes with no place of its own (the graph's
+// appended passes of one family, or a loop's copies) has to stand among one
+// family's `passes`: right before the first of them that `scene_pass` admits
+// (and that stands before `end`) which reads an image the run writes that no
+// such pass before it writes, nor any compute task of `config`. "Reads" is
+// LP-6's: an `input` or `reads` entry, a resource port that does not write, a
+// snapshot copy's source; a history read is not one. Every other placement
+// keeps the reader behind a producer already, so only a composition the
+// frame planner refuses today (the reader before the writer) moves.
+// std::nullopt when nothing reads the run so, or when the run waits on the
+// reader or a later pass (its `after` names it, its `before` names the run
+// -- `run_names` -- or it writes an image the run reads): the run then stays
+// where it is, and the reader is refused as before.
+std::optional<std::size_t> graphPassRunReaderPosition(const nlohmann::json &config, const nlohmann::json &passes,
+    const std::vector<const nlohmann::json *> &run, const std::set<std::string> &run_names,
+    const std::function<bool(const nlohmann::json &)> &scene_pass, std::size_t end);
+
 // LP-1a: the expand stage (docs/design_graph_loops.md 5.1, 5.2). For each
 // loop, in dependency order:
 //   1. the elements: the count (LP-1b: an expression is evaluated with the

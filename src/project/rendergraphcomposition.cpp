@@ -1265,6 +1265,78 @@ std::set<std::string> declarationWrites(const Json &declaration) {
     return resources;
 }
 
+// RS-3: the images a lowered pass or task reads this frame, as LP-6 counts a
+// read: an input, a resource port that does not write, a snapshot copy's
+// source. A history read waits on no pass of this frame.
+std::set<std::string> declarationFrameReads(const Json &declaration) {
+    std::set<std::string> reads;
+    const auto add = [&](const Json &name) {
+        std::string resource;
+        if (name.is_string()) resource = name.get<std::string>();
+        else if (name.is_object() && name.contains("target") && name.at("target").is_string())
+            resource = name.at("target").get<std::string>();
+        if (!resource.empty() && !resource.ends_with("@history")) reads.insert(resource);
+    };
+    for (const auto *key : {"input", "reads"})
+        if (const auto found = declaration.find(key); found != declaration.end() && found->is_array())
+            for (const auto &name : *found) add(name);
+    const auto writes = declarationWrites(declaration);
+    if (const auto ports = declaration.find("resource_ports"); ports != declaration.end() && ports->is_object())
+        for (const auto &[port, binding] : ports->items()) {
+            const Json resource = binding.is_string() ? binding
+                : binding.is_object() && binding.contains("resource") ? binding.at("resource") : Json(port);
+            if (resource.is_string() && !writes.contains(resource.get<std::string>())) add(resource);
+        }
+    if (declaration.value("type", std::string{}) == "snapshot_copy")
+        if (const auto source = declaration.find("source"); source != declaration.end()) add(*source);
+    return reads;
+}
+} // namespace
+
+std::optional<std::size_t> graphPassRunReaderPosition(const Json &config, const Json &passes,
+    const std::vector<const Json *> &run, const std::set<std::string> &run_names,
+    const std::function<bool(const Json &)> &scene_pass, std::size_t end) {
+    std::set<std::string> written, read, waited;
+    for (const auto *pass : run) {
+        written.merge(declarationWrites(*pass));
+        read.merge(declarationFrameReads(*pass));
+        for (const auto &name : orderNames(*pass, "after")) waited.insert(name);
+    }
+    // What a compute task writes may reach the reader without the run.
+    if (const auto tasks = config.find("compute_tasks"); tasks != config.end() && tasks->is_array())
+        for (const auto &task : *tasks)
+            if (task.is_object())
+                for (const auto &name : declarationWrites(task)) written.erase(name);
+    if (written.empty() || !passes.is_array()) return std::nullopt;
+    std::set<std::string> produced;
+    std::optional<std::size_t> reader;
+    for (std::size_t i = 0; i < std::min(end, passes.size()); ++i) {
+        const auto &pass = passes.at(i);
+        if (!pass.is_object() || !scene_pass(pass) || run_names.contains(pass.value("name", std::string{})))
+            continue;
+        if (!reader) {
+            const auto reads = declarationFrameReads(pass);
+            if (std::any_of(reads.begin(), reads.end(), [&](const std::string &name) {
+                    return written.contains(name) && !produced.contains(name);
+                }))
+                reader = i;
+        }
+        if (!reader) {
+            produced.merge(declarationWrites(pass));
+            continue;
+        }
+        // The run waits on this pass: it cannot stand before the reader.
+        const auto before = orderNames(pass, "before");
+        const auto writes = declarationWrites(pass);
+        if (waited.contains(pass.value("name", std::string{})) ||
+            std::any_of(before.begin(), before.end(), [&](const std::string &name) { return run_names.contains(name); }) ||
+            std::any_of(writes.begin(), writes.end(), [&](const std::string &name) { return read.contains(name); }))
+            return std::nullopt;
+    }
+    return reader;
+}
+
+namespace {
 void appendOrder(Json &declaration, const char *key, const std::string &name) {
     auto &list = declaration[key];
     if (list.is_null()) list = Json::array();
@@ -1608,8 +1680,10 @@ std::int64_t loopSetLength(const GraphLoopShape &shape, const GraphLoopConstants
 // passes, as an unplaced graph pass does (canonicalizePasses): before the
 // family's first canonical anchor -- so before output_transform too. It still
 // stands after the last pass it waits on (an after of a copy, a before naming
-// a copy or the loop) and before the first pass that waits on it.
-void insertAmongScenePasses(Json &list, std::vector<Json> run, const std::string &loop,
+// a copy or the loop) and before the first pass that waits on it. RS-3: and
+// before the first scene pass that reads an image of the run no pass before
+// it writes (graphPassRunReaderPosition), unless the run waits on that pass.
+void insertAmongScenePasses(const Json &composed, Json &list, std::vector<Json> run, const std::string &loop,
                             const std::function<bool(const Json &)> &depends) {
     std::set<std::string> names{loop};
     std::set<std::string> waited;
@@ -1630,7 +1704,13 @@ void insertAmongScenePasses(Json &list, std::vector<Json> run, const std::string
             floor = i + 1;
         if (dependent == list.size() && depends(pass)) dependent = i;
     }
-    const auto position = std::min(dependent, std::max(scene_end, floor));
+    auto position = std::min(dependent, std::max(scene_end, floor));
+    std::vector<const Json *> members;
+    for (const auto &pass : run) members.push_back(&pass);
+    if (const auto reader = graphPassRunReaderPosition(composed, list, members, names,
+            [](const Json &) { return true; }, scene_end);
+        reader && *reader < position && *reader >= floor)
+        position = *reader;
     for (std::size_t i = 0; i < run.size(); ++i)
         list.insert(list.begin() + static_cast<Json::difference_type>(position + i), std::move(run[i]));
 }
@@ -1902,7 +1982,7 @@ RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRe
                     continue;
                 }
             }
-            insertAmongScenePasses(list, std::move(passes), id, depends);
+            insertAmongScenePasses(composed, list, std::move(passes), id, depends);
         }
     }
 

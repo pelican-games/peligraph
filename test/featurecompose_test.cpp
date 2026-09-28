@@ -8482,4 +8482,83 @@ TEST_CASE("LP-1e an unplaced graph pass and an unplaced loop land after the hybr
     }
 }
 
+TEST_CASE("RS-3 an unplaced graph pass whose output a scene pass reads stands before that pass",
+          "[render-feature][graph-composition][rs3]") {
+    using Json = nlohmann::json;
+    // The blank project's present shows what the graph draws: it reads an
+    // image only the graph writes.
+    auto document = lp1eBlankRenderingConfig();
+    auto &present = document.at("rendering").at("rendering_passes").at(0).at("passes").at(0);
+    REQUIRE(present.at("name") == "present");
+    // What the engine refuses a pass for at compile time, checked here for
+    // every family of the composed config.
+    const auto inputs_produced = [](const RenderFeatureComposeResult &composed) {
+        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+        for (const auto &family : composed.config.at("rendering_passes")) {
+            const auto name = family.at("name").get<std::string>();
+            const auto graph = std::find_if(graphs.begin(), graphs.end(),
+                [&](const auto &candidate) { return candidate.name == name; });
+            REQUIRE(graph != graphs.end());
+            validateFramePlanPassInputsProduced(planFrameGraph(*graph), family, {});
+        }
+    };
+    SECTION("a fullscreen pass, and the loop that stands by it, move ahead of present") {
+        present["input"] = Json::array({"blit_image"});
+        document["definitions"]["paint"] = lp1aPaintBody();
+        document["nodes"] = Json::array({lp0bImage("blit_image"),
+                                         lp1aFullscreen("blit", {{"node", "blit_image"}, {"port", "resource"}}),
+                                         lp1aLoop("steps", lp1aRange(2))});
+        const auto composed = lp0aCompose(document);
+        const auto declared = lp0bDeclared(composed.config);
+        lp1eAmongScenePasses(declared, {"present", "blit", "steps/0/fill", "steps/1/fill"});
+        // The graph's run keeps its own order and stands ahead of its reader.
+        CHECK(lp0bIndex(declared, "blit") < lp0bIndex(declared, "steps/0/fill"));
+        CHECK(lp0bIndex(declared, "steps/1/fill") < lp0bIndex(declared, "present"));
+        const auto order = lp0bPlanOrder(composed);
+        CHECK(lp0bIndex(order, "blit") < lp0bIndex(order, "present"));
+        REQUIRE_NOTHROW(inputs_produced(composed));
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
+    SECTION("a loop with no graph pass to stand by moves ahead of present") {
+        present["input"] = Json::array({"canvas"});
+        document["definitions"]["accumulate"] = lp1aAccumulateBody();
+        document["nodes"] = Json::array({lp0bImage("canvas"),
+            lp1aLoop("steps", lp1aRange(2, "accumulate"), {{"target", {{"node", "canvas"}, {"port", "resource"}}}})});
+        const auto composed = lp0aCompose(document);
+        const auto declared = lp0bDeclared(composed.config);
+        lp1eAmongScenePasses(declared, {"present", "steps/0/blend", "steps/1/blend"});
+        CHECK(lp0bIndex(declared, "steps/0/blend") + 1 == lp0bIndex(declared, "steps/1/blend"));
+        CHECK(lp0bIndex(declared, "steps/1/blend") < lp0bIndex(declared, "present"));
+        const auto order = lp0bPlanOrder(composed);
+        CHECK(lp0bIndex(order, "steps/1/blend") < lp0bIndex(order, "present"));
+        REQUIRE_NOTHROW(inputs_produced(composed));
+    }
+    SECTION("a graph pass no scene pass reads stays where LP-1e puts it") {
+        document["nodes"] = Json::array({lp0bImage("blit_image"),
+                                         lp1aFullscreen("blit", {{"node", "blit_image"}, {"port", "resource"}})});
+        const auto declared = lp0bDeclared(lp0aCompose(document).config);
+        CHECK(lp0bIndex(declared, "present") < lp0bIndex(declared, "blit"));
+    }
+    SECTION("a reader the scene already feeds keeps the graph pass behind it") {
+        // present reads blit_image, but an earlier scene pass writes it: that
+        // configuration runs today, so its order is not changed.
+        auto &passes = document.at("rendering").at("rendering_passes").at(0).at("passes");
+        document["rendering"]["render_targets"] = Json::array({{{"name", "shared"}, {"format", "R16G16B16A16_SFLOAT"},
+            {"extent_scale", 1.0}, {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}}});
+        auto seed = passes.at(0);
+        seed["name"] = "seed";
+        seed["output"]["color"] = Json::array({"shared"});
+        passes.insert(passes.begin(), seed);
+        passes.at(1)["input"] = Json::array({"shared"});
+        document["nodes"] = Json::array({{{"id", "shared_ref"}, {"op", "render.target_ref"},
+                                          {"parameters", {{"name", "shared"}, {"type", lp0aSceneColorType()}}},
+                                          {"outputs", {"resource"}}},
+                                         lp1aFullscreen("blit", {{"node", "shared_ref"}, {"port", "resource"}},
+                                                        {{"color_load_op", "Load"}})});
+        const auto declared = lp0bDeclared(lp0aCompose(document).config);
+        CHECK(lp0bIndex(declared, "seed") < lp0bIndex(declared, "present"));
+        CHECK(lp0bIndex(declared, "present") < lp0bIndex(declared, "blit"));
+    }
+}
+
 } // namespace Pelican

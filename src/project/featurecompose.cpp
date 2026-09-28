@@ -3103,11 +3103,62 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     for (auto &target : graph_targets) resolved_config["render_targets"].push_back(std::move(target));
     for (auto &family : graph_passes) {
         auto &families = ensureArray(resolved_config, "rendering_passes");
-        const auto found = std::find_if(families.begin(), families.end(), [&](const auto &candidate) {
+        auto found = std::find_if(families.begin(), families.end(), [&](const auto &candidate) {
             return candidate.at("name") == family.at("name");
         });
-        if (found == families.end()) families.push_back(std::move(family));
-        else for (auto &pass : family.at("passes")) (*found)["passes"].push_back(std::move(pass));
+        if (!family.contains("passes") || !family.at("passes").is_array()) {
+            if (found == families.end()) families.push_back(std::move(family));
+            else for (auto &pass : family.at("passes")) (*found)["passes"].push_back(std::move(pass));
+            continue;
+        }
+        // The lowered family holds the rendering section's own passes and,
+        // after them, the graph's appended ones.
+        auto authored = std::move(family.at("passes"));
+        if (found == families.end()) {
+            family["passes"] = nlohmann::json::array();
+            families.push_back(std::move(family));
+            found = std::prev(families.end());
+        }
+        auto &passes = (*found)["passes"];
+        if (passes.is_null()) passes = nlohmann::json::array();
+        std::vector<nlohmann::json> graph_run;
+        for (auto &pass : authored) {
+            if (pass.is_object() && pass.contains("name") && pass.at("name").is_string() &&
+                lowered_graph.graph_declarations.contains(pass.at("name").get<std::string>()))
+                graph_run.push_back(std::move(pass));
+            else passes.push_back(std::move(pass));
+        }
+        // LP-1e: the graph's passes follow the family's scene passes. RS-3:
+        // unless one of those reads what the graph's passes write (the loops
+        // that stand by them included) and nothing before it writes that:
+        // then the graph's passes, in their own order, stand right before the
+        // first such reader. A pass the canonical order puts past the first
+        // anchor already stands after them and is not a reader here.
+        const auto family_name = found->at("name").get<std::string>();
+        std::vector<const nlohmann::json *> run;
+        std::set<std::string> run_names;
+        for (const auto &pass : graph_run) {
+            run.push_back(&pass);
+            run_names.insert(pass.value("name", std::string{}));
+        }
+        for (const auto &loop : lowered_graph.loops) {
+            if (loop.shape.placement || !loop.positions.contains(family_name)) continue;
+            run_names.insert(loop.shape.node);
+            for (const auto &body : loop.branches)
+                if (body)
+                    for (const auto &[pass_family, pass] : body->passes)
+                        if (pass_family == family_name) run.push_back(&pass);
+        }
+        const auto scene_pass = [](const nlohmann::json &pass) {
+            const auto type = pass.value("type", std::string{});
+            return type != "ui" && type != "debug_draw" && type != "gizmo" && type != "debug_text" &&
+                   !(pass.contains("canonical_anchor") && pass.at("canonical_anchor").is_string()) &&
+                   !passWritesSwapchain(pass);
+        };
+        auto position = graphPassRunReaderPosition(resolved_config, passes, run, run_names, scene_pass,
+                                                   passes.size()).value_or(passes.size());
+        for (auto &pass : graph_run)
+            passes.insert(passes.begin() + static_cast<nlohmann::json::difference_type>(position++), std::move(pass));
     }
     // LP-3b: a graph pass placed with `declared: true` stands among the
     // declared passes before any feature is composed, as the pass it was
