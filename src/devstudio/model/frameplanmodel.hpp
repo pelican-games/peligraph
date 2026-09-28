@@ -671,4 +671,26 @@ struct FramePlanModel {
 // accepted; old or future versions are not upgraded implicitly.
 FramePlanModel buildFramePlanModel(std::string_view response_json);
 
+// G-4 / GL-1d: the one judgment of when a new Forward opaque pass also sets
+// the project's material_route_default to "forward" -- shared by the Frame
+// Plan's material pass form and the Graph's palette, which gather the
+// pipeline's material passes each from what they read.
+//
+// Whether a material pass of this contract takes the deferred_geometry route:
+// a deferred_geometry_v1 pass, or a legacy G-buffer one (which accepts every
+// material with a G-buffer shader contract). An empty contract is the legacy
+// one, as a declaration without material_contract is.
+bool materialContractTakesDeferredRoute(std::string_view contract);
+
+// A Forward opaque pass in a pipeline with no pass for deferred materials:
+// without the forward default, the engine's built-in materials and every
+// automatic material have no pass to be drawn by, and the engine refuses the
+// pass (material_route_unserved@1).
+bool materialRouteOffersForwardDefault(std::string_view contract,
+                                       bool pipeline_has_deferred_pass);
+
+// The notice for a material_route_unserved@1 refusal: which materials have no
+// pass, on which route, and what to do about it. Empty for any other error.
+std::string materialRouteUnservedNotice(const nlohmann::json &error);
+
 } // namespace PelicanStudio

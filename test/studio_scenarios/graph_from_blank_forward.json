@@ -1,0 +1,243 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_from_blank_forward",
+  "description": "GL-1d with RS-2: the same as graph_from_blank with forward_opaque_v1, the palette default and the contract the user first tried from Blank. Blank routes materials to deferred; with no deferred pass in the pipeline Studio sends material_route_default forward with the edit (RS-2), the engine commits it and asks for a restart, and after the restart the pass draws with its draw loop.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "File > New Project..., fired by name",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "draw_project"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the blank project's present is on the Frame Plan canvas",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the Graph tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the blank project's graph has no node yet",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 0
+    },
+    {
+      "label": "the canvas has read the new document and can edit it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add: the palette opens",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the filter narrows the list to the material pass",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "material_pass"
+    },
+    {
+      "label": "the contract combo is offered for it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteContract",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "a forward pass: forward_opaque_v1 (Studio sends the route default)",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPaletteContract",
+      "text": "forward_opaque_v1"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the palette closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "decision 1: the root shows the pass's draw loop as a zone (after the engine restarts, if it asks to)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#render_material_pass_draws",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "beside it, the material pass",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_material_pass",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and inside the zone, the body's draw.material",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_material_pass_draw/step",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the document: the loop first",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].id",
+      "value": "render_material_pass_draws",
+      "retry_ms": 60000
+    },
+    {
+      "label": "a draw_loop over the pass's draw items",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.over.draw_items.contract",
+      "value": "forward_opaque_v1"
+    },
+    {
+      "label": "its one branch runs the body",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.branches[0].body",
+      "value": "render_material_pass_draw"
+    },
+    {
+      "label": "whose step is draw.material",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.render_material_pass_draw.nodes[0].op",
+      "value": "draw.material"
+    },
+    {
+      "label": "the pass last, its images between",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].op",
+      "value": "render.material_pass"
+    },
+    {
+      "label": "the pass's draws come from the loop",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].inputs.draws.node",
+      "value": "render_material_pass_draws"
+    },
+    {
+      "label": "the frame plan runs the loop inside the pass",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].tier",
+      "value": "draw_loop",
+      "retry_ms": 120000
+    },
+    {
+      "label": "a picture of the Graph tab with the pass and its zone",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "graph_from_blank.png"
+    },
+    {
+      "label": "the Frame Plan tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "the Frame Plan has the material pass",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#render_material_pass",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "a picture of the Frame Plan with the pass",
+      "expect": "screenshot",
+      "name": "pelican.framePlan",
+      "path": "graph_from_blank_frame_plan.png"
+    }
+  ]
+}

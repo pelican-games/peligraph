@@ -153,8 +153,8 @@ GraphCanvasReadCapability idleGraphCapability() {
     capability.requestStatus = [](QString *) { return qint64{0}; };
     capability.requestSetTime = [](double, QString *) { return qint64{0}; };
     capability.requestRenderFrame = [](QString *) { return qint64{0}; };
-    capability.requestEditGraphDocument = [](const QString &,
-                                             const QByteArray &, QString *) {
+    capability.requestEditGraphDocument = [](const QString &, const QByteArray &,
+                                             const QString &, QString *) {
         return qint64{0};
     };
     capability.requestEditResult = [](const QString &, QString *) {

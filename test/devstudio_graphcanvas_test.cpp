@@ -836,12 +836,14 @@ struct GraphHistoryHarness {
     void refresh() {
         client.reply(client.take("get_graph_instances"), snapshot());
     }
-    // LP-4c: the op list the last commit() sent.
+    // LP-4c: the op list the last commit() sent (GL-1d: and all it sent).
     Json last_ops;
+    Json last_params;
     void commit() {
         const auto submit = client.take("edit_graph_document");
         REQUIRE(submit.params.at("base_source_digest") == digest());
         last_ops = submit.params.at("ops");
+        last_params = submit.params;
         auto edited = Pelican::editGraphDocument(document, submit.params.at("ops"));
         client.reply(submit, {{"status", "accepted"}, {"ticket", "edit"}});
         REQUIRE_FALSE(client.model.canUndo());
@@ -1777,18 +1779,22 @@ TEST_CASE("LP-4e a material pass's sockets come from its contract, and the palet
     SECTION("a G-buffer pass arrives writing an image per socket and a depth") {
         REQUIRE(h.client.model.addNode("render.material_pass", "deferred_geometry_v1"));
         h.commit();
-        REQUIRE(h.last_ops.size() == 7);
+        // GL-1d, decision 1: its body and its draw_loop first, then the
+        // images, then the pass.
+        REQUIRE(h.last_ops.size() == 9);
         const auto &pass = h.last_ops.back().at("node");
         CHECK(pass.at("op") == "render.material_pass");
         CHECK(pass.at("parameters") ==
               Json{{"material_contract", "deferred_geometry_v1"}, {"pass_set", "main_render"}});
-        CHECK(pass.at("inputs").size() == 6);
+        CHECK(pass.at("inputs").size() == 7);
         CHECK(pass.at("inputs").at("worldpos") ==
               Json{{"node", pass.at("id").get<std::string>() + "__worldpos"}, {"port", "resource"}});
-        const auto &depth = h.last_ops[5].at("node");
+        const auto &depth = h.last_ops[7].at("node");
         CHECK(depth.at("parameters").at("format") == "D32_SFLOAT");
         CHECK(depth.at("parameters").at("type") == lp4eDepthType());
         CHECK(portNames(h.client.node(pass.at("id").get<std::string>())).front() == "albedo");
+        // A deferred pass needs no route default.
+        CHECK_FALSE(h.last_params.contains("material_route_default"));
     }
     SECTION("the palette's contract decides the sockets, and changing it is one field") {
         REQUIRE(h.client.model.setMaterialPassContract("gbuffer", "forward_transparent_v1"));
@@ -1797,6 +1803,190 @@ TEST_CASE("LP-4e a material pass's sockets come from its contract, and the palet
         CHECK(ops[0].at("parameters").at("material_contract") == "forward_transparent_v1");
         CHECK_FALSE(h.client.model.setMaterialPassContract("gbuffer", "legacy_gbuffer_v1"));
     }
+}
+
+// GL-1d, decision 1: the palette's material pass arrives drawing: the draw_loop
+// decompose_material_pass would write, its body's draw.material and the edge
+// into the pass's draws, all in the one list one Undo takes back.
+TEST_CASE("GL-1d the palette's material pass arrives with its draw loop, body and draws edge",
+          "[studio][graph-canvas][gl1d]") {
+    DrawLoopHarness h;
+    h.open();
+    REQUIRE(h.client.model.addNode("render.material_pass", "deferred_geometry_v1"));
+    h.commit();
+    const auto &pass = h.last_ops.back().at("node");
+    const auto id = pass.at("id").get<std::string>();
+    CHECK(id == "render_material_pass");
+    CHECK(h.last_ops[0] ==
+          Json{{"op", "add_definition"}, {"name", id + "_draw"},
+               {"definition",
+                {{"nodes", Json::array({{{"id", "step"}, {"op", "draw.material"},
+                                         {"parameters", Json::object()},
+                                         {"outputs", {"draws"}}}})},
+                 {"outputs", {{"draws", {{"node", "step"}, {"port", "draws"}}}}}}}});
+    CHECK(h.last_ops[1] ==
+          Json{{"op", "add_node"}, {"scope", "root"},
+               {"node", {{"id", id + "_draws"}, {"op", "graph.loop"},
+                         {"parameters",
+                          {{"over", {{"draw_items", {{"contract", "deferred_geometry_v1"}}}}},
+                           {"tier", "draw_loop"},
+                           {"order", {{"by", "phase_default"}}},
+                           {"branches", Json::array({{{"body", id + "_draw"}}})}}},
+                         {"outputs", {"draws"}}}}});
+    CHECK(pass.at("inputs").at("draws") == Json{{"node", id + "_draws"}, {"port", "draws"}});
+    // The canvas reads it back as a draw_loop the pass's draws come from,
+    // whose body draws each material.
+    const auto loop = h.client.model.loop(id + "_draws");
+    REQUIRE(loop);
+    CHECK(loop->draw_items);
+    CHECK(loop->contract == "deferred_geometry_v1");
+    CHECK(loop->pass == id);
+    CHECK(loop->body == id + "_draw");
+    CHECK(port(h.client.node(id), "draws").source_node == id + "_draws");
+    CHECK(h.client.model.drawBodyScope(id + "_draw"));
+    // One Undo takes the whole list back.
+    REQUIRE(h.client.model.canUndo());
+    REQUIRE(h.client.model.undo());
+    const auto submit = h.client.take("edit_graph_document");
+    const auto &inverse = submit.params.at("ops");
+    CHECK(std::ranges::any_of(inverse, [&](const Json &op) {
+        return op.value("op", std::string{}) == "remove_definition" &&
+               op.value("name", std::string{}) == id + "_draw";
+    }));
+    const auto undone = Pelican::editGraphDocument(h.document, inverse);
+    CHECK(undone.at("nodes").size() == lp4eDocument().at("nodes").size());
+    CHECK_FALSE(undone.at("definitions").contains(id + "_draw"));
+
+    SECTION("a second one takes names its loop and body are free under") {
+        auto document = lp4eDocument();
+        document["nodes"].push_back({{"id", "render_material_pass_draws"}, {"op", "value.constant"},
+                                     {"parameters", {{"value", 0.0}}}, {"outputs", {"value"}}});
+        DrawLoopHarness second;
+        second.document = document;
+        second.open();
+        REQUIRE(second.client.model.addNode("render.material_pass", "forward_opaque_v1"));
+        second.commit();
+        CHECK(second.last_ops.back().at("node").at("id") == "render_material_pass_2");
+        CHECK(second.last_ops[1].at("node").at("id") == "render_material_pass_2_draws");
+    }
+}
+
+// GL-1d, decisions 3 and 4: a Forward opaque pass where no pass draws deferred
+// materials carries material_route_default "forward" in the same ticket (the
+// Frame Plan's judgment); an engine that does not take the field is sent the
+// list again without it, and its material_route_unserved@1 reads as the Frame
+// Plan's sentence.
+TEST_CASE("GL-1d a forward material pass sets the route default, and falls back without it",
+          "[studio][graph-canvas][gl1d]") {
+    DrawLoopHarness h;
+    // forward_opaque is the only material pass: nothing draws deferred.
+    h.open();
+    CHECK_FALSE(h.client.model.pipelineHasDeferredMaterialPass());
+    CHECK(h.client.model.addNodeParams({}, "render.material_pass", "forward_opaque_v1") ==
+          Json{{"material_route_default", "forward"}});
+    CHECK(h.client.model.addNodeParams({}, "render.material_pass", "deferred_geometry_v1").empty());
+    CHECK(h.client.model.addNodeParams({}, "render.material_pass", "forward_transparent_v1").empty());
+    CHECK(h.client.model.addNodeParams({}, "value.constant").empty());
+
+    REQUIRE(h.client.model.addNode("render.material_pass", "forward_opaque_v1"));
+    const auto first = h.client.take("edit_graph_document");
+    CHECK(first.params.at("material_route_default") == "forward");
+    const auto ops = first.params.at("ops");
+
+    SECTION("an engine that takes it commits the pass and the default together") {
+        auto edited = Pelican::editGraphDocument(h.document, ops);
+        h.client.reply(first, {{"status", "accepted"}, {"ticket", "edit"}});
+        const auto poll = h.client.take("get_edit_result");
+        h.document = std::move(edited);
+        ++h.generation;
+        h.client.reply(poll, {{"status", "committed"}, {"source_digest", {{"hex", h.digest()}}}});
+        h.refresh();
+        // Its Undo does not send it: the default is the project's.
+        REQUIRE(h.client.model.undo());
+        CHECK_FALSE(h.client.take("edit_graph_document").params.contains("material_route_default"));
+    }
+    SECTION("an engine that does not know the field is asked again without it") {
+        h.client.model.receiveRpcFailure(
+            first.request_id,
+            "edit_graph_document contains unsupported field 'material_route_default'");
+        const auto again = h.client.take("edit_graph_document");
+        CHECK_FALSE(again.params.contains("material_route_default"));
+        CHECK(again.params.at("ops") == ops);
+        // Decision 4: its refusal reads as the Frame Plan's sentence.
+        const Json unserved{
+            {"code", "material_route_unserved@1"},
+            {"message", "material_route_unserved@1: the engine's message"},
+            {"unserved",
+             Json::array({{{"route", "deferred_geometry"},
+                           {"materials", Json::array({{{"name", "pelican.builtin.opaque"},
+                                                       {"origin", "builtin"}}})},
+                           {"hint", "set material_route_default to \"forward\""}}})}};
+        h.client.reply(again, {{"status", "rejected"}, {"committed", false}, {"error", unserved}});
+        CHECK(h.client.model.editNotice().kind == PelicanStudio::InspectorNoticeKind::Error);
+        CHECK(h.client.model.editNotice().message == PelicanStudio::materialRouteUnservedNotice(unserved));
+        CHECK(h.client.model.editNotice().message.find(
+                  "No pass draws the deferred_geometry route, which pelican.builtin.opaque "
+                  "(engine built-in) takes") != std::string::npos);
+        h.refresh();
+        // And the next addition does not offer the field again.
+        CHECK(h.client.model.addNodeParams({}, "render.material_pass", "forward_opaque_v1").empty());
+    }
+    SECTION("any other failure is not retried") {
+        h.client.model.receiveRpcFailure(first.request_id, "the engine went away");
+        CHECK(std::ranges::none_of(h.client.model.takeRpcRequests(), [](const auto &request) {
+            return request.method == "edit_graph_document";
+        }));
+    }
+}
+
+// GL-1d: a deferred material pass in the root, or one the frame plan routes
+// deferred materials to, is a pass for them: no default is offered.
+TEST_CASE("GL-1d a pipeline with a deferred material pass offers no route default",
+          "[studio][graph-canvas][gl1d]") {
+    auto document = lp4eDocument();
+    document["nodes"].push_back({{"id", "gbuffer"}, {"op", "render.material_pass"},
+                                 {"parameters", {{"material_contract", "deferred_geometry_v1"}}},
+                                 {"outputs", Json::array()}});
+    DrawLoopHarness h;
+    h.document = document;
+    h.open();
+    CHECK(h.client.model.pipelineHasDeferredMaterialPass());
+    CHECK(h.client.model.addNodeParams({}, "render.material_pass", "forward_opaque_v1").empty());
+    // The shared judgment, as the Frame Plan's form asks it.
+    CHECK(PelicanStudio::materialRouteOffersForwardDefault("forward_opaque_v1", false));
+    CHECK_FALSE(PelicanStudio::materialRouteOffersForwardDefault("forward_opaque_v1", true));
+    CHECK_FALSE(PelicanStudio::materialRouteOffersForwardDefault("deferred_geometry_v1", false));
+    CHECK(PelicanStudio::materialContractTakesDeferredRoute("legacy_gbuffer_v1"));
+    CHECK(PelicanStudio::materialContractTakesDeferredRoute(""));
+    CHECK_FALSE(PelicanStudio::materialContractTakesDeferredRoute("forward_transparent_v1"));
+}
+
+// GL-1d, decision 2: Over's Draw items turns a loop a material pass reads into
+// that pass's draw_loop.
+TEST_CASE("GL-1d a loop a material pass reads can run over its draw items",
+          "[studio][graph-canvas][gl1d]") {
+    auto document = lp4eDocument();
+    for (auto &node : document["nodes"])
+        if (node.at("id") == "forward_opaque_draws")
+            node["parameters"] = {{"over", {{"range", {{"count", 2}}}}},
+                                  {"limit", 1},
+                                  {"branches", Json::array({{{"body", "forward_opaque_draw"}}})}};
+    document["nodes"].push_back({{"id", "unread"}, {"op", "graph.loop"},
+                                 {"parameters", {{"over", {{"range", {{"count", 1}}}}},
+                                                 {"branches", Json::array({{{"body", "forward_opaque_draw"}}})}}},
+                                 {"outputs", {"draws"}}});
+    DrawLoopHarness h;
+    h.document = document;
+    h.open();
+    CHECK(h.client.model.loopDrawItemsContract("forward_opaque_draws") == "forward_opaque_v1");
+    CHECK(h.client.model.loopDrawItemsContract("unread").empty());
+    CHECK_FALSE(h.client.model.setLoopDrawItems("unread"));
+    REQUIRE(h.client.model.setLoopDrawItems("forward_opaque_draws"));
+    const auto parameters = h.loopParameters(h.refuse());
+    CHECK(parameters == Json{{"over", {{"draw_items", {{"contract", "forward_opaque_v1"}}}}},
+                             {"tier", "draw_loop"},
+                             {"order", {{"by", "phase_default"}}},
+                             {"branches", Json::array({{{"body", "forward_opaque_draw"}}})}});
 }
 
 TEST_CASE("LP-4e a draw step arrives at the head of its body's list and its fields are one "

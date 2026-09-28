@@ -2016,4 +2016,37 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
     return model;
 }
 
+bool materialContractTakesDeferredRoute(std::string_view contract) {
+    return contract.empty() || contract == "deferred_geometry_v1" ||
+           contract == "legacy_gbuffer_v1";
+}
+
+bool materialRouteOffersForwardDefault(std::string_view contract,
+                                       bool pipeline_has_deferred_pass) {
+    return contract == "forward_opaque_v1" && !pipeline_has_deferred_pass;
+}
+
+std::string materialRouteUnservedNotice(const Json &error) {
+    if (!error.is_object() ||
+        error.value("code", std::string{}) != "material_route_unserved@1")
+        return {};
+    std::string notice;
+    for (const auto &route : error.value("unserved", Json::array())) {
+        std::string names;
+        std::size_t count = 0;
+        for (const auto &material : route.value("materials", Json::array())) {
+            auto name = material.value("name", std::string{});
+            if (material.value("origin", std::string{}) == "builtin")
+                name += " (engine built-in)";
+            if (count++ != 0) names += ", ";
+            names += name;
+        }
+        if (!notice.empty()) notice += " ";
+        notice += "No pass draws the " + route.value("route", std::string{}) +
+                  " route, which " + names + (count == 1 ? " takes" : " take") +
+                  ". To fix: " + route.value("hint", std::string{}) + ".";
+    }
+    return notice.empty() ? error.value("message", std::string{}) : notice;
+}
+
 } // namespace PelicanStudio

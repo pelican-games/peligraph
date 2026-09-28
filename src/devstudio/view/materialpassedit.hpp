@@ -1,6 +1,7 @@
 #pragma once
 
 #include "frameplanedit.hpp"
+#include "frameplanmodel.hpp"
 
 #include <string>
 #include <vector>
@@ -84,10 +85,9 @@ bool materialPassPipelineHasDeferredPass(const FramePlanAuthoring &authoring);
 bool materialPassOffersForwardDefault(const FramePlanAuthoring &authoring,
                                       const std::string &contract);
 
-// G-4: the notice for a material_route_unserved@1 refusal: which materials
-// have no pass, on which route, and what to do about it. Empty for any other
-// error.
-std::string materialRouteUnservedNotice(const nlohmann::json &error);
+// G-4: materialRouteUnservedNotice (the notice for a
+// material_route_unserved@1 refusal) is frameplanmodel's, shared with the
+// Graph (GL-1d).
 
 // "Create missing targets": every empty slot gets the slot's default name, or
 // the default with _2, _3, ... when that name is declared already or another

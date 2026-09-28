@@ -13,6 +13,7 @@
 #include <QApplication>
 #include <QColor>
 #include <QCoreApplication>
+#include <QDialog>
 #include <QFocusEvent>
 #include <QFont>
 #include <QGraphicsItem>
@@ -36,12 +37,14 @@
 #include <QToolButton>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QWidget>
 #include <QPointF>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 
 #include <algorithm>
 #include <chrono>
@@ -2161,6 +2164,8 @@ struct RecordedCapability {
         // Q-5: what an edit carried, so a test can answer with the document
         // that edit produced.
         QByteArray body;
+        // GL-1d: the material_route_default it carried beside the ops.
+        QString route_default;
     };
     std::vector<Call> calls;
     qint64 next = 1;
@@ -2197,9 +2202,10 @@ struct RecordedCapability {
         seam.requestRenderFrame = [note](QString *) {
             return note(QStringLiteral("render_frame"));
         };
-        seam.requestEditGraphDocument = [this](const QString &,
-                                               const QByteArray &ops, QString *) {
-            calls.push_back(Call{QStringLiteral("edit_graph_document"), {}, 0, ops});
+        seam.requestEditGraphDocument = [this](const QString &, const QByteArray &ops,
+                                               const QString &route_default, QString *) {
+            calls.push_back(
+                Call{QStringLiteral("edit_graph_document"), {}, 0, ops, route_default});
             return next++;
         };
         seam.requestEditResult = [note](const QString &, QString *) {
@@ -3314,6 +3320,17 @@ TEST_CASE("LP-4c the Loop fields and Add loop go out through the capability",
     auto *count = widget.findChild<QSpinBox *>(QStringLiteral("pelican.graphCanvasLoop.count"));
     REQUIRE(count != nullptr);
     CHECK(count->value() == 2);
+    // GL-1d, decision 2: Over offers Draw items only to a loop a material
+    // pass reads; this one's draws go nowhere, and the item says so.
+    auto *over = widget.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasLoop.over"));
+    REQUIRE(over != nullptr);
+    const int draw_items = over->findData(QStringLiteral("draw_items"));
+    REQUIRE(draw_items >= 0);
+    auto *over_items = qobject_cast<QStandardItemModel *>(over->model());
+    REQUIRE(over_items != nullptr);
+    CHECK_FALSE(over_items->item(draw_items)->isEnabled());
+    CHECK(over->itemData(draw_items, Qt::ToolTipRole).toString().contains(
+        QStringLiteral("No material pass reads")));
     REQUIRE(widget.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasLoop.branch0.body")) !=
             nullptr);
     // The parameters are fields, never a JSON pill on the canvas.
@@ -3358,6 +3375,119 @@ TEST_CASE("LP-4c the Loop fields and Add loop go out through the capability",
     CHECK(added[1].at("node").at("op") == "graph.loop");
     CHECK(added[1].at("node").at("parameters").at("branches") ==
           Json::array({{{"body", "loop_body"}}}));
+}
+
+namespace {
+// GL-1d, decision 5: the palette on screen, if one is.
+QDialog *paletteOnScreen() {
+    for (QWidget *top : QApplication::topLevelWidgets())
+        if (top->objectName() == QLatin1String{"pelican.graphCanvasPalette"} && top->isVisible())
+            return qobject_cast<QDialog *>(top);
+    return nullptr;
+}
+
+void sendKey(QWidget *to, int key, const QString &text = {}) {
+    QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier, text);
+    QCoreApplication::sendEvent(to, &press);
+    QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier, text);
+    QCoreApplication::sendEvent(to, &release);
+}
+
+// Clicks Add and runs `inside` while the modal palette it opens is up.
+bool whilePaletteOpen(QPushButton &add, const std::function<void(QDialog &)> &inside) {
+    bool ran = false;
+    int ticks = 0;
+    QTimer poll;
+    poll.setInterval(5);
+    QObject::connect(&poll, &QTimer::timeout, [&] {
+        if (QDialog *dialog = paletteOnScreen()) {
+            poll.stop();
+            ran = true;
+            inside(*dialog);
+            if (dialog->isVisible()) dialog->reject();
+        } else if (++ticks > 2000) {
+            poll.stop();
+        }
+    });
+    poll.start();
+    add.click();
+    while (poll.isActive()) QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    QCoreApplication::processEvents();
+    return ran;
+}
+} // namespace
+
+TEST_CASE("GL-1d the Add node palette opens with the keyboard on its filter",
+          "[devstudio][graph-canvas][scene][gl1d]") {
+    (void)application();
+    RecordedCapability transport;
+    PelicanStudio::GraphCanvasWidget widget{transport.capability()};
+    widget.resize(900, 600);
+    widget.show();
+    QCoreApplication::processEvents();
+    const auto answerRpc = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        REQUIRE(transport.deliver);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+    };
+    answerRpc(QStringLiteral("get_graph_instances"), context(fixtureDocument()));
+    answerRpc(QStringLiteral("get_graph_catalog"), visualCatalog());
+    auto *add = widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasAddNode"));
+    REQUIRE(add != nullptr);
+    REQUIRE(add->isEnabled());
+
+    // Esc is Cancel: typed into, walked, and left with nothing sent.
+    QString focused;
+    QString typed;
+    int row_before = -1;
+    int row_after = -1;
+    bool closed = false;
+    REQUIRE(whilePaletteOpen(*add, [&](QDialog &dialog) {
+        QWidget *keyboard = dialog.focusWidget();
+        REQUIRE(keyboard != nullptr);
+        focused = keyboard->objectName();
+        // Typed straight away, without a click: the filter has it.
+        for (const QChar c : QStringLiteral("value."))
+            sendKey(keyboard, c == QLatin1Char{'.'} ? Qt::Key_Period : Qt::Key_A + (c.unicode() - 'a'),
+                    QString{c});
+        auto *filter = dialog.findChild<QLineEdit *>(QStringLiteral("pelican.graphCanvasPaletteFilter"));
+        auto *list = dialog.findChild<QListWidget *>(QStringLiteral("pelican.graphCanvasPaletteList"));
+        REQUIRE(filter != nullptr);
+        REQUIRE(list != nullptr);
+        typed = filter->text();
+        // The arrows walk the list; the keyboard stays on the filter.
+        row_before = list->currentRow();
+        sendKey(dialog.focusWidget(), Qt::Key_Down);
+        row_after = list->currentRow();
+        sendKey(dialog.focusWidget(), Qt::Key_Escape);
+        closed = !dialog.isVisible();
+    }));
+    CHECK(focused == QStringLiteral("pelican.graphCanvasPaletteFilter"));
+    CHECK(typed == QStringLiteral("value."));
+    CHECK(row_before == 0);
+    CHECK(row_after == 1);
+    CHECK(closed);
+    CHECK(transport.countOf(QStringLiteral("edit_graph_document")) == 0);
+
+    // Enter is OK: the row the arrows reached is added.
+    QString chosen;
+    REQUIRE(whilePaletteOpen(*add, [&](QDialog &dialog) {
+        auto *list = dialog.findChild<QListWidget *>(QStringLiteral("pelican.graphCanvasPaletteList"));
+        REQUIRE(list != nullptr);
+        REQUIRE(list->count() > 1);
+        sendKey(dialog.focusWidget(), Qt::Key_Down);
+        chosen = list->currentItem()->data(Qt::UserRole).toString();
+        sendKey(dialog.focusWidget(), Qt::Key_Return);
+        closed = !dialog.isVisible();
+    }));
+    CHECK(closed);
+    REQUIRE(transport.countOf(QStringLiteral("edit_graph_document")) == 1);
+    const auto sent = Json::parse(transport.calls.back().body.toStdString());
+    CHECK(std::ranges::any_of(sent, [&](const Json &op) {
+        return op.value("op", std::string{}) == "add_node" &&
+               op.at("node").value("op", std::string{}) == chosen.toStdString();
+    }));
 }
 
 TEST_CASE("LP-4e a draw_loop's Loop fields: the rows it takes, the rows it does not, and a "

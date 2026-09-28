@@ -204,8 +204,11 @@ GraphCanvasLoopFields::GraphCanvasLoopFields(
     over_->setObjectName(fieldName(QStringLiteral("over")));
     over_->addItem(tr("Count"), QStringLiteral("range"));
     over_->addItem(tr("View axis"), QStringLiteral("view_axis"));
-    over_->setToolTip(tr("Run over 0 up to a count, or over the views along one axis of a view "
-                         "family (a cube's faces, a shadow's cascades)."));
+    // GL-1d, decision 2: or over the materials of the pass its draws feed.
+    over_->addItem(tr("Draw items"), QStringLiteral("draw_items"));
+    over_->setToolTip(tr("Run over 0 up to a count, over the views along one axis of a view "
+                         "family (a cube's faces, a shadow's cascades), or over the materials "
+                         "of the material pass that reads the loop's draws."));
     form->addRow(caption(tr("Over")), over_);
     connect(over_, &QComboBox::currentIndexChanged, this, [this] { commitOver(); });
 
@@ -535,6 +538,21 @@ void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop) {
     {
         const QSignalBlocker block{over_};
         over_->setCurrentIndex(view ? 1 : 0);
+        // GL-1d, decision 2: draw items only for a loop a material pass
+        // reads, whose contract they are.
+        const int draw_index = over_->findData(QStringLiteral("draw_items"));
+        const auto contract = model_.loopDrawItemsContract(loop.id);
+        if (auto *items = qobject_cast<QStandardItemModel *>(over_->model());
+            items != nullptr && draw_index >= 0)
+            items->item(draw_index)->setEnabled(!contract.empty());
+        over_->setItemData(
+            draw_index,
+            contract.empty()
+                ? tr("No material pass reads this loop's draws: connect its draws "
+                     "to a material pass first.")
+                : tr("Run over the materials of the %1 pass that reads the draws.")
+                      .arg(qtext(contract)),
+            Qt::ToolTipRole);
     }
     {
         const QSignalBlocker block{count_target_};
@@ -892,6 +910,17 @@ void GraphCanvasLoopFields::commitOver() {
     if (!current_ || loop_.empty()) return;
     const auto over = over_->currentData().toString();
     const bool view = !current_->view_family.empty();
+    if (over == QLatin1String{"draw_items"}) {
+        // GL-1d, decision 2: the reading pass's contract; without one the
+        // item is not offered, and a pick that still arrives goes back.
+        if (model_.setLoopDrawItems(loop_)) {
+            after(true);
+            return;
+        }
+        const QSignalBlocker block{over_};
+        over_->setCurrentIndex(view ? 1 : 0);
+        return;
+    }
     if (over == QLatin1String{"range"}) {
         // Back to a count: as many as the axis had, so the copies stay.
         if (view) after(model_.setLoopCount(loop_, current_->known_count.value_or(1)));

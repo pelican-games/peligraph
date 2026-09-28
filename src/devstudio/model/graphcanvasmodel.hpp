@@ -745,6 +745,10 @@ class GraphCanvasModel {
     struct HistoryEntry {
         nlohmann::json forward;
         nlohmann::json inverse;
+        // GL-1d, decision 3: what the forward list sends beside its ops
+        // (`material_route_default`), or null. An Undo sends the inverse
+        // alone: the route default is the project's, not the list's.
+        nlohmann::json params;
     };
     enum class HistoryAction { Edit, Undo, Redo };
     struct PendingHistory {
@@ -780,6 +784,13 @@ class GraphCanvasModel {
     // before it produced, which a copy of the document is walked through.
     nlohmann::json inverseOps(const nlohmann::json &ops) const;
     bool submitHistory(HistoryAction action, HistoryEntry entry);
+    // GL-1d, decision 3: an engine that predates edit_graph_document's
+    // material_route_default refuses the whole call over the field. The
+    // list goes again without it (the engine then names the unserved
+    // route), and later additions no longer offer it. False when the
+    // refusal is not that one.
+    bool retryWithoutRouteDefault(const std::string &message);
+    bool route_default_unknown_ = false;
     void commitHistory(const nlohmann::json &response);
     void clearHistory();
 
@@ -1312,6 +1323,16 @@ class GraphCanvasModel {
                       const std::string &label);
     bool addNodeIn(std::string_view scope, const std::string &op,
                    const std::string &definition = {});
+    // GL-1d, decision 3: the params the palette's addition sends beside its
+    // ops: `material_route_default: "forward"` for a Forward opaque material
+    // pass in a pipeline with no pass for deferred materials (the Frame
+    // Plan's judgment, frameplanmodel's materialRouteOffersForwardDefault),
+    // else an empty object.
+    [[nodiscard]] nlohmann::json addNodeParams(std::string_view scope, const std::string &op,
+                                               const std::string &definition = {}) const;
+    // Whether a material pass of the last frame plan, or one the root
+    // document holds, takes the deferred_geometry route.
+    [[nodiscard]] bool pipelineHasDeferredMaterialPass() const;
     [[nodiscard]] nlohmann::json addNodeOpsIn(std::string_view scope, const std::string &op,
                                               const std::string &definition = {}) const;
     [[nodiscard]] std::vector<GraphCanvasCatalogEntry> paletteOperationsIn(
@@ -1358,6 +1379,13 @@ class GraphCanvasModel {
     // (`over: {view_axis: {family, axis}}`); the rest of the parameters stay.
     bool setLoopViewAxis(const std::string &id, const std::string &family,
                          const std::string &axis);
+    // GL-1d, decision 2: over the draws of the material pass that reads the
+    // loop's `draws` (`over: {draw_items: {contract}}`, tier draw_loop, the
+    // phase's order); what a draw_loop cannot take goes. The contract is that
+    // pass's; empty when no root material pass reads the loop, and then the
+    // loop cannot run over draw items.
+    [[nodiscard]] std::string loopDrawItemsContract(std::string_view id) const;
+    bool setLoopDrawItems(const std::string &id);
     // The view families a pass of the last frame plan runs in, with their
     // axes: what the Loop fields' View axis offers. Families without axes
     // ($main, planar, an author's) are not in it.

@@ -62,9 +62,13 @@ struct GraphCanvasReadCapability {
     std::function<qint64(double time, QString *error)> requestSetTime;
     std::function<qint64(QString *error)> requestRenderFrame;
     // One gesture, one op list, one CAS. `ops_json` is the serialised array the
-    // model built; the digest is the document it was built against.
+    // model built; the digest is the document it was built against. GL-1d:
+    // `material_route_default` goes beside the ops when it is not empty (a
+    // Forward opaque material pass added where no pass draws deferred
+    // materials).
     std::function<qint64(const QString &base_source_digest,
-                         const QByteArray &ops_json, QString *error)>
+                         const QByteArray &ops_json,
+                         const QString &material_route_default, QString *error)>
         requestEditGraphDocument;
     std::function<qint64(const QString &ticket, QString *error)>
         requestEditResult;

@@ -266,38 +266,17 @@ bool materialPassPipelineHasDeferredPass(const FramePlanAuthoring &authoring) {
         if (!declaration.is_object() ||
             declaration.value("type", std::string{}) != "material")
             return false;
-        const auto contract =
-            declaration.value("material_contract", std::string{"legacy_gbuffer_v1"});
-        return contract == "deferred_geometry_v1" || contract == "legacy_gbuffer_v1";
+        return materialContractTakesDeferredRoute(
+            declaration.value("material_contract", std::string{"legacy_gbuffer_v1"}));
     });
 }
 
 bool materialPassOffersForwardDefault(const FramePlanAuthoring &authoring,
                                       const std::string &contract) {
-    return contract == "forward_opaque_v1" &&
-           !materialPassPipelineHasDeferredPass(authoring);
-}
-
-std::string materialRouteUnservedNotice(const Json &error) {
-    if (!error.is_object() ||
-        error.value("code", std::string{}) != "material_route_unserved@1")
-        return {};
-    std::string notice;
-    for (const auto &route : error.value("unserved", Json::array())) {
-        std::vector<std::string> names;
-        for (const auto &material : route.value("materials", Json::array())) {
-            auto name = material.value("name", std::string{});
-            if (material.value("origin", std::string{}) == "builtin")
-                name += " (engine built-in)";
-            names.push_back(std::move(name));
-        }
-        if (!notice.empty()) notice += " ";
-        notice += "No pass draws the " + route.value("route", std::string{}) +
-                  " route, which " + join(names) +
-                  (names.size() == 1 ? " takes" : " take") + ". To fix: " +
-                  route.value("hint", std::string{}) + ".";
-    }
-    return notice.empty() ? error.value("message", std::string{}) : notice;
+    // GL-1d: the judgment is frameplanmodel's, which the Graph's palette
+    // shares; the passes are the ones this form reads.
+    return materialRouteOffersForwardDefault(
+        contract, materialPassPipelineHasDeferredPass(authoring));
 }
 
 } // namespace PelicanStudio

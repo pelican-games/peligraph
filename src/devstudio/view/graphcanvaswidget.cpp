@@ -3523,6 +3523,32 @@ class GraphTimelineStrip final : public QWidget {
     Scrub scrub_;
 };
 
+// GL-1d, decision 5: the palette's filter keeps the keyboard while the list
+// is walked. Up, Down and the page keys go to the list; everything else is
+// the filter's (Enter is OK and Esc is Cancel, as the dialog has them).
+class PaletteFilterKeys final : public QObject {
+public:
+    PaletteFilterKeys(QListWidget *list, QObject *parent) : QObject(parent), list_(list) {}
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (event->type() != QEvent::KeyPress) return QObject::eventFilter(watched, event);
+        switch (static_cast<QKeyEvent *>(event)->key()) {
+        case Qt::Key_Up:
+        case Qt::Key_Down:
+        case Qt::Key_PageUp:
+        case Qt::Key_PageDown:
+            QCoreApplication::sendEvent(list_, event);
+            return true;
+        default:
+            return QObject::eventFilter(watched, event);
+        }
+    }
+
+private:
+    QListWidget *list_;
+};
+
 } // namespace
 
 struct GraphCanvasWidget::Impl {
@@ -4189,8 +4215,13 @@ struct GraphCanvasWidget::Impl {
         };
         QObject::connect(apply_label, &QPushButton::clicked, &view, rename);
         QObject::connect(label_edit, &QLineEdit::returnPressed, &view, rename);
-        QObject::connect(add_node, &QPushButton::clicked, &view,
-                         [this] { openPalette(); });
+        // GL-1d: the palette is a modal dialog; opened from the event loop,
+        // as the menu's Add node... opens it, the click that asked for it
+        // has finished (and a scenario's click has its reply).
+        QObject::connect(add_node, &QPushButton::clicked, &view, [this] {
+            QMetaObject::invokeMethod(&view, [this] { openPalette(); },
+                                      Qt::QueuedConnection);
+        });
         // Picking from the list and pressing Enter on a typed path are the
         // two ways the field is finished; each sends one set_node_parameters.
         QObject::connect(ui_node, &QComboBox::activated, &view,
@@ -4370,6 +4401,7 @@ struct GraphCanvasWidget::Impl {
                     qtext(request.params.value("base_source_digest", std::string{})),
                     QByteArray::fromStdString(
                         request.params.value("ops", nlohmann::json::array()).dump()),
+                    qtext(request.params.value("material_route_default", std::string{})),
                     &error);
             else if (request.method == "get_edit_result" && graph.requestEditResult)
                 transport = graph.requestEditResult(
@@ -4990,8 +5022,14 @@ struct GraphCanvasWidget::Impl {
                          [&] { syncDefinition(); });
         QObject::connect(list, &QListWidget::itemDoubleClicked, &dialog,
                          &QDialog::accept);
+        // GL-1d, decision 5: what is typed as the palette opens is the
+        // filter's; the arrows walk the list; Enter is OK and Esc Cancel.
+        search->installEventFilter(new PaletteFilterKeys(list, search));
+        QObject::connect(search, &QLineEdit::returnPressed, &dialog, &QDialog::accept);
         reload();
         syncDefinition();
+        search->setFocus(Qt::PopupFocusReason);
+        QTimer::singleShot(0, search, [search] { search->setFocus(Qt::PopupFocusReason); });
         if (dialog.exec() != QDialog::Accepted) return;
         auto *row = list->currentItem();
         if (row == nullptr) return;

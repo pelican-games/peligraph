@@ -1,5 +1,6 @@
 #include "graphcanvasmodel.hpp"
 
+#include "frameplanmodel.hpp"
 #include "projectformat.hpp"
 #include "projectpathresolver.hpp"
 
@@ -26,6 +27,10 @@ std::string diagnostic(const Json &response) {
     const auto variant = graphRefusalVariant(error);
     const auto prefix =
         variant.empty() ? std::string{} : "The " + variant + " graph refused it: ";
+    // GL-1d, decision 4: a route no pass draws reads as the Frame Plan's
+    // sentence -- which materials, and the fix.
+    if (auto unserved = materialRouteUnservedNotice(error); !unserved.empty())
+        return prefix + unserved;
     // LP-4c, decision 9: a loop's or a definition's refusal is a sentence
     // made from the fields the engine lays beside its code; a view_select
     // one likewise (LP-4a).
@@ -890,6 +895,8 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
         return;
     }
     if (kind == RequestKind::Submit) {
+        // GL-1d, decision 3: an engine without material_route_default.
+        if (retryWithoutRouteDefault(message)) return;
         // A lost submission reply may have committed. Do not offer history
         // until a fresh document is read, or guess which edit it belongs to.
         clearHistory();
@@ -1056,6 +1063,11 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 // gesture is discarded, the reason is shown, and the canvas
                 // reads the document again rather than keeping a stale one.
                 ticket_.clear();
+                // GL-1d, decision 3: the same refusal of the route default,
+                // should an engine answer it as a rejection.
+                if (kind == RequestKind::Submit &&
+                    retryWithoutRouteDefault(diagnostic(response)))
+                    return;
                 // Q-13: a placement refused for a moved document goes again
                 // once the document is read (see layout_retry_).
                 const auto &error = response.at("error");
@@ -2189,11 +2201,34 @@ bool GraphCanvasModel::submitHistory(HistoryAction action, HistoryEntry entry) {
         ops.is_array() && !ops.empty() && std::ranges::all_of(ops, [](const Json &op) {
             return op.is_object() && op.value("op", std::string{}) == "set_layout";
         });
+    Json params{{"base_source_digest", digest_}, {"ops", std::move(ops)}};
+    // GL-1d, decision 3: what the list sends beside its ops goes with it and
+    // with its Redo, never with its Undo.
+    if (action != HistoryAction::Undo && entry.params.is_object())
+        for (const auto &[key, value] : entry.params.items())
+            if (!(route_default_unknown_ && key == "material_route_default"))
+                params[key] = value;
     pending_history_ = PendingHistory{action, std::move(entry)};
     edit_notice_ = {InspectorNoticeKind::Information, "Saving the graph change..."};
-    request(RequestKind::Submit, "edit_graph_document",
-            {{"base_source_digest", digest_}, {"ops", std::move(ops)}});
+    request(RequestKind::Submit, "edit_graph_document", std::move(params));
     return true;
+}
+
+bool GraphCanvasModel::retryWithoutRouteDefault(const std::string &message) {
+    if (!pending_history_ || !pending_history_->entry.params.is_object() ||
+        !pending_history_->entry.params.contains("material_route_default") ||
+        route_default_unknown_)
+        return false;
+    // edit_graph_document's own refusal of a field it does not take; the
+    // route default's name inside another refusal (a hint) is not it.
+    if (message.find("unsupported field") == std::string::npos ||
+        message.find("material_route_default") == std::string::npos)
+        return false;
+    route_default_unknown_ = true;
+    auto retry = std::move(*pending_history_);
+    pending_history_.reset();
+    retry.entry.params.erase("material_route_default");
+    return submitHistory(retry.action, std::move(retry.entry));
 }
 
 void GraphCanvasModel::forgetHistory() {
@@ -2412,7 +2447,7 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
     const auto scope = scopeToken(in_scope);
     const bool root = in_scope.empty();
     if (!root && !definitions_.contains(std::string{in_scope})) return ops;
-    const auto id = suggestNodeId(in_scope, op);
+    auto id = suggestNodeId(in_scope, op);
     Json node{{"id", id}, {"op", op}};
     if (op == "graph.input") {
         if (root) return Json::array();
@@ -2489,11 +2524,43 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
         // arrives with the contract the palette's combo chose (the
         // `definition` argument), writing images of its own -- one per
         // socket, and a depth -- added in the same list, as a fullscreen
-        // pass's is. Its draws are left unconnected: today's drawing.
+        // pass's is.
         if (!root || operation(op) == nullptr) return Json::array();
         const auto contract = definition.empty() ? materialPassContracts().front() : definition;
         if (std::ranges::find(materialPassContracts(), contract) == materialPassContracts().end())
             return Json::array();
+        // GL-1d, decision 1: and it arrives with its draws, as
+        // decompose_material_pass writes them (and as GL-1's folded pass
+        // shows them): an else-only draw_loop `<pass>_draws` over the pass's
+        // materials, whose body `<pass>_draw` draws each one. The id is one
+        // whose loop and body names are free as well.
+        const auto free = [&](const std::string &candidate) {
+            return findNode(in_scope, candidate) == nullptr &&
+                   findNode(in_scope, candidate + "_draws") == nullptr &&
+                   !definitions_.contains(candidate + "_draw");
+        };
+        std::string base{op};
+        std::ranges::replace(base, '.', '_');
+        for (int suffix = 2; !free(id) && suffix < 10000; ++suffix)
+            id = base + "_" + std::to_string(suffix);
+        node["id"] = id;
+        const auto loop = id + "_draws";
+        const auto body = id + "_draw";
+        ops.push_back(Json{{"op", "add_definition"}, {"name", body},
+            {"definition", Json{{"nodes", Json::array({Json{{"id", "step"},
+                                                            {"op", "draw.material"},
+                                                            {"parameters", Json::object()},
+                                                            {"outputs", Json::array({"draws"})}}})},
+                                {"outputs", Json{{"draws", Json{{"node", "step"},
+                                                                {"port", "draws"}}}}}}}});
+        ops.push_back(Json{{"op", "add_node"}, {"scope", scope},
+            {"node", Json{{"id", loop}, {"op", "graph.loop"},
+                          {"parameters",
+                           Json{{"over", Json{{"draw_items", Json{{"contract", contract}}}}},
+                                {"tier", "draw_loop"},
+                                {"order", Json{{"by", "phase_default"}}},
+                                {"branches", Json::array({Json{{"body", body}}})}}},
+                          {"outputs", Json::array({"draws"})}}}});
         Json parameters{{"material_contract", contract}, {"pass_set", "main_render"}};
         const Json color_type{{"semantic", "pelican.render.color_signal@1"},
                               {"arguments", Json{{"reference", "scene"}, {"transfer", "linear"},
@@ -2527,6 +2594,7 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
                                      {"arguments", Json{{"representation", "device"},
                                                         {"space", "projection"}}}},
                                 "D32_SFLOAT", "DEPTH_STENCIL_ATTACHMENT");
+        inputs["draws"] = Json{{"node", loop}, {"port", "draws"}};
         node["parameters"] = std::move(parameters);
         node["inputs"] = std::move(inputs);
         node["outputs"] = Json::array();
@@ -2638,7 +2706,42 @@ bool GraphCanvasModel::addNodeIn(std::string_view scope, const std::string &op,
     if (!canEdit()) return false;
     auto ops = addNodeOpsIn(scope, op, definition);
     if (ops.empty()) return false;
-    return submitOps(std::move(ops));
+    auto params = addNodeParams(scope, op, definition);
+    if (params.empty()) return submitOps(std::move(ops));
+    if (folded_stash_) return refuseFoldedEdit(ops);
+    auto inverse = inverseOps(ops);
+    return submitHistory(HistoryAction::Edit,
+                         {std::move(ops), std::move(inverse), std::move(params)});
+}
+
+Json GraphCanvasModel::addNodeParams(std::string_view scope, const std::string &op,
+                                     const std::string &definition) const {
+    Json params = Json::object();
+    if (op != kMaterialPass || !scope.empty() || route_default_unknown_) return params;
+    const auto contract = definition.empty() ? materialPassContracts().front() : definition;
+    if (materialRouteOffersForwardDefault(contract, pipelineHasDeferredMaterialPass()))
+        params["material_route_default"] = "forward";
+    return params;
+}
+
+bool GraphCanvasModel::pipelineHasDeferredMaterialPass() const {
+    // The plan's material passes, by the contract material_routing names
+    // (a pass it does not name is not known to be deferred)...
+    for (const auto &pass : plan_passes_)
+        if (pass.material && !pass.contract.empty() &&
+            materialContractTakesDeferredRoute(pass.contract))
+            return true;
+    // ...and the root's own, which a plan read before them does not list.
+    const auto &nodes = folded_stash_ ? folded_stash_->nodes : nodes_;
+    for (const auto &node : nodes) {
+        if (!node.is_object() || text(node, "op") != kMaterialPass) continue;
+        const auto parameters = node.find("parameters");
+        const auto contract = parameters != node.end() && parameters->is_object()
+                                  ? text(*parameters, "material_contract")
+                                  : std::string{};
+        if (materialContractTakesDeferredRoute(contract)) return true;
+    }
+    return false;
 }
 
 // --- LP-4c: graph.loop.
@@ -2983,6 +3086,38 @@ bool GraphCanvasModel::setLoopViewAxis(const std::string &id, const std::string 
     if (family.empty() || axis.empty()) return false;
     auto parameters = loopParameters(id);
     parameters["over"] = Json{{"view_axis", Json{{"family", family}, {"axis", axis}}}};
+    return setLoopParameters(id, std::move(parameters));
+}
+
+std::string GraphCanvasModel::loopDrawItemsContract(std::string_view id) const {
+    const auto *loop = findNode({}, id);
+    if (loop == nullptr || !isLoop(*loop)) return {};
+    for (const auto &candidate : nodes_) {
+        if (!candidate.is_object() || text(candidate, "op") != kMaterialPass) continue;
+        const auto inputs = candidate.find("inputs");
+        if (inputs == candidate.end() || !inputs->is_object()) continue;
+        const auto draws = inputs->find("draws");
+        if (draws == inputs->end() || !draws->is_object() || text(*draws, "node") != id) continue;
+        const auto parameters = candidate.find("parameters");
+        return parameters != candidate.end() && parameters->is_object()
+                   ? text(*parameters, "material_contract")
+                   : std::string{};
+    }
+    return {};
+}
+
+bool GraphCanvasModel::setLoopDrawItems(const std::string &id) {
+    const auto contract = loopDrawItemsContract(id);
+    if (contract.empty()) return false;
+    auto parameters = loopParameters(id);
+    parameters["over"] = Json{{"draw_items", Json{{"contract", contract}}}};
+    parameters["tier"] = "draw_loop";
+    // A draw_loop keeps the phase's order, runs every material and hands
+    // nothing on, and runs inside its pass: no limit, carry, element `where`
+    // or place of its own.
+    parameters["order"] = Json{{"by", "phase_default"}};
+    for (const auto *key : {"limit", "carry", "where", "insert", "canonical_anchor"})
+        parameters.erase(key);
     return setLoopParameters(id, std::move(parameters));
 }
 
