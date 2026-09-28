@@ -524,17 +524,17 @@ void Builder::addNodeRows(QGraphicsPathItem *item, const Node &entry) {
 
         if (drawn.value.shown()) {
             QString text = pillText(drawn.value);
-            // LP-4d2, decision 7: inside a zone a render node's parameters
-            // (a shader, its ports) read as long JSON; the pill keeps to the
-            // node and the whole of it is the tooltip.
+            // LP-4d2, decision 7: a render node's parameters (a shader, its
+            // ports, an image's type) read as long JSON; the pill keeps to
+            // the node and the whole of it is the tooltip. Inside a zone at
+            // first, and on the root too since the root's long pills ran
+            // far past the node's left edge.
             QString full;
-            if (container_ != nullptr) {
-                const qreal room = width - 10.0 - 14.0 - 14.0 - 8.0 -
-                                   row_metrics_.horizontalAdvance(drawn.label);
-                if (room > 24.0 && row_metrics_.horizontalAdvance(text) > room) {
-                    full = text;
-                    text = row_metrics_.elidedText(text, Qt::ElideRight, room);
-                }
+            const qreal room = width - 10.0 - 14.0 - 14.0 - 8.0 -
+                               row_metrics_.horizontalAdvance(drawn.label);
+            if (room > 24.0 && row_metrics_.horizontalAdvance(text) > room) {
+                full = text;
+                text = row_metrics_.elidedText(text, Qt::ElideRight, room);
             }
             const qreal pill_height = GraphCanvasSocketRowHeight - 6.0;
             const qreal pill_width =
