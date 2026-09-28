@@ -457,6 +457,7 @@ GraphCanvasScene::GraphCanvasScene(QObject *parent) : QGraphicsScene{parent} {
 void GraphCanvasScene::setModel(GraphCanvasModel *model) {
     model_ = model;
     session_node_positions_.clear();
+    folded_places_.clear();
     session_collapsed_.clear();
     pruned_revision_.reset();
     selected_node_.reset();
@@ -527,6 +528,9 @@ void GraphCanvasScene::autoLayout() {
         return entry.first.first == scope ||
                (entry.first.first == folded_prefix.first &&
                 entry.first.second.starts_with(folded_prefix.second));
+    });
+    std::erase_if(folded_places_, [&](const auto &entry) {
+        return entry.first.second.starts_with(folded_prefix.second);
     });
     // Start from nothing: the placement is the whole answer, so a leftover
     // control point from the last one would be a bend nobody asked for.
@@ -606,7 +610,7 @@ void GraphCanvasScene::keepFoldedPlaces() {
         if (!item->data(GraphCanvasDerivedRole).toBool() ||
             nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem})
             continue;
-        session_node_positions_.try_emplace(
+        folded_places_.insert_or_assign(
             foldedPositionKey(item->data(NodeGraphNameRole).toString().toStdString()), item->pos());
     }
 }
@@ -1594,9 +1598,6 @@ void GraphCanvasScene::repopulate() {
     });
     std::set<std::string, std::less<>> drawn_nodes;
     std::vector<std::pair<std::string, QGraphicsItem *>> zone_bodies;
-    // GL-1: the left edge of the graph's nodes, which the folded ones keep to
-    // the left of.
-    std::optional<qreal> graph_left;
     for (const auto &entry : drawn) {
         const GraphCanvasNode &node = *entry.node;
         const auto column_entry = layout.columns.find(node.id);
@@ -1656,27 +1657,50 @@ void GraphCanvasScene::repopulate() {
             drawing.addNode(entry, column, position, std::move(moved));
         }
         drawn_nodes.insert(node.id);
-        const qreal left = position.x() + frameOffset(node.id).x();
-        graph_left = graph_left ? std::min(*graph_left, left) : left;
+    }
+    // GL-1c, decision 1: everything the graph has drawn on the root so far,
+    // which no folded node lies on -- each node with what it holds (its
+    // sockets, a value's text running past its box) and each zone's whole
+    // frame (heading, edge rows, the carries' arrows, the bottom row).
+    std::optional<QRectF> graph_bounds;
+    for (QGraphicsItem *item : items()) {
+        if (item->parentItem() != nullptr ||
+            nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem})
+            continue;
+        const QRectF drawn_box =
+            item->sceneBoundingRect().united(item->mapRectToScene(item->childrenBoundingRect()));
+        graph_bounds = graph_bounds ? graph_bounds->united(drawn_box) : drawn_box;
     }
 
-    // GL-1b, decision 1: a folded node sits where the one placement put it.
-    // Once the document places the graph's nodes (a drag, Auto layout), that
-    // placement no longer describes them: a folded node keeps the place it
-    // had this session, and one that never had one is placed with the folded
-    // nodes alone -- the same layout -- left of the graph's nodes. Where they
-    // sit is never written to the document.
+    // GL-1b, decision 1: a folded node sits where the one placement put it --
+    // a zone is one box of its frame's size there, so none lies on a frame
+    // (GL-1c, decision 2). Once the document places the graph's nodes (a
+    // drag, Auto layout), that placement no longer describes them: the folded
+    // nodes keep the places they had this session while every one of them
+    // stays clear of what the graph draws. When one would not (a zone grew
+    // under it, a node was put on it) or one has no place yet, they are
+    // placed again among themselves -- the same layout -- left of all of it
+    // (GL-1c, decision 1), and keep that. A folded node the user dragged
+    // stays where it was put. Where they sit is never written to the
+    // document.
     std::optional<NodeGraphLayout> folded_alone;
     QPointF folded_shift;
+    bool folded_kept = false;
     if (anchored && !folded_nodes.empty()) {
         folded_alone = GraphCanvasDrawing::placeNodes({}, {}, top, folded_layout_nodes,
                                                       folded_only_edges);
         std::optional<qreal> right;
         for (const auto &[id, box] : folded_alone->boxes)
             right = std::max(right.value_or(box.right()), box.right());
-        folded_shift = QPointF{graph_left.value_or(0.0) - NodeGraphHorizontalGap -
-                                   right.value_or(0.0),
-                               0.0};
+        const QRectF bounds = graph_bounds.value_or(QRectF{});
+        folded_shift = QPointF{bounds.left() - NodeGraphHorizontalGap - right.value_or(0.0), 0.0};
+        folded_kept = std::ranges::all_of(folded_nodes, [&](const GraphCanvasFoldedNode &folded) {
+            const auto key = foldedPositionKey(folded.id);
+            if (session_node_positions_.contains(key)) return true;
+            const auto kept = folded_places_.find(key);
+            return kept != folded_places_.end() &&
+                   !QRectF{kept->second, drawing.derivedNodeSize(folded)}.intersects(bounds);
+        });
     }
     const NodeGraphLayout &folded_layout = folded_alone ? *folded_alone : layout;
     std::set<std::string, std::less<>> derived_drawn;
@@ -1686,6 +1710,11 @@ void GraphCanvasScene::repopulate() {
         QPointF position{0.0, top};
         if (const auto box = folded_layout.boxes.find(layout_key); box != folded_layout.boxes.end())
             position = QPointF{box->second.x, box->second.y} + folded_shift;
+        if (folded_alone) {
+            if (!folded_kept) folded_places_.insert_or_assign(key, position);
+            else if (const auto kept = folded_places_.find(key); kept != folded_places_.end())
+                position = kept->second;
+        }
         if (const auto kept = session_node_positions_.find(key); kept != session_node_positions_.end())
             position = kept->second;
         const auto column = folded_layout.columns.find(layout_key);

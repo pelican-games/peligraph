@@ -577,6 +577,10 @@ class GraphCanvasScene final : public QGraphicsScene {
     // filed under the scope so the same node id in two definitions does not
     // share one position.
     std::map<std::pair<std::string, std::string>, QPointF> session_node_positions_;
+    // GL-1c: the places a placement gave the folded nodes (not a drag), kept
+    // for the session under foldedPositionKey. They hold while they stay
+    // clear of what the graph draws.
+    std::map<std::pair<std::string, std::string>, QPointF> folded_places_;
     std::map<std::pair<std::string, std::string>, bool> session_collapsed_;
     std::map<std::string, ScopePlacement> placements_;
     QTimer *layout_timer_ = nullptr;
@@ -639,7 +643,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     void applyEdgeEmphasis();
     void pruneSessionPositions();
     // GL-1b, decision 1: where a folded node's session place is filed (per
-    // view), and keeping the places the folded nodes are drawn at now.
+    // view), and keeping the places the folded nodes are drawn at now (GL-1c:
+    // in folded_places_, apart from the places a drag gave).
     [[nodiscard]] std::pair<std::string, std::string> foldedPositionKey(const std::string &id) const;
     void keepFoldedPlaces();
     void scheduleSceneRectUpdate();

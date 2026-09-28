@@ -6028,3 +6028,120 @@ TEST_CASE("GL-1b a Graph commit that asks for a restart goes to the owner's rest
     tab.widget->engineRestartDeclined(QStringLiteral("Someone else's."));
     CHECK(tab.reads("get_graph_instances") == reads + 1);
 }
+
+// --- GL-1c. The folded read-only nodes never lie on what the root draws: a
+// loop's zone is one box of its frame's size in the one placement (decision
+// 2), and once the document places the graph's nodes the folded ones stand
+// left of everything the root draws -- frames, their bottom rows and carries
+// included -- even after a zone has grown under where they were (decision 1).
+// Checked on the drawing itself (decision 3).
+
+namespace {
+
+// The engine's passes around q19's loop: the preset's gbuffer and lighting,
+// and the rendering section's picking and present.
+Json gl1cPlan() {
+    auto plan = q19ZonePlan();
+    plan["graph"] = "main_render";
+    plan["nodes"].push_back(gl1bPass("gbuffer", 0, "engine", Json::array(), Json::array({"g_albedo"})));
+    plan["nodes"].push_back(gl1bPass("lighting", 1, "engine", Json::array({"g_albedo"}),
+                                     Json::array({"scene_color"})));
+    plan["nodes"].push_back(gl1bPass("picking", 2, "project", Json::array(), Json::array({"picking_id"})));
+    plan["nodes"].push_back(gl1bPass("present", 3, "project", Json::array({"scene_color"}),
+                                     Json::array({"display"})));
+    return plan;
+}
+
+// A node or a zone's frame with all it holds: sockets, a value's text running
+// past the box, the zone's bottom row, the carry's arrow, the body.
+QRectF gl1cDrawn(QGraphicsItem &item) {
+    return item.sceneBoundingRect().united(item.mapRectToScene(item.childrenBoundingRect()));
+}
+
+// Nothing folded lies on another folded node, on a graph node or a zone; with
+// `left_of`, all of them stand left of what the graph's nodes draw.
+void gl1cCheckClear(QGraphicsScene &scene, bool left_of) {
+    std::vector<QGraphicsItem *> folded;
+    std::vector<QGraphicsItem *> graph;
+    for (QGraphicsItem *item : itemsOfKind(scene, PelicanStudio::GraphCanvasNodeItem)) {
+        if (item->parentItem() != nullptr) continue;
+        if (item->data(PelicanStudio::GraphCanvasDerivedRole).toBool()) folded.push_back(item);
+        else if (item->data(PelicanStudio::GraphCanvasScopeRole).toString().isEmpty())
+            graph.push_back(item);
+    }
+    REQUIRE(folded.size() == 4);
+    REQUIRE(graph.size() == 2);
+    QRectF bounds;
+    for (QGraphicsItem *item : graph) bounds = bounds.united(gl1cDrawn(*item));
+    for (std::size_t index = 0; index < folded.size(); ++index) {
+        const QRectF box = folded[index]->sceneBoundingRect();
+        INFO(folded[index]->data(PelicanStudio::NodeGraphNameRole).toString().toStdString());
+        for (std::size_t other = index + 1; other < folded.size(); ++other)
+            CHECK_FALSE(box.intersects(folded[other]->sceneBoundingRect()));
+        for (QGraphicsItem *item : graph) CHECK_FALSE(box.intersects(gl1cDrawn(*item)));
+        if (left_of) CHECK(box.right() < bounds.left());
+    }
+}
+
+} // namespace
+
+TEST_CASE("GL-1c the folded nodes never lie on a loop's zone, placed or not, grown or not",
+          "[devstudio][graph-canvas][scene][gl1c]") {
+    (void)application();
+
+    SECTION("a document that places nothing: the zone is one box in the one placement") {
+        ZoneHarness h{q19ZoneDocument()};
+        h.loops = q19ZoneLoops();
+        h.plan = gl1cPlan();
+        h.open();
+        h.answerReads();
+        h.scene.repopulate();
+        // The zone's bottom row is drawn: the copies and the button.
+        REQUIRE(scopedItem(h.scene, PelicanStudio::GraphCanvasZoneButtonItem, QString{},
+                           QStringLiteral("steps"), QStringLiteral("frame_plan")) != nullptr);
+        gl1cCheckClear(h.scene, false);
+    }
+
+    SECTION("a document that places the graph's nodes: the folded ones stand left of it all") {
+        auto document = q19ZoneDocument();
+        document["layout"] = {{"nodes", {{"img", {{"x", 600.0}, {"y", 40.0}}},
+                                         {"steps", {{"x", 1000.0}, {"y", 40.0}}}}}};
+        ZoneHarness h{document};
+        h.loops = q19ZoneLoops();
+        h.plan = gl1cPlan();
+        h.open();
+        h.answerReads();
+        h.scene.repopulate();
+        gl1cCheckClear(h.scene, true);
+    }
+
+    SECTION("Auto layout, then the zone grows down over where the folded nodes were") {
+        ZoneHarness h{q19ZoneDocument()};
+        h.loops = q19ZoneLoops();
+        h.plan = gl1cPlan();
+        h.open();
+        h.answerReads();
+        h.scene.repopulate();
+        h.scene.autoLayout();
+        h.commit();
+        REQUIRE(h.scene.layout().nodes.contains("steps"));
+        gl1cCheckClear(h.scene, false);
+        const QRectF before =
+            scopedNode(h.scene, QString{}, QStringLiteral("steps"))->sceneBoundingRect();
+        // Four more images in the body, one under the other: the frame
+        // reaches much further down.
+        auto &body = h.document["definitions"]["body"]["nodes"];
+        for (const char *id : {"extra_a", "extra_b", "extra_c", "extra_d"}) {
+            auto image = body[1];
+            image["id"] = id;
+            body.push_back(std::move(image));
+        }
+        ++h.generation;
+        h.model.refresh();
+        h.answerReads();
+        h.scene.repopulate();
+        REQUIRE(scopedNode(h.scene, QString{}, QStringLiteral("steps"))->sceneBoundingRect().height() >
+                before.height() + 200.0);
+        gl1cCheckClear(h.scene, true);
+    }
+}
