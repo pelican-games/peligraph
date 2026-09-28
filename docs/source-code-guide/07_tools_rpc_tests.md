@@ -880,7 +880,7 @@ N-2 で **全 op が任意の `scope` を取る**ようになりました
 ([解決](../../src/project/graphcomposition.cpp#L1349))。既定は `"root"`、definition 名を書くとその本体が対象で、
 `root` は予約語なので同名の definition は指せません。これに合わせて
 `edit_graph_document` の書き戻しも 2 段になり、root の `nodes` は常に、`definitions` は
-**変化したときだけ**書き戻します([判定](../../src/core/communication/renderconfigeditor.cpp#L2433)) ——
+**変化したときだけ**書き戻します([判定](../../src/core/communication/renderconfigeditor.cpp#L2438)) ——
 root だけの編集が definition のバイト列を動かさないようにするためです。
 
 名前付きの拒否は `GraphRegistryError` が運びます: `graph.node_duplicate@1` / `graph.node_missing@1` /
