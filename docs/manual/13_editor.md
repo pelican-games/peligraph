@@ -928,8 +928,8 @@ shader の batch、render pipeline の読み直しが shader の変更を一緒�
 | `edit_render_targets` | `base_source_digest`・`ops[]`(✅F-1)。op は `{op:"add", target}` / `{op:"replace", name, target}`(`target.name` を変えれば改名)/ `{op:"remove", name}`。書くのは managed fragment `project://passes/authoring/render-targets.json` 1 つだけで、最初の要求で作って root の `features[]` に足す(空になっても消さない)。ops は順に当て、最後に 1 回 preflight して ticket を返す —— **全部入るか、何も入らないか**。名前付きの拒否は下の 6 種([edit_render_targets の実装](../../src/core/communication/renderconfigeditor.cpp#L3795)) |
 | `add_authored_pass` | `base_source_digest`・`graph`・`insert`(authoring context の挿入位置の token)・`pass`。pass 1 つを managed fragment `project://passes/authoring/pass-<id>.json` に書き、root の `features[]` に足して preflight し、ticket を返す。受ける `type` は `fullscreen` と **`material`**(✅G-1)だけで、それ以外は `authored_pass_type_unavailable`(detail は `requested_type` と **`supported_types`**(配列)。[add_authored_pass の種類の門](../../src/core/communication/renderconfigeditor.cpp#L3527))。material pass の形の検査は下の段落。任意の **`material_route_default`**(`"auto"` / `"forward"`。✅G-4)を渡すと、pass と rendering 文書の root の既定を 1 つの ticket で変える(下の「material の route の既定」) |
 | `set_material_route_default` | `base_source_digest`・`material_route_default`(`"auto"` / `"forward"`)。root の既定だけを変える。root 編集の ticket に乗り、commit の結果に `restart_required: true`(✅G-4。[`RenderConfigEditorService::setMaterialRouteDefault()`](../../src/core/communication/renderconfigeditor.cpp#L3041)) |
-| `edit_graph_document` | `base_source_digest`と`ops[]`で共通グラフ文書を編集する(§13.5「グラフの装着を編集する」)。ops は順に候補文書へ当て、最後に 1 回だけ展開する — **全部通るか、文書ごと拒否か**のどちらか |
-| `edit_graph_instances` | `base_source_digest`・`attach[]`・`detach[]`。owner を持つ root instance の装着 / 取り外しだけを扱い、中身は `edit_graph_document` の ops へ翻訳される([edit_graph_instances の実装](../../src/core/communication/renderconfigeditor.cpp#L2383)) |
+| `edit_graph_document` | `base_source_digest`と`ops[]`で共通グラフ文書を編集する(§13.5「グラフの装着を編集する」)。ops は順に候補文書へ当て、最後に 1 回だけ展開する — **全部通るか、文書ごと拒否か**のどちらか。任意の **`material_route_default`**(`"auto"` / `"forward"`。✅RS-2)を渡すと、graph の変更と rendering 文書の root の既定を 1 つの ticket で変える(下の「material の route の既定」) |
+| `edit_graph_instances` | `base_source_digest`・`attach[]`・`detach[]`。owner を持つ root instance の装着 / 取り外しだけを扱い、中身は `edit_graph_document` の ops へ翻訳される([edit_graph_instances の実装](../../src/core/communication/renderconfigeditor.cpp#L2383))。任意の `material_route_default`(✅RS-2)は `edit_graph_document` と同じ |
 | `export_render_feature` | `scope`(`root` / `preset`)と`index`で feature 1 つを `user://components/<name>/` へ書き出す。`engine://` の feature は `render_component_engine_reference` で拒否([export の実装](../../src/core/communication/renderconfigeditor.cpp#L1282)) |
 | `import_render_feature` | `base_source_digest`・`source_dir`(project 外の絶対パス)・`destination_reference`(未作成の`project://`)。component が要求する render target を project が宣言していなければ `render_component_requires_missing` |
 | `install_package` | `source_dir`(project 外の絶対パス)。`<project>/packages/<namespace>/` へ複製して`project.json`に記録し、catalog を作り直す。返すのは`namespace`・`package_version`・`sha256`・`feature_references`・`feature_names` |
@@ -972,7 +972,7 @@ graph も組み、XR を始めたときは xr も組みます([第6章 §6.13](0
 (`add_authored_pass`・`remove_authored_pass`・`edit_render_targets`)です([変種を合成する preflight](../../src/core/communication/renderconfigeditor.cpp#L995))。
 flat で合成できない候補は今までどおり flat の経路で断られます。flat が通って preview か xr が合成できない候補は
 `render_pipeline_preflight_failed` に **`variant`**(`"preview"` / `"xr"`)が付いて断られ、文書は変わりません(✅LP-0d から、graph の名前付きの拒否と `<code>: <fields>` で運ばれる拒否は、その code のまま `variant` を添えて返ります。下の「ループと分解の RPC」)。`set_layout`
-だけの `edit_graph_document`(再 compose しない編集)と、context の読み取りは合成しません。Studio はこの拒否を、Pass Editor と
+だけの `edit_graph_document`(再 compose しない編集。`material_route_default` を付けたものは除く ✅RS-2)と、context の読み取りは合成しません。Studio はこの拒否を、Pass Editor と
 Frame Plan の status 行に `The preview graph refused it: <code>: <message>` の 1 行で出します(以前の Pass Editor は
 `authoring failed` とだけ出し、理由は tooltip にしかありませんでした。[拒否の 1 行を作る所](../../src/devstudio/view/frameplanedit.cpp#L1799))。
 例: `history: true` の target `trail` を足す編集は通りますが(preview はその fragment ごと外します)、direct root の `present` に
@@ -1066,6 +1066,28 @@ G-buffer の target を HDR / SDR のどちらの format にするかを決め�
   1 回の preflight・1 つの ticket になります([pass と route の既定を 1 つの候補に入れる所](../../src/core/communication/renderconfigeditor.cpp#L3534))。
   下の受け皿の検査は、新しい既定で計算し直した route で行います。今の値と同じなら key は書かず、再起動も求めません。
 - `set_material_route_default` は既定だけを変えます(上の表)。
+- `edit_graph_document` と `edit_graph_instances` も任意の `material_route_default` を受けます(✅RS-2)。規則は `add_authored_pass` と
+  同じで、graph の変更と root の key の変更が同じ ticket・同じ候補に入り、preflight と live の判定は新しい既定で計算し直した route で
+  行います([graph の編集に route の既定を乗せる所](../../src/core/communication/renderconfigeditor.cpp#L3012))。今の値と同じなら key は書かず、再起動も求めません。
+  値が変われば commit の結果に `restart_required: true` が付きます(`restart_reason` は下の RS-1 の優先の規則のとおり)。
+  - 値の検査と書き込みは `add_authored_pass`・`set_material_route_default` と同じ関数です([値の検査](../../src/core/communication/renderconfigeditor.cpp#L2981)・
+    [書き込み](../../src/core/communication/renderconfigeditor.cpp#L3000))。`"auto"` / `"forward"` 以外は invalid params、runtime shader compiler の無い build の `"forward"` は下の
+    `material_route_default_unavailable@1`、rendering 節の無い root は `render_config_section_unlocated`(`method` はその RPC の名前)です。
+  - 書き先は root の rendering 節だけで、preset の中には書きません(`add_authored_pass`・`set_material_route_default` と同じ)。
+  - 置き場所だけ(`set_layout` だけ)の op 列でも、`material_route_default` が付けば候補を組み直して判定します
+    ([置き場所だけの扱いを外す所](../../src/core/communication/renderconfigeditor.cpp#L3033))。
+  - 既定を変えずに blank の project へ forward の material pass を足すと、今までどおり `material_route_unserved@1` で断られます
+    (deferred の route を受ける pass が無いため)。同じ ticket に `"forward"` を載せれば commit され、再起動を求めます。
+  - `apply_graph_template` と `decompose_material_pass` はこの key を受けません(知らない key として invalid params)。
+  - test: `renderconfigeditor_test` の
+    [「RS-2 edit_graph_document and edit_graph_instances carry material_route_default in their ticket」](../../test/renderconfigeditor_test.cpp#L7657)
+    (runtime を差し替えて、判定に使われた既定・`restart_reason`・同じ値の 2 回目・`edit_graph_instances`・値の誤りを見る)と、`engine_primitives_test` の
+    [「RS-2 edit_graph_document carries material_route_default for a forward material pass」](../../test/engine_primitives_test.cpp#L904)
+    (GPU。blank の project に、`render.image` 2 枚(color / depth)・body が `draw.material` 1 つの definition・`over.draw_items(contract)`・
+    `order: phase_default`・else の分岐 1 つの `graph.loop`・inputs が `color` / `depth` / `draws` の `render.material_pass`(forward_opaque_v1)を
+    送り、既定無しは `material_route_unserved@1` で文書が変わらないこと、`"forward"` 付きは commit と `restart_required`、起動し直すと
+    frame plan にその pass が出ることを見る。`restart_reason` の code は `material_physical_contract_changed` と `material_route_default_changed`
+    のどちらも受けています)。
 - engine はこの key を**起動時に 1 回しか読まない**ので、値を変えた ticket の commit の結果(`get_edit_result` /
   `step_frame` の `edit_results[]`)に **`restart_required: true`** と `restart_reason: {code: "material_route_default_changed"}`(✅RS-1 から)が付きます
   ([G-4 の restart_required と restart_reason を付ける所](../../src/core/communication/renderconfigeditor.cpp#L5095))。engine を起動し直すまで、
@@ -1125,7 +1147,7 @@ ticket を次の結果で終えます([型付きの拒否のときだけ commit 
   起動し直すまで、`get_frame_plan` は古い live の世代を言います。
 - 上の G-4 の route の既定の再起動と両方が当たる ticket では、`restart_reason` は `material_physical_contract_changed` の方です
   ([RS-1 の restart_reason を載せる所](../../src/core/communication/renderconfigeditor.cpp#L5094))。
-- `set_layout` だけの `edit_graph_document`(N-6。runtime に行かない)は対象外です。
+- `set_layout` だけの `edit_graph_document`(N-6。runtime に行かない)は対象外です。`material_route_default` を付けたもの(✅RS-2)は runtime に行くので対象です。
 - Studio がこの結果を受けて engine を起動し直す流れは、[Studio のノードキャンバス](#studio-のノードキャンバスgraph-タブ)の
   「engine の再起動が要る graph の編集(✅GL-1b)」にあります。
 - ⚠ 残した穴: ディスクからの reload([`Renderer::reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3505))は live の material の検査を
@@ -1392,7 +1414,7 @@ engine 内部の例外名は
 
 **編集の入口は 2 つ、読みは 4 つです。**
 
-- 編集: `edit_graph_document{base_source_digest, ops[]}` と `edit_graph_instances{base_source_digest, attach[], detach[]}`。
+- 編集: `edit_graph_document{base_source_digest, ops[], material_route_default?}` と `edit_graph_instances{base_source_digest, attach[], detach[], material_route_default?}`(`material_route_default` は ✅RS-2)。
   後者は owner 付き root instance の装着・取り外し専用で、**中では同じ `editGraphDocument()` の ops に翻訳されます**
   ([翻訳](../../src/project/graphcomposition.cpp#L2351))。検証を 2 度書かないための構造です。
 - 読み: `get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `get_graph_node_values`(§13.5 の読み取り表)。
