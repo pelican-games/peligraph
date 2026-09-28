@@ -26992,6 +26992,79 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
   - feature の畳んだ node と Show decomposed version は model の test だけ(GPU シナリオの fixture に feature が無い)
   - 派生の線の上の、ダブルクリック以外の操作で op が出ないことは test で見ていない
 
+### GL-2b: Graph の node に下の層を出し、Frame Plan のどの行からも node へ戻る
+
+**Studio のみ。実装者: Claude(Opus)。設計は `docs/design_graph_layers.md` の §7 の GL-2b の行(§3.2・§4・§5.1)。Studio での見え方は `docs/manual/13_editor.md` の「下の層を node で見る(✅GL-2b)」と「Frame Plan の表の行から開く(✅GL-2b)」。**
+
+#### 前提
+- engine の GL-2a(`d3a34869`)が `get_frame_plan` に `origin` / `replaces` / `from_nodes` / `diagnostics` / `deactivated_graph_nodes` を出す
+- GL-1(`4f13a95c`)は graph の pass を名前の一致で判定していた
+
+#### 着地(2026-09-28、91f3dc16)
+- **決定 1(判定)**: [`GraphCanvasModel::graphOwnerOf()`](../src/devstudio/model/graphcanvasmodel.cpp#L4457) は、plan が `origin` を出す engine のものなら `origin` だけで決める(`instance_path` の先頭の root の instance → `loop` → `node`。`origin` の無い pass は preset・feature・rendering 節の pass として畳む)。出すかどうかは `diagnostics` / `deactivated_graph_nodes` の鍵か、どれかの node の `origin` で見る([`GraphCanvasModel::readPlanLayers()`](../src/devstudio/model/graphcanvasmodel.cpp#L4649))。古い engine では GL-1 の名前の一致のまま
+- **決定 2(帯)**: [`GraphCanvasModel::layerBand()`](../src/devstudio/model/graphcanvasmodel.cpp#L4832)。root の node(畳んだ node を含む)の下に、既定と違うことだけを 1 行で: `×N copies`・`N barrier(s)`・`aliased`・graph の backend と違う backend・`deactivated: <reason> (<feature>)`。deactivated の node は不透明度 0.45 で描く。帯と Layers は本物の root で `Show:` が Render だけのとき([`GraphCanvasModel::layersShown()`](../src/devstudio/model/graphcanvasmodel.cpp#L4822)))。graph の backend は pass の `selected_endpoint` の最頻値、無ければ選ばれた候補の `endpoint`([`GraphCanvasModel::graphBackend()`](../src/devstudio/model/graphcanvasmodel.cpp#L4746))
+- **決定 3(Layers と診断)**: 詳細表の上の Layers(`pelican.graphCanvasLayersToggle` / `pelican.graphCanvasLayers`)に L1〜L3([`GraphCanvasModel::layerRows()`](../src/devstudio/model/graphcanvasmodel.cpp#L4876))。L1 は展開した plan の node と置き換え、L2 は resource・alias group・scope・barrier(barrier の行は hazard の kind と `execution_plan` の `resource_uses` の access。最上位の `barriers` に layout は無い)、L3 は決定と graph と違う backend。何も選ばないときは `from_nodes` が空の決定と backend の候補全部([`GraphCanvasModel::graphLayerRows()`](../src/devstudio/model/graphcanvasmodel.cpp#L4966))。L1 の pass の行を押すと Frame Plan の Logical graph でその node を選ぶ(`FramePlanWidget::showPlanNode`、[`FramePlanGraphicsScene::selectPlanNode()`](../src/devstudio/view/frameplangraphics.cpp#L3743))。plan の `diagnostics` は notice の下に `N diagnostics` の 1 行で畳む(`pelican.graphCanvasDiagnostics`、開くと `pelican.graphCanvasDiagnosticsList`)
+- **決定 4(Open in Graph)**: Frame Plan の Passes / Resources / Physical plan / Decisions / Backends / Barriers の行の右クリックに Open in Graph([右クリックの所](../src/devstudio/view/frameplanwidget.cpp#L2915))。行が名指す pass が複数なら submenu、無ければ押せない(tooltip `This row names no pass: it is about the whole graph.`)。名前付きの `pelican.framePlan.openRowInGraph` は選んだ行の最初の pass を開く。各タブに `pelican.framePlan.tab.<id>`、表に `pelican.framePlanPasses` などの名前。行き先は [`GraphCanvasModel::planNodeTarget()`](../src/devstudio/model/graphcanvasmodel.cpp#L4765)(instance の中の node は instance を通って body へ、ループの回はゾーンのその要素の分岐のタブへ)。`FramePlanModel` が resource・alias group・decision・backend の候補の `from_nodes` を読む
+- **test**: 新規 `devstudio_graphcanvas_test` の `GL-2b the plan's origin says which graph node made a pass; bands, Layers and Open in Graph read it`([test](../test/devstudio_graphcanvas_test.cpp#L2794))
+- **シナリオ**: 新規 `graph_layers_origin`([シナリオ](../test/studio_scenarios/graph_layers_origin.json)。着地時の json の step は 31、GL-1b で 30)。fixture `test/fixtures/studio_graph_layers_origin/` は `hybrid_v1` の preset と、`shadow_directional` の `shadow_depth` を置き換えるループ `cascades`、root の `tint` / `show` / instance `left`。ループの帯・preset の pass `deferred_geometry` の畳んだ node・診断の 1 行・graph 全体の Layers → Barriers の行 20 から `tint`(`Layers: tint` と `L2 physical`)→ 行 9(`cascades/2/depth`)からゾーンのタブが else に移る → 文書の node は 7 個のまま。打つ欄は 0
+- **穴**(実装者の報告)
+  - 帯と Layers は `Show:` が Render だけのときだけ
+  - feature の pass が全部置き換わると feature の畳んだ node が無いので、その `is replaced by` の行も出ない
+  - シナリオの Barriers の行の番号(20 と 9)は preset の pass の並びに依る
+
+### GL-1b: Graph の root を Frame Plan と同じ配置で並べ、graph の編集が求めた engine の再起動をする
+
+**Studio のみ。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「graph の外から来た pass を畳んだ node で見る」の置き場所と、「engine の再起動が要る graph の編集(✅GL-1b)」。**
+
+#### 前提
+- GL-1 の畳んだ node は graph の node の左に 1 列で、Frame Plan の Logical graph と並びが違った
+- engine の RS-1(`247ed20e`)は、生きている material の物理の描画の契約を変える graph の編集を commit し、`restart_required: true` と `restart_reason` を返す
+- GL-2b の帯は、ループでもゾーンの下端の行と同じ回の数を言っていた
+
+#### 着地(2026-09-28、a103e100)
+- **決定 1(配置)**: 畳んだ node と派生の線を、root の 1 回の `layoutNodeGraph`(Frame Plan の Logical graph と同じ。`GraphCanvasDrawing::placeNodes` に `extra_nodes` / `extra_edges` を足した)に入れる([配置に入れる所](../src/devstudio/view/graphcanvaswidget.cpp#L1567))。文書が graph の node を 1 つでも置いていれば、畳んだ node だけで同じ配置をして graph の左に置き、セッションの場所を覚える。Auto layout はその view の畳んだ node の場所も捨てて並べ直す(文書に書くのは graph の node だけ)。drag した畳んだ node の場所は文書が変わっても残る(`pruneSessionPositions` が消さない)
+- **決定 2(再起動)**: commit の `restart_required` で、model は文書も plan も読まず、notice を `Restarting the engine to apply this change (<code>)...` にして、Frame Plan と同じ [`MainWindow::requestEngineRestart()`](../src/devstudio/view/mainwindow.cpp#L1420) に渡す。見送られたら `GraphCanvasModel::engineRestartDeclined` が見送りの文を出して読み直す
+- **決定 3(古い engine)**: RS-1 の無い engine の拒否(`changes the physical rendering contract of live material` を含む文)に ` — this change needs an engine restart, which the engine does not offer for graph edits yet` を足す。notice の 1 行を切り詰めてもこの句は残す
+- ループの帯から `×N copies` を外した(ゾーンの下端の行が言う)
+- **test**: 新規 `devstudio_graphcanvas_scene_test` の `GL-1b the root's folded nodes are placed by the same one layout as the graph's, in the plan's order left to right` と `GL-1b a Graph commit that asks for a restart goes to the owner's restart; an older engine's refusal says a restart is what it needed`。GL-2b の model test の帯の期待を直した
+- **シナリオ**: `graph_layers_origin` から `×3 copies` を待つ 1 手を外した(31 → 30)
+- **43317a76(fix、2026-09-28)**: engine は `restart_reason.detail` を一覧(`color_formats`・`depth_format` など)で送る。GL-1b はそれを文字列として読み、`type must be string, but is array` の例外で編集が断られたように出て、engine を再起動しなかった。notice は `code` だけを読むようにし、scene test の応答を engine と同じ形にした。統合側が Release を仮想モニタで操作して見つけた
+
+### OT-1: Studio を選んだ画面に置き、engine の再起動で Graph の履歴を残し、倍率の違う画面で正しく撮る
+
+**Studio のみ。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「Studio を置く画面を選べます(✅OT-1)」「倍率の違う 2 枚目のモニタでも同じ場所を撮ります(✅OT-1)」と、§13.5「シーン編集との違い」の履歴。**
+
+#### 前提
+- シナリオと手の確認を、利用者の画面ではなく仮想モニタで走らせたい(commit の記録)。シナリオの Studio は利用者の画面に窓を出していた
+- Graph の履歴は再接続のたびに消えたので、GL-1b の再起動の後は Undo が無かった
+
+#### 着地(2026-09-28、962aac54)
+- **画面**: 環境変数 `PELICAN_STUDIO_SCREEN`(番号か `QScreen::name()`)。[`placeOnRequestedScreen()`](../src/devstudio/view/studioscreen.cpp#L30) を `uimain.cpp` が、保存した窓の位置を戻した後に呼ぶ。`availableGeometry` の左上へ、大きさはそのまま、入らなければ縮める。当たらなければ stderr に `PELICAN_STUDIO_SCREEN names no screen: <value>; screens: <names>`。シナリオの run は環境を継承する(`run_studio_scenario.cmake` の `cmake -E env`、`studio_drive.py` の `dict(os.environ)`)ので、`PELICAN_STUDIO_SCREEN=1 ctest -L studio_scenario` で全部が 2 枚目の画面で走る
+- **Graph の履歴**: [`GraphCanvasModel::clearContext()`](../src/devstudio/model/graphcanvasmodel.cpp#L568) は履歴を消さない(送信中の編集だけ捨てる)。次に読んだ文書の digest が履歴の digest と違えば消す。project を替えると `GraphCanvasWidget::setProjectRoot` が [`GraphCanvasModel::forgetHistory()`](../src/devstudio/model/graphcanvasmodel.cpp#L2199) を呼ぶ
+- **撮影**: automation の `screen` の撮影は widget を画面の原点から論理 pixel で測っていたので、倍率の違う 2 枚目の画面では viewport の隣の panel を読んだ。`physicalScreenRect()`(`src/devstudio/automation/automationcommands.cpp`)が窓の client の原点から測り、辺ごとに四捨五入する。PrintWindow の切り出しと `desktopShowsWindow` がそれを使い、desktop に戻るときは `desktopRegion()` が `BitBlt` で native に読む。最後の `QScreen::grabWindow` は画面の左上からの座標で呼ぶ
+- **test**: 新規 `devstudio_studio_screen_test` の `OT-1 PELICAN_STUDIO_SCREEN picks a screen by index or by name and keeps the window's size at its top-left`(画面の要らない純関数の test)、`devstudio_graphcanvas_test` の `OT-1 an engine restart keeps the graph history for the same document`。既存の `Graph history never replays across another writer or a reconnect` の再接続の節を「別の revision へ再接続すると新しい履歴」に直した
+- **統合側の確認**: 100 % の主モニタの右に置いた 125 % の仮想モニタで、studio シナリオ 40 本が全部緑
+
+### GL-1c: 畳んだ node をループのゾーンに重ねない
+
+**Studio のみ(GL-1b の直し)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「graph の外から来た pass を畳んだ node で見る」の置き場所。**
+
+#### 前提
+- GL-1b は Auto layout で置いた畳んだ node の場所を、graph の node とだけ比べて覚えていた。ゾーンが小さい間に覚え、その後 body が埋まってゾーンが大きくなると、その下に入った。`loop_zone_wire` では picking の畳んだ node がゾーンの Show in Frame Plan のボタンを覆い、押すと畳んだ node が選ばれた
+
+#### 着地(2026-09-28、ca6d774e)
+- root の範囲を、描いたもの(node とその子、ゾーンの枠全体・下端の行・carry の lane・箱からはみ出す値の字)で測る([測る所](../src/devstudio/view/graphcanvaswidget.cpp#L1665))
+- 配置で置いた場所は drag の場所とは別に覚え(`folded_places_`)、どの畳んだ node も範囲に触れない間だけ使う。触れるか場所の無い node があれば、範囲の左に並べ直して覚え直す([判定](../src/devstudio/view/graphcanvaswidget.cpp#L1697))。drag した node はその場所のまま
+- **test**: 新規 `devstudio_graphcanvas_scene_test` の `GL-1c the folded nodes never lie on a loop's zone, placed or not, grown or not`
+- **残る穴**(統合側の報告): root の node の長い値の字(image の `type` の JSON など)は省略されず、左へ大きくはみ出す
+
+### 0c252183(fix): Graph の palette の deferred の material pass が engine の検査する format で書く
+
+#### 着地(2026-09-28、0c252183)
+- palette の `render.material_pass`(LP-4e)は G-buffer の `albedo` と `emissive` の image を `R8G8B8A8_UNORM` で作っていた。`material_outputs` の無い material pass を engine は互換の format の組と比べ、最初の attachment が `R16G16B16A16_SFLOAT` なら HDR の組を選ぶので、pass は `Material pass color output format mismatch: <pass>__albedo` で断られ、engine が止まった
+- `material` 以外の色のソケットを全部 `R16G16B16A16_SFLOAT` にした([image を足す所](../src/devstudio/model/graphcanvasmodel.cpp#L2514))
+- 確認(commit の記録): 白紙の project に古い文書を置いた headless の player は止まり、新しい文書では描く。test は足していない
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

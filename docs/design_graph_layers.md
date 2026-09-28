@@ -222,7 +222,9 @@ canvas は 1 枚だが、**見せる領域を選ぶ**。全領域を一度に描
 |---|---|---|---|
 | **✅GL-1 見せ方だけ** | Graph に `rendering` 節の pass・preset の pass・feature を畳んだ node として出す。線は frame plan から派生した破線。ダブルクリックで開いた形を読む(material pass はゾーン、雛形のある feature は雛形)。領域 filter(既定 `render`)。Frame Plan の Open in Graph を全 pass に。graph の pass かどうかは名前の一致で判定(GL-2b で `origin` に置き換える)(`4f13a95c`) | 無し | Release で `deferred_geometry` が Graph に出て潜れる。GPU シナリオ 1 本 |
 | **GL-2a engine の origin** | §5.1 | 有り | graph の pass と preset の pass が `origin` で区別でき、物理 plan の要素から node に戻れる |
-| **GL-2b 層の印** | Studio が `origin` / `from_nodes` を読み、node の帯と詳細欄に L1〜L3 を出す。Frame Plan のどの層のどの行からも Open in Graph。GL-1 の判定を `origin` に置き換える | 無し | Barriers の行から node に戻る |
+| **✅GL-2b 層の印** | Studio が `origin` / `from_nodes` を読み、node の帯と詳細欄に L1〜L3 を出す。Frame Plan のどの層のどの行からも Open in Graph。GL-1 の判定を `origin` に置き換える(`91f3dc16`) | 無し | Barriers の行から node に戻る |
+| **✅GL-1b 配置と再起動**(GL-2b の後に足した行) | 畳んだ node と派生の線を root の 1 回の配置(Frame Plan の Logical graph と同じ `layoutNodeGraph`)に入れる。graph の編集の commit が `restart_required` を返したら(engine の RS-1)Frame Plan と同じ再起動へ。ループの帯は回の数をゾーンの下端に任せる(`a103e100`。`restart_reason.detail` の読みの直しは `43317a76`) | 無し(RS-1 の応答を読む) | 台帳の GL-1b の完了記録 |
+| **✅GL-1c 畳んだ node とゾーン**(同上) | 畳んだ node を、root に描いたもの(ゾーンの枠・下端の行・carry を含む)に重ねない。覚えた場所は重ならない間だけ使う(`ca6d774e`) | 無し | 台帳の GL-1c の完了記録 |
 | **GL-3 断片と決定** | `fold_groups`、`decisions` の欄(serial / no_alias / physical)、ローカル名を展開名へ写す段 | §5.2・§3.6 | 断片に付けた決定が展開名で効き、L2 の表に出る |
 | **GL-4 検査と印** | `verify_fold`、失効と `running open form` の表示、複数選択 → Fold | §5.3・§5.4 | 失効させた断片が開いた形で走り、名前付きの警告が出る |
 | **GL-5 Frame Plan を mode に** | Frame Plan の編集入口を Graph の操作へ束ね、独立の入口を消す | 無し | Frame Plan から送る op が Graph と同じ 1 経路になる |
