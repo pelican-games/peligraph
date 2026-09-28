@@ -262,6 +262,33 @@ class RenderConfigEditorService {
         bool edits_additional_documents = false,
         const AuthoredCandidateCheck &check = {},
         bool restart_required = false);
+    // G-4 / RS-2: the material_route_default a ticket may carry, read and
+    // judged by one rule for every ticket that takes it
+    // (add_authored_pass, set_material_route_default, edit_graph_document,
+    // edit_graph_instances). A value other than "auto" / "forward" throws
+    // std::invalid_argument; "forward" on a build without the runtime shader
+    // compiler is the returned refusal (material_route_default_unavailable@1).
+    struct RequestedRouteDefault {
+        std::optional<MaterialRouteDefault> value;
+        std::optional<nlohmann::ordered_json> refusal;
+    };
+    RequestedRouteDefault requestedRouteDefault(
+        const nlohmann::json &params, std::string_view method) const;
+    // Writes `requested` into the candidate root's rendering section when the
+    // committed root says otherwise, and answers whether it did: the engine
+    // reads the key once at start, so a change is a restart. Throws
+    // RenderConfigSectionUnlocated when the root has no rendering section.
+    bool writeRouteDefault(AuthoredRenderConfigDocument &candidate,
+                           MaterialRouteDefault requested) const;
+    // RS-2: queueRootEdit for a ticket that writes the graph document and may
+    // carry material_route_default: the graph edit and the route default are
+    // one candidate, judged with the routes the new default gives every
+    // material, and a changed default marks the ticket restart_required.
+    nlohmann::ordered_json queueGraphRootEdit(
+        const nlohmann::json &params, const std::string &base_digest,
+        const std::string &operation,
+        const std::function<std::optional<nlohmann::ordered_json>(AuthoredRenderConfigDocument &)> &transform,
+        bool source_only = false);
     nlohmann::ordered_json rejection(
         std::string code, std::string message,
         nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;

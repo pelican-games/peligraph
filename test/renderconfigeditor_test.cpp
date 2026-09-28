@@ -7648,6 +7648,69 @@ TEST_CASE("G-4 set_material_route_default rides the root-edit ticket and asks fo
     REQUIRE_THROWS(harness.service->setMaterialRouteDefault(
         {{"base_source_digest", harness.digest()}, {"material_route_default", 1}}));
 }
+
+// RS-2: the graph document tickets take material_route_default as
+// add_authored_pass does -- one candidate, judged with the new default, and a
+// restart when it changed. The op list here only places things, so without
+// the default the ticket would commit without composing anything; with it the
+// candidate is composed and judged.
+TEST_CASE("RS-2 edit_graph_document and edit_graph_instances carry material_route_default in their ticket",
+          "[render-config-editor][g4][rs2]") {
+    RenderTargetHarness harness{true};
+    std::optional<MaterialRouteDefault> judged_default;
+    harness.runtime.validate_candidate = [&](const RenderConfigCandidateDocumentSet &documents) {
+        judged_default = readMaterialRouteDefault(
+            renderingSectionOrEmpty(Json::parse(documents.rootDocument().bytes)));
+    };
+    const auto finish = [&](const nlohmann::ordered_json &accepted) {
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        harness.service->commitPending();
+        return harness.service->getResult({{"ticket", accepted.at("ticket")}});
+    };
+    const Json layout_only = Json::array(
+        {Json{{"op", "set_layout"}, {"scope", "root"}, {"layout", Json::object()}}});
+
+    const auto forward = finish(harness.service->editGraphDocument(
+        {{"base_source_digest", harness.digest()},
+         {"ops", layout_only},
+         {"material_route_default", "forward"}}));
+    INFO(forward.dump());
+    REQUIRE(forward.at("committed") == true);
+    CHECK(judged_default == MaterialRouteDefault::forward);
+    CHECK(forward.at("restart_required") == true);
+    CHECK(forward.at("restart_reason").at("code") == "material_route_default_changed");
+    CHECK(g4RootRouteDefault(harness) == MaterialRouteDefault::forward);
+
+    // The same default again changes nothing that needs a restart.
+    judged_default.reset();
+    const auto again = finish(harness.service->editGraphDocument(
+        {{"base_source_digest", harness.digest()},
+         {"ops", layout_only},
+         {"material_route_default", "forward"}}));
+    INFO(again.dump());
+    CHECK_FALSE(again.value("restart_required", false));
+
+    // edit_graph_instances shares the ticket's rule.
+    const auto back = finish(harness.service->editGraphInstances(
+        {{"base_source_digest", harness.digest()},
+         {"attach", Json::array()},
+         {"detach", Json::array()},
+         {"material_route_default", "auto"}}));
+    INFO(back.dump());
+    REQUIRE(back.at("committed") == true);
+    CHECK(back.at("restart_required") == true);
+    CHECK(judged_default == MaterialRouteDefault::automatic);
+    CHECK(g4RootRouteDefault(harness) == MaterialRouteDefault::automatic);
+
+    // A value that is not one of the two is refused as add_authored_pass
+    // refuses it, and nothing is queued.
+    REQUIRE_THROWS_WITH(harness.service->editGraphDocument(
+                            {{"base_source_digest", harness.digest()},
+                             {"ops", layout_only},
+                             {"material_route_default", "deferred"}}),
+                        Catch::Matchers::ContainsSubstring("edit_graph_document material_route_default"));
+}
 #endif
 
 #if !PELICAN_RUNTIME_SHADER_COMPILER

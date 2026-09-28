@@ -2382,11 +2382,13 @@ OrderedJson RenderConfigEditorService::getGraphInstances(const Json &params) con
 
 OrderedJson RenderConfigEditorService::editGraphInstances(const Json &params) {
     constexpr auto method = "edit_graph_instances";
-    requireOnly(params, {"base_source_digest", "attach", "detach"}, method);
+    requireOnly(params, {"base_source_digest", "attach", "detach", "material_route_default"}, method);
     const auto digest = requireString(params, "base_source_digest", method);
     const auto attached = params.value("attach", Json::array());
     const auto detached = params.value("detach", Json::array());
-    return queueRootEdit(digest, method,
+    // RS-2: material_route_default rides the same ticket, as on
+    // edit_graph_document.
+    return queueGraphRootEdit(params, digest, method,
         [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
             try {
                 const auto edited = Pelican::editGraphInstances(Json::parse(candidate.bytes()), attached, detached);
@@ -2401,7 +2403,7 @@ OrderedJson RenderConfigEditorService::editGraphInstances(const Json &params) {
 
 OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
     constexpr auto method = "edit_graph_document";
-    requireOnly(params, {"base_source_digest", "ops"}, method);
+    requireOnly(params, {"base_source_digest", "ops", "material_route_default"}, method);
     const auto digest = requireString(params, "base_source_digest", method);
     if (!params.contains("ops") || !params.at("ops").is_array())
         return rejection("invalid_graph_document", "Provide an array of graph document ops");
@@ -2418,8 +2420,11 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
                    operation.value("op", std::string{}) == "set_layout";
         });
     // One ticket, one CAS, one candidate: the same queue edit_graph_instances
-    // uses, so two edits in the same frame cannot both win.
-    return queueRootEdit(digest, method,
+    // uses, so two edits in the same frame cannot both win. RS-2: the
+    // project's material_route_default may travel in the same candidate, as
+    // it does on add_authored_pass (the palette's forward material pass needs
+    // it on a pipeline that draws nothing deferred).
+    return queueGraphRootEdit(params, digest, method,
         [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
             try {
                 const auto source = Json::parse(candidate.bytes());
@@ -2451,7 +2456,7 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
             } catch (const std::exception &error) {
                 return rejection("invalid_graph_document", error.what());
             }
-        }, {}, std::nullopt, layout_only);
+        }, layout_only);
 }
 
 namespace {
@@ -2972,6 +2977,67 @@ OrderedJson RenderConfigEditorService::editFrameNodeOrder(const Json &params) {
         });
 }
 
+RenderConfigEditorService::RequestedRouteDefault
+RenderConfigEditorService::requestedRouteDefault(const Json &params,
+                                                 std::string_view method) const {
+    RequestedRouteDefault requested;
+    const auto found = params.find("material_route_default");
+    if (found == params.end()) return requested;
+    requested.value = requestedMaterialRouteDefault(*found, method);
+    if (*requested.value == MaterialRouteDefault::forward &&
+        !runtime_shader_compiler_available) {
+        requested.refusal = rejection(
+            std::string{materialRouteDefaultUnavailableCode},
+            "material_route_default \"forward\" needs the runtime shader "
+            "compiler to build the forward version of the engine's built-in "
+            "materials; this build has none",
+            {{"value", "forward"},
+             {"reason", "runtime_shader_compiler_disabled"}});
+    }
+    return requested;
+}
+
+bool RenderConfigEditorService::writeRouteDefault(
+    AuthoredRenderConfigDocument &candidate,
+    MaterialRouteDefault requested) const {
+    const auto current = readMaterialRouteDefault(
+        renderingSectionOrEmpty(Json::parse(document_.bytes())));
+    if (requested == current) return false;
+    candidate = candidate.withSectionValue(
+        std::string{materialRouteDefaultKey},
+        Json(std::string{materialRouteDefaultName(requested)}).dump());
+    return true;
+}
+
+OrderedJson RenderConfigEditorService::queueGraphRootEdit(
+    const Json &params, const std::string &base_digest,
+    const std::string &operation,
+    const std::function<std::optional<OrderedJson>(AuthoredRenderConfigDocument &)> &transform,
+    bool source_only) {
+    const auto route_default = requestedRouteDefault(params, operation);
+    if (route_default.refusal) return *route_default.refusal;
+    bool restart_required = false;
+    auto accepted = queueRootEdit(base_digest, operation,
+        [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+            if (auto refused = transform(candidate)) return refused;
+            // Outside the graph edit's own catch: a root without a rendering
+            // section is refused by queueRootEdit as
+            // render_config_section_unlocated, as add_authored_pass refuses it.
+            if (route_default.value)
+                restart_required = writeRouteDefault(candidate, *route_default.value);
+            return std::nullopt;
+        },
+        {}, std::nullopt,
+        // A new default changes what every material is drawn with, so the
+        // candidate is composed and judged even when the ops only move nodes.
+        source_only && !route_default.value);
+    if (restart_required && accepted.value("status", std::string{}) == "accepted" &&
+        !pending_.empty()) {
+        pending_.back().restart_required = true;
+    }
+    return accepted;
+}
+
 OrderedJson RenderConfigEditorService::setMaterialRouteDefault(const Json &params) {
     constexpr auto method = "set_material_route_default";
     requireOnly(params, {"base_source_digest", "material_route_default"}, method);
@@ -2980,18 +3046,9 @@ OrderedJson RenderConfigEditorService::setMaterialRouteDefault(const Json &param
         throw std::invalid_argument(
             std::string{method} + " requires material_route_default");
     }
-    const auto value = requestedMaterialRouteDefault(
-        params.at("material_route_default"), method);
-    if (value == MaterialRouteDefault::forward &&
-        !runtime_shader_compiler_available) {
-        return rejection(
-            std::string{materialRouteDefaultUnavailableCode},
-            "material_route_default \"forward\" needs the runtime shader "
-            "compiler to build the forward version of the engine's built-in "
-            "materials; this build has none",
-            {{"value", "forward"},
-             {"reason", "runtime_shader_compiler_disabled"}});
-    }
+    const auto requested = requestedRouteDefault(params, method);
+    if (requested.refusal) return *requested.refusal;
+    const auto value = *requested.value;
     auto accepted = queueRootEdit(digest, method,
         [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
             candidate = candidate.withSectionValue(
@@ -3477,22 +3534,9 @@ OrderedJson RenderConfigEditorService::addAuthoredPass(
     // G-4: the pass and the project's material_route_default travel in one
     // candidate document set, so the candidate is judged with the routes the
     // new default gives every material.
-    std::optional<MaterialRouteDefault> requested_route_default;
-    if (const auto found = params.find("material_route_default");
-        found != params.end()) {
-        requested_route_default =
-            requestedMaterialRouteDefault(*found, "add_authored_pass");
-        if (*requested_route_default == MaterialRouteDefault::forward &&
-            !runtime_shader_compiler_available) {
-            return rejection(
-                std::string{materialRouteDefaultUnavailableCode},
-                "material_route_default \"forward\" needs the runtime shader "
-                "compiler to build the forward version of the engine's "
-                "built-in materials; this build has none",
-                {{"value", "forward"},
-                 {"reason", "runtime_shader_compiler_disabled"}});
-        }
-    }
+    const auto requested_route_default =
+        requestedRouteDefault(params, "add_authored_pass");
+    if (requested_route_default.refusal) return *requested_route_default.refusal;
 
     const auto gate = gateSnapshot();
     if (auto rejected = checkAuthoringPreconditions(
@@ -3580,22 +3624,14 @@ OrderedJson RenderConfigEditorService::addAuthoredPass(
                           document_.bytes());
     root = root.withFeatureAdded(reference);
     bool restart_required = false;
-    if (requested_route_default) {
-        const auto current_route_default = readMaterialRouteDefault(
-            renderingSectionOrEmpty(Json::parse(document_.bytes())));
-        if (*requested_route_default != current_route_default) {
-            try {
-                root = root.withSectionValue(
-                    std::string{materialRouteDefaultKey},
-                    Json(std::string{materialRouteDefaultName(
-                             *requested_route_default)})
-                        .dump());
-            } catch (const RenderConfigSectionUnlocated &error) {
-                return rejection("render_config_section_unlocated",
-                                 error.what(),
-                                 {{"method", "add_authored_pass"}});
-            }
-            restart_required = true;
+    if (requested_route_default.value) {
+        try {
+            restart_required =
+                writeRouteDefault(root, *requested_route_default.value);
+        } catch (const RenderConfigSectionUnlocated &error) {
+            return rejection("render_config_section_unlocated",
+                             error.what(),
+                             {{"method", "add_authored_pass"}});
         }
     }
     const auto fragment_bytes = managedFragmentBytes(id, insert, *pass);

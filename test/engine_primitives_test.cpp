@@ -895,6 +895,135 @@ TEST_CASE("RS-1 a graph edit the live materials cannot take is committed and ask
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+// RS-2: the Graph palette's Forward opaque material pass on a blank project,
+// with the draw_loop that supplies its draws (as decompose_material_pass
+// writes one). Nothing in the blank pipeline draws deferred, so the live
+// materials are unserved unless the same ticket makes the forward default the
+// project's: edit_graph_document carries material_route_default as
+// add_authored_pass does.
+TEST_CASE("RS-2 edit_graph_document carries material_route_default for a forward material pass",
+          "[rs2][primitives][material-routing][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("rs2_route_default");
+    const auto root = dir.root / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+
+    const auto image_op = [](const std::string &id, const Json &type, const char *format,
+                             const char *usage) {
+        return Json{{"op", "add_node"},
+                    {"scope", "root"},
+                    {"node", {{"id", id},
+                              {"op", "render.image"},
+                              {"parameters", {{"type", type},
+                                              {"format", format},
+                                              {"extent_scale", 1.0},
+                                              {"usage", Json::array({usage, "SAMPLED"})}}},
+                              {"outputs", Json::array({"resource"})}}}};
+    };
+    Json ops = Json::array();
+    ops.push_back(image_op("render_material_pass__color",
+                           Json{{"semantic", "pelican.render.color_signal@1"},
+                                {"arguments", {{"reference", "scene"}, {"transfer", "linear"},
+                                               {"range", "extended"}}}},
+                           "R16G16B16A16_SFLOAT", "COLOR_ATTACHMENT"));
+    ops.push_back(image_op("render_material_pass__depth",
+                           Json{{"semantic", "pelican.render.depth@1"},
+                                {"arguments", {{"representation", "device"}, {"space", "projection"}}}},
+                           "D32_SFLOAT", "DEPTH_STENCIL_ATTACHMENT"));
+    // The draw_loop: over the contract's draw items, one else branch whose
+    // body draws each material (materialpassdecompose.cpp's shape).
+    ops.push_back({{"op", "add_definition"},
+                   {"name", "render_material_pass_draw"},
+                   {"definition",
+                    {{"nodes", Json::array({{{"id", "step"},
+                                             {"op", "draw.material"},
+                                             {"parameters", Json::object()},
+                                             {"outputs", Json::array({"draws"})}}})},
+                     {"outputs", {{"draws", {{"node", "step"}, {"port", "draws"}}}}}}}});
+    ops.push_back({{"op", "add_node"},
+                   {"scope", "root"},
+                   {"node", {{"id", "render_material_pass_draws"},
+                             {"op", "graph.loop"},
+                             {"parameters",
+                              {{"over", {{"draw_items", {{"contract", "forward_opaque_v1"}}}}},
+                               {"order", {{"by", "phase_default"}}},
+                               {"branches", Json::array({{{"body", "render_material_pass_draw"}}})}}},
+                             {"outputs", Json::array({"draws"})}}}});
+    ops.push_back({{"op", "add_node"},
+                   {"scope", "root"},
+                   {"node", {{"id", "render_material_pass"},
+                             {"op", "render.material_pass"},
+                             {"parameters", {{"material_contract", "forward_opaque_v1"},
+                                             {"pass_set", "main_render"}}},
+                             {"inputs",
+                              {{"color", {{"node", "render_material_pass__color"}, {"port", "resource"}}},
+                               {"depth", {{"node", "render_material_pass__depth"}, {"port", "resource"}}},
+                               {"draws", {{"node", "render_material_pass_draws"}, {"port", "draws"}}}}},
+                             {"outputs", Json::array()}}}});
+
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        GET_MODULE(Renderer).prepareRuntimeModules();
+        (void)rpc.result("step_frame");
+        // The final answer, whether the ticket is refused when it is asked
+        // for or when the running renderer judges it.
+        const auto edit = [&](std::optional<std::string> route_default) {
+            const auto context = rpc.result("get_render_authoring_context");
+            Json params{{"base_source_digest", context.at("source_digest").at("hex")}, {"ops", ops}};
+            if (route_default) params["material_route_default"] = *route_default;
+            const auto accepted = rpc.result("edit_graph_document", params);
+            if (accepted.value("status", std::string{}) != "accepted") return accepted;
+            for (int attempt = 0; attempt < 8; ++attempt) {
+                (void)rpc.result("step_frame");
+                auto result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+                if (result.value("status", std::string{}) != "pending") return result;
+            }
+            FAIL("the graph edit ticket stayed pending");
+            return Json{};
+        };
+
+        // Without the forward default: refused by name, as today, and the
+        // document is what it was.
+        const auto root_before = readFile(rendering_path);
+        const auto refused = edit(std::nullopt);
+        INFO(refused.dump(2));
+        REQUIRE(refused.at("status") == "rejected");
+        CHECK(refused.at("error").at("code") == "material_route_unserved@1");
+        CHECK(readFile(rendering_path) == root_before);
+
+        // With it, in the same ticket: committed with the default written
+        // and a restart asked for.
+        const auto committed = edit(std::string{"forward"});
+        INFO(committed.dump(2));
+        REQUIRE(committed.at("status") == "committed");
+        CHECK(committed.at("restart_required") == true);
+        const auto code = committed.at("restart_reason").at("code").get<std::string>();
+        CHECK((code == "material_physical_contract_changed" || code == "material_route_default_changed"));
+        std::cout << "RS-2 restart_reason = " << committed.at("restart_reason").dump() << "\n";
+        const auto written = Json::parse(readFile(rendering_path));
+        CHECK(readMaterialRouteDefault(renderingSectionOrEmpty(written)) ==
+              MaterialRouteDefault::forward);
+        CHECK(written.dump().find("render_material_pass_draws") != std::string::npos);
+        (void)rpc.result("render_frame");
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+
+    // The restart: the same documents compose, and the pass is in the plan.
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    GET_MODULE(Renderer).prepareRuntimeModules();
+    (void)rpc.result("step_frame");
+    (void)rpc.result("render_frame");
+    CHECK(rpc.result("get_frame_plan").dump().find("render_material_pass") != std::string::npos);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
 namespace {
 
 // Q-14e: the blank template's direct root with three targets `present` can
