@@ -5525,6 +5525,9 @@ void GraphCanvasWidget::receiveFailure(qint64 request_id,
 }
 
 void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root) {
+    // OT-1: the graph history survives an engine restart, not a project
+    // switch.
+    if (impl_->project_root != project_root) impl_->model.forgetHistory();
     impl_->project_root = project_root;
     impl_->reloadUiNodes();
     impl_->reloadAudioAssets();

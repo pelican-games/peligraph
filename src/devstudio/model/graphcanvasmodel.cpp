@@ -566,7 +566,13 @@ GraphCanvasModel::takeRead(std::uint64_t id) {
 }
 
 void GraphCanvasModel::clearContext() {
-    clearHistory();
+    // OT-1, decision 3: the history outlives the document it was read with.
+    // An engine that comes back (a restart after a graph edit asked for one)
+    // serves the same document, and the digest the next read brings decides:
+    // one other than history_digest_ clears it (see receiveRpcResult). Only
+    // the edit in the air went with the engine. Another project clears it
+    // through forgetHistory().
+    pending_history_.reset();
     digest_.clear();
     layout_retry_.reset();
     layout_retrying_ = false;
@@ -2188,6 +2194,10 @@ bool GraphCanvasModel::submitHistory(HistoryAction action, HistoryEntry entry) {
     request(RequestKind::Submit, "edit_graph_document",
             {{"base_source_digest", digest_}, {"ops", std::move(ops)}});
     return true;
+}
+
+void GraphCanvasModel::forgetHistory() {
+    clearHistory();
 }
 
 void GraphCanvasModel::clearHistory() {

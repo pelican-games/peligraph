@@ -1020,8 +1020,13 @@ class GraphCanvasModel {
     [[nodiscard]] static std::string scopeToken(std::string_view scope);
 
   public:
+    // A reconnect keeps the Undo / Redo history (OT-1): the next document
+    // read keeps it only when its digest is the one the history was built on.
     void setConnected(bool connected);
     bool connected() const noexcept { return connected_; }
+    // OT-1: another project is opened. Its document is not the one the
+    // history is about, even if its digest happened to match.
+    void forgetHistory();
 
     void refresh();
     void requestCatalog();

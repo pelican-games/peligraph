@@ -1,5 +1,6 @@
 #include "uimain.hpp"
 #include "mainwindow.hpp"
+#include "studioscreen.hpp"
 #include "../automation/automationserver.hpp"
 #include <QApplication>
 #include <QString>
@@ -29,6 +30,9 @@ int uimain(int argc, char **argv, LaunchOptions options) {
     std::cout << "starting Pelican Studio..." << std::endl;
 
     MainWindow window;
+    // OT-1: after the saved geometry was restored (the constructor), so the
+    // screen asked for is the one the window opens on.
+    placeOnRequestedScreen(window);
     window.show();
 
     // The automation channel is opened before the project so a driver can

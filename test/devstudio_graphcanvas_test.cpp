@@ -996,14 +996,51 @@ TEST_CASE("Graph history never replays across another writer or a reconnect",
         h.client.model.refresh();
         h.refresh();
     }
-    SECTION("reconnect starts a new history") {
+    SECTION("a reconnect to another revision starts a new history") {
         h.client.model.setConnected(false);
+        ++h.generation;
         h.open();
     }
     REQUIRE_FALSE(h.client.model.canUndo());
     REQUIRE_FALSE(h.client.model.canRedo());
     REQUIRE_FALSE(h.client.model.undo());
     REQUIRE(onlyPlanRead(h.client.model));
+}
+
+// OT-1, decision 3: an engine restart (RS-1 asks for one after a graph edit
+// the live materials cannot take) reconnects Studio. The history is about the
+// document, not the connection: the same digest read back keeps Undo, another
+// one clears it, and another project clears it whatever the digest.
+TEST_CASE("OT-1 an engine restart keeps the graph history for the same document",
+          "[studio][graph-canvas][graph-history]") {
+    GraphHistoryHarness h;
+    h.open();
+    const auto before = h.document;
+    REQUIRE(h.client.model.setNodeLabel("clock", "Clock"));
+    h.commit();
+    REQUIRE(h.client.model.canUndo());
+    h.client.model.setConnected(false);
+    REQUIRE_FALSE(h.client.model.canUndo());
+    SECTION("the same document read back offers Undo, and it applies") {
+        h.open();
+        REQUIRE(h.client.model.canUndo());
+        REQUIRE(h.client.model.undo());
+        h.commit();
+        REQUIRE(h.document == before);
+        REQUIRE(h.client.model.canRedo());
+    }
+    SECTION("another digest read back clears it") {
+        ++h.generation;
+        h.open();
+        REQUIRE_FALSE(h.client.model.canUndo());
+        REQUIRE_FALSE(h.client.model.canRedo());
+    }
+    SECTION("another project clears it, even with the same digest") {
+        h.client.model.forgetHistory();
+        h.open();
+        REQUIRE_FALSE(h.client.model.canUndo());
+        REQUIRE_FALSE(h.client.model.canRedo());
+    }
 }
 
 TEST_CASE("Q-10 a sound refused while a graph edit is prepared reads as one sentence",

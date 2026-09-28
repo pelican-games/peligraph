@@ -338,6 +338,17 @@ if(TARGET pelican_studio_layout)
     Qt6::Widgets)
 endif()
 
+if(TARGET pelican_studio_view)
+  # OT-1: which screen PELICAN_STUDIO_SCREEN names, and where the window goes
+  # on it. Pure functions over names and rectangles; no screen is needed.
+  find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
+  pelican_define_test(devstudio_studio_screen_test QT Qt6::Core Qt6::Widgets)
+  target_sources(pelican_test_devstudio_studio_screen_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/studioscreen.cpp)
+  target_include_directories(pelican_test_devstudio_studio_screen_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view)
+endif()
+
 if(TARGET pelican_studio_outliner)
   pelican_define_test(devstudio_outliner_test
     pelican_studio_outliner

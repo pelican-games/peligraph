@@ -73,6 +73,60 @@ namespace PelicanStudio {
 namespace {
 
 #ifdef _WIN32
+// Where a widget's global rect lies on the desktop, in physical pixels.
+// GetWindowRect and the desktop are physical; the widget's global rect is in
+// Qt's logical pixels, whose screen origins stay at their native place while
+// the inside of each screen is scaled. Measure the widget from the window's
+// client origin (logical, same screen) and scale only that offset, so a
+// window on a second screen with another scale (a 125 % virtual monitor
+// right of a 100 % one) is read where it is. Qt rounds a scaled edge to the
+// nearest pixel; so does this, edge by edge, or a 125 % screen takes in a
+// row of the panel beside the widget. Empty when the window has no handle.
+QRect physicalScreenRect(QWidget *top_level, const QRect &global_rect) {
+    if (top_level == nullptr) return {};
+    const auto hwnd = reinterpret_cast<HWND>(top_level->winId());
+    POINT client_origin{0, 0};
+    if (hwnd == nullptr || !ClientToScreen(hwnd, &client_origin)) return {};
+    const qreal ratio = top_level->devicePixelRatioF();
+    const QPoint offset = global_rect.topLeft() - top_level->mapToGlobal(QPoint{0, 0});
+    const int left = qRound(offset.x() * ratio);
+    const int top = qRound(offset.y() * ratio);
+    const int right = qRound((offset.x() + global_rect.width()) * ratio);
+    const int bottom = qRound((offset.y() + global_rect.height()) * ratio);
+    return QRect{client_origin.x + left, client_origin.y + top, right - left, bottom - top};
+}
+
+// The desktop's pixels over a physical rect, read natively: Qt's grab takes
+// logical coordinates and, on a scaled screen, lands a row off.
+QImage desktopRegion(const QRect &physical) {
+    if (physical.isEmpty()) return {};
+    HDC screen_dc = GetDC(nullptr);
+    HDC memory_dc = CreateCompatibleDC(screen_dc);
+    HBITMAP bitmap = CreateCompatibleBitmap(screen_dc, physical.width(), physical.height());
+    HGDIOBJ previous = SelectObject(memory_dc, bitmap);
+    const bool copied = BitBlt(memory_dc, 0, 0, physical.width(), physical.height(), screen_dc,
+                               physical.x(), physical.y(), SRCCOPY | CAPTUREBLT) != FALSE;
+    QImage image;
+    if (copied) {
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = physical.width();
+        info.bmiHeader.biHeight = -physical.height();
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        info.bmiHeader.biCompression = BI_RGB;
+        image = QImage(physical.width(), physical.height(), QImage::Format_RGB32);
+        if (GetDIBits(memory_dc, bitmap, 0, static_cast<UINT>(physical.height()),
+                      image.bits(), &info, DIB_RGB_COLORS) == 0)
+            image = {};
+    }
+    SelectObject(memory_dc, previous);
+    DeleteObject(bitmap);
+    DeleteDC(memory_dc);
+    ReleaseDC(nullptr, screen_dc);
+    return image;
+}
+
 // The window's own composed content, children included -- the embedded
 // engine too -- whatever else is on the desktop in front of it. A screen
 // grab reads the desktop, so a window of another application lying over the
@@ -111,14 +165,8 @@ QImage printWindowRegion(QWidget *top_level, const QRect &global_rect) {
     DeleteDC(memory_dc);
     ReleaseDC(nullptr, screen_dc);
     if (image.isNull()) return {};
-    // GetWindowRect and the widget's global rect are both in physical pixels
-    // only at 100 % scaling; scale the widget rect by the window's ratio.
-    const qreal ratio = top_level->devicePixelRatioF();
-    const QRect physical{
-        static_cast<int>(global_rect.x() * ratio) - window_rect.left,
-        static_cast<int>(global_rect.y() * ratio) - window_rect.top,
-        static_cast<int>(global_rect.width() * ratio),
-        static_cast<int>(global_rect.height() * ratio)};
+    const QRect physical =
+        physicalScreenRect(top_level, global_rect).translated(-window_rect.left, -window_rect.top);
     const QRect clipped = physical.intersected(image.rect());
     if (clipped.isEmpty()) return {};
     return image.copy(clipped);
@@ -144,17 +192,16 @@ bool desktopShowsWindow(QWidget *top_level, const QRect &global_rect) {
     if (top_level == nullptr || global_rect.isEmpty()) return false;
     const auto hwnd = reinterpret_cast<HWND>(top_level->winId());
     if (hwnd == nullptr) return false;
-    const qreal ratio = top_level->devicePixelRatioF();
+    const QRect physical = physicalScreenRect(top_level, global_rect);
+    if (physical.isEmpty()) return false;
     constexpr int Steps = 4;
     for (int iy = 0; iy <= Steps; ++iy) {
         for (int ix = 0; ix <= Steps; ++ix) {
             const double fx = (ix + 0.5) / (Steps + 1);
             const double fy = (iy + 0.5) / (Steps + 1);
             const POINT point{
-                static_cast<LONG>((global_rect.x() +
-                                   fx * global_rect.width()) * ratio),
-                static_cast<LONG>((global_rect.y() +
-                                   fy * global_rect.height()) * ratio)};
+                static_cast<LONG>(physical.x() + fx * physical.width()),
+                static_cast<LONG>(physical.y() + fy * physical.height())};
             const HWND at = WindowFromPoint(point);
             if (at == nullptr || GetAncestor(at, GA_ROOT) != hwnd)
                 return false;
@@ -1942,6 +1989,13 @@ AutomationReply commandScreenshot(const AutomationHost &host,
         }
 #endif
     }
+#ifdef _WIN32
+    if (mode == QLatin1String("screen") && pixmap.isNull()) {
+        QWidget *top_level = target.owner != nullptr ? target.owner->window() : nullptr;
+        const QImage desktop = desktopRegion(physicalScreenRect(top_level, globalRect(target)));
+        if (!desktop.isNull()) pixmap = QPixmap::fromImage(desktop);
+    }
+#endif
     if (mode == QLatin1String("screen") && pixmap.isNull()) {
         QScreen *screen = QGuiApplication::primaryScreen();
         if (target.owner != nullptr && target.owner->window() != nullptr &&
@@ -1950,7 +2004,8 @@ AutomationReply commandScreenshot(const AutomationHost &host,
         if (screen == nullptr)
             return AutomationReply::failure(
                 ScreenshotFailed, QStringLiteral("no screen to capture"));
-        const QRect where = globalRect(target);
+        // With no window, grabWindow reads the screen from its own top-left.
+        const QRect where = globalRect(target).translated(-screen->geometry().topLeft());
         pixmap = screen->grabWindow(0, where.x(), where.y(), where.width(),
                                     where.height());
     } else if (mode == QLatin1String("widget")) {
