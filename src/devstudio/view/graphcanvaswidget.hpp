@@ -1,9 +1,11 @@
 #pragma once
 
 #include "../model/graphcanvasmodel.hpp"
+#include "frameplanedit.hpp"
 #include "graphcanvasreadcapability.hpp"
 #include "nodegraphics.hpp"
 
+#include <QAction>
 #include <QGraphicsScene>
 #include <QPointF>
 #include <QWidget>
@@ -96,6 +98,10 @@ inline constexpr int GraphCanvasBoundPortRole = Qt::UserRole + 3149;
 inline constexpr int GraphCanvasDerivedRole = Qt::UserRole + 3150;
 // GL-1, decision 5: the domain a stub's hidden nodes are in.
 inline constexpr int GraphCanvasStubDomainRole = Qt::UserRole + 3151;
+// GL-1e: on an input socket of a rendering-section pass that takes lines, and
+// on the line drawn to one: the index in the pass's `input` it stands for, or
+// -1 for the empty `+ input` slot (whose port is "in:+").
+inline constexpr int GraphCanvasPassInputRole = Qt::UserRole + 3152;
 enum class GraphCanvasZoneAnchor : int {
     none = 0,
     left = 1,
@@ -169,6 +175,10 @@ inline constexpr auto GraphCanvasDerivedSocketItem = "graph_derived_socket";
 inline constexpr auto GraphCanvasDerivedEdgeItem = "graph_derived_edge";
 inline constexpr auto GraphCanvasDomainStubItem = "graph_domain_stub";
 inline constexpr auto GraphCanvasFoldedButtonItem = "graph_folded_button";
+// GL-1e. `graph_pass_input_edge#<from>-><pass>`: a line the rendering
+// section's document names -- one item of a pass's `input` -- drawn solid from
+// the node whose output is that resource. Picked, Delete takes it out.
+inline constexpr auto GraphCanvasPassInputEdgeItem = "graph_pass_input_edge";
 // GL-2b, decision 2. `graph_layer_band#<id>`: the line under a root node
 // that says what its lower layers hold (`×3 copies · 2 barriers`).
 inline constexpr auto GraphCanvasLayerBandItem = "graph_layer_band";
@@ -501,6 +511,54 @@ class GraphCanvasScene final : public QGraphicsScene {
     bool showDecomposed();
     // GL-1, decision 5: a stub added its domain to the filter.
     std::function<void()> domainFilterChanged;
+
+    // --- GL-1e: a pass of the rendering section takes lines.
+
+    // A line dropped on a pass's input socket (or its `+ input`), or one of
+    // its lines deleted: the edit_preset_pass the Frame Plan's socket drop
+    // sends, built by the same functions from the authoring context the
+    // model read. The owner sends it; `rebuild` makes it again from the
+    // context read after a refusal for a moved document. One the builders
+    // refused is not handed on: the notice says why.
+    std::function<void(const FramePlanEditRequest &,
+                       std::function<FramePlanEditRequest()> rebuild)>
+        passInputEditRequested;
+    // Decision 1: the input sockets of one folded pass node, when it takes
+    // lines -- a fullscreen pass the root declares (editable_root_pass),
+    // drawn on the real root. Nothing for any other.
+    [[nodiscard]] std::optional<FramePlanInputSockets> passInputSockets(
+        const std::string &pass) const;
+    // The two edits, from the context the model holds now (the owner builds
+    // one again this way after the document moved under it).
+    [[nodiscard]] FramePlanEditRequest passInputConnectRequest(
+        const std::string &pass, const std::string &resource,
+        const FramePlanSocketDrop &drop) const;
+    [[nodiscard]] FramePlanEditRequest passInputDisconnectRequest(
+        const std::string &pass, std::size_t input_index) const;
+    // A picked line into such a pass: its pass and its index in `input`.
+    struct PassInputPick {
+        std::string pass;
+        std::size_t input_index = 0;
+
+        friend bool operator==(const PassInputPick &, const PassInputPick &) = default;
+    };
+    [[nodiscard]] const std::optional<PassInputPick> &selectedPassInput() const noexcept {
+        return selected_pass_input_;
+    }
+    void selectPassInput(const std::string &pass, std::size_t input_index);
+    // Delete on the picked line (or its right-click Delete).
+    bool deletePassInput();
+    // RU-1: the Graph's Undo and Redo also reach the render edit history,
+    // for the pass edits this tab sent (noteRenderEdit) while they are its
+    // newest edits; Redo gives back what that Undo took. Each hook returns
+    // false when the history had nothing to do.
+    std::function<bool()> renderUndo;
+    std::function<bool()> renderRedo;
+    std::function<bool()> renderUndoAvailable;
+    std::function<bool()> renderRedoAvailable;
+    void noteRenderEdit();
+    [[nodiscard]] bool canUndoAny() const;
+    [[nodiscard]] bool canRedoAny() const;
     [[nodiscard]] const QPointF &lastContextPosition() const noexcept {
         return context_position_;
     }
@@ -614,6 +672,22 @@ class GraphCanvasScene final : public QGraphicsScene {
     std::vector<std::size_t> selected_ties_;
     std::optional<PendingConnection> pending_connection_;
     QGraphicsPathItem *pending_edge_ = nullptr;
+    // GL-1e: the picked line into a pass, and which history the tab's last
+    // edit went to (the render edits' after noteRenderEdit).
+    std::optional<PassInputPick> selected_pass_input_;
+    // How many of the render history's newest edits are this tab's, and how
+    // many of those its Undo took back (what its Redo gives back).
+    std::size_t render_edits_ = 0;
+    std::size_t render_undone_ = 0;
+    // The builders' inputs, from the model: the authoring context parsed
+    // once per revision, and the plan in the Frame Plan's terms.
+    [[nodiscard]] FramePlanAuthoring passAuthoring() const;
+    mutable std::optional<std::pair<std::uint64_t, FramePlanAuthoring>> pass_authoring_;
+    // A drop on a pass's input socket: the edit, or the notice why not.
+    void dropOnPassInput(const std::string &pass, const QGraphicsItem &socket,
+                         const std::string &from_node, const std::string &from_port);
+    void handPassInputEdit(const FramePlanEditRequest &request,
+                           std::function<FramePlanEditRequest()> rebuild);
     std::unique_ptr<InlineEditor> editor_;
     QAction *auto_layout_action_ = nullptr;
     QAction *fit_view_action_ = nullptr;
@@ -748,6 +822,10 @@ class GraphCanvasWidget final : public QWidget {
     // change the frame plan (anything but a placement), when the engine says
     // it committed: the owner has the Frame Plan read the plan again.
     void setPlanCommitAction(std::function<void()> action);
+    // GL-1e / RU-1: the render edit history's Undo and Redo (the window's).
+    // A pass's input edit sent from this tab is taken back by the tab's own
+    // Undo through them, as by the Frame Plan's.
+    void setRenderHistoryActions(QAction *undo, QAction *redo);
     // GL-1b, decision 2. An edit that committed with restart_required hands
     // the restart to this action -- the window's, the one the Frame Plan's
     // G-4 / G-5 calls -- with the line the tab's notice shows. When the

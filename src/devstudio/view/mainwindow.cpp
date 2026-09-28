@@ -862,6 +862,9 @@ void MainWindow::createRenderHistory(QWidget *pass_editor) {
     connect(render_redo_action_, &QAction::triggered, this,
             [this] { render_history_->redo(); });
     frame_plan_->setRenderHistoryActions(render_undo_action_, render_redo_action_);
+    // GL-1e: a line into a rendering-section pass sent from the Graph tab is a
+    // render edit too; the tab's own Undo reaches it through these.
+    graph_canvas_->setRenderHistoryActions(render_undo_action_, render_redo_action_);
     pass_editor->addAction(render_undo_action_);
     pass_editor->addAction(render_redo_action_);
     render_features_->setRenderHistoryActions({render_undo_action_, render_redo_action_});

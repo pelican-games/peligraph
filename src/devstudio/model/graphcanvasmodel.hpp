@@ -486,6 +486,24 @@ struct GraphCanvasFoldedNode {
     bool material = false;
     // A feature with a shipped decomposed version (get_graph_templates).
     bool decomposable = false;
+    // GL-1e, decision 1: a pass of the rendering section that takes lines.
+    // The canvas fills these from the authoring context: the pass's input
+    // sockets top to bottom, shown in place of its reads.
+    struct InputSocket {
+        std::string label;
+        // The resource connected there, or "in:+" for the empty slot.
+        std::string port;
+        std::string resource;
+        // FramePlanInputSocket::key(): "in@<binding>", "in:variadic".
+        std::string key;
+        std::optional<std::size_t> binding;
+        // Where it is in the pass's `input`; none for the empty slot.
+        std::optional<std::size_t> input_index;
+
+        bool operator==(const InputSocket &) const = default;
+    };
+    bool takes_lines = false;
+    std::vector<InputSocket> input_sockets;
 
     [[nodiscard]] bool enterable() const noexcept { return feature_group || material; }
     // "From the rendering section (<source>): read only here. ..."
@@ -656,6 +674,9 @@ class GraphCanvasModel {
         // GL-1: get_graph_templates, which features have a decomposed
         // version to show.
         Templates,
+        // GL-1e: get_render_authoring_context, the rendering section's
+        // passes as edit_preset_pass takes them.
+        Authoring,
     };
     struct PendingRequest {
         std::uint64_t id = 0;
@@ -868,6 +889,12 @@ class GraphCanvasModel {
     std::vector<GraphCanvasPlanPass> plan_passes_;
     std::string plan_graph_;
     void readPlanPasses(const nlohmann::json &plan);
+    // --- GL-1e: the plan's buffers (resources[].kind), and the authoring
+    // context read after a plan with a rendering-section pass.
+    std::set<std::string, std::less<>> plan_buffers_;
+    nlohmann::json render_authoring_ = nlohmann::json::object();
+    std::uint64_t authoring_revision_ = 0;
+    void requestRenderAuthoring();
     // --- GL-2b: the plan's lower layers, by the frame plan node names each
     // element carries (from_nodes, a barrier's ends, a scope's nodes).
     struct PlanBarrier {
@@ -1686,6 +1713,28 @@ class GraphCanvasModel {
     // the graph node that made it, or the folded node it is in. Empty when
     // the plan does not list it (or it is an anchor).
     [[nodiscard]] std::string canvasNodeOfPass(std::string_view pass) const;
+
+    // --- GL-1e: a rendering-section pass's inputs, edited from the Graph.
+
+    // get_render_authoring_context as it last arrived: read after every plan
+    // that holds a pass of the rendering section (the root's own, F-6).
+    // Empty until one arrives; the revision moves with each.
+    [[nodiscard]] const nlohmann::json &renderAuthoringContext() const noexcept {
+        return render_authoring_;
+    }
+    [[nodiscard]] std::uint64_t authoringRevision() const noexcept { return authoring_revision_; }
+    // The last plan in the Frame Plan's terms, as far as a pass's input
+    // sockets need it: its graph, each pass with its pass_inputs, and which
+    // resources are buffers.
+    [[nodiscard]] FramePlanModel passInputPlan() const;
+    // The resource a root node's output hands on: a render.image (or
+    // render.buffer, render.attribute) its own id, a render.target_ref the
+    // target it names, a render node's output the resource node feeding its
+    // input of the same name. Empty for anything else.
+    [[nodiscard]] std::string outputResource(std::string_view node, std::string_view port) const;
+    // A pass's input edit is sent by the canvas's owner (edit_preset_pass);
+    // what became of it is said on the line a graph edit's is.
+    void setEditNotice(InspectorNotice notice);
 
     // --- GL-2b: the lower layers on the root canvas (design_graph_layers
     // 3.2, 4 rules 1 and 5).

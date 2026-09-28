@@ -208,6 +208,11 @@ class Builder {
     QGraphicsItem *addDerivedNode(const GraphCanvasFoldedNode &node, const QPointF &position,
                                   Moved moved);
     QGraphicsPathItem *addDerivedEdge(const GraphCanvasDerivedEdge &edge);
+    // GL-1e: one item of a rendering-section pass's `input`, drawn solid from
+    // the node (and output) the resource comes from.
+    QGraphicsPathItem *addPassInputEdge(const QString &from, const QString &from_port,
+                                        const QString &pass, const QString &resource,
+                                        std::size_t input_index);
     // `<- value (N)` beside an input socket, or `-> pose (N)` beside an
     // output socket; drawn on the socket's node, so it goes where it goes.
     void addDomainStub(const GraphCanvasDomainStub &stub, QGraphicsItem &socket);

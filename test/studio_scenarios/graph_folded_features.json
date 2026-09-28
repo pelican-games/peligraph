@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "graph_folded_features",
-  "description": "GL-1: the passes no graph node made are folded, read-only nodes on the Graph tab's root canvas. The fixture's root holds no graph node; its rendering section's material pass forward_opaque and its present are drawn as folded nodes, with the frame plan's scene_color between them as a dashed line. A double-click looks inside forward_opaque: a render.material_pass and a draw_loop zone whose body draws each material (draw.material), which Studio builds and never writes. An edit tried there sends nothing and says so, with Expand to edit; the breadcrumb comes back out; and the Frame Plan's Open in Graph on forward_opaque selects its node on the Graph canvas. The document is the same at the end.",
+  "description": "GL-1: the passes no graph node made are folded, read-only nodes on the Graph tab's root canvas. The fixture's root holds no graph node; its rendering section's material pass forward_opaque and its present are drawn as folded nodes, with scene_color between them as a solid line: present's `input` names it (GL-1e; a line only the frame plan implies is dashed). A double-click looks inside forward_opaque: a render.material_pass and a draw_loop zone whose body draws each material (draw.material), which Studio builds and never writes. An edit tried there sends nothing and says so, with Expand to edit; the breadcrumb comes back out; and the Frame Plan's Open in Graph on forward_opaque selects its node on the Graph canvas. The document is the same at the end.",
   "tab": "graph",
   "probe_no_automation": false,
   "steps": [
@@ -45,9 +45,9 @@
       "timeout_ms": 30000
     },
     {
-      "label": "decision 2: the frame plan's scene_color is a dashed line between them",
+      "label": "decision 2, as GL-1e draws it: present's input names scene_color, so the line from forward_opaque is the document's own, solid",
       "cmd": "wait",
-      "name": "pelican.graphCanvasView::graph_derived_edge#forward_opaque->present",
+      "name": "pelican.graphCanvasView::graph_pass_input_edge#forward_opaque->present",
       "visible": true,
       "timeout_ms": 30000
     },

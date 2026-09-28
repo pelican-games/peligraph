@@ -1305,8 +1305,12 @@ QSizeF Builder::derivedNodeSize(const GraphCanvasFoldedNode &node) const {
     for (const auto *list : {&node.reads, &node.writes})
         for (const auto &resource : *list)
             width = std::max(width, row_metrics_.horizontalAdvance(qtext(resource)) + 34.0);
+    for (const auto &socket : node.input_sockets)
+        width = std::max(width, row_metrics_.horizontalAdvance(qtext(socket.label)) + 34.0);
     width = std::min(width, GraphCanvasNodeMaximumWidth);
-    const auto rows = static_cast<qreal>(node.reads.size() + node.writes.size() +
+    // GL-1e: a pass that takes lines shows its input sockets for its reads.
+    const std::size_t inputs = node.takes_lines ? node.input_sockets.size() : node.reads.size();
+    const auto rows = static_cast<qreal>(inputs + node.writes.size() +
                                          (derivedBand(node).isEmpty() ? 0 : 1));
     return QSizeF{width, GraphCanvasHeaderHeight + GraphCanvasSectionPadding +
                              rows * GraphCanvasSocketRowHeight + GraphCanvasSectionPadding};
@@ -1404,8 +1408,65 @@ QGraphicsItem *Builder::addDerivedNode(const GraphCanvasFoldedNode &node, const 
         cursor_y += GraphCanvasSocketRowHeight;
     };
     for (const auto &resource : node.writes) row(resource, true);
-    for (const auto &resource : node.reads) row(resource, false);
+    if (!node.takes_lines) {
+        for (const auto &resource : node.reads) row(resource, false);
+        return item;
+    }
+    // GL-1e, decision 1: the pass's `input`, one socket each, and the empty
+    // `+ input` when its shader takes more. These take a line dropped from a
+    // graph node's output; they are the document's, not the plan's.
+    for (const auto &socket : node.input_sockets) {
+        const qreal centre_y = cursor_y + GraphCanvasSocketRowHeight / 2.0;
+        const QString label = qtext(socket.label);
+        const bool slot = !socket.input_index.has_value();
+        auto *text = new QGraphicsSimpleTextItem(label, item);
+        text->setFont(detail_font_);
+        text->setBrush(slot ? theme_.canvas.dim_text : theme_.canvas.heading_text);
+        text->setPos(14.0, centre_y - row_metrics_.height() / 2.0);
+        tag(text, GraphCanvasNodeLabelItem);
+        text->setData(GraphCanvasPortRole, qtext(socket.port));
+        auto *dot = new QGraphicsPathItem(socketPath(SocketShape::circle, GraphCanvasSocketSize),
+                                          item);
+        dot->setPos(0.0, centre_y);
+        dot->setZValue(1.0);
+        dot->setBrush(slot ? theme_.canvas.derived_body : theme_.canvas.derived_border);
+        dot->setPen(QPen{theme_.canvas.heading_text, 1.1});
+        dot->setToolTip(slot ? QObject::tr("Drop an image here: %1 reads one more input")
+                                   .arg(name)
+                             : QObject::tr("%1: input %2 of %3; drop another image here to "
+                                           "read that instead")
+                                   .arg(qtext(socket.resource))
+                                   .arg(static_cast<qulonglong>(*socket.input_index))
+                                   .arg(name));
+        tag(dot, GraphCanvasDerivedSocketItem);
+        dot->setData(GraphCanvasPortRole, qtext(socket.port));
+        dot->setData(GraphCanvasSocketDirectionRole, QStringLiteral("input"));
+        dot->setData(GraphCanvasSocketKeyRole, qtext(socket.key));
+        dot->setData(GraphCanvasPassInputRole,
+                     slot ? qlonglong{-1} : static_cast<qlonglong>(*socket.input_index));
+        cursor_y += GraphCanvasSocketRowHeight;
+    }
     return item;
+}
+
+QGraphicsPathItem *Builder::addPassInputEdge(const QString &from, const QString &from_port,
+                                             const QString &pass, const QString &resource,
+                                             std::size_t input_index) {
+    auto *line = new GraphEdgeItem;
+    place(line);
+    line->setZValue(0.5);
+    line->setPen(QPen{theme_.canvas.edge, 1.8});
+    line->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasPassInputEdgeItem));
+    tag(line);
+    line->setData(NodeGraphFromNameRole, from);
+    line->setData(NodeGraphToNameRole, pass);
+    line->setData(GraphCanvasFromPortRole, from_port);
+    line->setData(GraphCanvasToPortRole, resource);
+    line->setData(GraphCanvasPassInputRole, static_cast<qlonglong>(input_index));
+    line->setToolTip(QObject::tr("%1 reads %2 (input %3). Delete takes it out.")
+                         .arg(pass, resource)
+                         .arg(static_cast<qulonglong>(input_index)));
+    return line;
 }
 
 QGraphicsPathItem *Builder::addDerivedEdge(const GraphCanvasDerivedEdge &edge) {

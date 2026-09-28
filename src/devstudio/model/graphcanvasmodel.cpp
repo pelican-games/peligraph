@@ -730,6 +730,9 @@ void GraphCanvasModel::requestLoopReports() {
         plan_loop_copies_.clear();
         plan_passes_.clear();
         plan_graph_.clear();
+        plan_buffers_.clear();
+        render_authoring_ = Json::object();
+        ++authoring_revision_;
         plan_retry_wanted_ = false;
         return;
     }
@@ -871,7 +874,11 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
         // already draws. Without it the canvas says "loop" and nothing else.
         // GL-1: an engine without get_graph_templates has no decomposed
         // version to show, which is not an error.
-        if (kind == RequestKind::Loops || kind == RequestKind::Templates) return;
+        // GL-1e: nor is one without get_render_authoring_context: the
+        // rendering section's passes then take no lines.
+        if (kind == RequestKind::Loops || kind == RequestKind::Templates ||
+            kind == RequestKind::Authoring)
+            return;
         if (kind == RequestKind::LoopPage) {
             loop_pages_done_.insert(std::exchange(loop_page_node_, {}));
             requestNextLoopPage();
@@ -928,7 +935,9 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         try {
             const auto response = Json::parse(json);
             if (response.contains("error")) {
-                if (pending.kind == RequestKind::Templates) return;
+                if (pending.kind == RequestKind::Templates ||
+                    pending.kind == RequestKind::Authoring)
+                    return;
                 if (pending.kind == RequestKind::Loops) {
                     // Q-19: an engine with no plan yet is asked again --
                     // GL-1: also when the folded nodes have none to come
@@ -967,6 +976,8 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 readPlanViews(response);
                 readPlanPassInputs(response);
                 readPlanPasses(response);
+                // GL-1e: and what the rendering section's passes take.
+                requestRenderAuthoring();
                 plan_retry_wanted_ = plan_retry_budget_ > 0 && planMissesRenderNode();
                 // LP-4e: a fresh report starts every loop's pages over.
                 loop_pages_done_.clear();
@@ -977,6 +988,12 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             }
             if (pending.kind == RequestKind::LoopPage) {
                 receiveLoopPage(response);
+                ++report_revision_;
+                return;
+            }
+            if (pending.kind == RequestKind::Authoring) {
+                render_authoring_ = response.is_object() ? response : Json::object();
+                ++authoring_revision_;
                 ++report_revision_;
                 return;
             }
@@ -1040,7 +1057,9 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             failure_ = {};
             ++report_revision_;
         } catch (const std::exception &error) {
-            if (pending.kind == RequestKind::Loops || pending.kind == RequestKind::Templates) return;
+            if (pending.kind == RequestKind::Loops || pending.kind == RequestKind::Templates ||
+                pending.kind == RequestKind::Authoring)
+                return;
             if (pending.kind == RequestKind::LoopPage) {
                 loop_pages_done_.insert(std::exchange(loop_page_node_, {}));
                 requestNextLoopPage();
@@ -4573,6 +4592,13 @@ void GraphCanvasModel::readPlanPasses(const Json &plan) {
         }
     std::ranges::stable_sort(passes, {}, &GraphCanvasPlanPass::order);
     plan_passes_ = std::move(passes);
+    // GL-1e: a pass's `input` counts images and buffers apart.
+    plan_buffers_.clear();
+    if (const auto resources = plan.find("resources");
+        resources != plan.end() && resources->is_array())
+        for (const auto &resource : *resources)
+            if (resource.is_object() && text(resource, "kind") == "buffer")
+                plan_buffers_.insert(text(resource, "name"));
     readPlanLayers(plan);
     // Decision 3: which features have a decomposed version, asked once.
     if (connected_ && !templates_requested_ &&
@@ -4759,6 +4785,79 @@ std::string GraphCanvasModel::canvasNodeOfPass(std::string_view name) const {
     if (pass == nullptr || pass->kind == "anchor") return {};
     if (auto graph = graphOwnerOf(*pass); !graph.empty()) return graph;
     return foldedOwnerOf(*pass);
+}
+
+// --- GL-1e: a rendering-section pass's inputs.
+
+void GraphCanvasModel::requestRenderAuthoring() {
+    // Only a plan with a pass of the rendering section has one to edit: a
+    // project pass no graph node made and no feature brought.
+    if (!connected_ ||
+        std::ranges::none_of(plan_passes_, [this](const GraphCanvasPlanPass &pass) {
+            return pass.source == "project" && pass.feature.empty() &&
+                   pass.kind != "anchor" && graphOwnerOf(pass).empty();
+        }))
+        return;
+    read(RequestKind::Authoring, "get_render_authoring_context", Json::object());
+}
+
+FramePlanModel GraphCanvasModel::passInputPlan() const {
+    FramePlanModel plan;
+    plan.graph = plan_graph_;
+    for (const auto &pass : plan_passes_) {
+        FramePlanNode node;
+        node.name = pass.name;
+        node.kind = pass.kind;
+        node.source = pass.source;
+        node.reads = pass.reads;
+        node.history_reads = pass.history_reads;
+        node.writes = pass.writes;
+        if (const auto inputs = plan_pass_inputs_.find(pass.name);
+            inputs != plan_pass_inputs_.end())
+            node.pass_inputs = inputs->second;
+        plan.nodes.push_back(std::move(node));
+    }
+    for (const auto &buffer : plan_buffers_) {
+        FramePlanResource resource;
+        resource.name = buffer;
+        resource.kind = "buffer";
+        plan.resources.push_back(std::move(resource));
+    }
+    return plan;
+}
+
+std::string GraphCanvasModel::outputResource(std::string_view node, std::string_view port) const {
+    std::string at{node};
+    std::string socket{port};
+    // A render node hands on what it wrote: the resource on its input of
+    // the output's name (render.fullscreen's `color`), followed a few steps.
+    for (int step = 0; step < 8; ++step) {
+        const auto *found = findNode({}, at);
+        if (found == nullptr || !found->is_object()) return {};
+        const auto op = text(*found, "op");
+        if (op == "render.image" || op == "render.buffer" || op == "render.attribute")
+            return socket == "resource" ? at : std::string{};
+        if (op == "render.target_ref") {
+            const auto parameters = found->find("parameters");
+            return parameters != found->end() && parameters->is_object()
+                       ? text(*parameters, "name")
+                       : std::string{};
+        }
+        const auto inputs = found->find("inputs");
+        if (inputs == found->end() || !inputs->is_object()) return {};
+        const auto input = inputs->find(socket);
+        if (input == inputs->end() || !input->is_object()) return {};
+        const auto source = text(*input, "node");
+        if (source.empty()) return {};
+        socket = text(*input, "port");
+        at = source;
+    }
+    return {};
+}
+
+void GraphCanvasModel::setEditNotice(InspectorNotice notice) {
+    edit_notice_ = std::move(notice);
+    ++report_revision_;
 }
 
 // --- GL-2b: the plan's lower layers.

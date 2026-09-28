@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "graph_from_blank_forward",
-  "description": "GL-1d with RS-2: the same as graph_from_blank with forward_opaque_v1, the palette default and the contract the user first tried from Blank. Blank routes materials to deferred; with no deferred pass in the pipeline Studio sends material_route_default forward with the edit (RS-2), the engine commits it and asks for a restart, and after the restart the pass draws with its draw loop.",
+  "description": "GL-1d with RS-2: the same as graph_from_blank with forward_opaque_v1, the palette default and the contract the user first tried from Blank. Blank routes materials to deferred; with no deferred pass in the pipeline Studio sends material_route_default forward with the edit (RS-2), the engine commits it and asks for a restart, and after the restart the pass draws with its draw loop. GL-1e: a Cube added, the material pass's colour image is dragged onto present's + input in the Graph; Studio sends edit_preset_pass on present (as the Pass Editor saves it), the line is drawn solid, and the viewport shows what the pass drew instead of the gradient (with the engine's RS-3, which puts the graph's pass before present).",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -238,6 +238,140 @@
       "expect": "screenshot",
       "name": "pelican.framePlan",
       "path": "graph_from_blank_frame_plan.png"
+    },
+    {
+      "label": "GL-1e: Add Object > Cube, something for the pass to draw",
+      "cmd": "action",
+      "name": "pelican.outliner.addObject.cube"
+    },
+    {
+      "label": "the engine has a third object, named Cube",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[2].name",
+      "value": "Cube",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the Inspector has read the Cube before Save (Save waits for an idle editor session)",
+      "cmd": "wait",
+      "name": "pelican.inspectorModelChoice",
+      "text": "Cube (built-in)",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "File > Save Scene, so closing Studio has nothing to ask",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "the save is done",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "contains": "Scene saved",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick the camera in the Outliner, so no gizmo is drawn over the box",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "MainCamera"
+    },
+    {
+      "label": "the Inspector holds the camera",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "MainCamera\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Graph tab is in front again",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "fit the graph, so both ends of the line are on screen",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "decision 1: present, the rendering section's pass, offers an empty + input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "before: present reads nothing, and passthrough draws its gradient",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/graph_from_blank_present.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "gradient_middle"
+    },
+    {
+      "label": "decision 2: the material pass's colour image onto present's + input",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#render_material_pass__color/resource"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+"
+      },
+      "steps": 8
+    },
+    {
+      "label": "edit_preset_pass on present committed (RS-3 puts the graph's pass before it)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Pass inputs saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the line is the document's now: solid, from the image to present",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_pass_input_edge#render_material_pass__color->present",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the viewport's middle is what the pass drew, not the gradient",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/graph_from_blank_present.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "gradient_middle",
+      "retry_ms": 120000
+    },
+    {
+      "label": "a picture of the Graph with the line into present",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "graph_from_blank_present_graph.png"
     }
   ]
 }

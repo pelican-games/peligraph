@@ -19,6 +19,8 @@
 #include <QGraphicsItem>
 #include <QGraphicsPathItem>
 #include <QImage>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QPainter>
 #include <QGraphicsScene>
 #include <QGraphicsProxyWidget>
@@ -6274,4 +6276,375 @@ TEST_CASE("GL-1c the folded nodes never lie on a loop's zone, placed or not, gro
                 before.height() + 200.0);
         gl1cCheckClear(h.scene, true);
     }
+}
+
+// --- GL-1e. A pass of the rendering section takes lines on the Graph:
+// present (a fullscreen pass the root declares, drawing with
+// engine://passthrough) shows its `input` as sockets and an empty `+ input`
+// (decision 1); a graph image's output dropped on one sends the
+// edit_preset_pass the Frame Plan's socket drop sends -- in place of what is
+// there, or at the end -- and the line is drawn solid; Delete takes it out
+// (decision 2). The Graph tab sends it, polls its ticket, takes it back with
+// its own Undo through the render edit history, and an engine before RS-3
+// refuses it with its own sentence and one phrase more (decision 3).
+
+namespace {
+
+// The root: an image and the graph's fullscreen pass drawing into it.
+Json gl1eRead() {
+    Json document{
+        {"nodes",
+         Json::array({{{"id", "shade__color"}, {"op", "render.image"},
+                       {"parameters", {{"format", "R8G8B8A8_UNORM"}}},
+                       {"outputs", Json::array({"resource"})}},
+                      {{"id", "shade"}, {"op", "render.fullscreen"},
+                       {"parameters", Json::object()},
+                       {"inputs", {{"color", {{"node", "shade__color"}, {"port", "resource"}}}}},
+                       {"outputs", Json::array({"color"})}}})},
+        {"definitions", Json::object()},
+        {"layout", Json::object()}};
+    auto read = context(document);
+    read["source_digest"]["hex"] = "gl1e-root";
+    read["root_schema"] = "pelican.graph";
+    read["source_reference"] = "fixture";
+    return read;
+}
+
+// engine://passthrough as get_frame_plan publishes it: eight variadic inputs.
+Json gl1ePassthrough() {
+    auto declarations = Json::array();
+    for (std::size_t slot = 0; slot < 8; ++slot)
+        declarations.push_back({{"binding", slot},
+                                {"type", "sampled_image"},
+                                {"name", "pelican_variadic_input_" + std::to_string(slot)},
+                                {"variadic", true}});
+    return {{"state", "declared"},
+            {"fragment", "engine://passthrough"},
+            {"declarations", std::move(declarations)},
+            {"variadic_range", {{"first", 0}, {"max", 8}}},
+            {"pass_texture_inputs", 0},
+            {"pass_buffer_inputs", 0},
+            {"buffer_binding_base", 8}};
+}
+
+// The graph's pass first (RS-3 puts it before the pass that reads it), then
+// the rendering section's present reading what its `input` names.
+Json gl1ePlan(const std::vector<std::string> &inputs) {
+    auto present = gl1bPass("present", 1, "project", Json(inputs), Json::array({"display"}));
+    present["pass_inputs"] = gl1ePassthrough();
+    return {{"schema", "pelican.frame_plan"},
+            {"version", 1},
+            {"graph", "main_render"},
+            {"loops", Json::array()},
+            {"resources", Json::array({{{"name", "shade__color"}, {"kind", "image"}},
+                                       {{"name", "old_image"}, {"kind", "image"}},
+                                       {{"name", "display"}, {"kind", "image"}}})},
+            {"nodes", Json::array({gl1bPass("shade", 0, "project", Json::array(),
+                                            Json::array({"shade__color"})),
+                                   present})}};
+}
+
+Json gl1ePresent(const std::vector<std::string> &inputs) {
+    return {{"type", "fullscreen"},
+            {"input", inputs},
+            {"output", {{"color", "display"}}},
+            {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}};
+}
+
+// get_render_authoring_context of a Blank project: present is the root's own.
+Json gl1eAuthoring(const std::vector<std::string> &inputs) {
+    const auto present = gl1ePresent(inputs);
+    return {{"source_digest", {{"hex", "gl1e-root"}}},
+            {"config_kind", "direct"},
+            {"source_reference", "project://passes/main_rendering_config.json"},
+            {"graphs",
+             Json::array({{{"name", "main_render"},
+                           {"passes", Json::array({{{"name", "present"},
+                                                    {"declaration_index", 0},
+                                                    {"editable_root_pass", true},
+                                                    {"declaration", present},
+                                                    {"root_declaration", present}}})}}})}};
+}
+
+// The document, its plan and the context, answered in the order the model
+// asks for them.
+void openGl1e(GraphCanvasModel &model, GraphCanvasScene &scene,
+              const std::vector<std::string> &inputs) {
+    model.setConnected(true);
+    for (const auto &request : model.takeRpcRequests())
+        if (request.method == "get_graph_instances")
+            model.receiveRpcResult(request.request_id, gl1eRead().dump());
+    bool planned = false;
+    for (const auto &request : model.takeRpcRequests())
+        if (request.method == "get_frame_plan") {
+            model.receiveRpcResult(request.request_id, gl1ePlan(inputs).dump());
+            planned = true;
+        }
+    REQUIRE(planned);
+    // Decision 1: a plan with a pass of the rendering section asks for the
+    // authoring context, which says what the pass's `input` is.
+    bool authored = false;
+    for (const auto &request : model.takeRpcRequests())
+        if (request.method == "get_render_authoring_context") {
+            model.receiveRpcResult(request.request_id, gl1eAuthoring(inputs).dump());
+            authored = true;
+        }
+    REQUIRE(authored);
+    scene.setModel(&model);
+}
+
+QGraphicsItem *passSocket(QGraphicsScene &scene, const QString &pass, const QString &port) {
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{PelicanStudio::GraphCanvasDerivedSocketItem} &&
+            item->data(PelicanStudio::NodeGraphNameRole).toString() == pass &&
+            item->data(PelicanStudio::GraphCanvasPortRole).toString() == port &&
+            item->data(PelicanStudio::GraphCanvasSocketDirectionRole).toString() ==
+                QLatin1String{"input"})
+            return item;
+    return nullptr;
+}
+
+// The edit_preset_pass params the Pass Editor saves a root fullscreen pass
+// with, for `inputs`: the root's digest alone, the pass, and its whole input,
+// output and shader.
+Json gl1eSaved(const std::vector<std::string> &inputs) {
+    const auto present = gl1ePresent(inputs);
+    return {{"base_source_digest", "gl1e-root"},
+            {"graph", "main_render"},
+            {"pass_name", "present"},
+            {"input", inputs},
+            {"output", present.at("output")},
+            {"shader", present.at("shader")}};
+}
+
+} // namespace
+
+TEST_CASE("GL-1e a rendering-section pass takes lines: + input, replace, append, the solid line, "
+          "Delete",
+          "[devstudio][graph-canvas][scene][gl1e]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    std::vector<PelicanStudio::FramePlanEditRequest> sent;
+    scene.passInputEditRequested = [&](const PelicanStudio::FramePlanEditRequest &request,
+                                       std::function<PelicanStudio::FramePlanEditRequest()>) {
+        sent.push_back(request);
+    };
+    const auto image = [&] {
+        QGraphicsItem *socket = socketItem(scene, QStringLiteral("shade__color"),
+                                           QStringLiteral("resource"), QStringLiteral("output"));
+        REQUIRE(socket != nullptr);
+        return socket->sceneBoundingRect().center();
+    };
+
+    SECTION("an empty present: + input only, and a drop there sends the Frame Plan's edit") {
+        openGl1e(model, scene, {});
+        // Decision 1: the empty slot, and nothing else to drop on.
+        QGraphicsItem *slot = passSocket(scene, QStringLiteral("present"), QStringLiteral("in:+"));
+        REQUIRE(slot != nullptr);
+        CHECK(slot->data(PelicanStudio::GraphCanvasPassInputRole).toLongLong() == -1);
+        CHECK(slot->data(PelicanStudio::GraphCanvasSocketKeyRole).toString() ==
+              QStringLiteral("in:variadic"));
+        CHECK(itemsOfKind(scene, PelicanStudio::GraphCanvasPassInputEdgeItem).empty());
+        const auto sockets = scene.passInputSockets("present");
+        REQUIRE(sockets.has_value());
+        REQUIRE(sockets->sockets.size() == 1);
+
+        // Decision 2: the image's output onto it -- one edit_preset_pass,
+        // the shape the Pass Editor saves present with, and exactly what
+        // the Frame Plan's drop on the same slot builds.
+        drag(scene, image(), slot->sceneBoundingRect().center());
+        REQUIRE(sent.size() == 1);
+        CHECK(sent[0].method == "edit_preset_pass");
+        CHECK(sent[0].params == gl1eSaved({"shade__color"}));
+        const auto frame_plan = PelicanStudio::framePlanSocketConnectRequest(
+            PelicanStudio::framePlanAuthoringFromContext(gl1eAuthoring({})),
+            model.passInputPlan(), "main_render", "present", "shade__color",
+            PelicanStudio::FramePlanSocketDrop{PelicanStudio::FramePlanSocketDrop::Kind::variadic,
+                                               0});
+        CHECK(sent[0].method == frame_plan.method);
+        CHECK(sent[0].params == frame_plan.params);
+        // Nothing went out as a graph edit.
+        for (const auto &request : model.takeRpcRequests())
+            CHECK(request.method != "edit_graph_document");
+    }
+
+    SECTION("a connected present: the solid line, a drop on it replaces, on + input appends") {
+        openGl1e(model, scene, {"old_image"});
+        QGraphicsItem *connected =
+            passSocket(scene, QStringLiteral("present"), QStringLiteral("old_image"));
+        REQUIRE(connected != nullptr);
+        CHECK(connected->data(PelicanStudio::GraphCanvasPassInputRole).toLongLong() == 0);
+        CHECK(connected->data(PelicanStudio::GraphCanvasSocketKeyRole).toString() ==
+              QStringLiteral("in@0"));
+        REQUIRE(passSocket(scene, QStringLiteral("present"), QStringLiteral("in:+")) != nullptr);
+
+        drag(scene, image(), connected->sceneBoundingRect().center());
+        REQUIRE(sent.size() == 1);
+        CHECK(sent[0].params == gl1eSaved({"shade__color"}));
+
+        QGraphicsItem *slot = passSocket(scene, QStringLiteral("present"), QStringLiteral("in:+"));
+        drag(scene, image(), slot->sceneBoundingRect().center());
+        REQUIRE(sent.size() == 2);
+        CHECK(sent[1].params == gl1eSaved({"old_image", "shade__color"}));
+    }
+
+    SECTION("present reads the image: one solid line from its output, no dashed one; Delete") {
+        openGl1e(model, scene, {"shade__color"});
+        const auto lines = itemsOfKind(scene, PelicanStudio::GraphCanvasPassInputEdgeItem);
+        REQUIRE(lines.size() == 1);
+        auto *line = dynamic_cast<QGraphicsPathItem *>(lines.front());
+        REQUIRE(line != nullptr);
+        CHECK(line->data(PelicanStudio::NodeGraphFromNameRole).toString() ==
+              QStringLiteral("shade__color"));
+        CHECK(line->data(PelicanStudio::NodeGraphToNameRole).toString() ==
+              QStringLiteral("present"));
+        CHECK(line->pen().style() == Qt::SolidLine);
+        // It runs from the image's output to present's socket.
+        CHECK(QLineF(line->mapToScene(line->path().pointAtPercent(0.0)), image()).length() < 1.0);
+        QGraphicsItem *end =
+            passSocket(scene, QStringLiteral("present"), QStringLiteral("shade__color"));
+        REQUIRE(end != nullptr);
+        CHECK(QLineF(line->mapToScene(line->path().pointAtPercent(1.0)),
+                     end->sceneBoundingRect().center())
+                  .length() < 1.0);
+        // The plan's dashed line for the same read is not drawn beside it.
+        for (QGraphicsItem *dashed : itemsOfKind(scene, PelicanStudio::GraphCanvasDerivedEdgeItem))
+            CHECK(dashed->data(PelicanStudio::NodeGraphToNameRole).toString() !=
+                  QStringLiteral("present"));
+
+        // Picked and Delete: the input comes out.
+        // Where nothing is drawn over it (the graph's pass stands between).
+        std::optional<QPointF> bare;
+        for (int step = 1; step < 20 && !bare; ++step) {
+            const QPointF at = line->mapToScene(line->path().pointAtPercent(step / 20.0));
+            const auto under = scene.items(at);
+            if (!under.isEmpty() && under.front() == line) bare = at;
+        }
+        REQUIRE(bare.has_value());
+        click(scene, *bare);
+        REQUIRE(scene.selectedPassInput().has_value());
+        CHECK(scene.selectedPassInput()->pass == "present");
+        CHECK(scene.selectedPassInput()->input_index == 0);
+        pressKey(scene, Qt::Key_Delete);
+        REQUIRE(sent.size() == 1);
+        CHECK(sent[0].params == gl1eSaved({}));
+        CHECK_FALSE(scene.selectedPassInput().has_value());
+    }
+
+    SECTION("a pass the root does not declare takes no lines") {
+        model.setConnected(true);
+        for (const auto &request : model.takeRpcRequests())
+            if (request.method == "get_graph_instances")
+                model.receiveRpcResult(request.request_id, gl1eRead().dump());
+        for (const auto &request : model.takeRpcRequests())
+            if (request.method == "get_frame_plan")
+                model.receiveRpcResult(request.request_id, gl1ePlan({}).dump());
+        auto authoring = gl1eAuthoring({});
+        authoring["graphs"][0]["passes"][0]["editable_root_pass"] = false;
+        for (const auto &request : model.takeRpcRequests())
+            if (request.method == "get_render_authoring_context")
+                model.receiveRpcResult(request.request_id, authoring.dump());
+        scene.setModel(&model);
+        CHECK_FALSE(scene.passInputSockets("present").has_value());
+        CHECK(passSocket(scene, QStringLiteral("present"), QStringLiteral("in:+")) == nullptr);
+    }
+}
+
+TEST_CASE("GL-1e the Graph tab sends a pass's input edit, its Undo reaches the render history, "
+          "and an engine before RS-3 says why it refused",
+          "[devstudio][graph-canvas][scene][gl1e]") {
+    (void)application();
+    RecordedCapability transport;
+    auto capability = transport.capability();
+    capability.requestFramePlan = [&](QString *) {
+        transport.calls.push_back({QStringLiteral("get_frame_plan")});
+        return transport.next++;
+    };
+    capability.requestRenderAuthoringContext = [&](QString *) {
+        transport.calls.push_back({QStringLiteral("get_render_authoring_context")});
+        return transport.next++;
+    };
+    capability.requestEditPresetPass = [&](const QJsonObject &params, QString *) {
+        RecordedCapability::Call call{QStringLiteral("edit_preset_pass")};
+        call.body = QJsonDocument(params).toJson(QJsonDocument::Compact);
+        transport.calls.push_back(call);
+        return transport.next++;
+    };
+    PelicanStudio::GraphCanvasWidget widget{capability};
+    // RU-1's two actions, as the window hands them over.
+    QAction render_undo{QStringLiteral("Undo Render Edit")};
+    QAction render_redo{QStringLiteral("Redo Render Edit")};
+    int undone = 0;
+    QObject::connect(&render_undo, &QAction::triggered, [&] { ++undone; });
+    render_undo.setEnabled(false);
+    render_redo.setEnabled(false);
+    widget.setRenderHistoryActions(&render_undo, &render_redo);
+    widget.resize(1100, 700);
+    widget.show();
+    QCoreApplication::processEvents();
+    const auto answer = [&](const char *method, const Json &reply) {
+        const qint64 id = transport.idOf(QString::fromLatin1(method));
+        REQUIRE(id != 0);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    const auto open = [&](const std::vector<std::string> &inputs) {
+        answer("get_graph_instances", gl1eRead());
+        answer("get_frame_plan", gl1ePlan(inputs));
+        answer("get_render_authoring_context", gl1eAuthoring(inputs));
+    };
+    answer("get_graph_catalog", visualCatalog());
+    open({});
+    auto &scene = widget.scene();
+    auto *notice = widget.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasNotice"));
+    REQUIRE(notice != nullptr);
+    const auto drop = [&] {
+        QGraphicsItem *from = socketItem(scene, QStringLiteral("shade__color"),
+                                         QStringLiteral("resource"), QStringLiteral("output"));
+        QGraphicsItem *slot = passSocket(scene, QStringLiteral("present"), QStringLiteral("in:+"));
+        REQUIRE(from != nullptr);
+        REQUIRE(slot != nullptr);
+        const int before = transport.countOf(QStringLiteral("edit_preset_pass"));
+        drag(scene, from->sceneBoundingRect().center(), slot->sceneBoundingRect().center());
+        QCoreApplication::processEvents();
+        REQUIRE(transport.countOf(QStringLiteral("edit_preset_pass")) == before + 1);
+        CHECK(Json::parse(transport.calls.back().body.toStdString()) ==
+              gl1eSaved({"shade__color"}));
+        answer("edit_preset_pass", Json{{"status", "accepted"}, {"ticket", "gl1e"}});
+    };
+
+    // Decision 3: an engine before RS-3 runs the graph's pass after present.
+    drop();
+    const std::string refusal =
+        "Pass input target is not produced as an earlier output: present reads shade__color";
+    answer("get_edit_result", Json{{"status", "rejected"},
+                                   {"committed", false},
+                                   {"error", {{"code", "render_pipeline_preflight_failed"},
+                                              {"message", refusal}}}});
+    CHECK(notice->toolTip() ==
+          QString::fromStdString("render_pipeline_preflight_failed: " + refusal) +
+              QString::fromUtf8(" \xE2\x80\x94 the graph pass that draws it runs after this pass"));
+    // The sentence is cut to one line; the phrase is not.
+    CHECK(notice->text().endsWith(
+        QString::fromUtf8(" \xE2\x80\x94 the graph pass that draws it runs after this pass")));
+
+    // Committed: the tab says so, reads the document again, and its Undo
+    // takes the edit back through the render edit history.
+    drop();
+    const int reads = transport.countOf(QStringLiteral("get_graph_instances"));
+    answer("get_edit_result", Json{{"status", "committed"},
+                                   {"committed", true},
+                                   {"source_digest", {{"hex", "gl1e-root-2"}}}});
+    CHECK(notice->text() == QStringLiteral("Pass inputs saved."));
+    CHECK(transport.countOf(QStringLiteral("get_graph_instances")) == reads + 1);
+    render_undo.setEnabled(true);
+    QCoreApplication::processEvents();
+    auto *undo = widget.findChild<QAction *>(QStringLiteral("pelican.graphCanvas.undo"));
+    REQUIRE(undo != nullptr);
+    CHECK(undo->isEnabled());
+    undo->trigger();
+    QCoreApplication::processEvents();
+    CHECK(undone == 1);
 }

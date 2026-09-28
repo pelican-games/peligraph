@@ -112,6 +112,13 @@ GraphCanvasReadCapability graphCanvasReadCapability(EmbeddedViewport &viewport) 
                 QStringLiteral("get_edit_result"),
                 QJsonObject{{QStringLiteral("ticket"), ticket}}, error);
         },
+        .requestRenderAuthoringContext = [&viewport](QString *error) {
+            return viewport.requestRpc(QStringLiteral("get_render_authoring_context"),
+                                       QJsonObject{}, error);
+        },
+        .requestEditPresetPass = [&viewport](const QJsonObject &params, QString *error) {
+            return viewport.requestRpc(QStringLiteral("edit_preset_pass"), params, error);
+        },
         .result = [&viewport](QObject *context,
                               GraphCanvasReadCapability::ResultHandler handler) {
             QObject::connect(

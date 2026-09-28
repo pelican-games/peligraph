@@ -3,6 +3,7 @@
 #include "graphcanvasloopfields.hpp"
 
 #include "inlineediteventfilter.hpp"
+#include "jsonrpcrequest.hpp"
 #include "panelhelp.hpp"
 #include "renderconfigdigest.hpp"
 
@@ -30,6 +31,7 @@
 #include <QGraphicsView>
 #include <QHBoxLayout>
 #include <QHash>
+#include <QJsonObject>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QMenu>
@@ -255,6 +257,50 @@ void routeDerivedEdge(QGraphicsScene &scene, QGraphicsPathItem &line) {
     line.setPath(line.mapFromScene(curveGeometryBetween(*start, *tip).path));
 }
 
+// GL-1e, decision 2: one item of a rendering-section pass's `input`, from the
+// output it names -- a graph node's socket, or the row of a folded node -- to
+// the pass's socket for that item.
+void routePassInputEdge(QGraphicsScene &scene, QGraphicsPathItem &line) {
+    const QString scope = line.data(GraphCanvasScopeRole).toString();
+    const QString from = line.data(NodeGraphFromNameRole).toString();
+    const QString from_port = line.data(GraphCanvasFromPortRole).toString();
+    const QString pass = line.data(NodeGraphToNameRole).toString();
+    const auto index = line.data(GraphCanvasPassInputRole).toLongLong();
+    QGraphicsItem *start = nullptr;
+    QGraphicsItem *from_node = nullptr;
+    QGraphicsItem *end = nullptr;
+    for (QGraphicsItem *item : scene.items()) {
+        if (item->data(GraphCanvasScopeRole).toString() != scope ||
+            !item->data(GraphCanvasZoneScopeRole).toString().isEmpty())
+            continue;
+        const QString kind = nodeGraphItemKind(*item);
+        const QString name = item->data(NodeGraphNameRole).toString();
+        const bool output = item->data(GraphCanvasSocketDirectionRole).toString() ==
+                            QLatin1String{"output"};
+        if (name == from) {
+            if ((kind == QLatin1String{GraphCanvasSocketItem} ||
+                 kind == QLatin1String{GraphCanvasDerivedSocketItem}) &&
+                output && !from_port.isEmpty() &&
+                item->data(GraphCanvasPortRole).toString() == from_port)
+                start = item;
+            else if (kind == QLatin1String{GraphCanvasNodeItem})
+                from_node = item;
+        }
+        if (name == pass && kind == QLatin1String{GraphCanvasDerivedSocketItem} && !output &&
+            item->data(GraphCanvasPassInputRole).isValid() &&
+            item->data(GraphCanvasPassInputRole).toLongLong() == index)
+            end = item;
+    }
+    if (end == nullptr || (start == nullptr && from_node == nullptr)) return;
+    const QPointF tip = end->sceneBoundingRect().center();
+    const QPointF origin = start != nullptr
+                               ? start->sceneBoundingRect().center()
+                               : QPointF{from_node->sceneBoundingRect().right(),
+                                         from_node->sceneBoundingRect().top() +
+                                             GraphCanvasHeaderHeight / 2.0};
+    line.setPath(line.mapFromScene(curveGeometryBetween(origin, tip).path));
+}
+
 // GL-1b, decision 1: a folded node's key in the one placement. It cannot be a
 // graph node's id, so the two never share a box.
 std::string foldedLayoutKey(const std::string &id) { return std::string{"\x01" "folded|"} + id; }
@@ -263,11 +309,17 @@ bool isFoldedLayoutKey(const std::string &key) { return key.starts_with('\x01');
 void rerouteDerivedEdges(QGraphicsScene &scene, const std::string &node) {
     const QString name = qtext(node);
     for (QGraphicsItem *item : scene.items()) {
-        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasDerivedEdgeItem} ||
+        const QString kind = nodeGraphItemKind(*item);
+        const bool pass_input = kind == QLatin1String{GraphCanvasPassInputEdgeItem};
+        if ((kind != QLatin1String{GraphCanvasDerivedEdgeItem} && !pass_input) ||
             (item->data(NodeGraphFromNameRole).toString() != name &&
              item->data(NodeGraphToNameRole).toString() != name))
             continue;
-        if (auto *line = dynamic_cast<QGraphicsPathItem *>(item)) routeDerivedEdge(scene, *line);
+        auto *line = dynamic_cast<QGraphicsPathItem *>(item);
+        if (line == nullptr) continue;
+        // GL-1e: a pass's own line is routed to its socket.
+        if (pass_input) routePassInputEdge(scene, *line);
+        else routeDerivedEdge(scene, *line);
     }
 }
 
@@ -466,6 +518,8 @@ void GraphCanvasScene::setModel(GraphCanvasModel *model) {
     selection_scope_.clear();
     clearControlSelection();
     placements_.clear();
+    selected_pass_input_.reset();
+    pass_authoring_.reset();
     repopulate();
 }
 
@@ -1271,8 +1325,81 @@ void GraphCanvasScene::repopulate() {
         });
     }
     // Decision 1: and, left of them, what no graph node made, folded.
-    const auto folded_nodes = model_->foldedNodes();
+    auto folded_nodes = model_->foldedNodes();
     const auto derived_edges = model_->derivedEdges();
+    // GL-1e, decisions 1 and 2: a pass of the rendering section takes lines.
+    // Its sockets are its `input` (and `+ input` when its shader takes more),
+    // and each item of it is a solid line from what it names -- in place of
+    // the dashed one the plan implies for that resource.
+    struct PassLine {
+        std::string from;
+        std::string from_port;
+        std::string pass;
+        std::string resource;
+        std::size_t input_index = 0;
+    };
+    std::vector<PassLine> pass_lines;
+    std::set<std::pair<std::string, std::string>> pass_line_resources;
+    if (scope.empty() && !model_->foldedView()) {
+        // The root node a resource is named by: its output hands it on.
+        std::map<std::string, std::string, std::less<>> resource_nodes;
+        for (const auto &node : nodes) {
+            if (node.op == "render.image" || node.op == "render.buffer" ||
+                node.op == "render.attribute")
+                resource_nodes.emplace(node.id, node.id);
+            else if (node.op == "render.target_ref")
+                if (const auto name = node.parameters.find("name");
+                    name != node.parameters.end() && name->is_string())
+                    resource_nodes.emplace(name->get<std::string>(), node.id);
+        }
+        for (auto &folded : folded_nodes) {
+            if (folded.feature_group) continue;
+            const auto sockets = passInputSockets(folded.id);
+            if (!sockets) continue;
+            folded.takes_lines = true;
+            for (const auto &socket : sockets->sockets) {
+                GraphCanvasFoldedNode::InputSocket row;
+                row.key = socket.key();
+                row.binding = socket.binding;
+                row.resource = socket.resource;
+                row.label = socket.label;
+                if (socket.kind == FramePlanInputSocket::Kind::variadic_drop) {
+                    row.port = "in:+";
+                } else if (socket.connected()) {
+                    row.port = socket.resource;
+                    row.input_index = socket.input_index;
+                } else {
+                    row.port = row.key;
+                }
+                if (row.port.empty()) continue;
+                folded.input_sockets.push_back(row);
+                if (!row.input_index) continue;
+                PassLine line{{}, {}, folded.id, socket.resource, *row.input_index};
+                if (const auto named = resource_nodes.find(socket.resource);
+                    named != resource_nodes.end()) {
+                    line.from = named->second;
+                    line.from_port = "resource";
+                } else {
+                    // What the plan says wrote it: a folded node's row, or a
+                    // graph node's heading.
+                    for (const auto &edge : derived_edges)
+                        if (edge.to == folded.id &&
+                            std::ranges::find(edge.resources, socket.resource) !=
+                                edge.resources.end()) {
+                            line.from = edge.from;
+                            if (std::ranges::any_of(folded_nodes, [&](const auto &other) {
+                                    return other.id == edge.from;
+                                }))
+                                line.from_port = socket.resource;
+                            break;
+                        }
+                }
+                if (line.from.empty()) continue;
+                pass_line_resources.emplace(folded.id, socket.resource);
+                pass_lines.push_back(std::move(line));
+            }
+        }
+    }
 
     // Decision 3: the breadcrumb names the folded steps too, and a feature's
     // fold has its decomposed version's button under it.
@@ -1753,12 +1880,27 @@ void GraphCanvasScene::repopulate() {
     }
 
     // GL-1, decision 2: the lines the frame plan implies, dashed, read only.
-    for (const auto &edge : derived_edges) {
-        const auto drawn_end = [&](const std::string &id) {
-            return derived_drawn.contains(id) || drawn_nodes.contains(id);
-        };
+    const auto drawn_end = [&](const std::string &id) {
+        return derived_drawn.contains(id) || drawn_nodes.contains(id);
+    };
+    for (auto edge : derived_edges) {
         if (!drawn_end(edge.from) || !drawn_end(edge.to)) continue;
+        // GL-1e: a resource a pass's `input` names is its own solid line.
+        std::erase_if(edge.resources, [&](const std::string &resource) {
+            return pass_line_resources.contains({edge.to, resource});
+        });
+        if (edge.resources.empty()) continue;
         routeDerivedEdge(*this, *drawing.addDerivedEdge(edge));
+    }
+    for (const auto &line : pass_lines) {
+        if (!drawn_end(line.from) || !derived_drawn.contains(line.pass)) continue;
+        auto *item = drawing.addPassInputEdge(qtext(line.from), qtext(line.from_port),
+                                              qtext(line.pass), qtext(line.resource),
+                                              line.input_index);
+        routePassInputEdge(*this, *item);
+        if (selected_pass_input_ && selected_pass_input_->pass == line.pass &&
+            selected_pass_input_->input_index == line.input_index)
+            item->setPen(QPen{currentStudioTheme().canvas.edge_selected, 2.4});
     }
     // Decision 5: where a line to a hidden node is cut, the socket it ends on
     // says where it goes.
@@ -2264,6 +2406,9 @@ void GraphCanvasScene::selectEdge(const std::string &scope, const GraphCanvasEdg
 
 void GraphCanvasScene::afterEdit(bool submitted) {
     if (!submitted) return;
+    // GL-1e: the tab's last edit is the graph's now.
+    render_edits_ = 0;
+    render_undone_ = 0;
     // The request is in the model's outbox; only the owner can post it.
     if (editSubmitted) editSubmitted();
 }
@@ -2337,6 +2482,16 @@ void GraphCanvasScene::finishConnection(const QPointF &position) {
                                                : QStringLiteral("output");
     const std::string current = model_->currentScope();
     for (QGraphicsItem *item : items(position)) {
+        // GL-1e, decision 2: onto an input socket of a rendering-section
+        // pass (or its `+ input`): that pass's `input`, edited as the Frame
+        // Plan's socket drop edits it.
+        if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasDerivedSocketItem} &&
+            item->data(GraphCanvasPassInputRole).isValid()) {
+            if (!pending.from_output || !pending.scope.empty() || !current.empty()) return;
+            dropOnPassInput(item->data(NodeGraphNameRole).toString().toStdString(), *item,
+                            pending.node, pending.port);
+            return;
+        }
         // LP-4d2, decisions 1 and 2: the empty slot at the end of a zone's
         // edge. Left, a root output there is a new loop input; right, a body
         // output there is a new output of every body.
@@ -2446,9 +2601,26 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
     // the pick away again.
     bool picked_control = false;
     if (event->button() == Qt::LeftButton) {
+        // GL-1e: a press anywhere else lets go of a picked pass line.
+        if (selected_pass_input_) {
+            selected_pass_input_.reset();
+            for (QGraphicsItem *line : items())
+                if (nodeGraphItemKind(*line) == QLatin1String{GraphCanvasPassInputEdgeItem})
+                    if (auto *path = dynamic_cast<QGraphicsPathItem *>(line))
+                        path->setPen(QPen{currentStudioTheme().canvas.edge, 1.8});
+        }
         for (QGraphicsItem *item : items(event->scenePos())) {
             const QString kind = nodeGraphItemKind(*item);
             if (kind == QLatin1String{GraphCanvasEditorItem}) break;
+            // GL-1e: a line into a rendering-section pass is picked; Delete
+            // takes it out of the pass's `input`.
+            if (kind == QLatin1String{GraphCanvasPassInputEdgeItem}) {
+                event->accept();
+                selectPassInput(item->data(NodeGraphToNameRole).toString().toStdString(),
+                                static_cast<std::size_t>(
+                                    item->data(GraphCanvasPassInputRole).toLongLong()));
+                return;
+            }
             // LP-4d1: every pick is made in the scope the item belongs to --
             // a zone's body is its definition, whatever the canvas shows.
             const std::string scope = itemScope(*item);
@@ -2626,6 +2798,23 @@ void GraphCanvasScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
 
 void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     context_position_ = event->scenePos();
+    // GL-1e, decision 2: a line into a rendering-section pass offers Delete.
+    for (QGraphicsItem *item : items(event->scenePos())) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasPassInputEdgeItem}) continue;
+        selectPassInput(item->data(NodeGraphToNameRole).toString().toStdString(),
+                        static_cast<std::size_t>(
+                            item->data(GraphCanvasPassInputRole).toLongLong()));
+        QMenu menu;
+        QAction *remove = menu.addAction(QObject::tr("Delete"));
+        remove->setObjectName(QStringLiteral("pelican.graphCanvas.deletePassInput"));
+        QObject::connect(remove, &QAction::triggered, this, [this] {
+            QMetaObject::invokeMethod(
+                this, [this] { deletePassInput(); }, Qt::QueuedConnection);
+        });
+        event->accept();
+        menu.exec(event->screenPos());
+        return;
+    }
     // LP-4d1: opened inside a zone, the menu adds to the zone's body.
     const std::string scope = scopeAt(context_position_);
     const bool root = scope.empty();
@@ -3204,6 +3393,11 @@ void GraphCanvasScene::keyPressEvent(QKeyEvent *event) {
     if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) {
         // A control point is placement, not document: removing one sends a
         // `set_layout` when the wait runs out, and no graph edit at all.
+        // GL-1e: a picked line into a rendering-section pass.
+        if (selected_pass_input_ && deletePassInput()) {
+            event->accept();
+            return;
+        }
         if (deleteControlSelection()) {
             event->accept();
             return;
@@ -3218,13 +3412,193 @@ void GraphCanvasScene::keyPressEvent(QKeyEvent *event) {
 }
 
 void GraphCanvasScene::undoEdit() {
-    if (model_ && !editingInline() && !dragging() && !layoutPending())
-        afterEdit(model_->undo());
+    if (!model_ || editingInline() || dragging() || layoutPending()) return;
+    // GL-1e: a pass's input edit this tab sent went to the render edit
+    // history (RU-1), and the tab's Undo takes it back there while it is
+    // the tab's last edit. Any other render edit stays the Frame Plan's and
+    // the Pass Editor's to undo: here Ctrl+Z is the graph's (RU-1's keys).
+    if (render_edits_ > 0 && renderUndo && renderUndoAvailable && renderUndoAvailable()) {
+        if (renderUndo()) {
+            --render_edits_;
+            ++render_undone_;
+        }
+        return;
+    }
+    afterEdit(model_->undo());
 }
 
 void GraphCanvasScene::redoEdit() {
-    if (model_ && !editingInline() && !dragging() && !layoutPending())
-        afterEdit(model_->redo());
+    if (!model_ || editingInline() || dragging() || layoutPending()) return;
+    if (render_undone_ > 0 && renderRedo && renderRedoAvailable && renderRedoAvailable()) {
+        if (renderRedo()) {
+            --render_undone_;
+            ++render_edits_;
+        }
+        return;
+    }
+    afterEdit(model_->redo());
+}
+
+void GraphCanvasScene::noteRenderEdit() {
+    ++render_edits_;
+    render_undone_ = 0;
+}
+
+bool GraphCanvasScene::canUndoAny() const {
+    return model_ != nullptr &&
+           (model_->canUndo() ||
+            (render_edits_ > 0 && renderUndoAvailable && renderUndoAvailable()));
+}
+
+bool GraphCanvasScene::canRedoAny() const {
+    return model_ != nullptr &&
+           (model_->canRedo() ||
+            (render_undone_ > 0 && renderRedoAvailable && renderRedoAvailable()));
+}
+
+// --- GL-1e: a pass of the rendering section takes lines.
+
+FramePlanAuthoring GraphCanvasScene::passAuthoring() const {
+    if (model_ == nullptr) return {};
+    const auto revision = model_->authoringRevision();
+    if (!pass_authoring_ || pass_authoring_->first != revision)
+        pass_authoring_ = std::pair{
+            revision, framePlanAuthoringFromContext(model_->renderAuthoringContext())};
+    return pass_authoring_->second;
+}
+
+std::optional<FramePlanInputSockets> GraphCanvasScene::passInputSockets(
+    const std::string &pass) const {
+    if (model_ == nullptr || !model_->currentScope().empty() || model_->foldedView())
+        return std::nullopt;
+    // A pass of the rendering section: the project's, which no graph node
+    // made and no feature brought, drawn as a folded node of its own.
+    const auto &passes = model_->planPasses();
+    const auto found = std::ranges::find(passes, pass, &GraphCanvasPlanPass::name);
+    if (found == passes.end() || found->source != "project" || !found->feature.empty() ||
+        model_->canvasNodeOfPass(pass) != pass)
+        return std::nullopt;
+    // Decision 1: one the root declares (F-6), fullscreen. Preset and
+    // feature passes need a fork first and take no lines here.
+    const auto authoring = passAuthoring();
+    const auto &graph = model_->planGraph();
+    const auto *row = authoring.find(graph, pass);
+    if (row == nullptr || !row->root ||
+        row->editable_declaration.value("type", std::string{}) != "fullscreen")
+        return std::nullopt;
+    const auto plan = model_->passInputPlan();
+    const auto node = std::ranges::find(plan.nodes, pass, &FramePlanNode::name);
+    if (node == plan.nodes.end()) return std::nullopt;
+    const auto inputs = framePlanPassInputList(authoring, graph, pass);
+    auto sockets = framePlanInputSockets(plan, *node, inputs);
+    if (sockets.declared) return sockets;
+    // A shader whose declarations the plan does not publish: the pass's
+    // `input` in order, with nothing to add after it.
+    FramePlanInputSockets listed;
+    if (inputs)
+        for (std::size_t index = 0; index < inputs->size(); ++index) {
+            FramePlanInputSocket socket;
+            socket.kind = FramePlanInputSocket::Kind::undeclared;
+            const auto &input = inputs->at(index);
+            const auto at = input.find('@');
+            socket.resource = input.substr(0, at);
+            socket.history = at != std::string::npos;
+            socket.input_index = index;
+            socket.label = input;
+            listed.sockets.push_back(std::move(socket));
+        }
+    return listed;
+}
+
+FramePlanEditRequest GraphCanvasScene::passInputConnectRequest(
+    const std::string &pass, const std::string &resource,
+    const FramePlanSocketDrop &drop) const {
+    if (model_ == nullptr) return {};
+    return framePlanSocketConnectRequest(passAuthoring(), model_->passInputPlan(),
+                                         model_->planGraph(), pass, resource, drop);
+}
+
+FramePlanEditRequest GraphCanvasScene::passInputDisconnectRequest(
+    const std::string &pass, std::size_t input_index) const {
+    if (model_ == nullptr) return {};
+    return framePlanSocketDisconnectRequest(passAuthoring(), model_->passInputPlan(),
+                                            model_->planGraph(), pass, input_index);
+}
+
+void GraphCanvasScene::selectPassInput(const std::string &pass, std::size_t input_index) {
+    selected_pass_input_ = PassInputPick{pass, input_index};
+    selected_node_.reset();
+    selected_edge_.reset();
+    selected_edges_.clear();
+    setProperty("pelicanGraphSelectedNode", QString{});
+    applyEdgeEmphasis();
+    for (QGraphicsItem *item : items()) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasPassInputEdgeItem}) continue;
+        auto *line = dynamic_cast<QGraphicsPathItem *>(item);
+        if (line == nullptr) continue;
+        const bool picked =
+            item->data(NodeGraphToNameRole).toString() == qtext(pass) &&
+            item->data(GraphCanvasPassInputRole).toLongLong() ==
+                static_cast<qlonglong>(input_index);
+        line->setPen(picked ? QPen{currentStudioTheme().canvas.edge_selected, 2.4}
+                            : QPen{currentStudioTheme().canvas.edge, 1.8});
+    }
+    if (selectionChanged) selectionChanged();
+}
+
+bool GraphCanvasScene::deletePassInput() {
+    if (!selected_pass_input_ || model_ == nullptr) return false;
+    const auto pick = *std::exchange(selected_pass_input_, std::nullopt);
+    handPassInputEdit(passInputDisconnectRequest(pick.pass, pick.input_index),
+                      [this, pick] {
+                          return passInputDisconnectRequest(pick.pass, pick.input_index);
+                      });
+    return true;
+}
+
+void GraphCanvasScene::dropOnPassInput(const std::string &pass, const QGraphicsItem &socket,
+                                       const std::string &from_node,
+                                       const std::string &from_port) {
+    const auto resource = model_->outputResource(from_node, from_port);
+    if (resource.empty()) {
+        model_->setEditNotice({InspectorNoticeKind::Error,
+                               from_node + "." + from_port +
+                                   " is not an image or a buffer " + pass + " can read."});
+        if (noticeChanged) noticeChanged();
+        return;
+    }
+    // Where it landed, in the Frame Plan's terms: the `+ input` slot, a
+    // socket by its binding (in place of what is connected there), or the
+    // pass as a whole (a shader whose declarations are not published).
+    FramePlanSocketDrop drop;
+    const auto key = socket.data(GraphCanvasSocketKeyRole).toString();
+    if (key == QLatin1String{"in:variadic"}) {
+        drop.kind = FramePlanSocketDrop::Kind::variadic;
+    } else if (key.startsWith(QLatin1String{"in@"})) {
+        bool number = false;
+        const auto binding = key.mid(3).toULongLong(&number);
+        if (number) {
+            drop.kind = FramePlanSocketDrop::Kind::socket;
+            drop.binding = static_cast<std::size_t>(binding);
+        }
+    }
+    handPassInputEdit(passInputConnectRequest(pass, resource, drop),
+                      [this, pass, resource, drop] {
+                          return passInputConnectRequest(pass, resource, drop);
+                      });
+}
+
+void GraphCanvasScene::handPassInputEdit(const FramePlanEditRequest &request,
+                                         std::function<FramePlanEditRequest()> rebuild) {
+    if (!request.sendable()) {
+        const auto line = !request.line.empty()      ? request.line
+                          : !request.refusal.empty() ? request.refusal
+                                                     : std::string{"Nothing to change."};
+        model_->setEditNotice({InspectorNoticeKind::Error, line});
+        if (noticeChanged) noticeChanged();
+        return;
+    }
+    if (passInputEditRequested) passInputEditRequested(request, std::move(rebuild));
 }
 
 void GraphCanvasScene::leaveCurrentScope() {
@@ -3551,6 +3925,12 @@ private:
 
 } // namespace
 
+// GL-1e, decision 3: what an engine before RS-3 refusing a pass's input
+// edit is told besides its own sentence (it placed the graph's pass after
+// the rendering section's pass that reads it).
+constexpr std::string_view passRunsAfterHint =
+    " \xE2\x80\x94 the graph pass that draws it runs after this pass";
+
 struct GraphCanvasWidget::Impl {
     GraphCanvasWidget &view;
     GraphCanvasReadCapability graph;
@@ -3624,6 +4004,20 @@ struct GraphCanvasWidget::Impl {
     // have changed with it, and the last commit they were told of.
     std::function<void()> plan_commit_action;
     std::uint64_t told_plan_commit = 0;
+    // --- GL-1e: a rendering-section pass's input edit, sent from here as
+    // the Frame Plan sends it (edit_preset_pass, then get_edit_result).
+    qint64 pass_edit_request = 0;
+    qint64 pass_ticket_request = 0;
+    QString pass_ticket;
+    std::string pass_edit_notice;
+    // A refusal for a moved document builds the edit once more, from the
+    // context read after it (the revision it waits past).
+    std::function<FramePlanEditRequest()> pass_edit_rebuild;
+    bool pass_edit_retried = false;
+    std::optional<std::uint64_t> pass_retry_after;
+    // RU-1's two actions, which the tab's Undo and Redo also reach.
+    QAction *render_undo = nullptr;
+    QAction *render_redo = nullptr;
     // GL-1b, decision 2: who restarts the engine for a commit that asks.
     std::function<void(const QString &)> engine_restart_action;
     // Whether this tab asked for the restart now pending (a decline is only
@@ -4142,6 +4536,12 @@ struct GraphCanvasWidget::Impl {
         scene->placementChanged = [this] { showNotice(); };
         // LP-4d2: a zone gesture refused before it was sent says why.
         scene->noticeChanged = [this] { showNotice(); };
+        // GL-1e: a line into a rendering-section pass is sent from here.
+        scene->passInputEditRequested =
+            [this](const FramePlanEditRequest &request,
+                   std::function<FramePlanEditRequest()> rebuild) {
+                sendPassInputEdit(request, std::move(rebuild));
+            };
         // Decision 5: the owner brings the Frame Plan forward.
         scene->showInFramePlanRequested = [this](const std::string &loop) {
             if (!frame_plan_loop_action || !frame_plan_loop_action(qtext(loop))) {
@@ -4262,7 +4662,166 @@ struct GraphCanvasWidget::Impl {
         synchronize();
     }
 
+    // --- GL-1e.
+
+    void sendPassInputEdit(const FramePlanEditRequest &request,
+                           std::function<FramePlanEditRequest()> rebuild, bool retry = false) {
+        const auto say = [this](InspectorNoticeKind kind, std::string line) {
+            model.setEditNotice({kind, std::move(line)});
+            showNotice();
+        };
+        if (pass_edit_request != 0 || !pass_ticket.isEmpty()) {
+            say(InspectorNoticeKind::Error, "Wait for the current change to finish.");
+            return;
+        }
+        if (!graph.requestEditPresetPass) {
+            say(InspectorNoticeKind::Error,
+                "This engine connection cannot edit a pass from the Graph.");
+            return;
+        }
+        QJsonObject params;
+        try {
+            params = exactJsonRpcObject(request.params);
+        } catch (const std::exception &error) {
+            say(InspectorNoticeKind::Error, error.what());
+            return;
+        }
+        QString error;
+        pass_edit_request = graph.requestEditPresetPass(params, &error);
+        if (pass_edit_request == 0) {
+            say(InspectorNoticeKind::Error, error.toStdString());
+            return;
+        }
+        pass_edit_notice = request.notice;
+        pass_edit_rebuild = std::move(rebuild);
+        pass_edit_retried = retry;
+        say(InspectorNoticeKind::Information,
+            request.params.value("pass_name", std::string{}) + ": saving its inputs...");
+    }
+
+    void requestPassTicket() {
+        if (pass_ticket.isEmpty() || pass_ticket_request != 0) return;
+        QString error;
+        pass_ticket_request =
+            graph.requestEditResult ? graph.requestEditResult(pass_ticket, &error) : 0;
+        if (pass_ticket_request != 0) return;
+        pass_ticket.clear();
+        model.setEditNotice({InspectorNoticeKind::Error, error.toStdString()});
+        showNotice();
+    }
+
+    // Decision 3: the engine's own sentence, and -- for a pass that reads an
+    // image drawn later in the frame -- why (an engine before RS-3 puts the
+    // graph's pass after the rendering section's).
+    static std::string passEditRefusal(const nlohmann::json &response) {
+        const auto error = response.find("error");
+        const auto &reason = error != response.end() && error->is_object() ? *error : response;
+        const auto code = reason.value("code", std::string{});
+        const auto message = reason.value("message", std::string{});
+        std::string line = message.empty() ? response.dump()
+                           : code.empty()  ? message
+                                           : code + ": " + message;
+        if (line.find("Pass input target is not produced as an earlier output") !=
+            std::string::npos)
+            line += passRunsAfterHint;
+        return line;
+    }
+
+    void refusePassEdit(const nlohmann::json &response) {
+        const auto error = response.find("error");
+        const auto code = error != response.end() && error->is_object()
+                              ? error->value("code", std::string{})
+                              : response.value("code", std::string{});
+        // The document moved since the context was read: read it again, and
+        // send the gesture once more from what arrives.
+        if (code == "external_modification" && pass_edit_rebuild && !pass_edit_retried) {
+            pass_retry_after = model.authoringRevision();
+            model.setEditNotice({InspectorNoticeKind::Information,
+                                 "The document changed since the Graph read it; reading it "
+                                 "again..."});
+            showNotice();
+            model.refresh();
+            dispatch();
+            return;
+        }
+        pass_edit_rebuild = {};
+        model.setEditNotice({InspectorNoticeKind::Error, passEditRefusal(response)});
+        showNotice();
+    }
+
+    void resumePassRetry() {
+        if (!pass_retry_after || model.authoringRevision() == *pass_retry_after) return;
+        pass_retry_after.reset();
+        auto rebuild = std::exchange(pass_edit_rebuild, {});
+        if (!rebuild) return;
+        const auto request = rebuild();
+        if (!request.sendable()) {
+            model.setEditNotice({InspectorNoticeKind::Error,
+                                 !request.line.empty() ? request.line : request.refusal});
+            showNotice();
+            return;
+        }
+        sendPassInputEdit(request, rebuild, true);
+    }
+
+    void passEditCommitted(const nlohmann::json &response) {
+        pass_edit_rebuild = {};
+        // Q-13: the other panels read the revision this commit made, and
+        // this tab reads the document, the plan and the context again.
+        const auto digest = response.value("source_digest", nlohmann::json::object())
+                                .value("hex", std::string{});
+        if (digest_hub && !digest.empty()) digest_hub->publish(digest, &view);
+        model.setEditNotice({InspectorNoticeKind::Information,
+                             pass_edit_notice.empty() ? std::string{"Pass inputs saved."}
+                                                      : pass_edit_notice});
+        // RU-1: the tab's Undo takes this back first.
+        scene->noteRenderEdit();
+        if (plan_commit_action) plan_commit_action();
+        model.refresh();
+        dispatch();
+    }
+
+    // The two replies of a pass's input edit; false for any other.
+    bool deliverPassEdit(qint64 request_id, const QByteArray &bytes) {
+        if (request_id == 0 ||
+            (request_id != pass_edit_request && request_id != pass_ticket_request))
+            return false;
+        const bool submission = request_id == pass_edit_request;
+        (submission ? pass_edit_request : pass_ticket_request) = 0;
+        try {
+            const auto response = nlohmann::json::parse(
+                bytes.constData(), bytes.constData() + bytes.size());
+            const auto status = response.value("status", std::string{});
+            if (submission) {
+                const auto ticket = response.find("ticket");
+                if (status != "accepted" || ticket == response.end() || !ticket->is_string()) {
+                    refusePassEdit(response);
+                    return true;
+                }
+                pass_ticket = qtext(ticket->get<std::string>());
+                requestPassTicket();
+                return true;
+            }
+            if (status == "pending") {
+                QTimer::singleShot(25, &view, [this] { requestPassTicket(); });
+                return true;
+            }
+            pass_ticket.clear();
+            if (status != "committed" || !response.value("committed", false)) {
+                refusePassEdit(response);
+                return true;
+            }
+            passEditCommitted(response);
+        } catch (const std::exception &error) {
+            pass_ticket.clear();
+            model.setEditNotice({InspectorNoticeKind::Error, error.what()});
+            showNotice();
+        }
+        return true;
+    }
+
     void deliverResult(qint64 request_id, const QByteArray &result_json) {
+        if (deliverPassEdit(request_id, result_json)) return;
         const auto found = transport_requests.find(request_id);
         if (found == transport_requests.end()) return;
         const auto model_id = found.value();
@@ -4275,6 +4834,9 @@ struct GraphCanvasWidget::Impl {
         dispatch();
         tellPlanCommit();
         revealPending();
+        // GL-1e: an edit refused for a moved document, once the context
+        // read after it has arrived.
+        resumePassRetry();
         restartEngineIfAsked();
     }
 
@@ -4352,6 +4914,16 @@ struct GraphCanvasWidget::Impl {
     }
 
     void deliverFailure(qint64 request_id, const QString &message) {
+        if (request_id != 0 &&
+            (request_id == pass_edit_request || request_id == pass_ticket_request)) {
+            pass_edit_request = request_id == pass_edit_request ? 0 : pass_edit_request;
+            pass_ticket_request = request_id == pass_ticket_request ? 0 : pass_ticket_request;
+            pass_ticket.clear();
+            pass_edit_rebuild = {};
+            model.setEditNotice({InspectorNoticeKind::Error, message.toStdString()});
+            showNotice();
+            return;
+        }
         const auto found = transport_requests.find(request_id);
         if (found == transport_requests.end()) return;
         const auto model_id = found.value();
@@ -4390,6 +4962,9 @@ struct GraphCanvasWidget::Impl {
                 transport = graph.requestFramePlan(&error);
             else if (request.method == "get_graph_templates" && graph.requestGraphTemplates)
                 transport = graph.requestGraphTemplates(&error);
+            else if (request.method == "get_render_authoring_context" &&
+                     graph.requestRenderAuthoringContext)
+                transport = graph.requestRenderAuthoringContext(&error);
             else if (request.method == "set_time" && graph.requestSetTime)
                 transport = graph.requestSetTime(
                     request.params.value("t", 0.0), &error);
@@ -5201,8 +5776,9 @@ struct GraphCanvasWidget::Impl {
     void synchronize() {
         const bool history_available = !scene->editingInline() &&
                                        !scene->dragging() && !scene->layoutPending();
-        undo_action->setEnabled(history_available && model.canUndo());
-        redo_action->setEnabled(history_available && model.canRedo());
+        // GL-1e: the render edit history is reached through these too.
+        undo_action->setEnabled(history_available && scene->canUndoAny());
+        redo_action->setEnabled(history_available && scene->canRedoAny());
         add_loop_action->setEnabled(model.canEdit() && model.currentScope().empty());
         add_fullscreen_action->setEnabled(
             model.canEdit() &&
@@ -5274,7 +5850,9 @@ struct GraphCanvasWidget::Impl {
             notice->setToolTip(whole);
             // GL-1b, decision 3: the engine's sentence is long; what would
             // have applied the change is kept on the line whatever is cut.
-            const QString hint = qtext(std::string{GraphCanvasModel::restartNotOfferedHint});
+            // GL-1e, decision 3: so is why a pass's input edit was refused.
+            QString hint = qtext(std::string{GraphCanvasModel::restartNotOfferedHint});
+            if (!whole.endsWith(hint)) hint = qtext(std::string{passRunsAfterHint});
             notice->setText(whole.endsWith(hint) ? oneLine(whole.chopped(hint.size())) + hint
                                                  : oneLine(whole));
             notice->setStyleSheet(message.kind == InspectorNoticeKind::Error
@@ -5542,6 +6120,26 @@ void GraphCanvasWidget::setFramePlanLoopAction(std::function<bool(const QString 
 
 void GraphCanvasWidget::setPlanCommitAction(std::function<void()> action) {
     impl_->plan_commit_action = std::move(action);
+}
+
+void GraphCanvasWidget::setRenderHistoryActions(QAction *undo, QAction *redo) {
+    impl_->render_undo = undo;
+    impl_->render_redo = redo;
+    auto &scene = *impl_->scene;
+    const auto fire = [](QAction *action) {
+        if (action == nullptr || !action->isEnabled()) return false;
+        action->trigger();
+        return true;
+    };
+    scene.renderUndo = [undo, fire] { return fire(undo); };
+    scene.renderRedo = [redo, fire] { return fire(redo); };
+    scene.renderUndoAvailable = [undo] { return undo != nullptr && undo->isEnabled(); };
+    scene.renderRedoAvailable = [redo] { return redo != nullptr && redo->isEnabled(); };
+    // The tab's buttons follow what the history can do as well.
+    for (QAction *action : {undo, redo})
+        if (action != nullptr)
+            connect(action, &QAction::changed, this, [impl = impl_.get()] { impl->synchronize(); });
+    impl_->synchronize();
 }
 
 void GraphCanvasWidget::setEngineRestartAction(std::function<void(const QString &reason)> action) {

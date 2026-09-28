@@ -5,6 +5,7 @@
 #include <functional>
 
 class QByteArray;
+class QJsonObject;
 class QObject;
 class QString;
 
@@ -23,8 +24,10 @@ class EmbeddedViewport;
 // band is.
 //
 // The writes are three, and they are three on purpose. edit_graph_document is
-// the document edit: the canvas cannot attach an instance, fork a preset or
-// touch a pass from here. set_time and render_frame are the scrub, and they
+// the document edit: the canvas cannot attach an instance or fork a preset
+// from here. GL-1e adds one pass edit, and only one: edit_preset_pass on a
+// pass of the rendering section, changing its `input` the way the Frame
+// Plan's socket drop does. set_time and render_frame are the scrub, and they
 // are named separately rather than folded into one "scrub" call so that what
 // leaves the Studio when a person drags the Timeline is two RPCs a reader can
 // count -- O-1's reading of going to a time, and nothing else.
@@ -72,6 +75,14 @@ struct GraphCanvasReadCapability {
         requestEditGraphDocument;
     std::function<qint64(const QString &ticket, QString *error)>
         requestEditResult;
+    // GL-1e: a pass of the rendering section takes a line from the Graph.
+    // The read is what the Frame Plan and the Pass Editor read the pass from;
+    // the write is the edit_preset_pass they send (the whole params object
+    // the shared builder made), answered with a ticket get_edit_result polls.
+    // Either may be left empty: the pass then takes no lines here.
+    std::function<qint64(QString *error)> requestRenderAuthoringContext;
+    std::function<qint64(const QJsonObject &params, QString *error)>
+        requestEditPresetPass;
     std::function<void(QObject *context, ResultHandler handler)> result;
     std::function<void(QObject *context, FailureHandler handler)> failure;
 };
