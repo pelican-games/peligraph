@@ -1006,6 +1006,7 @@
     "docs/manual/13_editor.md|../../src/devstudio/view/graphcanvasdrawing.cpp|`layoutZone()`": "void layoutZone(Zone &zone, const QFontMetricsF &heading_metrics,",
     "docs/manual/13_editor.md|../../src/devstudio/view/graphcanvasdrawing.cpp|ラベルを描く所": "for (std::size_t index = 0; index < zone.axis_labels.size(); ++index) {",
     "docs/manual/13_editor.md|../../src/devstudio/view/graphcanvasdrawing.cpp|切る所": "// LP-4d2, decision 7: inside a zone a render node's parameters",
+    "docs/manual/13_editor.md|../../src/devstudio/view/graphcanvasdrawing.cpp|帯を切る所": "text = row_metrics_.elidedText(text, Qt::ElideRight, room);",
     "docs/manual/13_editor.md|../../src/devstudio/view/graphcanvasdrawing.cpp|帯を描く所": "// Q-19: the variadic group's rows, drawn over one long band on the edge.",
     "docs/manual/13_editor.md|../../src/devstudio/view/graphcanvasdrawing.cpp|当たる所": "item->setData(NodeGraphHotspotRole,",
     "docs/manual/13_editor.md|../../src/devstudio/view/graphcanvasdrawing.cpp|描く所": "void Builder::addLayerBand(QGraphicsItem &node, const QString &name, const QString &text) {",
