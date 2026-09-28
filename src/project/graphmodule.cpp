@@ -28,11 +28,19 @@ std::string nodeId(const Json &node) {
 // `destination` -- that take any image: a shadow map is a depth array, and a
 // copy's two images may differ in topology (cube capture copies a cube into a
 // 2D array). The pass checks formats, usage and extents when it is compiled,
-// as it does for the JSON form. Nothing comes out: whoever reads what the pass
-// wrote refers to the target (render.target_ref), as for render.material_pass.
+// as it does for the JSON form. RS-4: what the pass wrote comes out as an
+// output port of the socket's name -- shadow_depth's `depth`, snapshot_copy's
+// `destination` -- the image the socket was given, as a render.fullscreen
+// attachment port hands its image on; a reader of it waits on the pass. The
+// target can still be read by name (render.target_ref, render.image).
 std::vector<std::string> renderPassKindSockets(const std::string &op) {
     if (op == "render.shadow_depth") return {"depth"};
     return {"source", "destination"};
+}
+
+std::vector<std::string> renderPassKindWrittenSockets(const std::string &op) {
+    if (op == "render.shadow_depth") return {"depth"};
+    return {"destination"};
 }
 
 // The parameters are the pass's own fields, less the ones the sockets and the
@@ -79,6 +87,7 @@ GraphOperationContract renderPassKindPorts(const Json &node) {
     LogicalTypePattern image;
     image.constructor = LogicalTypeConstructor::image;
     for (const auto &socket : renderPassKindSockets(op)) contract.inputs.emplace(socket, GraphInputContract{image});
+    for (const auto &socket : renderPassKindWrittenSockets(op)) contract.forwarded_outputs.emplace(socket, socket);
     return contract;
 }
 
@@ -246,8 +255,11 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
         for (const auto &port : renderMaterialPassColorPorts(parameters)) {
             if (port == "depth" || port == "draws" || !contract.inputs.emplace(port, GraphInputContract{image}).second)
                 throw std::invalid_argument("render.material_pass color socket is named twice: " + port);
+            // RS-4: each attachment comes out under its socket's name.
+            contract.forwarded_outputs.emplace(port, port);
         }
         contract.inputs.emplace("depth", GraphInputContract{image});
+        contract.forwarded_outputs.emplace("depth", "depth");
         // Unconnected: today's drawing (one draw.material per material, or
         // the pass's material_variant).
         contract.inputs.emplace("draws", GraphInputContract{exactLogicalTypePattern(registry, draw_stream), false});
@@ -385,7 +397,8 @@ OrderedJson operationJson(const std::string &op, const GraphOperationRegistratio
                        {"evaluation", std::string{graphOperationEvaluationName(contract.evaluation)}},
                        {"change", std::move(change)},
                        {"sink", sink}};
-    if (registration.factory && contract.inputs.empty() && contract.outputs.empty()) {
+    if (registration.factory && contract.inputs.empty() && contract.outputs.empty() &&
+        contract.forwarded_outputs.empty()) {
         // The ports follow the authored parameters; resolving a node yields them.
         result["ports"] = "parameter_dependent";
         return result;
@@ -397,6 +410,9 @@ OrderedJson operationJson(const std::string &op, const GraphOperationRegistratio
     auto outputs = OrderedJson::array();
     for (const auto &[port, type] : contract.outputs)
         outputs.push_back(OrderedJson{{"port", port}, {"type", logicalTypeToJson(type)}});
+    // RS-4: no type of its own; it is the type of the edge into that input.
+    for (const auto &[port, input] : contract.forwarded_outputs)
+        outputs.push_back(OrderedJson{{"port", port}, {"type_from_input", input}});
     result["ports"] = "declared";
     result["inputs"] = std::move(inputs);
     result["outputs"] = std::move(outputs);
@@ -612,6 +628,8 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
         image.constructor = LogicalTypeConstructor::image;
         for (const auto &socket : renderPassKindSockets(op))
             registration.contract.inputs.emplace(socket, GraphInputContract{image});
+        for (const auto &socket : renderPassKindWrittenSockets(op))
+            registration.contract.forwarded_outputs.emplace(socket, socket);
         return std::pair<const std::string, GraphOperationRegistration>{op, std::move(registration)};
     };
     const auto render = [&](const char *op) {

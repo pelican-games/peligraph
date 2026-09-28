@@ -229,6 +229,12 @@ std::string_view graphParameterChangeName(GraphParameterChange change);
 struct GraphOperationContract {
     std::map<std::string, GraphInputContract> inputs;
     std::map<std::string, LogicalType> outputs;
+    // RS-4: an output port that hands on what an input socket was given (a
+    // pass's attachment, which takes any image): its type is the type of the
+    // edge into that input, output port -> input port. A node lists it among
+    // its `outputs` only when something reads it, so a node written before
+    // the port existed keeps its `outputs` as they were.
+    std::map<std::string, std::string> forwarded_outputs;
     GraphExecutionDomain domain = GraphExecutionDomain::values;
     GraphOperationEvaluation evaluation = GraphOperationEvaluation::direct;
     GraphParameterChange parameter_change = GraphParameterChange::value;

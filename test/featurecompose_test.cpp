@@ -8561,4 +8561,180 @@ TEST_CASE("RS-3 an unplaced graph pass whose output a scene pass reads stands be
     }
 }
 
+namespace {
+nlohmann::json rs4DepthType() {
+    return {{"semantic", "pelican.render.depth@1"},
+            {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+}
+
+nlohmann::json rs4DepthImage(const std::string &id) {
+    return {{"id", id}, {"op", "render.image"},
+            {"parameters", {{"type", rs4DepthType()}, {"format", "D32_SFLOAT"}, {"extent_scale", 1.0},
+                            {"usage", {"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"}}}},
+            {"outputs", {"resource"}}};
+}
+
+nlohmann::json rs4Endpoint(const std::string &node, const std::string &port) {
+    return {{"node", node}, {"port", port}};
+}
+
+// A fullscreen pass that samples `source` (of `type`) and draws into an image
+// of its own, `<id>_image`.
+nlohmann::json rs4Reader(const std::string &id, const nlohmann::json &source,
+                         const nlohmann::json &type = lp0aSceneColorType()) {
+    using Json = nlohmann::json;
+    Json parameters{{"pass_set", "main_render"},
+                    {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
+                    {"ports", {{"source", {{"kind", "image"}, {"type", type}, {"access", "read"}}},
+                               {"color", lp1aColorPort()}}}};
+    return Json{{"id", id}, {"op", "render.fullscreen"}, {"parameters", std::move(parameters)},
+                {"inputs", {{"source", source}, {"color", rs4Endpoint(id + "_image", "resource")}}},
+                {"outputs", {"color"}}};
+}
+
+nlohmann::json rs4MaterialPass(const std::string &id, const std::string &contract, const nlohmann::json &inputs,
+                               const nlohmann::json &outputs) {
+    return {{"id", id}, {"op", "render.material_pass"},
+            {"parameters", {{"material_contract", contract}, {"pass_set", "main_render"},
+                            {"depth_store_op", "store"}}},
+            {"inputs", inputs}, {"outputs", outputs}};
+}
+} // namespace
+
+TEST_CASE("RS-4 a graph pass hands on the images it wrote as output ports",
+          "[render-feature][graph-composition][rs4]") {
+    using Json = nlohmann::json;
+    auto document = lp1eBlankRenderingConfig();
+    auto &present = document.at("rendering").at("rendering_passes").at(0).at("passes").at(0);
+    REQUIRE(present.at("name") == "present");
+
+    SECTION("a forward material pass's color feeds a fullscreen pass and present") {
+        // present reads by name what the pass's `color` port hands on.
+        present["input"] = Json::array({"scene_color"});
+        const auto nodes = [](const Json &source) {
+            return Json::array({lp0bImage("scene_color"), rs4DepthImage("scene_depth"),
+                rs4MaterialPass("forward", "forward_opaque_v1",
+                                {{"color", rs4Endpoint("scene_color", "resource")},
+                                 {"depth", rs4Endpoint("scene_depth", "resource")}},
+                                {"color", "depth"}),
+                rs4Reader("tone", source), lp0bImage("tone_image")});
+        };
+        document["nodes"] = nodes(rs4Endpoint("forward", "color"));
+        const auto composed = lp0aCompose(document);
+        const auto &tone = passByName(composed.config, "tone");
+        CHECK(lp0bListed(tone.at("after"), "forward"));
+        CHECK(lp0bListed(tone.at("input"), "scene_color"));
+        CHECK(passByName(composed.config, "forward").at("output") ==
+              Json{{"color", Json::array({"scene_color"})}, {"depth", "scene_depth"}});
+        const auto declared = lp0bDeclared(composed.config);
+        CHECK(lp0bIndex(declared, "forward") < lp0bIndex(declared, "tone"));
+        CHECK(lp0bIndex(declared, "forward") < lp0bIndex(declared, "present"));
+        const auto order = lp0bPlanOrder(composed);
+        CHECK(lp0bIndex(order, "forward") < lp0bIndex(order, "tone"));
+        CHECK(lp0bIndex(order, "forward") < lp0bIndex(order, "present"));
+        lp6RequireInputsProduced(composed);
+        REQUIRE_NOTHROW(compileComposition(composed));
+
+        // Reading the image node instead (LP-6) lowers to the same passes.
+        document["nodes"] = nodes(rs4Endpoint("scene_color", "resource"));
+        const auto by_name = lp0aCompose(document);
+        CHECK(passByName(by_name.config, "tone") == tone);
+        CHECK(lp0bDeclared(by_name.config) == declared);
+
+        // The port is the type of the image on the socket.
+        auto mistyped = nodes(rs4Endpoint("forward", "depth"));
+        document["nodes"] = mistyped;
+        CHECK_THROWS_WITH(lp0aCompose(document),
+                          Catch::Matchers::ContainsSubstring("graph type mismatch at tone.source from forward.depth"));
+        document["nodes"] = nodes(rs4Endpoint("forward", "depth"));
+        document["nodes"][3] = rs4Reader("tone", rs4Endpoint("forward", "depth"), rs4DepthType());
+        CHECK(lp0bListed(passByName(lp0aCompose(document).config, "tone").at("input"), "scene_depth"));
+        // A node written before the ports existed lists none, and still composes.
+        document["nodes"] = nodes(rs4Endpoint("scene_color", "resource"));
+        document["nodes"][2]["outputs"] = Json::array();
+        REQUIRE_NOTHROW(lp0aCompose(document));
+    }
+
+    SECTION("deferred albedo, a shadow depth and a copy's destination are read the same way") {
+        Json nodes = Json::array();
+        Json geometry_inputs = Json::object();
+        for (const auto *socket : {"albedo", "normal", "material", "worldpos", "emissive"}) {
+            nodes.push_back(lp0bImage(std::string{"g_"} + socket));
+            geometry_inputs[socket] = rs4Endpoint(std::string{"g_"} + socket, "resource");
+        }
+        nodes.push_back(rs4DepthImage("g_depth"));
+        geometry_inputs["depth"] = rs4Endpoint("g_depth", "resource");
+        nodes.push_back(rs4MaterialPass("geometry", "deferred_geometry_v1", geometry_inputs, {"albedo"}));
+        nodes.push_back(rs4Reader("albedo_read", rs4Endpoint("geometry", "albedo")));
+        nodes.push_back(lp0bImage("albedo_read_image"));
+        // The shadow map, drawn with the scene's views.
+        nodes.push_back(rs4DepthImage("shadow_map"));
+        nodes.push_back({{"id", "shadow"}, {"op", "render.shadow_depth"},
+                         {"parameters", {{"pass_set", "main_render"}, {"depth_store_op", "store"},
+                                         {"shader", {{"vertex", "engine://shadow_depth"}}}}},
+                         {"inputs", {{"depth", rs4Endpoint("shadow_map", "resource")}}},
+                         {"outputs", {"depth"}}});
+        nodes.push_back(rs4Reader("shadow_read", rs4Endpoint("shadow", "depth"), rs4DepthType()));
+        nodes.push_back(lp0bImage("shadow_read_image"));
+        // A copy of what the geometry pass handed on, read from its destination.
+        nodes.push_back(lp0bImage("snap"));
+        nodes.push_back(lp0eSnapshotCopy("copy", rs4Endpoint("geometry", "albedo"), rs4Endpoint("snap", "resource"),
+                                         {{"pass_set", "main_render"}, {"snapshot_after", "geometry"}}));
+        nodes.back()["outputs"] = {"destination"};
+        nodes.push_back(rs4Reader("snap_read", rs4Endpoint("copy", "destination")));
+        nodes.push_back(lp0bImage("snap_read_image"));
+        document["nodes"] = nodes;
+        const auto composed = lp0aCompose(document);
+        for (const auto &[reader, writer, image] : std::vector<std::tuple<std::string, std::string, std::string>>{
+                 {"albedo_read", "geometry", "g_albedo"}, {"shadow_read", "shadow", "shadow_map"},
+                 {"snap_read", "copy", "snap"}}) {
+            INFO(reader);
+            const auto &pass = passByName(composed.config, reader);
+            CHECK(lp0bListed(pass.at("after"), writer));
+            CHECK(lp0bListed(pass.at("input"), image));
+        }
+        const auto &copy = passByName(composed.config, "copy");
+        CHECK(copy.at("source") == "g_albedo");
+        CHECK(copy.at("destination") == "snap");
+        CHECK(lp0bListed(copy.at("after"), "geometry"));
+        const auto order = lp0bPlanOrder(composed);
+        CHECK(lp0bIndex(order, "geometry") < lp0bIndex(order, "albedo_read"));
+        CHECK(lp0bIndex(order, "shadow") < lp0bIndex(order, "shadow_read"));
+        CHECK(lp0bIndex(order, "copy") < lp0bIndex(order, "snap_read"));
+
+        // Only a listed port is read.
+        document["nodes"] = nodes;
+        document["nodes"].push_back(rs4Reader("normal_read", rs4Endpoint("geometry", "normal")));
+        document["nodes"].push_back(lp0bImage("normal_read_image"));
+        CHECK_THROWS_WITH(lp0aCompose(document),
+                          Catch::Matchers::ContainsSubstring("unknown graph output port: geometry.normal"));
+    }
+
+    SECTION("a loop hands on its body pass's output port as `p`") {
+        const Json body{{"nodes", Json::array({{{"id", "target"}, {"op", "graph.input"}},
+                                               {{"id", "snap"}, {"op", "graph.input"}},
+                                               lp1aFullscreen("paint", rs4Endpoint("target", "value"),
+                                                              {{"color_load_op", "Load"}}),
+                                               lp0eSnapshotCopy("copy", rs4Endpoint("paint", "color"),
+                                                                rs4Endpoint("snap", "value"),
+                                                                {{"pass_set", "main_render"},
+                                                                 {"snapshot_after", "paint"}})})},
+                        {"outputs", {{"snap", rs4Endpoint("copy", "destination")}}}};
+        document["definitions"]["copy_body"] = body;
+        document["definitions"]["copy_body"]["nodes"][3]["outputs"] = {"destination"};
+        document["nodes"] = Json::array({lp0bImage("canvas"), lp0bImage("snap_image"),
+            lp1aLoop("copies", lp1aRange(2, "copy_body"),
+                     {{"target", rs4Endpoint("canvas", "resource")}, {"snap", rs4Endpoint("snap_image", "resource")}},
+                     Json::array({"snap"})),
+            rs4Reader("snap_read", rs4Endpoint("copies", "snap")), lp0bImage("snap_read_image")});
+        const auto composed = lp0aCompose(document);
+        const auto &reader = passByName(composed.config, "snap_read");
+        CHECK(lp0bListed(reader.at("after"), "copies/1/copy"));
+        CHECK(lp0bListed(reader.at("input"), "snap_image"));
+        CHECK(passByName(composed.config, "copies/0/copy").at("source") == "canvas");
+        const auto order = lp0bPlanOrder(composed);
+        CHECK(lp0bIndex(order, "copies/1/copy") < lp0bIndex(order, "snap_read"));
+    }
+}
+
 } // namespace Pelican

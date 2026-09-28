@@ -1225,30 +1225,50 @@ std::map<std::string, LogicalType> validateGraphPorts(
     const ExpandedGraphDocument &graph, const LogicalTypeRegistry &registry,
     const GraphOperationContractResolver &resolve) {
     std::map<std::string, GraphOperationContract> nodes;
+    std::map<std::string, const Json *> documents;
     for (const auto &node : graph.nodes) {
         const auto id = node.at("id").get<std::string>();
         const auto [found, inserted] = nodes.emplace(id, resolve(node));
         if (!inserted)
             throw std::invalid_argument("duplicate expanded graph node: " + id);
+        documents.emplace(id, &node);
         std::set<std::string> ports;
+        std::size_t typed = 0;
         const auto &outputs = node.at("outputs");
         if (!outputs.is_array()) throw std::invalid_argument("graph outputs must be an array: " + id);
         for (const auto &port : outputs) {
             const auto name = port.get<std::string>();
-            if (!found->second.outputs.contains(name) || !ports.insert(name).second)
+            // RS-4: a forwarded output may be listed; it need not be.
+            const bool own = found->second.outputs.contains(name);
+            if ((!own && !found->second.forwarded_outputs.contains(name)) || !ports.insert(name).second)
                 throw std::invalid_argument("invalid graph output: " + id + "." + name);
+            if (own) ++typed;
         }
-        if (ports.size() != found->second.outputs.size())
+        if (typed != found->second.outputs.size())
             throw std::invalid_argument("missing graph output: " + id);
         for (const auto &[port, type] : found->second.outputs) registry.requireCanonical(type);
     }
-    const auto sourceType = [&](const Json &endpoint) -> const LogicalType & {
+    // RS-4: a forwarded output is the type of the edge into its input, however
+    // many forwarded outputs the edge passes through first.
+    std::set<std::string> forwarding;
+    std::function<const LogicalType &(const Json &)> sourceType = [&](const Json &endpoint) -> const LogicalType & {
         const auto id = endpoint.at("node").get<std::string>();
         const auto port = endpoint.at("port").get<std::string>();
         const auto node = nodes.find(id);
-        if (node == nodes.end() || !node->second.outputs.contains(port))
+        if (node == nodes.end() ||
+            (!node->second.outputs.contains(port) && !node->second.forwarded_outputs.contains(port)))
             throw std::invalid_argument("unknown graph source: " + id + "." + port);
-        return node->second.outputs.at(port);
+        if (node->second.outputs.contains(port)) return node->second.outputs.at(port);
+        const auto &input = node->second.forwarded_outputs.at(port);
+        const auto &inputs = documents.at(id)->at("inputs");
+        if (!inputs.is_object() || !inputs.contains(input))
+            throw std::invalid_argument("unconnected graph input: " + id + "." + input);
+        const auto key = id + "." + port;
+        if (!forwarding.insert(key).second)
+            throw std::invalid_argument("cyclic graph output forwarding: " + key);
+        const auto &type = sourceType(inputs.at(input));
+        forwarding.erase(key);
+        return type;
     };
     for (const auto &node : graph.nodes) {
         const auto id = node.at("id").get<std::string>();
