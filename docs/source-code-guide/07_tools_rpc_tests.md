@@ -611,17 +611,17 @@ link せず、link の輪ができません。
 
 protocol は**改行区切り JSON 1 行 = 1 命令**で、`{id, cmd, ...}` に `{id, ok, result}` か
 `{id, ok:false, error:{code, message}}` を返します([組み立て](../../src/devstudio/automation/automationserver.cpp#L18))。
-命令は 20 個([一覧](../../src/devstudio/automation/automationcommands.cpp#L2061))、拒否は 10 種の名前付きコード
-([定数](../../src/devstudio/automation/automationcommands.cpp#L214))。`quit` は**答えてから**イベントループを畳み
+命令は 20 個([一覧](../../src/devstudio/automation/automationcommands.cpp#L2084))、拒否は 10 種の名前付きコード
+([定数](../../src/devstudio/automation/automationcommands.cpp#L237))。`quit` は**答えてから**イベントループを畳み
 ([順序](../../src/devstudio/automation/automationserver.cpp#L110))、`rpc` と `wait` 系は入れ子のイベントループを
 回すので、実行中に届いた次の行は `automation.busy@1` で断ります
 ([逐次](../../src/devstudio/automation/automationserver.cpp#L102)) —— 割り込ませて状態を混ぜるより、正直に断る側です。
 指す名前は widget の `objectName` か、キャンバスの中に描かれたものの合成名
-`<view>::<kind>#<node>[/<port>]`([生成](../../src/devstudio/automation/automationcommands.cpp#L256))で、`list` が
+`<view>::<kind>#<node>[/<port>]`([生成](../../src/devstudio/automation/automationcommands.cpp#L279))で、`list` が
 両方を publish します。`type` / `key` / `text` は `QGraphicsProxyWidget` が抱える埋め込み widget へ直接届くので、
-**どの窓が activate されているかに依存しません**([理由](../../src/devstudio/automation/automationcommands.cpp#L513))。
+**どの窓が activate されているかに依存しません**([理由](../../src/devstudio/automation/automationcommands.cpp#L536))。
 `text` は描かれた字ではなく item が data role に入れた値を優先します
-([優先](../../src/devstudio/automation/automationcommands.cpp#L529))。
+([優先](../../src/devstudio/automation/automationcommands.cpp#L552))。
 
 driver は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1253)(stdlib のみ)。シナリオ JSON の step を順に送り、
 `rpc_equals` / `text_equals` / `visible` / `list_count` / `screenshot` の期待を検査し、`verdict` / `summary` /

@@ -277,7 +277,7 @@
     "docs/manual/06_rendering.md|../../src/project/rendergraphcomposition.cpp|`checkTargetReference()`": "void checkTargetReference(const Json &composed, const RenderGraphTargetReference &reference) {",
     "docs/manual/06_rendering.md|../../src/project/rendergraphcomposition.cpp|`composedConstants()`": "GraphLoopConstants composedConstants(const Json &composed) {",
     "docs/manual/06_rendering.md|../../src/project/rendergraphcomposition.cpp|`expandRenderGraphLoops()`": "RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRenderGraphDocument &lowered,",
-    "docs/manual/06_rendering.md|../../src/project/rendergraphcomposition.cpp|`insertAmongScenePasses()`": "void insertAmongScenePasses(Json &list, std::vector<Json> run, const std::string &loop,",
+    "docs/manual/06_rendering.md|../../src/project/rendergraphcomposition.cpp|`insertAmongScenePasses()`": "void insertAmongScenePasses(const Json &composed, Json &list, std::vector<Json> run, const std::string &loop,",
     "docs/manual/06_rendering.md|../../src/project/rendergraphcomposition.cpp|`lowerRenderPassKindNode()`": "Json lowerRenderPassKindNode(const Json &node, Json parameters,",
     "docs/manual/06_rendering.md|../../src/project/rendergraphcomposition.cpp|`placeRenderGraphPassRun()`": "void placeRenderGraphPassRun(Json &composed, const RenderGraphPassRun &run) {",
     "docs/manual/06_rendering.md|../../src/project/rendergraphcomposition.cpp|`resolveGraphDocumentAfterComposition()`": "RenderGraphLoopResolution resolveGraphDocumentAfterComposition(Json &composed, const LoweredRenderGraphDocument &lowered,",
