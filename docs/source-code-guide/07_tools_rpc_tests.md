@@ -429,11 +429,11 @@ attachment ops、resource use、material filter、前後 barrier は折りたた
 **値の問い合わせが次の文書再取得を待たせないため**で、遅れて届いた古い答えは捨てられます。
 提供するのは scope 一覧(`root` + definition 名)、scope ごとの node と edge、root scope の `graph.instance` へ
 重ねる値の overlay、そして `contentRevision()` / `reportRevision()` の 2 つの世代です
-([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L1215))。編集側は 6 つの操作
+([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L1226))。編集側は 6 つの操作
 (`connectInput` / `disconnectInput` / `setNodeParameter` / `removeNode` / `setNodeLabel` / `addNode`)で、
-**どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L1990))。
+**どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L2002))。
 `addNodeOps()` だけは複数 op を返します —— 必須の scalar 入力を持つ操作は、未接続のままでは engine が受け取らないので、
-**同じ ops 列で `value.constant` を先に足して**そこへ繋ぎます([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L2404))。
+**同じ ops 列で `value.constant` を先に足して**そこへ繋ぎます([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L2439))。
 種の定数は後で本物の producer を繋いでも自動では消えません(記録された穴)。
 
 [`view/nodegraphics.{hpp,cpp}`](../../src/devstudio/view/nodegraphics.hpp#L35) は
@@ -475,7 +475,7 @@ Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphic
 
 [`GraphCanvasWidget`](../../src/devstudio/view/graphcanvaswidget.hpp) と `GraphCanvasScene` が view です。
 上段は `Scope:` の combo とパンくず、`Values from:` の combo、`Refresh`
-([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L3661))、本体は左がキャンバス、右が
+([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L3687))、本体は左がキャンバス、右が
 `Field` / `Value` の詳細表です。node は見出し帯 + 出力欄 + 入力欄の 3 段で、見出しの三角はソケット欄を
 折り畳みます(折り畳むと辺は見出し帯の左右中央 1 点へ集まります)。編集はすべて**即時**で Apply ボタンがなく、
 ソケット間ドラッグ = `set_input`、辺の `Delete` = `set_input{null}`、値の帯のその場編集 =
@@ -485,7 +485,7 @@ node の `Delete` = `remove_node` です。位置と折り畳みは `(scope, nod
 engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view/graphcanvasreadcapability.hpp#L31) が
 名前で持つ 5 つ(`get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` /
 `get_edit_result`)だけで、それ以外は `The graph canvas cannot issue %1.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L4333))。規範は struct の宣言そのもの
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L4364))。規範は struct の宣言そのもの
 ([メンバ 5 本](../../src/devstudio/view/graphcanvasreadcapability.hpp#L40))で、その上の宣言コメントは
 **読みを 3 つと数えたまま**です —— メンバは `requestGraphInstances` / `requestGraphCatalog` /
 `requestGraphValues` / `requestEditResult` の 4 読み + `requestEditGraphDocument` の 1 編集なので、

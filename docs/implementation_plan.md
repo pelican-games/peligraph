@@ -27065,6 +27065,25 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - `material` 以外の色のソケットを全部 `R16G16B16A16_SFLOAT` にした([image を足す所](../src/devstudio/model/graphcanvasmodel.cpp#L2514))
 - 確認(commit の記録): 白紙の project に古い文書を置いた headless の player は止まり、新しい文書では描く。test は足していない
 
+### GL-1d: Blank から Graph で描画を組む(palette の material pass は draw ループ付きで来る / forward の route)
+
+**Studio のみ(engine の RS-2 と並走)。実装者: Claude(Opus)。設計は `docs/design_graph_layers.md` の §7 の GL-1d の行、ループは `docs/design_graph_loops.md` §4(draw_loop)。Studio での見え方は `docs/manual/13_editor.md` の「render.material_pass と draw.* の node(✅LP-4e)」の palette の項、Loop の欄の表の Over、「palette はキーボードだけで使えます(✅GL-1d)」、シナリオの `graph_from_blank` / `graph_from_blank_forward`。**
+
+#### 前提
+- 利用者の指摘(2026-09-28 夜、Release): 「Blank からレンダリングを Graph で組めるかチェックした? レンダリングループが追加できない」
+- Blank の project で palette の `render.material_pass` を既定の `forward_opaque_v1` で足すと、engine が `material_route_unserved@1` で断った(material の既定の route は deferred で、それを描く pass が無い)。Frame Plan の Add material pass は `add_authored_pass` に `material_route_default: "forward"` を載せて通していた(G-4)が、Graph の経路には無かった
+- material の draw ループを Graph で一から作る道が無かった。Add loop のループは `over.range` か `over.view_axis` だけで、palette の material pass は `draws` を空けて来た。draw_loop のループは、rendering 節の material pass を Decompose into loop したときにしかできなかった
+
+#### 着地(2026-09-28、565de69b)
+- **決定 1(draw ループ付き)**: palette の `render.material_pass` は、pass と image に加えて同じ列(Undo 1 回)で、definition `<pass>_draw`(node `step`: `draw.material`、出力 `draws`)、root の `graph.loop` `<pass>_draws`(`over.draw_items.contract` = pass の契約、`tier: draw_loop`、`order: phase_default`、else の分岐 1 つの body `<pass>_draw`、出力 `draws`)、pass の `draws` ← ループ、を足す。`decompose_material_pass` が書く形と同じ。列の順は definition → ループ → image → pass。id・`<id>_draws`・`<id>_draw` のどれかが使われていれば `render_material_pass_2` … ([組む所](../src/devstudio/model/graphcanvasmodel.cpp#L2532))
+- **決定 2(Over の Draw items)**: Loop の欄の Over に `Draw items`。ループの `draws` を読む root の material pass があるときだけ選べ(無ければ項目を押せず、tooltip で理由)、選ぶとその pass の契約で `over.draw_items` を書き、`tier: draw_loop`・`order: phase_default` にして、`limit` / `carry` / `where` / `insert` / `canonical_anchor` を消す([`GraphCanvasModel::setLoopDrawItems()`](../src/devstudio/model/graphcanvasmodel.cpp#L3109))
+- **決定 3(forward の route)**: 足す pass が `forward_opaque_v1` で、pipeline に deferred の material pass が無いとき、`edit_graph_document` の params に `material_route_default: "forward"` を付ける(engine の RS-2)。deferred の pass は、最後の frame plan の material pass(`material_routing` の契約)と root の文書の `render.material_pass` から判定する。判定の関数 `materialRouteOffersForwardDefault` / `materialContractTakesDeferredRoute` を `src/devstudio/model/frameplanmodel.*` に移し、Frame Plan の form と共有する([判定](../src/devstudio/model/frameplanmodel.cpp#L2024))。Redo も付けて送り、Undo は付けない(route の既定は project の設定なので、Undo は既定を戻さない)。`unsupported field 'material_route_default'` で断る engine には付けずに送り直し、以後その session では付けない([送り直す所](../src/devstudio/model/graphcanvasmodel.cpp#L2217))
+- **決定 4(拒否の文)**: `material_route_unserved@1` の拒否は、Frame Plan と同じ文(`materialRouteUnservedNotice`。`frameplanmodel` に移した)で notice に出す。前は engine の message のまま
+- **palette のキーボード**: 開くと focus は絞り込みの欄(click なしで打てる)、↑↓ / PageUp / PageDown で一覧を動かし、Enter で足し、Esc で閉じる。右クリックの Add node... と Add のボタンは同じ関数を通り、Add のボタンもメニューと同じく event loop に回してから palette を開く(自動化の click が返るように)
+- **test**: 新規 `devstudio_graphcanvas_test` の `GL-1d the palette's material pass arrives with its draw loop, body and draws edge`・`GL-1d a loop a material pass reads can run over its draw items`・`GL-1d a forward material pass sets the route default, and falls back without it`・`GL-1d a pipeline with a deferred material pass offers no route default`、`devstudio_graphcanvas_scene_test` の `GL-1d the Add node palette opens with the keyboard on its filter`
+- **シナリオ**: 新規 `graph_from_blank`(deferred_geometry_v1。json の step は 35、実装者の報告では 37 手)と `graph_from_blank_forward`(forward_opaque_v1。統合側が足した。json の step は 35)。Blank の project → Add → 絞り込みに `material_pass` → Contract → Enter → ゾーンと pass と `draw.material` → 文書のループ・body・`draws` の線 → `loops[0].tier` が `draw_loop` → Frame Plan に pass。2 本とも仮想モニタ(`PELICAN_STUDIO_SCREEN=1`)で緑。シナリオは 40 → 42 本。統合側の報告では、forward の方を走らせた後の project の rendering に `material_route_default: "forward"` があり、engine の log に `LOG_ERROR` が無い(シナリオの step では見ていない)
+- **残る穴**: 「付けない」の記憶は Studio の session の間続く。deferred のシナリオは engine の再起動を見ていない(どちらも統合側の報告)。viewport の色は見ていない
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
