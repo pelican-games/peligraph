@@ -79,9 +79,8 @@ namespace {
 // the inside of each screen is scaled. Measure the widget from the window's
 // client origin (logical, same screen) and scale only that offset, so a
 // window on a second screen with another scale (a 125 % virtual monitor
-// right of a 100 % one) is read where it is. Qt rounds a scaled edge to the
-// nearest pixel; so does this, edge by edge, or a 125 % screen takes in a
-// row of the panel beside the widget. Empty when the window has no handle.
+// right of a 100 % one) is read where it is. Empty when the window has no
+// handle.
 QRect physicalScreenRect(QWidget *top_level, const QRect &global_rect) {
     if (top_level == nullptr) return {};
     const auto hwnd = reinterpret_cast<HWND>(top_level->winId());
@@ -89,11 +88,35 @@ QRect physicalScreenRect(QWidget *top_level, const QRect &global_rect) {
     if (hwnd == nullptr || !ClientToScreen(hwnd, &client_origin)) return {};
     const qreal ratio = top_level->devicePixelRatioF();
     const QPoint offset = global_rect.topLeft() - top_level->mapToGlobal(QPoint{0, 0});
-    const int left = qRound(offset.x() * ratio);
-    const int top = qRound(offset.y() * ratio);
-    const int right = qRound((offset.x() + global_rect.width()) * ratio);
-    const int bottom = qRound((offset.y() + global_rect.height()) * ratio);
-    return QRect{client_origin.x + left, client_origin.y + top, right - left, bottom - top};
+    // At a fractional scale an edge falls inside a pixel, and where Qt puts
+    // that pixel differs between widgets and native children (the engine's
+    // window): keep only the pixels wholly inside, so the picture never
+    // takes in a row of the panel beside it.
+    const int left = static_cast<int>(std::ceil(offset.x() * ratio - 1e-6));
+    const int top = static_cast<int>(std::ceil(offset.y() * ratio - 1e-6));
+    const int right = static_cast<int>(std::floor((offset.x() + global_rect.width()) * ratio + 1e-6));
+    const int bottom = static_cast<int>(std::floor((offset.y() + global_rect.height()) * ratio + 1e-6));
+    QRect physical{client_origin.x + left, client_origin.y + top, right - left, bottom - top};
+    // A native child filling the widget (the embedded engine's window) is
+    // sized by its own rounding, and at 125 % can be a row short of the
+    // widget: what shows there is the child, so read the child's pixels.
+    const POINT centre{physical.center().x(), physical.center().y()};
+    if (const HWND child = WindowFromPoint(centre);
+        child != nullptr && child != hwnd && GetAncestor(child, GA_ROOT) == hwnd) {
+        RECT child_rect{};
+        if (GetWindowRect(child, &child_rect)) {
+            const QRect inside = physical.intersected(QRect{
+                QPoint{child_rect.left, child_rect.top},
+                QPoint{child_rect.right - 1, child_rect.bottom - 1}});
+            // Only a child that covers the widget nearly whole: a small
+            // native control under the centre is not the widget's picture.
+            if (!inside.isEmpty() &&
+                qint64{inside.width()} * inside.height() * 10 >=
+                    qint64{physical.width()} * physical.height() * 9)
+                physical = inside;
+        }
+    }
+    return physical;
 }
 
 // The desktop's pixels over a physical rect, read natively: Qt's grab takes
