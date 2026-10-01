@@ -1960,6 +1960,30 @@ EditorProjectionResult materializeEditorProjection(
     }
 }
 
+// FG-2: how verify_fold starts its children: this executable, at this
+// launch's fixed-step rate and the project's window size, with the launch
+// options that change what a project resolves to (absolute paths, the game
+// logic DLL).
+static FoldVerifyProcessOptions foldVerifyProcessOptions(
+    const EngineLaunchConfig &launch, const ProjectBasicConfig &project) {
+    FoldVerifyProcessOptions options;
+    options.executable = foldVerifyExecutablePath().value_or(std::filesystem::path{});
+    options.fps = launch.fps;
+    // The runs draw at the size the project opens its window at.
+    const auto window = project.initialWindowSize();
+    if (window.width > 0 && window.height > 0) {
+        options.width = static_cast<std::uint32_t>(window.width);
+        options.height = static_cast<std::uint32_t>(window.height);
+    }
+    if (launch.allow_absolute_paths)
+        options.extra_arguments.emplace_back("--allow-absolute-paths");
+    if (launch.game_logic_dll) {
+        options.extra_arguments.emplace_back("--game-logic");
+        options.extra_arguments.push_back(*launch.game_logic_dll);
+    }
+    return options;
+}
+
 std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
     EditorRuntimeServiceOptions options) {
     auto runtime = std::make_shared<EditorRuntimeState>();
@@ -2241,6 +2265,34 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                             });
                         }
                         return result;
+                    },
+                    // FG-2: verify_fold's runs are this executable, headless,
+                    // in a copy of the project (graphfoldverify.hpp). What the
+                    // children need of this launch is read once, here: the
+                    // worker never reads the engine's modules.
+                    .verify_fold =
+                        [options = foldVerifyProcessOptions(
+                             runtime->modules.launch_config,
+                             runtime->modules.project_config)](
+                            const FoldVerifyJob &job,
+                            const std::atomic<bool> &cancelled) {
+                            return runFoldVerifyProcesses(job, options,
+                                                          cancelled);
+                        },
+                    // A deterministic driver does not start processes of its
+                    // own; neither does a launch that cannot name its
+                    // executable.
+                    .verify_fold_unavailable =
+                        [runtime]() -> std::optional<std::string> {
+                        const auto &launch = runtime->modules.launch_config;
+                        if (launch.golden_mode) return "golden";
+                        if (launch.input_replay ||
+                            runtime->modules.input_sequence.isReplaying())
+                            return "replay";
+                        if (launch.headless) return "headless";
+                        if (!foldVerifyExecutablePath())
+                            return "executable_unknown";
+                        return std::nullopt;
                     },
                 });
         }

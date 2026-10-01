@@ -249,6 +249,10 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("fold_nodes", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.foldNodes(params); });
     });
+    // FG-2: draws the open and the decided form of a fold group and marks it.
+    server.setHandler("verify_fold", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.verifyFold(params); });
+    });
     server.setHandler("get_graph_instances", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getGraphInstances(params); });
     });

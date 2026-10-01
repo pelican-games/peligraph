@@ -51,6 +51,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -600,7 +602,9 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
     // GT-1: a document the authoring context reads in place of the one the
     // resolver has (nullopt: the resolver's). The runtime never sees it.
     std::function<std::optional<std::string>(std::string_view)>
-        authoring_override = {}) {
+        authoring_override = {},
+    // FG-2: verify_fold's runner (unset: fold_verify_unavailable).
+    FoldVerifyRunner verify_fold = {}) {
     runtime.path_resolver = &resolver;
     // This producer models an already-running animgraph_demo instance. Shader
     // availability has its own ON/OFF gate tests; keep this lifecycle fixture
@@ -686,6 +690,7 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
                         return runtime.availability(name, document);
                     });
             },
+            .verify_fold = std::move(verify_fold),
         });
 }
 
@@ -8672,10 +8677,10 @@ struct Rd1Harness {
     ActualCpuRenderRuntime runtime;
     std::unique_ptr<RenderConfigEditorService> service;
 
-    explicit Rd1Harness(bool direct) {
+    explicit Rd1Harness(bool direct, FoldVerifyRunner verify_fold = {}) {
         if (direct) writeBytes(project.render_config, lp3bDirectRoot(project).dump(2) + "\n");
         resolver.setup(project.root, false);
-        service = makeProjectService(project, resolver, runtime);
+        service = makeProjectService(project, resolver, runtime, {}, {}, std::move(verify_fold));
     }
 
     nlohmann::ordered_json context() { return service->getRenderAuthoringContext(Json::object()); }
@@ -10411,6 +10416,270 @@ TEST_CASE("FG-1 fold_nodes declares a fold group, get_fold_groups reads its dige
     harness.commit(fg1Fold(harness, "post", nullptr, nullptr));
     CHECK_FALSE(Json::parse(readBytes(harness.project.render_config)).contains("fold_groups"));
     CHECK(fg1Groups(harness) == Json::array());
+}
+
+// --- FG-2: verify_fold.
+
+namespace {
+
+// A 4x4 frame of one grey, `changed` of its first pixels another colour.
+FoldVerifyFrame fg2Frame(std::uint8_t grey, std::uint32_t changed = 0) {
+    FoldVerifyFrame frame{.width = 4, .height = 4, .rgba = std::vector<std::uint8_t>(64, grey)};
+    for (std::uint32_t pixel = 0; pixel < changed; ++pixel) frame.rgba[pixel * 4 + 1] ^= 0x5a;
+    return frame;
+}
+
+FoldVerifyRun fg2Run(std::vector<FoldVerifyFrame> frames, std::uint64_t validation_errors = 0) {
+    return {.finished = true, .exit_code = 0, .frames = std::move(frames), .validation_errors = validation_errors};
+}
+
+FoldVerifyRuns fg2Same() {
+    return {.open_first = fg2Run({fg2Frame(10), fg2Frame(20)}),
+            .open_second = fg2Run({fg2Frame(10), fg2Frame(20)}),
+            .decided = fg2Run({fg2Frame(10), fg2Frame(20)})};
+}
+
+// Stands in for the children: answers `runs` and keeps every job it was
+// given. While `hold`, it waits (on the verify's worker thread) until
+// release() or the service's shutdown.
+struct Fg2Runner {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool hold = false;
+    std::vector<FoldVerifyJob> jobs;
+    FoldVerifyRuns runs = fg2Same();
+
+    FoldVerifyRunner runner() {
+        return [this](const FoldVerifyJob &job, const std::atomic<bool> &cancelled) {
+            std::unique_lock lock{mutex};
+            jobs.push_back(job);
+            while (hold && !cancelled.load()) changed.wait_for(lock, std::chrono::milliseconds{10});
+            return runs;
+        };
+    }
+    void set(FoldVerifyRuns next, bool held = false) {
+        std::lock_guard lock{mutex};
+        runs = std::move(next);
+        hold = held;
+    }
+    void release() {
+        {
+            std::lock_guard lock{mutex};
+            hold = false;
+        }
+        changed.notify_all();
+    }
+};
+
+nlohmann::ordered_json fg2Verify(Rd1Harness &harness, const Json &extra = Json::object()) {
+    Json request{{"base_source_digest", harness.context().at("source_digest").at("hex")}, {"group", "post"}};
+    for (const auto &[key, value] : extra.items()) request[key] = value;
+    return harness.service->verifyFold(request);
+}
+
+// The ticket's result once a frame boundary (commitPending) has read its runs.
+Json fg2Await(Rd1Harness &harness, const nlohmann::ordered_json &accepted) {
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    const Json ticket{{"ticket", accepted.at("ticket")}};
+    for (int attempt = 0; attempt < 4000; ++attempt) {
+        harness.service->commitPending();
+        auto result = Json(harness.service->getResult(ticket));
+        if (result.at("status") != "running" && result.at("status") != "pending") return result;
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    FAIL("verify_fold did not end");
+    return {};
+}
+
+// decompose_material_pass's forward_opaque and its draw loop, folded as
+// "post" with a decision that does not change the picture.
+void fg2Declare(Rd1Harness &harness) {
+    harness.commit(harness.decompose("forward_opaque"));
+    harness.commit(fg1Fold(harness, "post", Json::array({"forward_opaque", "forward_opaque_draws"}),
+                           Json{{"kind", "decisions"},
+                                {"decisions", {{"isolate", Json::array({{{"node", "forward_opaque"}}})}}}}));
+}
+
+// The composed target_planning's isolate of forward_opaque, as the plan the
+// runtime built reads it (this CPU runtime has no physical plan, where the
+// engine lists it as fold_decision_applied@1; the GPU test reads that).
+std::optional<bool> fg2Isolated(const Json &plan) {
+    const auto pointer = Json::json_pointer{"/target_planning/graphs/main_render/nodes/forward_opaque/isolate"};
+    if (!plan.contains(pointer)) return std::nullopt;
+    return plan.at(pointer).get<bool>();
+}
+
+} // namespace
+
+TEST_CASE("FG-2 verify_fold draws the open form twice and the decided form once, and marks the group verified "
+          "only when the pictures agree",
+          "[render-config-editor][fg2]") {
+    Fg2Runner fake;
+    Rd1Harness harness{true, fake.runner()};
+    fg2Declare(harness);
+    const auto root_before = readBytes(harness.project.render_config);
+    const auto digest = fg1Groups(harness).at(0).at("digest").get<std::string>();
+    CHECK(fg1Groups(harness).at(0).at("state") == "unverified");
+    CHECK_FALSE(fg2Isolated(harness.runtime.frame_plan).has_value());
+
+    SECTION("the same pictures and no new validation error: committed, and the decisions apply") {
+        const auto accepted = fg2Verify(harness, {{"frames", 2}, {"warmup_seconds", 0.5}});
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        // Running until a frame boundary reads the runs.
+        const auto running = harness.service->getResult({{"ticket", accepted.at("ticket")}});
+        CHECK(running.at("status") == "running");
+        CHECK(running.at("group") == "post");
+        const auto result = fg2Await(harness, accepted);
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "committed");
+        CHECK(result.at("operation") == "verify_fold");
+        CHECK(result.at("group") == "post");
+        CHECK(result.at("verified").at("digest") == digest);
+        CHECK(result.at("verified").at("frames") == 2);
+        const auto at = result.at("verified").at("at").get<std::string>();
+        CHECK(at.size() == 20);
+        CHECK(at[10] == 'T');
+        CHECK(at.back() == 'Z');
+        // One RD-1 document write: restore_render_documents takes it back.
+        CHECK(result.at("documents").size() == 1);
+
+        const auto root = Json::parse(readBytes(harness.project.render_config));
+        CHECK(root.at("fold_groups").at("post").at("folded").at("verified") == result.at("verified"));
+        const auto groups = fg1Groups(harness);
+        CHECK(groups.at(0).at("state") == "verified");
+        CHECK(groups.at(0).at("verified") == result.at("verified"));
+        // The next composition applies the group's decisions.
+        CHECK(fg2Isolated(harness.runtime.frame_plan) == std::optional<bool>{true});
+
+        // What the runs were given: the root at base_source_digest, once
+        // without the group's mark and once with the mark on its digest.
+        REQUIRE(fake.jobs.size() == 1);
+        const auto &job = fake.jobs.front();
+        CHECK(job.group == "post");
+        CHECK(job.frames == 2);
+        CHECK(job.warmup_seconds == 0.5);
+        CHECK(job.tolerance == 0);
+        CHECK(job.project_root == harness.project.root);
+        CHECK(job.root_path == harness.project.render_config);
+        const auto open = Json::parse(job.open_root_bytes);
+        auto decided = Json::parse(job.decided_root_bytes);
+        CHECK(open == Json::parse(root_before));
+        CHECK_FALSE(open.at("fold_groups").at("post").at("folded").contains("verified"));
+        CHECK(decided.at("fold_groups").at("post").at("folded").at("verified").at("digest") == digest);
+        decided["fold_groups"]["post"]["folded"].erase("verified");
+        CHECK(decided == open);
+    }
+
+    SECTION("the control runs differ: graph.fold_verify_unstable@1, nothing written") {
+        fake.set({.open_first = fg2Run({fg2Frame(10), fg2Frame(20)}),
+                  .open_second = fg2Run({fg2Frame(10), fg2Frame(20, 5)}),
+                  .decided = fg2Run({fg2Frame(10), fg2Frame(20)})});
+        const auto accepted = fg2Verify(harness, {{"frames", 2}});
+        const auto error = rd1Error(fg2Await(harness, accepted));
+        CHECK(error.at("code") == "graph.fold_verify_unstable@1");
+        CHECK(error.at("group") == "post");
+        CHECK(error.at("ticket") == accepted.at("ticket"));
+        CHECK(error.at("detail") == Json{{"frame", 2}, {"differing_pixels", 5}});
+        CHECK(readBytes(harness.project.render_config) == root_before);
+        CHECK(fg1Groups(harness).at(0).at("state") == "unverified");
+    }
+
+    SECTION("the decided form draws another picture: graph.fold_mismatch@1 pixels, within the tolerance it passes") {
+        fake.set({.open_first = fg2Run({fg2Frame(10), fg2Frame(20)}),
+                  .open_second = fg2Run({fg2Frame(10), fg2Frame(20)}),
+                  .decided = fg2Run({fg2Frame(10), fg2Frame(20, 3)})});
+        auto error = rd1Error(fg2Await(harness, fg2Verify(harness, {{"frames", 2}})));
+        CHECK(error.at("code") == "graph.fold_mismatch@1");
+        CHECK(error.at("group") == "post");
+        CHECK(error.at("what") == "pixels");
+        CHECK(error.at("detail") == Json{{"frame", 2}, {"differing_pixels", 3}});
+        CHECK(readBytes(harness.project.render_config) == root_before);
+        // T is the number of pixels a frame may differ by.
+        const auto result = fg2Await(harness, fg2Verify(harness, {{"frames", 2}, {"tolerance", 3}}));
+        CHECK(result.at("status") == "committed");
+        CHECK(fg1Groups(harness).at(0).at("state") == "verified");
+    }
+
+    SECTION("validation errors the controls do not have, a decided form that does not run, a control that does not") {
+        fake.set({.open_first = fg2Run({fg2Frame(10)}, 1),
+                  .open_second = fg2Run({fg2Frame(10)}, 1),
+                  .decided = fg2Run({fg2Frame(10)}, 3)});
+        auto error = rd1Error(fg2Await(harness, fg2Verify(harness, {{"frames", 1}})));
+        CHECK(error.at("code") == "graph.fold_mismatch@1");
+        CHECK(error.at("what") == "validation");
+        CHECK(error.at("detail") == Json{{"validation_errors", 3}, {"control_validation_errors", 1}});
+
+        fake.set({.open_first = fg2Run({fg2Frame(10)}),
+                  .open_second = fg2Run({fg2Frame(10)}),
+                  .decided = {.finished = false, .exit_code = 1, .message = "graph.fold_example@1: refused"}});
+        error = rd1Error(fg2Await(harness, fg2Verify(harness, {{"frames", 1}})));
+        CHECK(error.at("code") == "graph.fold_mismatch@1");
+        CHECK(error.at("what") == "compile");
+        CHECK(error.at("detail") == Json{{"exit_code", 1}, {"message", "graph.fold_example@1: refused"}});
+
+        fake.set({.open_first = fg2Run({fg2Frame(10)}),
+                  .open_second = {.finished = false, .exit_code = 3, .message = "no device"},
+                  .decided = fg2Run({fg2Frame(10)})});
+        error = rd1Error(fg2Await(harness, fg2Verify(harness, {{"frames", 1}})));
+        CHECK(error.at("code") == "fold_verify_failed");
+        CHECK(error.at("run") == "open");
+        CHECK(error.at("detail") == Json{{"exit_code", 3}, {"message", "no device"}});
+        CHECK(readBytes(harness.project.render_config) == root_before);
+    }
+}
+
+TEST_CASE("FG-2 verify_fold refuses a group that is being verified, and drops runs of a document that changed",
+          "[render-config-editor][fg2]") {
+    {
+        // An engine that cannot start the runs says so.
+        Rd1Harness harness{true};
+        fg2Declare(harness);
+        const auto error = rd1Error(fg2Verify(harness));
+        CHECK(error.at("code") == "fold_verify_unavailable");
+        CHECK(error.at("reason") == "no_runner");
+    }
+
+    Fg2Runner fake;
+    fake.set(fg2Same(), /*held=*/true);
+    Rd1Harness harness{true, fake.runner()};
+    fg2Declare(harness);
+    const auto accepted = fg2Verify(harness);
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    const Json ticket{{"ticket", accepted.at("ticket")}};
+
+    // A second verify of the same group while the first runs.
+    const auto busy = rd1Error(fg2Verify(harness));
+    CHECK(busy.at("code") == "fold_verify_busy");
+    CHECK(busy.at("group") == "post");
+    CHECK(busy.at("ticket") == accepted.at("ticket"));
+    // A group the root does not declare is the request's error.
+    CHECK_THROWS_AS(fg2Verify(harness, {{"group", "fg2_no_such_group"}}), std::invalid_argument);
+    CHECK_THROWS_AS(fg2Verify(harness, {{"frames", 0}}), std::invalid_argument);
+
+    // Edits go on while it runs; this one moves the root on.
+    harness.commit(el2Planning(harness, {{"forward_opaque", {{"serial", true}}}}));
+    CHECK(harness.service->getResult(ticket).at("status") == "running");
+    const auto changed = readBytes(harness.project.render_config);
+    fake.release();
+    const auto error = rd1Error(fg2Await(harness, accepted));
+    CHECK(error.at("code") == "external_modification");
+    CHECK(error.at("ticket") == accepted.at("ticket"));
+    CHECK(readBytes(harness.project.render_config) == changed);
+    CHECK(fg1Groups(harness).at(0).at("state") == "unverified");
+
+    // Once it ended, the group can be verified again, on the new document.
+    const auto again = fg2Await(harness, fg2Verify(harness));
+    CHECK(again.at("status") == "committed");
+    CHECK(fg1Groups(harness).at(0).at("state") == "verified");
+
+    // A verify still running when the service goes away is stopped: the
+    // destructor tells the worker and waits for it.
+    fake.set(fg2Same(), /*held=*/true);
+    REQUIRE(fg2Verify(harness).at("status") == "accepted");
+    harness.service.reset();
 }
 
 } // namespace Pelican

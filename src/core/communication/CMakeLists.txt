@@ -46,5 +46,6 @@ target_sources(pelican_core PRIVATE
     editorprojectionplan.cpp
     engineauthoringlists.cpp
     renderconfigeditor.cpp
+    graphfoldverify.cpp
     editorruntimefactory.cpp
 )

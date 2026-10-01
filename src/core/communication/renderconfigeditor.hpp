@@ -5,13 +5,16 @@
 #include "../../project/renderpipeline.hpp"
 #include "renderconfigtransaction.hpp"
 #include "editorgate.hpp"
+#include "graphfoldverify.hpp"
 #include "../userpublic/valuegraph.hpp"
 #include "../vkcore/renderer_config.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -161,6 +164,13 @@ struct RenderConfigEditorDependencies {
     // region_providers[]. Unset: the list is empty.
     std::function<std::vector<RenderAuthoringRegionProvider>()>
         region_providers;
+    // FG-2: draws a verify_fold job's three runs on a worker thread
+    // (graphfoldverify.hpp; production: runFoldVerifyProcesses). Unset:
+    // verify_fold is fold_verify_unavailable {reason: "no_runner"}.
+    FoldVerifyRunner verify_fold;
+    // FG-2: why this launch may not start the children now (headless,
+    // replay, golden ...), asked on every verify_fold; nullopt: it may.
+    std::function<std::optional<std::string>()> verify_fold_unavailable;
 };
 
 // Engine-owned render-authoring document/ticket service. Feature toggles edit
@@ -192,6 +202,22 @@ class RenderConfigEditorService {
         // RD-1: restore_render_documents may change which managed fragments
         // the root names, so the baselines are read again after it commits.
         bool reload_managed_baselines = false;
+        // FG-2: fields the committed result carries besides the usual ones
+        // (verify_fold's {group, verified}).
+        nlohmann::ordered_json result_extras = nlohmann::ordered_json::object();
+    };
+
+    // FG-2: one verify_fold between its acceptance and the frame boundary
+    // that reads its runs (harvestFoldVerifies).
+    struct FoldVerifyTask {
+        std::string ticket;
+        std::string group;
+        std::string base_source_digest;
+        // The group's open-form digest when the request was accepted.
+        std::string digest;
+        std::uint32_t frames = 3;
+        std::uint64_t tolerance = 0;
+        std::future<FoldVerifyRuns> runs;
     };
 
     // RD-1: one render document the current composition can write -- the
@@ -241,6 +267,11 @@ class RenderConfigEditorService {
     std::shared_ptr<const void> lifetime_ =
         std::make_shared<const int>(0);
     std::optional<std::string> inflight_ticket_;
+    // FG-2: the running verify_fold workers, and the flag that tells them the
+    // service (the engine) is going away.
+    std::vector<FoldVerifyTask> fold_verifies_;
+    std::shared_ptr<std::atomic<bool>> fold_verify_cancelled_ =
+        std::make_shared<std::atomic<bool>>(false);
 
     struct GateSnapshot {
         bool can_edit = true;
@@ -262,7 +293,10 @@ class RenderConfigEditorService {
         const std::function<std::optional<nlohmann::ordered_json>(AuthoredRenderConfigDocument &)> &transform,
         std::span<const RenderConfigCandidateDocument> additional_documents = {},
         std::optional<std::string> base_preset_digest = std::nullopt,
-        bool source_only = false);
+        bool source_only = false,
+        // FG-2: the ticket id to use (verify_fold's, issued when the request
+        // was accepted); nullopt: a new one.
+        std::optional<std::string> ticket_id = std::nullopt);
     // The authoring precondition preamble shared by queueRootEdit and
     // addAuthoredPass: gate -> base source digest CAS -> re-read-from-disk
     // CAS, in that order.  Returns the rejection the RPC answers with, or
@@ -326,7 +360,14 @@ class RenderConfigEditorService {
     // composed like any root edit (queueRootEdit; RD-1 takes it back).
     nlohmann::ordered_json queueFoldGroupEdit(
         const std::string &method, const std::string &base_digest, const std::string &group,
-        const std::function<nlohmann::ordered_json(nlohmann::ordered_json current)> &edit);
+        const std::function<nlohmann::ordered_json(nlohmann::ordered_json current)> &edit,
+        std::optional<std::string> ticket_id = std::nullopt);
+    // FG-2: at the frame boundary, every verify_fold whose runs are done is
+    // judged (judgeFoldVerifyRuns). A refusal ends its ticket; a pass writes
+    // folded.verified through queueFoldGroupEdit under the same ticket, with
+    // the CAS of the request's base_source_digest, ahead of the other queued
+    // tickets.
+    void harvestFoldVerifies() noexcept;
     // EL-3: why edit_rendering_keys does not write `key` (nullopt: it does).
     // `selects_preset`: the current root's section names a pipeline preset.
     std::optional<nlohmann::ordered_json> renderingKeyRefusal(
@@ -418,6 +459,18 @@ class RenderConfigEditorService {
     // node a root node id; `folded: null` (nodes absent) removes the group.
     // One ticket (queueFoldGroupEdit).
     nlohmann::ordered_json foldNodes(const nlohmann::json &params);
+    // FG-2: verify_fold {base_source_digest, group, frames?: N (3),
+    // warmup_seconds?: S (30), tolerance?: T (0)} -> {ticket, status:
+    // "accepted", base_source_digest}. The ticket is "running" while a worker
+    // draws the open form twice and the decided form once (dependencies'
+    // verify_fold); at a frame boundary after that it is committed (the
+    // group's folded.verified = {digest, at, frames} written as one RD-1
+    // ticket, the result with {group, verified}) or rejected
+    // (graph.fold_verify_unstable@1, graph.fold_mismatch@1,
+    // fold_verify_failed, or external_modification when the root changed
+    // meanwhile). Refused at once: fold_verify_unavailable {reason},
+    // fold_verify_busy {group, ticket}, gate_closed, external_modification.
+    nlohmann::ordered_json verifyFold(const nlohmann::json &params);
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params);
     nlohmann::ordered_json editGraphDocument(const nlohmann::json &params);
     // LP-3b: a one-piece material pass of the rendering section or of a

@@ -1386,6 +1386,12 @@ OrderedJson EditorCommandService::foldNodes(const Json &params) {
     return render_config_editor_->foldNodes(params);
 }
 
+// FG-2.
+OrderedJson EditorCommandService::verifyFold(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->verifyFold(params);
+}
+
 OrderedJson EditorCommandService::getGraphInstances(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->getGraphInstances(params);
@@ -2409,6 +2415,11 @@ OrderedJson EditorCommandRpcAdapter::getFoldGroups(const Json &params) const {
 OrderedJson EditorCommandRpcAdapter::foldNodes(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
     return mutable_service_->foldNodes(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::verifyFold(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
+    return mutable_service_->verifyFold(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getGraphInstances(const Json &params) const {

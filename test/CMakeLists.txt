@@ -3791,6 +3791,15 @@ if(PELICAN_PYTHON_TESTS_AVAILABLE)
                 --repo-root ${CMAKE_SOURCE_DIR}
                 --player $<TARGET_FILE:pelican_player>
             )
+            # FG-2: verify_fold starts the player three times (headless)
+            # from a windowed engine and marks the fold group verified.
+            # The children take no lease of their own: this test holds it.
+            pelican_define_gpu_python_test(
+                fg2_verify_fold_windowed
+                ${CMAKE_CURRENT_SOURCE_DIR}/fg2_verify_fold_windowed.py
+                --repo-root ${CMAKE_SOURCE_DIR}
+                --player $<TARGET_FILE:pelican_player>
+            )
         endif()
     endif()
 

@@ -32,6 +32,9 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cmath>
+#include <limits>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -898,6 +901,12 @@ RenderConfigEditorService::RenderConfigEditorService(
 }
 
 RenderConfigEditorService::~RenderConfigEditorService() {
+    // FG-2: a running verify_fold's worker stops its child (it closes the
+    // child's job after a grace) and returns; wait for every one.
+    fold_verify_cancelled_->store(true);
+    for (auto &task : fold_verifies_)
+        if (task.runs.valid()) task.runs.wait();
+    fold_verifies_.clear();
     lifetime_.reset();
 }
 
@@ -1716,7 +1725,8 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
     const std::string &base_digest, const std::string &operation,
     const std::function<std::optional<OrderedJson>(AuthoredRenderConfigDocument &)> &transform,
     std::span<const RenderConfigCandidateDocument> additional_documents,
-    std::optional<std::string> base_preset_digest, bool source_only) {
+    std::optional<std::string> base_preset_digest, bool source_only,
+    std::optional<std::string> ticket_id_override) {
     if (!isLowerHexDigest(base_digest))
         throw std::invalid_argument(operation + " base_source_digest must be 64 lowercase hex characters");
     const auto gate = gateSnapshot();
@@ -1734,7 +1744,8 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
                          {{"method", operation}});
     }
     const auto ticket_id =
-        "render-config-edit-" + std::to_string(next_ticket_++);
+        ticket_id_override ? *ticket_id_override
+                           : "render-config-edit-" + std::to_string(next_ticket_++);
     auto candidate_documents = currentDocumentSet().documents();
     const auto root_document = std::find_if(
         candidate_documents.begin(), candidate_documents.end(),
@@ -2515,7 +2526,8 @@ OrderedJson RenderConfigEditorService::getFoldGroups(const Json &params) const {
 
 OrderedJson RenderConfigEditorService::queueFoldGroupEdit(
     const std::string &method, const std::string &base_digest, const std::string &group,
-    const std::function<OrderedJson(OrderedJson current)> &edit) {
+    const std::function<OrderedJson(OrderedJson current)> &edit,
+    std::optional<std::string> ticket_id) {
     return queueRootEdit(base_digest, method,
         [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
             const auto root = OrderedJson::parse(candidate.bytes());
@@ -2538,7 +2550,8 @@ OrderedJson RenderConfigEditorService::queueFoldGroupEdit(
             candidate = groups.empty() ? candidate.withoutRootValue("fold_groups")
                                        : candidate.withRootValue("fold_groups", groups.dump(2));
             return std::nullopt;
-        });
+        },
+        {}, std::nullopt, false, std::move(ticket_id));
 }
 
 OrderedJson RenderConfigEditorService::foldNodes(const Json &params) {
@@ -2575,6 +2588,181 @@ OrderedJson RenderConfigEditorService::foldNodes(const Json &params) {
     OrderedJson entry{{"nodes", OrderedJson::parse(nodes->dump())},
                       {"folded", OrderedJson::parse(folded->dump())}};
     return queueFoldGroupEdit(method, base_digest, group, [&](OrderedJson) { return entry; });
+}
+
+// --- FG-2: verify_fold (graphfoldverify.hpp).
+
+namespace {
+
+// An optional non-negative integer field of a verify_fold request.
+std::uint64_t verifyFoldCount(const Json &params, const char *field, std::uint64_t fallback,
+                              std::uint64_t minimum, std::uint64_t maximum) {
+    const auto found = params.find(field);
+    if (found == params.end()) return fallback;
+    if (!found->is_number_unsigned() && !(found->is_number_integer() && found->get<std::int64_t>() >= 0))
+        throw std::invalid_argument(std::string{"verify_fold "} + field + " must be a non-negative integer");
+    const auto value = found->get<std::uint64_t>();
+    if (value < minimum || value > maximum)
+        throw std::invalid_argument(std::string{"verify_fold "} + field + " must be from " +
+                                    std::to_string(minimum) + " to " + std::to_string(maximum));
+    return value;
+}
+
+} // namespace
+
+OrderedJson RenderConfigEditorService::verifyFold(const Json &params) {
+    const std::string method = "verify_fold";
+    requireOnly(params, {"base_source_digest", "group", "frames", "warmup_seconds", "tolerance"}, method);
+    const auto base_digest = requireString(params, "base_source_digest", method);
+    if (!isLowerHexDigest(base_digest))
+        throw std::invalid_argument("verify_fold base_source_digest must be 64 lowercase hex characters");
+    const auto group = requireString(params, "group", method);
+    const auto frames = static_cast<std::uint32_t>(verifyFoldCount(params, "frames", 3, 1, 600));
+    const auto tolerance = verifyFoldCount(params, "tolerance", 0, 0,
+                                           static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()));
+    double warmup_seconds = 30.0;
+    if (const auto found = params.find("warmup_seconds"); found != params.end()) {
+        if (!found->is_number() || !std::isfinite(found->get<double>()) || found->get<double>() < 0.0 ||
+            found->get<double>() > 3600.0)
+            throw std::invalid_argument("verify_fold warmup_seconds must be a number from 0 to 3600");
+        warmup_seconds = found->get<double>();
+    }
+
+    // The children are the engine's own executable; a launch that may not
+    // start them says why, before anything else is judged.
+    if (!dependencies_.verify_fold)
+        return rejection(std::string{foldVerifyUnavailableCode},
+                         "this engine cannot start the runs verify_fold draws", {{"reason", "no_runner"}});
+    if (dependencies_.verify_fold_unavailable) {
+        if (auto reason = dependencies_.verify_fold_unavailable())
+            return rejection(std::string{foldVerifyUnavailableCode},
+                             "verify_fold does not start its runs in a " + *reason + " launch",
+                             {{"reason", *reason}});
+    }
+    const auto gate = gateSnapshot();
+    if (auto rejected = checkAuthoringPreconditions(gate, base_digest, method,
+                                                    "render config editing is currently disabled"))
+        return *rejected;
+
+    const auto root = Json::parse(document_.bytes());
+    const auto groups = parseGraphFoldGroups(root);
+    const auto declared = std::find_if(groups.begin(), groups.end(),
+                                       [&](const GraphFoldGroup &entry) { return entry.group == group; });
+    if (declared == groups.end())
+        throw std::invalid_argument("verify_fold group '" + group + "' is not a fold group of the root");
+    for (const auto &task : fold_verifies_) {
+        if (task.group == group)
+            return rejection(std::string{foldVerifyBusyCode},
+                             "a verify_fold of the fold group '" + group + "' is running",
+                             {{"group", group}, {"ticket", task.ticket}});
+    }
+
+    // The two forms of the root at base_source_digest: without the group's
+    // mark (FG-1 runs it open) and with its mark on the digest of now (FG-1
+    // applies its decisions). Nothing else changes.
+    const auto digest = graphFoldGroupDigest(root, declared->nodes);
+    const auto authored = OrderedJson::parse(document_.bytes()).at("fold_groups");
+    auto open_groups = authored;
+    open_groups[group]["folded"].erase("verified");
+    auto decided_groups = authored;
+    decided_groups[group]["folded"]["verified"] = {{"digest", digest}, {"at", foldVerifyUtcNow()}, {"frames", frames}};
+    FoldVerifyJob job{
+        .group = group,
+        .project_root = dependencies_.project_root,
+        .root_path = dependencies_.source_path,
+        .open_root_bytes = document_.withRootValue("fold_groups", open_groups.dump(2)).bytes(),
+        .decided_root_bytes = document_.withRootValue("fold_groups", decided_groups.dump(2)).bytes(),
+        .documents = {},
+        .frames = frames,
+        .warmup_seconds = warmup_seconds,
+        .tolerance = tolerance,
+    };
+    for (const auto &[key, managed] : managed_documents_) {
+        (void)key;
+        job.documents.push_back({.path = managed.path, .bytes = managed.bytes});
+    }
+
+    const auto ticket_id = "render-config-edit-" + std::to_string(next_ticket_++);
+    fold_verifies_.push_back(FoldVerifyTask{
+        .ticket = ticket_id,
+        .group = group,
+        .base_source_digest = base_digest,
+        .digest = digest,
+        .frames = frames,
+        .tolerance = tolerance,
+        // Its own thread: the frame and the RPCs go on while it draws.
+        .runs = std::async(std::launch::async,
+                           [runner = dependencies_.verify_fold, job = std::move(job),
+                            cancelled = fold_verify_cancelled_] { return runner(job, *cancelled); }),
+    });
+    results_[ticket_id] = {{"ticket", ticket_id}, {"status", "running"}, {"operation", method}, {"group", group}};
+    return {{"ticket", ticket_id}, {"status", "accepted"}, {"base_source_digest", digestJson(base_digest)}};
+}
+
+void RenderConfigEditorService::harvestFoldVerifies() noexcept {
+    for (auto task = fold_verifies_.begin(); task != fold_verifies_.end();) {
+        if (task->runs.wait_for(std::chrono::seconds{0}) != std::future_status::ready) {
+            ++task;
+            continue;
+        }
+        auto done = std::move(*task);
+        task = fold_verifies_.erase(task);
+        const auto finish = [this, &done](OrderedJson result) {
+            if (!result.contains("ticket")) result["ticket"] = done.ticket;
+            results_[done.ticket] = result;
+            completed_.push_back(std::move(result));
+        };
+        try {
+            FoldVerifyRuns runs;
+            try {
+                runs = done.runs.get();
+            } catch (const std::exception &error) {
+                runs.setup_failure = error.what();
+            }
+            if (runs.cancelled) {
+                finish(rejection(std::string{foldVerifyUnavailableCode}, "the engine is shutting down",
+                                 {{"ticket", done.ticket}, {"reason", "shutdown"}}));
+                continue;
+            }
+            const auto verdict = judgeFoldVerifyRuns(done.group, runs, done.tolerance);
+            if (!verdict.passed) {
+                auto fields = verdict.fields;
+                fields["ticket"] = done.ticket;
+                finish(rejection(verdict.code, verdict.message, std::move(fields)));
+                continue;
+            }
+            // The mark, on the document the runs drew: queueRootEdit's CAS
+            // refuses it as external_modification when the root moved on.
+            const OrderedJson verified{
+                {"digest", done.digest}, {"at", foldVerifyUtcNow()}, {"frames", done.frames}};
+            auto queued = queueFoldGroupEdit(
+                "verify_fold", done.base_source_digest, done.group,
+                [&](OrderedJson current) {
+                    if (!current.is_object() || !current.contains("folded"))
+                        throw std::invalid_argument("verify_fold: the root no longer declares the fold group " +
+                                                    done.group);
+                    current["folded"]["verified"] = verified;
+                    return current;
+                },
+                done.ticket);
+            if (queued.value("status", std::string{}) != "accepted") {
+                if (queued.contains("error")) queued["error"]["ticket"] = done.ticket;
+                finish(std::move(queued));
+                continue;
+            }
+            // Ahead of the tickets already queued, which were accepted
+            // against the same document and would otherwise move it first.
+            auto ticket = std::move(pending_.back());
+            pending_.pop_back();
+            ticket.result_extras = {{"group", done.group}, {"verified", verified}};
+            pending_.insert(pending_.begin(), std::move(ticket));
+        } catch (const std::exception &error) {
+            finish(preflightRejection(error, {{"ticket", done.ticket}, {"group", done.group}}));
+        } catch (...) {
+            finish(rejection("render_pipeline_preflight_failed", "unknown verify_fold failure",
+                             {{"ticket", done.ticket}, {"group", done.group}}));
+        }
+    }
 }
 
 namespace {
@@ -5749,6 +5937,10 @@ void RenderConfigEditorService::completeCommitTransaction(
             completed["post_commit_error"] =
                 applied.post_commit_error;
         }
+        for (const auto &[key, value] :
+             transaction->ticket.result_extras.items()) {
+            if (!completed.contains(key)) completed[key] = value;
+        }
         if (restart_reason) {
             // RS-1: committed, not live; the next start builds it.
             completed["restart_required"] = true;
@@ -5785,6 +5977,8 @@ void RenderConfigEditorService::completeCommitTransaction(
 
 void RenderConfigEditorService::commitPending() noexcept {
     if (inflight_ticket_) return;
+    // FG-2: a verify that passed queues its mark ahead of the queue below.
+    harvestFoldVerifies();
     auto queue = std::move(pending_);
     pending_.clear();
     for (auto ticket_iterator = queue.begin();
