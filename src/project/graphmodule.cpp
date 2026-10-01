@@ -44,13 +44,12 @@ std::vector<std::string> renderPassKindWrittenSockets(const std::string &op) {
 }
 
 // The parameters are the pass's own fields, less the ones the sockets and the
-// id decide (name, type, output, source, destination).
-GraphOperationContract renderPassKindPorts(const Json &node) {
+// id decide (name, type, output, source, destination). renderPorts has
+// checked that they are an object holding what the op requires.
+GraphOperationContract renderPassKindPorts(const Json &node, const Json &parameters_object) {
     const auto op = node.at("op").get<std::string>();
     const auto id = nodeId(node);
-    const auto parameters = node.find("parameters");
-    if (parameters == node.end() || !parameters->is_object())
-        throw std::invalid_argument("render node parameters must be an object");
+    const auto *const parameters = &parameters_object;
     static const std::set<std::string, std::less<>> common{
         "view_family", "view_select", "region_tags", "pass_set", "after", "before", "insert", "canonical_anchor"};
     static const std::set<std::string, std::less<>> shadow_depth{
@@ -62,9 +61,9 @@ GraphOperationContract renderPassKindPorts(const Json &node) {
     }
     if (op == "render.snapshot_copy") {
         // The frame planner orders the copy after this pass, as it does for
-        // the JSON form, which requires it too.
+        // the JSON form, which requires it too (absent: RS-9's named refusal).
         const auto after = parameters->find("snapshot_after");
-        if (after == parameters->end() || !after->is_string() || after->get_ref<const std::string &>().empty())
+        if (!after->is_string() || after->get_ref<const std::string &>().empty())
             throw std::invalid_argument("render.snapshot_copy requires snapshot_after, the pass it copies after: " +
                                         id);
     }
@@ -216,15 +215,61 @@ void checkDrawStepParameters(const std::string &op, const Json &parameters, cons
     if (!any) throw std::invalid_argument("draw.override replaces a render state or defines: " + id);
 }
 
+// RS-9: the parameters each render op cannot do without, in the order a
+// refusal names them. One entry is a name, or alternatives that each satisfy
+// it ("shader" or "ray_tracing" for a compute task); a refusal names the
+// first. A name holding JSON null counts as missing. The values themselves
+// are checked where they are read, as before. An op that requires nothing
+// (render.shadow_depth draws with engine://shadow_depth into its depth socket)
+// takes absent parameters as empty ones: set_node_parameters stores empty
+// parameters as none.
+std::vector<std::vector<std::string_view>> renderNodeRequiredParameters(std::string_view op) {
+    if (op == "render.fullscreen") return {{"ports"}, {"shader"}};
+    if (op == "render.raster") return {{"ports"}, {"shader"}, {"draw"}};
+    if (op == "render.compute") return {{"ports"}, {"shader", "ray_tracing"}};
+    if (op == "render.material_pass") return {{"material_contract"}};
+    if (op == "render.snapshot_copy") return {{"snapshot_after"}};
+    if (op == "render.target_ref") return {{"name"}, {"type"}};
+    if (op == "render.image") return {{"type"}};
+    if (op == "render.buffer") return {{"element"}};
+    if (op == "render.attribute") return {{"element"}, {"domain"}};
+    return {};
+}
+
+// RS-9: graph.render_node_parameters_missing@1 {node, op, missing} when the
+// parameters lack what the op requires. Absent parameters are empty ones.
+void checkRenderNodeRequiredParameters(const std::string &op, const Json &parameters, const Json &node) {
+    auto missing = Json::array();
+    for (const auto &alternatives : renderNodeRequiredParameters(op)) {
+        const bool given = std::any_of(alternatives.begin(), alternatives.end(), [&](std::string_view name) {
+            const auto found = parameters.find(std::string{name});
+            return found != parameters.end() && !found->is_null();
+        });
+        if (!given) missing.push_back(std::string{alternatives.front()});
+    }
+    if (!missing.empty())
+        throw GraphRegistryError("graph.render_node_parameters_missing@1",
+                                 {{"node", nodeId(node)}, {"op", op}, {"missing", std::move(missing)}});
+}
+
 // Render resources and passes declare their own ports, so pelican.render
 // registers a factory rather than a fixed contract.
 GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
                                    const LogicalType &scalar, const Json &node) {
     const auto op = node.at("op").get<std::string>();
-    // LP-3a: a draw.material has nothing to say, so its parameters may be absent.
+    // LP-3a: a draw.material has nothing to say, so its parameters may be
+    // absent. RS-9: so may any op's; a render op then lacks what it requires.
     static const Json no_parameters = Json::object();
     const auto found_parameters = node.find("parameters");
-    const auto &parameters = found_parameters != node.end() ? *found_parameters : no_parameters;
+    const auto &parameters =
+        found_parameters != node.end() && !found_parameters->is_null() ? *found_parameters : no_parameters;
+    static const std::set<std::string, std::less<>> render_ops{"render.fullscreen", "render.raster",
+        "render.compute", "render.material_pass", "render.snapshot_copy", "render.shadow_depth",
+        "render.target_ref", "render.image", "render.buffer", "render.attribute"};
+    if (render_ops.contains(op)) {
+        if (!parameters.is_object()) throw std::invalid_argument("render node parameters must be an object");
+        checkRenderNodeRequiredParameters(op, parameters, node);
+    }
     GraphOperationContract contract;
     const auto draw_stream = registry.canonicalize(parseSemanticTypeId("pelican.render.draw_stream@1"));
     if (op == "draw.material" || op == "draw.variant" || op == "draw.override") {
@@ -301,7 +346,7 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
         declaration["kind"] = "image";
         contract.outputs.emplace("resource", resourceType(registry, declaration));
     } else if (op == "render.shadow_depth" || op == "render.snapshot_copy") {
-        contract = renderPassKindPorts(node);
+        contract = renderPassKindPorts(node, parameters);
     } else if (op == "render.compute" || op == "render.fullscreen" || op == "render.raster") {
         const auto &ports = parameters.at("ports");
         if (!ports.is_object()) throw std::invalid_argument("render ports must be an object");

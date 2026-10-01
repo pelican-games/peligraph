@@ -66,12 +66,11 @@ embed_shader(sprite.vert)
 embed_shader(sprite.frag)
 embed_shader(bloom_blur_h.frag)
 embed_shader(bloom_blur_v.frag)
-# Defaults mirror src/core/resources/features/bloom.json parameters.scalars.
+# RS-8: bloom_highpass.frag carries the bloom feature's parameter defaults
+# itself (features/bloom.json parameters.scalars), so it compiles without them.
 # bloom_composite.frag is source-only (below): its `intensity` arrives through a
 # resource port, whose GLSL include is generated per pass at runtime.
-embed_shader(bloom_highpass.frag
-    -DPELICAN_FEATURE_BLOOM_THRESHOLD=0.4
-    -DPELICAN_FEATURE_BLOOM_KNEE=0.7)
+embed_shader(bloom_highpass.frag)
 embed_shader(bloom_upsample.frag)
 embed_shader(debug_texture.frag)
 embed_shader(shader_lab_hello.frag)
@@ -144,6 +143,7 @@ b_embed(pelican_resources shaders/include/pelican_shadow_filter.glsl)
 b_embed(pelican_resources shaders/include/pelican_skinning.glsl)
 b_embed(pelican_resources shaders/include/pelican_morph.glsl)
 b_embed(pelican_resources shaders/include/pelican_vat.glsl)
+b_embed(pelican_resources shaders/include/pelican_resource_ports.glsl)
 b_embed(pelican_resources shaders/material/standard_lighting.glsl)
 b_embed(pelican_resources shaders/material/toon_lighting.glsl)
 b_embed(pelican_resources shaders/material/openpbr_lighting.glsl)

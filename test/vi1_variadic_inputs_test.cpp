@@ -5,12 +5,14 @@
 #include "../src/core/fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../src/core/fullscreenpass/passinputlayout.hpp"
 #include "../src/core/launchconfig.hpp"
+#include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/renderingpass/passshaderdefines.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/shader/pelican_sets.hpp"
+#include "../src/core/shader/shadercompiler.hpp"
 #include "../src/core/shader/shaderreflection.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/watch/reloadservice.hpp"
@@ -32,6 +34,7 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <regex>
 #include <sstream>
 #include <stb_image.h>
 #include <string>
@@ -1454,6 +1457,150 @@ TEST_CASE("VI-1b the file watch's shader reload refuses a pass the same way, and
           Json::array({declaration(0, "sampled_image", "in_a", false)}));
     GET_MODULE(VulkanManageCore).waitIdle();
     requireNoValidationErrors(validation);
+}
+
+// RS-8 / RS-11: the bloom feature's shaders outside the feature. Each reads
+// the feature's parameter default where the feature is not there to give it:
+// bloom_highpass's threshold and knee (PELICAN_FEATURE_BLOOM_* when not
+// defined) and bloom_composite's intensity (without a bloomIntensity port,
+// against the engine's empty pelican_resource_ports.glsl). The defaults are
+// read off the shader sources and compared with features/bloom.json.
+TEST_CASE("RS-8 / RS-11 the bloom shaders compile on their own with the bloom feature's parameter defaults",
+          "[vi1][rs8][rs11]") {
+    // The case runs only where the runtime shader compiler is built
+    // (pelican_define_test RUNTIME_SHADER).
+    const auto feature = Json::parse(engineResourceOrThrow("features/bloom.json"));
+    const auto featureDefault = [&](std::string_view name) {
+        for (const auto &scalar : feature.at("parameters").at("scalars"))
+            if (scalar.at("name") == std::string{name}) return scalar.at("default").get<float>();
+        FAIL("features/bloom.json has no scalar " << name);
+        return 0.0f;
+    };
+    const auto sourceDefault = [](const std::string &source, const std::string &pattern) {
+        std::smatch match;
+        REQUIRE(std::regex_search(source, match, std::regex{pattern}));
+        return std::stof(match[1].str());
+    };
+    const auto highpass = engineResourceOrThrow("bloom_highpass.frag");
+    const auto composite = engineResourceOrThrow("bloom_composite.frag");
+    CHECK(sourceDefault(highpass, R"(#define PELICAN_FEATURE_BLOOM_THRESHOLD ([0-9.]+))") ==
+          featureDefault("threshold"));
+    CHECK(sourceDefault(highpass, R"(#define PELICAN_FEATURE_BLOOM_KNEE ([0-9.]+))") == featureDefault("knee"));
+    CHECK(sourceDefault(composite, R"(float bloomIntensity = ([0-9.]+);)") == featureDefault("intensity"));
+
+    ShaderCompiler compiler;
+    const auto compile = [&](const std::string &source, std::string_view name,
+                             std::vector<std::string> defines = {}) {
+        ShaderCompileOptions options;
+        options.defines = std::move(defines);
+        const auto result = compiler.compileSource(source, vk::ShaderStageFlagBits::eFragment, name, options);
+        INFO(name << ": " << result.log);
+        REQUIRE(result.ok);
+        return reflect(result.spirv);
+    };
+    // Without the feature's defines, and with them as the feature writes them.
+    (void)compile(highpass, "engine://bloom_highpass.frag");
+    (void)compile(highpass, "engine://bloom_highpass.frag",
+                  {"PELICAN_FEATURE_BLOOM_THRESHOLD=0.400000006", "PELICAN_FEATURE_BLOOM_KNEE=0.699999988"});
+    // Without a port: its two inputs, nothing at a port's name.
+    const auto reflected = compile(composite, "engine://bloom_composite.frag");
+    CHECK(readPassInputLayout(reflected).declarations.size() == 2);
+}
+
+// RS-8 / RS-11 on the device, as a graph writes them (as LP-1d's case): a
+// render.fullscreen draws engine://bloom_highpass over red (luminance 0.21,
+// under the default threshold 0.4: black) and over green (0.72: a dim
+// green), and engine://bloom_composite adds half-red to blue, once without a
+// bloomIntensity port (the default 2.0: magenta) and once with the port read
+// from a graph buffer of 1.0 (half-red on blue). `present` shows one of the
+// four images at a time (PELICAN_PASSTHROUGH_INPUT).
+TEST_CASE("RS-8 / RS-11 a graph fullscreen pass draws bloom_highpass, and bloom_composite with and without "
+          "its bloomIntensity port",
+          "[vi1][rs8][rs11][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("rs8_bloom_graph");
+    const auto root = dir.root / "project";
+    const std::vector<std::string> shown{"vi_hp_red", "vi_hp_green", "vi_comp_default", "vi_comp_port"};
+    writeProject(root, {{"vi_red", red}, {"vi_green", green}, {"vi_blue", blue}, {"vi_half", Rgb{128, 0, 0}}},
+                 Json{{"input", shown}, {"shader", passthroughShader(Json::array({"PELICAN_PASSTHROUGH_INPUT=0"}))}});
+    const auto config_path = root / "passes/main_rendering_config.json";
+    auto document = Json::parse(readFile(config_path));
+    for (const auto &name : shown) {
+        auto target = document.at("rendering").at("render_targets").at(0);
+        target["name"] = name;
+        document["rendering"]["render_targets"].push_back(std::move(target));
+    }
+    const Json type{{"semantic", "pelican.render.color_signal@1"},
+                    {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    const auto ref = [&](const std::string &name) {
+        return Json{{"id", name + "_ref"}, {"op", "render.target_ref"},
+                    {"parameters", {{"name", name}, {"type", type}}}, {"outputs", {"resource"}}};
+    };
+    const auto numbered = [&](int input_index) {
+        return Json{{"kind", "image"}, {"type", type}, {"access", "read"},
+                    {"binding", "input"}, {"input_index", input_index}};
+    };
+    const Json color{{"kind", "image"}, {"type", type}, {"access", "write"}, {"attachment", "color"}, {"location", 0}};
+    const auto endpoint = [](const std::string &node) { return Json{{"node", node}, {"port", "resource"}}; };
+    const auto pass = [&](const std::string &id, const std::string &fragment, Json ports, Json inputs) {
+        return Json{{"id", id}, {"op", "render.fullscreen"},
+                    {"parameters", {{"pass_set", "main_render"}, {"insert", {{"before", "present"}}},
+                                    {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", fragment}}},
+                                    {"ports", std::move(ports)}}},
+                    {"inputs", std::move(inputs)}, {"outputs", {"color"}}};
+    };
+    auto nodes = Json::array();
+    for (const auto *name : {"vi_red", "vi_green", "vi_blue", "vi_half"}) nodes.push_back(ref(name));
+    for (const auto &name : shown) nodes.push_back(ref(name));
+    for (const auto &[id, source] : {std::pair<std::string, std::string>{"hp_red", "vi_red"},
+                                     std::pair<std::string, std::string>{"hp_green", "vi_green"}})
+        nodes.push_back(pass(id, "engine://bloom_highpass", {{"source", numbered(0)}, {"color", color}},
+                             {{"source", endpoint(source + "_ref")}, {"color", endpoint("vi_" + id + "_ref")}}));
+    nodes.push_back(pass("comp_default", "engine://bloom_composite",
+                         {{"base", numbered(0)}, {"bloom", numbered(1)}, {"color", color}},
+                         {{"base", endpoint("vi_blue_ref")}, {"bloom", endpoint("vi_half_ref")},
+                          {"color", endpoint("vi_comp_default_ref")}}));
+    nodes.push_back({{"id", "intensity"}, {"op", "render.buffer"},
+                     {"parameters", {{"element", "float"}, {"size", 4}, {"lifetime", "persistent"},
+                                     {"host_source", "runtime_f32"}, {"initial_f32", Json::array({1.0})}}},
+                     {"outputs", {"resource"}}});
+    nodes.push_back(pass("comp_port", "engine://bloom_composite",
+                         {{"base", numbered(0)}, {"bloom", numbered(1)}, {"color", color},
+                          {"bloomIntensity", {{"kind", "buffer"}, {"element", "float"}, {"access", "read"}}}},
+                         {{"base", endpoint("vi_blue_ref")}, {"bloom", endpoint("vi_half_ref")},
+                          {"color", endpoint("vi_comp_port_ref")}, {"bloomIntensity", endpoint("intensity")}}));
+    document["nodes"] = std::move(nodes);
+    writeFile(config_path, document.dump(2));
+    const auto capture = dir.root / "capture.png";
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+
+    const auto show = [&](int index) {
+        if (index > 0)
+            requireCommitted(editPresent(
+                rpc, shown, passthroughShader(Json::array({"PELICAN_PASSTHROUGH_INPUT=" + std::to_string(index)}))));
+        return rpc.frame(capture);
+    };
+    // The centre pixel lit dimly in one channel, the others dark.
+    const auto dim = [](const std::vector<unsigned char> &rgba, int Rgb::*lit, std::initializer_list<int Rgb::*> dark) {
+        const auto centre = pixel(rgba, 32, 32);
+        bool ok = centre.*lit > 20 && centre.*lit < 220;
+        for (const auto channel : dark) ok = ok && centre.*channel <= 8;
+        return ok;
+    };
+    // Red is under the threshold; green passes it, dimmed by the knee.
+    CHECK(every(show(0), black));
+    CHECK(dim(show(1), &Rgb::g, {&Rgb::r, &Rgb::b}));
+    // Blue + half-red x 2.0 without the port; x 1.0 from the buffer with it.
+    CHECK(every(show(2), magenta));
+    const auto ported = show(3);
+    CHECK(dim(ported, &Rgb::r, {&Rgb::g}));
+    CHECK(pixel(ported, 32, 32).b >= 247);
+    GET_MODULE(VulkanManageCore).waitIdle();
 }
 
 } // namespace Pelican

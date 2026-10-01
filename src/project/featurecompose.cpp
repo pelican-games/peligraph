@@ -2229,6 +2229,33 @@ void validateFullscreenConsumerSelector(
     }
 }
 
+// RS-10: a fullscreen pass that lists the resource among its inputs reads
+// it by its own declaration, whatever its fragment shader: it is a consumer
+// without a selector naming its shader, and the input is not added again.
+bool fullscreenPassReadsResource(const nlohmann::json &pass,
+                                 const std::string &resource) {
+    return pass.value("type", std::string{}) == "fullscreen" &&
+           pass.contains("input") &&
+           stringListContains(pass.at("input"), resource);
+}
+
+// RS-10: a fullscreen pass with the light-data contract a selector asks for
+// (uses_light_data) whose fragment is not the one the selector names: the
+// author's own lighting (Studio's Deferred lighting template). The engine
+// cannot add an input its shader may not declare, so it is not bound; but
+// it is where the pipeline lights the scene, and it reads the resource by
+// name when it lists it (fullscreenPassReadsResource).
+bool fullscreenLightingWithoutSelector(const nlohmann::json &pass,
+                                       const nlohmann::json &selectors) {
+    if (pass.value("type", std::string{}) != "fullscreen") return false;
+    return std::any_of(
+        selectors.begin(), selectors.end(),
+        [&](const nlohmann::json &selector) {
+            return selector.at("uses_light_data").get<bool>() &&
+                   pass.value("uses_light_data", false);
+        });
+}
+
 bool fullscreenConsumerMatches(
     const nlohmann::json &pass,
     const nlohmann::json &selector) {
@@ -2367,6 +2394,7 @@ void applySurfaceResourceContracts(
             nlohmann::json::array();
         nlohmann::json fullscreen_consumers =
             nlohmann::json::array();
+        bool unbound_lighting = false;
         for (auto &pass_set :
              ensureArray(config, "rendering_passes")) {
             auto &passes =
@@ -2436,10 +2464,29 @@ void applySurfaceResourceContracts(
                     fullscreen_consumers.push_back(
                         pass_name);
                 }
+                if (fullscreen_selectors.empty()) continue;
+                const bool listed =
+                    std::find(fullscreen_consumers.begin(),
+                              fullscreen_consumers.end(),
+                              pass_name) !=
+                    fullscreen_consumers.end();
+                if (!listed &&
+                    fullscreenPassReadsResource(pass, resource)) {
+                    fullscreen_consumers.push_back(pass_name);
+                } else if (!listed &&
+                           fullscreenLightingWithoutSelector(
+                               pass, fullscreen_selectors)) {
+                    unbound_lighting = true;
+                }
             }
         }
+        // RS-10: a pipeline that lights the scene in a fullscreen pass of
+        // its own shader (deferred geometry and the author's lighting) is
+        // not refused: the resource is produced and declared, and that pass
+        // reads it by listing it as an input.
         if (material_consumers.empty() &&
             fullscreen_consumers.empty() &&
+            !unbound_lighting &&
             (declaration.contains("material_contracts") ||
              declaration.contains("fullscreen_consumers"))) {
             throw std::runtime_error(
@@ -2531,6 +2578,13 @@ void selectSurfaceResourceConsumersAmong(
                     appendFullscreenSurfaceResource(pass, resource, contract);
                     fullscreen_consumers.push_back(pass_name);
                 }
+                // RS-10: as in applySurfaceResourceContracts.
+                if (!selectors.empty() &&
+                    std::find(fullscreen_consumers.begin(),
+                              fullscreen_consumers.end(),
+                              pass_name) == fullscreen_consumers.end() &&
+                    fullscreenPassReadsResource(pass, resource))
+                    fullscreen_consumers.push_back(pass_name);
             }
         }
     }

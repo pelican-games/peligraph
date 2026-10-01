@@ -7207,7 +7207,10 @@ TEST_CASE("LP-0e render.shadow_depth and render.snapshot_copy refusals",
     SECTION("a copy without snapshot_after, or with a field it does not own") {
         auto nodes = lp0eCubeCopyNodes();
         nodes[2]["parameters"].erase("snapshot_after");
-        CHECK_THROWS_AS(partitionGraphDocument(lp0eCubeGraph(nodes, nullptr)), std::invalid_argument);
+        // RS-9: by name, saying what is missing.
+        const auto [code, fields] = lp0bEditRefusal(lp0eCubeGraph(nodes, nullptr));
+        CHECK(code == "graph.render_node_parameters_missing@1");
+        CHECK(fields.at("missing") == Json::array({"snapshot_after"}));
         nodes = lp0eCubeCopyNodes();
         nodes[2]["parameters"]["shader"] = Json::object();
         CHECK_THROWS_AS(partitionGraphDocument(lp0eCubeGraph(nodes, nullptr)), std::invalid_argument);
@@ -8735,6 +8738,124 @@ TEST_CASE("RS-4 a graph pass hands on the images it wrote as output ports",
         const auto order = lp0bPlanOrder(composed);
         CHECK(lp0bIndex(order, "copies/1/copy") < lp0bIndex(order, "snap_read"));
     }
+}
+
+// RS-9: a render node whose parameters lack what its op requires is refused
+// by name, listing what is missing; absent parameters are empty ones. A
+// render.shadow_depth requires nothing (it draws with engine://shadow_depth
+// into its depth socket), so one without parameters -- what
+// set_node_parameters stores for empty ones -- composes.
+TEST_CASE("RS-9 a render node without the parameters its op requires is refused by name",
+          "[render-feature][graph-composition][rs9]") {
+    using Json = nlohmann::json;
+    const auto with = [](Json node) {
+        auto document = lp0bGraph({}, Json::object());
+        document["nodes"].push_back(std::move(node));
+        return document;
+    };
+    const auto refusal = [&](const std::string &op, std::optional<Json> parameters) {
+        Json node{{"id", "it"}, {"op", op}, {"outputs", Json::array()}};
+        if (parameters) node["parameters"] = *parameters;
+        return lp0bEditRefusal(with(std::move(node)));
+    };
+    for (const auto &parameters : {std::optional<Json>{}, std::optional<Json>{Json::object()}}) {
+        INFO((parameters ? "empty parameters" : "no parameters"));
+        auto [code, fields] = refusal("render.compute", parameters);
+        CHECK(code == "graph.render_node_parameters_missing@1");
+        CHECK(fields == Json{{"node", "it"}, {"op", "render.compute"}, {"missing", Json::array({"ports", "shader"})}});
+        std::tie(code, fields) = refusal("render.fullscreen", parameters);
+        CHECK(code == "graph.render_node_parameters_missing@1");
+        CHECK(fields.at("missing") == Json::array({"ports", "shader"}));
+        std::tie(code, fields) = refusal("render.raster", parameters);
+        CHECK(fields.at("missing") == Json::array({"ports", "shader", "draw"}));
+        std::tie(code, fields) = refusal("render.snapshot_copy", parameters);
+        CHECK(fields.at("missing") == Json::array({"snapshot_after"}));
+    }
+    // One of two: a compute task's shader or ray_tracing; the message lists
+    // what is missing.
+    const auto [code, fields] = refusal("render.compute", Json{{"ports", Json::object()}});
+    CHECK(fields.at("missing") == Json::array({"shader"}));
+    try {
+        (void)partitionGraphDocument(with({{"id", "it"}, {"op", "render.compute"}, {"outputs", Json::array()}}));
+        FAIL("not refused");
+    } catch (const GraphRegistryError &error) {
+        CHECK_THAT(std::string{error.what()}, Catch::Matchers::ContainsSubstring(R"("missing":["ports","shader"])"));
+    }
+
+    // A shadow_depth with nothing to set, as Studio's palette places it.
+    auto document = with({{"id", "cast"}, {"op", "render.shadow_depth"},
+                          {"inputs", {{"depth", {{"node", "cast_depth"}, {"port", "resource"}}}}},
+                          {"outputs", {"depth"}}});
+    document["nodes"].push_back(
+        {{"id", "cast_depth"}, {"op", "render.image"},
+         {"parameters", {{"type", {{"semantic", "pelican.render.depth@1"},
+                                   {"arguments", {{"representation", "device"}, {"space", "projection"}}}}},
+                         {"format", "D32_SFLOAT"}, {"extent_scale", 1.0},
+                         {"usage", {"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"}}}},
+         {"outputs", {"resource"}}});
+    const auto composed = lp0aCompose(document);
+    const auto &cast = passByName(composed.config, "cast");
+    CHECK(cast.at("type") == "shadow_depth");
+    CHECK(cast.at("output").at("depth") == "cast_depth");
+    REQUIRE_NOTHROW(compileComposition(composed));
+}
+
+// RS-10: shadow_directional over a deferred-only pipeline whose lighting is
+// the author's own fullscreen pass (uses_light_data, a project shader: Studio's
+// Deferred lighting template). Nothing matches the feature's selectors (forward
+// material contracts, engine://fullscreen), and the pass is not given an input
+// its shader may not declare; the composition is not refused. A fullscreen
+// pass that lists shadow_map among its inputs is a consumer whatever its
+// shader. A pipeline with no lighting pass at all is still refused.
+TEST_CASE("RS-10 shadow_directional composes over a deferred pipeline with the author's lighting pass",
+          "[render-feature][shadow][rs10]") {
+    const auto config = [](nlohmann::json lighting) {
+        auto result = nlohmann::json::parse(R"json({
+  "render_targets": [
+    {"name": "lit_color", "extent_scale": 1.0, "format": "B8G8R8A8_UNORM", "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+    {"name": "gbuffer_albedo", "extent_scale": 1.0, "format": "B8G8R8A8_UNORM", "usage": ["COLOR_ATTACHMENT", "SAMPLED"]}
+  ],
+  "features": ["engine://features/shadow_directional.json"],
+  "rendering_passes": [
+    {"name": "main", "passes": [
+      {"name": "gbuffer_pass", "type": "material", "material_contract": "deferred_geometry_v1",
+       "output": {"color": ["gbuffer_albedo"], "depth": null}}
+    ]}
+  ]
+})json");
+        lighting["name"] = "lighting_pass";
+        lighting["type"] = "fullscreen";
+        lighting["output"] = {{"color", "lit_color"}, {"depth", nullptr}};
+        lighting["shader"] = {{"vertex", "engine://fullscreen"}, {"fragment", "project://shaders/lighting"}};
+        result["rendering_passes"][0]["passes"].push_back(std::move(lighting));
+        return result;
+    };
+    const auto compose = [](const nlohmann::json &document) {
+        return composeRenderFeatureConfig(document, RenderFeatureComposeDependencies{loadEngineFeature, true});
+    };
+
+    // The template's pass: composed, nothing bound, its inputs as written.
+    const auto own = compose(config({{"input", nlohmann::json::array({"gbuffer_albedo"})}, {"uses_light_data", true}}));
+    REQUIRE(own.surface_resource_contracts.size() == 1);
+    const auto &declaration = own.surface_resource_contracts.front();
+    CHECK(declaration.at("producer") == "shadow_depth");
+    CHECK(declaration.at("material_consumers").empty());
+    CHECK(declaration.at("fullscreen_consumers").empty());
+    CHECK(passByName(own.config, "lighting_pass").at("input") == nlohmann::json::array({"gbuffer_albedo"}));
+    REQUIRE_NOTHROW(compileComposition(own));
+
+    // Listing the shadow map makes it a consumer; the input is not added again.
+    const auto reading =
+        compose(config({{"input", nlohmann::json::array({"gbuffer_albedo", "shadow_map"})}, {"uses_light_data", true}}));
+    CHECK(reading.surface_resource_contracts.front().at("fullscreen_consumers") ==
+          nlohmann::json::array({"lighting_pass"}));
+    CHECK(passByName(reading.config, "lighting_pass").at("input") ==
+          nlohmann::json::array({"gbuffer_albedo", "shadow_map"}));
+    REQUIRE_NOTHROW(compileComposition(reading));
+
+    // No pass lights the scene: refused as before.
+    CHECK_THROWS_WITH(compose(config({{"input", nlohmann::json::array({"gbuffer_albedo"})}})),
+                      Catch::Matchers::ContainsSubstring("did not match any material or fullscreen consumer"));
 }
 
 } // namespace Pelican

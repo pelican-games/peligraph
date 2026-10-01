@@ -392,8 +392,9 @@ Json resolveGraphAttributeSources(const Json &document, const GraphAttributeSour
     // data, while its one authored declaration receives the derived count once.
     std::map<std::pair<std::string, std::string>, std::uint64_t> counts;
     for (const auto &node : graph.nodes) {
+        if (node.at("op") != "render.attribute") continue;
         const auto &parameters = node.at("parameters");
-        if (node.at("op") != "render.attribute" || !parameters.contains("source")) continue;
+        if (!parameters.contains("source")) continue;
         const auto id = node.at("id").get<std::string>();
         const auto count = resolve(id, parameters);
         const auto &origin = graph.origins.at(id);

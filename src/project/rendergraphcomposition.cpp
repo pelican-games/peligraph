@@ -482,7 +482,9 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         if (const auto op = node.at("op").get<std::string>();
             op == "render.shadow_depth" || op == "render.snapshot_copy") {
             auto *const pass_body = bodyOf(id);
-            auto parameters = node.at("parameters");
+            // RS-9: a shadow_depth that sets nothing has no parameters.
+            auto parameters = node.value("parameters", Json::object());
+            if (parameters.is_null()) parameters = Json::object();
             // An active pass need not wait for one that no longer executes.
             for (const auto *key : {"after", "before"})
                 if (const auto order = parameters.find(key); order != parameters.end() && order->is_array())

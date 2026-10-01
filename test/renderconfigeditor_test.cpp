@@ -10033,10 +10033,14 @@ TEST_CASE("EL-4 get_graph_catalog lists material pass formats, material output f
     // A compute shader names its local size.
     CHECK(shader_of("engine://ray_deform", "compute").at("local_size") == Json::array({64, 1, 1}));
     // A shader whose ports the pass gives (the generated resource-port
-    // include) says so, and is not reflected on its own.
+    // include) says so. RS-11: bloom_composite's one port is optional, so it
+    // reflects on its own (against the engine's empty include): its two
+    // inputs and no port.
     const auto bloom = shader_of("engine://bloom_composite", "fragment");
     CHECK(bloom.at("resource_port_include") == true);
-    CHECK(bloom.contains("reflection_error"));
+    CHECK(bloom.at("reflected_from") == "source");
+    CHECK(bloom.at("pass_inputs").size() == 2);
+    CHECK(bloom.at("resource_ports") == Json::array());
     CHECK(passthrough.at("resource_port_include") == false);
 }
 

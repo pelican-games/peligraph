@@ -660,6 +660,13 @@ std::string generateShaderResourcePortInclude(
             })) {
         stream << "#include \"pelican_frame.glsl\"\n";
     }
+    // RS-11: which ports the pass maps, so a shader can read a default for a
+    // port it leaves optional (#ifdef PELICAN_RESOURCE_PORT_<port>); a pass
+    // that maps none compiles against the engine's empty include of this name.
+    for (const auto &binding : bindings) {
+        stream << "#define PELICAN_RESOURCE_PORT_" << binding.port.name
+               << " 1\n";
+    }
     for (const auto &binding : bindings) {
         const auto guarded =
             writeStageGuardBegin(

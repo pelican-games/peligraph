@@ -4,11 +4,16 @@
 #include "pelican_sets.glsl"
 #include "pelican_frame.glsl"
 
+// RS-8: the bloom feature defines these from its parameters. Outside the
+// feature (a graph's render.fullscreen, the embedded SPIR-V) the shader reads
+// the feature's parameter defaults (features/bloom.json threshold / knee),
+// so it compiles on its own. The names stay the engine's: a pass cannot
+// define them (shader.defines refuses PELICAN_FEATURE_*).
 #ifndef PELICAN_FEATURE_BLOOM_THRESHOLD
-#error PELICAN_FEATURE_BLOOM_THRESHOLD must be defined for the bloom highpass shader
+#define PELICAN_FEATURE_BLOOM_THRESHOLD 0.4
 #endif
 #ifndef PELICAN_FEATURE_BLOOM_KNEE
-#error PELICAN_FEATURE_BLOOM_KNEE must be defined for the bloom highpass shader
+#define PELICAN_FEATURE_BLOOM_KNEE 0.7
 #endif
 
 layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform sampler2D inputTexture;

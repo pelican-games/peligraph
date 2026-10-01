@@ -115,6 +115,7 @@ constexpr auto registered_ids =
     "shaders/include/pelican_skinning.glsl",
     "shaders/include/pelican_morph.glsl",
     "shaders/include/pelican_vat.glsl",
+    "shaders/include/pelican_resource_ports.glsl",
     "shaders/material/standard_lighting.glsl",
     "shaders/material/toon_lighting.glsl",
     "shaders/material/openpbr_lighting.glsl",
@@ -295,6 +296,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_skinning.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_morph.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/include/pelican_vat.glsl")
+    PELICAN_ENGINE_RESOURCE("shaders/include/pelican_resource_ports.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/material/standard_lighting.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/material/toon_lighting.glsl")
     PELICAN_ENGINE_RESOURCE("shaders/material/openpbr_lighting.glsl")

@@ -155,7 +155,9 @@ OrderedJson engineShaderJson(const EngineShaderForms &forms) {
     entry["loads"] = PELICAN_RUNTIME_SHADER_COMPILER && forms.source ? "source" : "spirv";
     // A source that includes the resource-port header takes its ports from
     // the pass that runs it (the include is generated from the pass's
-    // `ports`), so it neither compiles nor reflects on its own.
+    // `ports`). On its own it compiles against the engine's empty include:
+    // it reflects when its ports are optional (RS-11, bloom_composite), and
+    // fails by the accessor's name when it calls one unconditionally.
     if (forms.source) {
         const auto source = *engineResource(forms.stem + std::string{shaderStageSourceExtension(forms.stage)});
         entry["resource_port_include"] =
