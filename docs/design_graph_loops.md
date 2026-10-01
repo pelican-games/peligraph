@@ -551,7 +551,7 @@ LP-1e の既定の位置(scene の pass の後)のままだと、graph の pass 
 - 動くのは、読み手より前に同じ image の書き手(scene の pass、compute task)がいない場合だけ。それは今まで frame planner が断っていた構成なので、通っていた構成の順序・出荷物は変わらない
 - canonical の並べ替えで最初の anchor より後ろに行く pass(swapchain に書く pass、`canonical_anchor` を持つ pass、type が `ui` / `debug_draw` / `gizmo` / `debug_text` の pass)は読み手の候補にしない([判定](../src/project/featurecompose.cpp#L3152))
 - **明示が勝つ**: `insert` / `canonical_anchor` / `insert.declared` の pass と、置き場所を書いたループは対象外。塊が読み手かそれより後ろの pass を待つ(塊の `after` がその pass を名指す、その pass の `before` が塊を名指す、塊が読む image をその pass が書く)ときは動かさず、今どおり断られる
-- 残した穴(実装者の報告): feature の pass が読み手より前で同じ image を書く構成は考えていない。graph の compute task が書いた image を読む場合は対象外
+- 残した穴(実装者の報告): feature の pass が読み手より前で同じ image を書く構成は考えていない。graph の compute task が書いた image を読む場合は RS-6(下の「graph の compute task が書いた image を rendering 節の pass が読むとき」)
 - test: `featurecompose_test.cpp` の「RS-3 an unplaced graph pass whose output a scene pass reads stands before that pass」([4 SECTION](../test/featurecompose_test.cpp#L8485)。fullscreen とその隣のループ / graph の pass の無いループ / 読み手が無ければ LP-1e のまま / scene が先に書く読み手なら動かない)
 
 **書いた image を出力 port で渡す(RS-4、`010c038f`)**
@@ -566,6 +566,20 @@ LP-1e の既定の位置(scene の pass の後)のままだと、graph の pass 
 - catalog: `render.shadow_depth` / `render.snapshot_copy` の `outputs` に `{port, type_from_input}`(`type` の鍵は無い。[載せる所](../src/project/graphmodule.cpp#L413))。`render.material_pass` は `parameter_dependent` のまま
 - rendering 節の pass は名前で読むので、`present` の `input` に「つなぐ」とは、その port が解決される image の名前を書くこと
 - test: `featurecompose_test.cpp` の「RS-4 a graph pass hands on the images it wrote as output ports」([3 SECTION](../test/featurecompose_test.cpp#L8604)。forward の `color` を fullscreen と present が読む / deferred の `albedo`・影の `depth`・copy の `destination` / ループの出力 `p`)
+
+**graph の compute task が書いた image を rendering 節の pass が読むとき(RS-6、`257cdef0`)**
+
+compute task は常に全 pass の後に宣言され、frame planner は前に宣言された書き手からしか読みの順を引かない。そのため、graph の compute task(ray tracing を含む)が書いた image を rendering 節の `present` に読ませる構成は `Pass input target is not produced as an earlier output` で断られていた。RS-6 から、読み手の側が task を待つ([`waitOnGraphTasksInScenePasses()`](../src/project/rendergraphcomposition.cpp#L2664)、合成から[呼ぶ所](../src/project/featurecompose.cpp#L3790))。
+
+- 対象の task: graph が作った compute task(root の `render.compute`、ループの展開、`pass_replacements` で置き換えた task)
+- task が書く image X ごと、family ごとに、最初の canonical anchor(か `output_transform`)より前で X を読む最初の rendering 節・preset の pass R に `after: <task>` を足す。読み手の候補と「読む」の数え方は RS-3 と同じ(graph と feature の pass、swapchain に書く pass、`ui` / `debug_draw` / `gizmo` / `debug_text` は候補にしない。`@history` は読みに数えない)
+- task の側には何も足さない。task は全 family の frame graph に入るので、task が pass を名指すとその pass の無い family で落ちる
+- 足さない場合: R より前の pass が X を書く / X の書き手(task 自身を含む)がすでに R より前に走る / task が R かそれより後ろを待つ(循環)/ X が buffer(見るのは render target だけ)。「前に走る」は frame planner と同じ順(`after` / `before` と、前に宣言された最後の書き手から読みへ)を family ごとに組んで辿る([`FamilyOrder`](../src/project/rendergraphcomposition.cpp#L2611))
+- task が依存している置き場所の無い graph の pass の塊も R の前へ動く(G-buffer → trace → `present`)。塊に依存する task は、`after` が塊の pass(かそういう task)を名指すもの、塊の pass(かそういう task)の `before` が名指すもの。塊かそういう task が R かそれより後ろを待つときは塊を動かさず、`after` も付かないので今どおり断られる([`graphPassRunReaderPosition()`](../src/project/rendergraphcomposition.cpp#L1298) の [RS-6 の分](../src/project/rendergraphcomposition.cpp#L1352))
+- R が X を `input` として読み、X が graph の `render.image` で `usage` に `SAMPLED` が無ければ足す
+- 自動で足した順序は frame plan の node の `added_after: [...]`(空なら出ない。`RenderPassProvenance::added_after`)
+- 残した穴(実装者の報告): ループの展開で生まれる task を介した塊の移動、`render.target_ref` を介した読み
+- test: `featurecompose_test.cpp` の「RS-6 a scene pass that reads what a graph compute task wrote waits on that task」([3 SECTION](../test/featurecompose_test.cpp#L8769)。present が task を待ち SAMPLED と added_after が付き task は何も名指さない / task が読む graph の pass が task と一緒に present の前へ / present を待つ graph の pass があれば動かず今どおり断られる)
 
 ## 7. view の軸を選ぶ(cascade と cube の 6 面)
 
@@ -749,6 +763,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `graph.output_referenced@1`(`set_outputs` で消した出力) | 編集(列の最後) | `{definition, output, node}` に `{consumer, port}` / `{scope_output}` / `{field: outputs｜carry}` のどれか(DO-1) |
 | `graph.target_ref_unknown@1` | 組み直し | `{node, name}` |
 | `graph.input_index_invalid@1` | 編集・読み込み | `{node, input_index, reason: missing｜duplicate, ports}`(LP-1d) |
+| `graph.render_node_parameters_missing@1` | 編集・読み込み | `{node, op, missing}`(render の node の `parameters` に op が要るものが無い。`missing` は欠けた名前を表の順に。`parameters` が無い・null の node は空として扱う。op ごとの表は [`renderNodeRequiredParameters()`](../src/project/graphmodule.cpp#L226)。RS-9) |
 | `graph.target_ref_type_mismatch@1` | 組み直し | `{node, name, field, declared, actual}`(field: `kind` / `topology`。LP-0a) |
 | `graph.history_write@1` | 編集・読み込み・組み直し | `{node, port}`(`X@history` へ書く port。LP-0a) |
 | `graph.history_unavailable@1` | 組み直し | `{node, port, target}`(history を持たない target の `@history` を読む。LP-0a) |
@@ -805,6 +820,8 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | LP-6 | image node の読みが、その image を書く graph の pass を待つ。root の graph pass をループの有無によらず依存の順に宣言する(§5.2) | LP-1a | `03725036` |
 | RS-3 | 置き場所の無い graph の pass の塊を、その出力を読む rendering 節の最初の pass の直前へ(§6 の表の下) | LP-1e | `1b4f7527` |
 | RS-4 | `render.material_pass` / `render.shadow_depth` / `render.snapshot_copy` の書いた socket を出力 port にする(§6 の表の下) | LP-0e、LP-3a | `010c038f` |
+| RS-6 | graph の compute task が書く image を読む rendering 節の最初の pass に `after: <task>`。task が待つ置き場所の無い graph の pass の塊もその前へ(§6 の表の下) | RS-3 | `257cdef0` |
+| RS-9 | render の node の `parameters` の欠落を `graph.render_node_parameters_missing@1` で名前付きに(§10) | — | `5d065436` |
 
 **docs**:各 WP で次を更新する。
 

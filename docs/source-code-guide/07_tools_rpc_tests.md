@@ -235,7 +235,7 @@ header の冒頭コメントが規範です。
 `builtinGraphModuleRegistry().catalog()` を印字するだけの 9 行です。出力は
 [`GraphModuleRegistry::catalog()`](../../src/project/graphmodule.cpp#L582) が組み立てる `pelican.graph_catalog` v1 で、
 module → types / operations / sinks の順に並びます。**並びは名前順**です(module と operation は名前を鍵にした
-`std::map`、types と sinks は明示的に sort)。登録順に依存しないので、module を足しても既存の行は動きません。RPC の `get_graph_catalog` は ✅EL-4 からこの値に 3 つの鍵(material pass の format の表と engine の shader の反映から作る一覧。§7 の RPC 表)を足して返すので、CLI の出力とは同じではありません。
+`std::map`、types と sinks は明示的に sort)。登録順に依存しないので、module を足しても既存の行は動きません。RPC の `get_graph_catalog` は ✅EL-4 からこの値に 2 つの鍵(material pass の format の表から作る一覧。§7 の RPC 表)を足して返すので、CLI の出力とは同じではありません。engine の shader の反映から作る一覧は、✅EL-4b から別の RPC `get_engine_shaders` です。
 
 [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake#L24)(ctest 名 `devcli_graph_catalog`)は
 module 数(既定 5。常に登録される `pelican.value` / `pelican.render` / `pelican.ui` の 3 に、`pelican.audio` と `pelican.pose` を足す。`pelican.ui` は GP-3 で加わった。`PELICAN_WITH_ANIMATION=OFF` と `PELICAN_WITH_AUDIO=OFF` でそれぞれ 1 減る)、各 operation が `domain` / `evaluation` /
@@ -322,7 +322,7 @@ Inspector / Output / Engine Log / Frame Plan / Pass Editor の7パネルを stab
 同じレンダー設定を別の角度から見ているだけだからです。
 
 tab は CLI から選べます。`pelican_studio --project <dir> --tab frame_plan|render_features|graph` で、
-[名前の一覧](../../src/devstudio/view/mainwindow.cpp#L1392)は `MainWindow` の static 関数にあり、
+[名前の一覧](../../src/devstudio/view/mainwindow.cpp#L1393)は `MainWindow` の static 関数にあり、
 **window を作る前**に [`main.cpp`](../../src/devstudio/main.cpp#L36) が綴りを検査して、未知なら console に
 理由を出して **exit 2** します。適用は `openProject()` の**後**です([順序](../../src/devstudio/view/uimain.cpp#L75))
 —— project を開くとその project の tool layout が復元され、前面の tab が変わるためです。
@@ -361,7 +361,7 @@ get_frame_plan 応答 = pelican.frame_plan v1
 ```
 
 2 つの層は互いに引けます(✅GL-2a)。名前の層の node の出所の鍵(`source` / `provider_*` / `authored_name` / `loop_origin` と、GL-2a の
-`origin` / `replaces`)は、`framePlanToJson()` が compiled pipeline の `RenderPassProvenance` から写します
+`origin` / `replaces`、✅RS-6 の `added_after`)は、`framePlanToJson()` が compiled pipeline の `RenderPassProvenance` から写します
 ([写す所](../../src/core/renderingpass/frameplanner.cpp#L1926))。`origin` の `graph`(rendering root 文書の参照)は raw の planner が知らないので、
 renderer が `framePlanToJson()` に渡します。物理の層は、`physical_target_plan` を足した直後に renderer が
 [`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L2186) を呼び
@@ -531,7 +531,7 @@ project と scene 文書を開き、scene と object の木を作ります。obj
 `(scene_id, declaration_index)` で、無名 object の表示名だけを engine と共有する
 `pelican://scene/<id>/authoring-object/<n>` 規則から作ります。
 
-[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L1748) は model の索引を Qt item の
+[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L1749) は model の索引を Qt item の
 data role に保持して Outliner dock へ写すだけです。project 読み込みと 2 scene・46/2 object、無名
 object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L123) が
 GUI なしで検査します。RPC の `scene_tree` / `get_components` も 0 始まりの
@@ -844,7 +844,8 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | `edit_graph_document` | [文書編集](../../src/core/communication/editorrpchandlers.cpp#L241) | `ops[]` を順に当てて最後に 1 回展開。全部通るか文書ごと拒否か |
 | `get_graph_values` | [instance 入力の値](../../src/core/communication/editorrpchandlers.cpp#L253) | publish 済み snapshot の読み。再評価しない |
 | `get_graph_node_values` | [node 出力の値](../../src/core/communication/editorrpchandlers.cpp#L256) | 展開木の node ごとの出力。`source: "rendering"` |
-| `get_graph_catalog` | [module catalog](../../src/core/communication/editorrpchandlers.cpp#L259) | `builtinGraphModuleRegistry().catalog()` に、✅EL-4 から `material_pass_contracts` / `material_output_formats` / `engine_shaders` を足したもの([`RenderConfigEditorService::getGraphCatalog()`](../../src/core/communication/renderconfigeditor.cpp#L3004)、一覧は [`engineauthoringlists.hpp`](../../src/core/communication/engineauthoringlists.hpp#L7))。3 つは §7.5c の CLI には出ない |
+| `get_graph_catalog` | [module catalog](../../src/core/communication/editorrpchandlers.cpp#L259) | `builtinGraphModuleRegistry().catalog()` に、✅EL-4 から `material_pass_contracts` / `material_output_formats` を足したもの([`RenderConfigEditorService::getGraphCatalog()`](../../src/core/communication/renderconfigeditor.cpp#L3004)、一覧は [`engineauthoringlists.hpp`](../../src/core/communication/engineauthoringlists.hpp#L9))。2 つは §7.5c の CLI には出ない。✅EL-4b から shader の反映はしない(EL-4 では `engine_shaders` もここで作っていた) |
+| `get_engine_shaders` | [engine の shader の一覧](../../src/core/communication/editorrpchandlers.cpp#L262) | ✅EL-4b。`{}` → `{engine_shaders: [...]}`([`RenderConfigEditorService::getEngineShaders()`](../../src/core/communication/renderconfigeditor.cpp#L3016)。field を足すと `requireOnly()` の `std::invalid_argument` で `-32602`)。一覧は [`engineShadersJson()`](../../src/core/communication/engineauthoringlists.cpp#L249) の関数内 static で、process の最初の呼び出しで engine の GLSL を compile して反映する。test が catalog から届かないことを見るために、呼ばれた回数 [`engineShadersRequestCount()`](../../src/core/communication/engineauthoringlists.cpp#L255) を数える |
 | `export_render_feature` | [部品の書き出し](../../src/core/communication/editorrpchandlers.cpp#L193) | feature 1 つを `user://components/<name>/` へ |
 | `import_render_feature` | [部品の取り込み](../../src/core/communication/editorrpchandlers.cpp#L196) | project 外の component ディレクトリを未作成の `project://` feature として取り込む |
 | `install_package` | [package の vendoring](../../src/core/communication/editorrpchandlers.cpp#L199) | `<project>/packages/<ns>/` へ複製し catalog を作り直す |
@@ -898,6 +899,8 @@ root だけの編集が definition のバイト列を動かさないようにす
 「instance は root に立ち、境界 port は definition の中にある」という片側ずつの所属を名前で言うためのものです
 ([分岐](../../src/project/graphcomposition.cpp#L2148))。形が壊れているだけのものは名前を持たず
 `invalid_graph_document` に落ちます。
+
+✅RS-9 から、render の node の `parameters` の欠落も `graph.render_node_parameters_missing@1` `{node, op, missing}` で名前付きになりました。op ごとの必須は [`renderNodeRequiredParameters()`](../../src/project/graphmodule.cpp#L226) の表で、render の op の契約を作る `renderPorts()` の頭で [`checkRenderNodeRequiredParameters()`](../../src/project/graphmodule.cpp#L241) が検査します([呼ぶ所](../../src/project/graphmodule.cpp#L271))。`parameters` が無い・`null` の node は空の object として通し、op が要るものが無ければここで断ります。
 
 利用者向けの手順と GUI の対応は [manual 第13章](../manual/13_editor.md) §13.5 が正です。
 
