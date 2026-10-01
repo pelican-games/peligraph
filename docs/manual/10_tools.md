@@ -643,7 +643,7 @@ pelican_cli graph-catalog
 `pelican.value` / `pelican.render` / `pelican.ui` の 3 本は常に登録されます(`pelican.ui` は GP-3 で加わった `ui.value` / `ui.visible` の sink。[第7章](07_input_ui.md) §7.4)。この個数と、各操作が
 `domain` / `evaluation` / `change` / `sink` を持つことは
 [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake#L24)(ctest 名 `devcli_graph_catalog`)が
-固定しています。出力はモジュール名・操作名・型・sink のどれも**名前順**です([catalog()](../../src/project/graphmodule.cpp#L537) が名前を鍵にした `std::map` を走り、型と sink は明示的に sort します)。登録順に依存しません。
+固定しています。出力はモジュール名・操作名・型・sink のどれも**名前順**です([catalog()](../../src/project/graphmodule.cpp#L582) が名前を鍵にした `std::map` を走り、型と sink は明示的に sort します)。登録順に依存しません。
 
 ## 10.5 ホットリロード(✅WP90/96〜110/147/162/178)
 

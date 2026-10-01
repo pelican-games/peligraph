@@ -204,7 +204,7 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 規則は 1 つです —— 上の 5 キーは共通グラフが所有し、**それ以外の rendering config のキーは全部 `rendering` 節に属します**。キーごとの所有は [第6章 §6.16](06_rendering.md) にあります。
 
 - **`features` / `render_targets` / `rendering_passes` などを最上位に直接並べた旧い形(legacy root)は、MG-2b から読めません。** 起動時の読み込み([renderingpassconfigloader.cpp](../../src/core/renderingpass/renderingpassconfigloader.cpp#L24))、`--feature-overlay` の重ね合わせ、ray tracing の設定の読み込み、Studio / RPC の編集文書のどれもが `render_config.legacy_root@1` で断ります([`RenderConfigLegacyRoot`](../../src/project/renderconfigdocument.hpp#L37))。直すには、旧いファイル全体を `rendering` の値にして上の 5 キーを足します。`rendering` の中身は旧い root と同じ意味で読まれます。
-- **`rendering` 節には `buffers` / `compute_tasks` を書けません。** この 2 つは共通グラフのノード(`render.buffer` / `render.compute`)の接続から lowering が作るので、節に書くと `render graph derives field from connections: buffers` のように拒否されます([lowerRenderGraphDocument()](../../src/project/rendergraphcomposition.cpp#L1015))。buffer と compute task は graph node か task feature で書きます。
+- **`rendering` 節には `buffers` / `compute_tasks` を書けません。** この 2 つは共通グラフのノード(`render.buffer` / `render.compute`)の接続から lowering が作るので、節に書くと `render graph derives field from connections: buffers` のように拒否されます([lowerRenderGraphDocument()](../../src/project/rendergraphcomposition.cpp#L1017))。buffer と compute task は graph node か task feature で書きます。
 
 `pelican.graph` root は web ビューア未対応です。web は v0 形式への追従中(WEB-1)で、それまで web は新しい出荷 sample を開けません([第9章](09_web.md) §9.3)。
 

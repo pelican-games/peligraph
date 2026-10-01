@@ -258,7 +258,7 @@
     "docs/manual/06_rendering.md|../../src/project/graphloopexpression.hpp|graphloopexpression.hpp": "// The grammar (the text is at most 256 characters, parentheses -- a call's",
     "docs/manual/06_rendering.md|../../src/project/graphmodule.cpp|`checkDrawStepParameters()`": "void checkDrawStepParameters(const std::string &op, const Json &parameters, const Json &node) {",
     "docs/manual/06_rendering.md|../../src/project/graphmodule.cpp|`isRenderMaterialPassParameter()`": "bool isRenderMaterialPassParameter(std::string_view key) {",
-    "docs/manual/06_rendering.md|../../src/project/graphmodule.cpp|`renderPassKindPorts()`": "GraphOperationContract renderPassKindPorts(const Json &node) {",
+    "docs/manual/06_rendering.md|../../src/project/graphmodule.cpp|`renderPassKindPorts()`": "GraphOperationContract renderPassKindPorts(const Json &node, const Json &parameters_object) {",
     "docs/manual/06_rendering.md|../../src/project/graphmodule.cpp|graphmodule.cpp:123": "if (registration.factory && contract.inputs.empty() && contract.outputs.empty()) {",
     "docs/manual/06_rendering.md|../../src/project/graphmodule.cpp|graphmodule.cpp:199": "throw GraphRegistryError(\"graph.operation_unregistered@1\",",
     "docs/manual/06_rendering.md|../../src/project/graphmodule.cpp|graphmodule.cpp:257": "throw GraphRegistryError(\"graph.operation_unregistered@1\",",

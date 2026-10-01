@@ -21,7 +21,7 @@ Runtime object
 | project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L237) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L639) |
 | path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)（module寿命、ログ、engine resource注入） |
 | scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L268) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1650) |
-| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3061) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1526) |
+| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3115) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1526) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L55) |
 | asset manifest | [`parse/generate/verify`](../../src/project/assetsmanifest.hpp#L60) | [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L11) |
 | material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L160) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L347) |
@@ -183,7 +183,7 @@ std::variant<
 
 ### engine resource
 
-shader、feature JSON、default config、debug fontなどは [`resources/CMakeLists.txt`](../../src/core/resources/CMakeLists.txt#L1) で`battery-embed`へ登録され、[`engineResource()`](../../src/core/loader/engineresources.cpp#L166) がIDを実データへ変換します。
+shader、feature JSON、default config、debug fontなどは [`resources/CMakeLists.txt`](../../src/core/resources/CMakeLists.txt#L1) で`battery-embed`へ登録され、[`engineResource()`](../../src/core/loader/engineresources.cpp#L167) がIDを実データへ変換します。
 
 resource追加には次の三箇所が必要です。
 
@@ -636,11 +636,11 @@ instances.publishModelInstance(std::move(staged_instance));
 | `pelican.project` | 1 | [`projectformat.cpp`](../../src/project/projectformat.cpp#L237) | `project.json`。`engine_min_version` と `requires`（§3.2） |
 | `pelican.scene` | 1〜2 | [`sceneformat.cpp`](../../src/project/sceneformat.cpp#L268) | 保存は元の版を維持。prefabはv2が前提。永続IDは両版で受理 |
 | `pelican.graph` | 1 | [`graphcomposition.cpp`](../../src/project/graphcomposition.cpp#L1116) | 共通グラフ。`definitions` / `nodes` / `outputs`（§3.15） |
-| `pelican.render_feature` | 1 | [`featurecompose.cpp`](../../src/project/featurecompose.cpp#L3061) | 本節「render feature」 |
+| `pelican.render_feature` | 1 | [`featurecompose.cpp`](../../src/project/featurecompose.cpp#L3115) | 本節「render feature」 |
 | `pelican.render_pipeline` | 1 | [`renderpipeline.cpp`](../../src/project/renderpipeline.cpp#L834) | preset（`hybrid_v1` など） |
 | `pelican.render_component` | 1 | [`rendercomponent.hpp`](../../src/project/rendercomponent.hpp#L16) | export / import される描画部品（§3.16） |
 | `pelican.package` | 1 | [`packagemanifest.hpp`](../../src/project/packagemanifest.hpp#L19) | vendoringされるディレクトリの封筒（§3.16） |
-| `pelican.graph_catalog` | 1 | [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L538) | `pelican_cli graph-catalog` の出力（module / op / 型の一覧） |
+| `pelican.graph_catalog` | 1 | [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L583) | `pelican_cli graph-catalog` の出力（module / op / 型の一覧） |
 | `pelican.material` / `pelican.material_bindings` | 1 | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744) / [`parsePrimitiveMaterialBindingJson()`](../../src/project/materialformat.cpp#L767) | 本節「material / surface」 |
 | `pelican.import` / `pelican.import_rules` | 1 | [`importmanifest.cpp`](../../src/project/importmanifest.cpp#L250) / [`parseImportRulesJson()`](../../src/project/importrules.cpp#L196) | 本節「import manifest / import rules」 |
 
@@ -686,7 +686,7 @@ instances.publishModelInstance(std::move(staged_instance));
 
 ### render feature
 
-[`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3061) はfeature JSONを順番に読み、render target、buffer、pass、compute taskを追加し、限定的なoverrideを適用します。名前衝突、曖昧anchor、未知override fieldは即時エラーです。shader defineも重複排除して集約します。
+[`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3115) はfeature JSONを順番に読み、render target、buffer、pass、compute taskを追加し、限定的なoverrideを適用します。名前衝突、曖昧anchor、未知override fieldは即時エラーです。shader defineも重複排除して集約します。
 
 runtime側の入口は [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1526) です。[`loadRenderGraphVariantsFromConfigData()`](../../src/core/vkcore/renderer_config.cpp#L450) が `ProjectBasicConfig::renderingConfigJson()` の文字列と起動ターゲットの実extentを渡し、flat（OpenXR有効時は `#xr` も）とpreviewを **1回の登録トランザクション** として受け取ります。
 
@@ -1119,7 +1119,7 @@ P-2a-4b までは、`rendering` 相当の中身を最上位に直接書く **leg
 
 **包む関数はもうありません。** P-2a-4b では `wrapLegacyRenderingConfig()` が5キーを付けて legacy 設定を `rendering` へ入れる唯一の場所でしたが、読み手が graph root しか受けなくなったので MG-2b で撤去されました。雛形の [`rendering_config_json`](../../src/project/projecttemplate.cpp#L200) と [`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L229) は graph root の全文を直接書いています(blank の `present` の fragment は VI-2 から `engine://passthrough` で、雛形は shader を書きません)。
 
-**`rendering` 節には `buffers` / `compute_tasks` を書けません。** graph root の lowering（[`lowerRenderGraphDocument()`](../../src/project/rendergraphcomposition.cpp#L1015)）が、この2つを graph node（`render.buffer` / `render.compute`）の接続から作るため、節にあれば `render graph derives field from connections: <key>` で拒否します。この規則は MG-2b より前からあります。legacy root には lowering が無かったので根に書けましたが、legacy root が無くなったことでその書き方も無くなりました。テストで根に宣言していたものは task feature へ移されています。エディタの「root scope で compute_tasks / buffers を編集する」経路はこれで到達不能になり、後の掃除の WP（台帳の MG-3）に回っています。
+**`rendering` 節には `buffers` / `compute_tasks` を書けません。** graph root の lowering（[`lowerRenderGraphDocument()`](../../src/project/rendergraphcomposition.cpp#L1017)）が、この2つを graph node（`render.buffer` / `render.compute`）の接続から作るため、節にあれば `render graph derives field from connections: <key>` で拒否します。この規則は MG-2b より前からあります。legacy root には lowering が無かったので根に書けましたが、legacy root が無くなったことでその書き方も無くなりました。テストで根に宣言していたものは task feature へ移されています。エディタの「root scope で compute_tasks / buffers を編集する」経路はこれで到達不能になり、後の掃除の WP（台帳の MG-3）に回っています。
 
 編集側の唯一の書き手は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L671) で、graph root 自身の5キー（`schema` / `version` / `definitions` / `nodes` / `outputs`）と editor の `layout` は根へ、それ以外は `rendering.<key>` へ書きます。この関数はJSONを組み直さず、元のバイト列の中で該当メンバの範囲を差し替えます（[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L305)）。理由は digest がファイル全体のバイト列に対して取られるためで、詳細は[第6章](06_rendering_vulkan_shader.md)にあります。
 
@@ -1163,7 +1163,7 @@ instance の入力ポートがどこから値を取るかは `edge > parameters 
 
 ### ループと合成の後の解決の段 ✅実装済み(LP-0a〜LP-Vb)
 
-`graph.loop`(書き方の正は manual 第6章 §6.18)は `graph.instance` と同じ構造の node で、処理が 2 つの段に分かれます。**形の検査は展開器**([`expandGraphDocument()`](../../src/project/graphcomposition.cpp#L1115) の中のループの展開)が編集と読み込みのたびに行い、各分岐の body を `<loop>/$<branch>/` の名前で 1 回だけ**雛形**として展開します(port の型の検査のため)。**回ごとの複写は合成の後**で、preset と feature の合成が済んでから [`resolveGraphDocumentAfterComposition()`](../../src/project/rendergraphcomposition.cpp#L1143) が [`expandRenderGraphLoops()`](../../src/project/rendergraphcomposition.cpp#L1726) を呼び、雛形の名前 `<loop>/$<branch>/` を `<loop>/<element>/` へ付け替えます。lowering はそのために、合成の後で使うもの(target の参照、history の読み、置き場所待ちの run、ループの body、ループの出力を読む側、draw_loop)を [`LoweredRenderGraphDocument`](../../src/project/rendergraphcomposition.hpp#L158) に残します。
+`graph.loop`(書き方の正は manual 第6章 §6.18)は `graph.instance` と同じ構造の node で、処理が 2 つの段に分かれます。**形の検査は展開器**([`expandGraphDocument()`](../../src/project/graphcomposition.cpp#L1115) の中のループの展開)が編集と読み込みのたびに行い、各分岐の body を `<loop>/$<branch>/` の名前で 1 回だけ**雛形**として展開します(port の型の検査のため)。**回ごとの複写は合成の後**で、preset と feature の合成が済んでから [`resolveGraphDocumentAfterComposition()`](../../src/project/rendergraphcomposition.cpp#L1145) が [`expandRenderGraphLoops()`](../../src/project/rendergraphcomposition.cpp#L1728) を呼び、雛形の名前 `<loop>/$<branch>/` を `<loop>/<element>/` へ付け替えます。lowering はそのために、合成の後で使うもの(target の参照、history の読み、置き場所待ちの run、ループの body、ループの出力を読む側、draw_loop)を [`LoweredRenderGraphDocument`](../../src/project/rendergraphcomposition.hpp#L158) に残します。
 
 | ファイル | 持ち物 |
 |---|---|
@@ -1176,9 +1176,9 @@ instance の入力ポートがどこから値を取るかは `edge > parameters 
 | [`viewselect.hpp`](../../src/project/viewselect.hpp#L21) | `view_select` の 4 つの拒否 code と、座標と選択の照合 |
 | `src/core/resources/graphs/*.json` | 出荷する分解版の雛形 4 本(engine は読まない。`decomposes` を持つ) |
 
-合成の中の順は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3061) の中で、(1) graph の lowering(`pass_set` の既定は [`defaultGraphPassFamily()`](../../src/project/featurecompose.cpp#L3035))→ (2) `insert.declared` の run を宣言の列へ置く → (3) feature・integration の合成 → (4) 変種で外れる feature に依存する node を外す([`withoutExcludedGraphDependents()`](../../src/project/rendergraphcomposition.cpp#L2155))→ (5) 残りの run を置く → (6) surface resources の consumer の選択と snapshot → (7) 解決の段(target の参照の検査 → ループの展開 → draw_loop の報告 → [`applyRenderFeaturePassReplacements()`](../../src/project/rendergraphcomposition.cpp#L2328))→ (8) ループの回の中で consumer を選び直す、です。run を consumer の選択より前に置くのは graph で書いた material pass が影の map を受けるため(LP-3a)、(8) は置き換えた consumer の代わりの回が受けるため(LP-Vb)です。
+合成の中の順は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3115) の中で、(1) graph の lowering(`pass_set` の既定は [`defaultGraphPassFamily()`](../../src/project/featurecompose.cpp#L3089))→ (2) `insert.declared` の run を宣言の列へ置く → (3) feature・integration の合成 → (4) 変種で外れる feature に依存する node を外す([`withoutExcludedGraphDependents()`](../../src/project/rendergraphcomposition.cpp#L2157))→ (5) 残りの run を置く → (6) surface resources の consumer の選択と snapshot → (7) 解決の段(target の参照の検査 → ループの展開 → draw_loop の報告 → [`applyRenderFeaturePassReplacements()`](../../src/project/rendergraphcomposition.cpp#L2330))→ (8) ループの回の中で consumer を選び直す、です。run を consumer の選択より前に置くのは graph で書いた material pass が影の map を受けるため(LP-3a)、(8) は置き換えた consumer の代わりの回が受けるため(LP-Vb)です。
 
-**graph の node の出所(✅GL-2a)。**lowering は node が作った pass・compute task の名前ごとに、展開の [`GraphNodeOrigin`](../../src/project/graphcomposition.hpp#L38)(instance path・definition・node・loop・loop branch)を `LoweredRenderGraphDocument::origins` に残します([残す所](../../src/project/rendergraphcomposition.cpp#L760))。ループの body の node は雛形の id `<loop>/$<branch>/<node>` で残ります。`applyRenderFeaturePassReplacements()` は、置き換え先ごとに置き換えた `{feature, pass}` を `RenderGraphLoopResolution::replacements` に返します(ループでは置き換えた pass と同じ family の回だけ。[返す所](../../src/project/rendergraphcomposition.cpp#L2419))。合成は provenance を同期した直後に、この 2 つを [`RenderPassProvenance`](../../src/project/renderpipeline.hpp#L259) の `graph_origin` と `replaces` へ載せます([載せる所](../../src/project/featurecompose.cpp#L3717)):root と instance の宣言は `graph_declarations` にある名前で引き、ループの回は `loop_origin` の `(loop, element)` が選んだ分岐から雛形の id を作って引き、`instance_path` を空にします。feature の provenance は飛ばします。`get_frame_plan` の `origin` / `replaces`(`framePlanToJson()`)と `get_compute_task_authoring` の `graph_node` は、どちらもこの 1 つを読みます(GL-2a の前は、editor が root を展開し直して task 名と突き合わせていました)。
+**graph の node の出所(✅GL-2a)。**lowering は node が作った pass・compute task の名前ごとに、展開の [`GraphNodeOrigin`](../../src/project/graphcomposition.hpp#L38)(instance path・definition・node・loop・loop branch)を `LoweredRenderGraphDocument::origins` に残します([残す所](../../src/project/rendergraphcomposition.cpp#L762))。ループの body の node は雛形の id `<loop>/$<branch>/<node>` で残ります。`applyRenderFeaturePassReplacements()` は、置き換え先ごとに置き換えた `{feature, pass}` を `RenderGraphLoopResolution::replacements` に返します(ループでは置き換えた pass と同じ family の回だけ。[返す所](../../src/project/rendergraphcomposition.cpp#L2421))。合成は provenance を同期した直後に、この 2 つを [`RenderPassProvenance`](../../src/project/renderpipeline.hpp#L259) の `graph_origin` と `replaces` へ載せます([載せる所](../../src/project/featurecompose.cpp#L3771)):root と instance の宣言は `graph_declarations` にある名前で引き、ループの回は `loop_origin` の `(loop, element)` が選んだ分岐から雛形の id を作って引き、`instance_path` を空にします。feature の provenance は飛ばします。`get_frame_plan` の `origin` / `replaces`(`framePlanToJson()`)と `get_compute_task_authoring` の `graph_node` は、どちらもこの 1 つを読みます(GL-2a の前は、editor が root を展開し直して task 名と突き合わせていました)。
 
 > 🧩 **難所 — 回の順は名前に頼れない**: 展開器は node を id の辞書順に並べるので、`<loop>/10/x` は `<loop>/9/x` より前に来ます。そこで body の外の資源に触る回は、要素の順に明示の `after` でつながれます。回ごとの `render.image` だけに触る回はつながれず、並列にできます。
 
@@ -1200,7 +1200,7 @@ instance の入力ポートがどこから値を取るかは `edge > parameters 
 >     after += writer; downstream[writer] += reader   # 足した待ちも到達に入れる
 > ```
 >
-> **手がかり**: 呼ぶのは fullscreen / raster / compute の `access: "read"` の port と、snapshot_copy の `source` の 2 か所です。表は `render.image` だけを載せ、`render.target_ref` と buffer は対象外です。root の graph の pass は、ループの有無によらず依存の順に並べてから宣言します([その所](../../src/project/rendergraphcomposition.cpp#L801))。ループが無いときに id 順のままだと、`enforceCanonicalOrder` が宣言順で鎖をつなぐので、足した `after` と逆向きの辺ができて循環します。
+> **手がかり**: 呼ぶのは fullscreen / raster / compute の `access: "read"` の port と、snapshot_copy の `source` の 2 か所です。表は `render.image` だけを載せ、`render.target_ref` と buffer は対象外です。root の graph の pass は、ループの有無によらず依存の順に並べてから宣言します([その所](../../src/project/rendergraphcomposition.cpp#L803))。ループが無いときに id 順のままだと、`enforceCanonicalOrder` が宣言順で鎖をつなぐので、足した `after` と逆向きの辺ができて循環します。
 >
 > **不変条件**: 読み手の下流にいる書き手は待たない(到達を見てから足し、足した辺も到達に加える)ので、足した待ちが循環を作りません。規則の一覧は [design_graph_loops.md](../design_graph_loops.md) §5.2 です。
 
