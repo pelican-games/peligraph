@@ -93,7 +93,7 @@ ON のまま配布します。OFF は必要な shader variant を全て事前生
 
 ### 機能ユニット(PELICAN_WITH_*)
 
-エンジンの一部機能は CMake オプションで切り離せる「ビルドユニット」になっています(✅実装済み・WP40/51)。**ビルドユニット** = パージ可能なサブシステムを CMake オプション 1 個の単位にしたもので、OFF にするとそのコードはリンクされず、使おうとすると名指しのエラーになります([../design_build_tiers.md](../design_build_tiers.md))。production機能は**既定 ON** なので、開発中は意識する必要はありません。experimental SPIR-V linkerだけは既定OFFです。配布ビルドで OFF にする方法は [第10章](10_tools.md) の `dist-config` を参照してください。
+エンジンの一部機能は CMake オプションで切り離せる「ビルドユニット」になっています(✅実装済み・WP40/51)。**ビルドユニット** = パージ可能なサブシステムを CMake オプション 1 個の単位にしたもので、OFF にするとそのコードはリンクされず、使おうとすると名指しのエラーになります([../design_build_tiers.md](../design_build_tiers.md))。主要機能は既定 ON ですが、Jolt プロバイダや experimental SPIR-V linker などは既定 OFF です。正確な既定値と連動条件は [ビルド機能の台帳](../build_features.md) を参照してください。配布ビルドで OFF にする方法は [第10章](10_tools.md) の `dist-config` を参照してください。
 
 | オプション | 内容 |
 |---|---|
@@ -128,7 +128,7 @@ resolver、graph compiler、scheduler、backendは残ります。
 - **残るもの**: 凍結ヘッダ(`abi_v1.hpp` / `pose_staging_v1.hpp`)と、その**交渉入口**(`getApiV1` / `getPoseStagingServiceV1` / `Vrm::getApplicationServiceV1`)。ゲーム DLL はこれらをリンクするので、入口は残したまま **`unsupported_version` を返す stub** に差し替わります([animation_disabled.cpp:13](../../src/core/animation/animation_disabled.cpp#L13))。「関数が無くてロードできない」ではなく「名前で『この build には無い』と答える」形です。**skinning の compute 側(palette / `skinned.vert` / `ray_deform.comp`)も残ります** —— 姿勢を受け取る側であって、姿勢を作る側ではないからです。
 - **使おうとしたときの見え方**: `animation` コンポーネントを持つシーンは scene load の prepare で `animation.module_unavailable@1`(→ トランザクションなので旧シーンが保たれます。検査は [`resolvedObjectFeatureRefusal()`](../../src/core/loader/resolvedscene.cpp#L78)・[第4章 §4.3](04_scene_ecs.md))。エディタでこのコンポーネントを足す(`add_component` / `spawn`)ときも同じ関数・同じ名前で拒否されます(✅PG-1)。`pose.*` を書いた共通グラフ文書は `graph.operation_unregistered@1`。`project.json` に `requires: ["animation"]` を書いてあるプロジェクトは、**そこまで行く前に** project の parse で止まります(下記)。
 
-**project 側からの宣言(`requires`)。** `project.json` に `"requires": ["animation"]` と書いておくと、OFF build でそのプロジェクトを開いた時点で `animation.module_unavailable@1: this build has PELICAN_WITH_ANIMATION=OFF, so project.json's requires: ["animation"] cannot be satisfied` を出して `pelican_player` が exit 1 します(ノードを 1 つずつ拒否させて原因を探させない、という判断です)。出荷では `animgraph_demo` / `vrm_xr_demo` / `posegraph_demo` の 3 つが宣言しています(`requires` の語は `animation` のほかに `audio` / `physics` / `xr` / `vat` / `seqplayer` があり、`sprite_demo` は `physics` を宣言しています。✅PG-1)。同じ値を**コーパスを舐める側**も読むので、OFF build のスモークはそれらを止まらずに名前付きで飛ばします:
+**project 側からの宣言(`requires`)。** `project.json` に `"requires": ["animation"]` と書いておくと、OFF build でそのプロジェクトを開いた時点で `animation.module_unavailable@1: this build has PELICAN_WITH_ANIMATION=OFF, so project.json's requires: ["animation"] cannot be satisfied` を出して `pelican_player` が exit 1 します(ノードを 1 つずつ拒否させて原因を探させない、という判断です)。出荷では `animgraph_demo` / `vrm_xr_demo` / `posegraph_demo` の 3 つが宣言しています(`requires` の語は `animation` のほかに `audio` / `physics` / `xr` / `vat` / `seqplayer` があり、`sprite_demo` は `physics` を宣言しています。✅PG-1)。同じ値を**コーパスを順に調べる側**も読むので、OFF build のスモークはそれらを止まらずに名前付きで飛ばします:
 
 ```
 skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)

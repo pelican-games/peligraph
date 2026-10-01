@@ -3,9 +3,12 @@
 対象: pelican2(HEAD=`82054c05`・2026-09-17、branch
 `codex/render-target-runtime-slice`)/ このマニュアルはコードを正とする
 
+用語・仕様説明の再照合: 2026-10-01（`develop` / `c6df4822`）。主な訂正内容は [確認記録](../documentation_review_2026-10-01.md) にあります。
+
 ## この用語集の使い方
 
 - **複数の章で説明なしに出てくる語だけ**を集めた索引です。正確な仕様は各語の「初出」リンク先にあり、ここはその入口です。
+- 設計文書に多い英語・略語は [§14.8](#148-設計コード解説で頻出する用語) にまとめています。
 - 五十音順ではなく**分野別**に並んでいます。語を探すときはブラウザの検索(Ctrl+F)を使ってください。
 - エンジン固有の語には実装への行リンクを添えました。**説明と実装が食い違ったら実装が正**です(食い違いの台帳は [第11章 §11.3](11_status.md#113-既知の食い違い設計文書-vs-コード))。
 
@@ -15,13 +18,13 @@
 
 **WP(Work Package)** — 実装作業の単位。**識別子は 2 系統**あります: `WP1`〜`WP386` の**通し番号**(`WP380a` のような枝番が付く)と、2026-09-16〜17 の v0 で使われた**記号 ID**(`AG-0` / `AG-1b` / `P-2a-1c` / `X-1` / `O-1` / `R1-2` / `N-2` …。「系統 + 段」で読み、`AG` = アニメーションと共通グラフ、`P` = パラメータと部品、`X` = 持ち出し、`O` = オフライン出力、`R` = 整理と凍結、`N` = ノードキャンバス)。どちらも **1 単位 = 1 ブランチ = 1 マージ**で、本マニュアルの `✅WP155/162/167` や `✅P-2a-3` のようなバッジは「その機能がどの単位で入ったか」を指します。状態の正は台帳 [../implementation_plan.md](../implementation_plan.md) で、本マニュアルの表は転記です。初出: [第11章 §11.1](11_status.md#111-wp-全台帳)。
 
-**台帳** — `docs/implementation_plan.md` のこと。未完了 WP の指示と、共通・運用規則が載ります(完了済み WP の逐語記録は `docs/implementation_archive.md` へ移されます)。章と食い違ったら台帳が正です。初出: [第11章 §11.1](11_status.md#111-wp-全台帳)。
+**台帳** — 仕様・作業・検証結果を一覧で管理する文書の呼び方です。WP の仕様と履歴は [実装指示書](../implementation_plan.md) と [過去の完了記録](../implementation_archive.md)、v0 の公開仕様は [凍結一覧](../v0_freeze.md)、開発の現況は [v1 開発計画](../v1_development_plan.md) を参照します。履歴にある「未実装」「次に行う」を、そのまま現在の状態と解釈しないでください。 初出: [第11章 §11.1](11_status.md#111-wp-全台帳)。
 
 **D0** — 「エディタに特権 API を作らない」という設計決定の記号。編集操作はまず JSON-RPC メソッドとして定義され、エンジン内蔵の ImGui インスペクタも外部の Python クライアントも Qt Studio も**同じ関数**を呼びます。Studio がエンジン内部へリンクしていないことはビルドレベルのテスト(`test/run_devstudio_boundary_negative.cmake`)で守られます。初出: [第13章 §13.1](13_editor.md#131-全体像--何ができるようになったか)。
 
 **ABI(Application Binary Interface)** — 別々にコンパイルされたバイナリが呼び合うときの、関数名・引数の並び・構造体レイアウトの約束。pelican2 では「ゲーム DLL の ABI」(登録入口の名前と epoch anchor)、「physics provider ABI」、「material output ABI」など、**DLL や shader をまたぐ境界ごと**にこの語が出ます。初出: [第8章 ゲーム DLL の ABI](08_gameplay.md#ゲーム-dll-の-abiwp381381a382a)。([abi_v2.hpp:83](../../src/core/userpublic/physics/abi_v2.hpp#L91))
 
-**決定的 / 決定性(deterministic)** — 同じビルド・同じプロジェクト・同じ入力なら、何度実行しても**同じ結果**になること。pelican2 ではフレームループの固定順序・入力のフレーム頭スナップショット・システム順(order → 名前辞書順)・イベントの次フレーム配送・物理のタイブレーク・固定シードの PCG32・ヘッドレスの固定ステップ(dt = 1/fps)の 8 要素で作ります。ウィンドウモードは実測 dt なので厳密なリプレイはヘッドレスで行います。初出: [第8章 §8.10](08_gameplay.md#810-決定性--なぜ毎回同じ結果になるのか)。
+**決定的 / 決定性(deterministic)** — 同じ条件で実行したときに、処理順序や結果を再現できる性質です。このエンジンではシステムの実行順、入力の取得時点、固定シードの乱数、物理結果の整列などを明示します。時間に依存する処理には同じ時刻列も必要で、ウィンドウモードの実測 dt は毎回同じとは限りません。ヘッドレスの固定ステップは再現試験に使えますが、異なる GPU・ドライバ・ビルド間で浮動小数点の結果や画像が必ずビット単位で一致するという保証ではありません。 初出: [第8章 §8.10](08_gameplay.md#810-決定性--なぜ毎回同じ結果になるのか)。
 
 **hard error** — 警告で済ませず**起動・ロードをその場で止める**エラー。スキーマ不一致・バージョン不一致・未知の名前・必須フィールド欠落がこれにあたります。「読めるふりをして一部だけ壊れる」事故を防ぐための方針で、メッセージには必ず手がかり(解決後の絶対パス・登録済み id 一覧・OFF になっているビルドフラグ名)が入ります。初出: [第1章 §1.5](01_overview.md#15-横断的な設計原則)。
 
@@ -57,7 +60,7 @@
 
 **wire** — 「ディスク / RPC に出る形」のこと。同じ値でも、C++ の構造体(runtime)・正規化した中間形(canonical)・JSON に出る形(wire)は別物で、codec がこの 3 者を往復させます。「wire モデル」は「JSON に出る形の設計」の意味です。初出: [第3章 §3.10](03_project_format.md#310-コンポーネント宣言スキーマ-v3--flags-と-list-の-wirewp382a)。
 
-**解決(resolve)** — 書かれた参照文字列(`project://`、`engine://`、`user://`、素の相対パス、`#フラグメント`)を**実ファイルの絶対パスへ確定させる**操作。cwd は使いません。担当は `PathResolver` で、プロジェクトルートの外へ出る参照は脱出防止で弾かれます。初出: [第3章 §3.3](03_project_format.md#33-パス参照と-pathresolver)。([PathResolver](../../src/core/loader/pathresolver.hpp#L9) / [ProjectPathResolver](../../src/project/projectpathresolver.hpp#L69))
+**解決(resolve)** — 参照や宣言から、実際に使う対象を確定する操作です。パス解決では `project://` や相対パスをプロジェクト基準、`user://` をユーザーデータ領域基準で解釈し、asset store は設定されたマウント先を使います。`engine://` は絶対ファイルパスではなく埋め込みリソースの識別子になる場合があります。`#` 以降のフラグメントも保持します。許可されたルートからの脱出は拒否しますが、すべての参照先がプロジェクトディレクトリ内にあるという意味ではありません。描画計画などで使う resolve は別の対象を確定する処理です。 初出: [第3章 §3.3](03_project_format.md#33-パス参照と-pathresolver)。([PathResolver](../../src/core/loader/pathresolver.hpp#L9) / [ProjectPathResolver](../../src/project/projectpathresolver.hpp#L69))
 
 **結合(binding)** — 解決で得た実体を、**実行時のオブジェクトへ繋ぐ**操作。「形式の解析(`src/project`、GPU 不要)」と「実行時の結合(`src/core`)」を分けるのが pelican2 の二段構えで、`src/project` は純粋なパーサに保たれます。入力の `binding` は別語で、こちらは「デバイスの操作 → アクション名」の対応表です([第7章 §7.2](07_input_ui.md#72-アクション定義とバインディングプロファイル))。初出: [第3章 §3.5](03_project_format.md#35-解釈レイヤ--pelican_project-とバインダの分離)。
 
@@ -85,7 +88,7 @@
 
 **scene load transaction(シーンロードのトランザクション)** — 新しいシーンを試験的に組み立ててから**一斉に切り替える**方式。段は `prepare → early_publish → publish → activate → commit_metadata → retire → flush → finish` の 8 つ固定で、commit 前に失敗すれば全員で巻き戻します。「トランザクション」という語は編集チケット・effect transaction にも使われるので、文脈に注意してください。初出: [第4章 §4.3](04_scene_ecs.md#43-シーンロードの流れ)。([SceneLoadPhase](../../src/core/loader/sceneload.hpp#L27))
 
-**prepare / publish / commit** — pelican2 全体で繰り返される 3 点セット。**prepare** で「投げうる準備(確保・コピー・検証)」を全部済ませ、**publish** は失敗しようのない差し替えだけにし、**commit** で外から見える状態を確定させます。publish が no-throw なので「半分だけ適用された状態」が原理的に作れません。初出: [第4章 §4.3](04_scene_ecs.md#43-シーンロードの流れ)。
+**prepare / publish / commit** — 状態の更新を段階に分けるための名前です。**prepare** は確保・検証などの準備、**publish** は準備した状態の反映、**commit** は更新の確定を表します。ただし、具体的な段階と失敗時の扱いは機能ごとに異なります。シーンロードでは publish 後も activate などで失敗する可能性があり、commit 前なら反映済みの状態も巻き戻します。`noexcept` は例外を呼び出し元へ出さないという C++ の指定であり、それだけで一連の更新の原子性（全体を適用するか、全体を戻すか）を保証するものではありません。 初出: [第4章 §4.3](04_scene_ecs.md#43-シーンロードの流れ)。
 
 **retire(退役)** — 旧シーンを片付ける段。ここで旧オブジェクトの `onDestroy` が走り、旧 entity は既に unpublish 済みなので**新シーンからは見えません**。retire 中に新たなシーンロードを要求しても拒否されます。初出: [第4章 §4.3](04_scene_ecs.md#43-シーンロードの流れ)。([scene.cpp の requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1855))
 
@@ -107,7 +110,7 @@
 
 **SoA / Chunk / Archetype** — ECS の格納形。**Archetype** は「同じコンポーネントの組み合わせを持つ entity の集合」、**Chunk** はそれを一定個数ずつ区切った箱、**SoA**(Structure of Arrays)は「コンポーネントごとに別の連続配列に置く」並べ方です。1 つのコンポーネントだけを走査するときに無駄なメモリを読まずに済みます。初出: [第4章 §4.4](04_scene_ecs.md#44-ランタイム-ecs-の要点ゲーム開発者向け)、詳細は [source-code-guide 第4章](../source-code-guide/04_ecs_deep_dive.md#chunkはsoa)。([ECSComponentChunk](../../src/core/userpublic/details/ecs/chunk.hpp#L19))
 
-**type erasure(型消去)** — テンプレートで知っていた型情報を、**サイズ・アライメント・関数ポインタの表**へ潰して、実行時に任意の型を同じコードで扱えるようにする手法。ECS の列は `void*` + 「構築 / 破棄 / 詰め替え」の関数ポインタで持たれています。初出: [source-code-guide 第4章](../source-code-guide/04_ecs_deep_dive.md#runtimeの型消去メタデータ)。([VariedArray](../../src/core/userpublic/details/ecs/chunk.hpp#L25))
+**type erasure(型消去)** — テンプレートで知っていた型情報を、**サイズ・アライメント・関数ポインタの表**で表して、実行時に任意の型を同じコードで扱えるようにする手法。ECS の列は `void*` + 「構築 / 破棄 / 詰め替え」の関数ポインタで持たれています。初出: [source-code-guide 第4章](../source-code-guide/04_ecs_deep_dive.md#runtimeの型消去メタデータ)。([VariedArray](../../src/core/userpublic/details/ecs/chunk.hpp#L25))
 
 **relocate(詰め替え)** — entity を削除したときに、末尾の要素を空いた位置へ移して列を詰める操作(swap-and-pop)。型消去された列では move 構築 + 破棄を 1 つの関数ポインタにまとめてこれを行います。**要素のアドレスが動く**ので、コンポーネントへの生ポインタをフレームをまたいで持つのは危険です。初出: [第4章 §4.4](04_scene_ecs.md#44-ランタイム-ecs-の要点ゲーム開発者向け)。
 
@@ -135,7 +138,7 @@
 
 **PCG32(permuted congruential generator)** — 高速で周期が長い擬似乱数生成器の一種。pelican2 は `std::mt19937` + `std::uniform_*` を**使わず**(処理系によって出る列が違うため)、PCG32 を分布まで自前実装しています。既定シードは 0 固定で、毎回変えたいゲームは自分で種を入れます。初出: [第8章 §8.10](08_gameplay.md#810-決定性--なぜ毎回同じ結果になるのか)。([deterministicrng.cpp:14](../../src/core/userpublic/deterministicrng.cpp#L14))
 
-**provider(プロバイダ)** — ある機能の**実装を差し替えられる口**。物理クエリでは Builtin / Jolt / ゲーム DLL の provider を capability 単位で差し替えられ(選択はビルド時)、描画では view family や draw の供給者を差し替えられます。クエリの順序やタイブレークの契約は provider ではなく**エンジンが所有する**ので、差し替えても結果の並びは変わりません。初出: [第8章 §8.8](08_gameplay.md#88-物理クエリとトリガーp1p2wp107179)。([ProviderV2](../../src/core/userpublic/physics/abi_v2.hpp#L91))
+**provider(プロバイダ)** — 機能の実装やデータを供給する、差し替え可能な実装です。物理では組み込み実装や Jolt をビルド設定で選べるほか、ゲーム DLL が実行時にプロバイダを登録できます。クエリごとに必要な機能（capability）を見て、対応するゲーム側プロバイダを優先し、なければビルドで選んだ実装を使います。結果の整列や同順位の処理はエンジン側の規則に従いますが、実装を替えても数値結果が完全一致するという意味ではありません。描画でもビューや描画項目を供給する実装にこの語を使います。 初出: [第8章 §8.8](08_gameplay.md#88-物理クエリとトリガーp1p2wp107179)。([ProviderV2](../../src/core/userpublic/physics/abi_v2.hpp#L91))
 
 **GJK / EPA** — 凸形状どうしの当たり判定の定番アルゴリズム。GJK は 2 つの形状の差(ミンコフスキー差)の中で原点までの最近点を反復で探し、**離れているか / 距離はいくらか**を出します。貫通しているときは GJK だけでは深さが出ないので、EPA(expanding polytope algorithm)が GJK の残した単体を膨らませて押し出す深さと向きを求めます。pelican2 は両方を自前で実装しており、GJK 反復は 40 回上限です。初出: [source-code-guide 第5章 §5.7](../source-code-guide/05_gameplay_and_services.md#57-physics)。([physquerysweep.cpp:20](../../src/core/phys/physquerysweep.cpp#L20) / [penetration()](../../src/core/phys/physquerysweep.cpp#L657))
 
@@ -193,11 +196,11 @@
 
 **IBL(image-based lighting)** — 環境を写した画像から、拡散・鏡面の環境光を作るライティング手法。**pelican2 では未実装**です(WP32 は番号予約のみ)。同梱の `sky_ambient.json` は単色の環境光であって IBL ではありません。初出: [第11章 §11.1](11_status.md#111-wp-全台帳)。
 
-**AS / BLAS / TLAS(加速構造)** — レイトレーシングで「レイがどの三角形に当たるか」を高速に絞るための木構造。**BLAS**(bottom-level)は 1 つのジオメトリの中身、**TLAS**(top-level)は BLAS のインスタンスを世界に並べた表で、**AS** はその総称です。pelican2 の AS は**静的ジオメトリ専用**で、transform を動かしても BLAS は無効化されません(TLAS の行が変わるだけ)。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)。([accelerationstructure.hpp:69](../../src/core/vkcore/accelerationstructure.hpp#L125))
+**AS / BLAS / TLAS(加速構造)** — レイと形状の交差候補を高速に絞り込むためのデータ構造の総称が **AS** です。**BLAS**（bottom-level acceleration structure）は三角形群や手続き形状の境界ボックスをまとめた下位構造、**TLAS**（top-level acceleration structure）は BLAS の配置・変換行列などを持つ上位構造です。現在は**静的形状に加え、スキン・モーフ・VAT による変形形状にも対応**します。変形後の頂点を計算し、条件が合えば前回の BLAS を基に更新（refit）します。配置の transform だけが変わる場合は BLAS を再利用し、TLAS の行列へ反映します。詳しくは [加速構造の解説](../source-code-guide/11_ray_query_acceleration_structures.md)。 初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)。([accelerationstructure.hpp:69](../../src/core/vkcore/accelerationstructure.hpp#L125))
 
 **SBT(shader binding table)** — レイトレーシングパイプラインで、「どのレイがどのシェーダ(raygen / miss / closest-hit)に当たるか」を引くための表。`ray_group_layout` の `ray_types` / `groups` / `misses` / `record` がこの表の形を決めます。`acceleration_structure` は SBT の入力ではないので、layout の digest からは取り除いて計算されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayTracingSceneShaderBindingTables](../../src/core/shader/pipelinefactory.hpp#L187))
 
-**`ray_group_layout`(ray layout)** — レイトレの宣言層の入口となる JSON。version は 3 だけを受理し(1 / 2 は MG-2a から `pelican.ray_group_layout.version_unsupported@1`)、**プロセス一生ものの 2 値**(layout 無し / 有り)として起動時に確定します。layout があるときだけ `acceleration_structure` 宣言と `pelican_ray_instance` コンポーネントが使えます。プロセス途中でのモード変更は拒否されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayLayoutRuntimeState](../../src/core/shader/raygrouplayout.hpp#L168))
+**`ray_group_layout`(ray layout)** — レイトレの宣言層の入口となる JSON。version は 3 だけを受理し(1 / 2 は MG-2a から `pelican.ray_group_layout.version_unsupported@1`)、**プロセスの実行中は変更できない 2 状態**(layout 無し / 有り)として起動時に確定します。layout があるときだけ `acceleration_structure` 宣言と `pelican_ray_instance` コンポーネントが使えます。プロセス途中でのモード変更は拒否されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayLayoutRuntimeState](../../src/core/shader/raygrouplayout.hpp#L168))
 
 ---
 
@@ -224,13 +227,13 @@
 **共通グラフ(`pelican.graph` v1)** — **値(スカラー)・描画・姿勢を 1 つのノード語彙で繋ぐ**機構、およびその文書形式。文書は `definitions`(名前付きの部分グラフ)/ `nodes`(root のノード列)/ `outputs` を持ち、rendering config は同じ文書の `rendering` 節に同居します。「共通」は「1 本の曲線の値を GPU バッファにも姿勢のブレンド率にも送れる」という意味です。ノード語彙は [第6章 §6.17](06_rendering.md)、編集操作は [第13章 §13.5](13_editor.md)、凍結された op の一覧は [../v0_freeze.md](../v0_freeze.md) §1.3。初出: [第6章 §6.16](06_rendering.md)。([graphcomposition.cpp](../../src/project/graphcomposition.cpp))
 ※ 紛らわしい別物として **`pelican.value_graph`** があります。これは共通グラフを lowering した結果の**内部 IR + テスト面**であって、**外部に約束された契約ではありません**([../v0_freeze.md](../v0_freeze.md) §2 行 1)。プロジェクトが書くのは `pelican.graph` です。
 
-**`graph.instance`(装着)** — 定義(`definitions` の 1 つ)を 1 回実体化するノード。`owner: {scene, object}` を書くと**シーンの個体に結び付き**、owner が解決できないときは**エラーではなく無音の inactive**(警告 1 行)になります。入力 port の値の決まり方は 4 通りで、これを **mode** と呼びます: `connected`(辺が繋がっている)/ `parameter`(`parameters` に書いた固定値)/ `default`(定義側の既定値)/ `override`(実行時に `setGraphParameter` で上書き)。優先は **辺 > `parameters` > 既定値**で、辺を外しても `parameters` は残るので**元の固定値に戻れます**。接続済みの入力に実行時上書きをかけると `graph.override_shadowed@1`(黙って消えません)。初出: [第4章 §4.1](04_scene_ecs.md#authoring-object-id-と-graphinstanceownerag-1ap-1p-2b)。
+**`graph.instance`(装着)** — 定義(`definitions` の 1 つ)を 1 回実体化するノード。`owner: {scene, object}` を書くと**シーンの個体に結び付き**、owner が解決できないときは**処理を停止するエラーにはせず、警告を出して非アクティブ（inactive）**になります。入力 port の値の決まり方は 4 通りで、これを **mode** と呼びます: `connected`(辺が繋がっている)/ `parameter`(`parameters` に書いた固定値)/ `default`(定義側の既定値)/ `override`(実行時に `setGraphParameter` で上書き)。優先は **辺 > `parameters` > 既定値**で、辺を外しても `parameters` は残るので**元の固定値に戻れます**。接続済みの入力に実行時上書きをかけると `graph.override_shadowed@1`(黙って消えません)。初出: [第4章 §4.1](04_scene_ecs.md#authoring-object-id-と-graphinstanceownerag-1ap-1p-2b)。
 
 **姿勢グラフ / `pelican.pose`** — 共通グラフの姿勢用 module。op は `pose.clip_sample`(クリップを時刻でサンプルする)/ `pose.blend`(2 つの姿勢を weight で混ぜる)/ `pose.state_machine`(`pelican.anim_graph` 文書を包む)/ `pose.retarget`、sink は `pose.skeletal`。port を流れる `pelican.pose@1` は**バイト列ではなく**、staged pose のハンドル + レイアウト世代 + フレーム revision です。評価は描画ではなく**アニメーションのフェーズ**で走り、スカラー → 姿勢の**一方向**です(姿勢 → スカラーはありません)。`PELICAN_WITH_ANIMATION=OFF` のビルドには module ごと存在しません。初出: [第8章 §8.13](08_gameplay.md)・[第4章 §4.2](04_scene_ecs.md#姿勢の-2-つの装着様式ag-1aag-1b)。
 
-**単一 writer / writer token** — 「1 つの個体の姿勢を書けるのは 1 本だけ」という規則と、その実行時の担保。文書レベルでは装着時に `pose.sink_conflict@1` で弾き、公開レベルでは `publishAnimationFrame` が **owner ごとの writer token**(フレーム revision 付き)を持ち、同じ revision に別の writer が来れば `authority_conflict`、同じ writer が 2 回来れば `duplicate_revision` を返します。文書の検査だけだと「検査をすり抜けた経路」が黙って二重書きになるため、公開側にも砦があります。初出: [第4章 §4.2](04_scene_ecs.md#姿勢の-2-つの装着様式ag-1aag-1b)。([PoseGraph::raiseSinkConflict()](../../src/core/animation/posegraph.cpp#L40))
+**単一 writer / writer token** — 「1 つの個体の姿勢を書けるのは 1 本だけ」という規則と、その実行時の担保。文書レベルでは装着時に `pose.sink_conflict@1` で弾き、公開レベルでは `publishAnimationFrame` が **owner ごとの writer token**(フレーム revision 付き)を持ち、同じ revision に別の writer が来れば `authority_conflict`、同じ writer が 2 回来れば `duplicate_revision` を返します。文書の検査だけだと「検査をすり抜けた経路」が黙って二重書きになるため、公開処理でも書き込み元を検証します。初出: [第4章 §4.2](04_scene_ecs.md#姿勢の-2-つの装着様式ag-1aag-1b)。([PoseGraph::raiseSinkConflict()](../../src/core/animation/posegraph.cpp#L40))
 
-**root motion** — クリップに焼かれた「根(root)の移動」を、姿勢としてではなく**個体の移動**として使うこと。`pose.clip_sample{root_motion: "extract", root_node}` で有効になり、移動量は owner の `localtransform` に加算され、staged pose 側の根はクリップ先頭の位置に固定(pin)されます。移動量は**巻き戻す前の時刻(unwrapped time)の差**で取るので、`speed < 0` でも 1 フレームに 1 周以上進んでも同じ 1 つの式です。`set_time`(シーク)は移動ではないと扱われ、その 1 フレームの移動量は 0 になります。**回転量の抽出は v0 の射程外**。末尾キーを先頭キーと同じにした「継ぎ目無し」クリップは正味の移動が 0 = 動きません。初出: [第4章 §4.2](04_scene_ecs.md#localtransform)・[第8章 §8.13](08_gameplay.md)。
+**root motion** — クリップに焼かれた「根(root)の移動」を、姿勢としてではなく**個体の移動**として使うこと。`pose.clip_sample{root_motion: "extract", root_node}` で有効になり、移動量は owner の `localtransform` に加算され、staged pose 側の根はクリップ先頭の位置に固定(pin)されます。移動量は**巻き戻す前の時刻(unwrapped time)の差**で取るので、`speed < 0` でも 1 フレームに 1 周以上進んでも同じ 1 つの式です。`set_time`(シーク)は移動ではないと扱われ、その 1 フレームの移動量は 0 になります。**v0 では回転量を抽出しません**。末尾キーを先頭キーと同じにした「継ぎ目無し」クリップは正味の移動が 0 = 動きません。初出: [第4章 §4.2](04_scene_ecs.md#localtransform)・[第8章 §8.13](08_gameplay.md)。
 
 **catalog(2 系統)** — 「今このビルドで何が使えるか」の一覧。**(1) グラフのカタログ** = 登録済み module / 型 / op / sink の語彙(`pelican_cli graph-catalog` と RPC `get_graph_catalog`。`PELICAN_WITH_ANIMATION` の ON / OFF で 5 module 36 op / 4 module 30 op と変わります。数は `PELICAN_WITH_AUDIO=ON` の build。GP-3 で常に登録される `pelican.ui` の 2 op、LP 系で `pelican.render` の 7 op が加わりました。構造の node の `graph.instance` / `graph.loop` は載りません)。**(2) feature のカタログ** = 使える render feature の一覧(RPC `list_render_features`。エンジン同梱と install 済み package が載り、`source` でどちらか分かります)。**(2) にプロジェクト内の素の `project://` feature は載りません**。初出: [第10章](10_tools.md)・[第3章 §3.11](03_project_format.md#311-package--本体ツリーの外から持ち込むx-1)。
 
@@ -251,6 +254,37 @@
 **`pass_replacements`** — feature の instance に書く `{"<feature の pass / task 名>": "<graph の node かループの id>"}`。書いた pass は feature から外れ、graph の node(ループなら展開した回の列)がその位置に入り、順序と `surface_resources` の名前も写ります。分解版で一体版の pass を置き換えるための仕組みです。初出: [第6章 §6.18](06_rendering.md)。
 
 **分解版(decomposed graph)** — 標準 feature の処理を、グラフの node とループで書き直したもの(「標準機能には一体版と分解版の両方を持たせる」という原則の後者)。engine は `engine://graphs/bloom_loop.json` などを**雛形**として出荷し(文書の `decomposes` が、どの feature を外すか・置き換えるかを言う)、project がそれを自分の graph へ写して使います。rendering 節の material pass は `decompose_material_pass` で分解版に書き換えられます。初出: [第6章 §6.18](06_rendering.md)、[第13章](13_editor.md)。
+
+---
+
+## 14.8 設計・コード解説で頻出する用語
+
+文書では次の英語や略語を使います。識別子や JSON のキーは原文のまま記載しますが、説明文では以下の意味です。
+
+| 用語 | この資料での意味 |
+|---|---|
+| 契約（contract） | 入出力、制約、失敗時の応答など、呼び出し側と実装側が守る仕様。法律上の契約を指すものではありません。 |
+| 正本 | 食い違いを判断する際の基準文書。現在の実装状況、公開仕様、過去の設計意図は区別して参照します。 |
+| 面 / surface | API・編集操作・データ形式などを外部に公開する範囲。文脈が曖昧なときは「公開 API」「編集対象」などと読み替えます。`.surface` はマテリアルのシェーダ定義ファイルという別の意味です。 |
+| authoring | 人やツールが編集・保存するデータ。実行時（runtime）に生成されるデータと区別します。 |
+| schema（スキーマ） | データに使えるキー、型、必須項目などの形式規則。 |
+| canonical（正規形） | 比較や処理を一貫させるために表現を統一した形。「正しい値」の同義語ではありません。 |
+| IR（Intermediate Representation、中間表現） | 入力の宣言を解析してから実行用データを作るまでの間に使う表現。 |
+| lowering | 宣言や中間表現を、実行方式に近い具体的な表現へ変換する処理。たとえば描画グラフから Vulkan 向けの計画を作ります。 |
+| backend（バックエンド） | 共通の仕様を、Vulkan などの具体的な実行方式で実現する部分。 |
+| dialect | 共通グラフ内で、ある処理分野が使う型・操作・規則のまとまり。 |
+| capability | あるビルド・実装・デバイスが利用できる機能。単にカタログに名前が載ることとは区別します。 |
+| op（operation） | グラフのノードが行う操作の種類。JSON の `op` に `value.constant` などを指定します。 |
+| port（ポート） / edge（辺） | ノードの値の出入口と、その接続。辺がデータや実行順序の依存を表します。 |
+| sink（出力先） | グラフの評価結果を、姿勢や描画用バッファなどの外部の状態へ反映する出口。 |
+| identity | 対象が同じものかを判別する識別情報。単なる表示名とは限りません。 |
+| digest（ダイジェスト） | 内容から計算するハッシュ値。文書の変更検出などに使います。 |
+| CAS（Compare And Swap） | 想定していた値と現在値が一致するときだけ更新する方式。編集 RPC では文書の digest を比較し、他の編集を上書きするのを防ぎます。CPU の原子命令を指す場合もあります。 |
+| epoch / generation / revision | 状態の世代や変更回数を識別する値。何を更新したときに進むかは型ごとに異なり、相互に置き換えられません。 |
+| lease（リース） | 資源の利用権や寿命を保持する仕組み。GPU テストの排他実行と、GPU 送信完了までの資源保持では対象が異なります。 |
+| submission | GPU キューへコマンドを送ること、またはその送信単位。CPU 側での送信と GPU 側での完了は別です。 |
+| refit / rebuild | 加速構造の既存の構成を利用した更新と、作り直し。使い分けの条件は [加速構造の解説](../source-code-guide/11_ray_query_acceleration_structures.md) を参照してください。 |
+| gate / fixture / golden | 合否を判定する検証、検証用の固定データや環境、比較の基準にする結果。どの範囲を検証したかは個々のテストによります。 |
 
 ---
 

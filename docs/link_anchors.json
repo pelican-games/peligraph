@@ -6300,6 +6300,10 @@
     "docs/source-code-guide/README.md|../../src/core/vkcore/renderer.cpp|`Renderer::render()`|#1": "void Renderer::render(",
     "docs/source-code-guide/README.md|../../src/core/vkcore/renderer.cpp|`Renderer::renderLogicalFrame()`": "void Renderer::renderLogicalFrame(",
     "docs/source-code-guide/README.md|../../src/core/vkcore/renderer.cpp|`Renderer::renderLogicalFrame()`|#1": "void Renderer::renderLogicalFrame(",
+    "docs/source-code-guide/README.md|../../src/core/vkcore/renderer.cpp|単一ビュー群の呼び出し口": "void Renderer::renderLogicalFrame(",
+    "docs/source-code-guide/README.md|../../src/core/vkcore/renderer.cpp|引数なしの描画関数": "void Renderer::render() {",
+    "docs/source-code-guide/README.md|../../src/core/vkcore/renderer.cpp|描画処理（複数のビュー群を受け取る実装）": "void Renderer::renderLogicalFrame(",
+    "docs/source-code-guide/README.md|../../src/core/vkcore/renderer.cpp|通常画面の描画": "void Renderer::render(",
     "docs/source-code-guide/README.md|../../src/player/main.cpp|`main()`": "int main(int argc, char *argv[]) {"
   }
 }

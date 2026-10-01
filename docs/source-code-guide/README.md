@@ -6,7 +6,7 @@
 
 基準コミット: `8864050`
 
-章によっては冒頭に自前の調査時点を書いています(第10章)。その章についてはそちらの日付とコミットが正です。
+上記は初回調査の基準です。その後の追記は各章で扱っています。2026-10-01 に `develop` の `c6df4822` と照合し、用語、参照先、加速構造などの説明を訂正しました。全機能をこの日付で再検証したという意味ではありません。現在の開発状況は [v1 開発計画](../v1_development_plan.md)、v0 の公開仕様は [凍結一覧](../v0_freeze.md) を参照してください。
 
 この文書群は、Pelican2を「利用する方法」ではなく、**ソースコードがどう分割され、起動後に何がどの順で動き、複雑な実装がなぜその形になっているか**を理解するための読解ガイドです。
 
@@ -20,12 +20,14 @@ Pelican が「こう呼んでいる」基本語(scene、asset、feature、render
 
 コードベース固有の難しさは各章の `🧩 難所` ブロックにまとめてあります(下の難所インデックス)。
 
+設計上の「契約」「正本」「面」や lowering、IR、capability、digest などは [用語集 §14.8](../manual/14_glossary.md#148-設計コード解説で頻出する用語) で説明しています。
+
 ## このガイドの特徴
 
 - 主要な説明には、実装へ直接ジャンプできる `ファイル#L行番号` リンクがあります。
 - 公開API、エンジン内部モジュール、純粋なデータ変換層、Vulkan層を区別します。
-- ECSは利用法だけでなく、世代付きID、アーキタイプ（archetype — 「同じComponentの組み合わせを持つentityの集まり」を1つの単位として扱うECSの分類）、SoAチャンク（SoA = structure of arrays。1 entity分をまとめた構造体を並べるのではなく、Componentごとに別々の連続配列へ分けて置く格納方式で、それを一定個数ずつ区切った箱がchunkです）、型消去（type erasure — 具体的な型ごとの情報をsize/alignmentと関数ポインタの表へ潰し、どんな型でも同じ経路で扱えるようにする手法）、ライフサイクル、変更検知、並列スケジューリングまで追います。
-- マクロ、自動登録、`__COUNTER__`（展開されるたびに0, 1, 2…と増える整数へ置き換わるプリプロセッサ組み込みマクロ。展開ごとに重複しない番号を作るのに使います）、型消去コールバックなどの「黒魔術」は、展開後に何が起きるかを段階的に説明します。
+- ECSは利用法だけでなく、世代付きID、アーキタイプ（archetype — 「同じComponentの組み合わせを持つentityの集まり」を1つの単位として扱うECSの分類）、SoAチャンク（SoA = structure of arrays。1 entity分をまとめた構造体を並べるのではなく、Componentごとに別々の連続配列へ分けて置く格納方式で、それを一定個数ずつ区切った箱がchunkです）、型消去（type erasure — 具体的な型ごとの情報をsize/alignmentと関数ポインタの表で表し、どんな型でも同じ経路で扱えるようにする手法）、ライフサイクル、変更検知、並列スケジューリングまで追います。
+- マクロ、自動登録、`__COUNTER__`（展開されるたびに0, 1, 2…と増える整数へ置き換わるプリプロセッサ組み込みマクロ。展開ごとに重複しない番号を作るのに使います）、型消去コールバックなどの実装技法は、展開後に何が起きるかを段階的に説明します。
 - 完成済みの機能と、骨組みだけの箇所・現在の制約を分けて記載します。
 
 ## 読む順番
@@ -40,25 +42,23 @@ Pelican が「こう呼んでいる」基本語(scene、asset、feature、render
 | [第6章 描画・Vulkan・Shader](06_rendering_vulkan_shader.md) | Rendering config、Frame graph、Dynamic Rendering、Shader反射、hot reload | レンダラを変更する人 |
 | [第7章 ツール・RPC・テスト](07_tools_rpc_tests.md) | devcli、Studio、JSON-RPC、テストの種類と読み方 | ツール/CIを触る人 |
 | [第8章 クラス・インターフェース索引](08_class_interface_index.md) | 主要型を責務別に引ける宣言/実装/テスト索引 | 名前から探したい人 |
-| [第9章 黒魔術・制約・変更時の注意](09_black_magic_and_gotchas.md) | マクロ展開、型消去、静的初期化、寿命、現在の未実装点 | 深い改修をする人 |
+| [第9章 マクロ・型消去・変更時の注意](09_black_magic_and_gotchas.md) | マクロ展開、型消去、静的初期化、寿命、現在の未実装点 | 深い改修をする人 |
 | [第10章 前提知識の補足](10_background_knowledge.md) | このコードが当然としている一般知識(Vulkan / glTF / C++ / OS / アルゴリズム / 座標と数値 / 宣言的グラフと拡張の作法) | コードは素直なのに読めないとき |
-| [第11章 Ray query / RT pipeline 用加速構造](11_ray_query_acceleration_structures.md) | 静的限定 BLAS / TLAS、AS 行の identity(`MaterialRowIdentity`)、2 種の shadow mask、SBT(shader binding table — RT pipeline が raygen / miss / hit の各 shader group handle を引くための GPU バッファ)、set 0 契約、raster shadow との差 | ray query / RT pipeline の土台や shadow feature を変更する人 |
+| [第11章 Ray query / RT pipeline 用加速構造](11_ray_query_acceleration_structures.md) | 静的・変形形状の BLAS / TLAS、AS 行の identity(`MaterialRowIdentity`)、2 種の shadow mask、SBT(shader binding table — RT pipeline が raygen / miss / hit の各 shader group handle を引くための GPU バッファ)、set 0 契約、raster shadow との差 | ray query / RT pipeline の土台や shadow feature を変更する人 |
 
 ## 難所インデックス(詰まったときの逆引き)
 
-各章には、**「初見ではまず読めない」実装**に `🧩 難所 — …` という解説ブロックがぶら下げてあります。何をする所か / なぜ素朴に読むと壊すのか / 骨子 / 読むときの手がかり / 触るときの不変条件、の順で書いてあります。読み飛ばしても本文は繋がるので、**詰まったときだけ開いてください**。
+各章の `🧩 難所` ブロックでは、実装の目的、読み違えやすい点、処理の手順、変更時に守る条件を説明します。知りたい内容から章を選び、章内で `難所` を検索してください。
 
-| 章 | 難所 |
+| 章 | 解説する主な実装上の注意点 |
 |---|---|
-| [第2章](02_runtime_lifecycle.md) | 「生成の逆順」が成立する条件 / 一本の順序が二つのモードを兼ねる / 名前は「解決」、中身は副作用 |
-| [第3章](03_project_and_loading.md) | 保存の TOCTOU 窓 / preserve-world の逆算 / 128 枚の結合 palette / closure が identity を運ぶ / 二段公開と巻き戻し順 / rest 差分の回転移送 |
-| [第4章](04_ecs_deep_dive.md) | 生成 transaction の三段構え / deinit を呼ぶ経路と呼ばない経路 / 型パックと indices の位置対応 / hazard 検出と計画の決定性 / generation 0 を跨がない台帳 / 移行 publish の relocate 舞踏 / publish を落とさない reserve |
-| [第5章](05_gameplay_and_services.md) | provider 索引の再マップ / ε クラスタの全順序 / GJK 最近点の全列挙 / 保守的前進で TOI を出す / EPA の四面体と面選択 / 差分は 1 パスのマージ / 滑りと skin の引き算 / one-way 足場の進入側 / N-way ブレンドの符号正準化 / 親 index < 子 index / publish しない publish / 割り込みとスナップショット / schema の指紋を採る / 不完全型のまま consteval / 3 回舐めてから swap |
-| [第6章](06_rendering_vulkan_shader.md) | preview 除外は 1 語差 / canonical bucket の番兵 / anchor 挿入と暗黙 after / format_class が format を上書き / writes-writes の曖昧検出 / barrier は後追いで作る / 決定性は set のキー / level は order で回す / `@history` は edge を作らない / sprite anchor の逆順スキャン / 量子化するのはアンカーだけ / 消さないための空呼び出し / リンクの向きは二方向 / push の先頭 64 byte / reload の swap は 3 回 / ジッタは w 倍で足す / epoch ペアが reset 信号 / `binding: buffer` は 5 つの宣言が噛み合って初めて成立する |
-| [第7章](07_tools_rpc_tests.md) | 曖昧な重なり判定 / `edit` の逐次プリフライト / undo 前提の三段検証 / preview lease の状態機械 / preview の状態不変性検証 |
-| [第9章](09_black_magic_and_gotchas.md) | 遅延生成の 49 行 / handle の CRTP と穴 / generation は 0 を跨がない / `struct_size` の 3 段ルール / `decltype` で catalog を掃く / void payload の消し方 / 捕まるものと捕まらないものが逆に見える / **§9.24**: byte 正確な節 locator と絶対 offset / 排他 create の committed marker / unwrapped time から作る root delta / per-node の評価分類は `max()` でしか動かない / package の SDK は転送ヘッダのディレクトリ / publish snapshot の `node_values` はグラフを持ったベクタ / `$pose/` のスカラー橋と 2 つの EvaluationState / 量子化された `--start-time` / 未解決 owner は無音で inactive / `pelican.pose@1` は意図して不透明 / 再生パラメータの既定値を本当に持つのは 2 関数だけ / 物理の契約の拒否は最後に投げ、editor はそれだけを commit する |
-
-この表に並ぶのは**中身の要約ではなく目印**です(「生成の逆順」「publish を落とさない」のように、そのブロックで一番間違えやすい一点を短く名指ししてあります)。タイトルから内容は復元できないので、章を開いて `難所 —` で検索し、該当ブロックを読んでください。表は各章の代表を拾ったものなので、その章の全件が要るときも同じ検索が要ります。
+| [第2章](02_runtime_lifecycle.md) | モジュールの生成・破棄順、実行モードごとの更新順、参照の取得に伴う状態変更 |
+| [第3章](03_project_and_loading.md) | 保存中のファイル変更、親子付け替え時の座標変換、シーン切替の巻き戻し、アニメーションの骨格間変換 |
+| [第4章](04_ecs_deep_dive.md) | Entity の生成と削除、読み書きの競合、世代番号の再利用制限、コンポーネント移行時の要素移動 |
+| [第5章](05_gameplay_and_services.md) | 物理クエリの順序と接触判定、姿勢のブレンドと反映時点、パラメータの検証と一括交換 |
+| [第6章](06_rendering_vulkan_shader.md) | 描画パスの挿入順、リソースへの読み書きの依存、GPU 同期、シェーダの結合、ホットリロード、履歴のリセット |
+| [第7章](07_tools_rpc_tests.md) | 編集前の検証、undo の前提条件、プレビュー資源の寿命と元の状態の保持 |
+| [第9章](09_black_magic_and_gotchas.md) | マクロと型消去、ABI の互換性、JSON を編集する位置の特定、姿勢の移動量抽出、参照先を解決できない場合の扱い |
 
 一般的でない専門用語(Floyd–Warshall・SFINAE・ADL・TOI・MTD・GJK/EPA・CAS・TOCTOU・ABA・Halton 列など)は、**その語が実際に出てくる章の初出箇所で 1〜2 文の説明を添えてあります**(この索引には用語表を置きません)。どの章に出るかは語ごとに違う — たとえば Floyd–Warshall は frame graph の推移閉包を扱う[第6章](06_rendering_vulkan_shader.md)、SFINAE と ADL は登録マクロを扱う[第9章](09_black_magic_and_gotchas.md)です — ので、横断して引くときは `rg '<語>' docs/source-code-guide` が最短です。Pelican 固有の基本語は [`docs/manual/14_glossary.md`](../manual/14_glossary.md)、一般知識の側は[第10章](10_background_knowledge.md)にまとまっています。
 
@@ -73,7 +73,7 @@ Pelican が「こう呼んでいる」基本語(scene、asset、feature、render
 3. [`Loop::run()`](../../src/core/appflow/loop.cpp#L772) — 通常/XR/headless/RPCの実行方式を分ける（windowed + RPCを含む5経路）。
 4. [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L152) — 1フレームのゲーム状態更新を5フェーズで実行する。
 5. [`ECSCoreTemplatePublic::update()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L663) — 内部ECS Systemを依存順に実行する（実行計画は [`buildECSExecutionPlan()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L206) が作る）。
-6. [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4945) — フレームグラフをGPUコマンドへ変換する。ここは view family を 1 つ受ける薄い overload で、本体は view families を取る [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4945)。flat画面では [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L6401) がflat variantの選択と再lowering再試行を被せ、cameraから1 viewを組むのは引数なしの [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L6401)。
+6. [描画処理（複数のビュー群を受け取る実装）](../../src/core/vkcore/renderer.cpp#L6373) — 描画計画を GPU コマンドへ変換します。[単一ビュー群の呼び出し口](../../src/core/vkcore/renderer.cpp#L4945) はこの実装へ転送します。[通常画面の描画](../../src/core/vkcore/renderer.cpp#L6401) は計画の選択と再変換の再試行を担当し、[引数なしの描画関数](../../src/core/vkcore/renderer.cpp#L6444) はカメラから 1 つのビューを組み立てます。
 7. [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) — 例外時もGPU/ECS/queue資源を規範順で解放する（実体は [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp#L122)）。
 
 ## リンクの見方

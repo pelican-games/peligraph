@@ -599,7 +599,7 @@ header が言う長さが 10 秒を超える音は streaming です。[`Audio::p
 
 busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更時はlive voice全てへ再適用します。
 
-### prepare / commit の縫い目と provisional handle ✅実装済み
+### 準備と確定の分離、および再生前に予約するハンドル ✅実装済み
 
 `playSound()` 自身が4本の小さなAPIの合成になっています（ヘッダのコメントが規範 — 「decodeとエンジン側の容量はcommit前に全部用意し、backend呼び出しだけを失敗しうるflushに残す」、[`audio.hpp` 内](../../src/core/audio/audio.hpp#L141)）。
 
@@ -703,7 +703,7 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 >
 > **不変条件**: `parents[i] < i`(root は -1)。`localToModel()` の 1 パスがこれに依存します。`layout_to_original` と `original_to_layout` は互いの逆写像なので、片方だけ触らないこと。
 
-> 🧩 **難所 — publish しない publish**([`publishFromSource()`](../../src/core/animation/animationservice.cpp#L1669) / [`commitStagedFrame()`](../../src/core/animation/animationservice.cpp#L873))
+> 🧩 **難所 — 姿勢の反映を全フェーズ終了まで保留する理由**([`publishFromSource()`](../../src/core/animation/animationservice.cpp#L1669) / [`commitStagedFrame()`](../../src/core/animation/animationservice.cpp#L873))
 >
 > **何をする所か**: `animationservice.cpp` の runtime は [`PoseArena`](../../src/core/animation/animationposearena.hpp#L23)(pose 本体と stale 表)・[`SinkRegistry`](../../src/core/animation/animationsinkregistry.hpp#L24)(フェーズ登録)・[`PhaseScheduler`](../../src/core/animation/animationphasescheduler.hpp#L28)(順序と実行)を組み合わせた形で、以下の staging は arena と scheduler の縫い目です。anim graph が `base_pose_and_root_modifier` フェーズで publish したフレームを、その場では renderer へ流さず 1 枚だけ staging し、全フェーズ終了後に `commitStagedFrame()` が 1 回だけ publish します。
 >
@@ -899,7 +899,7 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 
 `code_only` / `schema_drift` / `version_bump_success` / `version_bump_failure` / `type_removed` / `candidate_lifecycle_zero` / `pending_recovery` / `queued_event_purge` / `oninit_rollback`
 
-> 🧩 **難所 — schema の指紋を採る**([`materializeBehaviorParamsSchemaFingerprint()`](../../src/core/userpublic/details/behavior/registerer.hpp#L184) / [`validateBehaviorReload()`](../../src/core/userpublic/details/behavior/registerer.cpp#L152))
+> 🧩 **難所 — スキーマの構造をハッシュ値で識別する**([`materializeBehaviorParamsSchemaFingerprint()`](../../src/core/userpublic/details/behavior/registerer.hpp#L184) / [`validateBehaviorReload()`](../../src/core/userpublic/details/behavior/registerer.cpp#L152))
 >
 > **何をする所か**: `Params::schema` を 1 本の文字列へ潰します。reload 時に「`schema_version` を据え置いたまま params の形だけ変えた」を検出するための指紋です。
 >
@@ -992,7 +992,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 この節が扱うのは**平坦な**フィールド宣言（v2の `StructFieldSchema` 列）です。`Flags` と `List` を含む宣言は再帰的な `SchemaNode` へ起こされ、`$list` / `$row` の封筒付きJSONを使い、登録もv3入口へ回ります。その形と受理規則は[第3章 §3.11](03_project_and_loading.md) に、DLL境界での入口選択は [§2.11](02_runtime_lifecycle.md) にあります。
 
-> 🧩 **難所 — 3 回舐めてから swap**([`decodeBehaviorParams()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1047))
+> 🧩 **難所 — 3 段階で値を検証してから一括交換する**([`decodeBehaviorParams()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1047))
 >
 > **何をする所か**: JSON を `Params` へ復元します。失敗した場合は destination を**一切書き換えません**。成功時の反映は `swap` 1 回で、これが behavior のライブ params 差し替えの原子性そのものです。
 >
@@ -1019,7 +1019,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 §3.5 の 3 の executor が開いている間、この章で見てきた公開APIの**行き先が差し替わります**。差し替えの主体は [`activeEffectTransaction()`](../../src/core/loader/effecttransaction.cpp#L758) が返すポインタで、実体は `thread_local` な1変数です（[その宣言](../../src/core/loader/effecttransaction.cpp#L20)）。設定するのはRAIIの [`EffectTransactionScope`](../../src/core/loader/effecttransaction.cpp#L762) だけで、直前の値を退避して戻すので入れ子でも壊れません。`nullptr` のとき（= 通常フレーム）は全APIが従来どおりmoduleへ直行します。
 
-### どのAPIがどう曲がるか
+### トランザクション中の API の動作
 
 分類は文章ではなく**runtimeの表**として持たれています（[`public_api_manifest`](../../src/core/loader/sceneparticipantmanifest.cpp#L206)、型は [`ScenePublicApiManifestEntry`](../../src/core/loader/sceneparticipantmanifest.hpp#L50)）。分類名がそのまま挙動です。
 
@@ -1160,11 +1160,11 @@ resolved_rig  : 連鎖をさかのぼって求めた「この姿勢がどのrig�
 >
 > **不変条件**: 差分は折り返し前の時刻で取る（canonical時刻の差を取らない）。適用は個体の回転のみを通し、スケールは通さない。`set_time` の直後のフレームは変位を出さない。
 
-### `PELICAN_WITH_ANIMATION=OFF` の顔
+### `PELICAN_WITH_ANIMATION=OFF` のときの API の応答
 
 OFFビルドではこの3ファイルがビルドに入らず、`pelican.pose` module も登録されません。残るのは交渉入口だけで、3つとも out 引数が null なら `invalid_argument`、そうでなければ `unsupported_version` です（[`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L18)）。`get_status.animation` は `{"available": false}` だけを返し、**空のsink一覧は返しません** —— 「モジュールはあるが誰も動かしていない」と読めてしまうためです。ビルド側の帰結の一覧は[第1章 §1.6](01_architecture_and_build.md)にあります。
 
-## 5.17 pose staging service v1（追加交渉面） ✅実装済み（AG-1a / AG-2）
+## 5.17 pose staging service v1（準備中の姿勢へアクセスする追加 API） ✅実装済み（AG-1a / AG-2）
 
 `animation/abi_v1.hpp` は**凍結**されていて、フィールドを足せません。そこで「今フレームstagingされた姿勢を読む」ための面は別ヘッダ [`pose_staging_v1.hpp`](../../src/core/userpublic/animation/pose_staging_v1.hpp#L91) に分けてあり、[`getPoseStagingServiceV1()`](../../src/core/userpublic/animation/pose_staging_v1.hpp#L110) で交渉します。
 

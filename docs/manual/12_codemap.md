@@ -155,7 +155,7 @@ pelican2/
 
 ## 12.6 サブシステム別読解ガイド
 
-### ECS(2 つの顔を持つ)
+### ECS（内部登録と公開テンプレートの分担）
 
 読み始め: [`EntityId`](../../src/core/userpublic/details/ecs/entity.hpp#L12)(世代付き `EntityId` の canonical 定義)→ [`MutationScope::MutationScope()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L297) `MutationScope`(生成・変更トランザクションの単位)→ [chunk.cpp](../../src/core/userpublic/details/ecs/chunk.cpp)(アーキタイプ別チャンク格納)→ [ecs/archetypemigration.hpp](../../src/core/ecs/archetypemigration.hpp)(コンポーネント追加/削除でアーキタイプが変わるときの failure-atomic な移行。アダプタは `prepare` / `rollback` / `publish` の 3 メソッドで、`prepare` は throw してよいが公開状態を変えてはならず、`publish` は失敗できない、という契約)。
 
@@ -163,9 +163,9 @@ pelican2/
 - [ecs/](../../src/core/ecs) 直下([core.hpp](../../src/core/ecs/core.hpp)・[componentinfo.cpp](../../src/core/ecs/componentinfo.cpp))はエンジン内部視点、[userpublic/details/ecs/](../../src/core/userpublic/details/ecs) は実体テンプレート、という二重構造です。コンポーネントの型登録(scene JSON の `name` → C++ 型の対応)は [componentinfo.cpp](../../src/core/ecs/componentinfo.cpp) + [details/component/registerer.cpp](../../src/core/userpublic/details/component/registerer.cpp)
 - エンジン内部システム(transform 伝播・modelview 更新)は [ecs/predefined/](../../src/core/ecs/predefined)。**ゲームシステム**(`PELICAN_REGISTER_SYSTEM`)とは別物です(→ [第8章](08_gameplay.md))
 
-### シェーダ基盤(パイプラインが JSON から生えるまで)
+### シェーダ基盤（JSON からパイプラインを生成するまで）
 
-読み順: [shadercompiler.cpp](../../src/core/shader/shadercompiler.cpp)(shaderc で GLSL→SPIR-V。**エラーを throw せず result 返却する唯一の例外**)→ [shaderreflection.cpp](../../src/core/shader/shaderreflection.cpp)(spirv-reflect で descriptor layout を自動生成)→ [shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp)(stem 解決・リロードの世代 swap)→ [pipelinefactory.cpp](../../src/core/shader/pipelinefactory.cpp)(レイアウトハッシュ共有・`pipeline_cache.bin` 永続化)。マテリアル系は [surfacecompiler.cpp](../../src/core/shader/surfacecompiler.cpp)(`.surface` → テンプレート逆 include 合成)と [spvlink.cpp](../../src/core/shader/spvlink.cpp)(experimental SPIR-V リンカ)。SPIR-V(Vulkan がシェーダとして受け取るバイナリ中間表現。GLSL / WGSL はこれへコンパイルされる)のディスクキャッシュ(WP82)は `<project>/.pelican/shader_cache/`。
+読み順: [shadercompiler.cpp](../../src/core/shader/shadercompiler.cpp)(shaderc で GLSL→SPIR-V。**シェーダのコンパイル成否を結果オブジェクトで返す**)→ [shaderreflection.cpp](../../src/core/shader/shaderreflection.cpp)(spirv-reflect で descriptor layout を自動生成)→ [shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp)(stem 解決・リロードの世代 swap)→ [pipelinefactory.cpp](../../src/core/shader/pipelinefactory.cpp)(レイアウトハッシュ共有・`pipeline_cache.bin` 永続化)。マテリアル系は [surfacecompiler.cpp](../../src/core/shader/surfacecompiler.cpp)(`.surface` → テンプレート逆 include 合成)と [spvlink.cpp](../../src/core/shader/spvlink.cpp)(experimental SPIR-V リンカ)。SPIR-V(Vulkan がシェーダとして受け取るバイナリ中間表現。GLSL / WGSL はこれへコンパイルされる)のディスクキャッシュ(WP82)は `<project>/.pelican/shader_cache/`。
 
 ホットリロードのトランザクション(WP96/108 以降)は shaderlibrary 単独ではなく [src/core/watch/](../../src/core/watch)(FileWatcher / ContentDigest / ReloadService / ReloadGate)経由の単一経路です — シェーダに限らずテクスチャ・マテリアル値・モデルコンテナも同じ基盤で、失敗時は全体破棄・旧世代維持。
 
@@ -184,7 +184,7 @@ pelican2/
 
 [inputstate.cpp](../../src/core/os/inputstate.cpp)(L1: スナップショット)→ [actionmap.cpp](../../src/core/os/actionmap.cpp)(L2: アクション評価・セットスタック・エッジ検出)→ [gamecontext.cpp](../../src/core/userpublic/gamecontext.cpp) の `actionPressed` 系。rpc からの合成入力は [rpcserver.cpp](../../src/core/communication/rpcserver.cpp) の `inject_input` がキューに積み、次フレームのスナップショットに合流します。
 
-### ゲーム API 面(facade)
+### ゲーム向け公開 API（facade）
 
 ゲームコードが見てよいのは [userpublic/](../../src/core/userpublic) だけです。全 API の入口 = [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L284)。オブジェクト生成ビルダーは [gameobjects.hpp](../../src/core/userpublic/gameobjects.hpp)(`GameObjects::add().addComponent<...>().finish()`)、システム/イベント登録マクロは [gamesystem.hpp](../../src/core/userpublic/gamesystem.hpp) と [events.hpp](../../src/core/userpublic/events.hpp)、決定的乱数(PCG32)は [deterministicrng.cpp](../../src/core/userpublic/deterministicrng.cpp)。
 

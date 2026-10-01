@@ -2,7 +2,7 @@
 
 ## 先に 1 文だけ定義しておく語
 
-この章は次の 3 組を説明なしに使い始めます。深い扱いは各節にあります。
+先に、この章で使う 3 組の用語を説明します。詳しい処理は後の各節で扱います。
 
 - **静的ジオメトリ / 動的ジオメトリ** — 静的ジオメトリは元の頂点をそのまま使います。スキン付き / morph / VAT は compute で変形後の頂点を生成して加速構造へ渡します。
 - **BLAS / TLAS** — BLAS(bottom-level acceleration structure)はジオメトリ群の空間分割を GPU が辿れる形に焼いた下位構造、TLAS(top-level acceleration structure)はその BLAS を変換行列・mask・custom index 付きの**インスタンス行**として並べた上位構造です。ray は TLAS から引き、TLAS の行が BLAS を指します([用語集](../manual/14_glossary.md))。
@@ -12,7 +12,7 @@
 
 `PolygonInstanceContainer::recordRayDeformation` は、AS 構築前に現在の時刻・VAT texture・morph weight・skin palette を読み、VAT → morph → skin の順で変形します。VAT の補間、loop、終端clamp、法線textureもラスタと共有します。計算式はラスタ描画の GLSL helper と共有します。出力は位置・法線・接線・UV・色を持つ `CommonVertStruct` で、BLAS と hit shader の属性参照は同じ頂点バッファを使います。
 
-この除外は無言のフォールバックではありません。`Renderer::currentFramePlanJson()` の `ray_query_acceleration_structures` 診断には、除外したプリミティブ数・インスタンス数、スキン付き / morph / VAT / `blas_ineligible` 別の件数、および asset / geometry allocation / mesh / primitive / node を含む名前が出ます。`blas_ineligible` は、頂点または索引が空、索引数が三角形を構成できない、あるいは頂点オフセットが負で、ラスタライズはできても BLAS の三角形入力にはできない静的プリミティブです。同じ分類は初回構築時と分類変更時にログにも記録されます。対象外が存在すること自体はエラーではありません。
+BLAS の入力条件を満たさない形状は除外し、その理由を診断に記録します。スキン・モーフ・VAT であること自体は除外理由ではありません。`Renderer::currentFramePlanJson()` の `ray_query_acceleration_structures` 診断には、除外したプリミティブ数・インスタンス数、スキン付き / morph / VAT / `blas_ineligible` 別の件数、および asset / geometry allocation / mesh / primitive / node を含む名前が出ます。`blas_ineligible` は、頂点または索引が空、索引数が三角形を構成できない、あるいは頂点オフセットが負で、ラスタライズはできても BLAS の三角形入力条件を満たさないプリミティブです。同じ分類は初回構築時と分類変更時にログにも記録されます。対象外が存在すること自体はエラーではありません。
 
 変形出力はインスタンスごと・論理フレームごとに作成します。同じ個体・元geometry・topologyなら前回BLASを読み取り元に、新規BLASへrefitします。初回とモデル・geometry poolの変更時はrebuildします。同じメッシュの別インスタンスの姿勢は独立します。出力・compute descriptor・pipeline・refit元はsubmission完了まで保持し、使用中のASを書き換えません。静的BLASの再利用は維持します。変形出力が無いまま元姿勢をASに渡すことはエラーにします。
 

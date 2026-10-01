@@ -2,6 +2,15 @@
 
 game engine
 
+## Documentation / 日本語資料
+
+- [利用マニュアル](docs/manual/00_index.md)
+- [ソースコード読解ガイド](docs/source-code-guide/README.md)
+- [用語集](docs/manual/14_glossary.md)
+- [HTML で読む・GitHub Pages で公開する](docs/documentation_site.md)
+
+Local documentation preview: `uv run tools/docs_site.py serve`
+
 ## Requisites
 
 - Vulkan SDK 1.4.x (verified with 1.4.350; 1.3.x is no longer supported since vma-hpp v3.3.0)

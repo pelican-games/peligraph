@@ -1206,7 +1206,7 @@ push constant は engine 64 bytes + shader 64 bytes、合計128 bytesを契約�
 > ```text
 > 1. 各 range を単体検証: size>0 / 4 byte 倍数 / offset+size <= 128 /
 >    engine 領域に掛かるなら [0,64) を完全被覆
-> 2. stage_bit = 1,2,4,… と 32 bit 全部を舐める(stage_bit != 0 が終了条件)
+> 2. stage_bit = 1,2,4,… と 32 ビットすべてを走査する(stage_bit != 0 が終了条件)
 > 3. その stage を含む range 全部から begin=min(offset), end=max(offset+size)
 > 4. grouped_ranges[{begin,end}] |= stage → map を走査して 1 本ずつ吐く
 > ```

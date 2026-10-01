@@ -43,7 +43,7 @@ player ではこの parse の**前**に、MG-1 の入口 [`requireProjectMigrati
 
 - 語彙は [`knownProjectRequirements()`](../../src/project/projectformat.hpp#L65) が返す表だけが持ち、現在は **`animation` / `audio` / `physics` / `xr` / `vat` / `seqplayer` の6語**です（PG-1。各語が `PELICAN_WITH_ANIMATION` / `_AUDIO` / `_PHYSICS` / `_OPENXR` / `_VAT` / `_SEQPLAYER` の1つを指す）。表の行は `src/project/projectrequirements.def` で、同じ行をCMake側のコーパス選別（`cmake/pelican_project_requirements.cmake`）、component codecの `required_feature`、package の `requires.capabilities` の検査も読みます。知らない名前は黙って無視せず `project.requires_unknown@1` で拒否します（[`parseProjectRequirements()`](../../src/project/projectformat.cpp#L118)）。
 - このビルドが満たせない要求を書いたプロジェクトは、封筒のパースの時点で `<語>.module_unavailable@1`（例: `animation.module_unavailable@1`）を投げて止まります（[検査](../../src/project/projectformat.cpp#L191)）。ノードを1つずつ辿って「そんなopは知らない」と言われるより前に、名前で答えるためです。
-- 失敗させずに「このビルドでは開けない」だけ知りたい呼び手（`projects/` を舐めるテスト等）のために、[`unsatisfiedProjectRequirement()`](../../src/project/projectformat.hpp#L86) が最初の未充足要求を返す形も用意されています。
+- 失敗させずに「このビルドでは開けない」だけ知りたい呼び手（`projects/` を順に調べるテスト等）のために、[`unsatisfiedProjectRequirement()`](../../src/project/projectformat.hpp#L86) が最初の未充足要求を返す形も用意されています。
 
 もう一つ、X-1で `project.json` に増えた **`packages`** キーは `ProjectEnvelope` には入りません。読むのは [`readInstalledPackagesJson()`](../../src/project/packagemanifest.hpp#L103) で、1エントリは `{namespace, package_version, sha256}` の [`InstalledPackage`](../../src/project/packagemanifest.hpp#L70) です（§3.16）。封筒のパーサとvendoringの台帳を別の関数に分けてあるので、package を知らない読み手は `packages` を素通りできます。
 
@@ -774,7 +774,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 >
 > **何をする所か**: importルールのglobパターンを、プロジェクト相対パスへ突き合わせます。
 >
-> **素朴に読むと**: 同じ形のDP(動的計画法 — 部分問題の可否を表へ埋めながら前進させる解き方)が2つ並び、片方は文字を、片方はパスセグメントを舐めます。`*` と `**` の遷移式は字面上まったく同じ2本(パターンを進める = 0個マッチ、値を1つ進めてパターンを留める = 1個以上)なので、両者の違いがどこから生まれるのかコードから読み取れません。違いは遷移式ではなく**何を1単位とするDPか**にあります。`*` のDPは `splitPath()` 済みの1セグメント内だけを走るので、区切り文字を消費する術が構造的にありません = `*` は `/` を越えられません。`**` のDPはセグメントの列を走るので、同じ2本の遷移が「0個以上のディレクトリ階層」になります。つまりglobの意味論が正規表現の特別扱いではなく、DPを2段に分けたこと自体で表現されています。どちらもpush型(`dp[i][j]` が真のときだけ前進し、偽なら `continue`)なので、バックトラック実装にありがちな `a*a*a*b` の指数爆発が起きません — 外部から与えられるルール文字列を舐めるので、これは性能ではなく安全性の選択です。片方だけ「便利だから」と `*` に `/` を跨がせると、ルールの優先順位(最初に一致したruleが勝つ、[rule 層の走査](../../src/project/importrules.cpp#L285))が変わり、import先が黙って入れ替わります。
+> **素朴に読むと**: 同じ形のDP(動的計画法 — 部分問題の可否を表へ埋めながら前進させる解き方)が2つ並び、片方は文字を、片方はパスセグメントを順に調べます。`*` と `**` の遷移式は字面上まったく同じ2本(パターンを進める = 0個マッチ、値を1つ進めてパターンを留める = 1個以上)なので、両者の違いがどこから生まれるのかコードから読み取れません。違いは遷移式ではなく**何を1単位とするDPか**にあります。`*` のDPは `splitPath()` 済みの1セグメント内だけを走るので、区切り文字を消費する術が構造的にありません = `*` は `/` を越えられません。`**` のDPはセグメントの列を走るので、同じ2本の遷移が「0個以上のディレクトリ階層」になります。つまりglobの意味論が正規表現の特別扱いではなく、DPを2段に分けたこと自体で表現されています。どちらもpush型(`dp[i][j]` が真のときだけ前進し、偽なら `continue`)なので、バックトラック実装にありがちな `a*a*a*b` の指数爆発が起きません — 外部から与えられるルール文字列を順に調べるので、これは性能ではなく安全性の選択です。片方だけ「便利だから」と `*` に `/` を跨がせると、ルールの優先順位(最初に一致したruleが勝つ、[rule 層の走査](../../src/project/importrules.cpp#L285))が変わり、import先が黙って入れ替わります。
 >
 > **骨子**:
 > ```text
@@ -806,7 +806,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 7. 形式パーサ実装とruntime接続済み範囲を混同していないか。
 8. componentを増やすなら、§3.11 のcodec五点セットを揃えたか。
 
-> 🧩 **難所 — 舐め直しで閉じる窓**([`Impl::reconcile()`](../../src/core/watch/filewatcher.cpp#L472) / [`Impl::scan()`](../../src/core/watch/filewatcher.cpp#L374))
+> 🧩 **難所 — ファイルの再走査で監視通知の取りこぼしを防ぐ**([`Impl::reconcile()`](../../src/core/watch/filewatcher.cpp#L472) / [`Impl::scan()`](../../src/core/watch/filewatcher.cpp#L374))
 >
 > **何をする所か**: 監視対象のstoreを一巡して各ファイルの安定digestを取り、前回のinventoryとlive digestに照らしてreloadを積みます。
 >

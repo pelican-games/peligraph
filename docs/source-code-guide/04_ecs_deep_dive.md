@@ -280,7 +280,7 @@ Chunkは64 bitのComponent maskを持ちます。Component indexごとに`1ULL <
 
 `init()`内から`createEntity()`を呼ぶと`mutation_active`で`logic_error`になります。中途半端なtransactionへ別transactionを重ねないためです。テストは [`Structural callback reentry`](../../test/ecs_lifecycle_test.cpp#L354) です。
 
-## 4.6 GameObjects builderのtemplate黒魔術
+## 4.6 GameObjects builderのテンプレートによる型の組み立て
 
 公開側の典型コードは次です。
 
@@ -739,7 +739,7 @@ WP152で、既存entityへのComponent追加/削除が「途中で失敗して�
 
 entityの生成/破棄も同じ形です。[`ECSEntityMutation::prepareCreate()`](../../src/core/ecs/archetypemigration.hpp#L114) / [`prepareDestroy()`](../../src/core/ecs/archetypemigration.hpp#L117) が [`ECSEntityMutationToken`](../../src/core/ecs/archetypemigration.hpp#L83) を返します。
 
-> 🧩 **難所 — 移行publishのrelocate舞踏**([`State::publish()`](../../src/core/ecs/archetypemigration.cpp#L93) / [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229))
+> 🧩 **難所 — 移行の反映時に行う要素移動と参照の更新**([`State::publish()`](../../src/core/ecs/archetypemigration.cpp#L93) / [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229))
 >
 > **何をする所か**: prepare済み（容量1）の新archetype Chunkを `chunks_storage` の末尾へ公開し、旧Chunkの当該行から全Componentを新Chunkへmoveし、旧Chunkの穴を末尾行で埋めます。`rollbackPublished()` はそれを一手ずつ逆再生します。
 >

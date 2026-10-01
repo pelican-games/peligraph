@@ -1,21 +1,19 @@
-# pelican2 設計文書 索引
+# Pelican2 文書案内
 
-最終更新: 2026-07-27(window presentation / WSI epoch回復設計)。
-文書が矛盾したら
-**凍結済み > ドラフト、設計文書 > 指示書**の順で優先し、実装状態は
-コード・テスト・`design_reviews` の完了レポートを正とする。
+案内更新: 2026-10-01。利用方法、実装解説、設計仕様、開発履歴を目的別にまとめています。
 
-> **使い方を知りたい人へ**: 設計文書とは別に、人間向けの利用マニュアル
-> (チュートリアル+リファレンス、実装状況バッジ付き)が
-> [`manual/`](manual/00_index.md) にある。2026-07-10 の全域調査を基礎に、
-> WP179 までの状態差分を同期している。
+- **使い方を知る**: [利用マニュアル](manual/00_index.md)。ビルド、プロジェクト作成、描画、ゲームロジック、エディタ操作を扱います。
+- **コードを読む**: [ソースコード読解ガイド](source-code-guide/README.md)。起動から描画までの実装と、主要な型・関数を説明します。
+- **用語を調べる**: [用語集](manual/14_glossary.md)。設計資料に多い英語・略語は §14.8 を参照してください。
+- **現在の開発状況を知る**: [v1 開発計画](v1_development_plan.md)。v0 の公開仕様・再検証記録は [凍結一覧](v0_freeze.md) にあります。
+- **HTMLで閲覧・公開する**: [資料サイトの生成と GitHub Pages](documentation_site.md)。
 
-> **実装を読みたい人へ**: 起動、ECS、Vulkan、RPC、テストをソースから追う技術資料は [`source-code-guide/`](source-code-guide/README.md) にまとめている。
+実装の動作はコードとテストで確認します。設計文書には将来の機能や過去の状態も含まれるため、設計の記載だけで「現在利用できる」とは判断しません。
 
 ## まずこれを読む(新規参加者・新エージェント)
 
 1. 本索引
-2. `implementation_plan.md` §0(共通規則)と §1(現行 WP 一覧)— active 実装指示書
+2. [v1 開発計画](v1_development_plan.md)と[v0 凍結一覧](v0_freeze.md)。対象の WP の仕様・履歴は [実装指示書](implementation_plan.md)で確認する
 3. `design_project_format.md`([PF])— プロジェクトという単位の定義
 4. `adding_features.md` — 機能を足すときのレシピ集
 
@@ -29,7 +27,9 @@
 | `design_shader_freedom_kit.md` [SF] | — | シェーダ基盤(コンパイラ/ライブラリ/ファクトリ/set 規約)。実装済み |
 | `design_headless_rendering.md` [HL] | — | ヘッドレス描画。実装済み |
 
-## ドラフト(実装済み or 実装中 — レビュー反映で更新される)
+## 設計文書（過去の実装状況を含む）
+
+以下の「状態」は各設計文書を整理した当時の記録です。現在の対応状況は上記の開発計画と各機能のマニュアルを確認してください。
 
 | 文書 | 状態 | 内容 |
 |------|------|------|
@@ -87,29 +87,3 @@
   `pelican2-project-format.md`(web 実装者向け要約)、
   `design-engine-gui-system.md`(GUI 三層: tokens/primitives/surfaces)
 - `pelican-houdini-adapter/docs/`: 契約文書のコピー(正本はこちら側)
-
-## 次段の方向(2026-07-26 時点)
-
-- hot reload 残件 = HR2-I(input/profile)、U3(UI)、VRMA watcher 配線
-- editor = 共通 authoring/RPC/ImGui 基盤は済。Qt embedded viewport、
-  picking/gizmo、WebSocket multiple-client は後続
-- animation = VRMA-I0 まで済。graph v2、clip event sidecar、timeline/live
-  source、SpringBone は設計・WP 登録待ち
-- OpenXR = sequential PCVR、Vulkan multiview runtime、2-layer array
-  swapchain、optional composition depth、実測 device profile gate は済。
-  次は現実装の Meta XR Simulator/物理 HMD と対象 GPU で WP203c gate を閉じ、
-  その後 Quest standalone SA0〜SA3
-- window presentation = surface / swapchainをruntime epochとして交換し、
-  format-aware target compile、failure-contained publication、present lifetime、
-  XR mirror非停止へ統合する設計を確定。実装はWP215→216→217
-- physics = query/Jolt provider/E2 trigger は済。rigid-body simulation は
-  将来トラック(`design_physics_queries.md` §6、Jolt 推奨)
-- rendering = `hybrid_v1` の deferred + forward 合成、semantic material route、
-  RPE1〜RPE6c1(resolve、typed manifest、draw queue/provider、transparent/XR sort、
-  logical type/value graph、typed material screen input、target topology/backend probe/
-  planning policy、desktop/tile materialization physical fixture)は実装済み。次は
-  sample-count resolve、MSAA、XR variant、pipeline transaction の順。RPE6c0/1では
-  異種 execution 設計の canonical / disposable
-  lowering seamだけを置き、CPU schedulerと動画backendは計測・具体需要まで実装しない。
-  lighting/IBL、motion blur、bindless、compute particles はこの compiler 境界上で
-  需要と計測を伴う設計から開始

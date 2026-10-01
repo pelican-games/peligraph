@@ -574,7 +574,7 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 
 **約束の内側にあるが、今日は塞がっていないもの**です。正本は [../v0_freeze.md](../v0_freeze.md) §4(そこから台帳の該当節を引けます)。マニュアルの読者に影響が出るものだけをここに挙げます:
 
-1. **(解消)`graph.instance.owner` の authoring object id は保存と再読込を跨いで保たれます** —— scene の保存が `authoring_object_id` と `next_authoring_object_id` を書き、読み込みがそれを使います(`efb30dad`、[sceneformat.cpp](../../src/project/sceneformat.cpp#L45)。[../v0_freeze.md](../v0_freeze.md) §4.1)。OL-1 で、owner より前のオブジェクトを `duplicate` し、先頭にもう 1 つ挿入してから保存・再読込しても owner が同じオブジェクトを指すことを `test/sceneformat_test.cpp` の `[ol1]` が確かめています。解決できない owner が**無音で inactive**(警告ログが 1 回出るだけ)になる挙動は残ります([第4章 §4.1](04_scene_ecs.md))。
+1. **(解消)`graph.instance.owner` の authoring object id は保存と再読込を跨いで保たれます** —— scene の保存が `authoring_object_id` と `next_authoring_object_id` を書き、読み込みがそれを使います(`efb30dad`、[sceneformat.cpp](../../src/project/sceneformat.cpp#L45)。[../v0_freeze.md](../v0_freeze.md) §4.1)。OL-1 で、owner より前のオブジェクトを `duplicate` し、先頭にもう 1 つ挿入してから保存・再読込しても owner が同じオブジェクトを指すことを `test/sceneformat_test.cpp` の `[ol1]` が確かめています。解決できない owner が**警告を出して非アクティブになる**(警告ログが 1 回出るだけ)になる挙動は残ります([第4章 §4.1](04_scene_ecs.md))。
 2. **姿勢側の値スナップショットが無い** —— `get_graph_values` / `get_graph_node_values` が返すのは**描画側で publish した値**で、`source: "rendering"` を必ず返します。姿勢の評価は別の評価状態で走るので、event / trigger で駆動するノードがある文書では姿勢側が実際に食った値と**恒久的にずれ得ます**(event の無い文書ではずれません)。
 3. **values パーティションは 1 フレームに 2 回評価されます** —— 描画側と姿勢側がそれぞれ評価するためです。入力が同じなので値は同じですが、**状態を持つノード(`value.trigger_clock` / `value.event_clock` / `audio.playback`)は 2 つの状態を並走させます**。1 回に束ねるのは v0 の後。
 4. **`get_graph_values` は入れ子の instance を返しません**(root の instance の入力 port だけ)。展開木の全ノードが要るときは `get_graph_node_values` を使います。

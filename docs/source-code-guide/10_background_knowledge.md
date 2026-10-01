@@ -453,7 +453,7 @@ GPU に投入したコマンドバッファは、対応する fence が signal �
 
 `.glb` は glTF 2.0 仕様が定めるバイナリコンテナで、先頭 12 バイトのヘッダ(magic / version / 全体長、いずれも little-endian の uint32)に続いて、可変個のチャンクが並びます。チャンクは 8 バイトのチャンクヘッダ(chunkLength / chunkType)+ チャンク本体という形で、magic は `0x46546C67`(ASCII の `glTF`)、JSON チャンクの型は `0x4E4F534A`(`JSON`)、BIN チャンクの型は `0x004E4942`(`BIN\0`)です。仕様上、**最初のチャンクは必ず JSON チャンク**でなければならず、BIN チャンクは 0 個または 1 個の任意です。したがって JSON 本体は常にファイル先頭から 20 バイト目(= 12 + 8)から始まり、この定数を直接書いてしまう実装がよくあります。各チャンクは 4 バイト境界にパディングされ、JSON チャンクは末尾を空白 `0x20`、BIN チャンクは `0x00` で埋める決まりで、chunkLength はそのパディングを含みます。BIN チャンクがある場合、JSON 側の buffer[0] は `uri` を持たず、この BIN チャンクの中身を指します。
 
-**このリポジトリでは**: `src/devcli/distconfig.cpp` の `readGlbJsonChunk()`(469 行)が、`glb_magic` / `glb_json_chunk` 定数(35・37 行)で magic(オフセット 0)・version(4)・全体長(8)・JSON 長(12)・先頭チャンク型(16)を検証したうえで、オフセット 20 の生バイトだけを `nlohmann::json::parse` へ渡します(tinygltf は起動しません)。これは `glbContainsVat()` → `deriveVatEnabled()` から呼ばれ、参照先 GLB に `pelican.vat` extras があるかだけを見て配布ビルドの `PELICAN_WITH_VAT` を ON/OFF する判定に使われます。BIN チャンクが数 MB あっても JSON 先頭を舐めるだけで済むので、メタデータ確認のためにモデル全体をデコードしない割り切りです。
+**このリポジトリでは**: `src/devcli/distconfig.cpp` の `readGlbJsonChunk()`(469 行)が、`glb_magic` / `glb_json_chunk` 定数(35・37 行)で magic(オフセット 0)・version(4)・全体長(8)・JSON 長(12)・先頭チャンク型(16)を検証したうえで、オフセット 20 の生バイトだけを `nlohmann::json::parse` へ渡します(tinygltf は起動しません)。これは `glbContainsVat()` → `deriveVatEnabled()` から呼ばれ、参照先 GLB に `pelican.vat` extras があるかだけを見て配布ビルドの `PELICAN_WITH_VAT` を ON/OFF する判定に使われます。BIN チャンクが数 MB あっても 先頭の JSON チャンクだけを調べるだけで済むので、メタデータ確認のためにモデル全体をデコードしない割り切りです。
 
 ### buffer / bufferView / accessor の三層と byteStride
 
@@ -649,7 +649,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 ### 参照カウンタ付きの遅延解放と、受付/排出を分ける状態機械
 
-GPU 資源のように「今すぐには壊せない」ものを溜める破棄キューでは、2 つの考え方が要ります。1 つは**参照カウンタ**で、型消去した要素に仮想 `release()` を持たせたうえで、各要素が共有のカウンタを +1 して生まれ、解放時に -1 する。カウンタが 0 になった瞬間が「この束は全部片付いた」です(仮想関数だけだと「まだ何件残っているか」を数えるのに全要素を舐める必要があり、共有カウンタはそれを O(1) の整数読みにします)。もう 1 つは**受付と排出の分離**で、「新規の受付を止める(accepting = false)」と「溜まったものを流し切る(draining)」は別の遷移です。終了処理では必ず受付を止めてから流し切る順にしないと、排出中に積まれた要素が取り残されます。
+GPU 資源のように「今すぐには壊せない」ものを溜める破棄キューでは、2 つの考え方が要ります。1 つは**参照カウンタ**で、型消去した要素に仮想 `release()` を持たせたうえで、各要素が共有のカウンタを +1 して生まれ、解放時に -1 する。カウンタが 0 になった瞬間が「この束は全部片付いた」です(仮想関数だけだと「まだ何件残っているか」を数えるのに全要素を走査する必要があり、共有カウンタはそれを O(1) の整数読みにします)。もう 1 つは**受付と排出の分離**で、「新規の受付を止める(accepting = false)」と「溜まったものを流し切る(draining)」は別の遷移です。終了処理では必ず受付を止めてから流し切る順にしないと、排出中に積まれた要素が取り残されます。
 
 **使用場所**: [PendingCounter](../../src/core/vkcore/deletionqueue.hpp#L18) / [RetirementBatch](../../src/core/vkcore/deletionqueue.hpp#L50) / [accepting / draining のフラグ](../../src/core/vkcore/deletionqueue.hpp#L78) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
 

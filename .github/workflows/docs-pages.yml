@@ -1,0 +1,57 @@
+name: Documentation site
+
+on:
+  pull_request:
+    paths: ['docs/**', 'tools/docs_site*.py', 'mkdocs.yml', '.github/workflows/docs-pages.yml']
+  push:
+    branches: [develop]
+    paths: ['docs/**', 'tools/docs_site*.py', 'mkdocs.yml', '.github/workflows/docs-pages.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.8.22'
+      - name: Check site publication boundaries and links
+        run: uv run --python 3.12 tools/docs_site_test.py
+      - name: Get Pages URL
+        id: pages
+        if: vars.PUBLISH_DOCS == 'true' && github.ref == 'refs/heads/develop' && github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+      - name: Build documentation
+        env:
+          DOCS_SITE_URL: ${{ steps.pages.outputs.base_url }}
+        run: uv run tools/docs_site.py build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: documentation-html
+          path: build-docs/site
+      - uses: actions/upload-pages-artifact@v4
+        if: vars.PUBLISH_DOCS == 'true' && github.ref == 'refs/heads/develop' && github.event_name != 'pull_request'
+        with:
+          path: build-docs/site
+
+  deploy:
+    if: vars.PUBLISH_DOCS == 'true' && github.ref == 'refs/heads/develop' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deployment

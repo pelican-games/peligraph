@@ -1,0 +1,6 @@
+.md-grid { max-width: 1600px; }
+.md-typeset { line-height: 1.85; }
+.md-typeset h1, .md-typeset h2, .md-typeset h3 { line-height: 1.45; }
+.md-typeset table:not([class]) { font-size: .76rem; }
+.md-typeset pre { line-height: 1.5; }
+.md-typeset .mermaid { overflow-x: auto; }

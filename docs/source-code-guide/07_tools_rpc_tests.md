@@ -1195,7 +1195,7 @@ golden 更新は見た目が変わったから機械的に受け入れるので�
 
 ## 7.9 テストの実行方法
 
-repository の基本手順は [`README.md`](../../README.md#L10) にあります。
+repository の基本手順は [`README.md`](../../README.md#L19) にあります。
 
 ```powershell
 cmake . -B build -DCMAKE_PREFIX_PATH=<Qtの場所>

@@ -140,11 +140,11 @@ identity は下の 3 種のうち**ちょうど 1 つ**の形を取ります(「
 - **`source_material_index` は optional のまま運ばれ、欠損は 0 に潰されません**([modeltemplate.hpp](../../src/core/model/modeltemplate.hpp#L137) → [accelerationstructure.hpp](../../src/core/vkcore/accelerationstructure.hpp#L50))。内部の「無し」番兵(`0xffffffff`)が identity まで届いた場合は `pelican.ray_material_index_out_of_range@1` で失敗します。
 - material の付いていないモデルはレイトレの規則で選べません(`Unavailable`)。AS 規則を 1 つでも書いた v2 プロジェクトにそういう行が混ざると `pelican.ray_as_row_material_identity_unavailable@1` になります。規則を書かなければ identity は要求されません。
 
-### `.vrma`(VRM Animation)— 宣言レーンのないランタイム層形式(🚧WP176/177/178)
+### `.vrma`(VRM Animation)— 実行時に読み込めるがプロジェクトから参照できない形式(🚧WP176/177/178)
 
 `.vrma` は「ヒューマノイドのモーションだけ」を持つ glb コンテナ(`VRMC_vrm_animation` 1.0)です。ランタイム層の形式としてエンジンが直接デコードしますが、**プロジェクト形式から指す経路がまだありません**。この節は「置き場所と宣言」の話に限り、再生の詳細は [第8章](08_gameplay.md) §8.13 を参照してください。
 
-> ⚠️ **`.vrma` は `asset_data.json` に登録できません。** `models[]` が受理するのは `.glb` / `.gltf` / `.vrm` だけで、`.vrma` を書くと `model reference requires a .glb/.gltf/.vrm file: <参照>` で拒否されます([model.cpp](../../src/core/asset/model.cpp))。`textures` にも該当しません。**現時点で `.vrma` の宣言レーンは存在しません**(CLI・ファイル監視も未接続)。
+> ⚠️ **`.vrma` は `asset_data.json` に登録できません。** `models[]` が受理するのは `.glb` / `.gltf` / `.vrm` だけで、`.vrma` を書くと `model reference requires a .glb/.gltf/.vrm file: <参照>` で拒否されます([model.cpp](../../src/core/asset/model.cpp))。`textures` にも該当しません。**現時点で `.vrma` をプロジェクトのデータとして参照する方法はありません**(CLI・ファイル監視も未接続)。
 
 読み込めるのは**エンジン内部の C++ から import 境界を通した場合だけ**です([vrmadecoder.hpp](../../src/core/loader/vrmadecoder.hpp)):
 

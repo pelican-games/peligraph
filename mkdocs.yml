@@ -1,0 +1,74 @@
+site_name: Pelican2 ドキュメント
+site_description: Pelican2 の利用マニュアルとソースコード読解ガイド
+site_url: https://pelican-games.github.io/peligraph/
+repo_url: https://github.com/pelican-games/peligraph
+repo_name: ソース・設計資料（GitHub）
+edit_uri: ''
+docs_dir: docs
+exclude_docs: |
+  /README.md
+site_dir: build-docs/site
+use_directory_urls: false
+theme:
+  name: material
+  language: ja
+  font: false
+  features:
+    - navigation.tabs
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+plugins:
+  - search:
+      lang: [ja, en]
+hooks:
+  - tools/docs_site_hooks.py
+markdown_extensions:
+  - tables
+  - admonition
+  - attr_list
+  - pymdownx.tilde
+  - pymdownx.highlight
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - toc:
+      permalink: true
+      toc_depth: 3
+      slugify: !!python/name:pymdownx.slugs.uslugify
+extra_css:
+  - site/styles.css
+nav:
+  - はじめに: index.md
+  - 利用マニュアル:
+      - 目次: manual/00_index.md
+      - 1. エンジン全体像: manual/01_overview.md
+      - 2. ビルドと起動: manual/02_getting_started.md
+      - 3. プロジェクト形式: manual/03_project_format.md
+      - 4. シーンと ECS: manual/04_scene_ecs.md
+      - 5. アセット: manual/05_assets.md
+      - 6. レンダリング: manual/06_rendering.md
+      - 7. 入力と UI: manual/07_input_ui.md
+      - 8. ゲームロジック: manual/08_gameplay.md
+      - 9. Web プロファイル: manual/09_web.md
+      - 10. ツール: manual/10_tools.md
+      - 11. 実装状況: manual/11_status.md
+      - 12. コード対応表: manual/12_codemap.md
+      - 13. エディタ: manual/13_editor.md
+      - 14. 用語集: manual/14_glossary.md
+  - ソースコード読解ガイド:
+      - 読み方: source-code-guide/README.md
+      - 1. 全体構造とビルド: source-code-guide/01_architecture_and_build.md
+      - 2. 起動とフレーム更新: source-code-guide/02_runtime_lifecycle.md
+      - 3. プロジェクトの読み込み: source-code-guide/03_project_and_loading.md
+      - 4. ECS: source-code-guide/04_ecs_deep_dive.md
+      - 5. ゲーム API: source-code-guide/05_gameplay_and_services.md
+      - 6. 描画とシェーダ: source-code-guide/06_rendering_vulkan_shader.md
+      - 7. ツールとテスト: source-code-guide/07_tools_rpc_tests.md
+      - 8. クラス索引: source-code-guide/08_class_interface_index.md
+      - 9. 実装上の注意点: source-code-guide/09_black_magic_and_gotchas.md
+      - 10. 前提知識: source-code-guide/10_background_knowledge.md
+      - 11. 加速構造: source-code-guide/11_ray_query_acceleration_structures.md
+  - HTML の生成と公開: documentation_site.md

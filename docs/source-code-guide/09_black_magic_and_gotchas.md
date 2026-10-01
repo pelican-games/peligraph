@@ -1,4 +1,4 @@
-# 第9章 黒魔術・制約・変更時の注意
+# 第9章 マクロ・型消去・変更時の注意
 
 [索引へ戻る](README.md) / [前章](08_class_interface_index.md)
 
@@ -1209,7 +1209,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: 行を 2 回動かしているのに、どちらの entity の参照も壊れない理由。
 
-**答え**: [第4章「移行publishのrelocate舞踏」](04_ecs_deep_dive.md)が本体です。1 点だけ補うと、`backfilled_entity != entity` のときだけ最終行の `ref` を書き戻すのは、**対象 entity 自身が最終行だったときの二重書き込みを避ける**ためで、この条件を落とすと参照が 1 つ前の位置に固定されます。
+**答え**: [第4章「移行の反映時に行う要素移動と参照の更新」](04_ecs_deep_dive.md)が本体です。1 点だけ補うと、`backfilled_entity != entity` のときだけ最終行の `ref` を書き戻すのは、**対象 entity 自身が最終行だったときの二重書き込みを避ける**ためで、この条件を落とすと参照が 1 つ前の位置に固定されます。
 
 #### [`populate` → `cb_init` の順序](../../src/core/ecs/archetypemigration.cpp#L562) — publish 前に init する理由
 
@@ -1849,7 +1849,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 |---|---|---|---|
 | [ロック検出と debounce のコメント](../../src/core/gamelogic/gamelogicreload.cpp#L774) | source_busy_retries | 失敗と pending の別 | ビルドは DLL をその場で truncate → 書き戻すことがあるので、まずサイズ / 更新時刻の同一サンプルを 2 回取って debounce し、次に `FILE_SHARE_READ` のみで開いてライタを排除してからシャドウコピーを取る。`ERROR_SHARING_VIOLATION` / `ERROR_LOCK_VIOLATION` は**失敗ではなく pending 扱い**で、retries が 3 回に達したときだけ `source_busy` |
 | [`makeShadowCopy()`](../../src/core/gamelogic/gamelogicreload.cpp#L373) / [`sweepStaleShadowDirectories()`](../../src/core/gamelogic/gamelogicreload.cpp#L335) | シャドウコピーの規約 | ディレクトリ名の意味 | シャドウ先は `<source_dir>/.pelican-hot-reload/<PID>/` で、**PID をディレクトリ名にすることで同一 DLL を複数プロセスが同時にホットリロードしても衝突しない**。PDB があれば同名で併走コピーする(失敗は警告のみ)。掃除は「名前を PID としてパースでき、その PID が生存していない」ものだけ削除 |
-| [`validateBehaviorReloadSources()`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L85) | schema_changed_without_version_bump | 何を比べているか | `schema_version` が同じなのに `params_schema_fingerprint` が違えば**「バージョンを上げずにスキーマを変えた」**として拒否(同一版で表現が変わると既存 canonical params の解釈が壊れる)。version が上がっている場合は authored の生 `source_params` を candidate の `canonicalize_params` に通す。指紋そのものは[第5章「schema の指紋を採る」](05_gameplay_and_services.md) |
+| [`validateBehaviorReloadSources()`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L85) | schema_changed_without_version_bump | 何を比べているか | `schema_version` が同じなのに `params_schema_fingerprint` が違えば**「バージョンを上げずにスキーマを変えた」**として拒否(同一版で表現が変わると既存 canonical params の解釈が壊れる)。version が上がっている場合は authored の生 `source_params` を candidate の `canonicalize_params` に通す。指紋そのものは[第5章「スキーマの構造をハッシュ値で識別する」](05_gameplay_and_services.md) |
 | [`sceneBehaviorAttachmentSeq()`](../../src/core/gamelogic/behaviorarena.cpp#L72) / [`refreshSceneAttachmentSequence()`](../../src/core/gamelogic/behaviorarena.cpp#L455) | seq の符号化と再計算 | scene_ordered のときだけ再計算する理由 | seq は「シーン内の出現順」をそのまま単調な 64bit キーにする符号化。**scene_ordered でない(ランタイム生成の)attachment は自分の識別子由来の seq を持ち、シーンの index 変化に追随してはいけない** |
 | [attach 時の component_index シフト](../../src/core/gamelogic/behaviorarena.cpp#L1324) / [`reused` に載っているかの判定](../../src/core/gamelogic/behaviorarena.cpp#L1399) | 挿入 / 削除時の詰め替え | ずらさないと何が起きるか | component_index は同一 entity 内の並び順そのものなので、attach で挿入位置以降を +1、remove で以降を −1 してから seq を再計算しないと**実体とずれて衝突する**([公開時に seq 重複チェックがある](../../src/core/gamelogic/behaviorarena.cpp#L807))。所有権は「`reused` に載っている attachment のインスタンスは既存アリーナ側が持つ」モデル |
 | [detached 配列との交換](../../src/core/gamelogic/behaviorarena.cpp#L472) / [`transferRuntime`](../../src/core/gamelogic/behaviorarena.cpp#L330) | publish/rollback の実体 | 所有権の移り方 | → §9.22「三段トランザクション」を behavior arena で実現したもの。詳細は**未執筆** |
@@ -1983,7 +1983,7 @@ marker は自分が属する manifest に digest で縛られます。[`transact
 
 **実際は**: **include path で守られています**。[`pelican_package_sdk_include_dir()`](../../src/player/CMakeLists.txt#L161) が build ディレクトリの下に、public SDK が公開するヘッダ 1 本につき 1 行だけの転送ヘッダ([`package_sdk_header.hpp.in`](../../src/player/package_sdk_header.hpp.in))を生成します。対象は `src/core/userpublic/**`、`src/core/ecs/**`、`handle.hpp`、`phys/physquery.hpp`。[`pelican_package_sources()`](../../src/player/CMakeLists.txt#L205) が作る package target の include path には **`src/core` が入りません**([その省略に付いたコメント](../../src/player/CMakeLists.txt#L232))。したがってエンジン内部ヘッダを include した package コードは、規約違反ではなく**コンパイルエラー**になります。コピーではなく転送なので、実ヘッダは自分の相対 include を自分で解決でき、内容が腐りません。
 
-呼ぶ順序も強制されます。[`pelican_packages()`](../../src/player/CMakeLists.txt#L262) は project の `packages/*/package.json` を名前順に舐め、`code/CMakeLists.txt` を持つものだけを `add_subdirectory` し、生成された OBJECT ライブラリを project の game logic DLL へ足します。DLL がまだ無ければ [`FATAL_ERROR`](../../src/player/CMakeLists.txt#L310) で「`pelican_game_sources(...)` の後に呼べ」と言います。中断した install が残した [`.tmp-` 付きディレクトリは読み飛ばし](../../src/player/CMakeLists.txt#L279)ます。
+呼ぶ順序も強制されます。[`pelican_packages()`](../../src/player/CMakeLists.txt#L262) は project の `packages/*/package.json` を名前順に調べ、`code/CMakeLists.txt` を持つものだけを `add_subdirectory` し、生成された OBJECT ライブラリを project の game logic DLL へ足します。DLL がまだ無ければ [`FATAL_ERROR`](../../src/player/CMakeLists.txt#L310) で「`pelican_game_sources(...)` の後に呼べ」と言います。中断した install が残した [`.tmp-` 付きディレクトリは読み飛ばし](../../src/player/CMakeLists.txt#L279)ます。
 
 **不変条件**: package target の include path に `src/core` を足さないこと。転送ヘッダの生成対象を「SDK が公開するもの」以外へ広げないこと。`pelican_packages()` を `pelican_game_sources()` より前に置かないこと。
 
@@ -2025,7 +2025,7 @@ seek が無い代わりに置かれているのが **replay prologue** です。
 
 **読む場所**: [`parseStartFrame()`](../../src/player/main.cpp#L326) → [`--start-time` の宣言](../../src/player/main.cpp#L373) → [replay prologue](../../src/core/appflow/loop.cpp#L672)。
 
-### 難所 — 解決できない owner は無音で inactive、警告は 1 回だけ
+### 難所 — 解決できない owner は警告を出して非アクティブになる、警告は 1 回だけ
 
 **素朴に読むと**: `graph.instance` が指すオブジェクトが見つからなければ、毎フレーム警告が出るかエラーになる、と読めます。
 
