@@ -172,7 +172,7 @@ ctx.input().setCursorMode(Pelican::CursorMode::locked);   // normal / hidden / l
 ]}}
 ```
 
-`mouse_move` の `x` / `y` は**窓座標**です(framebuffer ピクセルではありません)。注入した移動は OS からの移動と同じ event になり、`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにします([注入の受け口](../../src/core/communication/rpcserver.cpp#L877))。headless は 1 倍なので、窓座標とピクセルは同じ値です。
+`mouse_move` の `x` / `y` は**窓座標**です(framebuffer ピクセルではありません)。注入した移動は OS からの移動と同じ event になり、`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにします([注入の受け口](../../src/core/communication/rpcserver.cpp#L878))。headless は 1 倍なので、窓座標とピクセルは同じ値です。
 
 ### 収録とリプレイ(✅WP89 = I3)
 
