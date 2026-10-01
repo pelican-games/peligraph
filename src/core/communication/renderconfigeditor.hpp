@@ -397,9 +397,10 @@ class RenderConfigEditorService {
     // input port. `instance` omitted or empty is the root scope.
     nlohmann::ordered_json getGraphNodeValues(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphCatalog(const nlohmann::json &params) const;
-    // EL-4b. {engine_shaders: [...]}: the engine:// shaders with what
-    // reflection reads of each (engineauthoringlists.hpp). Reflected on the
-    // first call of the process, never by get_graph_catalog.
+    // EL-4b / EL-4c. {status: building} | {status: ready, engine_shaders:
+    // [...]} | {status: failed, error}: the engine:// shaders with what
+    // reflection reads of each (engineauthoringlists.hpp), reflected on a
+    // worker thread once per process, never by get_graph_catalog.
     nlohmann::ordered_json getEngineShaders(const nlohmann::json &params) const;
     nlohmann::ordered_json getRayCallableRecords(const nlohmann::json &params) const;
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params);

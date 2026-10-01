@@ -1,5 +1,6 @@
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/asset/model.hpp"
+#include "../src/core/communication/engineauthoringlists.hpp"
 #include "../src/core/communication/rpcserver.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/predefined.hpp"
@@ -40,6 +41,7 @@
 #include <sstream>
 #include <stb_image.h>
 #include <string>
+#include <thread>
 #include <vector>
 
 // GP-5. engine://primitives/{cube,plane,sphere} resolve as model references
@@ -1528,7 +1530,9 @@ TEST_CASE("EL-1 get_render_authoring_context lists the materials a draw_loop jud
 // committed (RS-1's restart for the live materials), a format off the list
 // is refused as today, and every listed format has the aspect its socket
 // needs. An engine shader get_engine_shaders lists (EL-4b) runs in a graph's
-// fullscreen pass.
+// fullscreen pass. EL-4c: the engine reflects them on a worker thread it
+// starts with RPC; while it builds, get_engine_shaders answers building and
+// the other requests answer.
 TEST_CASE("EL-4 the material pass formats and engine shaders get_graph_catalog lists are the ones the engine takes",
           "[el4][primitives][material-routing][rpc][gpu]") {
     setupLogger(true);
@@ -1665,6 +1669,10 @@ TEST_CASE("EL-4 the material pass formats and engine shaders get_graph_catalog l
     initializeProjectTemplate(root, ProjectTemplate::Blank);
     FastModuleContainer modules;
     configureHeadless(root);
+    // The worker the endpoint starts waits before its first shader until
+    // released, so the requests below meet it building.
+    resetEngineShadersReflectionForTesting();
+    holdEngineShadersReflectionForTesting(true);
     Rpc rpc;
     (void)rpc.result("load_scene", {{"name", "default_scene"}});
     GET_MODULE(Renderer).prepareRuntimeModules();
@@ -1674,7 +1682,20 @@ TEST_CASE("EL-4 the material pass formats and engine shaders get_graph_catalog l
         rpc.result("get_render_authoring_context").at("render_target_vocabulary").at("format_aspects");
     // EL-4b: the catalog reflects no shader; get_engine_shaders lists them.
     CHECK_FALSE(catalog.contains("engine_shaders"));
-    const auto engine_shaders = rpc.result("get_engine_shaders").at("engine_shaders");
+    const Json building{{"status", "building"}};
+    CHECK(rpc.result("get_engine_shaders") == building);
+    CHECK(rpc.result("get_status").contains("instance_id"));
+    CHECK(rpc.result("get_engine_shaders") == building);
+    holdEngineShadersReflectionForTesting(false);
+    auto answered = rpc.result("get_engine_shaders");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes{2};
+    while (answered == building && std::chrono::steady_clock::now() < deadline) {
+        (void)rpc.result("step_frame");
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        answered = rpc.result("get_engine_shaders");
+    }
+    REQUIRE(answered.value("status", "") == "ready");
+    const auto engine_shaders = answered.at("engine_shaders");
     const auto shader_of = [&](const char *reference, const char *stage) {
         for (const auto &entry : engine_shaders)
             if (entry.at("reference") == reference && entry.at("stage") == stage) return entry;

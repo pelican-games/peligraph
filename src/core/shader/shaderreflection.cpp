@@ -77,6 +77,55 @@ ReflectedImageViewDimension imageViewDimension(
                : ReflectedImageViewDimension::two_d;
 }
 
+// EL-4c: the Vulkan format a storage image's SPIR-V image format (its GLSL
+// layout qualifier) names, by the Vulkan specification's compatibility table.
+vk::Format storageImageFormat(SpvImageFormat format) {
+    switch (format) {
+    case SpvImageFormatRgba32f: return vk::Format::eR32G32B32A32Sfloat;
+    case SpvImageFormatRgba16f: return vk::Format::eR16G16B16A16Sfloat;
+    case SpvImageFormatR32f: return vk::Format::eR32Sfloat;
+    case SpvImageFormatRgba8: return vk::Format::eR8G8B8A8Unorm;
+    case SpvImageFormatRgba8Snorm: return vk::Format::eR8G8B8A8Snorm;
+    case SpvImageFormatRg32f: return vk::Format::eR32G32Sfloat;
+    case SpvImageFormatRg16f: return vk::Format::eR16G16Sfloat;
+    case SpvImageFormatR11fG11fB10f: return vk::Format::eB10G11R11UfloatPack32;
+    case SpvImageFormatR16f: return vk::Format::eR16Sfloat;
+    case SpvImageFormatRgba16: return vk::Format::eR16G16B16A16Unorm;
+    case SpvImageFormatRgb10A2: return vk::Format::eA2B10G10R10UnormPack32;
+    case SpvImageFormatRg16: return vk::Format::eR16G16Unorm;
+    case SpvImageFormatRg8: return vk::Format::eR8G8Unorm;
+    case SpvImageFormatR16: return vk::Format::eR16Unorm;
+    case SpvImageFormatR8: return vk::Format::eR8Unorm;
+    case SpvImageFormatRgba16Snorm: return vk::Format::eR16G16B16A16Snorm;
+    case SpvImageFormatRg16Snorm: return vk::Format::eR16G16Snorm;
+    case SpvImageFormatRg8Snorm: return vk::Format::eR8G8Snorm;
+    case SpvImageFormatR16Snorm: return vk::Format::eR16Snorm;
+    case SpvImageFormatR8Snorm: return vk::Format::eR8Snorm;
+    case SpvImageFormatRgba32i: return vk::Format::eR32G32B32A32Sint;
+    case SpvImageFormatRgba16i: return vk::Format::eR16G16B16A16Sint;
+    case SpvImageFormatRgba8i: return vk::Format::eR8G8B8A8Sint;
+    case SpvImageFormatR32i: return vk::Format::eR32Sint;
+    case SpvImageFormatRg32i: return vk::Format::eR32G32Sint;
+    case SpvImageFormatRg16i: return vk::Format::eR16G16Sint;
+    case SpvImageFormatRg8i: return vk::Format::eR8G8Sint;
+    case SpvImageFormatR16i: return vk::Format::eR16Sint;
+    case SpvImageFormatR8i: return vk::Format::eR8Sint;
+    case SpvImageFormatRgba32ui: return vk::Format::eR32G32B32A32Uint;
+    case SpvImageFormatRgba16ui: return vk::Format::eR16G16B16A16Uint;
+    case SpvImageFormatRgba8ui: return vk::Format::eR8G8B8A8Uint;
+    case SpvImageFormatR32ui: return vk::Format::eR32Uint;
+    case SpvImageFormatRgb10a2ui: return vk::Format::eA2B10G10R10UintPack32;
+    case SpvImageFormatRg32ui: return vk::Format::eR32G32Uint;
+    case SpvImageFormatRg16ui: return vk::Format::eR16G16Uint;
+    case SpvImageFormatRg8ui: return vk::Format::eR8G8Uint;
+    case SpvImageFormatR16ui: return vk::Format::eR16Uint;
+    case SpvImageFormatR8ui: return vk::Format::eR8Uint;
+    case SpvImageFormatR64ui: return vk::Format::eR64Uint;
+    case SpvImageFormatR64i: return vk::Format::eR64Sint;
+    default: return vk::Format::eUndefined;
+    }
+}
+
 void sortReflection(ShaderReflection &reflection) {
     std::sort(reflection.bindings.begin(), reflection.bindings.end(), [](const auto &lhs, const auto &rhs) {
         if (lhs.set != rhs.set) {
@@ -182,6 +231,9 @@ ShaderReflection reflect(std::span<const uint32_t> spirv) {
                 ? std::optional<std::uint32_t>{
                       binding->input_attachment_index}
                 : std::nullopt,
+            descriptor_type == vk::DescriptorType::eStorageImage
+                ? storageImageFormat(binding->image.image_format)
+                : vk::Format::eUndefined,
         });
     }
 

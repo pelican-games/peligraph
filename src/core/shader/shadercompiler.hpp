@@ -41,9 +41,18 @@ DECLARE_MODULE(ShaderCompiler) {
     std::optional<std::filesystem::path> cache_directory;
     std::unordered_map<std::string, ShaderCompileResult> memory_cache;
     std::unordered_map<std::string, std::string> source_graph_memory;
+    bool records_startup_metrics = true;
+
+    struct DetachedTag {};
+    explicit ShaderCompiler(DetachedTag);
 
   public:
     ShaderCompiler();
+    // EL-4c: a compiler that reads no module and writes nothing outside
+    // itself: it looks up no project shader cache (so it has none) and adds
+    // nothing to StartupMetrics. A worker thread owns one while the engine
+    // compiles on its own thread.
+    static ShaderCompiler detached();
     ShaderCompileResult compileFile(const std::filesystem::path &path, const ShaderCompileOptions &opts = {});
     ShaderCompileResult compileSource(std::string_view source, vk::ShaderStageFlagBits stage,
                                       std::string_view name, const ShaderCompileOptions &opts = {});

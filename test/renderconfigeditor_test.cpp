@@ -58,6 +58,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <thread>
 #include <set>
 #include <span>
 #include <sstream>
@@ -9919,9 +9920,9 @@ TEST_CASE("EL-1 get_graph_catalog lists the argument values render.image accepts
 // EL-4: get_graph_catalog lists, per material pass contract, the formats each
 // socket takes and the formats a material_outputs pass takes; the vocabulary
 // gives each format its aspect; get_engine_shaders (EL-4b) lists the engine's
-// shaders by the stem references a pass gives. Each list is read off the
-// table the engine checks against (the running engine's own case is in
-// engine_primitives_test).
+// shaders by the stem references a pass gives, reflected on a worker thread
+// (EL-4c). Each list is read off the table the engine checks against (the
+// running engine's own case is in engine_primitives_test).
 TEST_CASE("EL-4 get_graph_catalog lists material pass formats, material output formats and engine shaders",
           "[render-config-editor][el4][graph-catalog]") {
     G6Harness harness{false};
@@ -10006,11 +10007,30 @@ TEST_CASE("EL-4 get_graph_catalog lists material pass formats, material output f
     CHECK(outputs.at("depth") == Json::array({"D16_UNORM", "D24_UNORM_S8_UINT", "D32_SFLOAT"}));
 
     // The engine's shaders, each by a stem whose stage file is built in: what
-    // get_engine_shaders answers, its only key; it takes no field.
+    // get_engine_shaders answers once ready; it takes no field.
     CHECK_THROWS_AS(harness.service->getEngineShaders({{"unexpected", 1}}), std::invalid_argument);
-    const auto answered = Json(harness.service->getEngineShaders(Json::object()));
+    // EL-4c: a worker thread reflects them. Held before its first shader,
+    // the request answers building at once, and other requests answer while
+    // it builds.
+    resetEngineShadersReflectionForTesting();
+    holdEngineShadersReflectionForTesting(true);
+    const Json building{{"status", "building"}};
+    CHECK(Json(harness.service->getEngineShaders(Json::object())) == building);
     CHECK(engineShadersRequestCount() > requests_before);
-    REQUIRE(answered.size() == 1);
+    CHECK(Json(harness.service->getGraphCatalog(Json::object())).at("schema") == "pelican.graph_catalog");
+    CHECK(Json(harness.service->getEngineShaders(Json::object())) == building);
+    holdEngineShadersReflectionForTesting(false);
+    auto answered = Json(harness.service->getEngineShaders(Json::object()));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes{2};
+    while (answered == building && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        answered = Json(harness.service->getEngineShaders(Json::object()));
+    }
+    INFO(answered.dump(2).substr(0, 4000));
+    REQUIRE(answered.at("status") == "ready");
+    REQUIRE(answered.size() == 2);
+    // Done, the same answer stays for the process.
+    CHECK(Json(harness.service->getEngineShaders(Json::object())) == answered);
     const auto &shaders = answered.at("engine_shaders");
     INFO(shaders.dump(2));
     REQUIRE_FALSE(shaders.empty());
@@ -10054,6 +10074,23 @@ TEST_CASE("EL-4 get_graph_catalog lists material pass formats, material output f
     CHECK(bloom.at("pass_inputs").size() == 2);
     CHECK(bloom.at("resource_ports") == Json::array());
     CHECK(passthrough.at("resource_port_include") == false);
+    // EL-4c: a storage image port names its format, its layout qualifier (r8)
+    // as the vocabulary names it; a sampled port has none.
+    const auto shadow_mask = shader_of("engine://rt_shadow_mask_pipeline", "raygen");
+    REQUIRE(shadow_mask.contains("reflected_from"));
+    const auto port_of = [&](const Json &shader, std::string_view port) {
+        for (const auto &entry : shader.at("resource_ports"))
+            if (entry.at("port") == std::string{port}) return entry;
+        FAIL("no resource port " << port);
+        return Json{};
+    };
+    const auto mask = port_of(shadow_mask, "shadow_mask");
+    CHECK(mask.at("type") == "storage_image");
+    CHECK(mask.at("format") == "R8_UNORM");
+    const auto &formats = vocabulary.at("formats");
+    CHECK(std::find(formats.begin(), formats.end(), mask.at("format")) != formats.end());
+    CHECK(port_of(shadow_mask, "normal").at("type") == "sampled_image");
+    CHECK_FALSE(port_of(shadow_mask, "normal").contains("format"));
 }
 
 // --- EL-3: edit_rendering_keys writes keys of the root's rendering section.

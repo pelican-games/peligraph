@@ -38,6 +38,10 @@ struct ReflectedBinding {
     // input-attachment index are independent namespaces under dynamic
     // rendering local read.
     std::optional<std::uint32_t> input_attachment_index;
+    // EL-4c: a storage image's format, from its GLSL layout qualifier (r8 is
+    // R8_UNORM); undefined for any other descriptor and for an image declared
+    // without one.
+    vk::Format storage_image_format = vk::Format::eUndefined;
 };
 
 struct ReflectedFragmentOutput {

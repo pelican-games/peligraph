@@ -3016,10 +3016,10 @@ OrderedJson RenderConfigEditorService::getGraphCatalog(const Json &params) const
 OrderedJson RenderConfigEditorService::getEngineShaders(const Json &params) const {
     requireOnly(params, {}, "get_engine_shaders");
     // EL-4b: the shaders the engine ships, as a pass's stem reference loads
-    // them. Reflecting them compiles every GLSL source, so this runs only
-    // when asked (once per process) and never inside get_graph_catalog,
-    // which Studio reads at startup.
-    return OrderedJson{{"engine_shaders", engineShadersJson()}};
+    // them, never inside get_graph_catalog, which Studio reads at startup.
+    // EL-4c: a worker thread reflects them (once per process); until it is
+    // done this answers {status: building} at once.
+    return engineShadersStatusJson();
 }
 
 OrderedJson RenderConfigEditorService::editFrameNodeOrder(const Json &params) {

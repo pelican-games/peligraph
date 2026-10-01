@@ -17,10 +17,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -115,15 +118,14 @@ std::vector<std::uint32_t> spirvWords(std::string_view bytes) {
 // when the runtime compiler is built in, else the precompiled SPIR-V.
 // Reflection reads that form; a source that does not compile on its own
 // (one that includes a pass's generated ports) is read from its SPIR-V when
-// there is one.
-std::optional<ShaderReflection> reflectEngineShader(const EngineShaderForms &forms, std::string &from,
-                                                    std::string &error) {
+// there is one. The compiler is the worker's own (EL-4c).
+std::optional<ShaderReflection> reflectEngineShader(const EngineShaderForms &forms, ShaderCompiler &compiler,
+                                                    std::string &from, std::string &error) {
     // The candidates loadFromStemReference tries (shaderSourceCandidateReference).
     const auto source_id = forms.stem + std::string{shaderStageSourceExtension(forms.stage)};
     const auto spirv_id = source_id + ".spv";
 #if PELICAN_RUNTIME_SHADER_COMPILER
     if (forms.source) {
-        ShaderCompiler compiler;
         const auto name = "engine://" + source_id;
         const auto stage = inferShaderStageFromPath(source_id);
         const auto compiled = compiler.compileSource(*engineResource(source_id), *stage, name);
@@ -133,6 +135,8 @@ std::optional<ShaderReflection> reflectEngineShader(const EngineShaderForms &for
         }
         error = compiled.log;
     }
+#else
+    (void)compiler;
 #endif
     if (forms.spirv) {
         const auto bytes = *engineResource(spirv_id);
@@ -147,7 +151,15 @@ std::optional<ShaderReflection> reflectEngineShader(const EngineShaderForms &for
     return std::nullopt;
 }
 
-OrderedJson engineShaderJson(const EngineShaderForms &forms) {
+// EL-4c: a format's name as render_target_vocabulary's formats give it, if
+// the vocabulary has the format.
+std::optional<std::string> vocabularyFormatName(vk::Format format) {
+    for (const auto &[name, listed] : imageFormats())
+        if (listed == format) return name;
+    return std::nullopt;
+}
+
+OrderedJson engineShaderJson(const EngineShaderForms &forms, ShaderCompiler &compiler) {
     OrderedJson entry{{"reference", "engine://" + forms.stem}, {"stage", shaderStageName(forms.stage)}};
     auto available = OrderedJson::array();
     if (forms.source) available.push_back("source");
@@ -168,7 +180,7 @@ OrderedJson engineShaderJson(const EngineShaderForms &forms) {
     std::string error;
     std::optional<ShaderReflection> reflection;
     try {
-        reflection = reflectEngineShader(forms, from, error);
+        reflection = reflectEngineShader(forms, compiler, from, error);
     } catch (const std::exception &failure) {
         error = failure.what();
     }
@@ -196,9 +208,14 @@ OrderedJson engineShaderJson(const EngineShaderForms &forms) {
     for (const auto &binding : reflection->bindings) {
         if (binding.set != PELICAN_SET_PASS_INPUT || !binding.name.starts_with(shaderResourcePortVariablePrefix))
             continue;
-        ports.push_back({{"port", binding.name.substr(shaderResourcePortVariablePrefix.size())},
+        OrderedJson port{{"port", binding.name.substr(shaderResourcePortVariablePrefix.size())},
                          {"binding", binding.binding},
-                         {"type", passInputDescriptorTypeName(binding.type)}});
+                         {"type", passInputDescriptorTypeName(binding.type)}};
+        // EL-4c: a storage image's format, from its layout qualifier, by
+        // the vocabulary's name; none when it declares none.
+        if (binding.storage_image_format != vk::Format::eUndefined)
+            if (const auto format = vocabularyFormatName(binding.storage_image_format)) port["format"] = *format;
+        ports.push_back(std::move(port));
     }
     entry["resource_ports"] = std::move(ports);
     if (forms.stage == ShaderStage::fragment) {
@@ -212,7 +229,9 @@ OrderedJson engineShaderJson(const EngineShaderForms &forms) {
     return entry;
 }
 
-OrderedJson buildEngineShadersJson() {
+// Every engine shader's entry, or nothing when `stop` is raised before the
+// last one: the worker looks at it between shaders.
+std::optional<OrderedJson> buildEngineShadersJson(ShaderCompiler &compiler, const std::atomic_bool &stop) {
     // (stem, stage) in the order stems and stages are listed.
     std::map<std::pair<std::string, std::size_t>, EngineShaderForms> found;
     for (const auto id : registeredEngineResourceIds()) {
@@ -235,22 +254,136 @@ OrderedJson buildEngineShadersJson() {
         (void)key;
         // A stem reference never loads a GLSL source without the compiler.
         if (!forms.spirv && !PELICAN_RUNTIME_SHADER_COMPILER) continue;
-        result.push_back(engineShaderJson(forms));
+        if (stop.load(std::memory_order_relaxed)) return std::nullopt;
+        result.push_back(engineShaderJson(forms, compiler));
     }
     return result;
 }
 
-} // namespace
-
-namespace {
 std::atomic<std::size_t> engine_shaders_requests{0};
+
+// EL-4c: the one reflection of the process. The worker owns its compiler
+// (ShaderCompiler::detached: no module, no project cache, no StartupMetrics)
+// and reads only the built-in resources and pure functions of them, so it
+// shares nothing with the frame loop but this state, under the mutex.
+class EngineShadersReflection {
+    enum class State { idle, building, done };
+
+    std::mutex mutex;
+    std::condition_variable hold_changed;
+    std::thread worker;
+    std::atomic_bool stop_requested{false};
+    bool held_for_testing = false;
+    State state = State::idle;
+    // The ready or failed answer, once done.
+    OrderedJson answer;
+
+    void run() {
+        {
+            std::unique_lock lock{mutex};
+            hold_changed.wait(lock, [&] { return !held_for_testing || stop_requested.load(); });
+        }
+        OrderedJson result;
+        try {
+            auto compiler = ShaderCompiler::detached();
+            auto shaders = buildEngineShadersJson(compiler, stop_requested);
+            if (!shaders) {
+                // Stopped: nothing is kept, and the next start begins again.
+                std::scoped_lock lock{mutex};
+                state = State::idle;
+                return;
+            }
+            result = {{"status", "ready"}, {"engine_shaders", std::move(*shaders)}};
+        } catch (const std::exception &failure) {
+            result = {{"status", "failed"}, {"error", failure.what()}};
+        } catch (...) {
+            result = {{"status", "failed"}, {"error", "engine shader reflection failed"}};
+        }
+        std::scoped_lock lock{mutex};
+        answer = std::move(result);
+        state = State::done;
+    }
+
+    void startLocked() {
+        if (state != State::idle) return;
+        stop_requested = false;
+        try {
+            worker = std::thread{[this] { run(); }};
+            state = State::building;
+        } catch (const std::exception &failure) {
+            answer = {{"status", "failed"}, {"error", failure.what()}};
+            state = State::done;
+        }
+    }
+
+  public:
+    ~EngineShadersReflection() { stop(); }
+
+    void start() {
+        std::scoped_lock lock{mutex};
+        startLocked();
+    }
+
+    OrderedJson status() {
+        std::scoped_lock lock{mutex};
+        startLocked();
+        if (state == State::building) return {{"status", "building"}};
+        return answer;
+    }
+
+    // Raises stop (the worker leaves after the shader it is reflecting, or
+    // before its first when held) and joins it. A done answer is kept.
+    void stop() {
+        std::thread running;
+        {
+            std::scoped_lock lock{mutex};
+            stop_requested = true;
+            running = std::move(worker);
+        }
+        hold_changed.notify_all();
+        if (running.joinable()) running.join();
+        std::scoped_lock lock{mutex};
+        stop_requested = false;
+    }
+
+    void reset() {
+        stop();
+        std::scoped_lock lock{mutex};
+        state = State::idle;
+        answer = OrderedJson{};
+    }
+
+    void hold(bool held) {
+        {
+            std::scoped_lock lock{mutex};
+            held_for_testing = held;
+        }
+        hold_changed.notify_all();
+    }
+};
+
+EngineShadersReflection &engineShadersReflection() {
+    static EngineShadersReflection reflection;
+    return reflection;
+}
+
 } // namespace
 
-const OrderedJson &engineShadersJson() {
+void startEngineShadersReflection() {
     engine_shaders_requests.fetch_add(1, std::memory_order_relaxed);
-    static const OrderedJson shaders = buildEngineShadersJson();
-    return shaders;
+    engineShadersReflection().start();
 }
+
+OrderedJson engineShadersStatusJson() {
+    engine_shaders_requests.fetch_add(1, std::memory_order_relaxed);
+    return engineShadersReflection().status();
+}
+
+void stopEngineShadersReflection() { engineShadersReflection().stop(); }
+
+void resetEngineShadersReflectionForTesting() { engineShadersReflection().reset(); }
+
+void holdEngineShadersReflectionForTesting(bool held) { engineShadersReflection().hold(held); }
 
 std::size_t engineShadersRequestCount() {
     return engine_shaders_requests.load(std::memory_order_relaxed);

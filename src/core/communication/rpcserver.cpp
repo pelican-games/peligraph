@@ -4,6 +4,7 @@
 #include "animationstatus.hpp"
 #include "editorrpchandlers.hpp"
 #include "editorruntimefactory.hpp"
+#include "engineauthoringlists.hpp"
 #include "playsession.hpp"
 #include "projectmigrationrpc.hpp"
 #include "../startup.hpp"
@@ -2693,7 +2694,14 @@ struct EngineRpcEndpoint::Impl {
         configureEngineRpcHandlers(server, modules, instance_id,
                                    pending_transforms, editor_rpc,
                                    *editor_service, play_session);
+        // EL-4c: get_engine_shaders' list is reflected on a worker thread;
+        // it starts now so the list is warm before Studio asks. It reads
+        // only the built-in shaders, never the frame or the scene.
+        startEngineShadersReflection();
     }
+
+    // EL-4c: the worker leaves after the shader it is reflecting.
+    ~Impl() { stopEngineShadersReflection(); }
 };
 
 EngineRpcEndpoint::EngineRpcEndpoint(std::istream &input_stream,

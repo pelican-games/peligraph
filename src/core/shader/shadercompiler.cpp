@@ -487,7 +487,8 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
                                 const std::vector<std::pair<std::string, std::string>> &virtual_includes,
                                 const std::optional<std::filesystem::path> &cache_directory,
                                 std::unordered_map<std::string, ShaderCompileResult> &memory_cache,
-                                std::unordered_map<std::string, std::string> &source_graph_memory) {
+                                std::unordered_map<std::string, std::string> &source_graph_memory,
+                                bool record_metrics) {
     const auto start = std::chrono::steady_clock::now();
     std::string key;
     std::filesystem::path cache_path;
@@ -502,7 +503,7 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
                 output.cache_hit = true;
                 output.log = "shader in-memory cache hit";
                 output.dependencies = dependencies;
-                if (auto *metrics = FastModuleContainer::tryGet<StartupMetrics>()) {
+                if (auto *metrics = record_metrics ? FastModuleContainer::tryGet<StartupMetrics>() : nullptr) {
                     metrics->addShader(std::chrono::duration<double, std::milli>{
                                            std::chrono::steady_clock::now() - start}.count(), true);
                 }
@@ -517,7 +518,7 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
                                            .cache_key = key,
                                            .dependencies = dependencies};
                 memory_cache.emplace(key, output);
-                if (auto *metrics = FastModuleContainer::tryGet<StartupMetrics>()) {
+                if (auto *metrics = record_metrics ? FastModuleContainer::tryGet<StartupMetrics>() : nullptr) {
                     metrics->addShader(std::chrono::duration<double, std::milli>{
                                            std::chrono::steady_clock::now() - start}.count(), true);
                 }
@@ -544,7 +545,7 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
         }
         memory_cache.insert_or_assign(key, output);
     }
-    if (auto *metrics = FastModuleContainer::tryGet<StartupMetrics>()) {
+    if (auto *metrics = record_metrics ? FastModuleContainer::tryGet<StartupMetrics>() : nullptr) {
         metrics->addShader(std::chrono::duration<double, std::milli>{
                                std::chrono::steady_clock::now() - start}.count(), false);
     }
@@ -553,6 +554,10 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
 #endif
 
 } // namespace
+
+ShaderCompiler::ShaderCompiler(DetachedTag) : records_startup_metrics{false} {}
+
+ShaderCompiler ShaderCompiler::detached() { return ShaderCompiler{DetachedTag{}}; }
 
 ShaderCompiler::ShaderCompiler() {
     if (const auto *resolver = FastModuleContainer::tryGet<PathResolver>();
@@ -610,7 +615,7 @@ ShaderCompileResult ShaderCompiler::compileFile(const std::filesystem::path &pat
     }
     auto result = compileGlsl(readTextFile(path), stage, normalizedPath(path).string(), opts.entry_point,
                               compile_include_dirs, opts.defines, opts.virtual_includes, cache_directory,
-                              memory_cache, source_graph_memory);
+                              memory_cache, source_graph_memory, records_startup_metrics);
     result.dependencies.push_back(normalizedPath(path));
     std::sort(result.dependencies.begin(), result.dependencies.end());
     result.dependencies.erase(std::unique(result.dependencies.begin(), result.dependencies.end()),
@@ -626,7 +631,8 @@ ShaderCompileResult ShaderCompiler::compileSource(std::string_view source, vk::S
                                                   std::string_view name, const ShaderCompileOptions &opts) {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     return compileGlsl(source, stage, name, opts.entry_point, include_dirs, opts.defines,
-                        opts.virtual_includes, cache_directory, memory_cache, source_graph_memory);
+                        opts.virtual_includes, cache_directory, memory_cache, source_graph_memory,
+                        records_startup_metrics);
 #else
     (void)source;
     (void)stage;
