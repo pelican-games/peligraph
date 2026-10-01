@@ -364,7 +364,7 @@ get_frame_plan 応答 = pelican.frame_plan v1
 `origin` / `replaces`、✅RS-6 の `added_after`)は、`framePlanToJson()` が compiled pipeline の `RenderPassProvenance` から写します
 ([写す所](../../src/core/renderingpass/frameplanner.cpp#L1926))。`origin` の `graph`(rendering root 文書の参照)は raw の planner が知らないので、
 renderer が `framePlanToJson()` に渡します。物理の層は、`physical_target_plan` を足した直後に renderer が
-[`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L2196) を呼び
+[`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L2199) を呼び
 ([呼ぶ所](../../src/core/vkcore/renderer.cpp#L4239))、resources / alias_groups / decisions / backend の候補に、関わる node 名の
 `from_nodes[]` を書き込みます。物理の要素 → node 名 → `origin` → graph の文書、の順に辿れます(形は manual 第13章「`get_frame_plan` に足されたもの」)。
 
