@@ -31,6 +31,20 @@ add_library(pelican_studio_view STATIC
     fullscreenpasswidget.hpp
     fullscreenpasssettings.cpp
     fullscreenpasssettings.hpp
+    # UX-4a: the forms that edit parts of a pass declaration (Pass Editor now,
+    # the Graph's detail panel next).
+    passforms/passform.cpp
+    passforms/passform.hpp
+    passforms/attachmentopsform.cpp
+    passforms/attachmentopsform.hpp
+    passforms/materialroutingform.cpp
+    passforms/materialroutingform.hpp
+    passforms/materialsettingsform.cpp
+    passforms/materialsettingsform.hpp
+    passforms/rasterstateform.cpp
+    passforms/rasterstateform.hpp
+    passforms/shaderdefinesform.cpp
+    passforms/shaderdefinesform.hpp
     fullscreenshadertemplate.cpp
     fullscreenshadertemplate.hpp
     shaderinputcontract.cpp

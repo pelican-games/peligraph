@@ -36,6 +36,10 @@ struct RenderPassAuthoringCapability {
         requestEditResult;
     std::function<void(QObject *context, ResultHandler handler)> result;
     std::function<void(QObject *context, FailureHandler handler)> failure;
+    // UX-4a. get_scene_acceleration_structures: the structures the project
+    // declares, for the Ray scene list. Optional; its answer comes through
+    // `result` / `failure` like the others.
+    std::function<qint64(QString *error)> requestSceneAccelerationStructures;
 };
 
 RenderPassAuthoringCapability renderPassAuthoringCapability(

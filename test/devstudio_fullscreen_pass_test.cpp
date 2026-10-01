@@ -9,6 +9,9 @@
 #include "mainwindow.hpp"
 #include "renderfeatureswidget.hpp"
 #include "graphattachmentwidget.hpp"
+#include "passforms/attachmentopsform.hpp"
+#include "passforms/rasterstateform.hpp"
+#include "passforms/shaderdefinesform.hpp"
 #include "../src/devstudio/model/frameplanmodel.hpp"
 
 #include "graphcomposition.hpp"
@@ -137,6 +140,22 @@ Widget &required(QWidget &form, const char *object_name) {
     return *result;
 }
 
+// UX-4a: picks the entry of a form's combo whose data is `value`.
+void chooseData(QComboBox &combo, const char *value) {
+    const int index = combo.findData(QString::fromLatin1(value));
+    if (index < 0) throw std::runtime_error(std::string{"no combo entry "} + value);
+    combo.setCurrentIndex(index);
+}
+
+// UX-4a: a form of the Pass Editor, and a value put into it as a pass
+// declaration's would be (load), then told to the editor as a change.
+template <typename Form>
+Form &passForm(FullscreenPassWidget &form) {
+    auto *result = form.findChild<Form *>();
+    if (result == nullptr) throw std::runtime_error("missing pass form");
+    return *result;
+}
+
 const QWidget &requiredWidget(const FullscreenPassWidget &form,
                               const char *object_name) {
     auto *result = form.findChild<QWidget *>(QString::fromLatin1(object_name));
@@ -210,6 +229,9 @@ struct AuthoringHarness {
     bool available = true;
     qint64 next_id = 1000;
     std::vector<Request> requests;
+    // UX-4a: get_scene_acceleration_structures, apart from `requests` so
+    // that requests.back() stays the authoring request.
+    std::vector<qint64> scene_structure_requests;
     RenderPassAuthoringCapability::ReadyHandler ready_handler;
     RenderPassAuthoringCapability::ResultHandler result_handler;
     RenderPassAuthoringCapability::FailureHandler failure_handler;
@@ -265,6 +287,10 @@ struct AuthoringHarness {
                            RenderPassAuthoringCapability::FailureHandler
                                handler) {
                 failure_handler = std::move(handler);
+            },
+            .requestSceneAccelerationStructures = [this](QString *) {
+                scene_structure_requests.push_back(++next_id);
+                return next_id;
             },
         };
     }
@@ -361,13 +387,12 @@ void driveFromDeclaration(FullscreenPassWidget &form,
     required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment")
         .setText(QString::fromStdString(
             declaration.at("shader").at("fragment").get<std::string>()));
-    auto &raster_state = required<QPlainTextEdit>(
-        form, "pelican.fullscreenPass.rasterState");
-    raster_state.setPlainText(
-        declaration.contains("raster_state")
-            ? QString::fromStdString(
-                  declaration.at("raster_state").dump())
-            : QString{});
+    auto &raster_state = passForm<RasterStateForm>(form);
+    raster_state.load(declaration.value("raster_state", Json(nullptr)), nullptr);
+    emit raster_state.changed();
+    auto &defines = passForm<ShaderDefinesForm>(form);
+    defines.load(declaration.at("shader").value("defines", Json(nullptr)));
+    emit defines.changed();
     for (const auto &input : declaration.at("input")) {
         chooseCandidate(form, "pelican.fullscreenPass.inputTarget",
                         "pelican.fullscreenPass.addInput",
@@ -389,11 +414,12 @@ void driveFromDeclaration(FullscreenPassWidget &form,
     } else if (!color.is_null()) {
         add_color(color);
     }
-    required<QPlainTextEdit>(
-        form, "pelican.fullscreenPass.colorAttachmentReferences")
-        .setPlainText(has_attachment_object
-                          ? QString::fromStdString(color.dump())
-                          : QString{});
+    if (has_attachment_object) {
+        auto &attachments = passForm<AttachmentOpsForm>(form);
+        attachments.load(color, declaration.value("clear_colors", Json(nullptr)),
+                         declaration.at("output").at("depth"));
+        emit attachments.changed();
+    }
     setDepth(form, declaration.at("output").at("depth"));
     QApplication::processEvents();
 }
@@ -705,12 +731,9 @@ void clearDraftThroughControls(FullscreenPassWidget &form) {
     required<QLineEdit>(form,
                         "pelican.fullscreenPass.shader.fragment")
         .clear();
-    required<QPlainTextEdit>(
-        form, "pelican.fullscreenPass.rasterState")
-        .clear();
-    required<QPlainTextEdit>(
-        form, "pelican.fullscreenPass.colorAttachmentReferences")
-        .clear();
+    passForm<RasterStateForm>(form).reset();
+    passForm<ShaderDefinesForm>(form).reset();
+    emit passForm<RasterStateForm>(form).changed();
     for (const auto &[list_name, remove_name] :
          std::array{
              std::pair{"pelican.fullscreenPass.inputs",
@@ -1319,8 +1342,6 @@ TEST_CASE(
     authoring.succeed(authoring.requests.back().id, context);
     form.receiveResult(QByteArray::fromStdString(plan.dump()));
     driveShapeDraft(form, {}, {"swapchain"}, std::nullopt);
-    auto &raster_state = required<QPlainTextEdit>(
-        form, "pelican.fullscreenPass.rasterState");
     auto &save = required<QPushButton>(
         form, "pelican.fullscreenPass.save");
     const auto saved_pass = [&]() {
@@ -1353,11 +1374,19 @@ TEST_CASE(
         authoring.succeed(authoring.requests.back().id, context);
     };
 
-    raster_state.setPlainText(
-        QString::fromStdString(additive_state.dump()));
+    // UX-4a: the raster state is chosen in its form, not typed as JSON.
+    auto &cull = required<QComboBox>(form, "pelican.fullscreenPass.rasterState.cull");
+    auto &blend = required<QComboBox>(form, "pelican.fullscreenPass.rasterState.blend.0");
+    auto &write_mask =
+        required<QComboBox>(form, "pelican.fullscreenPass.rasterState.writeMask.0");
+    CHECK(required<QComboBox>(form, "pelican.fullscreenPass.rasterState.depthTest")
+              .isHidden());
+    chooseData(cull, "none");
+    chooseData(blend, "additive");
+    chooseData(write_mask, "rg");
     const Json additive_pass = saved_pass();
     finish_save("wp355-additive");
-    raster_state.clear();
+    for (auto *field : {&cull, &blend, &write_mask}) chooseData(*field, "");
     const Json omitted_pass = saved_pass();
     REQUIRE(additive_pass.at("raster_state") == additive_state);
     REQUIRE_FALSE(omitted_pass.contains("raster_state"));
@@ -2345,8 +2374,8 @@ TEST_CASE("Studio edits a preset pass with its source digest and retains hidden 
     REQUIRE(name.isReadOnly());
     auto &ray_query = required<QCheckBox>(form, "pelican.fullscreenPass.rayQuery");
     REQUIRE(ray_query.isChecked());
-    auto &query_scene = required<QLineEdit>(form, "pelican.fullscreenPass.rayQueryScene");
-    CHECK(query_scene.text() == (connection ? "actors" : "scene"));
+    auto &query_scene = required<QComboBox>(form, "pelican.fullscreenPass.rayQueryScene");
+    CHECK(query_scene.currentText() == (connection ? "actors" : "scene"));
     CHECK(query_scene.isEnabled());
     auto &candidate = required<QComboBox>(form, "pelican.fullscreenPass.inputTarget");
     auto &inputs = required<QListWidget>(form, "pelican.fullscreenPass.inputs");
@@ -2450,8 +2479,10 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
     refresh.succeed(refresh.requests.back(), QByteArray::fromStdString(plan.dump()));
     CHECK(required<QLabel>(form, "pelican.fullscreenPass.type").text().toStdString() == pass_type);
     CHECK(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment").isHidden() == (pass_type == "material"));
-    CHECK(required<QPlainTextEdit>(form, "pelican.fullscreenPass.draw").isHidden() == (pass_type == "material"));
-    CHECK(required<QPlainTextEdit>(form, "pelican.fullscreenPass.materialRouting").isHidden() == (feature_owned || pass_type != "material"));
+    CHECK(required<QWidget>(form, "pelican.fullscreenPass.draw").isHidden() == (pass_type == "material"));
+    CHECK(required<QWidget>(form, "pelican.fullscreenPass.materialRouting").isHidden() == (feature_owned || pass_type != "material"));
+    // UX-4a: a raster pass's depth output loads and stores in the form.
+    CHECK(required<QComboBox>(form, "pelican.fullscreenPass.depthLoad").currentData().toString() == "load");
     // LP-4e: a material pass offers Decompose into loop, which is the Frame
     // Plan's, on the pass being edited.
     {
@@ -2468,13 +2499,17 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
     }
     CHECK_FALSE(required<QGroupBox>(form, "pelican.fullscreenPass.targets").isHidden());
     auto &query = required<QCheckBox>(form, "pelican.fullscreenPass.rayQuery");
-    auto &scene = required<QLineEdit>(form, "pelican.fullscreenPass.rayQueryScene");
+    auto &scene = required<QComboBox>(form, "pelican.fullscreenPass.rayQueryScene");
     auto &save = required<QPushButton>(form, "pelican.fullscreenPass.save");
     CHECK(query.isChecked() == named);
     query.setChecked(true);
-    scene.setText("   ");
-    CHECK_FALSE(save.isEnabled());
-    scene.setText(" actors ");
+    // UX-4a: the structures are the project's declared ones (and "scene").
+    CHECK((scene.findData("actors") < 0 || named));
+    REQUIRE(authoring.scene_structure_requests.size() >= 1);
+    authoring.succeed(authoring.scene_structure_requests.back(),
+                      {{"definitions", Json::array({{{"name", "actors"}, {"instance_mask", 255}}})}});
+    REQUIRE(scene.findData("scene") == 0);
+    chooseData(scene, "actors");
     auto expected = original;
     expected["ray_query"] = {{"acceleration_structure", "actors"}};
     if (named) {
@@ -2490,37 +2525,54 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
         auto &color_target = required<QComboBox>(form, "pelican.fullscreenPass.colorTarget");
         color_target.setCurrentText("replacement");
         required<QPushButton>(form, "pelican.fullscreenPass.addColor").click();
-        expected["output"]["color"][0]["target"] = "replacement";
-        required<QPlainTextEdit>(form, "pelican.fullscreenPass.colorAttachmentReferences").setPlainText(
-            QString::fromStdString(expected.at("output").at("color").dump()));
+        // UX-4a: the new output's load and store are chosen in its row.
+        chooseData(required<QComboBox>(form, "pelican.fullscreenPass.outputLoad.0"), "load");
+        chooseData(required<QComboBox>(form, "pelican.fullscreenPass.outputStore.0"), "store");
+        expected["output"]["color"][0] = {{"target", "replacement"}, {"load_op", "load"}, {"store_op", "store"}};
         required<QComboBox>(form, "pelican.fullscreenPass.depthTarget").setCurrentText("new_depth");
         expected["output"]["depth"]["target"] = "new_depth";
     }
     if (pass_type == "raster" && named) {
-        auto &draw = required<QPlainTextEdit>(form, "pelican.fullscreenPass.draw");
-        draw.setPlainText(R"({"vertex_count":0})");
+        auto &vertices = required<QSpinBox>(form, "pelican.fullscreenPass.draw.vertexCount");
+        CHECK(vertices.value() == 3);
+        vertices.setValue(0);
         CHECK_FALSE(save.isEnabled());
-        draw.setPlainText(R"({"vertex_count":6,"instance_count":2})");
+        vertices.setValue(6);
+        required<QSpinBox>(form, "pelican.fullscreenPass.draw.instanceCount").setValue(2);
         expected["draw"] = {{"vertex_count", 6}, {"instance_count", 2}};
         auto &fragment = required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment");
         fragment.clear();
         CHECK_FALSE(save.isEnabled());
         fragment.setText("project://custom_fragment");
         expected["shader"]["fragment"] = "project://custom_fragment";
-        required<QPlainTextEdit>(form, "pelican.fullscreenPass.rasterState").clear();
+        CHECK(required<QComboBox>(form, "pelican.fullscreenPass.rasterState.depthTest")
+                  .currentData().toString() == "true");
+        chooseData(required<QComboBox>(form, "pelican.fullscreenPass.rasterState.cull"), "");
+        chooseData(required<QComboBox>(form, "pelican.fullscreenPass.rasterState.depthTest"), "");
         expected.erase("raster_state");
     }
     if (pass_type == "material" && named) {
-        auto &settings = required<QPlainTextEdit>(form, "pelican.fullscreenPass.materialSettings");
-        settings.setPlainText("[]");
+        auto &other = required<QPlainTextEdit>(form, "pelican.fullscreenPass.materialOther");
+        other.setPlainText("[]");
         CHECK_FALSE(save.isEnabled());
-        settings.setPlainText(R"({"material_filter":{"include":["actors"]}})");
+        other.clear();
+        required<QLineEdit>(form, "pelican.fullscreenPass.materialFilter.include").setText("actors");
         expected["material_filter"] = {{"include", {"actors"}}};
         auto &contract = required<QComboBox>(form, "pelican.fullscreenPass.materialContract");
         contract.setCurrentIndex(contract.findData("forward_transparent_v1"));
         expected["material_contract"] = "forward_transparent_v1";
-        required<QPlainTextEdit>(form, "pelican.fullscreenPass.materialRouting").setPlainText(
-            R"({"policy":"hybrid_auto_v1","routes":{"deferred_geometry":"geometry","forward_opaque":"opaque","forward_transparent":"material_pass"}})");
+        // UX-4a: routing is three choices of the preset's material passes;
+        // turning it on fills the route this pass's contract names.
+        required<QCheckBox>(form, "pelican.fullscreenPass.materialRouting.enabled").setChecked(true);
+        CHECK(required<QComboBox>(form, "pelican.fullscreenPass.materialRouting.forward_opaque")
+                  .currentData().toString() == "material_pass");
+        auto &deferred = required<QComboBox>(form, "pelican.fullscreenPass.materialRouting.deferred_geometry");
+        deferred.addItem("geometry", "geometry");
+        chooseData(deferred, "geometry");
+        auto &opaque = required<QComboBox>(form, "pelican.fullscreenPass.materialRouting.forward_opaque");
+        opaque.addItem("opaque", "opaque");
+        chooseData(opaque, "opaque");
+        chooseData(required<QComboBox>(form, "pelican.fullscreenPass.materialRouting.forward_transparent"), "material_pass");
     }
     INFO(required<QLabel>(form, "pelican.fullscreenPass.validationSummary").text().toStdString());
     INFO(required<QPlainTextEdit>(form, "pelican.fullscreenPass.json").toPlainText().toStdString());
@@ -2548,7 +2600,7 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
     CHECK(Json::parse(required<QPlainTextEdit>(form, "pelican.fullscreenPass.json").toPlainText().toStdString()) == expected);
     authoring.succeed(authoring.requests.back().id,
         {{"status", "rejected"}, {"error", {{"message", "test rejection"}}}});
-    CHECK(scene.text() == " actors ");
+    CHECK(scene.currentText() == "actors");
     query.setChecked(false);
     REQUIRE(save.isEnabled());
     save.click();
@@ -2571,7 +2623,7 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
     CHECK_FALSE(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment").isHidden());
     CHECK_FALSE(required<QGroupBox>(form, "pelican.fullscreenPass.targets").isHidden());
     CHECK_FALSE(query.isChecked());
-    CHECK(required<QPlainTextEdit>(form, "pelican.fullscreenPass.draw").isHidden());
+    CHECK(required<QWidget>(form, "pelican.fullscreenPass.draw").isHidden());
 }
 
 TEST_CASE("Studio edits auxiliary shader and query fields without changing pass shape",
@@ -2612,12 +2664,16 @@ TEST_CASE("Studio edits auxiliary shader and query fields without changing pass 
     CHECK(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment").isHidden() == shadow);
     auto &skin = required<QLineEdit>(form, "pelican.fullscreenPass.shader.skinnedVertex");
     CHECK(skin.isHidden() == !skinned);
-    CHECK(required<QPlainTextEdit>(form, "pelican.fullscreenPass.draw").isHidden());
+    CHECK(required<QWidget>(form, "pelican.fullscreenPass.draw").isHidden());
     CHECK(required<QComboBox>(form, "pelican.fullscreenPass.inputTarget").isHidden());
     required<QLineEdit>(form, "pelican.fullscreenPass.shader.vertex").setText("project://changed_vertex");
     if (skinned) skin.clear();
     required<QCheckBox>(form, "pelican.fullscreenPass.rayQuery").setChecked(true);
-    required<QLineEdit>(form, "pelican.fullscreenPass.rayQueryScene").setText("actors");
+    // UX-4a: the project's declared structures are the list.
+    REQUIRE_FALSE(authoring.scene_structure_requests.empty());
+    authoring.succeed(authoring.scene_structure_requests.back(),
+                      {{"definitions", Json::array({{{"name", "actors"}}})}});
+    chooseData(required<QComboBox>(form, "pelican.fullscreenPass.rayQueryScene"), "actors");
     const auto draft = Json::parse(required<QPlainTextEdit>(form, "pelican.fullscreenPass.json").toPlainText().toStdString());
     CHECK(draft.at("type") == kind);
     CHECK(draft.at("output") == original.at("output"));
@@ -3379,17 +3435,16 @@ TEST_CASE("G-3 Uses scene lights, Camera position and an output's load, "
     selectData(push, "camera_position");
     CHECK(push.currentText() == QStringLiteral("Camera position"));
 
-    auto &attachments = required<QPlainTextEdit>(
-        form, "pelican.fullscreenPass.colorAttachmentReferences");
-    CHECK(attachments.toPlainText().isEmpty());
+    auto &attachments = passForm<AttachmentOpsForm>(form);
+    CHECK(attachments.color() == Json::array({"tint_out"}));
     auto &load = required<QComboBox>(form, "pelican.fullscreenPass.outputLoad.0");
     auto &store = required<QComboBox>(form, "pelican.fullscreenPass.outputStore.0");
     auto &clear =
         required<QLineEdit>(form, "pelican.fullscreenPass.outputClearColor.0");
     CHECK(clear.isHidden());
     selectData(load, "clear");
-    // The row writes the JSON field; the field is what the draft reads.
-    CHECK(Json::parse(attachments.toPlainText().toStdString()) ==
+    // The row writes output.color; the form is what the draft reads.
+    CHECK(attachments.color() ==
           Json::array({{{"target", "tint_out"}, {"load_op", "clear"}}}));
     CHECK_FALSE(clear.isHidden());
     clear.setText(QStringLiteral("0.25, 0.5, 0.75"));
@@ -3414,30 +3469,38 @@ TEST_CASE("G-3 Uses scene lights, Camera position and an output's load, "
     CHECK(Pelican::validatePassFieldOwnership(pass, {}, "g3") ==
           Pelican::RenderPassType::fullscreen);
 
-    // The other way: JSON typed into the field is what the rows show, in the
-    // engine's other spellings too, and a field the rows do not show stays.
-    attachments.setPlainText(QStringLiteral(
-        R"([{"target":"tint_out","load_op":"DontCare","subresource":{"mip":0}}])"));
-    CHECK(load.currentData().toString() == QStringLiteral("dont_care"));
-    CHECK(store.currentData().toString().isEmpty());
-    CHECK(clear.isHidden());
-    selectData(load, "load");
-    CHECK(Json::parse(attachments.toPlainText().toStdString()) ==
+    // The other way: a declaration's output.color is what the rows show, in
+    // the engine's other spellings too, and a field the rows do not show
+    // stays. (The clear colour typed is kept by the form across it.)
+    const Json typed_clear = attachments.clearColors();
+    attachments.load(Json::parse(R"([{"target":"tint_out","load_op":"DontCare","subresource":{"mip":0}}])"),
+                     typed_clear, nullptr);
+    auto &reloaded_load = required<QComboBox>(form, "pelican.fullscreenPass.outputLoad.0");
+    auto &reloaded_store = required<QComboBox>(form, "pelican.fullscreenPass.outputStore.0");
+    auto &reloaded_clear =
+        required<QLineEdit>(form, "pelican.fullscreenPass.outputClearColor.0");
+    CHECK(reloaded_load.currentData().toString() == QStringLiteral("dont_care"));
+    CHECK(reloaded_store.currentData().toString().isEmpty());
+    CHECK(reloaded_clear.isHidden());
+    selectData(reloaded_load, "load");
+    CHECK(attachments.color() ==
           Json::array({{{"target", "tint_out"},
                         {"load_op", "load"},
                         {"subresource", {{"mip", 0}}}}}));
     // Back to Default everywhere: the entry is the output's name again.
-    attachments.setPlainText(QStringLiteral(R"([{"target":"tint_out","load_op":"load"}])"));
-    selectData(load, "");
-    CHECK(attachments.toPlainText().isEmpty());
+    attachments.load(Json::parse(R"([{"target":"tint_out","load_op":"load"}])"), typed_clear,
+                     nullptr);
+    selectData(required<QComboBox>(form, "pelican.fullscreenPass.outputLoad.0"), "");
+    CHECK(attachments.color() == Json::array({"tint_out"}));
     // The clear colour typed earlier is still the pass's.
     CHECK(outputJson(form).at("clear_colors") ==
           Json{{"tint_out", Json::array({0.25, 0.5, 0.75, 1.0})}});
-    clear.setText(QStringLiteral("red"));
+    auto &current_clear = required<QLineEdit>(form, "pelican.fullscreenPass.outputClearColor.0");
+    current_clear.setText(QStringLiteral("red"));
     CHECK(required<QPlainTextEdit>(form, "pelican.fullscreenPass.json")
               .toPlainText()
               .contains(QStringLiteral("clear colour of tint_out")));
-    clear.clear();
+    current_clear.clear();
 
     // Turned off, the fields are absent, as the engine reads an absent one.
     required<QCheckBox>(form, "pelican.fullscreenPass.usesLightData")
@@ -4015,27 +4078,26 @@ TEST_CASE("T-1 New target: <pass>_color... makes the output and puts it in the d
 
 TEST_CASE("T-1 a clear colour is picked into its field",
           "[devstudio][fullscreen-pass][t1][clear-color]") {
-    CHECK(FullscreenOutputOpsEditor::clearColorText(1.0, 0.5, 0.0, 1.0) ==
+    CHECK(AttachmentOpsForm::clearColorText(1.0, 0.5, 0.0, 1.0) ==
           QStringLiteral("1, 0.5, 0, 1"));
-    CHECK(FullscreenOutputOpsEditor::clearColorText(0.2, 0.33333, 0.66666, 0.5) ==
+    CHECK(AttachmentOpsForm::clearColorText(0.2, 0.33333, 0.66666, 0.5) ==
           QStringLiteral("0.2, 0.333, 0.667, 0.5"));
-    CHECK(FullscreenOutputOpsEditor::clearColorComponents(QStringLiteral("0.2, 0.4, 0.6")) ==
+    CHECK(AttachmentOpsForm::clearColorComponents(QStringLiteral("0.2, 0.4, 0.6")) ==
           std::array<double, 4>{0.2, 0.4, 0.6, 1.0});
-    CHECK(FullscreenOutputOpsEditor::clearColorComponents(QStringLiteral("0, 0, 0, 0.25")) ==
+    CHECK(AttachmentOpsForm::clearColorComponents(QStringLiteral("0, 0, 0, 0.25")) ==
           std::array<double, 4>{0.0, 0.0, 0.0, 0.25});
-    CHECK(FullscreenOutputOpsEditor::clearColorComponents(QStringLiteral("red")) ==
+    CHECK(AttachmentOpsForm::clearColorComponents(QStringLiteral("red")) ==
           std::array<double, 4>{0.0, 0.0, 0.0, 1.0});
 
     (void)application();
-    FullscreenOutputOpsEditor editor;
-    editor.setJsonWriter([](const QString &) {});
-    editor.sync({"a"}, QStringLiteral(R"([{"target":"a","load_op":"clear"}])"));
+    AttachmentOpsForm editor{QStringLiteral("pelican.fullscreenPass")};
+    editor.load(Json::array({{{"target", "a"}, {"load_op", "clear"}}}), nullptr, nullptr);
     auto &field = required<QLineEdit>(editor, "pelican.fullscreenPass.outputClearColor.0");
     auto &pick = required<QToolButton>(editor, "pelican.fullscreenPass.outputClearColorPick.0");
     // Beside the field, shown when the field is.
     CHECK_FALSE(field.isHidden());
     CHECK_FALSE(pick.isHidden());
-    editor.sync({"a"}, QStringLiteral(R"([{"target":"a","load_op":"load"}])"));
+    chooseData(required<QComboBox>(editor, "pelican.fullscreenPass.outputLoad.0"), "load");
     CHECK(field.isHidden());
     CHECK(pick.isHidden());
 }

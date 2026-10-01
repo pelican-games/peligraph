@@ -72,6 +72,11 @@ RenderPassAuthoringCapability renderPassAuthoringCapability(
                     handler(request_id, message);
                 });
         },
+        .requestSceneAccelerationStructures = [&viewport](QString *error) {
+            return viewport.requestRpc(
+                QStringLiteral("get_scene_acceleration_structures"),
+                QJsonObject{}, error);
+        },
     };
 }
 

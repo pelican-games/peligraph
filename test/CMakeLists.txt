@@ -616,6 +616,17 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
   )
 
+  # UX-4a: each pass form on its own -- a value in gives the same JSON out,
+  # and what the form does not know stays.
+  pelican_define_test(devstudio_pass_forms_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_project
+    # The engine's own define reader, to compare refusals with.
+    pelican_core
+    Qt6::Core
+    Qt6::Widgets
+  )
+
   # F-3: the shader "New..." writes, put through the engine's own compiler.
   # A build without the runtime compiler cannot compile GLSL at all, so there
   # the test is not registered rather than registered and skipped.

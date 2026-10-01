@@ -18,6 +18,11 @@
 #include "rasterpass.hpp"
 #include "inspectormodel.hpp"
 #include "viewselectfield.hpp"
+#include "passforms/attachmentopsform.hpp"
+#include "passforms/materialroutingform.hpp"
+#include "passforms/materialsettingsform.hpp"
+#include "passforms/rasterstateform.hpp"
+#include "passforms/shaderdefinesform.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -178,7 +183,9 @@ struct FullscreenPassWidget::Impl {
     // what a template reads each input as.
     QComboBox *shader_template_kind = nullptr;
     FullscreenPassInterfaceRow *interface_row = nullptr;
-    FullscreenOutputOpsEditor *output_ops = nullptr;
+    // UX-4a: each output's load / clear / store, and the depth output's; the
+    // form holds output.color itself.
+    AttachmentOpsForm *output_ops = nullptr;
     QLabel *input_roles = nullptr;
     // The names "New..." filled in itself, so it may replace them when the
     // kind changes but never replaces a name the author typed.
@@ -214,13 +221,19 @@ struct FullscreenPassWidget::Impl {
     std::optional<std::filesystem::path> project_root;
     std::function<bool(const std::filesystem::path &)> shader_open_action;
     QLineEdit *skinned_vertex_shader = nullptr;
+    QWidget *skinned_vertex_row = nullptr;
+    QComboBox *skinned_vertex_choice = nullptr;
     QCheckBox *ray_query = nullptr;
-    QLineEdit *ray_query_scene = nullptr;
-    QPlainTextEdit *draw = nullptr;
-    QPlainTextEdit *raster_state = nullptr;
-    QComboBox *material_contract = nullptr;
-    QPlainTextEdit *material_settings = nullptr;
-    QPlainTextEdit *material_routing = nullptr;
+    // UX-4a: the scene acceleration structures the project declares
+    // (get_scene_acceleration_structures), "scene" first.
+    QComboBox *ray_query_scene = nullptr;
+    std::vector<std::string> declared_scene_structures;
+    qint64 pending_scene_structures = 0;
+    // UX-4a: the forms that stand where the raw JSON fields stood.
+    RasterStateForm *raster_form = nullptr;
+    ShaderDefinesForm *defines_form = nullptr;
+    MaterialSettingsForm *material_form = nullptr;
+    MaterialRoutingForm *routing_form = nullptr;
     Json preset_material_routing = nullptr;
     QComboBox *input_candidate = nullptr;
     QLabel *connection_hint = nullptr;
@@ -236,7 +249,6 @@ struct FullscreenPassWidget::Impl {
     QPushButton *add_color = nullptr;
     QListWidget *colors = nullptr;
     QPushButton *remove_color = nullptr;
-    QPlainTextEdit *color_attachment_references = nullptr;
     QComboBox *depth = nullptr;
     QPushButton *clear_depth = nullptr;
     QLabel *field_ownership = nullptr;
@@ -454,43 +466,49 @@ struct FullscreenPassWidget::Impl {
         fragment_shader->setPlaceholderText(
             owner.tr("a stem, or pick one from the list beside it"));
         buildShaderTemplateRows();
-        skinned_vertex_shader = new QLineEdit(&owner);
+        // UX-4a: the skinned vertex stem is picked like the other stems.
+        skinned_vertex_row = new QWidget(&owner);
+        skinned_vertex_row->setObjectName(
+            QStringLiteral("pelican.fullscreenPass.skinnedVertexRow"));
+        auto *skinned_layout = new QHBoxLayout(skinned_vertex_row);
+        skinned_layout->setContentsMargins(0, 0, 0, 0);
+        skinned_vertex_shader = new QLineEdit(skinned_vertex_row);
         skinned_vertex_shader->setObjectName("pelican.fullscreenPass.shader.skinnedVertex");
         skinned_vertex_shader->setPlaceholderText(owner.tr("Blank uses the engine default"));
-        form->addRow(owner.tr("Skinned vertex stem"), skinned_vertex_shader);
-        form->setRowVisible(skinned_vertex_shader, false);
+        skinned_layout->addWidget(skinned_vertex_shader, 1);
+        skinned_vertex_choice = makeShaderChoice(
+            skinned_vertex_row, "pelican.fullscreenPass.shader.skinnedVertexChoice",
+            skinned_vertex_shader);
+        skinned_vertex_choice->setToolTip(owner.tr(
+            "The engine's default, or a vertex shader from the project's shaders "
+            "folder. Picking one puts its stem in the field."));
+        skinned_layout->addWidget(skinned_vertex_choice);
+        form->addRow(owner.tr("Skinned vertex stem"), skinned_vertex_row);
+        form->setRowVisible(skinned_vertex_row, false);
         ray_query = new QCheckBox(owner.tr("Scene ray query"), &owner);
         ray_query->setObjectName("pelican.fullscreenPass.rayQuery");
         form->addRow(ray_query);
-        ray_query_scene = new QLineEdit("scene", &owner);
+        ray_query_scene = new QComboBox(&owner);
         ray_query_scene->setObjectName("pelican.fullscreenPass.rayQueryScene");
         ray_query_scene->setEnabled(false);
-        ray_query_scene->setToolTip(
-            owner.tr("The scene acceleration structure the ray query reads."));
+        ray_query_scene->setToolTip(owner.tr(
+            "The scene acceleration structure the ray query reads: scene, or one "
+            "the project declares (Render Features, Acceleration structures)."));
+        showSceneStructures(QStringLiteral("scene"));
         form->addRow(owner.tr("Ray scene"), ray_query_scene);
 
-        raster_state = new QPlainTextEdit(&owner);
-        raster_state->setObjectName(
-            QStringLiteral("pelican.fullscreenPass.rasterState"));
-        raster_state->setPlaceholderText(owner.tr(
-            "Optional raster_state JSON, for example "
-            "{\"color_attachments\":[{\"blend\":\"additive\"}]}"));
-        raster_state->setLineWrapMode(QPlainTextEdit::NoWrap);
-        raster_state->setMaximumHeight(92);
-        form->addRow(owner.tr("Raster state"), raster_state);
-        draw = new QPlainTextEdit(&owner);
-        draw->setObjectName("pelican.fullscreenPass.draw");
-        draw->setPlaceholderText(owner.tr("{\"vertex_count\":3,\"instance_count\":1}"));
-        draw->setMaximumHeight(92);
-        form->addRow(owner.tr("Draw"), draw);
-        draw->hide();
-        form->setRowVisible(draw, false);
-        material_contract = new QComboBox(&owner);
-        material_contract->setObjectName("pelican.fullscreenPass.materialContract");
-        material_contract->addItem(owner.tr("Default (no explicit contract)"), QString{});
-        for (const auto *contract : {"legacy_gbuffer_v1", "deferred_geometry_v1", "forward_opaque_v1", "forward_transparent_v1"})
-            material_contract->addItem(QString::fromLatin1(contract), QString::fromLatin1(contract));
-        form->addRow(owner.tr("Contract"), material_contract);
+        // UX-4a: raster_state and draw, shader.defines, the material settings
+        // and the preset's routing are forms (passforms/), not JSON fields.
+        const QString form_prefix = QStringLiteral("pelican.fullscreenPass");
+        raster_form = new RasterStateForm(form_prefix, &owner);
+        raster_form->setDepthShown(false);
+        raster_form->setDrawShown(false);
+        raster_form->setColorAttachments({owner.tr("Output").toStdString()});
+        form->addRow(owner.tr("Raster state"), raster_form);
+        defines_form = new ShaderDefinesForm(form_prefix, &owner);
+        form->addRow(owner.tr("Defines"), defines_form);
+        material_form = new MaterialSettingsForm(form_prefix, &owner);
+        form->addRow(owner.tr("Material"), material_form);
         decompose = new QPushButton(owner.tr("Decompose into loop..."), &owner);
         decompose->setObjectName(QStringLiteral("pelican.fullscreenPass.decomposeIntoLoop"));
         decompose->setToolTip(owner.tr(
@@ -502,17 +520,9 @@ struct FullscreenPassWidget::Impl {
                                  text(editing_preset_pass->second));
         });
         form->addRow(QString{}, decompose);
-        material_settings = new QPlainTextEdit(&owner);
-        material_settings->setObjectName("pelican.fullscreenPass.materialSettings");
-        material_settings->setMaximumHeight(140);
-        material_settings->setPlaceholderText(owner.tr("Material selection, variant, outputs and resources (JSON object). Remove a key to use its default."));
-        form->addRow(owner.tr("Material"), material_settings);
-        material_routing = new QPlainTextEdit(&owner);
-        material_routing->setObjectName("pelican.fullscreenPass.materialRouting");
-        material_routing->setMaximumHeight(110);
-        material_routing->setToolTip(owner.tr("Preset-wide routing shared by all graphs. Select distinct deferred_geometry, forward_opaque and forward_transparent passes using policy hybrid_auto_v1. Blank removes the routing table."));
-        form->addRow(owner.tr("Routing"), material_routing);
-        for (auto *field : std::array<QWidget *, 3>{material_contract, material_settings, material_routing})
+        routing_form = new MaterialRoutingForm(form_prefix, &owner);
+        form->addRow(owner.tr("Routing"), routing_form);
+        for (auto *field : std::array<QWidget *, 2>{material_form, routing_form})
             form->setRowVisible(field, false);
         form->setRowVisible(decompose, false);
         layout->addLayout(form);
@@ -598,22 +608,6 @@ struct FullscreenPassWidget::Impl {
         applyPanelNoticeStyle(connection_hint);
         connection_hint->hide();
         target_layout->addWidget(connection_hint, 8, 0, 1, 3);
-        color_attachment_references = new QPlainTextEdit(targets);
-        color_attachment_references->setObjectName(QStringLiteral(
-            "pelican.fullscreenPass.colorAttachmentReferences"));
-        color_attachment_references->setPlaceholderText(owner.tr(
-            "Optional output.color JSON for attachment objects, for example "
-            "[{\"target\":\"color\",\"load_op\":\"Load\"}]. Targets must "
-            "match the selected color outputs in order."));
-        color_attachment_references->setLineWrapMode(QPlainTextEdit::NoWrap);
-        color_attachment_references->setMaximumHeight(92);
-        auto *attachment_label =
-            new QLabel(owner.tr("output.color (JSON)"), targets);
-        attachment_label->setToolTip(owner.tr(
-            "Optional attachment objects for the selected color outputs, in "
-            "order."));
-        target_layout->addWidget(attachment_label, 6, 0, 1, 3);
-        target_layout->addWidget(color_attachment_references, 7, 0, 1, 3);
         buildPassSettings(*target_layout);
         input_contract =
             makeContractRow(targets, "pelican.fullscreenPass.inputContract", false);
@@ -716,7 +710,7 @@ struct FullscreenPassWidget::Impl {
             if (pending_authoring_request || !pending_ticket.isEmpty()) return;
             editing_preset_pass.reset(); load_edit_requested = false;
             input_filter.reset(); populateRoleCandidates();
-            name->setReadOnly(false); position->setEnabled(true); raster_state->setEnabled(true);
+            name->setReadOnly(false); position->setEnabled(true); raster_form->setEnabled(true);
             save->setText(owner.tr("Save"));
             clearDraft(); updateDraft();
         });
@@ -732,9 +726,11 @@ struct FullscreenPassWidget::Impl {
             ray_query_scene->setEnabled(enabled);
             updateDraft();
         });
-        QObject::connect(ray_query_scene, &QLineEdit::textChanged, &owner, [this] { updateDraft(); });
+        QObject::connect(ray_query_scene, qOverload<int>(&QComboBox::currentIndexChanged),
+                         &owner, [this] { updateDraft(); });
         QObject::connect(name, &QLineEdit::textChanged, &owner, [this] {
             updateNewColorTargetEntry();
+            defines_form->setPassName(name->text().trimmed().toStdString());
             updateDraft();
         });
         QObject::connect(color_candidate,
@@ -746,15 +742,10 @@ struct FullscreenPassWidget::Impl {
                          [this] { updateDraft(); });
         QObject::connect(skinned_vertex_shader, &QLineEdit::textChanged, &owner,
                          [this] { updateDraft(); });
-        QObject::connect(draw, &QPlainTextEdit::textChanged, &owner, [this] { updateDraft(); });
-        QObject::connect(material_contract, qOverload<int>(&QComboBox::currentIndexChanged), &owner, [this] { updateDraft(); });
-        QObject::connect(material_settings, &QPlainTextEdit::textChanged, &owner, [this] { updateDraft(); });
-        QObject::connect(material_routing, &QPlainTextEdit::textChanged, &owner, [this] { updateDraft(); });
-        QObject::connect(raster_state, &QPlainTextEdit::textChanged, &owner,
-                         [this] { updateDraft(); });
-        QObject::connect(color_attachment_references,
-                         &QPlainTextEdit::textChanged, &owner,
-                         [this] { updateDraft(); });
+        for (PassForm *pass_form : std::array<PassForm *, 5>{
+                 raster_form, defines_form, material_form, routing_form, output_ops})
+            QObject::connect(pass_form, &PassForm::changed, &owner,
+                             [this] { updateDraft(); });
         QObject::connect(depth, &QComboBox::currentTextChanged, &owner,
                          [this] { updateDraft(); });
         QObject::connect(
@@ -1168,7 +1159,11 @@ struct FullscreenPassWidget::Impl {
             choice, qOverload<int>(&QComboBox::currentIndexChanged), &owner,
             [choice, field](int index) {
                 if (index < 0) return;
-                const QString stem = choice->itemText(index);
+                // UX-4a: an entry may stand for a stem other than its text
+                // ("Engine default" is the empty stem).
+                const QVariant data = choice->itemData(index);
+                const QString stem =
+                    data.isValid() ? data.toString() : choice->itemText(index);
                 {
                     const QSignalBlocker blocker{choice};
                     choice->setCurrentIndex(-1);
@@ -1188,6 +1183,69 @@ struct FullscreenPassWidget::Impl {
                 choice->addItem(text(reference));
             choice->setCurrentIndex(-1);
         }
+        // UX-4a: a skinned vertex stem is the engine's own or a project .vert.
+        const QSignalBlocker blocker{skinned_vertex_choice};
+        skinned_vertex_choice->clear();
+        skinned_vertex_choice->addItem(owner.tr("Engine default"), QString{});
+        for (const auto &reference :
+             fullscreenShaderChoices(FullscreenShaderStage::vertex, project_root))
+            if (!reference.starts_with("engine://"))
+                skinned_vertex_choice->addItem(text(reference));
+        skinned_vertex_choice->setCurrentIndex(-1);
+    }
+
+    // UX-4a: the Ray scene list -- "scene", the structures the project
+    // declares, the ones other passes read -- with `current` selected (added
+    // when it is none of them, so a declaration is shown as it is).
+    void showSceneStructures(const QString &current) {
+        std::vector<std::string> names{"scene"};
+        const auto add = [&](const std::string &candidate) {
+            if (!candidate.empty() && std::ranges::find(names, candidate) == names.end())
+                names.push_back(candidate);
+        };
+        for (const auto &structure : declared_scene_structures) add(structure);
+        for (const auto &[key, declaration] : preset_passes) {
+            (void)key;
+            const auto query = declaration.find("ray_query");
+            if (query != declaration.end() && query->is_object())
+                add(query->value("acceleration_structure", std::string{}));
+        }
+        const QSignalBlocker blocker{ray_query_scene};
+        ray_query_scene->clear();
+        for (const auto &structure : names)
+            ray_query_scene->addItem(text(structure), text(structure));
+        passform::selectData(*ray_query_scene, current.isEmpty() ? QStringLiteral("scene") : current);
+    }
+
+    void requestSceneStructures() {
+        if (!authoring.requestSceneAccelerationStructures || pending_scene_structures != 0)
+            return;
+        QString error;
+        pending_scene_structures = authoring.requestSceneAccelerationStructures(&error);
+    }
+
+    // The answer to get_scene_acceleration_structures; true when `request_id`
+    // was that request. A failure leaves the list as it was.
+    bool receiveSceneStructures(qint64 request_id, const QByteArray *result_json) {
+        if (request_id == 0 || request_id != pending_scene_structures) return false;
+        pending_scene_structures = 0;
+        if (result_json == nullptr) return true;
+        const Json response = Json::parse(result_json->constData(),
+                                          result_json->constData() + result_json->size(),
+                                          nullptr, false);
+        if (!response.is_object() || !response.contains("definitions") ||
+            !response.at("definitions").is_array())
+            return true;
+        declared_scene_structures.clear();
+        for (const auto &definition : response.at("definitions"))
+            if (definition.is_object() && definition.contains("name") &&
+                definition.at("name").is_string())
+                declared_scene_structures.push_back(definition.at("name").get<std::string>());
+        const bool keep = updating;
+        updating = true;
+        showSceneStructures(ray_query_scene->currentData().toString());
+        updating = keep;
+        return true;
     }
 
     void updateShaderTemplateAvailability() {
@@ -1350,11 +1408,7 @@ struct FullscreenPassWidget::Impl {
         interface_row->setChangedAction([this] { updateDraft(); });
         form->addRow(owner.tr("Frame data"), interface_row);
 
-        output_ops = new FullscreenOutputOpsEditor(targets);
-        output_ops->setJsonWriter([this](const QString &json_text) {
-            color_attachment_references->setPlainText(json_text);
-        });
-        output_ops->setChangedAction([this] { updateDraft(); });
+        output_ops = new AttachmentOpsForm(QStringLiteral("pelican.fullscreenPass"), targets);
         target_layout.addWidget(output_ops, 9, 0, 1, 3);
 
         input_roles = new QLabel(targets);
@@ -1485,10 +1539,19 @@ struct FullscreenPassWidget::Impl {
                     : QString{});
     }
 
+    // UX-4a: the forms follow the outputs chosen in the target lists.
     void syncPassSettings() {
-        output_ops->sync(selectedSequence(*colors),
-                         color_attachment_references->toPlainText());
-        if (color_attachment_references->isHidden()) output_ops->hide();
+        const auto selected_colors = selectedSequence(*colors);
+        output_ops->setColorTargets(selected_colors);
+        output_ops->setDepthTarget(depth->currentIndex() >= 0
+                                       ? depth->currentText().toStdString()
+                                       : std::string{});
+        // A fullscreen pass's raster_state has one colour attachment entry
+        // (parseFullscreenRasterFixedFunctionState); a raster pass's, one an
+        // output.
+        raster_form->setColorAttachments(
+            editingRasterPass() ? selected_colors
+                                : std::vector<std::string>{owner.tr("Output").toStdString()});
         refreshInputRoles();
     }
 
@@ -1500,20 +1563,22 @@ struct FullscreenPassWidget::Impl {
         auto_shader_name.clear();
         interface_row->reset();
         output_ops->reset();
+        output_ops->setDepthOpsShown(false);
+        raster_form->reset();
+        raster_form->setDepthShown(false);
+        raster_form->setDrawShown(false);
+        defines_form->reset();
+        material_form->reset();
+        routing_form->reset();
         const QSignalBlocker blocker{shader_template_kind};
         shader_template_kind->setCurrentIndex(0);
         refreshInputRoles();
     }
 
-    // The output.color JSON follows the colour list: an output that stays
-    // keeps its attachment fields, a new one is a plain name.
+    // output.color follows the colour list: an output that stays keeps its
+    // attachment fields, a new one is a plain name.
     void reconcileColorAttachments() {
-        const auto current = color_attachment_references->toPlainText();
-        const auto next = FullscreenOutputOpsEditor::reconciledJson(
-            selectedSequence(*colors), current);
-        if (next == current) return;
-        const QSignalBlocker blocker{color_attachment_references};
-        color_attachment_references->setPlainText(next);
+        output_ops->setColorTargets(selectedSequence(*colors));
     }
 
     // What edit_preset_pass sends for a fullscreen pass besides its input,
@@ -1631,27 +1696,19 @@ struct FullscreenPassWidget::Impl {
         return preset_digest;
     }
 
-    static constexpr std::array materialSettingKeys{
-        "material_range", "material_filter", "material_variant", "gpu_draw_source",
-        "material_outputs", "material_output_states", "screen_inputs", "surface_resources", "material_resources"};
-
-    Json routingDraft() const {
-        const auto bytes = material_routing->toPlainText().trimmed();
-        auto result = bytes.isEmpty() ? Json(nullptr) : Json::parse(bytes.toStdString());
-        if (!result.is_null() && !result.is_object())
-            throw std::runtime_error("Material routing must be a JSON object or blank.");
-        return result;
-    }
+    Json routingDraft() const { return routing_form->routing(); }
 
     void showPresetFields(bool preserve_declaration) {
         type->setText(preserve_declaration ? text(original_preset_pass.at("type").get<std::string>()) : QStringLiteral("fullscreen"));
-        for (auto *field : std::array<QWidget *, 5>{position, location, vertex_row, fragment_row, raster_state})
+        for (auto *field : std::array<QWidget *, 6>{position, location, vertex_row, fragment_row, raster_form, defines_form})
             form->setRowVisible(field, !preserve_declaration);
         if (editingRasterPass()) {
-            for (auto *field : std::array<QWidget *, 3>{vertex_row, fragment_row, raster_state})
+            for (auto *field : std::array<QWidget *, 4>{vertex_row, fragment_row, raster_form, defines_form})
                 form->setRowVisible(field, true);
         }
-        form->setRowVisible(draw, editingRasterPass());
+        raster_form->setDrawShown(editingRasterPass());
+        raster_form->setDepthShown(editingRasterPass());
+        output_ops->setDepthOpsShown(editingRasterPass() || editingMaterialPass());
         if (editingAuxiliaryPass()) {
             form->setRowVisible(vertex_row, true);
             form->setRowVisible(fragment_row, !editingShadowPass());
@@ -1662,7 +1719,8 @@ struct FullscreenPassWidget::Impl {
         // themselves whether they are shown.
         fragment_shader->setHidden(!form->isRowVisible(fragment_row));
         vertex_shader->setHidden(!form->isRowVisible(vertex_row));
-        form->setRowVisible(skinned_vertex_shader, editsSkinnedShader());
+        form->setRowVisible(skinned_vertex_row, editsSkinnedShader());
+        skinned_vertex_shader->setHidden(!editsSkinnedShader());
         auto *target_grid = qobject_cast<QGridLayout *>(targets->layout());
         const std::array visible_columns{!editingAuxiliaryPass(), !editingShadowPass(),
             !editingAuxiliaryPass() || editingShadowPass() || editsSkinnedShader()};
@@ -1670,11 +1728,9 @@ struct FullscreenPassWidget::Impl {
             for (int row = 0; row < 6; ++row)
                 if (auto *item = target_grid->itemAtPosition(row, column); item && item->widget())
                     item->widget()->setVisible(visible_columns[column]);
-        for (int row : {6, 7})
-            target_grid->itemAtPosition(row, 0)->widget()->setVisible(!editingShadowPass());
-        for (auto *field : std::array<QWidget *, 3>{material_contract, material_settings, material_routing})
+        for (auto *field : std::array<QWidget *, 2>{material_form, routing_form})
             form->setRowVisible(field, editingMaterialPass());
-        form->setRowVisible(material_routing, editingMaterialPass() && editsPresetRouting());
+        form->setRowVisible(routing_form, editingMaterialPass() && editsPresetRouting());
         form->setRowVisible(decompose, editingMaterialPass());
         targets->setVisible(true);
         validation->setVisible(true);
@@ -1682,47 +1738,15 @@ struct FullscreenPassWidget::Impl {
 
     Json rayQueryDeclaration() const {
         if (!ray_query->isChecked()) return false;
-        const auto selected_scene = ray_query_scene->text().trimmed();
+        const auto selected_scene = ray_query_scene->currentData().toString().trimmed();
         if (selected_scene.isEmpty()) throw std::runtime_error("Scene acceleration structure name must not be empty.");
         return {{"acceleration_structure", selected_scene.toStdString()}};
     }
 
     Json draftJson() const {
         const auto selected_colors = selectedSequence(*colors);
-        Json color_output = selected_colors;
-        const auto attachment_text =
-            color_attachment_references->toPlainText().trimmed();
-        if (!attachment_text.isEmpty()) {
-            Json encoded = Json::parse(attachment_text.toUtf8().constData());
-            const Json entries = encoded.is_array()
-                                     ? encoded
-                                     : Json::array({encoded});
-            if (entries.size() != selected_colors.size()) {
-                throw std::runtime_error(
-                    "output.color attachment JSON count must match the "
-                    "selected color output count");
-            }
-            for (std::size_t index = 0; index < entries.size(); ++index) {
-                const Json &entry = entries.at(index);
-                std::string target;
-                if (entry.is_string()) {
-                    target = entry.get<std::string>();
-                } else if (entry.is_object() && entry.contains("target") &&
-                           entry.at("target").is_string()) {
-                    target = entry.at("target").get<std::string>();
-                } else {
-                    throw std::runtime_error(
-                        "each output.color attachment JSON entry requires a "
-                        "string target");
-                }
-                if (target != selected_colors.at(index)) {
-                    throw std::runtime_error(
-                        "output.color attachment JSON targets must match the "
-                        "selected color outputs in order");
-                }
-            }
-            color_output = std::move(encoded);
-        }
+        // UX-4a: the attachment form holds output.color for these outputs.
+        Json color_output = output_ops->color();
 
         const bool preserve_declaration = preservesPresetDeclaration();
         Json draft = preserve_declaration ? original_preset_pass : Json::object();
@@ -1738,37 +1762,40 @@ struct FullscreenPassWidget::Impl {
         output["color"] = std::move(color_output);
         if (editingShadowPass() && selected_colors.empty()) output["color"] = nullptr;
         if (depth->currentIndex() >= 0) {
-            auto selected_depth = output.value("depth", Json(nullptr));
-            if (selected_depth.is_object()) selected_depth["target"] = depth->currentText().toStdString();
-            else selected_depth = depth->currentText().toStdString();
-            output["depth"] = std::move(selected_depth);
+            output["depth"] = output_ops->depth();
         } else if (!preserve_declaration || output.contains("depth")) {
             output["depth"] = nullptr;
         }
         draft["output"] = std::move(output);
         // The ownership authority, rather than a Studio-maintained field set,
         // decides whether this type may emit its shader editor value.
+        // UX-4a: a refused define stops the draft as the engine would.
+        const auto defines = defines_form->defines();
+        if (!preserve_declaration || editingRasterPass())
+            if (const auto refusal = defines_form->refusal(); !refusal.isEmpty())
+                throw std::runtime_error(refusal.toStdString());
         if (!preserve_declaration && fullscreenOwns("shader")) {
             draft["shader"] = Json{
                 {"vertex", vertex_shader->text().toStdString()},
                 {"fragment", fragment_shader->text().toStdString()},
             };
+            if (!defines.is_null()) draft["shader"]["defines"] = defines;
         }
-        const auto raster_text =
-            raster_state->toPlainText().trimmed();
+        const auto raster_value = raster_form->rasterState();
         if (!preserve_declaration && fullscreenOwns("raster_state") &&
-            !raster_text.isEmpty()) {
-            draft["raster_state"] = Json::parse(
-                raster_text.toUtf8().constData());
+            !raster_value.is_null() && raster_form->isEnabled()) {
+            draft["raster_state"] = raster_value;
         }
         if (editingRasterPass()) {
             auto shader = draft.value("shader", Json::object());
             shader["vertex"] = vertex_shader->text().toStdString();
             shader["fragment"] = fragment_shader->text().toStdString();
+            if (defines.is_null()) shader.erase("defines");
+            else shader["defines"] = defines;
             draft["shader"] = std::move(shader);
-            draft["draw"] = Json::parse(draw->toPlainText().toStdString());
-            if (raster_text.isEmpty()) draft.erase("raster_state");
-            else draft["raster_state"] = Json::parse(raster_text.toStdString());
+            draft["draw"] = raster_form->draw();
+            if (raster_value.is_null()) draft.erase("raster_state");
+            else draft["raster_state"] = raster_value;
         }
         if (editingAuxiliaryPass()) {
             const auto default_shader = "engine://" + draft.at("type").get<std::string>();
@@ -1789,20 +1816,11 @@ struct FullscreenPassWidget::Impl {
             }
         }
         if (editingMaterialPass()) {
-            const auto bytes = material_settings->toPlainText().trimmed();
-            const auto settings = bytes.isEmpty() ? Json::object() : Json::parse(bytes.toStdString());
-            if (!settings.is_object()) throw std::runtime_error("Material settings must be a JSON object.");
-            for (const auto &[key, value] : settings.items())
-                if (std::find(materialSettingKeys.begin(), materialSettingKeys.end(), key) == materialSettingKeys.end())
-                    throw std::runtime_error("Unknown material setting: " + key);
-            for (const auto *key : materialSettingKeys) {
+            const auto settings = material_form->settings();
+            for (const auto &key : MaterialSettingsForm::keys()) {
                 if (settings.contains(key) && !settings.at(key).is_null()) draft[key] = settings.at(key);
                 else draft.erase(key);
             }
-            const auto contract = material_contract->currentData().toString();
-            if (contract.isEmpty()) draft.erase("material_contract");
-            else draft["material_contract"] = contract.toStdString();
-            if (editsPresetRouting()) (void)routingDraft();
         }
         if (!preserve_declaration) {
             interface_row->apply(draft);
@@ -2446,8 +2464,7 @@ struct FullscreenPassWidget::Impl {
                         if (!original_preset_pass.contains(key) || draft.at(key) != original_preset_pass.at(key)) settings[key] = draft.at(key);
                     } else if (original_preset_pass.contains(key)) settings[key] = nullptr;
                 };
-                for (const auto *key : materialSettingKeys) collect(key);
-                collect("material_contract");
+                for (const auto &key : MaterialSettingsForm::keys()) collect(key.c_str());
                 if (!settings.empty()) params["material_settings"] = std::move(settings);
                 if (editsPresetRouting()) {
                     const auto routing = routingDraft();
@@ -2475,6 +2492,17 @@ struct FullscreenPassWidget::Impl {
                 shader = framePlanShaderWithoutPassthroughInput(std::move(shader));
             shader["vertex"] = draft.at("shader").at("vertex");
             shader["fragment"] = draft.at("shader").at("fragment");
+            // UX-4a: the defines are the form's; moving off
+            // engine://passthrough still drops its input define (VI-3b).
+            if (const auto defines = draft.at("shader").find("defines");
+                defines != draft.at("shader").end())
+                shader["defines"] = *defines;
+            else
+                shader.erase("defines");
+            if (shader.value("fragment", std::string{}) != EnginePassthroughFragment &&
+                original_preset_pass.value("shader", Json::object())
+                        .value("fragment", std::string{}) == EnginePassthroughFragment)
+                shader = framePlanShaderWithoutPassthroughInput(std::move(shader));
             params["input"] = draft.at("input");
             params["output"] = std::move(output);
             params["shader"] = std::move(shader);
@@ -2565,28 +2593,30 @@ struct FullscreenPassWidget::Impl {
       original_preset_pass = declaration;
       showPresetFields(preserve_declaration);
       if (editingMaterialPass()) {
-        material_contract->setCurrentIndex(material_contract->findData(text(declaration.value("material_contract", std::string{}))));
-        auto settings = Json::object();
-        for (const auto *key : materialSettingKeys)
-            if (declaration.contains(key)) settings[key] = declaration.at(key);
-        material_settings->setPlainText(text(settings.dump(2)));
-        material_routing->setPlainText(preset_material_routing.is_null() ? QString{} : text(preset_material_routing.dump(2)));
+        material_form->setResourceCandidates(resourceNames());
+        material_form->setVariantCandidates(materialVariantNames());
+        material_form->load(declaration);
+        routing_form->setPassCandidates(materialPassNames());
+        routing_form->load(preset_material_routing);
       }
       const auto query = declaration.value("ray_query", Json(false));
       ray_query->setChecked(query.is_object() || (query.is_boolean() && query.get<bool>()));
-      ray_query_scene->setText(query.is_object()
+      showSceneStructures(query.is_object()
           ? text(query.at("acceleration_structure").get<std::string>()) : QStringLiteral("scene"));
       name->setText(text(editing_preset_pass->second));
       name->setReadOnly(true);
       position->setEnabled(false);
-      raster_state->setEnabled(editingRasterPass());
+      raster_form->setEnabled(editingRasterPass());
       if (!preserve_declaration || editingRasterPass()) {
         vertex_shader->setText(text(declaration.at("shader").at("vertex").get<std::string>()));
         fragment_shader->setText(text(declaration.at("shader").at("fragment").get<std::string>()));
+        defines_form->setPassName(editing_preset_pass->second);
+        defines_form->load(declaration.at("shader").value("defines", Json(nullptr)));
       }
       if (editingRasterPass()) {
-        draw->setPlainText(text(declaration.at("draw").dump(2)));
-        if (declaration.contains("raster_state")) raster_state->setPlainText(text(declaration.at("raster_state").dump(2)));
+        raster_form->setIndexBufferCandidates(bufferNames());
+        raster_form->load(declaration.value("raster_state", Json(nullptr)),
+                          declaration.value("draw", Json(nullptr)));
       }
       if (editingAuxiliaryPass()) {
         const auto shader = declaration.value("shader", Json::object());
@@ -2603,9 +2633,8 @@ struct FullscreenPassWidget::Impl {
         colors->addItem(text(entry.is_string()
                                  ? entry.get<std::string>()
                                  : entry.at("target").get<std::string>()));
-      if (std::any_of(entries.begin(), entries.end(),
-                      [](const auto &entry) { return entry.is_object(); }))
-        color_attachment_references->setPlainText(text(color.dump()));
+      output_ops->load(color, declaration.value("clear_colors", Json(nullptr)),
+                       output.value("depth", Json(nullptr)));
       if (output.contains("depth") && !output.at("depth").is_null()) {
         const auto &encoded = output.at("depth");
         const auto target = text(encoded.is_string() ? encoded.get<std::string>() : encoded.at("target").get<std::string>());
@@ -2614,7 +2643,6 @@ struct FullscreenPassWidget::Impl {
         depth->setCurrentText(target);
       }
       if (!preserve_declaration) interface_row->load(declaration);
-      output_ops->loadClearColors(declaration);
       loadViewField(declaration);
       load_edit_requested = false;
       updating = false;
@@ -2853,8 +2881,54 @@ struct FullscreenPassWidget::Impl {
         if (keep && kept_position <= position->maximum())
             position->setValue(kept_position);
         if (editing_preset_pass && !keep) load_edit_requested = true;
+        showSceneStructures(ray_query_scene->currentData().toString());
+        requestSceneStructures();
         loadPresetPass();
         updateDraft();
+    }
+
+    // --- UX-4a: what the forms offer to choose from.
+
+    std::vector<std::string> resourceNames() const {
+        std::vector<std::string> names;
+        for (const auto &[resource, kind] : resource_kinds) {
+            (void)kind;
+            names.push_back(resource);
+        }
+        return names;
+    }
+
+    std::vector<std::string> bufferNames() const {
+        std::vector<std::string> names;
+        for (const auto &[resource, kind] : resource_kinds)
+            if (kind == Pelican::PassShapeResourceKind::buffer) names.push_back(resource);
+        return names;
+    }
+
+    // The preset's material passes, each once, with its contract.
+    std::vector<std::pair<std::string, std::string>> materialPassNames() const {
+        std::vector<std::pair<std::string, std::string>> passes;
+        for (const auto &[key, declaration] : preset_passes) {
+            if (declaration.value("type", std::string{}) != "material") continue;
+            if (std::ranges::find(passes, key.second,
+                                  &std::pair<std::string, std::string>::first) != passes.end())
+                continue;
+            passes.emplace_back(key.second,
+                                declaration.value("material_contract", std::string{}));
+        }
+        return passes;
+    }
+
+    std::vector<std::string> materialVariantNames() const {
+        std::vector<std::string> variants;
+        for (const auto &[key, declaration] : preset_passes) {
+            (void)key;
+            const auto variant = declaration.find("material_variant");
+            if (variant != declaration.end() && variant->is_string() &&
+                std::ranges::find(variants, variant->get<std::string>()) == variants.end())
+                variants.push_back(variant->get<std::string>());
+        }
+        return variants;
     }
 
     // --- Q-13.
@@ -2944,6 +3018,7 @@ struct FullscreenPassWidget::Impl {
 
     void receiveAuthoringResult(qint64 request_id,
                                 const QByteArray &result_json) {
+        if (receiveSceneStructures(request_id, &result_json)) return;
         if (request_id != pending_authoring_request) return;
         const auto completed = pending_authoring_kind;
         receiveAuthoringAnswer(request_id, result_json);
@@ -3032,6 +3107,7 @@ struct FullscreenPassWidget::Impl {
 
     void receiveAuthoringFailure(qint64 request_id,
                                  const QString &message) {
+        if (receiveSceneStructures(request_id, nullptr)) return;
         if (request_id != pending_authoring_request) return;
         const auto completed = pending_authoring_kind;
         pending_authoring_request = 0;
@@ -3250,13 +3326,7 @@ struct FullscreenPassWidget::Impl {
         fragment_shader->clear();
         skinned_vertex_shader->clear();
         ray_query->setChecked(false);
-        ray_query_scene->setText("scene");
-        raster_state->clear();
-        draw->clear();
-        material_contract->setCurrentIndex(0);
-        material_settings->clear();
-        material_routing->clear();
-        color_attachment_references->clear();
+        showSceneStructures(QStringLiteral("scene"));
         inputs->clear();
         colors->clear();
         pending_color_target.clear();
@@ -3318,7 +3388,7 @@ struct FullscreenPassWidget::Impl {
         // again -- its name typed, its position chosen -- as New pass makes it.
         name->setReadOnly(false);
         position->setEnabled(true);
-        raster_state->setEnabled(true);
+        raster_form->setEnabled(true);
         save->setText(owner.tr("Save"));
         requested_insert_after = after_pass.toStdString();
         (void)graph_name;
