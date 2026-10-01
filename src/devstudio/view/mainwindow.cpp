@@ -365,13 +365,14 @@ void MainWindow::createWorkspace() {
         graphCanvasReadCapability(*viewport_), render_tabs);
     render_tabs->addTab(frame_plan_, tr("Frame Plan"));
     render_tabs->addTab(render_features_, tr("Features"));
-    // RSX, decision 3: the rendering section's keys no other panel writes.
-    rendering_settings_ = new RenderingSettingsWidget(viewport_, render_tabs);
-    render_tabs->addTab(rendering_settings_, tr("Rendering settings"));
     // The common graph is a tab of the render tools too, not a new dock:
     // one more dock would be a new place to lose, and this is a read-only view
     // of the same render configuration the other two tabs already describe.
     render_tabs->addTab(graph_canvas_, tr("Graph"));
+    // RSX, decision 3: the rendering section's keys no other panel writes.
+    // Last, so the tabs before it keep their places (and Ctrl+Tab its steps).
+    rendering_settings_ = new RenderingSettingsWidget(viewport_, render_tabs);
+    render_tabs->addTab(rendering_settings_, tr("Rendering settings"));
     docks_[FramePlanDock] = makeDock(
         this, tr("Frame Plan"), QStringLiteral("pelican.framePlanDock"),
         withRenderBanner(render_tabs, QStringLiteral("renderTools")));

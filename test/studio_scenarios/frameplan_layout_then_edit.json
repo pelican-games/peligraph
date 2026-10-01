@@ -75,7 +75,13 @@
       "retry_ms": 60000
     },
     {
-      "label": "Ctrl+Tab back round to the Frame Plan",
+      "label": "Ctrl+Tab on to Rendering settings (RSX put it last)",
+      "cmd": "key",
+      "name": "pelican.renderTools",
+      "sequence": "Ctrl+Tab"
+    },
+    {
+      "label": "and Ctrl+Tab back round to the Frame Plan",
       "cmd": "key",
       "name": "pelican.renderTools",
       "sequence": "Ctrl+Tab"
@@ -127,7 +133,10 @@
     {
       "label": "and the Frame Plan never said external_modification",
       "expect": "result",
-      "command": {"cmd": "text", "name": "pelican.framePlanStatus"},
+      "command": {
+        "cmd": "text",
+        "name": "pelican.framePlanStatus"
+      },
       "path": "text",
       "op": "excludes",
       "value": "external_modification"
@@ -277,7 +286,10 @@
     {
       "label": "the Frame Plan never said external_modification",
       "expect": "result",
-      "command": {"cmd": "text", "name": "pelican.framePlanStatus"},
+      "command": {
+        "cmd": "text",
+        "name": "pelican.framePlanStatus"
+      },
       "path": "text",
       "op": "excludes",
       "value": "external_modification"
