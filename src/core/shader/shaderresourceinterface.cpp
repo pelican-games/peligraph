@@ -931,4 +931,35 @@ void validateShaderResourceInterfaceReflection(
     }
 }
 
+void bindShaderResourceInterfaceByReflectedName(
+    std::span<ShaderResourceInterfaceBinding> bindings,
+    const ShaderReflection &reflection,
+    std::uint32_t expected_set) {
+    for (auto &port : bindings) {
+        const auto name =
+            shaderResourcePortVariableName(port.port.name);
+        std::optional<std::uint32_t> reflected;
+        for (const auto &candidate : reflection.bindings) {
+            if (candidate.set != expected_set ||
+                candidate.name != name) {
+                continue;
+            }
+            if (reflected && *reflected != candidate.binding) {
+                throw std::runtime_error(
+                    "Shader resource port '" + port.port.name +
+                    "' (resource '" + port.port.resource +
+                    "') reflected descriptor '" + name +
+                    "' at bindings " +
+                    std::to_string(*reflected) + " and " +
+                    std::to_string(candidate.binding));
+            }
+            reflected = candidate.binding;
+        }
+        // A port the reflection does not name keeps its binding: the
+        // pipeline's validateShaderResourceInterfaceReflection refuses it as
+        // absent, after the stage checks that name their own codes first.
+        if (reflected) port.binding = *reflected;
+    }
+}
+
 } // namespace Pelican

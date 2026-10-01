@@ -533,6 +533,102 @@ void main() {
 }
 
 TEST_CASE(
+    "RS-5 resource ports bind where a precompiled shader's reflection names "
+    "them, whatever order they were listed in",
+    "[shader][reflection][resource-port][rs5]") {
+    // engine://rt_shadow_mask_pipeline was built with world_position at 0,
+    // normal at 1 and shadow_mask at 2. A graph lists its reads by resource
+    // name, so normal comes first and is numbered 0.
+    ShaderReflection reflection;
+    const auto reflected = [&](std::uint32_t binding,
+                               vk::DescriptorType type,
+                               std::string name) {
+        reflection.bindings.push_back(ReflectedBinding{
+            .set = PELICAN_SET_PASS_INPUT,
+            .binding = binding,
+            .type = type,
+            .count = 1,
+            .stages = vk::ShaderStageFlagBits::eRaygenKHR,
+            .name = std::move(name),
+            .image_view_dimension =
+                ReflectedImageViewDimension::two_d,
+        });
+    };
+    reflected(0, vk::DescriptorType::eCombinedImageSampler,
+              "pelican_resource_world_position");
+    reflected(1, vk::DescriptorType::eCombinedImageSampler,
+              "pelican_resource_normal");
+    reflected(2, vk::DescriptorType::eStorageImage,
+              "pelican_resource_shadow_mask");
+    const auto port = [](std::string name, std::string resource,
+                         std::uint32_t binding, bool sampled) {
+        return ShaderResourceInterfaceBinding{
+            .port = ShaderResourcePortDefinition{
+                .name = std::move(name),
+                .resource = std::move(resource),
+                .access = sampled
+                              ? ShaderResourcePortAccess::sampled
+                              : ShaderResourcePortAccess::storage,
+            },
+            .binding = binding,
+            .descriptor =
+                sampled ? ShaderResourceDescriptorKind::
+                              combined_image_sampler
+                        : ShaderResourceDescriptorKind::
+                              storage_image,
+            .image_view_dimension =
+                ReflectedImageViewDimension::two_d,
+            .readable = sampled,
+            .writable = !sampled,
+        };
+    };
+    std::vector bindings{
+        port("normal", "gb__normal", 0, true),
+        port("world_position", "gb__worldpos", 1, true),
+        port("shadow_mask", "mask", 2, false),
+    };
+    REQUIRE_THROWS_WITH(
+        validateShaderResourceInterfaceReflection(
+            bindings, reflection),
+        Catch::Matchers::ContainsSubstring(
+            "reflected unexpected descriptor "
+            "'pelican_resource_world_position' at binding 0"));
+
+    bindShaderResourceInterfaceByReflectedName(
+        bindings, reflection);
+    CHECK(bindings.at(0).binding == 1);
+    CHECK(bindings.at(1).binding == 0);
+    CHECK(bindings.at(2).binding == 2);
+    REQUIRE_NOTHROW(
+        validateShaderResourceInterfaceReflection(
+            bindings, reflection));
+
+    // The type, count and view checks stay where they were.
+    auto storage_normal = reflection;
+    storage_normal.bindings.at(1).type =
+        vk::DescriptorType::eStorageImage;
+    REQUIRE_THROWS_WITH(
+        validateShaderResourceInterfaceReflection(
+            bindings, storage_normal),
+        Catch::Matchers::ContainsSubstring(
+            "resource 'gb__normal'"));
+
+    // A port the shader does not name keeps its place and is refused as
+    // absent by the check the pipeline runs.
+    std::vector missing{
+        port("normals", "gb__normal", 3, true)};
+    bindShaderResourceInterfaceByReflectedName(
+        missing, reflection);
+    CHECK(missing.at(0).binding == 3);
+    REQUIRE_THROWS_WITH(
+        validateShaderResourceInterfaceReflection(
+            missing, reflection),
+        Catch::Matchers::ContainsSubstring(
+            "Shader resource port 'normals' (resource "
+            "'gb__normal') is absent from shader reflection"));
+}
+
+TEST_CASE(
     "resource port view resolver separates shared consumer and producer-family "
     "contracts",
     "[shader][resource-port][multiview][wp207a]") {

@@ -83,4 +83,18 @@ void validateShaderResourceInterfaceReflection(
     const ShaderReflection &reflection,
     std::uint32_t expected_set = 1);
 
+// RS-5: sets each port's binding to the one its reflected descriptor
+// `pelican_resource_<port>` sits at, so the order the ports were declared
+// in carries no meaning. A shader compiled with the generated include
+// reflects the bindings that include gave it, so this changes nothing there;
+// a precompiled shader keeps the bindings it was built with. A port whose
+// descriptor the reflection does not name is left as it is, for
+// validateShaderResourceInterfaceReflection to refuse as absent. The
+// descriptor set layout (made from the reflection) and the descriptor
+// writes (keyed by these bindings) then agree by name.
+void bindShaderResourceInterfaceByReflectedName(
+    std::span<ShaderResourceInterfaceBinding> bindings,
+    const ShaderReflection &reflection,
+    std::uint32_t expected_set = 1);
+
 } // namespace Pelican

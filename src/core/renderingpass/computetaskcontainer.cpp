@@ -1382,9 +1382,33 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
             dependencies);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     PipelineHandle pipeline;
+    // RS-5: the ports bind where the shader's reflection names them. The
+    // generated include gave a runtime-compiled shader the same bindings, and
+    // a precompiled one (an engine:// RT shader) keeps the bindings it was
+    // built with whatever order the task listed its reads and writes in.
+    // The pipeline layout comes from the same reflection, and the descriptor
+    // writes below key on these bindings.
     if (definition.ray_tracing) {
         auto shaders = resolveRayTracingShaders(
             definition, dependencies, shader_recipe);
+        {
+            const auto &library = dependencies.shader_library;
+            std::vector<ShaderReflection> stages{
+                library.get(shaders.raygen).reflection};
+            for (const auto shader : shaders.misses)
+                stages.push_back(library.get(shader).reflection);
+            for (const auto shader : shaders.closest_hits)
+                stages.push_back(library.get(shader).reflection);
+            for (const auto &shader : shaders.any_hits)
+                if (shader) stages.push_back(library.get(*shader).reflection);
+            for (const auto &shader : shaders.intersections)
+                if (shader) stages.push_back(library.get(*shader).reflection);
+            for (const auto shader : shaders.callables)
+                stages.push_back(library.get(shader).reflection);
+            bindShaderResourceInterfaceByReflectedName(
+                resource_interface, merge(stages),
+                PELICAN_SET_PASS_INPUT);
+        }
         pipeline = pipeline_factory.createRayTracing(
             RayTracingPipelineDesc{
                 .max_recursion =
@@ -1405,11 +1429,17 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                         ->traced_ray_type_indices,
             });
     } else {
+        const auto shader = loadComputeTaskShader(
+            definition.shader, definition,
+            dependencies, shader_recipe);
+        bindShaderResourceInterfaceByReflectedName(
+            resource_interface,
+            dependencies.shader_library.get(shader)
+                .reflection,
+            PELICAN_SET_PASS_INPUT);
         pipeline = pipeline_factory.createCompute(
             ComputePipelineDesc{
-                .shader = loadComputeTaskShader(
-                    definition.shader, definition,
-                    dependencies, shader_recipe),
+                .shader = shader,
                 .shader_defines = shader_recipe.defines,
                 .resource_interface = resource_interface,
                 .allow_ray_query = definition.ray_query_acceleration_structure.has_value(),

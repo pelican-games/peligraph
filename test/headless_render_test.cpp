@@ -233,7 +233,8 @@ void writeRtShadowMaskTestProject(
 void writeEmbeddedRtShadowMaskTestProject(
     const std::filesystem::path &directory,
     std::optional<std::uint32_t> max_recursion = std::nullopt,
-    bool reloadable_project_shaders = false) {
+    bool reloadable_project_shaders = false,
+    bool reads_in_graph_order = false) {
     writeTextFile(
         directory / "scene.json",
         R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
@@ -373,6 +374,12 @@ void writeEmbeddedRtShadowMaskTestProject(
     }
   }
 })json");
+    // RS-5: a graph lists the reads by resource name, so the normal comes
+    // before the world position the shader was built to find at binding 0.
+    if (reads_in_graph_order) {
+        config["compute_tasks"][0]["reads"] =
+            nlohmann::json::array({"gbuffer_normal", "gbuffer_worldpos"});
+    }
     auto &ray_tracing =
         config["compute_tasks"][0]["ray_tracing"];
     if (max_recursion) {
@@ -10751,6 +10758,90 @@ TEST_CASE(
             }
         }
         REQUIRE(acceleration_structure_registered);
+
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) {
+            std::filesystem::remove_all(temp_dir);
+        }
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error,
+            "Vulkan embedded ray-query shadow-mask rendering unavailable");
+        throw;
+    }
+}
+
+TEST_CASE(
+    "RS-5 embedded RT pipeline ports bind by reflected name when the reads "
+    "come in graph order",
+    "[headless][gpu][rs5][ray-query][ray-tracing][embedded]") {
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeEmbeddedRtShadowMaskTestProject(
+            temp_dir, std::nullopt, false, true);
+        configureRayQueryTestRuntime(temp_dir);
+
+        auto &renderer = GET_MODULE(Renderer);
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        REQUIRE(vkcore.getRuntimeCapabilities().ray_query);
+        REQUIRE(
+            vkcore.getRuntimeCapabilities().ray_tracing_pipeline);
+        auto &geometry = GET_MODULE(VertBufContainer);
+        auto primitive = geometry.addPrimitiveEntry(
+            makeScreenQuad(0.55F, 1.0F));
+        primitive.mesh_index = 0;
+        primitive.primitive_index = 0;
+        ModelTemplate model;
+        model.asset_id = ModelAssetId{2853};
+        model.material_primitives = {
+            ModelTemplate::MaterialPrimitives{
+                .material =
+                    GET_MODULE(StandardMaterialResource)
+                        .standardTransparentMaterial(),
+                .primitives = {primitive},
+            },
+        };
+        GET_MODULE(PolygonInstanceContainer)
+            .placeModelInstance(model);
+        GET_MODULE(LightContainer).load({
+            LightLoadEntry{
+                .name = "RS-5 embedded directional",
+                .component = LightCodecData{
+                    .type = LightCodecType::Directional,
+                    .direction = {0.0f, 0.0f, -1.0f},
+                    .intensity = 1.0f,
+                    .color = {1.0f, 1.0f, 1.0f}},
+            },
+        });
+
+        // Bound by position, the normal would sit at the world position's
+        // binding and registration would stop on the reflection check.
+        renderer.render();
+        vkcore.waitIdle();
+        const auto mask =
+            RendererTestAccess::readR8RenderTarget(renderer,
+                "rt_shadow_mask");
+        const auto pipeline_mask =
+            RendererTestAccess::readR8RenderTarget(renderer,
+                "rt_shadow_mask_pipeline");
+        REQUIRE(mask.extent == vk::Extent2D{32, 32});
+        REQUIRE(pipeline_mask.extent == mask.extent);
+        // The ray query pass reads its inputs by position and is the
+        // reference: the RT pipeline sees the same world position and normal.
+        REQUIRE(pipeline_mask.pixels == mask.pixels);
+        for (std::uint32_t y = 4; y <= 10; ++y) {
+            for (std::uint32_t x = 4; x <= 10; ++x) {
+                REQUIRE(r8PixelAt(pipeline_mask, x, y) < 64);
+            }
+        }
+        for (std::uint32_t y = 0; y < 32; ++y) {
+            for (std::uint32_t x = 22; x < 32; ++x) {
+                REQUIRE(r8PixelAt(pipeline_mask, x, y) > 192);
+            }
+        }
 
         std::filesystem::remove_all(temp_dir);
     } catch (const std::exception &error) {
