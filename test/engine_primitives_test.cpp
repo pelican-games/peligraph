@@ -1527,7 +1527,8 @@ TEST_CASE("EL-1 get_render_authoring_context lists the materials a draw_loop jud
 // the ones the running engine takes: an image of each listed combination is
 // committed (RS-1's restart for the live materials), a format off the list
 // is refused as today, and every listed format has the aspect its socket
-// needs. An engine shader the catalog lists runs in a graph's fullscreen pass.
+// needs. An engine shader get_engine_shaders lists (EL-4b) runs in a graph's
+// fullscreen pass.
 TEST_CASE("EL-4 the material pass formats and engine shaders get_graph_catalog lists are the ones the engine takes",
           "[el4][primitives][material-routing][rpc][gpu]") {
     setupLogger(true);
@@ -1671,10 +1672,13 @@ TEST_CASE("EL-4 the material pass formats and engine shaders get_graph_catalog l
     const auto catalog = rpc.result("get_graph_catalog");
     const auto aspects =
         rpc.result("get_render_authoring_context").at("render_target_vocabulary").at("format_aspects");
+    // EL-4b: the catalog reflects no shader; get_engine_shaders lists them.
+    CHECK_FALSE(catalog.contains("engine_shaders"));
+    const auto engine_shaders = rpc.result("get_engine_shaders").at("engine_shaders");
     const auto shader_of = [&](const char *reference, const char *stage) {
-        for (const auto &entry : catalog.at("engine_shaders"))
+        for (const auto &entry : engine_shaders)
             if (entry.at("reference") == reference && entry.at("stage") == stage) return entry;
-        FAIL("get_graph_catalog lists no " << stage << " shader " << reference);
+        FAIL("get_engine_shaders lists no " << stage << " shader " << reference);
         return Json{};
     };
     const auto vertex = shader_of("engine://fullscreen", "vertex");

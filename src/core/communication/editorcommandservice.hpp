@@ -351,6 +351,7 @@ class EditorCommandService {
     nlohmann::ordered_json getGraphValues(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphNodeValues(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphCatalog(const nlohmann::json &params) const;
+    nlohmann::ordered_json getEngineShaders(const nlohmann::json &params) const;
     nlohmann::ordered_json editComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json addComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json removeComputeTask(const nlohmann::json &params);
@@ -450,6 +451,7 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json getGraphValues(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphNodeValues(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphCatalog(const nlohmann::json &params) const;
+    nlohmann::ordered_json getEngineShaders(const nlohmann::json &params) const;
     nlohmann::ordered_json addComputeTask(const nlohmann::json &params) const;
     nlohmann::ordered_json removeComputeTask(const nlohmann::json &params) const;
     nlohmann::ordered_json editRayCallableRecords(const nlohmann::json &params) const;

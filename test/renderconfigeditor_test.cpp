@@ -1,4 +1,5 @@
 #include "../src/core/communication/editorcommandservice.hpp"
+#include "../src/core/communication/engineauthoringlists.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "lp3a_decompose_support.hpp"
 #include "lp1c_decompose_support.hpp"
@@ -9916,15 +9917,21 @@ TEST_CASE("EL-1 get_graph_catalog lists the argument values render.image accepts
 }
 
 // EL-4: get_graph_catalog lists, per material pass contract, the formats each
-// socket takes, the formats a material_outputs pass takes, and the engine's
-// shaders by the stem references a pass gives; the vocabulary gives each
-// format its aspect. Each list is read off the table the engine checks
-// against (the running engine's own case is in engine_primitives_test).
+// socket takes and the formats a material_outputs pass takes; the vocabulary
+// gives each format its aspect; get_engine_shaders (EL-4b) lists the engine's
+// shaders by the stem references a pass gives. Each list is read off the
+// table the engine checks against (the running engine's own case is in
+// engine_primitives_test).
 TEST_CASE("EL-4 get_graph_catalog lists material pass formats, material output formats and engine shaders",
           "[render-config-editor][el4][graph-catalog]") {
     G6Harness harness{false};
     harness.service = makeProjectService(harness.project, harness.resolver, harness.runtime);
+    // EL-4b: the catalog Studio reads at startup reflects no shader. It has
+    // no engine_shaders, and never asks the engine shaders' list for one.
+    const auto requests_before = engineShadersRequestCount();
     const auto catalog = Json(harness.service->getGraphCatalog(Json::object()));
+    CHECK_FALSE(catalog.contains("engine_shaders"));
+    CHECK(engineShadersRequestCount() == requests_before);
     const auto vocabulary =
         Json(harness.service->getRenderAuthoringContext(Json::object())).at("render_target_vocabulary");
     // The modules are listed as before.
@@ -9998,8 +10005,13 @@ TEST_CASE("EL-4 get_graph_catalog lists material pass formats, material output f
     CHECK(lists(outputs.at("color").at("ivec4"), "R32G32B32A32_SINT"));
     CHECK(outputs.at("depth") == Json::array({"D16_UNORM", "D24_UNORM_S8_UINT", "D32_SFLOAT"}));
 
-    // The engine's shaders, each by a stem whose stage file is built in.
-    const auto &shaders = catalog.at("engine_shaders");
+    // The engine's shaders, each by a stem whose stage file is built in: what
+    // get_engine_shaders answers, its only key; it takes no field.
+    CHECK_THROWS_AS(harness.service->getEngineShaders({{"unexpected", 1}}), std::invalid_argument);
+    const auto answered = Json(harness.service->getEngineShaders(Json::object()));
+    CHECK(engineShadersRequestCount() > requests_before);
+    REQUIRE(answered.size() == 1);
+    const auto &shaders = answered.at("engine_shaders");
     INFO(shaders.dump(2));
     REQUIRE_FALSE(shaders.empty());
     const auto stage_extension = [](const std::string &stage) {

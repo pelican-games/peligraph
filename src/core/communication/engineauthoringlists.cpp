@@ -16,6 +16,7 @@
 #include "../shader/shaderreflection.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <map>
 #include <optional>
@@ -241,9 +242,18 @@ OrderedJson buildEngineShadersJson() {
 
 } // namespace
 
+namespace {
+std::atomic<std::size_t> engine_shaders_requests{0};
+} // namespace
+
 const OrderedJson &engineShadersJson() {
+    engine_shaders_requests.fetch_add(1, std::memory_order_relaxed);
     static const OrderedJson shaders = buildEngineShadersJson();
     return shaders;
+}
+
+std::size_t engineShadersRequestCount() {
+    return engine_shaders_requests.load(std::memory_order_relaxed);
 }
 
 } // namespace Pelican

@@ -3006,12 +3006,20 @@ OrderedJson RenderConfigEditorService::getGraphCatalog(const Json &params) const
     auto catalog = builtinGraphModuleRegistry().catalog();
     // EL-4: render.material_pass's sockets follow its parameters, so the
     // formats each takes are listed per contract beside the modules, with
-    // those of a material_outputs pass; and the shaders the engine ships, as
-    // a pass's stem reference loads them.
+    // those of a material_outputs pass. Both are table lookups; the engine
+    // shaders are not listed here (EL-4b: get_engine_shaders).
     catalog["material_pass_contracts"] = materialPassContractsJson();
     catalog["material_output_formats"] = materialOutputFormatsJson();
-    catalog["engine_shaders"] = engineShadersJson();
     return catalog;
+}
+
+OrderedJson RenderConfigEditorService::getEngineShaders(const Json &params) const {
+    requireOnly(params, {}, "get_engine_shaders");
+    // EL-4b: the shaders the engine ships, as a pass's stem reference loads
+    // them. Reflecting them compiles every GLSL source, so this runs only
+    // when asked (once per process) and never inside get_graph_catalog,
+    // which Studio reads at startup.
+    return OrderedJson{{"engine_shaders", engineShadersJson()}};
 }
 
 OrderedJson RenderConfigEditorService::editFrameNodeOrder(const Json &params) {

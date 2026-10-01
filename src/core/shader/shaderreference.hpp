@@ -20,8 +20,8 @@ enum class ShaderStage {
 
 // EL-4: every stage, in declaration order. A stem reference loads the stage's
 // file <stem><shaderStageSourceExtension> (or its .spv), and a shader path's
-// extension names its stage, from this list; get_graph_catalog's
-// engine_shaders is read off it.
+// extension names its stage, from this list; get_engine_shaders' list is
+// read off it.
 inline constexpr std::array shaderStages{
     ShaderStage::vertex,     ShaderStage::fragment,     ShaderStage::compute,
     ShaderStage::raygen,     ShaderStage::miss,         ShaderStage::closesthit,

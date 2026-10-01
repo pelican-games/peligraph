@@ -259,6 +259,9 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("get_graph_catalog", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getGraphCatalog(params); });
     });
+    server.setHandler("get_engine_shaders", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getEngineShaders(params); });
+    });
     server.setHandler("edit_compute_task", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editComputeTask(params); });
     });
