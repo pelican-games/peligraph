@@ -235,7 +235,7 @@ header の冒頭コメントが規範です。
 `builtinGraphModuleRegistry().catalog()` を印字するだけの 9 行です。出力は
 [`GraphModuleRegistry::catalog()`](../../src/project/graphmodule.cpp#L537) が組み立てる `pelican.graph_catalog` v1 で、
 module → types / operations / sinks の順に並びます。**並びは名前順**です(module と operation は名前を鍵にした
-`std::map`、types と sinks は明示的に sort)。登録順に依存しないので、module を足しても既存の行は動きません。
+`std::map`、types と sinks は明示的に sort)。登録順に依存しないので、module を足しても既存の行は動きません。RPC の `get_graph_catalog` は ✅EL-4 からこの値に 3 つの鍵(material pass の format の表と engine の shader の反映から作る一覧。§7 の RPC 表)を足して返すので、CLI の出力とは同じではありません。
 
 [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake#L24)(ctest 名 `devcli_graph_catalog`)は
 module 数(既定 5。常に登録される `pelican.value` / `pelican.render` / `pelican.ui` の 3 に、`pelican.audio` と `pelican.pose` を足す。`pelican.ui` は GP-3 で加わった。`PELICAN_WITH_ANIMATION=OFF` と `PELICAN_WITH_AUDIO=OFF` でそれぞれ 1 減る)、各 operation が `domain` / `evaluation` /
@@ -844,7 +844,7 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | `edit_graph_document` | [文書編集](../../src/core/communication/editorrpchandlers.cpp#L241) | `ops[]` を順に当てて最後に 1 回展開。全部通るか文書ごと拒否か |
 | `get_graph_values` | [instance 入力の値](../../src/core/communication/editorrpchandlers.cpp#L253) | publish 済み snapshot の読み。再評価しない |
 | `get_graph_node_values` | [node 出力の値](../../src/core/communication/editorrpchandlers.cpp#L256) | 展開木の node ごとの出力。`source: "rendering"` |
-| `get_graph_catalog` | [module catalog](../../src/core/communication/editorrpchandlers.cpp#L259) | `builtinGraphModuleRegistry().catalog()` をそのまま(§7.5c と同じ値) |
+| `get_graph_catalog` | [module catalog](../../src/core/communication/editorrpchandlers.cpp#L259) | `builtinGraphModuleRegistry().catalog()` に、✅EL-4 から `material_pass_contracts` / `material_output_formats` / `engine_shaders` を足したもの([`RenderConfigEditorService::getGraphCatalog()`](../../src/core/communication/renderconfigeditor.cpp#L3004)、一覧は [`engineauthoringlists.hpp`](../../src/core/communication/engineauthoringlists.hpp#L7))。3 つは §7.5c の CLI には出ない |
 | `export_render_feature` | [部品の書き出し](../../src/core/communication/editorrpchandlers.cpp#L193) | feature 1 つを `user://components/<name>/` へ |
 | `import_render_feature` | [部品の取り込み](../../src/core/communication/editorrpchandlers.cpp#L196) | project 外の component ディレクトリを未作成の `project://` feature として取り込む |
 | `install_package` | [package の vendoring](../../src/core/communication/editorrpchandlers.cpp#L199) | `<project>/packages/<ns>/` へ複製し catalog を作り直す |

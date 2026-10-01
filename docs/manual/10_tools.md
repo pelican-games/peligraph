@@ -632,7 +632,7 @@ install した feature は `list_render_features` の catalog に `source: "pack
 
 引数を取りません。**登録済みグラフモジュールのカタログ**を `pelican.graph_catalog` v1 の JSON で stdout に出します
 ([実装](../../src/devcli/graphcatalogcommand.cpp#L10))。モジュール作者が engine のソースを読まずに
-型・操作・sink を知るための口で、`get_graph_catalog` RPC が返すのと同じ値です。
+型・操作・sink を知るための口で、`get_graph_catalog` RPC が返すのと同じ値です(✅EL-4 から RPC はこれに `material_pass_contracts` / `material_output_formats` / `engine_shaders` を足して返します。CLI はモジュールのカタログだけを印字し、この 3 つは出しません。[第13章](13_editor.md) §13.5)。
 
 ```sh
 pelican_cli graph-catalog
