@@ -10213,4 +10213,105 @@ TEST_CASE("EL-3 edit_rendering_keys refuses by name, and one refused key writes 
     }
 }
 
+// --- EL-2: the planner's decisions a rendering root declares.
+
+namespace {
+
+nlohmann::ordered_json el2Planning(Rd1Harness &harness, Json nodes, Json resources = Json::object(),
+                                   std::string graph = "main_render") {
+    Json request{{"base_source_digest", harness.context().at("source_digest").at("hex")},
+                 {"graph", std::move(graph)}};
+    if (!nodes.empty()) request["nodes"] = std::move(nodes);
+    if (!resources.empty()) request["resources"] = std::move(resources);
+    return harness.service->editTargetPlanning(request);
+}
+
+} // namespace
+
+TEST_CASE("EL-2 edit_target_planning merges a graph's names into the root, erases them, and refuses an unknown one",
+          "[render-config-editor][el2]") {
+    SECTION("a direct root") {
+        Rd1Harness harness{true};
+        const auto root_before = readBytes(harness.project.render_config);
+        const auto read = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+        // A node of the composition's main_render and a target it writes.
+        std::string resource;
+        for (const auto &node : harness.runtime.frame_plan.at("nodes"))
+            if (node.at("name") == "forward_opaque") resource = node.at("writes").at(0).get<std::string>();
+        REQUIRE_FALSE(resource.empty());
+
+        const auto first = harness.commit(el2Planning(
+            harness, {{"forward_opaque", {{"isolate", true}}}}, {{resource, {{"no_alias", true}}}}));
+        CHECK(first.at("operation") == "edit_target_planning");
+        CHECK(Json(first.at("documents")) ==
+              Json{{"passes/main.json", renderConfigSourceDigest(readBytes(harness.project.render_config))}});
+        CHECK(el3Section(harness).at("target_planning") ==
+              Json{{"graphs",
+                    {{"main_render",
+                      {{"nodes", {{"forward_opaque", {{"isolate", true}}}}},
+                       {"resources", {{resource, {{"no_alias", true}}}}}}}}}});
+        // An object's fields replace the entry's; the others stay.
+        harness.commit(el2Planning(harness, {{"forward_opaque", {{"serial", true}}}}));
+        CHECK(el3Section(harness).at("target_planning").at("graphs").at("main_render").at("nodes") ==
+              Json{{"forward_opaque", {{"isolate", true}, {"serial", true}}}});
+
+        // A name the composition does not have, in nodes, resources or graph.
+        const auto applies = harness.runtime.apply_calls;
+        const auto planned = readBytes(harness.project.render_config);
+        auto error = rd1Error(el2Planning(harness, {{"el2_no_such_pass", {{"isolate", true}}}}));
+        CHECK(error.at("code") == "target_planning_name_unknown");
+        CHECK(error.at("graph") == "main_render");
+        CHECK(error.at("kind") == "node");
+        CHECK(error.at("name") == "el2_no_such_pass");
+        error = rd1Error(el2Planning(harness, Json::object(), {{"el2_no_such_target", {{"no_alias", true}}}}));
+        CHECK(error.at("kind") == "resource");
+        error = rd1Error(el2Planning(harness, {{"forward_opaque", {{"isolate", true}}}}, Json::object(),
+                                     "el2_no_such_graph"));
+        CHECK(error.at("kind") == "graph");
+        CHECK(error.at("name") == "el2_no_such_graph");
+        // A request of the wrong shape, and a package the parser refuses.
+        CHECK_THROWS_AS(el2Planning(harness, {{"forward_opaque", true}}), std::invalid_argument);
+        const auto digest = harness.context().at("source_digest").at("hex");
+        CHECK_THROWS_AS(harness.service->editVulkanPlanPins(
+                            {{"base_source_digest", digest}, {"family", "flat"}, {"pin", Json::object()}}),
+                        std::invalid_argument);
+        CHECK_THROWS_AS(harness.service->putVulkanPhysicalFragment(
+                            {{"base_source_digest", digest}, {"family", "side"}, {"fragment", nullptr}}),
+                        std::invalid_argument);
+        harness.service->commitPending();
+        CHECK(harness.runtime.apply_calls == applies);
+        CHECK(readBytes(harness.project.render_config) == planned);
+
+        // null erases a name; the key goes with its last one.
+        harness.commit(el2Planning(harness, {{"forward_opaque", nullptr}}, {{resource, nullptr}}));
+        CHECK_FALSE(el3Section(harness).contains("target_planning"));
+
+        // RD-1 takes the root back to what it was before the first edit.
+        harness.commit(el2Planning(harness, {{"forward_opaque", {{"isolate", true}}}}));
+        const auto restored = harness.commit(harness.service->restoreRenderDocuments(
+            {{"documents",
+              Json::array({rd1Restore(read.at("passes/main.json"),
+                                      renderConfigSourceDigest(readBytes(harness.project.render_config)))})}}));
+        CHECK(restored.at("operation") == "restore_render_documents");
+        CHECK(readBytes(harness.project.render_config) == root_before);
+    }
+    SECTION("a root whose preset declares target_planning") {
+        Rd1Harness harness{false};
+        harness.fork();
+        const auto preset_path = harness.presetPath();
+        auto preset = Json::parse(readBytes(preset_path));
+        preset["config"]["target_planning"] = {{"profile", {{"kind", "optimized"}}}};
+        harness.commit(harness.service->restoreRenderDocuments(
+            {{"documents", Json::array({rd1Document("passes/local-pipeline.json",
+                                                    renderConfigSourceDigest(readBytes(preset_path)),
+                                                    preset.dump(2) + "\n")})}}));
+        const auto before = readBytes(harness.project.render_config);
+        const auto error = rd1Error(el2Planning(harness, {{"forward_opaque", {{"isolate", true}}}}));
+        CHECK(error.at("code") == "rendering_key_not_allowed_here");
+        CHECK(error.at("key") == "target_planning");
+        CHECK(error.at("reason") == "preset_declares_key");
+        CHECK(readBytes(harness.project.render_config) == before);
+    }
+}
+
 } // namespace Pelican

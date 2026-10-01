@@ -9,8 +9,10 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json_fwd.hpp>
@@ -539,6 +541,32 @@ vulkanPhysicalFragmentPackageToJson(
 VulkanPhysicalFragmentPackage
 vulkanPhysicalFragmentPackageFromJson(
     const nlohmann::json &document);
+// EL-2: linkVulkanPhysicalFragment's refusal of a package whose fingerprint
+// is not the plan's. The message is the linker's; the editor reads the
+// fields (physical_fragment_stale). `fingerprint` is "logical_graph" or
+// "automatic_plan"; `expected` is the plan's and `actual` the package's, in
+// stableFingerprint64String form (as the package and get_frame_plan write
+// them).
+struct VulkanPhysicalFragmentStaleInfo {
+    std::string graph;
+    std::string fingerprint;
+    std::string expected;
+    std::string actual;
+};
+
+class VulkanPhysicalFragmentStale : public std::runtime_error {
+  public:
+    VulkanPhysicalFragmentStale(const std::string &message,
+                                VulkanPhysicalFragmentStaleInfo info)
+        : std::runtime_error{message}, info_{std::move(info)} {}
+    const VulkanPhysicalFragmentStaleInfo &info() const noexcept {
+        return info_;
+    }
+
+  private:
+    VulkanPhysicalFragmentStaleInfo info_;
+};
+
 VulkanTargetPlan linkVulkanPhysicalFragment(
     const CompiledLogicalRenderGraph &canonical_graph,
     const TargetTopologySnapshot &topology,

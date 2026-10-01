@@ -2853,9 +2853,19 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
         vulkanTargetPlanLogicalGraphFingerprint(
             canonical_graph);
     if (package.logical_graph_fingerprint !=
-            logical_fingerprint ||
-        automatic_plan.logical_graph_fingerprint !=
-            logical_fingerprint) {
+        logical_fingerprint) {
+        throw VulkanPhysicalFragmentStale{
+            "Vulkan physical fragment is stale for logical graph '" +
+                canonical_graph.name + "'",
+            {.graph = canonical_graph.name,
+             .fingerprint = "logical_graph",
+             .expected =
+                 stableFingerprint64String(logical_fingerprint),
+             .actual = stableFingerprint64String(
+                 package.logical_graph_fingerprint)}};
+    }
+    if (automatic_plan.logical_graph_fingerprint !=
+        logical_fingerprint) {
         throw std::runtime_error(
             "Vulkan physical fragment is stale for logical graph '" +
             canonical_graph.name + "'");
@@ -2881,14 +2891,20 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
     }
     if (package.automatic_plan_fingerprint !=
         automatic_fingerprint) {
-        throw std::runtime_error(
+        throw VulkanPhysicalFragmentStale{
             "Vulkan physical fragment is stale for the current "
             "target facts/provider generation: expected " +
-            stableFingerprint64String(
-                automatic_fingerprint) +
-            ", got " +
-            stableFingerprint64String(
-                package.automatic_plan_fingerprint));
+                stableFingerprint64String(
+                    automatic_fingerprint) +
+                ", got " +
+                stableFingerprint64String(
+                    package.automatic_plan_fingerprint),
+            {.graph = canonical_graph.name,
+             .fingerprint = "automatic_plan",
+             .expected =
+                 stableFingerprint64String(automatic_fingerprint),
+             .actual = stableFingerprint64String(
+                 package.automatic_plan_fingerprint)}};
     }
 
     const auto canonical_topology =

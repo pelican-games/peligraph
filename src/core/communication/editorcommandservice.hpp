@@ -342,6 +342,9 @@ class EditorCommandService {
     nlohmann::ordered_json editFrameNodeOrder(const nlohmann::json &params);
     nlohmann::ordered_json setMaterialRouteDefault(const nlohmann::json &params);
     nlohmann::ordered_json editRenderingKeys(const nlohmann::json &params);
+    nlohmann::ordered_json editTargetPlanning(const nlohmann::json &params);
+    nlohmann::ordered_json editVulkanPlanPins(const nlohmann::json &params);
+    nlohmann::ordered_json putVulkanPhysicalFragment(const nlohmann::json &params);
     nlohmann::ordered_json getGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params);
     nlohmann::ordered_json editGraphDocument(const nlohmann::json &params);
@@ -442,6 +445,9 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json editFrameNodeOrder(const nlohmann::json &params) const;
     nlohmann::ordered_json setMaterialRouteDefault(const nlohmann::json &params) const;
     nlohmann::ordered_json editRenderingKeys(const nlohmann::json &params) const;
+    nlohmann::ordered_json editTargetPlanning(const nlohmann::json &params) const;
+    nlohmann::ordered_json editVulkanPlanPins(const nlohmann::json &params) const;
+    nlohmann::ordered_json putVulkanPhysicalFragment(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphDocument(const nlohmann::json &params) const;

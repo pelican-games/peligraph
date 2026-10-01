@@ -317,6 +317,27 @@ class RenderConfigEditorService {
     // `selects_preset`: the current root's section names a pipeline preset.
     std::optional<nlohmann::ordered_json> renderingKeyRefusal(
         const std::string &key, bool selects_preset) const;
+    // EL-2: the tail the three planning RPCs share: the gate and CAS, the
+    // preset's own declaration of `key` refused (rendering_key_not_allowed_here),
+    // then `transform` on the root's current `key` value (nullopt: absent;
+    // returning nullopt removes the key), and the candidate's ticket.
+    // `transform` may return a refusal instead (its second member).
+    struct PlanningKeyValue {
+        std::optional<nlohmann::ordered_json> value;
+        std::optional<nlohmann::ordered_json> refusal;
+    };
+    nlohmann::ordered_json queuePlanningKeyEdit(
+        std::string_view method, const std::string &base_digest,
+        std::string_view key,
+        const std::function<PlanningKeyValue(
+            std::optional<nlohmann::ordered_json> current,
+            const ResolvedRenderConfigAuthoringContext &context)> &transform);
+    // EL-2: a physical fragment the runtime's linker refused as stale, as
+    // physical_fragment_stale with the family `root_bytes` declares it under
+    // (when the root's section holds it), or nullopt for any other error.
+    std::optional<nlohmann::ordered_json> physicalFragmentStaleRefusal(
+        const std::exception_ptr &error, std::string_view root_bytes,
+        nlohmann::ordered_json details) const;
     nlohmann::ordered_json rejection(
         std::string code, std::string message,
         nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;
@@ -422,6 +443,29 @@ class RenderConfigEditorService {
     // rendering_key_not_editable {key}. Values are judged by the candidate's
     // composition (with the graph variants) and the runtime's recomposition.
     nlohmann::ordered_json editRenderingKeys(const nlohmann::json &params);
+    // EL-2: the planner's decisions the root's rendering section declares,
+    // each through one ticket like edit_rendering_keys (the candidate's
+    // composition with the graph variants, then the runtime's recomposition,
+    // which compiles the target plans and judges the values).
+    // {base_source_digest, graph, nodes?: {name: {serial?, isolate?} | null},
+    //  resources?: {name: {no_alias?} | null}} into
+    // target_planning.graphs.<graph>: null erases the name, an object's fields
+    // replace the entry's (a null field erases that field). A name the
+    // current composition's frame graph does not have is
+    // target_planning_name_unknown {graph, kind, name} (kind "graph", "node"
+    // or "resource"); a name only the authored entries still hold may be
+    // erased.
+    nlohmann::ordered_json editTargetPlanning(const nlohmann::json &params);
+    // EL-2: {base_source_digest, family, pin: package | null, graph?}: the
+    // package (vulkanTargetPlanPinPackageFromJson) replaces the family's
+    // package for its graph; null erases the family's package for `graph`,
+    // or every package of the family when `graph` is absent.
+    nlohmann::ordered_json editVulkanPlanPins(const nlohmann::json &params);
+    // EL-2: the same for vulkan_physical_fragments ({..., fragment: package
+    // | null, graph?}). A package the runtime's linker finds stale is refused
+    // as physical_fragment_stale {family?, graph, fingerprint, expected,
+    // actual}.
+    nlohmann::ordered_json putVulkanPhysicalFragment(const nlohmann::json &params);
     nlohmann::ordered_json editComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json addComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json removeComputeTask(const nlohmann::json &params);

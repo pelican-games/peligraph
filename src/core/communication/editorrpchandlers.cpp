@@ -232,6 +232,16 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("edit_rendering_keys", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editRenderingKeys(params); });
     });
+    // EL-2: the planner's decisions the rendering root declares.
+    server.setHandler("edit_target_planning", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.editTargetPlanning(params); });
+    });
+    server.setHandler("edit_vulkan_plan_pins", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.editVulkanPlanPins(params); });
+    });
+    server.setHandler("put_vulkan_physical_fragment", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.putVulkanPhysicalFragment(params); });
+    });
     server.setHandler("get_graph_instances", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getGraphInstances(params); });
     });

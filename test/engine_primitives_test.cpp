@@ -1748,4 +1748,167 @@ TEST_CASE("EL-4 the material pass formats and engine shaders get_graph_catalog l
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+// EL-2: the planner's decisions the editor writes into the rendering root
+// reach the plan the running renderer compiles. The blank project's
+// main_render is a chain el2_a -> el2_b -> el2_c -> present through three
+// targets of one shape; el2_a's and el2_c's targets never live at once, so the
+// planner aliases them until el2_a is isolated or its target says no_alias.
+// (A rendering scope is fused only for a tile backend candidate, which a
+// desktop device does not select, so the scopes cannot show isolate here.)
+TEST_CASE("EL-2 target planning, plan pins and physical fragments written over RPC reach the frame plan",
+          "[el2][primitives][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("el2_planning");
+    const auto root = dir.root / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    {
+        auto authored = Json::parse(readFile(rendering_path));
+        auto &section = renderingSectionOf(authored);
+        const auto target = [](const char *name) {
+            return Json{{"name", name},
+                        {"extent_scale", 1.0},
+                        {"format", "R8G8B8A8_UNORM"},
+                        {"format_class", "data"},
+                        {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}};
+        };
+        section["render_targets"] =
+            Json::array({target("el2_color_a"), target("el2_color_b"), target("el2_color_c")});
+        const Json shader{{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}};
+        const auto draw = [&](const char *name, Json input, const char *color) {
+            return Json{{"name", name},
+                        {"type", "fullscreen"},
+                        {"input", std::move(input)},
+                        {"output", {{"color", Json::array({color})}, {"depth", nullptr}}},
+                        {"shader", shader}};
+        };
+        auto &passes = section.at("rendering_passes").at(0).at("passes");
+        passes.at(0)["input"] = Json::array({"el2_color_c"});
+        passes.insert(passes.begin(), draw("el2_c", Json::array({"el2_color_b"}), "el2_color_c"));
+        passes.insert(passes.begin(), draw("el2_b", Json::array({"el2_color_a"}), "el2_color_b"));
+        passes.insert(passes.begin(), draw("el2_a", Json::array(), "el2_color_a"));
+        writeFile(rendering_path, authored.dump(2));
+    }
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    GET_MODULE(Renderer).prepareRuntimeModules();
+    (void)rpc.result("step_frame");
+    const auto send = [&](std::string_view method, Json params) {
+        params["base_source_digest"] =
+            rpc.result("get_render_authoring_context").at("source_digest").at("hex");
+        return rpc.result(method, std::move(params));
+    };
+    const auto settle = [&](const Json &accepted) {
+        INFO(accepted.dump(2));
+        REQUIRE(accepted.at("status") == "accepted");
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            (void)rpc.result("step_frame");
+            auto result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+            if (result.value("status", std::string{}) != "pending") return result;
+        }
+        FAIL("the planning ticket stayed pending");
+        return Json{};
+    };
+    const auto committed = [&](std::string_view method, Json params) {
+        auto result = settle(send(method, std::move(params)));
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        return result;
+    };
+    const auto physical = [&] {
+        (void)rpc.result("render_frame");
+        const auto plan = rpc.result("get_frame_plan");
+        REQUIRE(plan.contains("physical_target_plan"));
+        return plan.at("physical_target_plan");
+    };
+    const auto aliased = [](const Json &plan) {
+        for (const auto &group : plan.at("alias_groups")) {
+            const auto &members = group.at("resources");
+            if (std::find(members.begin(), members.end(), "el2_color_a") != members.end() &&
+                std::find(members.begin(), members.end(), "el2_color_c") != members.end())
+                return true;
+        }
+        return false;
+    };
+    const auto documents = rpc.result("get_render_documents").at("documents");
+    REQUIRE(documents.size() == 1);
+    const auto root_before = readFile(rendering_path);
+
+    // 1. isolate keeps el2_a's target out of every alias group, as no_alias
+    // on the target does; null undoes each.
+    const auto automatic = physical();
+    INFO(automatic.at("alias_groups").dump(2));
+    INFO(automatic.at("resources").dump(2));
+    REQUIRE(aliased(automatic));
+    const auto isolated = committed(
+        "edit_target_planning", {{"graph", "main_render"}, {"nodes", {{"el2_a", {{"isolate", true}}}}}});
+    CHECK(isolated.at("operation") == "edit_target_planning");
+    CHECK_FALSE(aliased(physical()));
+    committed("edit_target_planning", {{"graph", "main_render"},
+                                       {"nodes", {{"el2_a", nullptr}}},
+                                       {"resources", {{"el2_color_a", {{"no_alias", true}}}}}});
+    CHECK_FALSE(aliased(physical()));
+    const auto unknown = send("edit_target_planning",
+                              {{"graph", "main_render"}, {"nodes", {{"el2_nowhere", {{"isolate", true}}}}}});
+    INFO(unknown.dump(2));
+    REQUIRE(unknown.at("status") == "rejected");
+    CHECK(unknown.at("error").at("code") == "target_planning_name_unknown");
+    CHECK(unknown.at("error").at("kind") == "node");
+    CHECK(unknown.at("error").at("name") == "el2_nowhere");
+    committed("edit_target_planning", {{"graph", "main_render"}, {"resources", {{"el2_color_a", nullptr}}}});
+    CHECK(aliased(physical()));
+
+    // 2. The plan's own pin package and physical fragment, written back.
+    const auto pin = physical().at("ejectable_pin_package");
+    committed("edit_vulkan_plan_pins", {{"family", "flat"}, {"pin", pin}});
+    {
+        const auto plan = physical();
+        CHECK(plan.at("applied_pin_package") == pin);
+        CHECK(plan.at("backend_selection").at("selected_candidate") == pin.at("pins").at("backend_candidate"));
+    }
+    const auto fragment = physical().at("ejectable_physical_fragment");
+    committed("put_vulkan_physical_fragment", {{"family", "flat"}, {"fragment", fragment}});
+    CHECK(physical().at("applied_physical_fragment") == fragment);
+    const auto applied_root = readFile(rendering_path);
+
+    // A fragment whose base plan is not the current one: the linker says so.
+    auto broken = fragment;
+    auto fingerprint = broken.at("automatic_plan_fingerprint").get<std::string>();
+    fingerprint.back() = fingerprint.back() == '0' ? '1' : '0';
+    broken["automatic_plan_fingerprint"] = fingerprint;
+    const auto stale = settle(send("put_vulkan_physical_fragment", {{"family", "flat"}, {"fragment", broken}}));
+    INFO(stale.dump(2));
+    REQUIRE(stale.at("status") == "rejected");
+    const auto &error = stale.at("error");
+    CHECK(error.at("code") == "physical_fragment_stale");
+    CHECK(error.at("family") == "flat");
+    CHECK(error.at("graph") == "main_render");
+    CHECK(error.at("fingerprint") == "automatic_plan");
+    CHECK(error.at("expected") == fragment.at("automatic_plan_fingerprint"));
+    CHECK(error.at("actual") == fingerprint);
+    CHECK(readFile(rendering_path) == applied_root);
+    CHECK(physical().at("applied_physical_fragment") == fragment);
+
+    // 3. RD-1 takes the root back, and the plan with it.
+    const auto current = rpc.result("get_render_documents").at("documents").at(0);
+    const auto restored = settle(rpc.result(
+        "restore_render_documents",
+        {{"documents", Json::array({{{"reference", documents.at(0).at("reference")},
+                                     {"base_digest", current.at("digest")},
+                                     {"content", documents.at(0).at("content")}}})}}));
+    INFO(restored.dump(2));
+    REQUIRE(restored.at("status") == "committed");
+    CHECK(readFile(rendering_path) == root_before);
+    {
+        const auto plan = physical();
+        CHECK_FALSE(plan.contains("applied_pin_package"));
+        CHECK_FALSE(plan.contains("applied_physical_fragment"));
+        CHECK(aliased(plan));
+    }
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
 } // namespace Pelican

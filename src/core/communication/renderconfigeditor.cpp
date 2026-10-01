@@ -39,6 +39,7 @@
 #include <ranges>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_set>
 #include <utility>
 
@@ -3147,10 +3148,10 @@ constexpr std::array<OwnedRenderingKey, 13> renderingOwnedKeys{{
     {"ray_task_callable_records", "edit_ray_callable_records"},
     {"pipeline", "fork_render_pipeline"},
     {"render_targets", "edit_render_targets"},
-    // EL-2's RPC (not yet registered).
+    // EL-2.
     {"target_planning", "edit_target_planning"},
-    {"vulkan_plan_pins", "edit_target_planning"},
-    {"vulkan_physical_fragments", "edit_target_planning"},
+    {"vulkan_plan_pins", "edit_vulkan_plan_pins"},
+    {"vulkan_physical_fragments", "put_vulkan_physical_fragment"},
 }};
 
 } // namespace
@@ -3276,6 +3277,353 @@ OrderedJson RenderConfigEditorService::editRenderingKeys(const Json &params) {
         std::string{method}, gate, base_digest, std::move(candidate),
         RenderConfigCandidateDocumentSet{source_normalized_reference_, std::move(documents)},
         std::string{});
+}
+
+// --- EL-2: the planner's decisions a rendering root declares.
+
+namespace {
+
+constexpr std::array<std::string_view, 3> planFamilies{"flat", "preview", "xr"};
+
+std::string requirePlanFamily(const Json &params, std::string_view method) {
+    auto family = requireString(params, "family", method);
+    if (std::ranges::find(planFamilies, family) == planFamilies.end())
+        throw std::invalid_argument(std::string{method} +
+                                    " family must be \"flat\", \"preview\" or \"xr\"");
+    return family;
+}
+
+// The names target_planning.graphs.<graph> may name, as the planner reads the
+// composed config: the frame graph's nodes, and the logical resources its
+// shadow graph declares (declared and history targets, what a node writes,
+// swapchain when a node reads it). nullopt: the composition has no such graph.
+struct PlanningNames {
+    std::set<std::string, std::less<>> nodes;
+    std::set<std::string, std::less<>> resources;
+};
+
+std::optional<PlanningNames> planningNamesOf(const Json &composed, std::string_view graph) {
+    for (const auto &definition : parseFrameGraphDefinitionsFromConfigJson(composed)) {
+        if (definition.name != graph) continue;
+        PlanningNames names;
+        names.resources.insert(definition.declared_resources.begin(),
+                               definition.declared_resources.end());
+        names.resources.insert(definition.history_resources.begin(),
+                               definition.history_resources.end());
+        for (const auto &node : definition.nodes) {
+            names.nodes.insert(node.name);
+            names.resources.insert(node.writes.begin(), node.writes.end());
+            if (std::ranges::find(node.reads, std::string{"swapchain"}) != node.reads.end())
+                names.resources.insert("swapchain");
+        }
+        return names;
+    }
+    return std::nullopt;
+}
+
+// {name: object | null} applied to `entries`: null erases the name; an
+// object's fields replace the entry's, a null field erasing that field. An
+// entry left with no field is erased.
+void mergePlanningEntries(OrderedJson &entries, const Json &edits) {
+    if (!entries.is_object()) entries = OrderedJson::object();
+    for (const auto &[name, edit] : edits.items()) {
+        if (edit.is_null()) {
+            entries.erase(name);
+            continue;
+        }
+        auto &entry = entries[name];
+        if (!entry.is_object()) entry = OrderedJson::object();
+        for (const auto &[field, value] : edit.items()) {
+            if (value.is_null()) entry.erase(field);
+            else entry[field] = value;
+        }
+        if (entry.empty()) entries.erase(name);
+    }
+}
+
+void eraseIfEmpty(OrderedJson &holder, const std::string &key) {
+    const auto found = holder.find(key);
+    if (found != holder.end() && (found->is_object() || found->is_array()) &&
+        found->empty())
+        holder.erase(found);
+}
+
+// The package a planning RPC writes (null: erase it), judged by the parser the
+// compiler reads it with, and the graph a null erases (empty: every graph).
+struct PlanPackageRequest {
+    Json package;
+    std::string graph;
+};
+
+PlanPackageRequest requirePlanPackage(const Json &params, const std::string &field,
+                                      std::string_view method,
+                                      const std::function<void(const Json &)> &parse) {
+    const auto found = params.find(field);
+    if (found == params.end())
+        throw std::invalid_argument(std::string{method} + " requires " + field +
+                                    " (a package, or null)");
+    PlanPackageRequest request{.package = *found, .graph = {}};
+    if (const auto graph = params.find("graph"); graph != params.end()) {
+        if (!found->is_null())
+            throw std::invalid_argument(std::string{method} + " takes graph only with a null " +
+                                        field + "; a package names its own graph");
+        if (!graph->is_string() || graph->get_ref<const std::string &>().empty())
+            throw std::invalid_argument(std::string{method} + " graph must be a non-empty string");
+        request.graph = graph->get<std::string>();
+    }
+    if (found->is_null()) return request;
+    try {
+        parse(*found);
+    } catch (const std::exception &error) {
+        throw std::invalid_argument(std::string{method} + " " + field + ": " + error.what());
+    }
+    return request;
+}
+
+// The family's packages with the request's package in place of the one for
+// its graph (appended when the family has none for it); a null package erases
+// the one for the request's graph, or every one of the family. A family left
+// with none is erased, and the key with it when no family is left.
+std::optional<OrderedJson> withFamilyPackage(std::optional<OrderedJson> current,
+                                             const std::string &family,
+                                             const PlanPackageRequest &request) {
+    auto value = current && current->is_object() ? std::move(*current) : OrderedJson::object();
+    const auto target =
+        request.package.is_null() ? request.graph : request.package.value("graph", std::string{});
+    OrderedJson kept = OrderedJson::array();
+    bool placed = false;
+    if (const auto packages = value.find(family);
+        packages != value.end() && packages->is_array()) {
+        for (auto &entry : *packages) {
+            const bool same = target.empty() ||
+                              (entry.is_object() && entry.value("graph", std::string{}) == target);
+            if (!same) {
+                kept.push_back(std::move(entry));
+            } else if (!request.package.is_null() && !placed) {
+                kept.push_back(request.package);
+                placed = true;
+            }
+        }
+    }
+    if (!request.package.is_null() && !placed) kept.push_back(request.package);
+    if (kept.empty()) value.erase(family);
+    else value[family] = std::move(kept);
+    if (value.empty()) return std::nullopt;
+    return value;
+}
+
+} // namespace
+
+OrderedJson RenderConfigEditorService::queuePlanningKeyEdit(
+    std::string_view method, const std::string &base_digest, std::string_view key,
+    const std::function<PlanningKeyValue(std::optional<OrderedJson>,
+                                         const ResolvedRenderConfigAuthoringContext &)> &transform) {
+    const std::string method_name{method};
+    const std::string key_name{key};
+    if (!isLowerHexDigest(base_digest))
+        throw std::invalid_argument(method_name +
+                                    " base_source_digest must be 64 lowercase hex characters");
+    if (!dependencies_.resolve_authoring_context)
+        return rejection("method_unavailable",
+                         method_name + " requires the render authoring resolver",
+                         {{"method", method_name}});
+    const auto gate = gateSnapshot();
+    if (auto rejected = checkAuthoringPreconditions(
+            gate, base_digest, method, "render config editing is currently disabled")) {
+        return *rejected;
+    }
+    std::optional<OrderedJson> current;
+    try {
+        const auto root = OrderedJson::parse(document_.bytes());
+        const auto &section = renderingSectionOf(root);
+        if (const auto found = section.find(key_name); found != section.end()) current = *found;
+    } catch (const RenderConfigSectionUnlocated &error) {
+        return rejection("render_config_section_unlocated", error.what(), {{"method", method_name}});
+    }
+    const OrderedJson preflight_details{{"participant", "pelican.render_pipeline"},
+                                        {"method", method_name}};
+    PlanningKeyValue edited;
+    try {
+        const auto context = dependencies_.resolve_authoring_context(currentDocumentSet());
+        // What resolveRenderPipelinePreset refuses: a root that selects a
+        // preset does not override the preset's own declaration of the key.
+        if (context.pipeline_preset_bytes) {
+            const auto preset = Json::parse(*context.pipeline_preset_bytes);
+            const auto config = preset.find("config");
+            if (config != preset.end() && config->is_object() && config->contains(key_name)) {
+                return rejection(
+                    "rendering_key_not_allowed_here",
+                    "the pipeline preset this rendering section selects declares " + key_name +
+                        ", which a section that selects a preset cannot override; fork the "
+                        "preset (fork_render_pipeline) and edit it there",
+                    {{"key", key_name}, {"reason", "preset_declares_key"}});
+            }
+        }
+        edited = transform(std::move(current), context);
+    } catch (const std::invalid_argument &) {
+        throw;
+    } catch (const std::exception &error) {
+        return preflightRejection(error, preflight_details);
+    }
+    if (edited.refusal) return *edited.refusal;
+    auto candidate = document_;
+    try {
+        candidate = edited.value ? candidate.withSectionValue(key_name, edited.value->dump(2))
+                                 : candidate.withoutSectionValue(key_name);
+    } catch (const RenderConfigSectionUnlocated &error) {
+        return rejection("render_config_section_unlocated", error.what(), {{"method", method_name}});
+    }
+    auto documents = currentDocumentSet().documents();
+    const auto root_document = std::find_if(
+        documents.begin(), documents.end(), [&](const auto &entry) {
+            return entry.normalized_reference == source_normalized_reference_;
+        });
+    if (root_document == documents.end())
+        throw std::logic_error(method_name + " candidate lost its root document");
+    root_document->bytes = candidate.bytes();
+    // The values are judged by the candidate as a whole: its composition (and
+    // graph variants) here, then the runtime's recomposition, which compiles
+    // the target plans, when it commits.
+    return enqueueAuthoredPassTicket(
+        method_name, gate, base_digest, std::move(candidate),
+        RenderConfigCandidateDocumentSet{source_normalized_reference_, std::move(documents)},
+        std::string{});
+}
+
+std::optional<OrderedJson> RenderConfigEditorService::physicalFragmentStaleRefusal(
+    const std::exception_ptr &error, std::string_view root_bytes, OrderedJson details) const {
+    if (!error) return std::nullopt;
+    try {
+        std::rethrow_exception(error);
+    } catch (const VulkanPhysicalFragmentStale &stale) {
+        const auto &info = stale.info();
+        // The family the root's section declares the package under. A
+        // package a preset declares has none here.
+        try {
+            const auto root = Json::parse(root_bytes);
+            const auto &section = renderingSectionOrEmpty(root);
+            if (const auto fragments = section.find("vulkan_physical_fragments");
+                fragments != section.end() && fragments->is_object()) {
+                for (const auto &[family, packages] : fragments->items()) {
+                    if (!packages.is_array()) continue;
+                    for (const auto &package : packages)
+                        if (package.is_object() &&
+                            package.value("graph", std::string{}) == info.graph)
+                            details["family"] = family;
+                }
+            }
+        } catch (const std::exception &) {
+        }
+        details["graph"] = info.graph;
+        details["fingerprint"] = info.fingerprint;
+        details["expected"] = info.expected;
+        details["actual"] = info.actual;
+        return rejection("physical_fragment_stale", stale.what(), std::move(details));
+    } catch (...) {
+    }
+    return std::nullopt;
+}
+
+OrderedJson RenderConfigEditorService::editTargetPlanning(const Json &params) {
+    constexpr std::string_view method = "edit_target_planning";
+    requireOnly(params, {"base_source_digest", "graph", "nodes", "resources"}, method);
+    const auto base_digest = requireString(params, "base_source_digest", method);
+    const auto graph = requireString(params, "graph", method);
+    if (graph.empty())
+        throw std::invalid_argument("edit_target_planning graph must not be empty");
+    const auto entries = [&](const char *field) -> const Json * {
+        const auto found = params.find(field);
+        if (found == params.end()) return nullptr;
+        const auto shape = std::string{"edit_target_planning "} + field +
+                           " must be an object of name: object | null";
+        if (!found->is_object()) throw std::invalid_argument(shape);
+        for (const auto &[name, edit] : found->items())
+            if (name.empty() || !(edit.is_object() || edit.is_null()))
+                throw std::invalid_argument(shape);
+        return &*found;
+    };
+    const auto *nodes = entries("nodes");
+    const auto *resources = entries("resources");
+    if ((nodes == nullptr || nodes->empty()) && (resources == nullptr || resources->empty()))
+        throw std::invalid_argument("edit_target_planning requires a name in nodes or resources");
+
+    return queuePlanningKeyEdit(
+        method, base_digest, "target_planning",
+        [&](std::optional<OrderedJson> current,
+            const ResolvedRenderConfigAuthoringContext &context) -> PlanningKeyValue {
+            const auto unknown = [&](std::string_view kind, const std::string &name) {
+                return rejection(
+                    "target_planning_name_unknown",
+                    "target_planning." + graph + ": the current composition has no " +
+                        std::string{kind} + " named " + name,
+                    {{"graph", graph}, {"kind", std::string{kind}}, {"name", name}});
+            };
+            // The names are the expanded ones get_frame_plan shows. FG-1 maps a
+            // fold group's local names onto them before this point.
+            const auto names = planningNamesOf(context.config, graph);
+            if (!names) return {.value = std::nullopt, .refusal = unknown("graph", graph)};
+            auto planning =
+                current && current->is_object() ? std::move(*current) : OrderedJson::object();
+            if (!planning["graphs"].is_object()) planning["graphs"] = OrderedJson::object();
+            auto &declared = planning["graphs"][graph];
+            if (!declared.is_object()) declared = OrderedJson::object();
+            for (const auto &[field, kind, edits, known] :
+                 {std::tuple{"nodes", "node", nodes, &names->nodes},
+                  std::tuple{"resources", "resource", resources, &names->resources}}) {
+                if (edits == nullptr) continue;
+                const auto authored = declared.find(field);
+                for (const auto &[name, edit] : edits->items()) {
+                    if (known->contains(name)) continue;
+                    // A name the composition no longer has may still be erased.
+                    if (edit.is_null() && authored != declared.end() && authored->is_object() &&
+                        authored->contains(name))
+                        continue;
+                    return {.value = std::nullopt, .refusal = unknown(kind, name)};
+                }
+                mergePlanningEntries(declared[field], *edits);
+                eraseIfEmpty(declared, field);
+            }
+            eraseIfEmpty(planning["graphs"], graph);
+            eraseIfEmpty(planning, "graphs");
+            if (planning.empty()) return {};
+            return {.value = std::move(planning), .refusal = std::nullopt};
+        });
+}
+
+OrderedJson RenderConfigEditorService::editVulkanPlanPins(const Json &params) {
+    constexpr std::string_view method = "edit_vulkan_plan_pins";
+    requireOnly(params, {"base_source_digest", "family", "pin", "graph"}, method);
+    const auto base_digest = requireString(params, "base_source_digest", method);
+    const auto family = requirePlanFamily(params, method);
+    const auto request = requirePlanPackage(params, "pin", method, [](const Json &document) {
+        (void)vulkanTargetPlanPinPackageFromJson(document);
+    });
+    return queuePlanningKeyEdit(
+        method, base_digest, "vulkan_plan_pins",
+        [&](std::optional<OrderedJson> current,
+            const ResolvedRenderConfigAuthoringContext &) -> PlanningKeyValue {
+            return {.value = withFamilyPackage(std::move(current), family, request),
+                    .refusal = std::nullopt};
+        });
+}
+
+OrderedJson RenderConfigEditorService::putVulkanPhysicalFragment(const Json &params) {
+    constexpr std::string_view method = "put_vulkan_physical_fragment";
+    requireOnly(params, {"base_source_digest", "family", "fragment", "graph"}, method);
+    const auto base_digest = requireString(params, "base_source_digest", method);
+    const auto family = requirePlanFamily(params, method);
+    const auto request = requirePlanPackage(params, "fragment", method, [](const Json &document) {
+        (void)vulkanPhysicalFragmentPackageFromJson(document);
+    });
+    // Whether the fragment's fingerprints are the plan's is the runtime
+    // linker's to say (physical_fragment_stale when they are not).
+    return queuePlanningKeyEdit(
+        method, base_digest, "vulkan_physical_fragments",
+        [&](std::optional<OrderedJson> current,
+            const ResolvedRenderConfigAuthoringContext &) -> PlanningKeyValue {
+            return {.value = withFamilyPackage(std::move(current), family, request),
+                    .refusal = std::nullopt};
+        });
 }
 
 OrderedJson RenderConfigEditorService::editComputeTask(const Json &params) {
@@ -5213,6 +5561,13 @@ void RenderConfigEditorService::completeCommitTransaction(
                     }
                     finish(rejection(refusal->first, applied.error,
                                      std::move(details)));
+                    return;
+                }
+                // EL-2: a physical fragment the linker found stale.
+                if (auto refusal = physicalFragmentStaleRefusal(
+                        applied.exception,
+                        transaction->ticket.candidate.bytes(), details)) {
+                    finish(std::move(*refusal));
                     return;
                 }
             }
