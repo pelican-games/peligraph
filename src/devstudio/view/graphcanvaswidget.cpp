@@ -2369,14 +2369,28 @@ void GraphCanvasScene::applyEdgeEmphasis() {
 void GraphCanvasScene::scheduleSceneRectUpdate() {
     if (scene_rect_update_queued_) return;
     scene_rect_update_queued_ = true;
+    // A gesture (a node dragged, a reroute or a tie moved) only grows the
+    // rect. Recomputing it from the items made it shrink on the side a node
+    // left -- dragging the leftmost node (a folded feature) moved the
+    // scene's edge under the view and the whole canvas slid.
     QMetaObject::invokeMethod(
-        this, [this] { applySceneRectNow(); }, Qt::QueuedConnection);
+        this, [this] { applySceneRectNow(/*grow_only=*/true); }, Qt::QueuedConnection);
 }
 
-void GraphCanvasScene::applySceneRectNow() {
+void GraphCanvasScene::applySceneRectNow(bool grow_only) {
     scene_rect_update_queued_ = false;
-    const QRectF bounds = itemsBoundingRect();
-    setSceneRect(bounds.adjusted(-60.0, -60.0, 60.0, 60.0));
+    QRectF rect = itemsBoundingRect().adjusted(-60.0, -60.0, 60.0, 60.0);
+    if (grow_only) {
+        rect = rect.united(sceneRect());
+        if (rect == sceneRect()) return;
+    }
+    // A redraw sets the rect anew and may shrink it; each view keeps the
+    // scene point it had in its middle, so what is on screen stays put.
+    std::vector<std::pair<QGraphicsView *, QPointF>> centres;
+    for (QGraphicsView *view : views())
+        centres.emplace_back(view, view->mapToScene(view->viewport()->rect().center()));
+    setSceneRect(rect);
+    for (const auto &[view, centre] : centres) view->centerOn(centre);
 }
 
 void GraphCanvasScene::selectNode(const std::string &id) {

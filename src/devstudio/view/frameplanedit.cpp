@@ -813,6 +813,10 @@ FramePlanEditRequest framePlanSocketConnectRequest(
             return refuseLine(pass + "'s shader takes at most " +
                               std::to_string(max) +
                               " inputs in its variadic group.");
+        // The engine refuses a pass that names one input twice
+        // (duplicate_input); say so here instead of sending it.
+        if (std::ranges::find(inputs, resource) != inputs.end())
+            return refuseLine(pass + " already reads " + resource + ".");
         inputs.push_back(resource);
         return passInputListRequest(authoring, graph, pass, std::move(inputs));
     }

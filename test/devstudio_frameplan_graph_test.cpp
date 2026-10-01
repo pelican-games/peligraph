@@ -7475,6 +7475,11 @@ TEST_CASE("VI-3a a drop connects by number: at the next binding, in place, or "
               Json::array({"t_a", "t_b", "t_c", "t_v"}));
         CHECK(request({"t_a"}, "t_v", {Kind::variadic}).refusal ==
               "Connect binding 1..2" + fill_first);
+        // An image the pass already reads is not named twice: the engine
+        // refuses duplicate_input.
+        const auto again = request({"t_a", "t_b", "t_c", "t_v"}, "t_v", {Kind::variadic});
+        CHECK_FALSE(again.sendable());
+        CHECK(again.refusal == "wp343_mixed_a already reads t_v.");
     }
     SECTION("a full band refuses") {
         std::vector<std::string> full{"t_a", "t_b", "t_c"};

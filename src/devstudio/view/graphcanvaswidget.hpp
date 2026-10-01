@@ -722,7 +722,7 @@ class GraphCanvasScene final : public QGraphicsScene {
     [[nodiscard]] std::pair<std::string, std::string> foldedPositionKey(const std::string &id) const;
     void keepFoldedPlaces();
     void scheduleSceneRectUpdate();
-    void applySceneRectNow();
+    void applySceneRectNow(bool grow_only = false);
     void clearControlSelection();
     // Picking something in `scope` lets go of what was picked elsewhere.
     void enterSelectionScope(const std::string &scope);
