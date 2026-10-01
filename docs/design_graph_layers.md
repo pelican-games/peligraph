@@ -200,15 +200,82 @@ canvas は 1 枚だが、**見せる領域を選ぶ**。全領域を一度に描
 - `kind`: `replacement`(RPE11b の provider)/ `decisions`(§3.6)
 - 境界(断片の外との資源と port)は組み直しで検査する。`fold_groups` は field の追加なので版は上げない
 
+**合意した形(2026-10-02、GUI session と engine session)。** 上の JSON と 3 行は 2026-09-27 の案として残す。§5.2〜§5.4 の合意は次のとおりで、着地しているのは EL-2 だけ(FG-1 / FG-2 は未着地)。
+
+層の分け方(WP の順):
+
+| WP | 中身 | 状態 |
+|---|---|---|
+| EL-2 | graph 全体の口(`target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments`)を**展開名で**書く ticket 3 本(`edit_target_planning` / `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment`) | 着地(`b5a58b11`)。形は manual 13 章の「graph 全体の計画の決定を書く(✅EL-2)」、入口は [`editTargetPlanning()`](../src/core/communication/renderconfigeditor.cpp#L3527) |
+| FG-1 | `fold_groups` の宣言と、ローカル名で書いた決定を組み立てのたびに展開名へ写す段(この節) | 未着地 |
+| FG-2 | `verify_fold`(等価性の検査と印。§5.3) | 未着地 |
+| FG-3(後回し) | physical fragment のローカル名化、`kind: "replacement"`、feature と分解版の名前の対応表のデータ化 | 後回し |
+
+FG-1 の宣言(root の `fold_groups`):
+
+```json
+"fold_groups": {
+  "my_post": {
+    "nodes": ["blur_loop", "blur_mix", "post_color"],
+    "folded": {
+      "kind": "decisions",
+      "decisions": {
+        "serial":   [{ "node": "blur_loop", "element": 2 }],
+        "isolate":  [{ "node": "blur_mix" }],
+        "no_alias": [{ "node": "post_color" }]
+      },
+      "verified": { "digest": "<開いた形の digest>", "at": "2026-10-02T12:00:00Z", "frames": 3 }
+    }
+  }
+}
+```
+
+- `fold_groups.<group> = {nodes: [root の node id], folded: {kind: "decisions", decisions: {serial: [...], isolate: [...], no_alias: [...]}, verified?: {digest, at, frames?}}}`。案の `physical` は無い(physical fragment のローカル名化は FG-3)
+- **主語**は `{node: <root の node id>, element?: N}`。loop / instance の node ならその展開の全部(ループの全部の回、instance の中の全部の node)、`element` を付けるとループのその回だけ
+- `no_alias` の主語は `{node: <render.image の node id>}` で、画像の node 自体を指せる。port を指す `{node, port}` は補助
+- 主語は group の `nodes`(とその body)の中に限る。外を指すと `graph.fold_subject_outside@1`
+- `kind` は今回 `decisions` だけ。`replacement` は `graph.fold_kind_unsupported@1`(FG-3 まで)
+- **写す段**: 組み立てのたびに、GL-2a の `graph_origin`(§5.1。frame plan の node の `origin`)を逆に引いてローカル名 → 展開名へ写し、`target_planning` の `serial` / `isolate` / `no_alias` に足す。文書には展開名を書かないので、ループの count を変えても宣言は古くならない
+  - 今の engine の事実(コードで確認): LP-1a は、書いた文書が `target_planning` の node に `<loop>/…` の展開名を書くことを `graph.loop_expansion_referenced@1` で断る([`requireLoopExpansionUnreferenced()`](../src/project/graphcomposition.cpp#L989))。したがって EL-2 の `edit_target_planning` ではループの回の node を名指せない(コードの読み。test は無い)。回ごとの決定を書く道は FG-1 の写しになる
+- EL-2 の明示(root の `target_planning` に書いた値)と逆の指定は `graph.fold_decision_conflict@1`
+- frame plan の `decisions` の要素に `from_fold: <group>` を足す。今の要素は `{id, subject, selected, detail}` と GL-2a の `from_nodes` で、決定の出所の印は無い
+- **digest**: 開いた形(`nodes` に挙げた root の node、それらの間の線と `parameters`、使う body の definition。layout は除く)の canonical な digest を engine が計算する
+- **失効**: `verified` が無い、または digest が違うときは、決定を捨てて**開いた形で走らせ**、`diagnostics` に `fold_unverified` / `fold_stale {verified_digest, current_digest}` を出す。断らない、黙らない(§3.5 の案の `graph.fold_stale@1` を名前付きで返す形は、組み直しを断らない diagnostics になった)
+- **RPC**:
+  - `get_fold_groups {}` → `[{group, nodes, kind, digest, verified?, state: "verified" | "stale" | "unverified"}]`
+  - `fold_nodes {base_source_digest, group, nodes, folded}`: 1 ticket、RD-1 の対象(`restore_render_documents` で戻せる)。`folded.verified` は書かせない(書くのは `verify_fold` だけ)。`folded: null` で group を消す
+
 ### 5.3 検査と印
 
 - `verify_fold {group}`:開いた形と畳んだ形で §3.5 の一致を取り、通れば `verified` を書く(ticket。RD-1 の undo の対象)。通らなければ `graph.fold_mismatch@1 {group, what: "frame_plan" | "queue" | "draws" | "pixels", detail}`
 - 前提として、一体版と分解版の名前の対応表をデータにし、実行中の engine で 2 つの形を描き比べる道を作る(今は test 専用)
 
+**合意した形(2026-10-02)。** 上の 2 行は案として残す。FG-2 として次の形にする(未着地)。
+
+- `verify_fold {group}` は非同期の ticket(`accepted` → `running` → `committed` / `rejected`)
+- **「同じ」の定義**(`kind: "decisions"`): 絵が同じで、validation が出ないこと。frame plan と queue の byte は一致しなくてよい(決定は物理の plan を変えるためのもの)。案の `what: "frame_plan" | "queue" | "draws"` は使わない
+- **走らせ方**: engine が自分の exe を headless の子 process で 3 回起こす —— 開いた形 ×2(対照)と決定ありの形 ×1。同じ文書を一時 dir に写して走らせる
+- 各回、warm-up(既定 30 s 相当)を描いて捨て、その後の N frame(既定 3)を byte で比べる。warm-up は NVIDIA の二段の shader compile の対策(起動直後の code が数秒後に最適化した code に差し替わり、値が変わりうる)
+- **結果**:
+  - 対照どうしが一致しない: `graph.fold_verify_unstable@1 {group, detail}`(決定のせいではない。比べられない)
+  - 対照が一致し、決定ありだけ違う: `graph.fold_mismatch@1 {group, what: "pixels" | "validation" | "compile", detail}`(`detail` は最初に違った frame と差の数)
+  - 通れば `verified {digest, at, frames}` を書く(RD-1 の undo の対象)
+- Studio は既定 3 frame・byte 一致で、詳細の折り畳みに frame 数と許容幅を出す
+- 失効しても自動では走らせ直さない(Studio の Verify ボタンで走らせる)
+- engine 同梱の一体版と雛形は今どおり engine の test が一致を見る(印を持たない。§3.5)
+- 案の「名前の対応表をデータにする」は FG-3 に回した。`kind: "decisions"` の検査は同じ文書の開いた形どうし(決定の有無)を比べるので、一体版と分解版の名前の対応表を使わない
+
 ### 5.4 展開して編集・畳み直す
 
 - 展開して編集: 今の `decompose_material_pass` / `apply_graph_template` のまま。一般化は要るときに
 - 畳み直す: `fold_nodes {nodes[], group, folded}`。断片の宣言を書き、`verify_fold` を続けて走らせる。1 ticket
+
+**合意した形(2026-10-02)。** 上の 2 行は案として残す。
+
+- 展開して編集は今の `decompose_material_pass` / `apply_graph_template` のまま(一方通行。戻すのは RD-1 の undo)。畳んだ形へ戻す逆の RPC は作らない
+- 畳み直すは §5.2 の合意の `fold_nodes {base_source_digest, group, nodes, folded}`(1 ticket)。断片の宣言と決定を書くだけで、`verified` は書かない。等価性の検査は別の ticket の `verify_fold`(§5.3)で、書いた直後の group は `unverified` として開いた形で走る(決定は効かない)
+- 2 つの関係: 展開して編集した結果は root の node になる(material pass なら `render.material_pass` と draw_loop のループと body の definition、雛形なら雛形の nodes / definitions)。それを `fold_nodes` で group として宣言して決定を付けるのが、「畳んで書いてある」ものを開いた後で「開いて書いてある」側の断片(§3.1)にする道になる。開いた形を編集すれば digest が変わって group は `stale` になり、検査し直すまで決定は効かない
+- `kind: "replacement"`(provider での置き換え)での畳み直しは FG-3 まで無い
 
 ## 6. 保存形
 

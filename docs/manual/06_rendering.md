@@ -1534,6 +1534,7 @@ render / compute / transfer / output / marker のノード本体は provider の
 - node/resource 制約は graph ごとです。`main` と書けば XR variant のコンパイル時には自動的に `main#xr` へ対応し、個々の node/resource 名は変わりません。
 - `serial` / `isolate` / `no_alias` は禁止側だけを明示する設計です。通常 node に `parallel_safe` のような boilerplate は要りません。
 - 未知 graph/node/resource、重複した warning ID、型の違うフラグは runtime object を作る前に compile error になります。
+- 書く RPC は `edit_target_planning`(✅EL-2)です。graph ごとの `nodes` / `resources` を名前単位で混ぜ、`null` で消します。今の合成に無い名前は、ticket を取らずに `target_planning_name_unknown` で断ります。`profile` と `diagnostics` を書く RPC は無く、文書を直すか `restore_render_documents` です。形と拒否は[第13章](13_editor.md)の「graph 全体の計画の決定を書く(✅EL-2)」にあります。
 
 #### 3 つの representation と、その選ばれ方
 
@@ -1646,6 +1647,8 @@ multiview選択時は2-layer image、`viewMask=0b11`、execution count 1とな�
 
 貼り付け後は `physical_target_plan.applied_pin_package` に同じ package が出ます。論理 graph が変わった package は `pin package is stale`、現在の device/provider で成立しない candidate は `pinned backend candidate is infeasible` として失敗し、別 candidate へ黙って fallback しません。ここで **fingerprint** は「対象の内容から計算した短いハッシュ値」で、貼った package が今のグラフ向けかどうかを照合するための鍵です。`logical_graph_fingerprint` は論理グラフ(パスと資源と依存)から計算され、**物理側の指定(`target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments`)はその計算に入りません**。したがってこれらを貼ったこと自体では logical fingerprint は変わらず、貼った package が直後に stale になることもありません。
 
+RPC から書くときは `edit_vulkan_plan_pins {base_source_digest, family, pin}`(✅EL-2)です。同じ family の同じ `graph` の package を置き換え、`pin: null` で消します([第13章](13_editor.md)の「graph 全体の計画の決定を書く(✅EL-2)」)。
+
 v1 pin が固定するのは有限集合の **backend candidate だけ**です。resource/scopeを編集する場合は、次の別schemaを使います。
 
 ### Vulkan physical fragment v1 / v2 / v3
@@ -1746,6 +1749,8 @@ sample count、array layer上限、external depthなら`TRANSFER_SRC`契約を�
   sampled/storage/transfer依存を含む融合はまだ受理しません。
 
 貼り付け後は`applied_physical_fragment`で適用内容を再観測できます。logical graphだけでなく、変更前の自動plan、target facts、選択候補、provider generationも`automatic_plan_fingerprint`へ束縛されます。いずれかが変わった古いfragmentは **stale error**(貼った package が前提にしていた plan はもう存在しない、という失敗)となり、部分的に推測して修復しません。直し方は「もう一度 eject してから編集し直す」だけです。
+
+RPC から書くときは `put_vulkan_physical_fragment {base_source_digest, family, fragment}`(✅EL-2)です。stale な fragment は、ticket の結果の `physical_fragment_stale {family, graph, fingerprint, expected, actual}` で返り、文書は変わりません(`fingerprint` は `logical_graph` か `automatic_plan`。[第13章](13_editor.md)の「graph 全体の計画の決定を書く(✅EL-2)」)。
 
 同じ名前のtargetを複数graphやflat/XR variantが共有する場合、全planは同じphysical formatを選ぶ必要があります。異なるformatを同時に使う設計ならtarget名を分けてください。hot reloadでformatを変更した場合は、新しいruntime generationのimage・view・pipelineを作ってから一括publishし、旧generationは既存のGPU lease規則でretireします。
 
