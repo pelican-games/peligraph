@@ -1522,4 +1522,205 @@ TEST_CASE("EL-1 get_render_authoring_context lists the materials a draw_loop jud
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+
+// EL-4: the formats get_graph_catalog lists for a material pass's sockets are
+// the ones the running engine takes: an image of each listed combination is
+// committed (RS-1's restart for the live materials), a format off the list
+// is refused as today, and every listed format has the aspect its socket
+// needs. An engine shader the catalog lists runs in a graph's fullscreen pass.
+TEST_CASE("EL-4 the material pass formats and engine shaders get_graph_catalog lists are the ones the engine takes",
+          "[el4][primitives][material-routing][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("el4_lists");
+    const Json color_type{{"semantic", "pelican.render.color_signal@1"},
+                          {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    const Json depth_type{{"semantic", "pelican.render.depth@1"},
+                          {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+    const auto image_parameters = [&](const std::string &socket, const std::string &format) {
+        const bool depth = socket == "depth";
+        return Json{{"type", depth ? depth_type : color_type},
+                    {"format", format},
+                    {"extent_scale", 1.0},
+                    {"usage", Json::array({depth ? "DEPTH_STENCIL_ATTACHMENT" : "COLOR_ATTACHMENT", "SAMPLED"})}};
+    };
+    const auto image_id = [](const std::string &socket) { return "el4_pass__" + socket; };
+    // The pass and one image per socket, the formats as given.
+    const auto material_pass_ops = [&](const std::string &contract, const Json &formats) {
+        Json ops = Json::array();
+        Json inputs = Json::object();
+        for (const auto &[socket, format] : formats.items()) {
+            ops.push_back({{"op", "add_node"},
+                           {"scope", "root"},
+                           {"node", {{"id", image_id(socket)},
+                                     {"op", "render.image"},
+                                     {"parameters", image_parameters(socket, format.get<std::string>())},
+                                     {"outputs", Json::array({"resource"})}}}});
+            inputs[socket] = {{"node", image_id(socket)}, {"port", "resource"}};
+        }
+        ops.push_back({{"op", "add_node"},
+                       {"scope", "root"},
+                       {"node", {{"id", "el4_pass"},
+                                 {"op", "render.material_pass"},
+                                 {"parameters", {{"material_contract", contract}, {"pass_set", "main_render"}}},
+                                 {"inputs", inputs},
+                                 {"outputs", Json::array()}}}});
+        return ops;
+    };
+    // The final answer, refused when asked for or when the renderer judges it.
+    const auto edit = [](Rpc &rpc, const Json &ops, std::optional<std::string> route_default = std::nullopt) {
+        const auto context = rpc.result("get_render_authoring_context");
+        Json params{{"base_source_digest", context.at("source_digest").at("hex")}, {"ops", ops}};
+        if (route_default) params["material_route_default"] = *route_default;
+        const auto accepted = rpc.result("edit_graph_document", params);
+        if (accepted.value("status", std::string{}) != "accepted") return accepted;
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            (void)rpc.result("step_frame");
+            auto result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+            if (result.value("status", std::string{}) != "pending") return result;
+        }
+        FAIL("the graph edit ticket stayed pending");
+        return Json{};
+    };
+    const auto contract_of = [](const Json &catalog, const char *name) {
+        for (const auto &entry : catalog.at("material_pass_contracts"))
+            if (entry.at("contract") == name) return entry;
+        FAIL("get_graph_catalog lists no contract " << name);
+        return Json{};
+    };
+    // A format of the aspect that `listed` does not hold.
+    const auto off_list = [](const Json &aspects, const Json &listed, const std::string &aspect) {
+        for (const auto &[name, format_aspect] : aspects.items())
+            if (format_aspect == aspect && std::find(listed.begin(), listed.end(), name) == listed.end()) return name;
+        FAIL("every " << aspect << " format is listed");
+        return std::string{};
+    };
+    const auto refused_for = [](const Json &result, const char *message) {
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "rejected");
+        CHECK_THAT(result.at("error").dump(), Catch::Matchers::ContainsSubstring(message));
+    };
+    const auto check_aspects = [](const Json &contract, const Json &aspects) {
+        for (const auto &socket : contract.at("sockets")) {
+            INFO(socket.dump());
+            CHECK(socket.at("aspect") == (socket.at("socket") == "depth" ? "depth" : "color"));
+            for (const auto &format : socket.at("formats"))
+                CHECK(aspects.at(format.get<std::string>()) == socket.at("aspect"));
+        }
+    };
+
+    // --- The G-buffer contract on a blank project.
+    {
+        const auto root = dir.root / "deferred";
+        initializeProjectTemplate(root, ProjectTemplate::Blank);
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        GET_MODULE(Renderer).prepareRuntimeModules();
+        (void)rpc.result("step_frame");
+        const auto catalog = rpc.result("get_graph_catalog");
+        const auto aspects =
+            rpc.result("get_render_authoring_context").at("render_target_vocabulary").at("format_aspects");
+        const auto deferred = contract_of(catalog, "deferred_geometry_v1");
+        INFO(deferred.dump(2));
+        check_aspects(deferred, aspects);
+        const auto &combinations = deferred.at("combinations");
+        REQUIRE(combinations.size() == 2);
+        const auto rendering_path = root / "passes/main_rendering_config.json";
+        const auto root_before = readFile(rendering_path);
+
+        // Off the list: a depth format the depth socket does not take, then a
+        // color format the normal socket does not take.
+        auto formats = combinations.at(0);
+        formats["depth"] = off_list(aspects, Json::array({formats.at("depth")}), "depth");
+        refused_for(edit(rpc, material_pass_ops("deferred_geometry_v1", formats)), "depth output format mismatch");
+        formats = combinations.at(0);
+        Json normal_formats;
+        for (const auto &socket : deferred.at("sockets"))
+            if (socket.at("socket") == "normal") normal_formats = socket.at("formats");
+        formats["normal"] = off_list(aspects, normal_formats, "color");
+        refused_for(edit(rpc, material_pass_ops("deferred_geometry_v1", formats)), "color output format mismatch");
+        CHECK(readFile(rendering_path) == root_before);
+
+        // Each listed combination is committed; the second rewrites the
+        // images the first added.
+        const auto first = edit(rpc, material_pass_ops("deferred_geometry_v1", combinations.at(0)));
+        INFO(first.dump(2));
+        REQUIRE(first.at("status") == "committed");
+        Json rewrite = Json::array();
+        for (const auto &[socket, format] : combinations.at(1).items())
+            rewrite.push_back({{"op", "set_node_parameters"},
+                               {"scope", "root"},
+                               {"node", image_id(socket)},
+                               {"parameters", image_parameters(socket, format.get<std::string>())}});
+        const auto second = edit(rpc, rewrite);
+        INFO(second.dump(2));
+        REQUIRE(second.at("status") == "committed");
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+
+    // --- A fullscreen pass of listed engine shaders, then the forward contract.
+    const auto root = dir.root / "forward";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    GET_MODULE(Renderer).prepareRuntimeModules();
+    (void)rpc.result("step_frame");
+    const auto catalog = rpc.result("get_graph_catalog");
+    const auto aspects =
+        rpc.result("get_render_authoring_context").at("render_target_vocabulary").at("format_aspects");
+    const auto shader_of = [&](const char *reference, const char *stage) {
+        for (const auto &entry : catalog.at("engine_shaders"))
+            if (entry.at("reference") == reference && entry.at("stage") == stage) return entry;
+        FAIL("get_graph_catalog lists no " << stage << " shader " << reference);
+        return Json{};
+    };
+    const auto vertex = shader_of("engine://fullscreen", "vertex");
+    const auto fragment = shader_of("engine://passthrough", "fragment");
+    INFO(vertex.dump(2) << "\n" << fragment.dump(2));
+    REQUIRE(fragment.contains("reflected_from"));
+    CHECK(fragment.at("fragment_outputs").at(0).at("location") == 0);
+    const auto fullscreen = edit(rpc, Json::array({
+        {{"op", "add_node"},
+         {"scope", "root"},
+         {"node", {{"id", "el4_canvas"},
+                   {"op", "render.image"},
+                   {"parameters", image_parameters("color", "R16G16B16A16_SFLOAT")},
+                   {"outputs", Json::array({"resource"})}}}},
+        {{"op", "add_node"},
+         {"scope", "root"},
+         {"node", {{"id", "el4_fill"},
+                   {"op", "render.fullscreen"},
+                   {"parameters",
+                    {{"pass_set", "main_render"},
+                     {"shader", {{"vertex", vertex.at("reference")}, {"fragment", fragment.at("reference")}}},
+                     {"ports", {{"color", {{"kind", "image"}, {"type", color_type}, {"access", "write"},
+                                           {"attachment", "color"}, {"location", 0}}}}}}},
+                   {"inputs", {{"color", {{"node", "el4_canvas"}, {"port", "resource"}}}}},
+                   {"outputs", Json::array({"color"})}}}},
+    }));
+    INFO(fullscreen.dump(2));
+    REQUIRE(fullscreen.at("status") == "committed");
+    CHECK(fullscreen.value("restart_required", false) == false);
+    (void)rpc.result("render_frame");
+    CHECK(rpc.result("get_frame_plan").dump().find("el4_fill") != std::string::npos);
+
+    const auto forward = contract_of(catalog, "forward_opaque_v1");
+    INFO(forward.dump(2));
+    check_aspects(forward, aspects);
+    REQUIRE(forward.at("combinations").size() == 1);
+    auto formats = forward.at("combinations").at(0);
+    REQUIRE(formats.size() == 2);
+    formats["color"] = off_list(aspects, Json::array({formats.at("color")}), "color");
+    refused_for(edit(rpc, material_pass_ops("forward_opaque_v1", formats), "forward"),
+                "color output format mismatch");
+    const auto committed =
+        edit(rpc, material_pass_ops("forward_opaque_v1", forward.at("combinations").at(0)), "forward");
+    INFO(committed.dump(2));
+    REQUIRE(committed.at("status") == "committed");
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
 } // namespace Pelican

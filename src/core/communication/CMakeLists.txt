@@ -44,6 +44,7 @@ target_sources(pelican_core PRIVATE
     editorjournalops.cpp
     editorpreviewservice.cpp
     editorprojectionplan.cpp
+    engineauthoringlists.cpp
     renderconfigeditor.cpp
     editorruntimefactory.cpp
 )

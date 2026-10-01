@@ -291,20 +291,8 @@ std::string_view materialOutputTypeName(
 
 std::optional<MaterialOutputType>
 materialOutputTypeFromName(std::string_view name) {
-    if (name == "float") return MaterialOutputType::floating;
-    if (name == "vec2") return MaterialOutputType::vec2;
-    if (name == "vec3") return MaterialOutputType::vec3;
-    if (name == "vec4") return MaterialOutputType::vec4;
-    if (name == "int") return MaterialOutputType::integer;
-    if (name == "ivec2") return MaterialOutputType::ivec2;
-    if (name == "ivec3") return MaterialOutputType::ivec3;
-    if (name == "ivec4") return MaterialOutputType::ivec4;
-    if (name == "uint") {
-        return MaterialOutputType::unsigned_integer;
-    }
-    if (name == "uvec2") return MaterialOutputType::uvec2;
-    if (name == "uvec3") return MaterialOutputType::uvec3;
-    if (name == "uvec4") return MaterialOutputType::uvec4;
+    for (const auto type : materialOutputTypes)
+        if (materialOutputTypeName(type) == name) return type;
     return std::nullopt;
 }
 

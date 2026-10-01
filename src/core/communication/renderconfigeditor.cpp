@@ -14,6 +14,7 @@
 #include "../../project/materialpassdecompose.hpp"
 #include "../../project/renderconfigsection.hpp"
 #include "renderconfigtransaction.hpp"
+#include "engineauthoringlists.hpp"
 
 #include "../fullscreenpass/fullscreeninputbindingmismatch.hpp"
 #include "../fullscreenpass/shaderinputmismatchjson.hpp"
@@ -2191,6 +2192,12 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         {"usage", imageUsageFlagNames()},
         {"format_classes", OrderedJson::array({"scene", "display", "data", "explicit"})},
     };
+    // EL-4: each format's aspect, from its Vulkan format traits; `formats`
+    // stays the list of names.
+    auto format_aspects = OrderedJson::object();
+    for (const auto &[name, format] : imageFormats())
+        format_aspects[name] = std::string{imageFormatAspectName(format)};
+    result["render_target_vocabulary"]["format_aspects"] = std::move(format_aspects);
     // EL-1: the names a draw_loop branch's `when` and draw.variant take, from
     // what the draw-loop tables judge (MaterialDrawSubject): `id` is the
     // matching key `when.material` compares, `tags` what `when.tags` / `where`
@@ -2996,7 +3003,15 @@ OrderedJson RenderConfigEditorService::getGraphNodeValues(const Json &params) co
 
 OrderedJson RenderConfigEditorService::getGraphCatalog(const Json &params) const {
     requireOnly(params, {}, "get_graph_catalog");
-    return builtinGraphModuleRegistry().catalog();
+    auto catalog = builtinGraphModuleRegistry().catalog();
+    // EL-4: render.material_pass's sockets follow its parameters, so the
+    // formats each takes are listed per contract beside the modules, with
+    // those of a material_outputs pass; and the shaders the engine ships, as
+    // a pass's stem reference loads them.
+    catalog["material_pass_contracts"] = materialPassContractsJson();
+    catalog["material_output_formats"] = materialOutputFormatsJson();
+    catalog["engine_shaders"] = engineShadersJson();
+    return catalog;
 }
 
 OrderedJson RenderConfigEditorService::editFrameNodeOrder(const Json &params) {

@@ -28,6 +28,17 @@ enum class MaterialOutputType {
     uvec4,
 };
 
+// EL-4: every output type, in declaration order. materialOutputTypeFromName
+// accepts exactly their names; get_graph_catalog lists them.
+inline constexpr MaterialOutputType materialOutputTypes[] = {
+    MaterialOutputType::floating,         MaterialOutputType::vec2,
+    MaterialOutputType::vec3,             MaterialOutputType::vec4,
+    MaterialOutputType::integer,          MaterialOutputType::ivec2,
+    MaterialOutputType::ivec3,            MaterialOutputType::ivec4,
+    MaterialOutputType::unsigned_integer, MaterialOutputType::uvec2,
+    MaterialOutputType::uvec3,            MaterialOutputType::uvec4,
+};
+
 enum class MaterialOutputNumericClass {
     floating,
     signed_integer,

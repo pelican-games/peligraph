@@ -227,8 +227,7 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
             output_states, *output_schema,
             "Material pass '" + pass_def.name +
                 "' material_output_states");
-        if (contract ==
-            MaterialPassContract::legacy_gbuffer_v1) {
+        if (!materialPassContractAcceptsMaterialOutputs(contract)) {
             throw std::runtime_error(
                 "Material pass material_outputs requires an "
                 "explicit non-legacy material_contract: " +
@@ -281,14 +280,7 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
             const auto format_name =
                 vk::to_string(metadata.format);
             const auto format_class =
-                format_name.ends_with("Sint")
-                    ? MaterialOutputNumericClass::
-                          signed_integer
-                    : format_name.ends_with("Uint")
-                          ? MaterialOutputNumericClass::
-                                unsigned_integer
-                          : MaterialOutputNumericClass::
-                                floating;
+                materialPassFormatNumericClass(metadata.format);
             const auto output_class =
                 materialOutputNumericClass(
                     output_schema->outputs[location].type);
@@ -304,10 +296,9 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
         }
         return;
     }
-    const bool forward = materialPassShaderContract(contract) ==
-                         MaterialShaderContract::forward_scene_color_v1;
-    const auto expected_color_count = forward ? std::size_t{1}
-                                              : materialPassColorAttachmentFormatsSdr.size();
+    const auto shader_contract = materialPassShaderContract(contract);
+    const auto expected_color_count =
+        materialPassColorAttachmentFormatsFor(shader_contract, false).size();
     if (pass_def.output_color.size() != expected_color_count) {
         throw std::runtime_error("Material pass contract '" +
                                  std::string{materialPassContractName(contract)} +
@@ -323,8 +314,8 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
         rt_metadata
             .get(pass_def.output_color.front().target)
             .format;
-    const bool hdr = first_format == vk::Format::eR16G16B16A16Sfloat;
-    const auto &expected_formats = materialPassColorAttachmentFormats(hdr);
+    const auto expected_formats = materialPassColorAttachmentFormatsFor(
+        shader_contract, materialPassUsesHdrColorFormats(first_format));
     for (size_t i = 0; i < pass_def.output_color.size(); ++i) {
         const auto rt_id = pass_def.output_color[i];
         if (isSpecialRenderTarget(rt_id.target)) {
@@ -333,9 +324,7 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
 
         const auto rt =
             rt_metadata.get(rt_id.target);
-        const auto expected_format = forward ? forwardMaterialPassColorAttachmentFormat
-                                             : expected_formats[i];
-        if (rt.format != expected_format) {
+        if (rt.format != expected_formats[i]) {
             throw std::runtime_error("Material pass color output format mismatch: " + rt.name + " in pass: " +
                                      pass_def.name);
         }

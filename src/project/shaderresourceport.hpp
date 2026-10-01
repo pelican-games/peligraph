@@ -132,6 +132,11 @@ ShaderResourcePortAccess effectiveShaderResourcePortAccess(
     const ShaderResourcePortDefinition &port,
     bool resource_is_image, bool written);
 
+// EL-4: the GLSL name of a port's descriptor is this prefix and the port's
+// name.
+inline constexpr std::string_view shaderResourcePortVariablePrefix =
+    "pelican_resource_";
+
 std::string shaderResourcePortVariableName(
     std::string_view port_name);
 

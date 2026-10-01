@@ -587,10 +587,8 @@ std::string_view materialPassContractName(MaterialPassContract contract) {
 }
 
 std::optional<MaterialPassContract> materialPassContractFromName(std::string_view name) {
-    if (name == "legacy_gbuffer_v1") return MaterialPassContract::legacy_gbuffer_v1;
-    if (name == "deferred_geometry_v1") return MaterialPassContract::deferred_geometry_v1;
-    if (name == "forward_opaque_v1") return MaterialPassContract::forward_opaque_v1;
-    if (name == "forward_transparent_v1") return MaterialPassContract::forward_transparent_v1;
+    for (const auto contract : materialPassContracts)
+        if (materialPassContractName(contract) == name) return contract;
     return std::nullopt;
 }
 

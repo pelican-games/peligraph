@@ -31,6 +31,8 @@
 #include "../src/project/materialdrawloop.hpp"
 #include "../src/project/rendercomponent.hpp"
 #include "../src/project/renderpipeline.hpp"
+#include "../src/project/graphmodule.hpp"
+#include "../src/core/shader/shaderreference.hpp"
 #include "../src/project/vulkanviewplanning.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -9911,6 +9913,131 @@ TEST_CASE("EL-1 get_graph_catalog lists the argument values render.image accepts
     CHECK_THAT(refused.at("error").dump(),
                Catch::Matchers::ContainsSubstring("unsupported enum value: el1_not_a_reference"));
     CHECK(readBytes(harness.project.render_config) == before);
+}
+
+// EL-4: get_graph_catalog lists, per material pass contract, the formats each
+// socket takes, the formats a material_outputs pass takes, and the engine's
+// shaders by the stem references a pass gives; the vocabulary gives each
+// format its aspect. Each list is read off the table the engine checks
+// against (the running engine's own case is in engine_primitives_test).
+TEST_CASE("EL-4 get_graph_catalog lists material pass formats, material output formats and engine shaders",
+          "[render-config-editor][el4][graph-catalog]") {
+    G6Harness harness{false};
+    harness.service = makeProjectService(harness.project, harness.resolver, harness.runtime);
+    const auto catalog = Json(harness.service->getGraphCatalog(Json::object()));
+    const auto vocabulary =
+        Json(harness.service->getRenderAuthoringContext(Json::object())).at("render_target_vocabulary");
+    // The modules are listed as before.
+    CHECK(catalog.at("schema") == "pelican.graph_catalog");
+    CHECK_FALSE(catalog.at("modules").empty());
+
+    // Every format the parser takes has an aspect, from Vulkan's traits;
+    // `formats` stays a list of names.
+    const auto &aspects = vocabulary.at("format_aspects");
+    REQUIRE(vocabulary.at("formats").size() == aspects.size());
+    for (const auto &name : vocabulary.at("formats")) CHECK(aspects.contains(name.get<std::string>()));
+    CHECK(aspects.at("R16G16B16A16_SFLOAT") == "color");
+    CHECK(aspects.at("R32_UINT") == "color");
+    CHECK(aspects.at("D32_SFLOAT") == "depth");
+    CHECK(aspects.at("D16_UNORM") == "depth");
+    CHECK(aspects.at("D24_UNORM_S8_UINT") == "depth_stencil");
+
+    // One entry per contract the parser accepts, its sockets the ones the
+    // graph gives render.material_pass, each format a known one of the
+    // socket's aspect.
+    const auto &contracts = catalog.at("material_pass_contracts");
+    REQUIRE(contracts.size() == materialPassContracts.size());
+    for (const auto &contract : contracts) {
+        INFO(contract.dump());
+        const auto name = contract.at("contract").get<std::string>();
+        REQUIRE(materialPassContractFromName(name));
+        auto sockets = renderMaterialPassColorPorts(Json{{"material_contract", name}});
+        sockets.push_back("depth");
+        REQUIRE(contract.at("sockets").size() == sockets.size());
+        for (std::size_t index = 0; index < sockets.size(); ++index) {
+            const auto &socket = contract.at("sockets").at(index);
+            CHECK(socket.at("socket") == sockets[index]);
+            CHECK_FALSE(socket.at("formats").empty());
+            for (const auto &format : socket.at("formats"))
+                CHECK(aspects.at(format.get<std::string>()) == socket.at("aspect"));
+        }
+        for (const auto &combination : contract.at("combinations"))
+            CHECK(combination.size() == sockets.size());
+        CHECK(contract.at("material_outputs") == (name != "legacy_gbuffer_v1"));
+    }
+    const auto contract_of = [&](std::string_view name) {
+        for (const auto &contract : contracts)
+            if (contract.at("contract") == std::string{name}) return contract;
+        return Json{};
+    };
+    const auto forward = contract_of("forward_opaque_v1");
+    CHECK(forward.at("sockets").at(0) ==
+          Json{{"socket", "color"}, {"aspect", "color"}, {"formats", {"R16G16B16A16_SFLOAT"}}});
+    CHECK(forward.at("sockets").at(1) ==
+          Json{{"socket", "depth"}, {"aspect", "depth"}, {"formats", {"D32_SFLOAT"}}});
+    // The G-buffer: the SDR table and the HDR one its first socket chooses.
+    const auto deferred = contract_of("deferred_geometry_v1");
+    REQUIRE(deferred.at("combinations").size() == 2);
+    CHECK(deferred.at("combinations").at(0).at("albedo") == "B8G8R8A8_SRGB");
+    CHECK(deferred.at("combinations").at(1).at("albedo") == "R16G16B16A16_SFLOAT");
+    CHECK(deferred.at("sockets").at(2) ==
+          Json{{"socket", "material"}, {"aspect", "color"}, {"formats", {"R8G8B8A8_UNORM"}}});
+
+    // A material_outputs pass: by the output's type, the color formats of its
+    // numeric class; any depth format for its depth.
+    const auto &outputs = catalog.at("material_output_formats");
+    const auto lists = [](const Json &list, const char *format) {
+        return std::find(list.begin(), list.end(), format) != list.end();
+    };
+    CHECK(outputs.at("color").size() == std::size(materialOutputTypes));
+    CHECK(lists(outputs.at("color").at("vec4"), "R8G8B8A8_UNORM"));
+    CHECK(lists(outputs.at("color").at("vec4"), "R16G16B16A16_SFLOAT"));
+    CHECK_FALSE(lists(outputs.at("color").at("vec4"), "R32_UINT"));
+    CHECK_FALSE(lists(outputs.at("color").at("vec4"), "D32_SFLOAT"));
+    CHECK(lists(outputs.at("color").at("uint"), "R32_UINT"));
+    CHECK(lists(outputs.at("color").at("ivec4"), "R32G32B32A32_SINT"));
+    CHECK(outputs.at("depth") == Json::array({"D16_UNORM", "D24_UNORM_S8_UINT", "D32_SFLOAT"}));
+
+    // The engine's shaders, each by a stem whose stage file is built in.
+    const auto &shaders = catalog.at("engine_shaders");
+    INFO(shaders.dump(2));
+    REQUIRE_FALSE(shaders.empty());
+    const auto stage_extension = [](const std::string &stage) {
+        for (const auto candidate : shaderStages)
+            if (shaderStageName(candidate) == stage) return std::string{shaderStageSourceExtension(candidate)};
+        FAIL("unknown stage " << stage);
+        return std::string{};
+    };
+    for (const auto &shader : shaders) {
+        const auto reference = shader.at("reference").get<std::string>();
+        REQUIRE(reference.starts_with("engine://"));
+        const auto file = reference.substr(9) + stage_extension(shader.at("stage").get<std::string>());
+        CHECK((engineResource(file) || engineResource(file + ".spv")));
+        CHECK((shader.contains("reflected_from") != shader.contains("reflection_error")));
+    }
+    const auto shader_of = [&](std::string_view reference, std::string_view stage) {
+        for (const auto &shader : shaders)
+            if (shader.at("reference") == std::string{reference} && shader.at("stage") == std::string{stage})
+                return shader;
+        FAIL("no " << stage << " shader " << reference);
+        return Json{};
+    };
+    const auto fullscreen = shader_of("engine://fullscreen", "vertex");
+    CHECK(fullscreen.at("forms") == Json::array({"source", "spirv"}));
+    CHECK(fullscreen.at("pass_inputs") == Json::array());
+    const auto passthrough = shader_of("engine://passthrough", "fragment");
+    CHECK(passthrough.at("reflected_from") == "source");
+    CHECK_FALSE(passthrough.at("pass_inputs").empty());
+    CHECK(passthrough.at("variadic_inputs") == Json{{"first", 0}, {"max", 8}});
+    CHECK(passthrough.at("fragment_outputs").at(0).at("location") == 0);
+    // A compute shader names its local size.
+    CHECK(shader_of("engine://ray_deform", "compute").at("local_size") == Json::array({64, 1, 1}));
+    // A shader whose ports the pass gives (the generated resource-port
+    // include) says so, and is not reflected on its own.
+    const auto bloom = shader_of("engine://bloom_composite", "fragment");
+    CHECK(bloom.at("resource_port_include") == true);
+    CHECK(bloom.contains("reflection_error"));
+    CHECK(passthrough.at("resource_port_include") == false);
 }
 
 // --- EL-3: edit_rendering_keys writes keys of the root's rendering section.

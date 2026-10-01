@@ -59,6 +59,15 @@ enum class MaterialPassContract {
     forward_transparent_v1,
 };
 
+// EL-4: every contract, in declaration order. materialPassContractFromName
+// accepts exactly their names; get_graph_catalog lists them.
+inline constexpr std::array materialPassContracts{
+    MaterialPassContract::legacy_gbuffer_v1,
+    MaterialPassContract::deferred_geometry_v1,
+    MaterialPassContract::forward_opaque_v1,
+    MaterialPassContract::forward_transparent_v1,
+};
+
 enum class MaterialRouteReason {
     automatic_deferred_compatible,
     automatic_openpbr_base,

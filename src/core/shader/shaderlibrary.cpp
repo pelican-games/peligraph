@@ -41,15 +41,8 @@ ShaderStage shaderStageFromPath(const std::filesystem::path &path) {
         candidate = candidate.stem();
     }
     const auto extension = lowerExtension(candidate);
-    if (extension == ".vert") return ShaderStage::vertex;
-    if (extension == ".frag") return ShaderStage::fragment;
-    if (extension == ".comp") return ShaderStage::compute;
-    if (extension == ".rgen") return ShaderStage::raygen;
-    if (extension == ".rmiss") return ShaderStage::miss;
-    if (extension == ".rchit") return ShaderStage::closesthit;
-    if (extension == ".rahit") return ShaderStage::anyhit;
-    if (extension == ".rint") return ShaderStage::intersection;
-    if (extension == ".rcall") return ShaderStage::callable;
+    for (const auto stage : shaderStages)
+        if (extension == shaderStageSourceExtension(stage)) return stage;
     throw std::runtime_error(
         "Shader path does not encode an expected stage: " +
         path.string());

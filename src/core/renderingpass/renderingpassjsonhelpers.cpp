@@ -7,6 +7,7 @@
 #include <set>
 #include <stdexcept>
 #include <unordered_map>
+#include <vulkan/vulkan_format_traits.hpp>
 
 namespace Pelican {
 
@@ -91,6 +92,25 @@ std::vector<std::string> imageFormatNames() {
     names.reserve(format_names.size());
     for (const auto &entry : format_names) names.emplace_back(entry.first);
     return names;
+}
+
+std::vector<std::pair<std::string, vk::Format>> imageFormats() {
+    std::vector<std::pair<std::string, vk::Format>> formats;
+    formats.reserve(format_names.size());
+    for (const auto &[name, format] : format_names) formats.emplace_back(name, format);
+    return formats;
+}
+
+std::string_view imageFormatAspectName(vk::Format format) {
+    bool depth = false;
+    bool stencil = false;
+    for (std::uint8_t component = 0; component < vk::componentCount(format); ++component) {
+        const std::string_view name = vk::componentName(format, component);
+        depth = depth || name == "D";
+        stencil = stencil || name == "S";
+    }
+    if (depth) return stencil ? "depth_stencil" : "depth";
+    return stencil ? "stencil" : "color";
 }
 
 std::vector<std::string> imageUsageFlagNames() {

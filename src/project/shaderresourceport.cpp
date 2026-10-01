@@ -595,7 +595,7 @@ std::string shaderResourcePortVariableName(
     std::string_view port_name) {
     requireIdentifier(
         port_name, "shader resource port name");
-    return "pelican_resource_" +
+    return std::string{shaderResourcePortVariablePrefix} +
            std::string{port_name};
 }
 

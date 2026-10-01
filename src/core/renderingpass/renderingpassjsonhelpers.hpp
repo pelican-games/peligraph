@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -16,6 +17,12 @@ vk::ImageUsageFlags stringToUsageFlags(const std::vector<std::string> &usage_str
 // The names stringToFormat / stringToUsageFlags accept, in table order.
 std::vector<std::string> imageFormatNames();
 std::vector<std::string> imageUsageFlagNames();
+// EL-4: every format stringToFormat accepts, with its name, in table order.
+std::vector<std::pair<std::string, vk::Format>> imageFormats();
+// EL-4: which aspects a format's texels carry, read off Vulkan's format
+// traits (its components named D and S), not off its name: "color",
+// "depth", "depth_stencil" or "stencil".
+std::string_view imageFormatAspectName(vk::Format format);
 PassInfo makePassInfo(const std::string &type_str);
 PassInfo makePassInfo(RenderPassType type);
 FullscreenPushConstantData stringToFullscreenPushConstantData(const std::string &data_str);

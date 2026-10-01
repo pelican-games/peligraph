@@ -1,6 +1,10 @@
 #pragma once
 
+#include "../../project/materialoutput.hpp"
+#include "../../project/renderpipeline.hpp"
+
 #include <array>
+#include <vector>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
@@ -36,5 +40,39 @@ inline constexpr vk::Format forwardMaterialPassColorAttachmentFormat =
     vk::Format::eR16G16B16A16Sfloat;
 
 inline constexpr vk::Format materialPassDepthAttachmentFormat = vk::Format::eD32Sfloat;
+
+// EL-4: the color formats a material pass without material_outputs takes,
+// one per socket in location order. A forward contract takes one scene
+// color; a G-buffer one the SDR or the HDR table, chosen by its first
+// socket's format (materialPassUsesHdrColorFormats).
+// validateMaterialPassAttachments checks against these, and
+// get_graph_catalog lists them.
+inline constexpr bool materialPassUsesHdrColorFormats(vk::Format first_color) {
+    return first_color == vk::Format::eR16G16B16A16Sfloat;
+}
+
+inline std::vector<vk::Format> materialPassColorAttachmentFormatsFor(MaterialShaderContract shader_contract,
+                                                                     bool hdr) {
+    if (shader_contract == MaterialShaderContract::forward_scene_color_v1)
+        return {forwardMaterialPassColorAttachmentFormat};
+    const auto &formats = materialPassColorAttachmentFormats(hdr);
+    return {formats.begin(), formats.end()};
+}
+
+// EL-4: whether a pass of the contract may declare material_outputs (the
+// legacy G-buffer keeps its fixed five attachments).
+inline constexpr bool materialPassContractAcceptsMaterialOutputs(MaterialPassContract contract) {
+    return contract != MaterialPassContract::legacy_gbuffer_v1;
+}
+
+// EL-4: the numeric class a color target's format has where a
+// material_outputs output is written to it; the output's type must be of
+// the same class.
+inline MaterialOutputNumericClass materialPassFormatNumericClass(vk::Format format) {
+    const auto name = vk::to_string(format);
+    if (name.ends_with("Sint")) return MaterialOutputNumericClass::signed_integer;
+    if (name.ends_with("Uint")) return MaterialOutputNumericClass::unsigned_integer;
+    return MaterialOutputNumericClass::floating;
+}
 
 } // namespace Pelican
