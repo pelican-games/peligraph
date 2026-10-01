@@ -27117,6 +27117,110 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - **test**: 新規 `devstudio_graphcanvas_test` の `GL-1f a material pass, a shadow_depth and a snapshot_copy hand on what they wrote; a line from one lists the port in the writer's outputs, and the last one gone takes it out`。`LP-4e a material pass's sockets come from its contract, and the palette places one` を「出力が空」から「`color` / `depth`」に直した。GL-1e の scene の test の線の元を pass の出力に直し、pass の出力を `present` に落とす節を足した
 - **シナリオ**: `graph_from_blank_forward` の drag を material pass の `graph_socket#render_material_pass/out:color` からにした。`graph_from_blank_forward`(53 手)/ `graph_from_blank` / `graph_folded_features` / `loop_zone_read` / `material_loop_decompose` が仮想モニタで緑(統合側の報告)
 
+### 81b62382(fix): drag の間は Graph が滑らない / 読んでいる image を二重につながない
+
+**Studio のみ。Studio での見え方は `docs/manual/13_editor.md` の「ループをゾーンで見る・編集する」のゾーンを選ぶ・動かす、「Graph から画面に出す(✅GL-1e)」の落とす。**
+
+#### 着地(2026-10-01、81b62382)
+- drag の 1 歩ごとに描いたものから scene rect を計算し直していたので、一番左の node(畳んだ feature)を drag すると rect が view の下で縮み、canvas 全体が滑った。gesture(node・reroute・tie の drag)の間は rect を広げるだけにし、rect を新しく決める描き直しでは各 view が中央の点を保つ([`GraphCanvasScene::scheduleSceneRectUpdate()`](../src/devstudio/view/graphcanvaswidget.cpp#L2448))。UX-1 が後で、view が見えている範囲ごと保つ形に直した(下の UX-1 の決定 2)
+- pass が既に読んでいる image をその `+ input` に落とすと、同じ入力を 2 つ書いて送り、engine が `duplicate_input` で断った。Frame Plan と Graph が共有する接続の要求(`framePlanSocketConnectRequest`)が送らずに `<pass> already reads <image>.` を言う([断る所](../src/devstudio/view/frameplanedit.cpp#L819))
+- **test**: `devstudio_frameplan_graph_test` の `VI-3a a drop connects by number: at the next binding, in place, or not at all with the line that says why` に 1 節を足した。scene rect の変更に test は無い(commit の stat)
+
+### UX-1: Graph の操作感 —— 線の吸着と強調、ゾーンと body の node の drag、分岐の body、Auto layout の入口
+
+**Studio のみ。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「線を引いている間、落とせるソケットが光り、近ければ吸い付きます(✅UX-1)」、「ループをゾーンで見る・編集する」の分岐のタブとゾーンを選ぶ・動かす、「分岐表」の Add branch、上段の操作列、「Auto layout(✅N-4)」、「notice の文は写せます(✅UX-1)」。**
+
+#### 前提
+- 利用者の指摘(2026-10-01、Release で Blank → Graph で material pass を組んで): Node Wrangler のように繋げるソケットを強調して少し離れても吸着したい / ゾーンを動かすと押し戻される / loop の中の node をゾーンを動かさずに動かせない / 追加した分岐(else)のタブを開いて編集できない / graph の自動レイアウトがどこにあるか分からない(右クリックの Auto layout だけだった)
+
+#### 着地(2026-10-01、7620fe1f)
+- **決定 1(吸着)**: 線を引いている間、落とせるソケットを 1.35 倍、落とせないソケットを不透明度 0.3 で描く。画面の 32 px 以内(`GraphCanvasSnapRadius`。ズームに依らない)で一番近い落とせるソケットに線の先を寄せ(1.7 倍)、離すとそこへ落とす。光らせる判定と落とす判定は同じ [`GraphCanvasScene::dropAction()`](../src/devstudio/view/graphcanvaswidget.cpp#L2665) 1 つで、型の判定は `canConnect()` と同じ中身の [`GraphCanvasModel::canConnectAmong()`](../src/devstudio/model/graphcanvasmodel.cpp#L2604)
+- **決定 2(ゾーンの押し戻し)**: 文書の位置は動かした値で、動いていたのは view だった(コードの注記)。view は viewport より小さい scene rect を中央に置くので、drag の間と描き直しの後の rect の変化、スクロールバーの出現のたびに画面の全部が変化の半分ずれた。[`GraphCanvasScene::applySceneRectNow()`](../src/devstudio/view/graphcanvaswidget.cpp#L2459) が各 view に見えている範囲を含めた rect を渡してスクロールを保ち、`configureGraphCanvasView()` がスクロールバーを常に出す
+- **決定 3(body の node の drag)**: 配置を持たない root は描くたびに自動配置をやり直すので、body の node の drag で枠が広がるとゾーンが元へ戻った。drag の間、root の graph の node の場所をセッションに固定する([`GraphCanvasScene::holdRootPlaces()`](../src/devstudio/view/graphcanvaswidget.cpp#L672)。root の文書には書かない)
+- **決定 4(分岐)**: Add branch は else の body を写した definition(名前は Studio が `<ループ>_body` から提案)を `add_definition` で作り、分岐と同じ列で送る(Undo 1 回。[写す所](../src/devstudio/model/graphcanvasmodel.cpp#L3747))。選んだタブはテーマの token `tab_selected` / `tab_selected_text`(太字)で描く。ほかの分岐と同じ body のタブに `· shared with else`(か `branch N`)、文書が定義しない body のタブは薄く描いて理由を tooltip に。`GraphCanvasModel::loopBranch()` は body で引き直さず、タブで選んだ番号を返す
+- **決定 5(入口)**: Graph タブの上段(Undo / Redo の後ろ)に Auto layout と Fit view のボタン。右クリックと同じ action を発火する
+- **決定 6(最後の列)**: 画面に書くもの(`display` / `swapchain`、Frame Plan では `frame_target` も)と sink を、道が短くても最後の列に置く。共有の配置の `LayoutOptions::last_column`([`layoutNodeGraph` の (3b)](../src/devstudio/view/nodelayout.cpp#L296))を、Graph タブと Frame Plan の Logical graph が使う
+- **決定 7(Copy message)**: [`applyPanelNoticeStyle()`](../src/devstudio/view/panelhelp.hpp#L106) が notice の行を選べるようにし、右クリックの Copy message で全文(`panelNoticeMessage()`。tooltip の全文)を clipboard に入れる。この関数を通る全パネルの notice に付く
+- **test**: 新規 `devstudio_graphcanvas_scene_test` の `UX-1 a zone dragged by its heading ends where the hand let go, and stays there`・`UX-1 a body node is dragged inside its zone, and the zone stays where it is`・`UX-1 a line being drawn lights the sockets it can land on and snaps to the nearest one in reach`・`UX-1 Add branch gives the branch a body of its own, and the chosen tab is plain`・`UX-1 Auto layout and Fit view stand in the Graph tab's row beside Undo and Redo`・`UX-1 what writes to the screen and a sink stand in the last column, however short the path to them`・`UX-1 a notice's Copy message puts the whole message on the clipboard`
+- **シナリオ**: `graph_loop_expand` の Add branch の分岐の body の期待を `loop_body` から `loop_body_2` に直した。新しいシナリオは無い
+
+### UX-2: Graph の node の値を選んで決める(生の JSON や型名を打たない)
+
+**Studio のみ。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「render.image の値を選んで決める(✅UX-2)」「render pass の shader を選ぶ(✅UX-2)」「値の帯は一覧を開きます。打つ道は詳細表の JSON です(✅UX-2)」、シナリオの `graph_from_blank_forward`。**
+
+#### 前提
+- 利用者の指摘(2026-10-01): 「ターゲットのフォーマットとかそういったもろもろも、生 json とか生の型を書くよりかは、なるべく選択したい」。それまで `render.image` の `type` は JSON、`format` は名前、`usage` は配列の JSON を打っていた
+
+#### 着地(2026-10-01、5f048297)
+- **決定 1(render.image の欄)**: [`GraphCanvasImageFields`](../src/devstudio/view/graphcanvasrenderfields.hpp#L37)。Format は `render_target_vocabulary.formats`(depth の型なら depth の format だけ)、Type は catalog の constructor `image` の型を人の読める名前で、その引数は catalog の `parameters[].allowed`(EL-1 の `arguments.<名前>.values` があればそれ)の combo、Usage は flag ごとの check、Size は `Screen ×` か `Fixed` と Layers。Depth と Color の間で型を替えると format と usage の attachment の flag も動く([`GraphCanvasModel::imageParametersWithSemantic()`](../src/devstudio/model/graphcanvasmodel.cpp#L6146))。vocabulary は接続ごとに 1 回 `get_render_authoring_context` で取る。vocabulary の無い engine では Format と Usage は打つ欄に戻る
+- **決定 2(render pass の欄)**: [`GraphCanvasPassFields`](../src/devstudio/view/graphcanvasrenderfields.hpp#L90)。Vertex / Fragment を Pass Editor の一覧(`fullscreenShaderChoices`)から選ぶ。Ports は宣言を読むだけで出す(入力のソケットは shader の宣言から出るので、つなぐのは canvas の線)
+- **決定 4(値の帯)**: `render.image` の format / type、render pass の fragment の帯は、押すと一覧の combo が開く([`GraphCanvasModel::valueChoices()`](../src/devstudio/model/graphcanvasmodel.cpp#L6193))
+- **決定 5(JSON の道)**: 詳細表の parameters の行の値をダブルクリックで JSON として打てる。JSON でなければ送らない
+- どの変更も node の parameters 全体を 1 回の `set_node_parameters` で送り(Undo 1 回)、欄が知らない鍵はそのまま送る([`GraphCanvasModel::setNodeParameters()`](../src/devstudio/model/graphcanvasmodel.cpp#L5989))
+- **test**: 新規 `devstudio_graphcanvas_scene_test` の `UX-2 a render.image's format, type, usage and size are picked in its fields, each one set_node_parameters; its pills open the list; the details still take JSON; an engine without the vocabulary falls back to text` と `UX-2 a render pass's shaders are picked from the Pass Editor's list, its ports shown as declared, and its shader pill opens the fragment list`
+- **シナリオ**: `graph_from_blank_forward` の末尾に足した(json の step は 51 → 69)。palette で `render.fullscreen` を足し、その image を選んで Format の combo で `R8G8B8A8_UNORM` から `R16G16B16A16_SFLOAT` へ替え、engine が commit して欄が出さない鍵(`usage` の `TRANSFER_SRC`)が残ることを見る
+
+### UX-4a: Pass Editor の生 JSON の欄を部品のフォームに(Graph に埋め込む前の部品作り)
+
+**Studio のみ。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「生の JSON の欄はフォームになりました(✅UX-4a)」と「pass の設定欄(✅G-3)」の color 出力ごとの行。部品の索引は `docs/source-code-guide/08_class_interface_index.md`。**
+
+#### 前提
+- 利用者の指摘(2026-10-01): 生 JSON や生の型を書くより選択したい / 機能はあるのに GUI が無いものを GUI にしたい。Pass Editor の raster の draw と raster state、shader の defines、material の設定、preset の routing は JSON の欄だった
+
+#### 着地(2026-10-01、ad1e0771)
+- **決定 1・3・4(部品)**: `src/devstudio/view/passforms/` に [`PassForm`](../src/devstudio/view/passforms/passform.hpp#L28) と 5 つの部品(`RasterStateForm` / `AttachmentOpsForm` / `ShaderDefinesForm` / `MaterialSettingsForm` / `MaterialRoutingForm`)。どれも今の値(JSON)を受けて変えた後の値(JSON)を返し、知らない鍵は受けたまま返す。Pass Editor に依存しない。Pass Editor はこれを JSON の欄の代わりに使い([並べる所](../src/devstudio/view/fullscreenpasswidget.cpp#L507))、送る要求とその形は変わらない。`fullscreenpasssettings.*` の G-3 の行は `AttachmentOpsForm` に移した
+- `ShaderDefinesForm` は engine の define の parser が断るもの(engine が pass の compile で定義する名前、C の識別子でない名前、同じ名前の 2 回)を engine の文で赤くし、断られる行があれば下書きを作らない
+- `MaterialSettingsForm` は 10 個の設定のうち `gpu_draw_source` だけを Other (JSON) に残す
+- **決定 2**: skinned vertex stem の横に選ぶ一覧(Engine default と project の `.vert`)、Ray scene は `scene` と宣言済みの structure の combo(`RenderPassAuthoringCapability` に `get_scene_acceleration_structures` の読みを足した)
+- **test**: 新規 `devstudio_pass_forms_test` の 5 本(部品ごとに 1 本)。`devstudio_fullscreen_pass_test` を部品の欄に合わせて直した
+- Graph の詳細欄への埋め込み(UX-4b)はまだ
+
+### UX-3: Graph の palette を広げる / 全 render node に置き場所の欄 / ソケットごとの設定 / EL-1 の一覧
+
+**Studio のみ。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「palette で置ける render node(✅UX-3)」「render node の置き場所 —— Place(✅UX-3)」「入力ソケットの右クリック —— 読み方の設定(✅UX-3)」、definition の改名の Rename、「draw_loop の Loop の欄と分岐の when」「render.material_pass と draw.* の node」の UX-3 の項、Region replacements の provider、シナリオの `graph_palette_kinds`。**
+
+#### 前提
+- palette は ports が parameters で決まる render node を `render.fullscreen` と material pass と draw step のほかは出さなかった。置き場所の欄はループの Loop の欄だけ、ソケットの読み方は `ports` の JSON を打っていた
+- engine の EL-1(`get_render_authoring_context` の `materials` / `material_tags` / `region_providers`、catalog の型の `arguments`)が着地し、名前を打っていた欄を一覧から選べるようになった
+
+#### 着地(2026-10-01、f34adcc7)
+- **決定 1(palette)**: `render.target_ref`(宣言済みの target の combo、型は宣言から)・単独の `render.image`(UX-2 の既定)・`render.buffer` / `render.attribute`(element・domain・数)・`render.raster`(fullscreen と同じ形に `draw.vertex_count` 3)・`render.compute`(project の compute shader があるときだけ)・`render.snapshot_copy`(`snapshot_after` を plan の pass から選び、source をその pass が書いたものにつなぎ、destination の image を一緒に置く)・`render.shadow_depth`(depth の image と一緒)を、engine の graph の検査が受ける形で 1 回の編集に置く([種を入れる所](../src/devstudio/model/graphcanvasmodel.cpp#L2777))
+- **決定 2(Place)**: fullscreen / raster / material pass / shadow_depth / snapshot_copy / compute の詳細欄に Place(automatic / before・after の pass / after anchor)と Family(`pass_set`)の欄。compute は置き場所を取らないので押せない([`GraphCanvasModel::setPlace()`](../src/devstudio/model/graphcanvasmodel.cpp#L6494))
+- **決定 3(ソケット)**: fullscreen / raster / compute の入力のソケットの右クリックに Previous frame(`history`)・Filter / Address(`sampling`)・Mip level / Layer(`subresource`)・Attachment location(`location`)。port が取れないものは灰色で理由を tooltip に([`addGraphCanvasSocketEntries()`](../src/devstudio/view/graphcanvasrenderfields.cpp#L725))
+- **決定 4**: Rename definition の欄に Studio の提案(走らせる最初の node の `<id>_body`)。`draw.override` に Depth compare の combo
+- **決定 5(EL-1 の一覧)**: draw_loop の Where と分岐の tags を `material_tags` の複数選択に、分岐の material を `materials[]` の名前(組込は印付き)に、has variant に variant の名前を、`draw.variant` と material pass の `material_variant` を variant の和の combo に、Regions の provider を `region_providers` の combo に。一覧を返さない engine では今までの欄
+- **test**: 新規 `devstudio_graphcanvas_scene_test` の `UX-3 decision 1: the palette places target_ref, image, buffer, attribute, raster, compute, shadow_depth and snapshot_copy seeded, each in one edit the engine's graph validation takes`・`UX-3 decision 2: a render node's Place and family are picked, each one set_node_parameters; a compute task takes none`・`UX-3 decision 3: a render node's socket menu writes its port's previous frame, sampling, mip / layer and location, each one set_node_parameters`・`UX-3 decisions 4 and 5: the engine's materials, tags and variants are picked in the draw_loop's fields, the draw steps' and the material pass's; draw.override's depth_compare is a combo`
+- **シナリオ**: 新規 `graph_palette_kinds`(json の step は 61。Blank → New render target... の `ux3_scene` → palette の `target_ref` / `render.raster` / `snapshot_copy` → engine が受け、Frame Plan に raster と copy が出る)。シナリオは 42 → 43 本。`material_loop_decompose` は分岐の material を鍵ではなく engine の一覧の名前 `g1_flat` で選ぶように直した。`test/studio_scenarios/README.md` の Rename の欄の説明を提案の名前に直した
+
+### GB-1: Blank から GUI だけで描画を組むシナリオ 5 本
+
+**test のみ(Studio のシナリオ)。Studio での見え方は `docs/manual/13_editor.md` の「Studio の自動化面」の `gui_build_A`〜`gui_build_E` の段落。**
+
+#### 着地(2026-10-01、3c6442a9)
+- 新規 `gui_build_A`〜`gui_build_E`(json の step は 41 / 58 / 83 / 73 / 40)。どれも File > New Project > Blank pipeline から、マウスとキーボードでできることだけで組む(`rpc` は読むだけ)。シナリオは 43 → 48 本
+- **A(forward)** と **B(deferred と lighting。通る道は Frame Plan)** は最後まで組み、viewport に箱が描かれることを見る
+- **C(bloom のループ)**: 明るい所の pass(`engine://passthrough` のまま)と Add loop の 4 回のループ、carry まで組み、engine が 4 回展開して回が前の回を読むところで止まる。止まる所(description の記録): `extent_scale` を回ごとに帯から書けない、Graph の pass の欄の shader の一覧に engine の bloom の shader が無い(engine の EL-4 が出す)、`bloom_highpass` が engine の予約する `PELICAN_FEATURE_*` の define を要る、合成に buffer の port と加算の blend の欄が無い、ループの出力を `present` に落とすと `present` がループの入力の image を読む
+- **D(影)**: forward の pass に Features の `shadow_directional` を足し、Add loop の Over で影の family と cascade の軸を選べるところまで。palette の `render.shadow_depth` をその body に足すと engine が `render node parameters must be an object` で断るので、Features の Replace with loop version… で engine の cascade のループに置き換えて見る(deferred の pipeline では `shadow_directional` が断られる)
+- **E(RT の mask)**: Deferred geometry に Features の `rt_shadow_mask_pipeline` を足し、Frame Plan で task が G-buffer を読み mask を書くところまで。mask を `present` に落とすと `render_pipeline_preflight_failed`(compute の task は全部の pass の後に走る)、palette は `render.compute` を出さない、Tasks > New ray tracing は無い shader を名指す
+- commit の記録では、止まる所は engine の RS-6〜RS-11 と GB-1 の後の Studio の作業が受ける(どれがどれかは、この台帳の記録の時点では未確認)
+
+### RSX: render の編集の完了を 1 か所で受け、どのパネルでも restart_required で起動し直す / Rendering settings のタブ(EL-3)
+
+**Studio のみ。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「どのパネルの render の編集も、再起動が要れば同じ形で起動し直します(✅RSX)」「Studio の Rendering settings タブ(✅RSX)」、「render の編集を戻す」の `edit_rendering_keys`、シナリオの `rendering_settings_from_blank`。engine の契約は同じ章の「rendering 節のほかのキーを書く(✅EL-3)」。**
+
+#### 前提
+- 利用者の決定(2026-10-01): material の物理の契約が変わる編集は今の「engine を起動し直す」のまま(その場で組み直す案は採らない)。起動し直しが要るときに自動で行われるかを気にしていた
+- engine は RS-1 から runtime に届く render config の ticket の完了すべてに `restart_required` を返すが、Studio が見ていたのは Graph タブ・Frame Plan・render の編集の履歴の 3 か所だけで、Render Features は再起動が要る編集でも `Applied without restarting` を言っていた(engine session の調査)
+
+#### 着地(2026-10-01、6a1069c8)
+- **決定 1(1 か所で読む)**: [`readRenderEditCompletion()` / `completeRenderEdit()`](../src/devstudio/model/rendereditcompletion.hpp#L52)(`src/devstudio/model/rendereditcompletion.*`)。`restart_required` なら `Restarting the engine to apply this change (<code>)...` で MainWindow の `requestEngineRestart()` を呼ぶ(`restart_reason` は `code` だけ読む)
+- **決定 2(全パネル)**: 前は Graph タブ・Frame Plan・履歴。後は Pass Editor、Render Features とその dialog(frame node の順・compute task・fork / regions・callable records・scene acceleration structures)、Graph タブの pass の入力の編集、Inspector のグラフ装着、Rendering settings、履歴の戻しを加えた全部。`Applied without restarting` は再起動しないときだけ
+- **決定 3(Rendering settings)**: render-tools の 3 枚目のタブ([`RenderingSettingsWidget`](../src/devstudio/view/renderingsettingswidget.hpp#L37))。`draw_sort` / `render_strategy` / `resolver_version` / `multisampling` は選ぶ combo(engine は一覧を出さないので、第6章の値を Studio が持つ)、`shader_defines` は UX-4a の `ShaderDefinesForm`(rendering 節の defines として、engine が予約する名前も断らない形)、`snapshots` / `graph_transforms` / `xr` は今は JSON の欄と Apply。変えるたびに `edit_rendering_keys` を 1 回。preset を選ぶ root が断るキー(`multisampling` / `resolver_version`)は押せなくして engine の reason を tooltip に。履歴に `edit_rendering_keys`(`Set <key>` / `Remove <key>`)を足した。`--tab rendering_settings` と View ▸ Render Tools ▸ Rendering settings
+- **N-7**: Pass Editor の行の名前を短くして文字の上限に戻した(`Add define` → `Add`、`Raster state` → `Raster`、`Scene ray query` → `Ray query`、`Front face` → `Winding`。commit の記録では 398 / 400)
+- **test**: 新規 `devstudio_rendering_settings_test` の `RSX decision 1: a render edit that commits with restart_required restarts the engine through the one reading, and Render features does not say it applied live` と `RSX decision 3: Rendering settings shows the root's rendering keys, sends one edit_rendering_keys per change, and switches off what a preset root refuses`
+- **シナリオ**: 新規 `rendering_settings_from_blank`(json の step は 30。Blank → Rendering settings で `shader_defines` に `RSX_TINT` を足す → `Saved shader_defines.` → Edit ▸ Undo Render Edit で `Undid "Set shader_defines".` と root から消える)。シナリオは 48 → 49 本
+- **残る穴**: `snapshots` / `graph_transforms` / `xr` は JSON の欄(次にフォームにする候補)。EL-3 の編集が `restart_required` を返す道を GPU で通す test は無い
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

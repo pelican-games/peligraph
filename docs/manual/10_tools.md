@@ -715,8 +715,8 @@ pelican_studio --project <dir> --tab graph     # render-tools dock のタブを�
 pelican_studio --automation <名前>             # test 用の自動化チャネルを開く(Q-1)
 ```
 
-`--tab` が取るのは `frame_plan` / `render_features` / `graph` の 3 つ
-([一覧](../../src/devstudio/view/mainwindow.cpp#L1374))。**未知の名前は window を作る前に console へ
+`--tab` が取るのは `frame_plan` / `render_features` / `rendering_settings` / `graph` の 4 つ(`rendering_settings` は ✅RSX から。[第13章](13_editor.md)「Studio の Rendering settings タブ」)
+([一覧](../../src/devstudio/view/mainwindow.cpp#L1392))。**未知の名前は window を作る前に console へ
 理由を出して終了コード 2** です([検査](../../src/devstudio/main.cpp#L36)) —— window を開いて「たまたま前にあった
 タブ」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます
 ([順序](../../src/devstudio/view/uimain.cpp#L75)) —— project を開くとその project のツール配置が復元され、
@@ -815,7 +815,7 @@ viewport の左クリックは child client の物理 pixel 座標を `pick_obje
 現在は選択と toolbar の Move / Rotate / Scale モードを `set_gizmo` で player へ送ります。
 
 Inspector の `Add component...` / `Ray geometry...` の下、properties の一覧より**上**には **Attached graphs** グループが
-あります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L269))。選択オブジェクトを owner とする
+あります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L271))。選択オブジェクトを owner とする
 `graph.instance` の一覧と **Attach...** / **Detach** / **Refresh**、選択した instance の **Instance inputs**
 (port ごとに mode / 著作された値 / 実際に使われた値の 3 列)、そして port ごとの 4 導線 ——
 **Control with a curve** / **Connect to another output** / **Open the source** / **Disconnect** です。
@@ -850,7 +850,7 @@ overlay が用意しますが、overlay の feature 一覧を scene や project 
 
 `View > Panels > Frame Plan` の dock(`pelican.framePlanDock`)には **Frame Plan・Features・Graph の
 3 つのタブ**が同居します(タブ widget の object name は `pelican.renderTools`。
-[構築](../../src/devstudio/view/mainwindow.cpp#L364))。**Graph は新しい dock ではなくこの dock の 3 枚目**です ——
+[構築](../../src/devstudio/view/mainwindow.cpp#L366))。**Graph は新しい dock ではなくこの dock の 3 枚目**です ——
 dock を増やすことは「見失う場所」を増やすことなので、同じレンダー設定を語る 3 つの見方を 1 箇所に置いています。
 
 **Frame Plan タブ**は実行中 player の公開 `get_frame_plan` を読む調査面で、**9 枚のタブ**を持ちます ——
@@ -879,7 +879,7 @@ acceleration structure = 菱形 / swapchain = 六角 / history = 縁の太い丸
 ボタンは 3 段です。著作一覧の下の行が **Remove selected** / **Parameters...** / **Make editable...**、
 カタログの下が **Add selected**、最下段が **Refresh** / **Procedural assets...** / **Tasks...** /
 **Fork preset...** / **Region replacements...** / **Callable Records...** / **Scene AS...** / **Apply**
-([構築](../../src/devstudio/view/renderfeatureswidget.cpp#L2227))。**Parameters...** は選択 feature の
+([構築](../../src/devstudio/view/renderfeatureswidget.cpp#L2290))。**Parameters...** は選択 feature の
 scalar パラメータを編集し、**Make editable...** は materialize(具体値へ展開した派生を新しい
 `project://` ファイルに作り、元の参照をそれに差し替える)です。どちらも詳細は
 [第13章](13_editor.md) §13.5。**この dock に export / import や package の UI はありません** ——
@@ -985,7 +985,7 @@ HEAD が動くと configure が再実行される。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。2026-07-10 以降の追加: `run_devcli_assets`(WP66)/ `run_event_schema_compile`(WP71)/ `run_dump_lowered_material`(WP76)/ `run_devcli_gltf_extract`(WP79)/ `run_spvlink_golden`(WP80)/ `run_devcli_rules_import`(WP84)/ `run_devcli_bake_camera` + `run_input_record_replay_headless`(WP89)/ `run_ui_u2_rpc_replay`(WP93)など。
 - 2026-09 の追加: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(ctest 名 `devcli_graph_catalog`。`pelican_cli graph-catalog` の出力を検査し、**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` / `:end` のコメントで区切られていて、誰も比べない写しを 2 つ目の正にしないための仕掛けです)、`package_install_smoke`(X-1。install → カタログ → 描画 → uninstall を実 player で。`gpu` ラベル)、[`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(出荷 project の走査。`project.json` の `requires` が満たせない project は**名前を出して skip** し、player の中で落ちません)。
 - **Studio のシナリオ(Q-1)**: `test/studio_scenarios/*.json` は 1 本が 1 つの ctest `studio_scenario_<名前>` になり
-([登録](../../test/CMakeLists.txt#L3386))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
+([登録](../../test/CMakeLists.txt#L3410))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
 実物の player が埋まるので `QT_QPA_PLATFORM=offscreen` は掛けません。Studio target と Python 製テストを有効にし、
 Python 3.11 以上を用意します。`uv` は不要です。完全な GPU gate はシナリオの未登録・skip を失敗にするため、
 `SKIP_DEVSTUDIO=OFF` と `PELICAN_PYTHON_TESTS=ON` を指定します。[`run_studio_scenario.cmake`](../../test/run_studio_scenario.cmake#L30) が fixture

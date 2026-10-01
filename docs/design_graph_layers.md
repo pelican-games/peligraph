@@ -233,6 +233,8 @@ canvas は 1 枚だが、**見せる領域を選ぶ**。全領域を一度に描
 | **GL-5 Frame Plan を mode に** | Frame Plan の編集入口を Graph の操作へ束ね、独立の入口を消す | 無し | Frame Plan から送る op が Graph と同じ 1 経路になる |
 | GL-6(後) | 保存形の一本化(§6) | 大 | 別設計 |
 
+注(2026-10-02): GL の段とは別に、Graph タブの使い勝手の WP が着地した。層の段ではないので表に行は足さない。UX-1(`7620fe1f`。線の吸着、ゾーンと body の node の drag、分岐ごとの body、画面に書くものを最後の列に)、UX-2(`5f048297`。`render.image` と render pass の値を選ぶ欄)、UX-3(`f34adcc7`。palette で置ける render node の種、Place の欄、ソケットの設定、EL-1 の一覧)、UX-4a(`ad1e0771`。Pass Editor の部品のフォーム)、RSX(`6a1069c8`。どのパネルの編集も `restart_required` で起動し直す、Rendering settings タブ)、GB-1(`3c6442a9`。Blank から GUI だけで組むシナリオ 5 本)。記録は台帳の各 WP の完了記録、見え方は manual 13 章。UX-2・UX-3・UX-4a は、名前や JSON を打つ欄を一覧から選ぶ欄に替えた(§4 の 8「打つものを増やさない」と同じ向き)。GB-1 では、forward の pass を画面に出すまでが Graph タブだけで通り(A)、deferred と lighting は Frame Plan の道で通った(B。Graph の palette の道は止まる。GB-1 の description の記録)。
+
 GL-1 は engine を触らず、Release で使い心地を確かめられる。**GL-1 が使いにくければ、ここで §3〜§4 を直す**(損は小さい)。test は段ごとに要の 1 本ずつにし、全数は段の終わりに統合側で 1 回回す(利用者の指示「テストで実装速度を遅くしない」)。
 
 ## 8. 体現できるか・使いやすくできるか(2026-09-27 の答え)
