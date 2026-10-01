@@ -8849,6 +8849,103 @@ TEST_CASE("RS-6 a scene pass that reads what a graph compute task wrote waits on
     }
 }
 
+TEST_CASE("RS-6b a scene pass that reads what a feature's compute task wrote waits on that task",
+          "[render-feature][graph-composition][rs6][rs6b]") {
+    using Json = nlohmann::json;
+    SECTION("present shows the ray-traced mask of rt_shadow_mask_pipeline") {
+        // The blank project, a G-buffer pass before present (what Add
+        // material pass... makes), the feature added in Features, and its
+        // mask dropped on present's input (gui_build_E).
+        auto document = lp1eBlankRenderingConfig();
+        auto &rendering = document.at("rendering");
+        auto &passes = rendering.at("rendering_passes").at(0).at("passes");
+        REQUIRE(passes.at(0).at("name") == "present");
+        Json targets = Json::array();
+        for (const auto *name : {"gbuffer_worldpos", "gbuffer_normal"})
+            targets.push_back({{"name", name}, {"format", "R16G16B16A16_SFLOAT"}, {"extent_scale", 1.0},
+                               {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}});
+        rendering["render_targets"] = std::move(targets);
+        auto gbuffer = passes.at(0);
+        gbuffer["name"] = "gbuffer";
+        gbuffer["output"]["color"] = Json::array({"gbuffer_worldpos"});
+        auto normals = passes.at(0);
+        normals["name"] = "gbuffer_normals";
+        normals["output"]["color"] = Json::array({"gbuffer_normal"});
+        passes.insert(passes.begin(), normals);
+        passes.insert(passes.begin(), gbuffer);
+        passes.at(2)["input"] = Json::array({"rt_shadow_mask_pipeline"});
+        rendering["features"] = Json::array({"engine://features/rt_shadow_mask_pipeline.json"});
+        const auto composed = lp0aCompose(document);
+        const auto &task = lp1bTask(composed.config, "rt_shadow_mask_pipeline");
+        // present waits on the task; the task names no pass.
+        CHECK(lp0bListed(passByName(composed.config, "present").at("after"), "rt_shadow_mask_pipeline"));
+        CHECK_FALSE(task.contains("before"));
+        CHECK_FALSE(lp0bListed(task.value("after", Json::array()), "present"));
+        const auto order = lp0bPlanOrder(composed);
+        CHECK(lp0bIndex(order, "gbuffer") < lp0bIndex(order, "rt_shadow_mask_pipeline"));
+        CHECK(lp0bIndex(order, "rt_shadow_mask_pipeline") < lp0bIndex(order, "present"));
+        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+        const auto graph = std::find_if(graphs.begin(), graphs.end(),
+            [](const auto &candidate) { return candidate.name == "main_render"; });
+        REQUIRE(graph != graphs.end());
+        const auto plan = planFrameGraph(*graph);
+        REQUIRE_NOTHROW(validateFramePlanPassInputsProduced(plan, composed.config.at("rendering_passes").at(0), {}));
+        // present samples the mask: the composed target gains SAMPLED (the
+        // feature's document keeps its own usage).
+        const auto &mask = renderTargetByName(composed.config, "rt_shadow_mask_pipeline");
+        CHECK(mask.at("usage") == Json::array({"STORAGE", "TRANSFER_SRC", "SAMPLED"}));
+        // The frame plan says what the engine added.
+        const auto compiled = compileComposition(composed);
+        const auto json = framePlanToJson(plan, &compiled);
+        const auto node = std::find_if(json.at("nodes").begin(), json.at("nodes").end(),
+            [](const Json &candidate) { return candidate.at("name") == "present"; });
+        REQUIRE(node != json.at("nodes").end());
+        CHECK(node->value("added_after", Json()) == Json::array({"rt_shadow_mask_pipeline"}));
+        const auto resource = std::find_if(json.at("resources").begin(), json.at("resources").end(),
+            [](const Json &candidate) { return candidate.at("name") == "rt_shadow_mask_pipeline"; });
+        REQUIRE(resource != json.at("resources").end());
+        CHECK(resource->value("added_usage", Json()) == Json::array({"SAMPLED"}));
+        CHECK(resource->at("usage") == Json::array({"STORAGE", "TRANSFER_SRC", "SAMPLED"}));
+        const auto gbuffer_resource = std::find_if(json.at("resources").begin(), json.at("resources").end(),
+            [](const Json &candidate) { return candidate.at("name") == "gbuffer_worldpos"; });
+        REQUIRE(gbuffer_resource != json.at("resources").end());
+        CHECK_FALSE(gbuffer_resource->contains("added_usage"));
+    }
+    SECTION("features whose tasks name the passes they feed keep today's order") {
+        // clustered_lighting and planar_reflection order their tasks with
+        // `before`; the same rendering section composed without a graph root
+        // (which never adds a wait) runs in the same order.
+        const Json reflection{{"ref", "engine://features/planar_reflection.json"},
+                              {"parameters", {{"resolution", 64}, {"plane_x", 0.0}, {"plane_y", 2.0},
+                                              {"plane_z", 0.0}, {"plane_offset", -2.0},
+                                              {"preserve_raster_winding", true}, {"oblique_near_plane", true}}}};
+        const Json features = Json::array({"engine://features/clustered_lighting.json", reflection,
+                                           "engine://features/rt_shadow_mask_pipeline.json"});
+        const auto graph_root = lp0aCompose(lp1cOnePiece(features));
+        const auto flat = composeRenderFeatureConfig(
+            Json{{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}, {"features", features}},
+            RenderFeatureComposeDependencies{loadEngineFeature, true});
+        const auto ordering = [](const Json &config) {
+            Json result = Json::array();
+            for (const auto &family : config.at("rendering_passes"))
+                for (const auto &pass : family.at("passes"))
+                    result.push_back({pass.at("name"), pass.value("after", Json::array()),
+                                      pass.value("before", Json::array())});
+            return result;
+        };
+        CHECK(ordering(graph_root.config) == ordering(flat.config));
+        CHECK(graph_root.config.at("compute_tasks") == flat.config.at("compute_tasks"));
+        for (const auto &provenance : graph_root.pass_provenance) {
+            INFO(provenance.name);
+            CHECK(provenance.added_after.empty());
+        }
+        for (const auto &provenance : graph_root.resource_provenance) {
+            INFO(provenance.name);
+            CHECK(provenance.added_usage.empty());
+        }
+    }
+}
+
 // RS-9: a render node whose parameters lack what its op requires is refused
 // by name, listing what is missing; absent parameters are empty ones. A
 // render.shadow_depth requires nothing (it draws with engine://shadow_depth

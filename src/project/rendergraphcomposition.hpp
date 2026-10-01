@@ -416,10 +416,16 @@ struct GraphTaskReaderWait {
     std::string family;
     std::string pass;
     std::string task;
+    // RS-6b: the image whose usage gained SAMPLED for this reader; empty
+    // when none did.
+    std::string sampled;
 };
 
 // RS-6: a scene pass that reads an image a graph compute task writes waits on
-// that task. For each task named in `graph_tasks` and each render target it
+// that task. RS-6b: a feature's compute task (ray tracing included) is waited
+// on by the same rule; the caller names both in `graph_tasks`, and both the
+// graph's render.images and the features' render targets in `graph_images`.
+// For each task named in `graph_tasks` and each render target it
 // writes, the first pass of each family that `reader_candidate` admits, that
 // stands before the family's first canonical anchor (or output_transform)
 // and that reads the image this frame (LP-6's reads, as RS-3: no history
@@ -428,7 +434,9 @@ struct GraphTaskReaderWait {
 // task runs after it (an after would close a cycle). The task gets nothing:
 // it is in every family's graph and may name no pass. When the reader lists
 // the image as an `input` and the image is one of `graph_images` (a graph's
-// render.image), SAMPLED joins its usage. Called on the composed config once
+// render.image, or RS-6b a feature's render target), SAMPLED joins its usage
+// (the composed declaration only; the wait's `sampled` names the image).
+// Called on the composed config once
 // the canonical order and the terminal's waits are explicit. Returns what it
 // added.
 std::vector<GraphTaskReaderWait> waitOnGraphTasksInScenePasses(nlohmann::json &composed,

@@ -286,7 +286,7 @@ struct RenderPassProvenance {
     // GL-2a: the feature passes this one took the place of, in the order
     // the instance named them (one node may replace several).
     std::vector<RenderPassReplacedDeclaration> replaces;
-    // RS-6: the graph's compute tasks the engine added to this pass's
+    // RS-6: the graph's (RS-6b: and the features') compute tasks the engine added to this pass's
     // `after` because the pass reads an image they write
     // (waitOnGraphTasksInScenePasses), in the order added.
     std::vector<std::string> added_after;
@@ -310,6 +310,11 @@ struct RenderResourceProvenance {
     std::optional<std::vector<std::string>> usage;
     // LP-1a: set on a render target or buffer a graph.loop expanded.
     std::optional<RenderLoopOrigin> loop_origin;
+    // RS-6b: the usage flags the engine added to this render target's
+    // declaration (SAMPLED, when a scene pass samples what a graph's or a
+    // feature's compute task wrote; waitOnGraphTasksInScenePasses), in the
+    // order added. `usage` already lists them.
+    std::vector<std::string> added_usage;
 
     bool operator==(const RenderResourceProvenance &) const = default;
 };

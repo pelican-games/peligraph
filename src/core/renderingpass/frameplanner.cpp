@@ -2081,6 +2081,9 @@ nlohmann::json framePlanToJson(
                 if (provenance.usage) {
                     resource["usage"] = *provenance.usage;
                 }
+                if (!provenance.added_usage.empty()) {
+                    resource["added_usage"] = provenance.added_usage;
+                }
                 if (provenance.loop_origin) {
                     resource["loop_origin"] =
                         loopOriginJson(*provenance.loop_origin);

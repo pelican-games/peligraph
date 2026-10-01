@@ -2844,8 +2844,10 @@ std::vector<GraphTaskReaderWait> waitOnGraphTasksInScenePasses(Json &composed,
                     if (target.is_object() && target.value("name", std::string{}) == image &&
                         target.contains("usage") && target.at("usage").is_array() &&
                         std::find(target.at("usage").begin(), target.at("usage").end(), "SAMPLED") ==
-                            target.at("usage").end())
+                            target.at("usage").end()) {
                         target.at("usage").push_back("SAMPLED");
+                        added.back().sampled = image;
+                    }
             }
         }
     }

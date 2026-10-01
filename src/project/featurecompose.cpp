@@ -3803,7 +3803,10 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     enforceTerminalAfterComputeTasks(composed);
     // RS-6: a scene pass of the rendering section or the preset that reads an
     // image the graph's compute task writes waits on that task (RS-3 placed
-    // the graph's passes the task waits on before it already).
+    // the graph's passes the task waits on before it already). RS-6b: so does
+    // one that reads an image a feature's compute task writes (feature tasks
+    // are declared after every pass too); a feature's pass is no reader here,
+    // so what a feature orders with its own before / after stays.
     std::vector<GraphTaskReaderWait> graph_task_waits;
     if (common_graph) {
         const auto graph_made = [&](const std::string &name) {
@@ -3814,9 +3817,14 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         std::set<std::string> graph_task_names;
         if (const auto tasks = composed.find("compute_tasks"); tasks != composed.end() && tasks->is_array())
             for (const auto &task : *tasks)
-                if (const auto name = task.value("name", std::string{}); graph_made(name))
+                if (const auto name = task.value("name", std::string{});
+                    graph_made(name) || graph_features.feature_passes.contains(name))
                     graph_task_names.insert(name);
-        graph_task_waits = waitOnGraphTasksInScenePasses(composed, graph_task_names, graph_images,
+        // RS-6b: a feature's render target gains SAMPLED as a graph image does.
+        auto sampled_images = graph_images;
+        for (const auto &resource : resource_provenance)
+            if (resource.source == RenderPipelineProvenanceSource::feature) sampled_images.insert(resource.name);
+        graph_task_waits = waitOnGraphTasksInScenePasses(composed, graph_task_names, sampled_images,
             [&](const nlohmann::json &pass) {
                 const auto name = pass.value("name", std::string{});
                 const auto type = pass.value("type", std::string{});
@@ -3834,6 +3842,14 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                 std::find(provenance.added_after.begin(), provenance.added_after.end(), wait.task) ==
                     provenance.added_after.end())
                 provenance.added_after.push_back(wait.task);
+    // RS-6b: and the usage it widened for such a reader.
+    for (const auto &wait : graph_task_waits)
+        if (!wait.sampled.empty())
+            for (auto &provenance : resource_provenance)
+                if (provenance.name == wait.sampled &&
+                    std::find(provenance.added_usage.begin(), provenance.added_usage.end(), "SAMPLED") ==
+                        provenance.added_usage.end())
+                    provenance.added_usage.push_back("SAMPLED");
     // RS-13: a pass that names `<loop>.<output>` says what it reads instead.
     for (const auto &reference : active_graph.loop_output_references) {
         const auto value = graph_loop_output_values.find({reference.loop, reference.port});
