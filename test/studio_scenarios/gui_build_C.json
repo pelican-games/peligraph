@@ -1,0 +1,557 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "gui_build_C",
+  "description": "GB-1 target C (bloom loop), as far as it goes from File > New Project > Blank with Studio's GUI only. A forward material pass from the Graph tab's palette and a Cube (as gui_build_A); Add fullscreen pass in the root is the bright pass, fed the material pass's colour by a drag onto its + input (it draws with engine://passthrough: there is no threshold shader to pick); Add loop, Add fullscreen pass into its body, Count 4 typed, the bright pass's output dropped on the body pass (a loop input), the body's output on the zone's right edge, and the carry drawn back onto the boundary input. The body pass keeps engine://passthrough: the Pass fields' shader list (UX-2) does not offer the engine's bloom shaders yet (engine EL-4 lists them) and its image's extent_scale pill as 0.5. The engine expands the loop four times, each copy reading the one before. It stops here: extent_scale cannot be made per element (1 / pow2(element + 1)) from the pill, the engine's bloom_highpass needs PELICAN_FEATURE_* defines it reserves, the composite needs a buffer port and additive blending no field offers, and the loop's output dropped on present's + input made present read the loop's input image instead. Typed: the project folder and name, material_pass in the palette filter, 4 in Count, and 0.5.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "File > New Project...",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "gb_c"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the blank project's present is on the Frame Plan canvas",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the Graph tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the canvas has read the new document and can edit it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add: the palette opens",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the filter narrows the list to the material pass",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "material_pass"
+    },
+    {
+      "label": "the contract combo is offered for it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteContract",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "a forward pass",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPaletteContract",
+      "text": "forward_opaque_v1"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the palette closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the pass's draw loop is drawn as a zone (after the restart the route default asks for)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#render_material_pass_draws",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the material pass is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_material_pass",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the frame plan runs its draw loop",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].tier",
+      "value": "draw_loop",
+      "retry_ms": 120000
+    },
+    {
+      "label": "Add Object > Cube",
+      "cmd": "action",
+      "name": "pelican.outliner.addObject.cube"
+    },
+    {
+      "label": "the engine has a Cube",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[2].name",
+      "value": "Cube",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the Inspector has read the Cube",
+      "cmd": "wait",
+      "name": "pelican.inspectorModelChoice",
+      "text": "Cube (built-in)",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "File > Save Scene",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "the save is done",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "contains": "Scene saved",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick the camera, so no gizmo is drawn over the box",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "MainCamera"
+    },
+    {
+      "label": "the Inspector holds the camera",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "MainCamera\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Graph tab is in front again",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "fit the graph",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "Add fullscreen pass in the root: the bright pass",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addFullscreenPass"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "auto layout",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.autoLayout"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "the scene colour into the bright pass's + input",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#render_material_pass/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen/in:variadic"
+      },
+      "steps": 8
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the bright pass reads the material pass's colour",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[5].inputs.color_2.node",
+      "value": "render_material_pass",
+      "retry_ms": 10000
+    },
+    {
+      "label": "Add loop",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addLoop"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "zone",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#loop",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "auto layout",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.autoLayout"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick zone",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#loop"
+    },
+    {
+      "label": "loop fields",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.count",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Add fullscreen pass into the body",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addFullscreenPass"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick zone",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#loop"
+    },
+    {
+      "label": "count field",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.count",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "count 4",
+      "cmd": "type",
+      "name": "pelican.graphCanvasLoop.count",
+      "text": "4"
+    },
+    {
+      "label": "Enter",
+      "cmd": "key",
+      "name": "pelican.graphCanvasLoop.count",
+      "sequence": "Return"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "the bright pass's output onto the body pass's + input",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_socket#loop_body/render_fullscreen/in:variadic"
+      },
+      "steps": 8
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "the body pass's output onto the zone's right-edge slot",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#loop_body/render_fullscreen/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_zone_socket#loop/out:+"
+      },
+      "steps": 8
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "carry: the body output's inside end back onto the boundary input",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_zone_socket#loop/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_socket#loop_body/color/value"
+      },
+      "steps": 8
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the loop is fed by the bright pass",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[6].inputs.color.node",
+      "value": "render_fullscreen",
+      "retry_ms": 10000
+    },
+    {
+      "label": "the body declares its output",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.loop_body.outputs.color.node",
+      "value": "render_fullscreen"
+    },
+    {
+      "label": "and the loop carries color into color",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[6].parameters.carry[0].to",
+      "value": "color"
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "zoom in over the body image's extent_scale pill",
+      "cmd": "wheel",
+      "name": "pelican.graphCanvasView::graph_value_pill#loop_body/render_fullscreen__color/extent_scale",
+      "delta": 720
+    },
+    {
+      "label": "click it",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_value_pill#loop_body/render_fullscreen__color/extent_scale"
+    },
+    {
+      "label": "half size",
+      "cmd": "type",
+      "name": "pelican.graphCanvasView::graph_inline_editor#render_fullscreen__color/extent_scale",
+      "text": "0.5"
+    },
+    {
+      "label": "Return",
+      "cmd": "key",
+      "name": "pelican.graphCanvasView::graph_inline_editor#render_fullscreen__color/extent_scale",
+      "sequence": "Return"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "into an image at half the screen's size",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.loop_body.nodes[0].parameters.extent_scale",
+      "value": 0.5,
+      "retry_ms": 10000
+    },
+    {
+      "label": "the engine expands the loop four times",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].count",
+      "value": 4,
+      "retry_ms": 60000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "copy 1 stands after copy 0 in the frame plan",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[4].name",
+      "value": "loop/1/render_fullscreen",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and reads what copy 0 drew (the carry)",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[4].reads[0]",
+      "value": "loop/0/render_fullscreen__color"
+    },
+    {
+      "label": "a picture of the Graph tab with the bright pass and the loop",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "gui_build_C_graph.png"
+    }
+  ]
+}

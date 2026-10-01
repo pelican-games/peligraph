@@ -1,0 +1,271 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "gui_build_E",
+  "description": "GB-1 target E (ray-traced mask), as far as it goes from File > New Project > Blank with Studio's GUI only. The G-buffer is the Frame Plan's Add material pass... with Deferred geometry (as gui_build_B) over a Cube from Add Object. The trace task is the engine's shipped rt_shadow_mask_pipeline feature, picked in Features' catalog, Add, Apply (it needs a device with ray-tracing pipelines): the Frame Plan draws it reading gbuffer_worldpos and gbuffer_normal and writing the mask. It stops before present: the mask dropped on present's + input is refused (render_pipeline_preflight_failed: a compute task runs after every pass, so present would read it before it is written), the Graph tab's palette offers no render.compute, and Tasks > New ray tracing names raygen/miss/hit shaders that do not exist. Typed: the project folder and name.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "File > New Project...",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "gb_e"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "present is on the Frame Plan canvas",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "Add Object > Cube",
+      "cmd": "action",
+      "name": "pelican.outliner.addObject.cube"
+    },
+    {
+      "label": "the engine has a Cube",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[2].name",
+      "value": "Cube",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the Inspector has read the Cube",
+      "cmd": "wait",
+      "name": "pelican.inspectorModelChoice",
+      "text": "Cube (built-in)",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "File > Save Scene",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "the save is done",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "contains": "Scene saved",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Add material pass...",
+      "cmd": "action",
+      "name": "pelican.framePlan.addMaterialPass"
+    },
+    {
+      "label": "the form is open",
+      "cmd": "wait",
+      "name": "pelican.materialPassForm.name",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Deferred geometry",
+      "cmd": "select",
+      "name": "pelican.materialPassForm.contract",
+      "text": "Deferred geometry (G-buffer)"
+    },
+    {
+      "label": "named after it, nothing typed",
+      "expect": "text_equals",
+      "name": "pelican.materialPassForm.name",
+      "value": "deferred_geometry"
+    },
+    {
+      "label": "Save: the targets, then the pass",
+      "cmd": "click",
+      "name": "pelican.materialPassForm.ok"
+    },
+    {
+      "label": "the form closed",
+      "cmd": "wait",
+      "name": "pelican.materialPassForm.name",
+      "visible": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the engine runs deferred_geometry first",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[0].name",
+      "value": "deferred_geometry",
+      "retry_ms": 120000
+    },
+    {
+      "label": "Features tab",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.render_features"
+    },
+    {
+      "label": "the catalog has been read",
+      "cmd": "wait",
+      "name": "pelican.renderFeatures.catalog",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick rt_shadow_mask_pipeline",
+      "cmd": "select",
+      "name": "pelican.renderFeatures.catalog",
+      "text": "rt_shadow_mask_pipeline"
+    },
+    {
+      "label": "Add",
+      "cmd": "click",
+      "name": "pelican.renderFeatures.add"
+    },
+    {
+      "label": "Apply ready",
+      "cmd": "wait",
+      "name": "pelican.renderFeatures.apply",
+      "enabled": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Apply",
+      "cmd": "click",
+      "name": "pelican.renderFeatures.apply"
+    },
+    {
+      "label": "the root lists the ray-traced mask",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_features",
+        "params": {}
+      },
+      "path": "result.features",
+      "op": "contains",
+      "value": "engine://features/rt_shadow_mask_pipeline.json",
+      "retry_ms": 120000
+    },
+    {
+      "label": "and the engine runs it",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_features",
+        "params": {}
+      },
+      "path": "result.runtime.enabled_feature_names",
+      "op": "contains",
+      "value": "rt_shadow_mask_pipeline",
+      "retry_ms": 120000
+    },
+    {
+      "label": "Frame Plan tab",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "the whole frame",
+      "cmd": "select",
+      "name": "pelican.framePlanTarget",
+      "text": "Whole frame"
+    },
+    {
+      "label": "read the frame plan again",
+      "cmd": "click",
+      "name": "pelican.framePlanRefresh"
+    },
+    {
+      "label": "the trace task is drawn",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#rt_shadow_mask_pipeline",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "it reads the G-buffer's world position",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#rt_shadow_mask_pipeline/in:gbuffer_worldpos",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and normal",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#rt_shadow_mask_pipeline/in:gbuffer_normal",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and writes the mask",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node_socket#rt_shadow_mask_pipeline/out:rt_shadow_mask_pipeline",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "a picture of the Frame Plan with the trace task",
+      "expect": "screenshot",
+      "name": "pelican.framePlan",
+      "path": "gui_build_E_frame_plan.png"
+    }
+  ]
+}
