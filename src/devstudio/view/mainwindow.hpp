@@ -4,6 +4,7 @@
 #include "toollayoutpreset.hpp"
 #include "../model/gizmomodel.hpp"
 #include "../model/project.hpp"
+#include "../model/renderdocumentreload.hpp"
 #include "../model/renderedithistory.hpp"
 #include "../model/selection.hpp"
 #include "../viewport/enginelogbuffer.hpp"
@@ -187,6 +188,10 @@ class MainWindow : public QMainWindow {
     QAction *render_undo_action_ = nullptr;
     QAction *render_redo_action_ = nullptr;
     std::uint64_t shown_render_history_line_ = 0;
+    // RL-1s. The render documents rewritten on disk, taken in through
+    // reload_render_documents; and the Graph menu's "Reload from disk".
+    std::optional<RenderDocumentReload> render_reload_;
+    QAction *reload_from_disk_action_ = nullptr;
     // PM-3a: Pause / Step on the gizmo band, the play line of the status bar,
     // and what a paused game turns the viewport's frame and that band.
     PlayControls *play_controls_ = nullptr;
@@ -210,6 +215,8 @@ class MainWindow : public QMainWindow {
     void createRenderHistory(QWidget *pass_editor);
     void renderHistoryChanged();
     void renderDocumentsRestored(const nlohmann::json &commit, bool restart_required);
+    void createRenderReload();
+    void renderDocumentsReloaded(const nlohmann::json &commit);
     void createMenus();
     void createPlayControls(QToolBar *band);
     void updatePlayPresentation();

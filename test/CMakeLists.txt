@@ -391,6 +391,9 @@ if(TARGET pelican_studio_inspector_model)
   # RU-1: the render edit history over a list of what was sent -- no Qt, no
   # engine; the test answers each request as the engine does.
   pelican_define_test(devstudio_render_history_test pelican_studio_inspector_model)
+  # RL-1s: a render document rewritten on disk is taken in by
+  # reload_render_documents -- no Qt, no engine, no disk.
+  pelican_define_test(devstudio_render_reload_test pelican_studio_inspector_model)
   # GL-3a: fold groups as the Graph tab and the Frame Plan read and write
   # them, without Qt.
   pelican_define_test(devstudio_graph_fold_test pelican_studio_inspector_model)

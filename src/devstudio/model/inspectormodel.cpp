@@ -1,5 +1,6 @@
 #include "inspectormodel.hpp"
 #include "playstatemodel.hpp"
+#include "renderdocumentreload.hpp"
 
 #include <schemawire.hpp>
 
@@ -633,6 +634,12 @@ std::string componentUnavailableDescription(std::string_view code) {
 }
 
 std::string knownRefusalDescription(std::string_view code, std::string_view message) {
+    // RL-1s, decision 5: the render document on disk was rewritten and its
+    // reload refused, so every edit meets a file the engine did not load.
+    // The engine's own words follow, for the tooltip and Copy message.
+    if (code == "external_modification" && renderDocumentsRefusedOnDisk())
+        return std::string{renderDiskRefusalSentence} + "\n" + std::string{code} + ": " +
+               std::string{message};
     if (findUnavailableComponentText(code) != nullptr)
         return componentUnavailableDescription(code);
     for (const auto &entry : UnavailableComponentTexts)

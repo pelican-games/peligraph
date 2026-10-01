@@ -164,6 +164,10 @@ class RenderEditHistory {
     void abandonInFlight();
     // Another project: nothing of this history applies to it.
     void clear();
+    // RL-1s: the documents were read again from disk (reload_render_documents,
+    // which is not an entry). What the stacks hold was written before it, so
+    // Undo does not reach back past it; `line` marks where it was cut.
+    void cut(std::string line);
 
     // The stacks, the busy state or the line changed.
     std::function<void()> changed;

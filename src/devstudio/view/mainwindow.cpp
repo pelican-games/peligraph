@@ -23,12 +23,14 @@
 #include <QAbstractButton>
 #include <QAction>
 #include <QActionGroup>
+#include <QCryptographicHash>
 #include <QAbstractItemView>
 #include <QCoreApplication>
 #include <QCloseEvent>
 #include <QDebug>
 #include <QDir>
 #include <QDockWidget>
+#include <QFile>
 #include <QFileDialog>
 #include <QFrame>
 #include <QFont>
@@ -608,6 +610,8 @@ void MainWindow::createWorkspace() {
     rendering_settings_->setRenderConfigDigest(render_digest_);
     // RU-1: and one history of their edits.
     createRenderHistory(pass_editor_scroll);
+    // RL-1s: and what is written to their files from outside Studio.
+    createRenderReload();
     frame_plan_->setLayoutCapability(FramePlanLayoutCapability{
         .read = [this] { return graph_canvas_->scene().layoutMember("frame_plan"); },
         .write = [this](const nlohmann::json &frame_plan, QString *reason) {
@@ -726,12 +730,15 @@ void MainWindow::createWorkspace() {
                 pending_gizmo_requests_.clear();
                 gizmo_model_.startSession();
                 dispatchGizmoModel();
+                // RL-1s: what this engine composes is what is watched.
+                if (render_reload_) render_reload_->engineReady();
             });
     connect(viewport_, &EmbeddedViewport::engineRpcBecameUnavailable, this,
             [this](const QString &) {
                 // RU-1: what the history had in flight went with the engine;
                 // the history stays (its documents are on disk).
                 if (render_history_) render_history_->abandonInFlight();
+                if (render_reload_) render_reload_->engineGone();
                 if (pending_navigation_ != Navigation::None) {
                     cancelNavigation(tr("The engine disconnected. The project remains open."));
                 }
@@ -757,6 +764,23 @@ void MainWindow::createWorkspace() {
                 if (play_controls_ &&
                     play_controls_->receiveResult(request_id, result_json))
                     return;
+                // RL-1s: the reload's own requests; and every committed render
+                // edit's `documents`, which is what Studio wrote (decision 2).
+                // Only an answer that can be one is parsed.
+                if (render_reload_ && request_id != 0 &&
+                    (render_reload_->owns(request_id) ||
+                     result_json.contains("\"committed\""))) {
+                    nlohmann::json result;
+                    try {
+                        result = nlohmann::json::parse(
+                            result_json.constData(),
+                            result_json.constData() + result_json.size());
+                    } catch (const std::exception &) {
+                        result = nlohmann::json{};
+                    }
+                    if (render_reload_->receiveResult(request_id, result)) return;
+                    render_reload_->observeReply(result);
+                }
                 // RU-1: the render history's own reads, restores and polls,
                 // and the replies to the edits it follows.
                 if (render_history_ && render_history_->waitingFor(request_id)) {
@@ -797,6 +821,9 @@ void MainWindow::createWorkspace() {
                     return;
                 if (play_controls_ &&
                     play_controls_->receiveFailure(request_id, message))
+                    return;
+                if (render_reload_ &&
+                    render_reload_->receiveFailure(request_id, message.toStdString()))
                     return;
                 if (render_history_ && render_history_->waitingFor(request_id)) {
                     render_history_->receiveFailure(request_id, message.toStdString());
@@ -949,6 +976,78 @@ void MainWindow::renderDocumentsRestored(const nlohmann::json &commit,
             completion.restart_required ? completion.restart_line
                                         : renderEditRestartLine({})));
     }
+}
+
+void MainWindow::createRenderReload() {
+    render_reload_.emplace(RenderDocumentReload::Transport{
+        .request = [this](const std::string &method, const nlohmann::json &params,
+                          std::string *error) -> std::int64_t {
+            const auto object =
+                QJsonDocument::fromJson(QByteArray::fromStdString(params.dump())).object();
+            QString message;
+            const qint64 id =
+                viewport_->requestRpc(QString::fromStdString(method), object, &message);
+            if (id == 0 && error != nullptr) *error = message.toStdString();
+            return id;
+        },
+        .schedule = [this](int milliseconds, std::function<void()> task) {
+            QTimer::singleShot(milliseconds, this, std::move(task));
+        },
+        // Decision 2: the engine's digests are the sha256 of the bytes on disk.
+        .file_digest = [](const std::filesystem::path &path) -> std::optional<std::string> {
+            QFile file(QString::fromStdWString(path.wstring()));
+            if (!file.open(QIODevice::ReadOnly)) return std::nullopt;
+            QCryptographicHash hash(QCryptographicHash::Sha256);
+            if (!hash.addData(&file)) return std::nullopt;
+            return hash.result().toHex().toStdString();
+        },
+    });
+    // Decision 1: one watcher, the Frame Plan's, which already follows the
+    // shaders (UX-6a); the documents ride beside them with their own hook.
+    render_reload_->watchChanged = [this] {
+        frame_plan_->setWatchedRenderDocuments(render_reload_->watchedFiles(),
+                                               [this](const QString &) {
+                                                   if (render_reload_)
+                                                       render_reload_->fileChanged();
+                                               });
+    };
+    render_reload_->notice = [this](const RenderDocumentReload::Notice &notice) {
+        using Kind = RenderDocumentReload::Notice::Kind;
+        InspectorNotice shown;
+        shown.kind = notice.kind == Kind::Error         ? InspectorNoticeKind::Error
+                     : notice.kind == Kind::Success     ? InspectorNoticeKind::Success
+                     : notice.kind == Kind::Information ? InspectorNoticeKind::Information
+                                                        : InspectorNoticeKind::None;
+        // The line, then the rest for the tooltip and Copy message.
+        shown.message =
+            notice.detail.empty() ? notice.line : notice.line + "\n" + notice.detail;
+        graph_canvas_->showDiskReloadNotice(shown);
+        if (!notice.line.empty())
+            statusBar()->showMessage(QString::fromStdString(notice.line), 8000);
+    };
+    render_reload_->reloaded = [this](const nlohmann::json &commit) {
+        renderDocumentsReloaded(commit);
+    };
+    // Decision 5: by hand, whatever the digests say -- after a fix the
+    // watcher missed, or to hear again why the file is refused.
+    reload_from_disk_action_ = new QAction(tr("Reload from disk"), this);
+    reload_from_disk_action_->setObjectName(QStringLiteral("pelican.graphCanvas.reloadFromDisk"));
+    reload_from_disk_action_->setToolTip(
+        tr("Read the rendering documents again from their files (reload_render_documents)"));
+    connect(reload_from_disk_action_, &QAction::triggered, this, [this] {
+        if (render_reload_) render_reload_->reloadNow();
+    });
+    graph_canvas_->setReloadFromDiskAction(reload_from_disk_action_);
+}
+
+void MainWindow::renderDocumentsReloaded(const nlohmann::json &commit) {
+    // Decision 4: the reload is not an Undo entry, and what the histories
+    // hold was written before the disk changed under them: both end here.
+    if (render_history_) render_history_->cut("\xE2\x80\x94 reloaded from disk \xE2\x80\x94");
+    graph_canvas_->documentsReloadedFromDisk();
+    // The way back after any outside change (RU-1's restore): every panel
+    // reads the documents again, and RSX's one reader hears a restart.
+    renderDocumentsRestored(commit, readRenderEditCompletion(commit).restart_required);
 }
 
 void MainWindow::updateModalTransformPolling() {
@@ -1659,6 +1758,8 @@ void MainWindow::openProjectNow(const QString &path) {
         // RU-1: nothing in the render history is about the next project.
         if (render_history_) render_history_->clear();
         project_model_ = std::move(opened_project);
+        // RL-1s: nor anything the reload watched.
+        if (render_reload_) render_reload_->open(project_model_->projectRoot());
         tool_layout_presets_.emplace(
             application_config_directory_,
             displayPath(project_model_->projectRoot()));
@@ -1742,6 +1843,7 @@ void MainWindow::leaveCurrentProject(
     pending_outliner_edit_.reset();
     endGizmoSessionForProjectSwitch(next_project_root);
     if (render_history_) render_history_->clear();
+    if (render_reload_) render_reload_->open({});
     selection_model_.bindProject(nullptr);
     project_model_.reset();
     tool_layout_presets_.reset();

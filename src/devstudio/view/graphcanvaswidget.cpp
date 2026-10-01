@@ -3248,6 +3248,8 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     if (tie_action_ != nullptr || untie_action_ != nullptr) menu.addSeparator();
     if (tie_action_ != nullptr) menu.addAction(tie_action_);
     if (untie_action_ != nullptr) menu.addAction(untie_action_);
+    // RL-1s, decision 5: take in what the files on disk hold now.
+    if (reload_from_disk_action_ != nullptr) menu.addAction(reload_from_disk_action_);
     if (fit_view_action_ != nullptr) {
         menu.addAction(fit_view_action_);
     } else if (fitViewRequested) {
@@ -7240,6 +7242,33 @@ void GraphCanvasWidget::shadersReloaded() {
     if (!impl_->model.canRefresh()) return;
     impl_->model.refresh();
     impl_->dispatch();
+}
+
+void GraphCanvasWidget::documentsReloadedFromDisk() {
+    impl_->model.forgetHistory();
+    if (impl_->model.canRefresh()) impl_->model.refresh();
+    impl_->dispatch();
+}
+
+void GraphCanvasWidget::showDiskReloadNotice(const InspectorNotice &notice) {
+    // The line this call put up last, so taking it down never takes down
+    // what an edit said since.
+    static constexpr const char *shown_property = "pelicanDiskReloadNotice";
+    const auto shown = property(shown_property).toString().toStdString();
+    if (notice.kind == InspectorNoticeKind::None) {
+        if (!shown.empty() && impl_->model.notice().message == shown)
+            impl_->model.setEditNotice({});
+        setProperty(shown_property, QString{});
+    } else {
+        impl_->model.setEditNotice(notice);
+        setProperty(shown_property, QString::fromStdString(notice.message));
+    }
+    impl_->showNotice();
+}
+
+void GraphCanvasWidget::setReloadFromDiskAction(QAction *action) {
+    if (action != nullptr) addAction(action);
+    impl_->scene->setReloadFromDiskAction(action);
 }
 
 bool GraphCanvasWidget::removeImageTransferSource(const QString &resource, const QString &loop,

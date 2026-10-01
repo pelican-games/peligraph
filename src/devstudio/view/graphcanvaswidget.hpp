@@ -359,6 +359,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     // entries rather than inventing a throwaway one per right-click.
     void setMenuActions(QAction *auto_layout, QAction *fit_view,
                         QAction *tie = nullptr, QAction *untie = nullptr);
+    // RL-1s, decision 5: "Reload from disk", last in the canvas menu.
+    void setReloadFromDiskAction(QAction *action) { reload_from_disk_action_ = action; }
 
     // --- N-6: the placement, and the gestures that change it.
 
@@ -738,6 +740,7 @@ class GraphCanvasScene final : public QGraphicsScene {
     QAction *fit_view_action_ = nullptr;
     QAction *tie_action_ = nullptr;
     QAction *untie_action_ = nullptr;
+    QAction *reload_from_disk_action_ = nullptr;
     QAction *add_loop_action_ = nullptr;
     QAction *add_fullscreen_action_ = nullptr;
     QAction *rename_definition_action_ = nullptr;
@@ -951,6 +954,16 @@ class GraphCanvasWidget final : public QWidget {
         std::function<void(std::map<std::string, std::vector<std::filesystem::path>, std::less<>>)>
             action);
     void shadersReloaded();
+    // RL-1s. The render documents were read again from disk: the Graph's
+    // own Undo history ends here (what it holds inverts a document that is
+    // no longer the one on disk), and the document is read again.
+    void documentsReloadedFromDisk();
+    // RL-1s. What the reload from disk said, on this tab's notice row
+    // (kind None takes down only a line this call put up).
+    void showDiskReloadNotice(const InspectorNotice &notice);
+    // RL-1s, decision 5: "Reload from disk" in the canvas menu (the window
+    // owns the action, and what it does).
+    void setReloadFromDiskAction(QAction *action);
     // UX-6a, decision 4: take TRANSFER_SRC off the render.image a plan
     // resource is (`origin` for a loop's copy: the body node it came from),
     // as one edit. False, with nothing sent, when the document has no such

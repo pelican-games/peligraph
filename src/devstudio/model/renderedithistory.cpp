@@ -837,4 +837,11 @@ void RenderEditHistory::clear() {
     notify();
 }
 
+void RenderEditHistory::cut(std::string line) {
+    undo_.clear();
+    redo_.clear();
+    say(std::move(line));
+    notify();
+}
+
 } // namespace PelicanStudio

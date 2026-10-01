@@ -161,6 +161,11 @@ class FramePlanWidget final : public QWidget {
     // pass -- the declarations, and so the sockets, may have moved.
     void setExtraShaderSources(NodeShaderSources sources);
     void setShadersReloadedAction(std::function<void()> reloaded);
+    // RL-1s, decision 1: the render documents the window watches go into
+    // the same watcher as the shaders (one watcher, not two); a write to
+    // one calls `changed` with its path and never asks for reload_shaders.
+    void setWatchedRenderDocuments(std::vector<std::filesystem::path> files,
+                                   std::function<void(const QString &path)> changed);
     // UX-6a, decision 4: the Physical plan's Remove on an image the planner
     // keeps out of aliasing because it has TRANSFER_SRC. The action takes
     // the flag off the image (the Graph tab's document): the resource, and
