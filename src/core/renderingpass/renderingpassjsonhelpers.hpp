@@ -17,6 +17,9 @@ vk::ImageUsageFlags stringToUsageFlags(const std::vector<std::string> &usage_str
 // The names stringToFormat / stringToUsageFlags accept, in table order.
 std::vector<std::string> imageFormatNames();
 std::vector<std::string> imageUsageFlagNames();
+// PO-1: the names of the flags set in `usage`, in table order; a flag the
+// table has no name for is given vk::to_string's.
+std::vector<std::string> imageUsageNames(vk::ImageUsageFlags usage);
 // EL-4: every format stringToFormat accepts, with its name, in table order.
 std::vector<std::pair<std::string, vk::Format>> imageFormats();
 // EL-4: which aspects a format's texels carry, read off Vulkan's format

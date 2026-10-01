@@ -27,6 +27,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../loader/renderconfigcandidate.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
+#include "../fullscreenpass/passinputlayout.hpp"
 #include "../fullscreenpass/shaderinputmismatchjson.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../material/materialdrawlooptable.hpp"
@@ -3992,6 +3993,54 @@ nlohmann::json passInputsFramePlanJson(
     return result;
 }
 
+// PO-1: get_frame_plan's unused_binding diagnostics of a fullscreen / raster
+// pass: {kind, subject: <pass>, detail: {binding, resource}} for each input
+// the pass supplies at a pass-input binding its shader declares but whose
+// code never reaches it. Nothing when the reflection cannot be read.
+void appendUnusedBindingDiagnostics(
+    nlohmann::json &frame_plan, const FullscreenPassContainer &container,
+    const RenderTargetContainer &targets, const CompiledPass &compiled) {
+    FullscreenPassInputReport report;
+    try {
+        report = container.passInputReport(compiled.pass_id);
+    } catch (const std::exception &) {
+        return;
+    }
+    const auto unused = [&](std::uint32_t binding) {
+        return std::any_of(report.declarations.begin(),
+                           report.declarations.end(),
+                           [&](const FullscreenShaderPassInput &declared) {
+                               return declared.binding == binding &&
+                                      !declared.accessed;
+                           });
+    };
+    const auto append = [&](std::uint32_t binding, std::string resource) {
+        auto &diagnostics = frame_plan["diagnostics"];
+        if (!diagnostics.is_array()) diagnostics = nlohmann::json::array();
+        diagnostics.push_back(nlohmann::json{
+            {"kind", "unused_binding"},
+            {"subject", compiled.definition.name},
+            {"detail", {{"binding", binding}, {"resource", std::move(resource)}}},
+        });
+    };
+    const auto &definition = compiled.definition;
+    for (std::size_t input = 0; input < definition.input_targets.size(); ++input) {
+        const auto binding = static_cast<std::uint32_t>(input);
+        if (!unused(binding)) continue;
+        auto resource = targets.getMetadata(definition.input_targets[input]).name;
+        if (input < definition.input_target_history.size() &&
+            definition.input_target_history[input]) {
+            resource += "@history";
+        }
+        append(binding, std::move(resource));
+    }
+    for (std::size_t input = 0; input < definition.input_buffers.size(); ++input) {
+        const auto binding =
+            passBufferInputBinding(report.texture_inputs, report.variadic, input);
+        if (unused(binding)) append(binding, definition.input_buffers[input]);
+    }
+}
+
 } // namespace
 
 nlohmann::json Renderer::currentFramePlanJson() const {
@@ -4082,6 +4131,11 @@ nlohmann::json Renderer::currentFramePlanJson() const {
                 continue;
             }
             auto field = passInputsFramePlanJson(*fullscreen, compiled);
+            if (const auto *targets =
+                    FastModuleContainer::tryGet<RenderTargetContainer>()) {
+                appendUnusedBindingDiagnostics(result, *fullscreen, *targets,
+                                               compiled);
+            }
             for (auto &node : result["nodes"]) {
                 if (node.value("kind", std::string{}) != "compute" &&
                     node.value("name", std::string{}) == definition.name) {
@@ -5723,6 +5777,9 @@ void Renderer::LogicalFrameRecorder::configureGpuTimingRanges() {
         modules.render_timing->configureGpuQueries(
             static_cast<std::uint32_t>(in_flight_frames_num), range_slots,
             static_cast<std::uint32_t>(max_nodes));
+        // PO-1: get_status averages over this generation's frames only.
+        modules.render_timing->beginRuntimeGeneration(
+            runtime_generation->generation);
     }
 }
 

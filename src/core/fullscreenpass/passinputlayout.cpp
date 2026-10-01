@@ -117,6 +117,7 @@ PassInputLayout readPassInputLayout(const ShaderReflection &reflection) {
             .type = passInputDescriptorTypeName(reflected->type),
             .name = reflected->name,
             .variadic = k.has_value(),
+            .accessed = reflected->accessed,
         });
         if (k && *k <= reflected->binding) {
             groups[reflected->binding - *k].push_back(*k);

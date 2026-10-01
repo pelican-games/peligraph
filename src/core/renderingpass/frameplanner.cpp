@@ -1679,6 +1679,63 @@ std::string_view renderPipelineDiagnosticKindName(
 
 } // namespace
 
+std::vector<FramePlanUnreadOutput> findFramePlanUnreadOutputs(
+    const FramePlan &plan,
+    const std::unordered_map<std::string, std::vector<std::string>>
+        &image_usage) {
+    const auto has = [](const std::vector<std::string> &names,
+                        std::string_view name) {
+        return std::find(names.begin(), names.end(), name) != names.end();
+    };
+    std::vector<const FramePlanNode *> nodes;
+    nodes.reserve(plan.nodes.size());
+    std::set<std::string, std::less<>> read_as_history;
+    for (const auto &node : plan.nodes) {
+        nodes.push_back(&node);
+        read_as_history.insert(node.reads_history.begin(),
+                               node.reads_history.end());
+    }
+    std::stable_sort(nodes.begin(), nodes.end(),
+                     [](const FramePlanNode *left, const FramePlanNode *right) {
+                         return left->order < right->order;
+                     });
+
+    std::vector<FramePlanUnreadOutput> result;
+    for (std::size_t index = 0; index < nodes.size(); ++index) {
+        const auto &node = *nodes[index];
+        std::set<std::string, std::less<>> reported;
+        for (const auto &resource : node.writes) {
+            if (resource.empty() || resource == "display" ||
+                reported.contains(resource)) {
+                continue;
+            }
+            const auto usage = image_usage.find(resource);
+            if (usage == image_usage.end() ||
+                has(usage->second, "TRANSFER_SRC")) {
+                continue;
+            }
+            if (has(usage->second, "DEPTH_STENCIL_ATTACHMENT") &&
+                std::any_of(node.writes.begin(), node.writes.end(),
+                            [&](const std::string &other) {
+                                return !other.empty() && other != resource;
+                            })) {
+                continue;
+            }
+            if (read_as_history.contains(resource)) continue;
+            const auto consumed = std::any_of(
+                nodes.begin() + static_cast<std::ptrdiff_t>(index) + 1,
+                nodes.end(), [&](const FramePlanNode *later) {
+                    return has(later->reads, resource) ||
+                           has(later->writes, resource);
+                });
+            if (consumed) continue;
+            reported.insert(resource);
+            result.push_back(FramePlanUnreadOutput{node.name, resource});
+        }
+    }
+    return result;
+}
+
 std::string framePlanNodeKindName(FramePlanNodeKind kind) {
     switch (kind) {
     case FramePlanNodeKind::render:
@@ -2107,6 +2164,22 @@ nlohmann::json framePlanToJson(
                 {"detail", diagnostic.detail_fields.is_null()
                                ? nlohmann::json(diagnostic.detail)
                                : diagnostic.detail_fields},
+            });
+        }
+        // PO-1: what a node writes that nothing consumes, judged by the
+        // usage the pipeline's render targets declare.
+        std::unordered_map<std::string, std::vector<std::string>> image_usage;
+        for (const auto &provenance : render_pipeline->resource_provenance) {
+            if (provenance.usage) {
+                image_usage.emplace(provenance.name, *provenance.usage);
+            }
+        }
+        for (const auto &unread :
+             findFramePlanUnreadOutputs(plan, image_usage)) {
+            diagnostics.push_back(nlohmann::json{
+                {"kind", "unread_output"},
+                {"subject", unread.node},
+                {"detail", {{"resource", unread.resource}}},
             });
         }
         result["diagnostics"] = std::move(diagnostics);

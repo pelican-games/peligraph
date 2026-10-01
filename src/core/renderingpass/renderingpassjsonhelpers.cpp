@@ -120,6 +120,21 @@ std::vector<std::string> imageUsageFlagNames() {
     return names;
 }
 
+std::vector<std::string> imageUsageNames(vk::ImageUsageFlags usage) {
+    std::vector<std::string> names;
+    for (const auto &[name, flag] : image_usage_names) {
+        if (usage & flag) {
+            names.emplace_back(name);
+            usage &= ~vk::ImageUsageFlags{flag};
+        }
+    }
+    for (std::uint32_t bit = 1; bit != 0; bit <<= 1) {
+        const auto flag = static_cast<vk::ImageUsageFlagBits>(bit);
+        if (usage & flag) names.push_back(vk::to_string(flag));
+    }
+    return names;
+}
+
 vk::Format stringToFormat(const std::string &format_str) {
     const auto found = std::find_if(
         format_names.begin(), format_names.end(),

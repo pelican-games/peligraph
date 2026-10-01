@@ -1,6 +1,7 @@
 #include "renderingsamplecount.hpp"
 
 #include "logicalframegraphadapter.hpp"
+#include "renderingpassjsonhelpers.hpp"
 
 #include <algorithm>
 #include <array>
@@ -83,17 +84,66 @@ bool isTileLocalAttachmentCandidate(
                    allowed_usage});
 }
 
+vk::ImageUsageFlags runtimeAliasSafeUsage() {
+    return vk::ImageUsageFlagBits::eColorAttachment |
+           vk::ImageUsageFlagBits::eSampled;
+}
+
 bool isRuntimeAliasCandidate(
     const RenderTargetDefinition &definition) {
-    const auto required_usage =
-        vk::ImageUsageFlags{
-            vk::ImageUsageFlagBits::eColorAttachment |
-            vk::ImageUsageFlagBits::eSampled};
     return !definition.history &&
            definition.format_class != "display" &&
            definition.storage_mode ==
                RenderTargetStorageMode::materialized &&
-           definition.usage == required_usage;
+           definition.usage == runtimeAliasSafeUsage();
+}
+
+std::string joinNames(const std::vector<std::string> &names) {
+    std::string result;
+    for (const auto &name : names) {
+        if (!result.empty()) result += ", ";
+        result += name;
+    }
+    return result;
+}
+
+// PO-1: what kept a target out of isRuntimeAliasCandidate, in words the
+// plan's reason carries (empty for a candidate). It names the checks of that
+// rule one by one and decides nothing itself.
+std::string runtimeAliasExclusion(
+    const RenderTargetDefinition &definition) {
+    if (isRuntimeAliasCandidate(definition)) return {};
+    std::vector<std::string> causes;
+    if (definition.history) {
+        causes.push_back(
+            "history target keeps its contents for the next frame");
+    }
+    if (definition.format_class == "display") {
+        causes.push_back("display-format target is not aliased");
+    }
+    if (definition.storage_mode !=
+        RenderTargetStorageMode::materialized) {
+        causes.push_back("storage mode is not materialized");
+    }
+    const auto safe = runtimeAliasSafeUsage();
+    const auto safe_set = "{" + joinNames(imageUsageNames(safe)) + "}";
+    if (const auto extra = definition.usage & ~safe) {
+        const auto names = imageUsageNames(extra);
+        causes.push_back("usage " + joinNames(names) +
+                         (names.size() == 1 ? " is" : " are") +
+                         " outside the alias-safe set " + safe_set);
+    }
+    if (const auto missing = safe & ~definition.usage) {
+        causes.push_back("usage lacks " +
+                         joinNames(imageUsageNames(missing)) +
+                         " of the alias-safe set " + safe_set);
+    }
+    std::string result;
+    for (const auto &cause : causes) {
+        if (!result.empty()) result += "; ";
+        result += cause;
+    }
+    return result;
 }
 
 vk::ImageUsageFlags tileLocalImageUsage(
@@ -608,18 +658,21 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
                     target->second->format)}) &&
             target->second->mip_levels ==
                 ImageMipLevelCount{};
+        auto pattern = runtimeImagePattern(
+            types, resource.type,
+            target->second->format,
+            target->second->format_candidates,
+            false,
+            transient,
+            tile_local,
+            !transient && !tile_local &&
+                isRuntimeAliasCandidate(
+                    *target->second));
+        pattern.store_reason =
+            runtimeAliasExclusion(*target->second);
         result.push_back({
             resource.name,
-            runtimeImagePattern(
-                types, resource.type,
-                target->second->format,
-                target->second->format_candidates,
-                false,
-                transient,
-                tile_local,
-                !transient && !tile_local &&
-                    isRuntimeAliasCandidate(
-                        *target->second)),
+            std::move(pattern),
             runtimeExtentPlan(*target->second),
             target->second->mip_levels,
             target->second->array_layers,

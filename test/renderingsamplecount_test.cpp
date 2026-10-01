@@ -1672,6 +1672,91 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "PO-1 a target kept out of runtime aliasing by its usage names the usage in the plan's reason",
+    "[target-planning][alias][runtime][po1]") {
+    auto display =
+        target("display",
+               vk::Format::eR8G8B8A8Unorm);
+    display.format_class = "display";
+    const auto compile = [&](vk::ImageUsageFlags temporary_b_usage) {
+        const std::vector targets{
+            target("temporary_a",
+                   vk::Format::eR8G8B8A8Unorm),
+            target("temporary_b",
+                   vk::Format::eR8G8B8A8Unorm,
+                   temporary_b_usage),
+            display,
+        };
+        return compileRenderingTargetPlans(
+            parseFrameGraphDefinitionsFromConfigJson(
+                aliasLifetimeConfig()),
+            targets, SampleCountPolicy{},
+            vk::Format::eB8G8R8A8Unorm,
+            RenderingTargetPlanDeviceFacts{
+                .query_attachment_samples =
+                    [](const auto &) {
+                        return std::vector<
+                            std::uint32_t>{1};
+                    },
+            });
+    };
+    const auto representation_detail =
+        [](const VulkanTargetPlan &plan, std::string_view resource) {
+            const auto found = std::find_if(
+                plan.decisions.begin(), plan.decisions.end(),
+                [&](const auto &decision) {
+                    return decision.id ==
+                               "pelican.plan.resource_representation@1" &&
+                           decision.subject == resource;
+                });
+            REQUIRE(found != plan.decisions.end());
+            return found->detail;
+        };
+
+    const auto transfer =
+        compile(vk::ImageUsageFlagBits::eColorAttachment |
+                vk::ImageUsageFlagBits::eSampled |
+                vk::ImageUsageFlagBits::eTransferSrc);
+    const auto &excluded = *transfer.plans.front();
+    REQUIRE(excluded.alias_groups.empty());
+    const std::string expected =
+        "logical materialization requirement is required: usage "
+        "TRANSFER_SRC is outside the alias-safe set "
+        "{COLOR_ATTACHMENT, SAMPLED}";
+    CHECK(physicalResource(excluded, "temporary_b").reason ==
+          expected);
+    CHECK(representation_detail(excluded, "temporary_b") ==
+          expected);
+    // A candidate's reason is as before.
+    CHECK(physicalResource(excluded, "temporary_a").reason ==
+          "arbitrary read requires a materialized resource");
+    CHECK(physicalResource(excluded, "display").reason ==
+          "logical materialization requirement is required: "
+          "display-format target is not aliased");
+
+    // Without TRANSFER_SRC it is a candidate again (the rule is unchanged).
+    const auto sampled =
+        compile(vk::ImageUsageFlagBits::eColorAttachment |
+                vk::ImageUsageFlagBits::eSampled);
+    REQUIRE(sampled.plans.front()->alias_groups.size() == 1);
+    CHECK(physicalResource(*sampled.plans.front(), "temporary_b")
+              .reason ==
+          "arbitrary read requires a materialized resource");
+
+    // Every usage past the set is named, in the usage table's order.
+    const auto storage =
+        compile(vk::ImageUsageFlagBits::eColorAttachment |
+                vk::ImageUsageFlagBits::eSampled |
+                vk::ImageUsageFlagBits::eTransferSrc |
+                vk::ImageUsageFlagBits::eStorage);
+    CHECK(physicalResource(*storage.plans.front(), "temporary_b")
+              .reason ==
+          "logical materialization requirement is required: usage "
+          "STORAGE, TRANSFER_SRC are outside the alias-safe set "
+          "{COLOR_ATTACHMENT, SAMPLED}");
+}
+
+TEST_CASE(
     "runtime alias merge drops groups that graph variants do not share",
     "[target-planning][alias][runtime][variant]") {
     auto display =

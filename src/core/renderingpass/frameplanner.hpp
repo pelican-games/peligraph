@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -167,6 +168,28 @@ struct FramePlan {
 
 std::string framePlanNodeKindName(FramePlanNodeKind kind);
 
+// PO-1: a resource a node writes that nothing consumes: no later node of the
+// frame reads it or writes it again (a later write may load it), and no node
+// reads it as history in the next frame.
+struct FramePlanUnreadOutput {
+    std::string node;
+    std::string resource;
+
+    bool operator==(const FramePlanUnreadOutput &) const = default;
+};
+
+// `image_usage` is each declared image's usage (the names a render target
+// declares). Only those resources are judged: a buffer, the swapchain or an
+// undeclared resource may be consumed outside the plan. Also never reported:
+// `display` (it reaches the screen), an image whose usage has TRANSFER_SRC
+// (it may be read back or captured), and a depth image a node writes beside
+// other outputs (its own depth test uses it). One entry per node and
+// resource, in node order.
+std::vector<FramePlanUnreadOutput> findFramePlanUnreadOutputs(
+    const FramePlan &plan,
+    const std::unordered_map<std::string, std::vector<std::string>>
+        &image_usage);
+
 FrameGraphDefinition makeFrameGraphDefinition(const RenderingPassDefinition &definition);
 FrameGraphDefinition parseFrameGraphDefinitionFromJson(const nlohmann::json &graph_json);
 std::vector<FrameGraphDefinition> parseFrameGraphDefinitionsFromConfigJson(const nlohmann::json &config_json);
@@ -200,6 +223,9 @@ std::vector<std::string> framePlanOrder(const FramePlan &plan);
 // detail: {verified_digest?, current_digest}}, and the target_planning
 // entries of this graph the verified fold groups added are `fold_decisions`
 // ([{group, kind: "node" | "resource", name, field}]; absent when none).
+// PO-1: `diagnostics` also has
+// {kind: "unread_output", subject: <node>, detail: {resource}} for each of
+// findFramePlanUnreadOutputs, judged by the pipeline's resource usage.
 nlohmann::json framePlanToJson(
     const FramePlan &plan,
     const CompiledRenderPipeline *render_pipeline = nullptr,

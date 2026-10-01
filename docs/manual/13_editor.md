@@ -978,7 +978,7 @@ engine の一覧から選ばせるための 3 つの鍵です([組み立て](../
 
 engine が動いていないとき(service に engine の一覧を読む口が無いとき)は 3 つとも `[]` です。既存の鍵は変わりません。
 test: `engine_primitives_test` の
-[「EL-1 get_render_authoring_context lists the materials a draw_loop judges, by the names it takes」](../../test/engine_primitives_test.cpp#L1400)
+[「EL-1 get_render_authoring_context lists the materials a draw_loop judges, by the names it takes」](../../test/engine_primitives_test.cpp#L1484)
 (GPU。tag と variant を持つ material 3 つを足し、一覧の `id` / `tags` / `variants` / `builtin`、`material_tags` の並び、
 `builtin.identity_v1` を見てから、一覧の名前だけで `has_variant` / `tags` / `material` の分岐を書いた draw_loop を `edit_graph_document` で
 commit し、`get_frame_plan` で各 material が名前で選んだ分岐に入ることを見る)と、`renderconfigeditor_test` の
@@ -1012,7 +1012,7 @@ test: `renderconfigeditor_test` の
 [「EL-4 get_graph_catalog lists material pass formats, material output formats and engine shaders」](../../test/renderconfigeditor_test.cpp#L9927)
 (contract ごとの socket と組、`deferred_geometry_v1` の 2 組の `albedo` が `B8G8R8A8_SRGB` と `R16G16B16A16_SFLOAT`、型ごとの format と depth の `D16_UNORM` / `D24_UNORM_S8_UINT` / `D32_SFLOAT`、`format_aspects`、`engine://passthrough` の `variadic_inputs` が `{first: 0, max: 8}`、
 `engine://ray_deform` の `local_size` が `[64, 1, 1]`、`engine://bloom_composite` が `resource_port_include: true` で source から反映され入力 2 つ・port 無しであること(✅RS-11 から。EL-4 の時点では `reflection_error`)。✅EL-4b から、catalog に `engine_shaders` が無く、catalog を読んでも一覧を作りに行かないこと(呼ばれた回数 [`engineShadersRequestCount()`](../../src/core/communication/engineauthoringlists.cpp#L388) で見る)、`get_engine_shaders` が知らない field を断ること。✅EL-4c から、worker を最初の shader の前で止めておき、`get_engine_shaders` が `{status: "building"}` をすぐ返し、その間も `get_graph_catalog` が答えること、止めを外すと `ready` になり、以後同じ答えが続くこと、`engine://rt_shadow_mask_pipeline` の `shadow_mask` が `storage_image` で `format: "R8_UNORM"`(vocabulary の `formats` にある)、`normal` が `sampled_image` で `format` が無いこと)と、`engine_primitives_test` の
-[「EL-4 the material pass formats and engine shaders get_graph_catalog lists are the ones the engine takes」](../../test/engine_primitives_test.cpp#L1536)
+[「EL-4 the material pass formats and engine shaders get_graph_catalog lists are the ones the engine takes」](../../test/engine_primitives_test.cpp#L1620)
 (GPU。✅EL-4b から shader の一覧は `get_engine_shaders` で読み、catalog に `engine_shaders` が無いことも見る。✅EL-4c から、endpoint が始めた worker を止めておいた間に `get_engine_shaders` が `building`、`get_status` が答えることを見て、止めを外した後は `step_frame` を回しながら `ready` まで聞き直す。blank の project で G-buffer の contract の 2 組をそれぞれ image ごと commit し、一覧に無い depth と color の format は文書を変えずに断られ、一覧の `engine://fullscreen` と `engine://passthrough` の fullscreen pass が `restart_required` 無しで commit されて frame plan に出て、forward の組も commit されることを見る)。
 
 **編集は、起動時に登録した graph の変種の全部で合成してから受けます(✅G-6)。**engine は起動時に flat と一緒に preview の
@@ -1035,7 +1035,7 @@ Frame Plan の status 行に `The preview graph refused it: <code>: <message>` �
 |---|---|
 | `pass` | pass の名前 |
 | `fragment` | pass の fragment の参照(書いたまま。例 `project://shaders/present`)。fragment の無い raster pass では `""` |
-| `direction` | `"pass_input_undeclared"`(pass の入力を shader が宣言していない。Q-14e)/ `"shader_input_unsupplied"`(shader の宣言を pass が渡さず、engine も埋められない。✅Q-14f)/ `"variadic_layout_invalid"`(shader の宣言が可変の組の並べ方の規則を破っている。✅VI-1)/ `"variadic_capacity_exceeded"`(pass の texture の入力が、可変の組の終わり `first + max` より多い。✅VI-1)。[2 つの値](../../src/core/fullscreenpass/fullscreeninputbindingmismatch.hpp#L39)、[VI-1 の 2 つ](../../src/core/fullscreenpass/fullscreeninputbindingmismatch.hpp#L51) |
+| `direction` | `"pass_input_undeclared"`(pass の入力を shader が宣言していない。Q-14e)/ `"shader_input_unsupplied"`(shader の宣言を pass が渡さず、engine も埋められない。✅Q-14f)/ `"variadic_layout_invalid"`(shader の宣言が可変の組の並べ方の規則を破っている。✅VI-1)/ `"variadic_capacity_exceeded"`(pass の texture の入力が、可変の組の終わり `first + max` より多い。✅VI-1)。[2 つの値](../../src/core/fullscreenpass/fullscreeninputbindingmismatch.hpp#L43)、[VI-1 の 2 つ](../../src/core/fullscreenpass/fullscreeninputbindingmismatch.hpp#L55) |
 | `kind` | `pass_input_undeclared`: 入力の種類 `"texture"` / `"buffer"`。`shader_input_unsupplied`: 宣言の種類 `"texture"`(image・sampler・input attachment)/ `"buffer"`(storage・uniform・texel buffer)/ `"other"` |
 | `binding` | `pass_input_undeclared`: 合わなかった set 1 の binding(texture の入力は 0 から、その後に buffer の入力)。`shader_input_unsupplied`: 埋められない宣言のうち最小の binding |
 | `resource` | その入力の render target / buffer の名前(任意。引けなければ鍵ごと無い)。`shader_input_unsupplied` では名指す入力が無いので常に無い |
@@ -1081,7 +1081,7 @@ Frame Plan の status 行に `The preview graph refused it: <code>: <message>` �
 
 `defines` が配列でないときは `pass_shader_define` は付かず、message は `Pass shader.defines must be an array: <pass>` です(編集 RPC でこの形を確かめた test は無く、code は未確認)。
 
-**各 pass の set 1 の宣言を `get_frame_plan` で読む(✅VI-1 / VI-1b)。**`get_frame_plan` の `nodes[]` のうち fullscreen / raster pass の node には **`pass_inputs`** が付き、その pass が今描いている pipeline の shader の set 1 の宣言を、pass が渡しているかどうかに関わらず全部返します(Studio がソケットを宣言から描くためのもの。[組み立て](../../src/core/vkcore/renderer.cpp#L3954))。
+**各 pass の set 1 の宣言を `get_frame_plan` で読む(✅VI-1 / VI-1b)。**`get_frame_plan` の `nodes[]` のうち fullscreen / raster pass の node には **`pass_inputs`** が付き、その pass が今描いている pipeline の shader の set 1 の宣言を、pass が渡しているかどうかに関わらず全部返します(Studio がソケットを宣言から描くためのもの。[組み立て](../../src/core/vkcore/renderer.cpp#L3955))。
 
 | 鍵 | 中身 |
 |---|---|
@@ -1201,8 +1201,8 @@ ticket を次の結果で終えます([型付きの拒否のときだけ commit 
 - `set_layout` だけの `edit_graph_document`(N-6。runtime に行かない)は対象外です。`material_route_default` を付けたもの(✅RS-2)は runtime に行くので対象です。
 - Studio がこの結果を受けて engine を起動し直す流れは、[Studio のノードキャンバス](#studio-のノードキャンバスgraph-タブ)の
   「engine の再起動が要る graph の編集(✅GL-1b)」にあります。
-- ディスクからの読み直しとの関係: [`Renderer::reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3505) は live の material の照合を
-  外し([`validate_live_materials = false` の所](../../src/core/vkcore/renderer.cpp#L3537))、同じ transaction の中で material の shader と pipeline を
+- ディスクからの読み直しとの関係: [`Renderer::reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3506) は live の material の照合を
+  外し([`validate_live_materials = false` の所](../../src/core/vkcore/renderer.cpp#L3538))、同じ transaction の中で material の shader と pipeline を
   作り直してから公開し、作り直しが失敗すれば候補世代ごと捨てて旧世代を保ちます([第6章 §6.7](06_rendering.md) の
   「任意 G-buffer / material output ABI・attachment state」)。RS-1 が commit した文書を、その engine 自身の file watcher が拾うことは
   ありません。RS-1 の editor は `--rpc` で起こした engine の中でだけ動き([RPC を受け始める所](../../src/core/appflow/loop.cpp#L701))、
@@ -1324,7 +1324,7 @@ Studio にはまだこれを送る UI がありません。
   [「EL-2 edit_target_planning merges a graph's names into the root, erases them, and refuses an unknown one」](../../test/renderconfigeditor_test.cpp#L10232)
   (direct root: 混ぜる・field の置き換え・3 種の `target_planning_name_unknown`・形の誤りが invalid params で何も書かないこと・`null` で名前とキーが消えること・
   `restore_render_documents` で戻ること。preset が `target_planning` を持つ root: `rendering_key_not_allowed_here`)と、`engine_primitives_test` の
-  [「EL-2 target planning, plan pins and physical fragments written over RPC reach the frame plan」](../../test/engine_primitives_test.cpp#L1758)
+  [「EL-2 target planning, plan pins and physical fragments written over RPC reach the frame plan」](../../test/engine_primitives_test.cpp#L1842)
   (GPU。blank の project に同じ形の target 3 枚の鎖を足し、`isolate` / `no_alias` で alias が外れて `null` で戻ること、eject した pin と fragment を書き戻すと
   `applied_*` に出ること、fingerprint を 1 文字変えた fragment が `physical_fragment_stale` で文書も plan も変わらないこと、restore で文書と plan が戻ること)。
   着地の W1 で 72 件が緑(統合側の報告)。変異の確認は検証の方針により行っていません。
@@ -1684,10 +1684,10 @@ params は `{}` のほかに `{loop_elements: {node, offset?, limit?}}` を受�
 | node と resource | `loop_origin` | ✅LP-1a。ループが展開した pass・compute task・target・buffer に `{loop, element, node}`(node は body の definition の中の id)。Studio は展開名を分解せずにこれを読む |
 | node | `origin` | ✅GL-2a。graph の node が作った pass・compute task(root の node・instance の中の node・ループの回・`pass_replacements` の置き換え先)に、作った node の `{graph, node, definition?, instance_path?, loop?, loop_branch?, element?}`。preset・feature・rendering 節の pass には付かない(preset が `engine://` だと graph の pass も preset の pass も `source: "engine"` なので、これで見分ける)。`graph` は rendering root 文書の参照(`get_compute_task_authoring` が node の task に返す `source_reference` と同じ値)、`node` はその scope に書かれた id、`definition` は node を持つ definition(root の node には無い)、`instance_path` は置いた instance(末尾の `/` は無い。root とループの body には無い)、`loop` / `loop_branch` / `element` はループの回だけ(`element` は `loop_origin.element` と同じ)([組む所](../../src/core/renderingpass/frameplanner.cpp#L1639)) |
 | node | `replaces` | ✅GL-2a。feature の pass・task の代わりに入った node に `[{feature, pass}]`(instance が名指した順。1 つの node が複数を置き換えうるので配列)。ループでは、置き換えた pass と同じ pass family の回にだけ付く |
-| node | `added_after` | ✅RS-6。engine がその pass の `after` に足した graph の compute task(✅RS-6b から feature と integration の compute task も)の名前を、足した順に(その pass が task の書く image を読むため。[第6章](06_rendering.md) §6.18「graph の pass の置き場所」)。足していない node には鍵が無い([出す所](../../src/core/renderingpass/frameplanner.cpp#L1965)) |
-| 最上位の `resources[]` | `added_usage` | ✅RS-6b。engine が合成した config の render target の宣言の `usage` に足した flag を、足した順に(今は `SAMPLED` だけ。task が書く render target を rendering 節・preset の pass が `input` で読むため。graph の `render.image` と feature の render target。[第6章](06_rendering.md) §6.18 の同じ項)。`usage` にはもう入っている。feature の文書は書き換えない。足していない resource には鍵が無い([出す所](../../src/core/renderingpass/frameplanner.cpp#L2088)) |
+| node | `added_after` | ✅RS-6。engine がその pass の `after` に足した graph の compute task(✅RS-6b から feature と integration の compute task も)の名前を、足した順に(その pass が task の書く image を読むため。[第6章](06_rendering.md) §6.18「graph の pass の置き場所」)。足していない node には鍵が無い([出す所](../../src/core/renderingpass/frameplanner.cpp#L2022)) |
+| 最上位の `resources[]` | `added_usage` | ✅RS-6b。engine が合成した config の render target の宣言の `usage` に足した flag を、足した順に(今は `SAMPLED` だけ。task が書く render target を rendering 節・preset の pass が `input` で読むため。graph の `render.image` と feature の render target。[第6章](06_rendering.md) §6.18 の同じ項)。`usage` にはもう入っている。feature の文書は書き換えない。足していない resource には鍵が無い([出す所](../../src/core/renderingpass/frameplanner.cpp#L2145)) |
 | 最上位 | `diagnostics` / `deactivated_graph_nodes` | ✅GL-2a。compiled pipeline の診断 `[{kind, subject, detail}]`(kind は `graph_variant_selected` / `pipeline_preset_resolved` / `feature_excluded` / `graph_node_deactivated`)と、変種で非活性にした graph の node `[{node, feature, reason}]`(reason は `target_ref` / `insert` / `order` / `pass_replacement` / `loop_output`。第6章 §6.18)。compiled pipeline のある plan では空でも鍵がある |
-| `physical_target_plan` の `resources[]`・`alias_groups[]`・`decisions[]`・`backend_selection.candidates[]` | `from_nodes` | ✅GL-2a。その要素が関わる frame plan の node 名を plan の順で。resource は読む・書く・履歴を読む・attachment にする node、alias group はメンバーの resource の和、decision(最上位・`lowering_graph`・`planning_opportunities`・`backend_selection` の 4 か所)は `subject` を node → resource → alias group → scope の順で引く(lowering の node は元の node へ開く)。graph 全体の決定は `[]`。backend の候補は failures / diagnostics の `subject` から引くが、実装者の報告では実物で全部 `[]`(候補の拒否の `subject` は候補の名前のため)([`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L2220)) |
+| `physical_target_plan` の `resources[]`・`alias_groups[]`・`decisions[]`・`backend_selection.candidates[]` | `from_nodes` | ✅GL-2a。その要素が関わる frame plan の node 名を plan の順で。resource は読む・書く・履歴を読む・attachment にする node、alias group はメンバーの resource の和、decision(最上位・`lowering_graph`・`planning_opportunities`・`backend_selection` の 4 か所)は `subject` を node → resource → alias group → scope の順で引く(lowering の node は元の node へ開く)。graph 全体の決定は `[]`。backend の候補は failures / diagnostics の `subject` から引くが、実装者の報告では実物で全部 `[]`(候補の拒否の `subject` は候補の名前のため)([`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L2293)) |
 | render / compute / snapshot_copy の node | `view_select` | ✅LP-Va。宣言の `{<軸>: <値>}` |
 | 同上 | `view_axes` | ✅LP-Va2。node の family の軸 `[{axis, length, runtime, labels?}]`。並びは provider の index の順(外側が先)、`length` は今の世代の長さで実行時の軸は `null`・`runtime: true`、`labels` は cube の `face` だけ(`+X` 〜 `-Z`)。`$main`・`$reflection/planar`・provider の無い family は `[]` |
 | node | `no_selected_view: true` | ✅LP-Va2。直近に公開したフレームで `view_select` に一致する view が 1 つも無かった node にだけ付く。公開前と、走った node には鍵が無い |
@@ -1696,7 +1696,7 @@ params は `{}` のほかに `{loop_elements: {node, offset?, limit?}}` を受�
 
 #### `edit_preset_pass` の `view_select`(✅LP-Va2)
 
-`edit_preset_pass`(root pass の編集を含む)は、どの pass の type の置換 payload でも `view_select` を受けます。**省略は保持、`null` は member の削除、値は置換**です。値は compiler と同じ規則([`parseRenderViewSelect()`](../../src/core/renderingpass/renderingpassjsonhelpers.cpp#L449))で読まれ、形の誤りは `render_pipeline_preflight_failed` で、message はその parse の文(`view_select must be a non-empty object of axis names to non-negative integers` など)で終わり、文書は変わりません。軸が family にあるかどうかは組み直しの検査(`graph.view_select_*@1`)です。
+`edit_preset_pass`(root pass の編集を含む)は、どの pass の type の置換 payload でも `view_select` を受けます。**省略は保持、`null` は member の削除、値は置換**です。値は compiler と同じ規則([`parseRenderViewSelect()`](../../src/core/renderingpass/renderingpassjsonhelpers.cpp#L464))で読まれ、形の誤りは `render_pipeline_preflight_failed` で、message はその parse の文(`view_select must be a non-empty object of axis names to non-negative integers` など)で終わり、文書は変わりません。軸が family にあるかどうかは組み直しの検査(`graph.view_select_*@1`)です。
 
 #### `edit_graph_document` の definition の op(✅LP-0c)と、ループの編集
 
@@ -2041,7 +2041,7 @@ LP-4c の着地時はゾーン表示が無く、body は instance と同じく�
 - **carry で前の回の出力を読む**: 線だけで組めます。(1) root の pass の出力を左の縁の `+` へ(ループの入力)、(2) body の pass の出力を右の縁の `+` へ(ループの出力)、(3) 右の縁の内側の端を左の縁の内側の端へ(carry)、(4) 左の縁の内側の端(body の `graph.input`)を body の pass の宣言のソケットへ落とします。(4) で pass がその `graph.input` を番号付きの入力として読み、展開された 2 回目の pass が 1 回目の出力を読みます(frame plan の `loop/1/render_fullscreen` の `reads` に `loop/0/render_fullscreen__color` が入ります。シナリオ `loop_zone_read`)。
   - carry の矢印は左の縁の内側のソケットで終わり、その上に描かれます。Q-19 から、矢印の下のソケットを押すと、carry を選ぶのではなく線を引き始めます([押した所](../../src/devstudio/view/graphcanvaswidget.cpp#L2972))。Q-19 の前は、carry の付いた入力からは線を引けませんでした(実装者の報告)。
 - **分かっている穴**(Q-19 の着地時の記録。実装者の報告):
-  - ✅LP-6(`03725036`)で塞がりました。root の `render.image` から引いた線も通ります(engine の規則: image node から読む pass は、その image を書く graph の pass を待つ。待たない場合も含めて [第6章 §6.18](06_rendering.md) の「image node を読む pass の順」と [design_graph_loops.md](../design_graph_loops.md) §5.2)。Q-19 の着地時は、root の `render.image` の出力を body の pass のソケットへ引くと、engine が `Pass input target is not produced as an earlier output: <image> in pass: <pass>` で断り([その文を投げる所](../../src/core/renderingpass/frameplanner.cpp#L1864))、シナリオのように root の pass の出力 port から引いて避けていました。
+  - ✅LP-6(`03725036`)で塞がりました。root の `render.image` から引いた線も通ります(engine の規則: image node から読む pass は、その image を書く graph の pass を待つ。待たない場合も含めて [第6章 §6.18](06_rendering.md) の「image node を読む pass の順」と [design_graph_loops.md](../design_graph_loops.md) §5.2)。Q-19 の着地時は、root の `render.image` の出力を body の pass のソケットへ引くと、engine が `Pass input target is not produced as an earlier output: <image> in pass: <pass>` で断り([その文を投げる所](../../src/core/renderingpass/frameplanner.cpp#L1921))、シナリオのように root の pass の出力 port から引いて避けていました。
   - **LP-6 が入るまでの一時的な案内(Q-20、Q-21 で外した)**: Q-20 から Q-21 までの間、Graph タブは上の拒否を受けると、notice の拒否の行の後ろに「その image を書く pass から線を引く」案内を足していました(`render.image` から読む線を持つ編集のときだけ。engine はこの拒否に専用の code を付けないので、判定は message の文字列でした)。LP-6(`03725036`)で engine が直ったので、Q-21(`5b4b3737`)で案内とその判定を外し、シナリオ `loop_zone_read` に root の `render.image` から body の pass へ引く線を足しました。
   - シナリオ `loop_zone_read` は、frame plan の回の pass を位置(`nodes[2]` / `nodes[3]`)で見ています(同じ位置の `name` が合うことも見ます)。
   - シナリオで `Graph change saved.` を待った直後に発火する action は、文書の読み直しの途中で disabled のことがありえます(`loop_zone_wire` も同じ手順です)。

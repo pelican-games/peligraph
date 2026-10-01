@@ -352,7 +352,7 @@ process 終了時も pending request を失敗にするため、入力 pipe や 
 到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L112) が view 表示なしで検査します。
 
 読む前に、応答の階層だけ掴んでおきます。`get_frame_plan` の 1 応答の中に、名前の層と物理の層が入れ子で
-入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L3997))。
+入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L4046))。
 
 ```text
 get_frame_plan 応答 = pelican.frame_plan v1
@@ -362,10 +362,10 @@ get_frame_plan 応答 = pelican.frame_plan v1
 
 2 つの層は互いに引けます(✅GL-2a)。名前の層の node の出所の鍵(`source` / `provider_*` / `authored_name` / `loop_origin` と、GL-2a の
 `origin` / `replaces`、✅RS-6 の `added_after`)は、`framePlanToJson()` が compiled pipeline の `RenderPassProvenance` から写します
-([写す所](../../src/core/renderingpass/frameplanner.cpp#L1930))。resource の側の ✅RS-6b の `added_usage`(engine が宣言の `usage` に足した `SAMPLED`)も、`RenderResourceProvenance` から `resources[]` へ写します([`added_usage` を写す所](../../src/core/renderingpass/frameplanner.cpp#L2088))。`origin` の `graph`(rendering root 文書の参照)は raw の planner が知らないので、
+([写す所](../../src/core/renderingpass/frameplanner.cpp#L1987))。resource の側の ✅RS-6b の `added_usage`(engine が宣言の `usage` に足した `SAMPLED`)も、`RenderResourceProvenance` から `resources[]` へ写します([`added_usage` を写す所](../../src/core/renderingpass/frameplanner.cpp#L2145))。`origin` の `graph`(rendering root 文書の参照)は raw の planner が知らないので、
 renderer が `framePlanToJson()` に渡します。物理の層は、`physical_target_plan` を足した直後に renderer が
-[`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L2220) を呼び
-([呼ぶ所](../../src/core/vkcore/renderer.cpp#L4239))、resources / alias_groups / decisions / backend の候補に、関わる node 名の
+[`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L2293) を呼び
+([呼ぶ所](../../src/core/vkcore/renderer.cpp#L4293))、resources / alias_groups / decisions / backend の候補に、関わる node 名の
 `from_nodes[]` を書き込みます。物理の要素 → node 名 → `origin` → graph の文書、の順に辿れます(形は manual 第13章「`get_frame_plan` に足されたもの」)。
 
 Graph タブが読む応答も同じ読み方をします。1 応答に「今の版」と「文書の 2 つの層」が入っています
@@ -1153,7 +1153,7 @@ cmake_parse_arguments(PELICAN_TEST
 | action map と layer consumption | [`inputactions_test.cpp`](../../test/inputactions_test.cpp#L107) |
 | project/path/security | [`projectconfig_test.cpp`](../../test/projectconfig_test.cpp#L188)、[`pathresolver_test.cpp`](../../test/pathresolver_test.cpp#L157) |
 | physics の幾何と world binding | [`physquery_test.cpp`](../../test/physquery_test.cpp#L112)、[`physworld_test.cpp`](../../test/physworld_test.cpp#L55) |
-| frame graph の順序/異常系 | [`frameplanner_test.cpp`](../../test/frameplanner_test.cpp#L277) |
+| frame graph の順序/異常系 | [`frameplanner_test.cpp`](../../test/frameplanner_test.cpp#L278) |
 | rendering JSON | [`renderingpass_helpers_test.cpp`](../../test/renderingpass_helpers_test.cpp#L21) |
 | shader compile/reflection/reload | [`shader_compiler_reflection_test.cpp`](../../test/shader_compiler_reflection_test.cpp#L32)、[`shader_library_test.cpp`](../../test/shader_library_test.cpp#L94) |
 | feature composition | [`featurecompose_test.cpp`](../../test/featurecompose_test.cpp#L369) |

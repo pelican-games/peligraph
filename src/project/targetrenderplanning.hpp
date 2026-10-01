@@ -49,6 +49,10 @@ struct ResourcePattern {
         ResourcePatternFallback::materialize;
     std::uint64_t estimated_bytes = 0;
     std::string provenance;
+    // PO-1: why the binding's producer keeps the resource out of aliasing
+    // (which usage left the alias-safe set, ...). Explains the plan's reason
+    // for a required or stored materialization; planning never reads it.
+    std::string store_reason;
 };
 
 enum class ResourceExtentKind : std::uint8_t {

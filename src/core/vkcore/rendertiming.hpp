@@ -156,6 +156,8 @@ DECLARE_MODULE(RenderTiming) {
         std::uint32_t query_count = 0;
         GpuTimingRangeIdentity identity;
         std::vector<GpuTimingNodeDescriptor> nodes;
+        // PO-1: the runtime generation the range was recorded with.
+        std::uint64_t runtime_generation = 0;
     };
 
     struct ActiveGpuRange {
@@ -164,6 +166,7 @@ DECLARE_MODULE(RenderTiming) {
         std::uint32_t first_query = 0;
         GpuTimingRangeIdentity identity;
         std::vector<GpuTimingNodeDescriptor> nodes;
+        std::uint64_t runtime_generation = 0;
     };
 
     struct GpuAggregate {
@@ -187,6 +190,11 @@ DECLARE_MODULE(RenderTiming) {
     std::uint64_t dropped_samples = 0;
 
     std::deque<GpuTimingHistoryFrame> gpu_history;
+    // PO-1: gpu_history holds the frames of one runtime generation, the one
+    // the frames being recorded use. A new generation empties it, and a range
+    // of another generation collected late is not added to it. nullopt until
+    // the first frame says its generation.
+    std::optional<std::uint64_t> window_generation;
     std::vector<GpuTimingViewRow> published_latest_views;
     std::vector<GpuTimingNodeRow> published_latest_nodes;
     std::size_t last_snapshot_history_frame_visits = 0;
@@ -219,6 +227,11 @@ DECLARE_MODULE(RenderTiming) {
     // equal or smaller limits is a no-op; graph growth drains and recreates it.
     void configureGpuQueries(std::uint32_t frame_slots, std::uint32_t range_slots,
                              std::uint32_t max_nodes);
+    // PO-1: the runtime generation the logical frame about to be recorded
+    // uses. Called once per logical frame before its ranges begin; when it
+    // differs from the window's, the window (gpu_history and what is
+    // published from it) is emptied and starts at this generation.
+    void beginRuntimeGeneration(std::uint64_t generation);
     void beginGpuRange(vk::CommandBuffer cmd_buf, std::uint32_t frame_slot,
                        std::uint32_t range_slot, GpuTimingRangeIdentity identity,
                        std::vector<GpuTimingNodeDescriptor> nodes);
@@ -248,8 +261,7 @@ DECLARE_MODULE(RenderTiming) {
     std::uint64_t queryPoolCreateCountForTesting() const { return query_pool_create_count; }
     std::size_t historyFrameCountForTesting() const noexcept {
         return gpu_history.size();
-    }
-    std::size_t lastSnapshotHistoryFrameVisitsForTesting() const noexcept {
+    }    std::size_t lastSnapshotHistoryFrameVisitsForTesting() const noexcept {
         return last_snapshot_history_frame_visits;
     }
     std::size_t pendingRangeCountForTesting() const;

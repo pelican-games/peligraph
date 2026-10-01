@@ -1397,6 +1397,90 @@ TEST_CASE("Q-14f a present that supplies one input refuses a uniform buffer its 
 // typing them. The names listed are the ones the loop judges by: the loop
 // rewritten with them through edit_graph_document sends each material down
 // the branch its name chose, in the running frame plan.
+TEST_CASE("PO-1 the frame plan names a binding the shader never reads and an output nobody reads, through the running renderer",
+          "[po1][frame-plan][diagnostics][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("po1_diagnostics");
+    const auto root = dir.root / "project";
+    // present supplies q14e_a and q14e_b; its shader declares both and reads
+    // only q14e_b. draw_q14e_c writes q14e_c, which nothing reads.
+    writeQ14eProject(root, Json::array({"q14e_a", "q14e_b"}), q14f_reads_second_frag);
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    (void)rpc.result("render_frame");
+    const auto plan = rpc.result("get_frame_plan");
+    auto found = Json::array();
+    for (const auto &entry : plan.at("diagnostics")) {
+        if (entry.at("kind") == "unused_binding" || entry.at("kind") == "unread_output")
+            found.push_back(entry);
+    }
+    INFO(plan.at("diagnostics").dump(2));
+    // Nothing else: draw_q14e_a / draw_q14e_b are read, present writes
+    // display, and q14e_b's binding is read.
+    CHECK(found ==
+          Json::array({{{"kind", "unread_output"},
+                        {"subject", "draw_q14e_c"},
+                        {"detail", {{"resource", "q14e_c"}}}},
+                       {{"kind", "unused_binding"},
+                        {"subject", "present"},
+                        {"detail", {{"binding", 0}, {"resource", "q14e_a"}}}}}));
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+TEST_CASE("PO-1 get_status's GPU time starts a new window when an edit publishes a new generation",
+          "[po1][gpu-timing][status][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("po1_gpu_timing");
+    const auto root = dir.root / "project";
+    writeQ14eProject(root, Json::array({"q14e_a"}), q14f_reads_one_frag);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    {
+        auto authored = Json::parse(readFile(rendering_path));
+        renderingSectionOf(authored)["features"] =
+            Json::array({"engine://features/gpu_timing.json"});
+        writeFile(rendering_path, authored.dump(2));
+    }
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    for (int frame = 0; frame < 6; ++frame) (void)rpc.result("step_frame");
+    const auto before = rpc.result("get_status").at("gpu_timing");
+    INFO(before.dump(2));
+    REQUIRE(before.at("enabled") == true);
+    REQUIRE(before.at("supported") == true);
+    REQUIRE(before.at("generation").is_number_unsigned());
+    REQUIRE(before.at("samples").get<std::size_t>() >= 2);
+    CHECK(before.at("samples") == before.at("history_count"));
+    std::uint64_t last_before = 0;
+    for (const auto &frame : before.at("logical_frame_history"))
+        last_before = std::max(last_before, frame.at("logical_frame").get<std::uint64_t>());
+
+    const auto committed = editPresentInputs(rpc, Json::array({"q14e_b"}));
+    INFO(committed.dump(2));
+    REQUIRE(committed.at("committed") == true);
+    for (int frame = 0; frame < 5; ++frame) (void)rpc.result("step_frame");
+    const auto generation = rpc.result("get_frame_plan").at("runtime_generation");
+    REQUIRE(generation != before.at("generation"));
+
+    const auto after = rpc.result("get_status").at("gpu_timing");
+    INFO(after.dump(2));
+    CHECK(after.at("generation") == generation);
+    const auto samples = after.at("samples").get<std::size_t>();
+    CHECK(samples >= 1);
+    CHECK(after.at("history_count") == samples);
+    REQUIRE(after.at("logical_frame_history").size() == samples);
+    // The window holds none of the frames measured before the edit.
+    for (const auto &frame : after.at("logical_frame_history"))
+        CHECK(frame.at("logical_frame").get<std::uint64_t>() > last_before);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
 TEST_CASE("EL-1 get_render_authoring_context lists the materials a draw_loop judges, by the names it takes",
           "[el1][primitives][draw-loop][rpc][gpu]") {
     setupLogger(true);

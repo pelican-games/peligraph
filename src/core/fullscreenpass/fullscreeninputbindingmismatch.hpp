@@ -21,6 +21,10 @@ struct FullscreenShaderPassInput {
     // shader's variadic inputs (PELICAN_DECLARE_VARIADIC_INPUTS).
     std::string name;
     bool variadic = false;
+    // PO-1: the shader's code reaches it (ReflectedBinding::accessed). Not
+    // on the wire of the declarations; get_frame_plan's unused_binding
+    // diagnostics carry it.
+    bool accessed = true;
 };
 
 // VI-1: the set-1 bindings PELICAN_DECLARE_VARIADIC_INPUTS(first, max)

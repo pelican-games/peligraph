@@ -121,7 +121,7 @@ sequenceDiagram
 
 [`FastModuleContainer::get<T>()`](../../src/core/container.hpp#L149) はoptionalが空なら`emplace()`し、破棄関数をstaticな`cleaners`へ積みます。従って、**最初に`GET_MODULE(T)`を呼んだ瞬間がTのconstructor実行時点**です。
 
-例として [`Renderer` のconstructor](../../src/core/vkcore/renderer.cpp#L3139) は [`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L412) を呼ぶだけに見えますが、その内部で次のmoduleが連鎖的に生成されます。ただし現在は、[`Renderer::prepareRuntimeModules()`](../../src/core/vkcore/renderer.hpp#L267) と [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L259) により「render前に依存を全解決してから、以後の新規module生成を禁止する（module graphを凍結する）」方式へ変わっています。
+例として [`Renderer` のconstructor](../../src/core/vkcore/renderer.cpp#L3140) は [`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L412) を呼ぶだけに見えますが、その内部で次のmoduleが連鎖的に生成されます。ただし現在は、[`Renderer::prepareRuntimeModules()`](../../src/core/vkcore/renderer.hpp#L267) と [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L259) により「render前に依存を全解決してから、以後の新規module生成を禁止する（module graphを凍結する）」方式へ変わっています。
 
 ```text
 Renderer
@@ -425,7 +425,7 @@ ECSCore::update()
 | 走る場所 | 誰が | 何のために | 使う state |
 |---|---|---|---|
 | `update_game`（animation） | [`AnimationSystem::updatePoseGraphs()`](../../src/core/ecs/predefined/animationsystem.cpp#L253) | animation 分割の node が今フレーム消費するスカラを集める | [`poseGraphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L153) |
-| `render()` | [`Renderer` の publish](../../src/core/vkcore/renderer.cpp#L5810) | rendering 分割の sink（バッファ、音声、RT値）へ実際に書く | [`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L149) |
+| `render()` | [`Renderer` の publish](../../src/core/vkcore/renderer.cpp#L5867) | rendering 分割の sink（バッファ、音声、RT値）へ実際に書く | [`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L149) |
 
 **2回評価するのに state を分けているのが要点**です。`value.trigger_clock` のような「前回の評価が何をしたか」に依存する op は state を進めるので、1つの state を共有させると1フレームで2回進んでしまいます。だから `SceneLoader` は同じ文書に対して2つの `EvaluationState` を持ち、グラフ世代の切り替えでも両方を一緒に移送します（片方だけ置いていくと、描画側は走り続けたまま姿勢側のクロックだけが巻き戻ります）。順序は固定で、animation 分割は values 分割の1段後ろに置かれます（[分割の順序](../../src/project/graphpartition.hpp#L10) / [段の定義](../../src/project/graphcomposition.hpp#L216)）。ただし animation 側が描画側の評価結果を受け取っているわけではありません —— animation フェーズは**自分の state で values 分割を自分で評価し直します**（[`evaluateLowered()` の呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L368)）。2つの state が「同じ入力で1フレームに1回ずつ進む」ので、姿勢側と描画側は互いのクロックを進めないまま同じ数値を読みます（[コメントの規範](../../src/core/ecs/predefined/animationsystem.cpp#L355)）。
 
@@ -505,7 +505,7 @@ ECSCore::update()
 
 `advance()`後に`current_time += delta_time`、`frame_index++`です。最初の更新フレームはindex 1になります。
 
-**評価の番号と play state(✅PM-1a)。**[`advance()`](../../src/core/appflow/enginetime.cpp#L36) は描画のフレームごとに必ず `evaluation_index` を 1 進めます(戻すのは `setup()` だけ)。animation の書き込み・graph・phase の revision、VMA の frame index、GPU timing、TAA、shader の `frame_index`、graph の publish、picking、RenderDoc、XR の mirror、RPC の `frame`、そして `GameContext::frameIndex()` が読むのはこちらで、[`evaluationIndex()`](../../src/core/appflow/enginetime.hpp#L93) で取ります。上の `current_time` / `delta_time` / `frame_index` は game の時計と game のフレームで、`PlayState::playing` の間は毎フレーム、`paused` の間は [`requestSteps()`](../../src/core/appflow/enginetime.cpp#L134) で頼まれた歩を 1 フレームに 1 つ取るときだけ進みます(そのときの `dt` は固定の `1/fps`)。それ以外の `paused` のフレームは `delta_time = 0` で、止まった時刻のまま評価し直されます。そのフレーム自身の差分(realtime の測定値か fixed_step の固定値)は `editor_delta_time` に別に取り、[`editorDt()`](../../src/core/appflow/enginetime.hpp#L94) で editor の system が読みます。[`setPlayState()`](../../src/core/appflow/enginetime.cpp#L90) は `paused` から出るときに取っていない歩を捨て、`last_tick` を今に合わせ直すので、再開の最初のフレームの `dt` に一時停止の時間は入りません。一時停止しない実行では、評価の番号と game のフレームは同じ値で進みます。RPCの`set_time`は時刻だけを直接変更し、deltaを0へ戻します。この不連続は [`timeSetRevision()`](../../src/core/appflow/enginetime.cpp#L78) で観測でき、rendererはこれとcamera不連続をまとめて検知してtemporal history（前フレームのview/projection行列やcamera位置をview単位で覚えておく履歴。前フレームの描画結果を今フレームへ再投影して混ぜる処理が使うので、時刻やcameraが飛ぶと対応関係が崩れて捨てる必要があります）をリセットします（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1544)）。
+**評価の番号と play state(✅PM-1a)。**[`advance()`](../../src/core/appflow/enginetime.cpp#L36) は描画のフレームごとに必ず `evaluation_index` を 1 進めます(戻すのは `setup()` だけ)。animation の書き込み・graph・phase の revision、VMA の frame index、GPU timing、TAA、shader の `frame_index`、graph の publish、picking、RenderDoc、XR の mirror、RPC の `frame`、そして `GameContext::frameIndex()` が読むのはこちらで、[`evaluationIndex()`](../../src/core/appflow/enginetime.hpp#L93) で取ります。上の `current_time` / `delta_time` / `frame_index` は game の時計と game のフレームで、`PlayState::playing` の間は毎フレーム、`paused` の間は [`requestSteps()`](../../src/core/appflow/enginetime.cpp#L134) で頼まれた歩を 1 フレームに 1 つ取るときだけ進みます(そのときの `dt` は固定の `1/fps`)。それ以外の `paused` のフレームは `delta_time = 0` で、止まった時刻のまま評価し直されます。そのフレーム自身の差分(realtime の測定値か fixed_step の固定値)は `editor_delta_time` に別に取り、[`editorDt()`](../../src/core/appflow/enginetime.hpp#L94) で editor の system が読みます。[`setPlayState()`](../../src/core/appflow/enginetime.cpp#L90) は `paused` から出るときに取っていない歩を捨て、`last_tick` を今に合わせ直すので、再開の最初のフレームの `dt` に一時停止の時間は入りません。一時停止しない実行では、評価の番号と game のフレームは同じ値で進みます。RPCの`set_time`は時刻だけを直接変更し、deltaを0へ戻します。この不連続は [`timeSetRevision()`](../../src/core/appflow/enginetime.cpp#L78) で観測でき、rendererはこれとcamera不連続をまとめて検知してtemporal history（前フレームのview/projection行列やcamera位置をview単位で覚えておく履歴。前フレームの描画結果を今フレームへ再投影して混ぜる処理が使うので、時刻やcameraが飛ぶと対応関係が崩れて捨てる必要があります）をリセットします（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1545)）。
 
 **edit とセッション(✅PM-1b)。**`PlayState` に 3 つ目の `edit` が入りました。時計の進み方は `paused` と同じ(`dt = 0`、評価の番号だけ進む)で、`requestSteps()` は `paused` 以外で投げるので `edit` では歩を取りません。`setPlayState()` は `paused` か `edit` から出るときに歩を捨て `last_tick` を合わせ直します。`edit` と他の 2 つの間には「セッション」があり、[`beginGameSession()`](../../src/core/appflow/enginetime.cpp#L104) は今の時刻を覚えて game の時計と game のフレームを 0 に、[`endGameSession()`](../../src/core/appflow/enginetime.cpp#L112) は覚えた時刻(セッションが無ければ 0)に時計を戻します。**game のフレームは終わるときに戻しません**(`edit` では進まないので、前のセッションの最後の値が次のセッションの始めまで残ります)。状態の移りが途中で失敗したときのために、`gameClock()` / `restoreGameClock()` で時刻・フレーム・セッションの有無をまとめて取って戻せます。
 
@@ -522,7 +522,7 @@ ECSCore::update()
 
 ## 2.8 描画フレーム
 
-状態更新後に [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L6401) が呼ばれます（windowedでは [`renderFlatFrameWithOptionalCapture()`](../../src/core/appflow/loop.cpp#L329) 経由）。WP128以降、`render()`は1-viewのアダプタで、実体は [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4945) です。
+状態更新後に [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L6458) が呼ばれます（windowedでは [`renderFlatFrameWithOptionalCapture()`](../../src/core/appflow/loop.cpp#L329) 経由）。WP128以降、`render()`は1-viewのアダプタで、実体は [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4999) です。
 
 1. `DeletionQueue.beginFrame()`で安全になった旧GPU資源を解放。
 2. view数変化・`set_time`・camera不連続を検知してtemporal historyをリセット。

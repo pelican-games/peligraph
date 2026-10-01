@@ -42,6 +42,10 @@ struct ReflectedBinding {
     // R8_UNORM); undefined for any other descriptor and for an image declared
     // without one.
     vk::Format storage_image_format = vk::Format::eUndefined;
+    // PO-1: the entry point's code reaches the declaration (spirv-reflect's
+    // static use, through the call graph). A merge is accessed when any
+    // stage's is. True where nothing was reflected.
+    bool accessed = true;
 };
 
 struct ReflectedFragmentOutput {

@@ -153,7 +153,7 @@ execute_process(
 if(NOT rpc_result EQUAL 0)
     message(FATAL_ERROR "gpu timing RPC status run failed with ${rpc_result}\nstdout:\n${rpc_stdout}\nstderr:\n${rpc_stderr}")
 endif()
-if(NOT rpc_stdout MATCHES [=["gpu_timing":\{"dropped_samples":0,"enabled":true,"history_capacity":120,"history_count":1]=])
+if(NOT rpc_stdout MATCHES [=["gpu_timing":\{"dropped_samples":0,"enabled":true,"generation":[0-9]+,"history_capacity":120,"history_count":1]=])
     message(FATAL_ERROR "get_status.gpu_timing did not expose the enabled 120-frame schema\nstdout:\n${rpc_stdout}")
 endif()
 if(NOT rpc_stdout MATCHES [=["schema_version":2,"supported":true]=] OR

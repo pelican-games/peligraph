@@ -6,6 +6,7 @@
 #include "../src/project/featurecompose.hpp"
 #include "../src/project/renderconfigsection.hpp"
 #include "../src/core/renderingpass/renderingpassconfigjsonparser.hpp"
+#include "../src/core/renderingpass/renderingpassjsonhelpers.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
@@ -612,6 +613,109 @@ TEST_CASE("hybrid preset resolves ordered deferred and forward writes",
                       "opaque_color") != transparent->reads.end());
     REQUIRE(std::find(transparent->reads.begin(), transparent->reads.end(),
                       "opaque_depth") != transparent->reads.end());
+}
+
+TEST_CASE("PO-1 a write nothing consumes is an unread_output diagnostic of the frame plan",
+          "[frameplanner][diagnostics][po1]") {
+    const auto node = [](std::string name, std::size_t order,
+                         std::vector<std::string> reads,
+                         std::vector<std::string> writes,
+                         std::vector<std::string> reads_history = {}) {
+        return FramePlanNode{
+            .name = std::move(name),
+            .kind = FramePlanNodeKind::render,
+            .declaration_index = order,
+            .order = order,
+            .level = order,
+            .reads = std::move(reads),
+            .reads_history = std::move(reads_history),
+            .writes = std::move(writes),
+        };
+    };
+    FramePlan plan;
+    plan.name = "po1_unread";
+    plan.nodes = {
+        // A depth-only pass nobody samples: the motivating shadow pass.
+        node("shadow", 0, {}, {"shadow_map"}),
+        // Its depth serves its own depth test beside a color that is read.
+        node("geometry", 1, {}, {"albedo", "scene_depth", "chain"}),
+        node("lighting", 2, {"albedo"}, {"lit", "unused_out"}),
+        // Read as history next frame; a readback target; a buffer.
+        node("taa", 3, {"lit"}, {"accum", "feedback", "readback", "particles"},
+             {"feedback"}),
+        // Written again later: only the last write is judged.
+        node("overlay", 4, {}, {"chain"}),
+        node("present", 5, {"accum"}, {"display"}),
+    };
+    const std::unordered_map<std::string, std::vector<std::string>> usage{
+        {"shadow_map", {"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"}},
+        {"albedo", {"COLOR_ATTACHMENT", "SAMPLED"}},
+        {"scene_depth", {"DEPTH_STENCIL_ATTACHMENT"}},
+        {"chain", {"COLOR_ATTACHMENT", "SAMPLED"}},
+        {"lit", {"COLOR_ATTACHMENT", "SAMPLED"}},
+        {"unused_out", {"COLOR_ATTACHMENT", "SAMPLED"}},
+        {"accum", {"COLOR_ATTACHMENT", "SAMPLED"}},
+        {"feedback", {"COLOR_ATTACHMENT", "SAMPLED"}},
+        {"readback", {"COLOR_ATTACHMENT", "TRANSFER_SRC"}},
+        {"display", {"COLOR_ATTACHMENT", "SAMPLED"}},
+    };
+    const std::vector<FramePlanUnreadOutput> expected{
+        {"shadow", "shadow_map"},
+        {"lighting", "unused_out"},
+        {"overlay", "chain"},
+    };
+    REQUIRE(findFramePlanUnreadOutputs(plan, usage) == expected);
+
+    // On the wire: the pipeline's declared usage judges, next to its own
+    // diagnostics.
+    CompiledRenderPipeline pipeline;
+    for (const auto &[name, names] : usage) {
+        pipeline.resource_provenance.push_back(RenderResourceProvenance{
+            .name = name, .kind = "render_target", .usage = names});
+    }
+    const auto wire = framePlanToJson(plan, &pipeline);
+    auto unread = nlohmann::json::array();
+    for (const auto &entry : wire.at("diagnostics")) {
+        if (entry.at("kind") == "unread_output") unread.push_back(entry);
+    }
+    REQUIRE(unread == nlohmann::json::array({
+        {{"kind", "unread_output"}, {"subject", "shadow"},
+         {"detail", {{"resource", "shadow_map"}}}},
+        {{"kind", "unread_output"}, {"subject", "lighting"},
+         {"detail", {{"resource", "unused_out"}}}},
+        {{"kind", "unread_output"}, {"subject", "overlay"},
+         {"detail", {{"resource", "chain"}}}},
+    }));
+    // Without a pipeline the plan carries no diagnostics, as before.
+    REQUIRE_FALSE(framePlanToJson(plan).contains("diagnostics"));
+
+    // hybrid_v1 writes nothing it does not consume.
+    const auto load_engine = [](std::string_view ref) {
+        constexpr std::string_view prefix = "engine://";
+        if (ref.rfind(prefix, 0) != 0) throw std::runtime_error("expected engine ref");
+        return engineResourceOrThrow(ref.substr(prefix.size()));
+    };
+    const auto composed = composeRenderFeatureConfig(
+        nlohmann::json{
+            {"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}},
+        RenderFeatureComposeDependencies{{}, false, {}, load_engine});
+    const auto resolved = resolveRenderTargetFormatClassesV2(
+        composed.config, vk::Format::eB8G8R8A8Srgb, vk::Extent2D{1280, 720}, false);
+    std::unordered_map<std::string, std::vector<std::string>> hybrid_usage;
+    for (const auto &target : parseRenderTargetDefinitionsFromJson(resolved)) {
+        hybrid_usage.emplace(target.name, imageUsageNames(target.usage));
+    }
+    REQUIRE(hybrid_usage.contains("gbuffer_albedo"));
+    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(resolved);
+    REQUIRE(graphs.size() == 1);
+    const auto hybrid = findFramePlanUnreadOutputs(
+        planFrameGraph(graphs.front()), hybrid_usage);
+    std::string reported;
+    for (const auto &entry : hybrid) {
+        reported += entry.node + " writes " + entry.resource + "\n";
+    }
+    INFO(reported);
+    REQUIRE(hybrid.empty());
 }
 
 TEST_CASE("frame planner accepts compute tasks and serializes node kinds", "[frameplanner]") {

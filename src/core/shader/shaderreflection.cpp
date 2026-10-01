@@ -234,6 +234,7 @@ ShaderReflection reflect(std::span<const uint32_t> spirv) {
             descriptor_type == vk::DescriptorType::eStorageImage
                 ? storageImageFormat(binding->image.image_format)
                 : vk::Format::eUndefined,
+            binding->accessed != 0,
         });
     }
 
@@ -360,6 +361,7 @@ ShaderReflection merge(std::span<const ShaderReflection> stages) {
                     "Shader input attachment index mismatch");
             }
             existing.stages |= binding.stages;
+            existing.accessed = existing.accessed || binding.accessed;
             if (existing.name.empty()) {
                 existing.name = binding.name;
             }

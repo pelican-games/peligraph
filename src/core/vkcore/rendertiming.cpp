@@ -198,6 +198,8 @@ nlohmann::json disabledGpuTimingStatusJson() {
         {"history_capacity", gpu_timing_history_capacity},
         {"history_count", 0},
         {"dropped_samples", 0},
+        {"generation", nullptr},
+        {"samples", 0},
         {"logical_frame_averages",
          nlohmann::json::array()},
         {"logical_frame_history",
@@ -487,6 +489,21 @@ void RenderTiming::configureGpuQueries(std::uint32_t frame_slots,
     publishSnapshot();
 }
 
+void RenderTiming::beginRuntimeGeneration(std::uint64_t generation) {
+    if (window_generation == generation) return;
+    window_generation = generation;
+    // Frames of the generation before measured another configuration; an
+    // average over both would mix them. Its ranges still in flight are
+    // dropped as they are collected (collectGpuRange).
+    gpu_history.clear();
+    gpu_series_totals.clear();
+    // A redraw of the same logical frame under the new generation is
+    // measured again: the window holds none of its samples.
+    std::fill(last_recorded_gpu_ranges.begin(), last_recorded_gpu_ranges.end(),
+              std::nullopt);
+    publishSnapshot();
+}
+
 void RenderTiming::beginGpuRange(vk::CommandBuffer cmd_buf, std::uint32_t frame_slot,
                                  std::uint32_t range_slot,
                                  GpuTimingRangeIdentity identity,
@@ -529,7 +546,8 @@ void RenderTiming::beginGpuRange(vk::CommandBuffer cmd_buf, std::uint32_t frame_
     const auto first_query = static_cast<std::uint32_t>(pending_index) * queries_per_range;
     cmd_buf.resetQueryPool(query_pool.get(), first_query, queries_per_range);
     active_gpu_range = ActiveGpuRange{
-        pending_index, range_slot, first_query, std::move(identity), std::move(nodes)};
+        pending_index, range_slot, first_query, std::move(identity), std::move(nodes),
+        window_generation.value_or(0)};
 }
 
 void RenderTiming::writeNodeSubrangeStart(vk::CommandBuffer cmd_buf,
@@ -565,7 +583,8 @@ void RenderTiming::endGpuRange() {
                              timestamp_queries_per_node;
     pending_gpu_ranges[active_gpu_range->pending_index] = PendingGpuRange{
         active_gpu_range->first_query, query_count,
-        std::move(active_gpu_range->identity), std::move(active_gpu_range->nodes)};
+        std::move(active_gpu_range->identity), std::move(active_gpu_range->nodes),
+        active_gpu_range->runtime_generation};
     active_gpu_range.reset();
 }
 
@@ -613,6 +632,11 @@ bool RenderTiming::collectGpuRange(std::size_t pending_index, bool wait) {
         if (results[static_cast<std::size_t>(query) * 2 + 1] == 0) return false;
     }
 
+    // PO-1: recorded before the window's generation began.
+    if (pending->runtime_generation != window_generation.value_or(0)) {
+        pending.reset();
+        return true;
+    }
     const auto timestamp_delta = [&](std::uint64_t start, std::uint64_t end) {
         if (timestamp_valid_bits >= 64) return end - start;
         const auto mask = (std::uint64_t{1} << timestamp_valid_bits) - 1;
@@ -703,6 +727,12 @@ nlohmann::json RenderTiming::statusJson() const {
         {"history_capacity", gpu_timing_history_capacity},
         {"history_count", gpu_history.size()},
         {"dropped_samples", dropped_samples},
+        // PO-1: the runtime generation the window began at (null before a
+        // frame said one), and how many logical frames it holds -- the frames
+        // logical_frame_averages are over.
+        {"generation", window_generation ? nlohmann::json(*window_generation)
+                                         : nlohmann::json(nullptr)},
+        {"samples", gpu_history.size()},
         {"logical_frame_averages",
          std::move(projection.logical_frame_averages)},
         {"logical_frame_history",

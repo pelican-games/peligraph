@@ -165,7 +165,7 @@ function(validate_rpc_stdout stdout label)
     list(GET lines 20 line20)
     list(GET lines 21 line21)
 
-    if(NOT line0 MATCHES [=["id":1]=] OR NOT line0 MATCHES [=["instance_id":"[0-9a-fA-F-]+"]=] OR NOT line0 MATCHES [=["project_root"]=] OR NOT line0 MATCHES [=["scene":"default_scene"]=] OR NOT line0 MATCHES [=["frame":0]=] OR NOT line0 MATCHES [=["time":0\.0]=] OR NOT line0 MATCHES [=["seed":1234]=] OR NOT line0 MATCHES [=["xr":\{"active":false.*"timing":\{.*"wait_frame_count":0.*"view_configuration":null\}]=] OR NOT line0 MATCHES [=["contract":2]=] OR NOT line0 MATCHES [=["readback_encoding":"srgb"]=] OR NOT line0 MATCHES [=["capture":"available"]=] OR NOT line0 MATCHES [=["gpu_timing":\{"dropped_samples":0,"enabled":false,"history_capacity":120]=])
+    if(NOT line0 MATCHES [=["id":1]=] OR NOT line0 MATCHES [=["instance_id":"[0-9a-fA-F-]+"]=] OR NOT line0 MATCHES [=["project_root"]=] OR NOT line0 MATCHES [=["scene":"default_scene"]=] OR NOT line0 MATCHES [=["frame":0]=] OR NOT line0 MATCHES [=["time":0\.0]=] OR NOT line0 MATCHES [=["seed":1234]=] OR NOT line0 MATCHES [=["xr":\{"active":false.*"timing":\{.*"wait_frame_count":0.*"view_configuration":null\}]=] OR NOT line0 MATCHES [=["contract":2]=] OR NOT line0 MATCHES [=["readback_encoding":"srgb"]=] OR NOT line0 MATCHES [=["capture":"available"]=] OR NOT line0 MATCHES [=["gpu_timing":\{"dropped_samples":0,"enabled":false,"generation":null,"history_capacity":120]=])
         message(FATAL_ERROR "${label}: get_status initial response did not include expected fields:\n${line0}")
     endif()
     if(NOT line0 MATCHES [=["memory":\{"driver_available":]=] OR

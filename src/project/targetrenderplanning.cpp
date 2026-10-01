@@ -993,12 +993,21 @@ std::string materializationReason(
     if (resource.uses.produced_by_snapshot) {
         return "snapshot output requires a stable sampled image";
     }
+    // PO-1: the producer's own words for what kept it out of aliasing.
+    const auto explained = [&](std::string reason) {
+        if (!resource.pattern.store_reason.empty()) {
+            reason += ": " + resource.pattern.store_reason;
+        }
+        return reason;
+    };
     if (resource.logical.materialization ==
         LogicalMaterializationRequirement::required) {
-        return "logical materialization requirement is required";
+        return explained(
+            "logical materialization requirement is required");
     }
     if (resource.pattern.require_store) {
-        return "ResourcePattern requires contents to be stored";
+        return explained(
+            "ResourcePattern requires contents to be stored");
     }
     if (resource.uses.widest_read ==
         LogicalReadFootprintKind::neighborhood) {
