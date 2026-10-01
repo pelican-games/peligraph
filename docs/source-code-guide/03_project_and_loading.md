@@ -428,7 +428,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 > ctest wp380c_... : dumpbin /symbols で「入っていないこと」を検査
 > ```
 >
-> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L2340) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L87)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
+> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L2341) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L87)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
 >
 > **不変条件**: setterの定義をヘッダへ書かない（inlineでも）。test-onlyのTUを `pelican_core` のソースへ足さない。`default_fault_injector_for_testing` の既定値をnullptr以外にしない。
 
@@ -1107,7 +1107,7 @@ ABI側では [`AnimationClipKindV1`](../../src/core/userpublic/animation/abi_v1.
 
 `rendering_config_json` が指すファイルの**根**は `pelican.graph` root だけです。共通グラフ文書の5キー（`schema` / `version` / `definitions` / `nodes` / `outputs`）の横に `rendering` キーがあり、rendering config の中身はその下に入ります。出荷7本と `devcli project init` の雛形がすべてこの形です。
 
-P-2a-4b までは、`rendering` 相当の中身を最上位に直接書く **legacy root** も契約でした。MG-2b でその読み手を撤去し、legacy root は `render_config.legacy_root@1`（[`RenderConfigLegacyRoot`](../../src/project/renderconfigdocument.hpp#L37)）で断ります。断る場所は、起動時にファイルを最初に読む [`loadRenderingPassConfigJsonFromString()`](../../src/core/renderingpass/renderingpassconfigloader.cpp#L16)、feature overlay の [`applyRenderFeatureOverlays()`](../../src/project/renderfeatureoverlay.cpp#L122)、ray tracing の [`loadRayTracingProjectConfig()`](../../src/core/shader/raygrouplayout.cpp#L1452)、編集文書の [`AuthoredRenderConfigDocument`](../../src/project/renderconfigdocument.cpp#L529) です。出荷の legacy root 5本は `{"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":<旧い根>}` に書き換えられました。
+P-2a-4b までは、`rendering` 相当の中身を最上位に直接書く **legacy root** も契約でした。MG-2b でその読み手を撤去し、legacy root は `render_config.legacy_root@1`（[`RenderConfigLegacyRoot`](../../src/project/renderconfigdocument.hpp#L37)）で断ります。断る場所は、起動時にファイルを最初に読む [`loadRenderingPassConfigJsonFromString()`](../../src/core/renderingpass/renderingpassconfigloader.cpp#L16)、feature overlay の [`applyRenderFeatureOverlays()`](../../src/project/renderfeatureoverlay.cpp#L122)、ray tracing の [`loadRayTracingProjectConfig()`](../../src/core/shader/raygrouplayout.cpp#L1452)、編集文書の [`AuthoredRenderConfigDocument`](../../src/project/renderconfigdocument.cpp#L546) です。出荷の legacy root 5本は `{"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":<旧い根>}` に書き換えられました。
 
 **「authored な `rendering` キーがどこにあるか」を決める場所は1つ**で、[`src/project/renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L12) の小さなヘッダに全部入っています。読み手も書き手もここを呼ぶ規約で、各所が自前の `if (graph)` を育てないためです。
 
@@ -1121,7 +1121,7 @@ P-2a-4b までは、`rendering` 相当の中身を最上位に直接書く **leg
 
 **`rendering` 節には `buffers` / `compute_tasks` を書けません。** graph root の lowering（[`lowerRenderGraphDocument()`](../../src/project/rendergraphcomposition.cpp#L1015)）が、この2つを graph node（`render.buffer` / `render.compute`）の接続から作るため、節にあれば `render graph derives field from connections: <key>` で拒否します。この規則は MG-2b より前からあります。legacy root には lowering が無かったので根に書けましたが、legacy root が無くなったことでその書き方も無くなりました。テストで根に宣言していたものは task feature へ移されています。エディタの「root scope で compute_tasks / buffers を編集する」経路はこれで到達不能になり、後の掃除の WP（台帳の MG-3）に回っています。
 
-編集側の唯一の書き手は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L654) で、graph root 自身の5キー（`schema` / `version` / `definitions` / `nodes` / `outputs`）と editor の `layout` は根へ、それ以外は `rendering.<key>` へ書きます。この関数はJSONを組み直さず、元のバイト列の中で該当メンバの範囲を差し替えます（[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L288)）。理由は digest がファイル全体のバイト列に対して取られるためで、詳細は[第6章](06_rendering_vulkan_shader.md)にあります。
+編集側の唯一の書き手は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L671) で、graph root 自身の5キー（`schema` / `version` / `definitions` / `nodes` / `outputs`）と editor の `layout` は根へ、それ以外は `rendering.<key>` へ書きます。この関数はJSONを組み直さず、元のバイト列の中で該当メンバの範囲を差し替えます（[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L305)）。理由は digest がファイル全体のバイト列に対して取られるためで、詳細は[第6章](06_rendering_vulkan_shader.md)にあります。
 
 ## 3.15 共通グラフ文書 `pelican.graph` ✅実装済み（AG-0 / P-1）
 
