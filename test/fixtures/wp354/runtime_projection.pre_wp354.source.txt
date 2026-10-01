@@ -35,3 +35,8 @@ field, removes only /profile and /nodes/<index>/shader_resolution, and requires
 nlohmann::json::diff(the explicit baseline, stripped) to contain zero
 operations. No WP374 pointer is added to the permitted removal list, so any
 further projection growth still trips this recursive comparison.
+
+GL-2a likewise overlays the two top-level fields every frame plan with a
+compiled pipeline now carries, empty for this fixture's pipeline:
+/diagnostics = [] and /deactivated_graph_nodes = []. LP-Va2 overlaid
+view_axes = [] on the render, compute and snapshot_copy nodes the same way.

@@ -3809,9 +3809,13 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         const auto graph_made = [&](const std::string &name) {
             return active_graph.graph_declarations.contains(name) || graph_loop_declarations.contains(name);
         };
+        // Read only: a composition with no compute task keeps no compute_tasks
+        // field (WP180 byte parity with the flat resolver).
         std::set<std::string> graph_task_names;
-        for (const auto &task : ensureArray(composed, "compute_tasks"))
-            if (const auto name = task.value("name", std::string{}); graph_made(name)) graph_task_names.insert(name);
+        if (const auto tasks = composed.find("compute_tasks"); tasks != composed.end() && tasks->is_array())
+            for (const auto &task : *tasks)
+                if (const auto name = task.value("name", std::string{}); graph_made(name))
+                    graph_task_names.insert(name);
         graph_task_waits = waitOnGraphTasksInScenePasses(composed, graph_task_names, graph_images,
             [&](const nlohmann::json &pass) {
                 const auto name = pass.value("name", std::string{});

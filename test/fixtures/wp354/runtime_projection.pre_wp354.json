@@ -1,5 +1,7 @@
 {
   "barriers": [],
+  "deactivated_graph_nodes": [],
+  "diagnostics": [],
   "execution_plan": {
     "bridges": [],
     "dependencies": [],
