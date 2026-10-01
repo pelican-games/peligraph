@@ -681,7 +681,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 | `query_journal` | `{after_transaction_id?}` | 編集履歴(undo の種) |
 | `can_edit` / `can_preview` | `{}` | 編集・プレビューの可否と理由 |
 | `get_graph_instances` | `{}` | 共通グラフ文書の `source_reference` / `source_digest` / `instances[]`(`graph.instance` だけ)/ root の `nodes[]` 全体 / `definitions` 本体([get_graph_instances の実装](../../src/core/communication/renderconfigeditor.cpp#L2410)) |
-| `get_graph_catalog` | `{}` | 登録済みグラフモジュールのカタログ(`pelican.graph_catalog` v1。`modules` などは `pelican_cli graph-catalog` と同じ値 — [第10章](10_tools.md) §10.4。✅EL-4 から RPC にだけ `material_pass_contracts` / `material_output_formats` が足される。EL-4 で同じく足した `engine_shaders` は ✅EL-4b で外れ、`get_engine_shaders` へ移った —— 下の「material pass の format と engine の shader も、engine の一覧から読めます(✅EL-4 / EL-4b)」)。✅RS-4 から、op の `outputs` の要素は `{port, type}` のほかに `{port, type_from_input}`(`type` の鍵は無く、名指した入力 socket に入る edge の型になる。`render.shadow_depth` の `depth`、`render.snapshot_copy` の `destination`)がある([第6章](06_rendering.md) §6.17)。✅EL-1 から、`modules[].types[]` の各 type に `arguments {<引数名>: {kind, required, values | min, max, default}}` が付く。`kind` は値の種類(`enum_value` / `boolean` / `signed_integer` / `unsigned_integer` など)、`required` は既定値が無いとき true、`values` は enum の取れる値、`min` / `max` は整数の範囲、`default` は省いたときの値(enum は文字列)。type の検査が照合するのと同じ schema の表から読む(`pelican.render` の型は `builtinRenderTypeSchemas()`、`render.image` の `type.arguments` を照合する表)ので、並んだ値はどれも通り、外の値は今までどおり `unsupported enum value: <値>` で断られる([arguments を組む所](../../src/project/graphmodule.cpp#L429))。既存の `parameters` はそのまま |
+| `get_graph_catalog` | `{}` | 登録済みグラフモジュールのカタログ(`pelican.graph_catalog` v1。`modules` などは `pelican_cli graph-catalog` と同じ値 — [第10章](10_tools.md) §10.4。✅EL-4 から RPC にだけ `material_pass_contracts` / `material_output_formats` が足される。EL-4 で同じく足した `engine_shaders` は ✅EL-4b で外れ、`get_engine_shaders` へ移った —— 下の「material pass の format と engine の shader も、engine の一覧から読めます(✅EL-4 / EL-4b)」)。✅RS-4 から、op の `outputs` の要素は `{port, type}` のほかに `{port, type_from_input}`(`type` の鍵は無く、名指した入力 socket に入る edge の型になる。`render.shadow_depth` の `depth`、`render.snapshot_copy` の `destination`)がある([第6章](06_rendering.md) §6.17)。✅EL-1 から、`modules[].types[]` の各 type に `arguments {<引数名>: {kind, required, values | min, max, default}}` が付く。`kind` は値の種類(`enum_value` / `boolean` / `signed_integer` / `unsigned_integer` など)、`required` は既定値が無いとき true、`values` は enum の取れる値、`min` / `max` は整数の範囲、`default` は省いたときの値(enum は文字列)。type の検査が照合するのと同じ schema の表から読む(`pelican.render` の型は `builtinRenderTypeSchemas()`、`render.image` の `type.arguments` を照合する表)ので、並んだ値はどれも通り、外の値は今までどおり `unsupported enum value: <値>` で断られる([arguments を組む所](../../src/project/graphmodule.cpp#L431))。既存の `parameters` はそのまま |
 | `get_engine_shaders` | `{}`(✅EL-4b。field を足すと `-32602`) | ✅EL-4c からすぐ返り、`{status: "building"}`(反映の途中)/ `{status: "ready", engine_shaders: [...]}` / `{status: "failed", error}` のどれか。`engine_shaders` の要素は下の「material pass の format と engine の shader も、engine の一覧から読めます」の表の `engine_shaders` の行。反映は process に 1 つの worker thread が裏で 1 回だけ行い、ready になった後は process が終わるまで同じ答えを返す。frame と RPC は反映を待たない(EL-4b までは最初の呼び出しの中で反映し、その間 frame と RPC が止まっていた) |
 | `get_graph_values` | `{instance}` | その instance の入力 port の実効値 `{port, value, source, connected\|parameter}` と `published` / `generation` / `frame`。**publish 時の snapshot を読むだけで再評価しません** |
 | `get_graph_node_values` | `{instance?}` | 展開木の全ノードの出力値(`{node, expanded, outputs}`)と `source:"rendering"`。`instance` 省略で root から |
@@ -931,6 +931,8 @@ shader の batch、render pipeline の読み直しが shader の変更を一緒�
 | `set_material_route_default` | `base_source_digest`・`material_route_default`(`"auto"` / `"forward"`)。root の既定だけを変える。root 編集の ticket に乗り、commit の結果に `restart_required: true`(✅G-4。[`RenderConfigEditorService::setMaterialRouteDefault()`](../../src/core/communication/renderconfigeditor.cpp#L3363)) |
 | `edit_rendering_keys` | `base_source_digest`・`set?`(`{キー: 値}`)・`remove?`(キーの配列)。root の rendering 節のうち、ほかの RPC が書かない 8 つのキー(`draw_sort` など)を 1 つの ticket で丸ごと書く / 消す(✅EL-3。下の「rendering 節のほかのキーを書く」) |
 | `edit_target_planning` / `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment` | root の rendering 節の `target_planning`(graph ごとの node の `serial` / `isolate` と資源の `no_alias` を名前単位で)・`vulkan_plan_pins`・`vulkan_physical_fragments` を 1 つの ticket で書く / 消す(✅EL-2。下の「graph 全体の計画の決定を書く」) |
+| `get_fold_groups` / `fold_nodes` | `get_fold_groups {}` は root の graph 文書の `fold_groups` を group ごとに `{group, nodes, kind, digest, verified?, state}` で返す。`fold_nodes {base_source_digest, group, nodes, folded}` は group 1 つを宣言する / 置き換える / 消す(`folded: null`)1 つの ticket(✅FG-1。下の「断片の決定を宣言する」) |
+| `verify_fold` | `base_source_digest`・`group`・`frames?`・`warmup_seconds?`・`tolerance?`。group の開いた形と決定ありの形を engine 自身の player に headless で描かせて比べ、通れば `folded.verified` を書く非同期の ticket(✅FG-2。下の「断片を検査して印を付ける」) |
 | `edit_graph_document` | `base_source_digest`と`ops[]`で共通グラフ文書を編集する(§13.5「グラフの装着を編集する」)。ops は順に候補文書へ当て、最後に 1 回だけ展開する — **全部通るか、文書ごと拒否か**のどちらか。任意の **`material_route_default`**(`"auto"` / `"forward"`。✅RS-2)を渡すと、graph の変更と rendering 文書の root の既定を 1 つの ticket で変える(下の「material の route の既定」) |
 | `edit_graph_instances` | `base_source_digest`・`attach[]`・`detach[]`。owner を持つ root instance の装着 / 取り外しだけを扱い、中身は `edit_graph_document` の ops へ翻訳される([edit_graph_instances の実装](../../src/core/communication/renderconfigeditor.cpp#L2437))。任意の `material_route_default`(✅RS-2)は `edit_graph_document` と同じ |
 | `export_render_feature` | `scope`(`root` / `preset`)と`index`で feature 1 つを `user://components/<name>/` へ書き出す。`engine://` の feature は `render_component_engine_reference` で拒否([export の実装](../../src/core/communication/renderconfigeditor.cpp#L1293)) |
@@ -939,6 +941,7 @@ shader の batch、render pipeline の読み直しが shader の変更を一緒�
 | `uninstall_package` | `namespace`。root config と選択中 preset の全文字列を走査し、まだ参照が残っていれば`package_in_use`(参照を列挙)で**何も消しません** |
 | `decompose_material_pass` | `base_source_digest`・`base_preset_digest?`・`pass`。一体版の material pass を `render.material_pass` + draw_loop の `graph.loop` + body の definition に 1 つの ticket で書き換える(✅LP-3b。下の「ループと分解の RPC」) |
 | `get_render_documents` / `restore_render_documents` | render 文書を丸ごと読む / CAS の下で丸ごと戻す(作る・消すを含む)。render の編集の undo の土台(✅RD-1 / RD-1b。下の「ループと分解の RPC」) |
+| `reload_render_documents` | `{}`。ディスクの root とそれが読む render 文書を読み直し、組み直して公開する ticket。ディスクには書かない(✅RL-1。下の「ループと分解の RPC」の「ディスクで書き換えた render 文書を取り込む」) |
 | `get_graph_templates` | `{}`。engine が同梱する分解版の雛形(`engine://graphs/*.json`)を `{templates: [{reference, title, description?, decomposes, document}]}` で返す(✅GT-1。下の「ループと分解の RPC」) |
 | `apply_graph_template` | `base_source_digest`・`base_preset_digest?`・`template`。雛形の nodes / definitions を root の graph へ写し、`decomposes` に従って feature を外すか `pass_replacements` を書き、`shader_defines` を足すのを 1 つの ticket で行う(✅GT-1。下の「ループと分解の RPC」) |
 
@@ -1069,7 +1072,7 @@ Frame Plan の status 行に `The preview graph refused it: <code>: <message>` �
   - `"variadic_group_malformed"`: 名前が組のもの(`pelican_variadic_input_<k>`)なのにマクロが作った形でない —— 2D の combined image sampler でない、binding が `first + k` でない、配列、k に抜けがある。message は `Fullscreen shader's variadic pass inputs are malformed: fragment '<fragment>' declares '<名前>' at set 1 binding <b>; declare variadic inputs only with PELICAN_DECLARE_VARIADIC_INPUTS(first, max)`。
 - **`variadic_capacity_exceeded`**: pass の texture の入力が `first + max` 個より多い(溢れた入力の番号は最初の buffer の番号になるため)。`kind` は `"texture"`、`binding` は `first + max`(溢れた最初の入力)、`resource` はその入力の target の名前、`expected` は `"sampled_image"`。message は `Fullscreen pass supplies more texture inputs than its shader takes: pass '<pass>' supplies <N> texture inputs, but fragment '<fragment>' takes at most <first+max> (variadic inputs at set 1 bindings <a>-<c>); input <b> ('<target>') has no binding` です([message を組む所](../../src/core/fullscreenpass/fullscreeninputbindingmismatch.cpp#L136))。
 
-可変の組の枠を pass が渡さないのは意図した使い方なので、そこを既定の resource で埋めても LOG_WARNING は出ません(固定の宣言を埋めたときは従来どおり出ます。[警告から除く所](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L2460))。
+可変の組の枠を pass が渡さないのは意図した使い方なので、そこを既定の resource で埋めても LOG_WARNING は出ません(固定の宣言を埋めたときは従来どおり出ます。[警告から除く所](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L2506))。
 
 **pass ごとの `shader.defines` の拒否(✅VI-1)。**fullscreen / raster pass の `shader.defines`(第6章 §6.4)が読めないときも code は `render_pipeline_preflight_failed` で、`error` に **`pass_shader_define`** `{pass, define, name, index, reason}` が付き、文書は変わりません([付ける所](../../src/core/communication/renderconfigeditor.cpp#L116))。`define` は書いたままの要素(文字列でなければその JSON の文字列)、`name` は `=` の前の名前(識別子でなければ `""`)、`index` は配列の位置です。`reason` は 3 つです([読む所](../../src/core/renderingpass/passshaderdefines.cpp#L61))。
 
@@ -1209,6 +1212,9 @@ ticket を次の結果で終えます([型付きの拒否のときだけ commit 
   `--rpc` の engine では watcher の gate が閉じているためです([gate の条件](../../src/core/watch/reloadgate.cpp#L27))。同じ project を
   `--rpc` 無しの窓ありで開いている別の engine があれば、その watcher がファイルを拾い、ディスクの経路で組み直しを試みます
   (この道を端から端まで通す test は見当たりません。未確認)。
+- `--rpc` の engine(Studio の engine)に、ディスクで書き換えた render 文書を取り込ませる道は `reload_render_documents`(✅RL-1)です。file watcher の
+  経路ではなく編集 RPC の候補として組み直すので、live の material の物理の契約だけが変わる文書は、上の RS-1 と同じく commit して `restart_required` になります
+  (コードの読み。test はこの道を通していません。§13.5 の「ループと分解の RPC」の「ディスクで書き換えた render 文書を取り込む」)。
 - 編集 RPC の経路でもディスクの経路と同じ作り直しを使い、起動し直さずにその場で載せる案は採りません。起動し直しのままです
   (2026-10-01 利用者の決定)。
 - test: `renderconfigeditor_test` の
@@ -1293,7 +1299,10 @@ Studio にはまだこれを送る UI がありません。
   - 消すとき(`null`)は緩く、今の合成に無い名前でも、root の entry がその名前を持っていれば消せます(組み直しで名前が無くなった後の掃除のため)。
   - ループの回の node(`<loop>/<element>/<node>`)は合成した config に在るので名前の表は通りますが、`target_planning` の node に展開名を書くことは LP-1a が
     `graph.loop_expansion_referenced@1` で断ります([第6章](06_rendering.md) の「展開名は書けません」)。コードの読みでは、この要求は組み直しの preflight で
-    断られます(test は無く、未確認)。ループの回ごとの決定は FG-1(未着地)で宣言する予定です([design_graph_layers](../design_graph_layers.md) §5.2)。
+    断られます(test は無く、未確認)。ループの回ごとの決定は、root の `fold_groups` にローカル名(`{node: <ループ>, element: N}`)で書きます(✅FG-1。下の「断片の決定を宣言する」)。
+  - ✅FG-1 から、検査済みの fold group が同じ graph・同じ名前・同じ field を `true` に決めているとき、その field に `false` を書く要求は、ticket を取らずに
+    **`graph.fold_decision_conflict@1`**(`group`・`name`・`field`)で断ります([EL-2 から断る所](../../src/core/communication/renderconfigeditor.cpp#L3852))。比べる相手は、今の合成が
+    fold group から足した決定です。
 - **`edit_vulkan_plan_pins {base_source_digest, family, pin, graph?}`** と **`put_vulkan_physical_fragment {base_source_digest, family, fragment, graph?}`**
   ([`editVulkanPlanPins()`](../../src/core/communication/renderconfigeditor.cpp#L3873) / [`putVulkanPhysicalFragment()`](../../src/core/communication/renderconfigeditor.cpp#L3890))。
   - `family` は `flat` / `preview` / `xr` のどれかです。package(`pin` / `fragment`)は compiler が読むのと同じ parser で形を見ます([形を見る所](../../src/core/communication/renderconfigeditor.cpp#L3621))。
@@ -1317,8 +1326,8 @@ Studio にはまだこれを送る UI がありません。
 - frame plan(`get_frame_plan.physical_target_plan`)での見え方:
   - `isolate` した node が書く target と、`no_alias` の資源は `alias_groups` から外れます。
   - pin は `applied_pin_package` と `backend_selection.selected_candidate`、fragment は `applied_physical_fragment` に出ます。
-  - `decisions[]` の要素(`{id, subject, selected, detail}` と GL-2a の `from_nodes`)には、その決定が `target_planning` から来たことを示す印はまだありません
-    (FG-1 で `from_fold` を足す予定。[design_graph_layers](../design_graph_layers.md) §5.2)。
+  - `decisions[]` の要素(`{id, subject, selected, detail}` と GL-2a の `from_nodes`)には、その決定が `target_planning` から来たことを示す印はありません。
+    ✅FG-1 から、fold group が足した決定は `pelican.plan.fold_decision_applied@1` の要素として並び、`from_fold` に group の名前が付きます(下の「断片の決定を宣言する」)。
   - `isolate` で rendering scope が分かれるのは tile backend の候補が選ばれたときだけで、desktop の GPU では scope の差として見えません(GPU の test の注記)。
 - test: `renderconfigeditor_test` の
   [「EL-2 edit_target_planning merges a graph's names into the root, erases them, and refuses an unknown one」](../../test/renderconfigeditor_test.cpp#L10290)
@@ -1328,6 +1337,134 @@ Studio にはまだこれを送る UI がありません。
   (GPU。blank の project に同じ形の target 3 枚の鎖を足し、`isolate` / `no_alias` で alias が外れて `null` で戻ること、eject した pin と fragment を書き戻すと
   `applied_*` に出ること、fingerprint を 1 文字変えた fragment が `physical_fragment_stale` で文書も plan も変わらないこと、restore で文書と plan が戻ること)。
   着地の W1 で 72 件が緑(統合側の報告)。変異の確認は検証の方針により行っていません。
+
+**断片の決定を宣言する(✅FG-1)。**root の graph 文書に `fold_groups` を書くと、root の node の組(断片)に計画の決定 —— `serial` / `isolate` / `no_alias` —— を
+**ローカル名で**付けられます。組み立てのたびに engine が展開名へ写して `target_planning` に足すので、ループの回の数が変わっても宣言を書き直す必要はありません。
+設計は [design_graph_layers](../design_graph_layers.md) §5.2、読みと写しは [`graphfold.hpp`](../../src/project/graphfold.hpp#L80) です。Studio はまだこれを送りません(Graph の層の GL-3 の決定の UI が使う口です)。
+
+```json
+"fold_groups": {
+  "post": {
+    "nodes": ["fold_a", "fold_b", "fold_image", "blur"],
+    "folded": {
+      "kind": "decisions",
+      "decisions": {
+        "isolate":  [{ "node": "blur", "element": 1 }],
+        "no_alias": [{ "node": "fold_image" }]
+      },
+      "verified": { "digest": "<64 桁の小文字 hex>", "at": "2026-10-02T12:00:00Z", "frames": 3 }
+    }
+  }
+}
+```
+
+(`blur` は `graph.loop`、`fold_image` は `render.image`。FG-1 の test の文書と同じ名前です。)
+
+- **形**: `fold_groups.<group> = {nodes: [root の node id], folded: {kind: "decisions", decisions?: {serial?, isolate?, no_alias?}, verified?: {digest, at, frames?}}}`
+  ([`parseGraphFoldGroups()`](../../src/project/graphfold.cpp#L128))。`nodes` は空でない配列で、同じ id は 2 回書けません。知らない鍵、`verified.digest` が 64 桁の小文字 hex でないなどの
+  形の誤りは文書の誤りです(`fold_nodes` では invalid params)。`nodes` の node が文書に在るかはここでは見ません(消えた node は下の digest を変え、group は `stale` になります)。
+- **主語** `{node, element?, port?}`。`node` は group の `nodes` のどれかで、外を指すと **`graph.fold_subject_outside@1`**(`group`・`subject`)です。
+  - `serial` / `isolate`: node が作った pass と compute task。`graph.loop` と `graph.instance` の node はその展開の全部、`element` を付けるとループのその回だけ。
+    `render.image` / `render.buffer` の node は pass を作らないので、書いても何も足しません。
+  - `no_alias`: 資源。`render.image` / `render.buffer` の node 自身、ループ / instance の node ならそれが展開した target と buffer の全部(`element` でその回)、
+    `{node: <書き手>, port}` ならその node の入力 `port` につながった `render.image` / `render.buffer`(`render.target_ref` なら指す target)。`port` を書けるのは `no_alias` だけです。
+- `kind` は `decisions` だけです。ほか(`replacement` など)は **`graph.fold_kind_unsupported@1`**(`group`・`kind`)。
+- **写す段**([`applyGraphFoldGroups()`](../../src/project/graphfold.cpp#L269)): 合成が GL-2a の `graph_origin` を provenance に載せた直後、`target_planning` を compile する前に
+  呼ばれます([呼ぶ所](../../src/project/featurecompose.cpp#L3904))。pass と task は provenance の `loop_origin` / `graph_origin` から作った root の node を引き、target と buffer は
+  `loop_origin` か展開名の先頭(`<node>/…`)で引きます。feature の provenance は見ません。足す先は、pass ならその pass の family の graph、compute task と資源は全 family の graph の
+  `target_planning.graphs.<graph>.nodes.<展開名>.<field>` / `.resources.<展開名>.no_alias` で、値は `true` です。どこにも当たらない主語(ループにもう無い回など)は何も足しません。
+  合成した config の `target_planning` が同じ entry を `false` にしていれば、組み立てが **`graph.fold_decision_conflict@1`**(`group`・`name`・`field`)で断られます。
+- **digest**([`graphFoldGroupDigest()`](../../src/project/graphfold.cpp#L185)): group の `nodes` の root の node(id の順)を、入力のうち group の他の node から来る線だけを残して入れ、
+  それらが使う definition(instance の definition とループの各分岐の body。中の node が使う definition も辿る。definition の `layout` は除く)を並べた JSON を、鍵を整列して
+  dump した sha256(64 桁の小文字 hex)です。root の `layout` と group の外の node は入りません。node の `parameters` は入るので、ループの `count` を変えると digest が変わり、
+  印は古くなります(決定の宣言は古くならず、検査し直すまで効かないだけです)。文書に無い node は `null` として入ります。
+- **印と失効**: `verified.digest` が今の digest と同じ group(`state: "verified"`)の決定だけが効きます。`verified` が無い(`unverified`)・digest が違う(`stale`)group は
+  決定を捨てて開いた形で走り、frame plan の `diagnostics` に `{kind: "fold_unverified" | "fold_stale", subject: <group>, detail: {verified_digest?, current_digest}}` が出ます
+  (`verified_digest` は `fold_stale` だけ。組み立ては断りません。[診断にする所](../../src/project/renderpipeline.cpp#L1400))。
+- **frame plan での見え方**: 効いた決定は、最上位の `fold_decisions` `[{group, kind: "node" | "resource", name, field}]`(その frame graph の分。無ければ鍵ごと無い)と、
+  `physical_target_plan.decisions[]` の `{id: "pelican.plan.fold_decision_applied@1", subject: <展開名>, selected: <field>, detail, from_nodes, from_fold: <group>}` に出ます
+  ([足す所](../../src/core/renderingpass/frameplanner.cpp#L2413))。`detail` は `fold group <group> declared it in target_planning nodes` / `… resources` です。
+- **`get_fold_groups {}`** → `{source_digest, fold_groups: [{group, nodes, kind, digest, verified?, state}]}`(group 名の順。`state` は `verified` / `stale` / `unverified`。
+  読むだけ。[`getFoldGroups()`](../../src/core/communication/renderconfigeditor.cpp#L2518))。
+- **`fold_nodes {base_source_digest, group, nodes, folded}`**([`foldNodes()`](../../src/core/communication/renderconfigeditor.cpp#L2557)): group 1 つを書く root 編集の ticket
+  (id は `render-config-edit-<N>`、結果の `operation` は `fold_nodes`。RD-1 の `documents` を持つので `restore_render_documents` で戻せます)。
+  - `folded` は `{kind, decisions?}` で、**`verified` を書くと invalid params** です(書くのは `verify_fold` だけ)。`nodes` は root の node id で、root に無い id は invalid params。
+  - 同じ名前の group が在れば丸ごと置き換えます。書き直すと `verified` も消えます。
+  - `folded: null`(`nodes` は書かない)で group を消し、最後の group が消えると `fold_groups` の鍵ごと消えます(ほかのバイトはそのまま)。
+  - 名前付きの拒否(`graph.fold_kind_unsupported@1` / `graph.fold_subject_outside@1`)は、その code と fields のまま返り、文書は変わりません。
+- test: `rendercompilerprogram_test` の
+  [「FG-1 a verified fold group's decisions reach target_planning and the frame plan by the expanded names」](../../test/rendercompilerprogram_test.cpp#L2090)
+  (本番の compiler。ループの `isolate` が回の数 3 と 2 のどちらでも展開名で効き、`element` で 1 回だけ、`render.image` の `no_alias` で alias から外れ、決定が `from_fold` 付きで出ること。
+  root と definition の `layout`・group の外の node が digest を変えないこと。group の node の parameter を変えると `fold_stale`、印を消すと `fold_unverified` で決定が効かないこと。
+  3 種の名前付きの拒否)と、`renderconfigeditor_test` の
+  [「FG-1 fold_nodes declares a fold group, get_fold_groups reads its digest and state, and RD-1 takes it back」](../../test/renderconfigeditor_test.cpp#L10394)
+  (宣言と `unverified`、RD-1 で戻ること、`verified` を書く要求と無い node が invalid params、名前付きの拒否、印のある group と EL-2 の `false` の衝突、`folded: null`)。
+  着地の W1 で 106 件が緑(統合側の報告)。
+
+**断片を検査して印を付ける —— `verify_fold`(✅FG-2)。**`fold_nodes` は印(`verified`)を書かないので、宣言した直後の group は `unverified` で、決定は効きません。
+印を書くのは `verify_fold` だけです。group の開いた形と決定ありの形を engine 自身の player に headless で描かせ、絵が同じで、Vulkan validation の error が増えなければ印を書きます。
+設計は [design_graph_layers](../design_graph_layers.md) §5.3 です。Studio はまだこれを送りません。
+
+- **要求** `verify_fold {base_source_digest, group, frames?, warmup_seconds?, tolerance?}`([`verifyFold()`](../../src/core/communication/renderconfigeditor.cpp#L2613))。
+  `frames` は比べる frame の数(1〜600、既定 3)、`warmup_seconds` は描いて捨てる時間(0〜3600、既定 30)、`tolerance` は 1 frame の中で違ってよい画素の数(既定 0 = byte の一致)。
+  範囲の外・形の誤り・root が宣言していない `group` は invalid params です。
+- **答え**: すぐ `{ticket, status: "accepted", base_source_digest}` を返し(ticket は `render-config-edit-<N>`)、frame も RPC も止めません。描いている間の `get_edit_result` は
+  `{ticket, status: "running", operation: "verify_fold", group}` です。描き終わった後の frame の境界で判定し、通れば `folded.verified = {digest, at, frames}` を同じ ticket の番号の
+  root 編集として書きます(その間は `pending` と読めることがあります)。committed の結果には `group` と `verified` が付き、RD-1 の `documents` を持つので
+  `restore_render_documents` で戻せます。印の ticket は、既に並んでいる ticket より先に commit されます([`harvestFoldVerifies()`](../../src/core/communication/renderconfigeditor.cpp#L2702))。
+- **すぐ断るもの**:
+  - **`fold_verify_unavailable`**(`reason`): `headless` / `golden` / `replay`(`--replay` か入力の再生中)/ `executable_unknown`(自分の exe の path を取れない。Windows 以外は常にこれ)/
+    `no_runner`(子を起こす口を持たない構成)([判定](../../src/core/communication/editorruntimefactory.cpp#L2309))。コードには engine の終了で止めた run の `shutdown` もありますが、
+    終了の時は editor ごと消えるので、答えとして読む道は見当たりません(コードの読み)。
+  - **`fold_verify_busy`**(`group`・`ticket`): 同じ group を検査している間。ほかの group と、ほかの編集は止めません。
+  - `gate_closed`・`external_modification`(ほかの編集と同じ)。
+- **走らせ方**([`runFoldVerifyProcesses()`](../../src/core/communication/graphfoldverify.cpp#L438)):
+  - 受けた時点の root(`base_source_digest` の文書)から 2 つの形を作ります —— group の `verified` を外した形(開いた形)と、今の digest で `verified` を付けた形(決定ありの形)。
+    ほかの文書は editor が持つ managed fragment を写します。
+  - project を丸ごと(最上位の `.git` を除く)system の temp の下の `pelican_fold_verify_<pid>_…` に写し、root を書き換えながら同じ exe を 3 回、順に起こします:
+    開いた形 ×2(対照)、決定ありの形 ×1。終われば写しを消します。
+  - 子の引数は `--headless --project <写し> --frames <frames> --fps <親の fps> [--size <project の窓の大きさ>] [--start-time <warmup_seconds>] --render-out <run>/frame_%d.png
+    --vulkan-validation on --log-file <run>/pelican.log` で、親が `--allow-absolute-paths` / `--game-logic` で起きていればそれも付けます
+    ([組み立て](../../src/core/communication/graphfoldverify.cpp#L291)、[親から読む所](../../src/core/communication/editorruntimefactory.cpp#L1967))。
+    warm-up は player の `--start-time` で、その時刻までの fixed-step の frame を描いて捨てます(時刻ではなく frame の数で数えます)。
+- **比べ方**([`judgeFoldVerifyRuns()`](../../src/core/communication/graphfoldverify.cpp#L388)): 各 frame の PNG を RGBA8 に読み、4 byte のどれかが違う画素を数えます(大きさが違えば
+  大きい方の全画素)。validation の error は、子の stdout と stderr にある `Validation Error` の数です。判定は次の順で、最初に当たったものが答えです。
+  1. 写しが作れない → **`fold_verify_failed`**(`run: "setup"`、`detail: {message}`)。対照のどちらかが描けない(0 以外で終わる・frame が無い・時間切れ)→ `fold_verify_failed`
+     (`run: "open"`、`detail: {exit_code, message}`)。何も比べていません
+  2. 対照どうしが、ある frame で `tolerance` を超えて違う → **`graph.fold_verify_unstable@1`**(`detail: {frame, differing_pixels}`)。決定のせいではなく、比べられません
+  3. 決定ありの形が描けない → **`graph.fold_mismatch@1`**(`what: "compile"`、`detail: {exit_code, message}`)
+  4. 決定ありの形が 1 回目の対照と `tolerance` を超えて違う → `graph.fold_mismatch@1`(`what: "pixels"`、`detail: {frame, differing_pixels}`。`frame` は 1 から)
+  5. 決定ありの形の validation の error が、対照の多い方より多い → `graph.fold_mismatch@1`(`what: "validation"`、`detail: {validation_errors, control_validation_errors}`)
+
+  どの拒否にも `group` と `ticket` が付き、文書は変わりません。
+- 描いている間に root が変われば、印の ticket が CAS で **`external_modification`** になり、何も書きません。
+- **子の終わらせ方**: 子は 1 つずつ kill-on-close の job object に入れ、標準入出力はファイルにします。900 s を超えた子と、engine の終了時(猶予 3 s)にまだ走っている子は、
+  その job の handle を閉じて終わらせます(名前や pid で探しません。[`runChild()`](../../src/core/communication/graphfoldverify.cpp#L157))。editor は終わるときに worker を待ちます。
+- **時間**: 実装者の報告では、160x90・Debug・validation・`frames: 2`・`warmup_seconds: 0.5` で約 17 s でした(未確認)。既定値(30 s の warm-up、3 frame)は測っていません。
+- **残した穴**: 子は project の既定の scene を描きます(引数に scene を渡しません)。warm-up は frame の数なので、速い Release では実時間で短くなります(NVIDIA の二段の
+  compile の差し替えより前に描きうる。対照どうしの比較が違いを捕まえます)。子を起こせるのは Windows だけです。
+- test: `renderconfigeditor_test` の
+  [「FG-2 verify_fold draws the open form twice and the decided form once, and marks the group verified only when the pictures agree」](../../test/renderconfigeditor_test.cpp#L10568)
+  (runner を差し替えて、通れば印と RD-1 の 1 文書・次の組み立てで決定が効くこと、子に渡す 2 つの root、4 種の拒否と `tolerance`)、
+  [「FG-2 verify_fold refuses a group that is being verified, and drops runs of a document that changed」](../../test/renderconfigeditor_test.cpp#L10686)
+  (`no_runner`、`fold_verify_busy`、無い group と `frames: 0` が invalid params、走っている間の編集で `external_modification`、終わるときに worker を待つこと)と、GPU の
+  [`fg2_verify_fold_windowed.py`](../../test/fg2_verify_fold_windowed.py)(窓ありの engine から実際に子を 3 回起こし、描いている間も frame が進み、committed の後に frame plan に
+  `fold_decision_applied@1` が出ること。headless の engine では `fold_verify_unavailable {reason: "headless"}`)。着地の W1 で 33 件が緑(統合側の報告)。
+
+**計画を詰める手がかり(✅PO-1)。**Blank から組んだ project を最適化しようとして(GB-2)見えなかった 3 つを、読む側に足しました。判定の規則は変えていません。
+
+- **alias の候補から外れた理由**: `physical_target_plan.resources[].reason`(と `pelican.plan.resource_representation@1` の `detail`)が
+  `logical materialization requirement is required` か `ResourcePattern requires contents to be stored` のとき、その後に `: <原因>` が付きます(原因が複数なら `; ` で区切る)。
+  原因の文と fingerprint への影響は [第6章](06_rendering.md) §6.6 の「alias から外れた理由(✅PO-1)」。
+- **frame plan の `diagnostics`** に `unread_output`(誰も読まない出力)と `unused_binding`(shader が読まない入力)。形は下の「`get_frame_plan` に足されたもの」の表です。
+- **`get_status.gpu_timing`** に `generation`(平均の窓が始まった runtime の世代)と `samples`(窓の論理フレームの数)。新しい世代が公開されると窓は空から始まります
+  ([第6章](06_rendering.md) §6.14 の「GPU タイミング」)。
+- test: `renderingsamplecount_test` の
+  [「PO-1 a target kept out of runtime aliasing by its usage names the usage in the plan's reason」](../../test/renderingsamplecount_test.cpp#L1675)、`frameplanner_test` の
+  [「PO-1 a write nothing consumes is an unread_output diagnostic of the frame plan」](../../test/frameplanner_test.cpp#L618)、`engine_primitives_test` の
+  [「PO-1 the frame plan names a binding the shader never reads and an output nobody reads, through the running renderer」](../../test/engine_primitives_test.cpp#L1400)
+  と [「PO-1 get_status's GPU time starts a new window when an edit publishes a new generation」](../../test/engine_primitives_test.cpp#L1434)(後の 2 本は GPU)。
+  着地の W1 で 115 件が緑(統合側の報告)。
 
 Render Featuresの **Parameters...**で、選択中 feature instance の scalar パラメータを編集できます
 (`edit_render_features` の `set_parameters`)。欄は engine の `parameters` 宣言から作られ、
@@ -1686,7 +1823,12 @@ params は `{}` のほかに `{loop_elements: {node, offset?, limit?}}` を受�
 | node | `replaces` | ✅GL-2a。feature の pass・task の代わりに入った node に `[{feature, pass}]`(instance が名指した順。1 つの node が複数を置き換えうるので配列)。ループでは、置き換えた pass と同じ pass family の回にだけ付く |
 | node | `added_after` | ✅RS-6。engine がその pass の `after` に足した graph の compute task(✅RS-6b から feature と integration の compute task も)の名前を、足した順に(その pass が task の書く image を読むため。[第6章](06_rendering.md) §6.18「graph の pass の置き場所」)。足していない node には鍵が無い([出す所](../../src/core/renderingpass/frameplanner.cpp#L2022)) |
 | 最上位の `resources[]` | `added_usage` | ✅RS-6b。engine が合成した config の render target の宣言の `usage` に足した flag を、足した順に(今は `SAMPLED` だけ。task が書く render target を rendering 節・preset の pass が `input` で読むため。graph の `render.image` と feature の render target。[第6章](06_rendering.md) §6.18 の同じ項)。`usage` にはもう入っている。feature の文書は書き換えない。足していない resource には鍵が無い([出す所](../../src/core/renderingpass/frameplanner.cpp#L2145)) |
-| 最上位 | `diagnostics` / `deactivated_graph_nodes` | ✅GL-2a。compiled pipeline の診断 `[{kind, subject, detail}]`(kind は `graph_variant_selected` / `pipeline_preset_resolved` / `feature_excluded` / `graph_node_deactivated`)と、変種で非活性にした graph の node `[{node, feature, reason}]`(reason は `target_ref` / `insert` / `order` / `pass_replacement` / `loop_output`。第6章 §6.18)。compiled pipeline のある plan では空でも鍵がある |
+| 最上位 | `diagnostics` / `deactivated_graph_nodes` | ✅GL-2a。compiled pipeline の診断 `[{kind, subject, detail}]`(kind は `graph_variant_selected` / `pipeline_preset_resolved` / `feature_excluded` / `graph_node_deactivated`。✅FG-1 の `fold_stale` / `fold_unverified` と ✅PO-1 の `unread_output` / `unused_binding` は下の行)と、変種で非活性にした graph の node `[{node, feature, reason}]`(reason は `target_ref` / `insert` / `order` / `pass_replacement` / `loop_output`。第6章 §6.18)。compiled pipeline のある plan では空でも鍵がある |
+| 最上位 | `fold_decisions` | ✅FG-1。検査済みの fold group がこの frame graph の `target_planning` に足した決定 `[{group, kind: "node" \| "resource", name, field}]`。無ければ鍵ごと無い([出す所](../../src/core/renderingpass/frameplanner.cpp#L2197))。§13.5 の「断片の決定を宣言する」 |
+| `diagnostics` の `fold_stale` / `fold_unverified` | `{kind, subject: <group>, detail: {verified_digest?, current_digest}}` | ✅FG-1。開いた形で走っている fold group。`detail` は文字列ではなく object で、`verified_digest` は `fold_stale` だけ |
+| `diagnostics` の `unread_output` | `{kind, subject: <node>, detail: {resource}}` | ✅PO-1。usage を宣言した image を node が書き、同じ frame の後の node が読みも書きもせず、次の frame に history として読む node も無い。`display`、usage に `TRANSFER_SRC` を持つ image、ほかの出力と一緒に書く depth(`DEPTH_STENCIL_ATTACHMENT`)は出さない。buffer と宣言の無い資源も出さない。同じ資源を後でまた書けば、最後に書いた node だけが出る([`findFramePlanUnreadOutputs()`](../../src/core/renderingpass/frameplanner.cpp#L1682)) |
+| `diagnostics` の `unused_binding` | `{kind, subject: <pass>, detail: {binding, resource}}` | ✅PO-1。fullscreen / raster の pass が set 1 に渡す入力のうち、shader が宣言しているがコードが読まない binding(spirv-reflect の静的な使用。どれかの stage が読めば読んだことになる)。`resource` は target 名(history の入力は `<名前>@history`)か buffer 名。compute task と material pass は対象外。renderer が `get_frame_plan` を組むときに足す([`appendUnusedBindingDiagnostics()`](../../src/core/vkcore/renderer.cpp#L4000)) |
+| `physical_target_plan.decisions[]` | `pelican.plan.fold_decision_applied@1` と `from_fold` | ✅FG-1。`fold_decisions` の 1 件ごとに `{id: "pelican.plan.fold_decision_applied@1", subject: <展開名>, selected: <field>, detail, from_nodes, from_fold: <group>}`([足す所](../../src/core/renderingpass/frameplanner.cpp#L2413)) |
 | `physical_target_plan` の `resources[]`・`alias_groups[]`・`decisions[]`・`backend_selection.candidates[]` | `from_nodes` | ✅GL-2a。その要素が関わる frame plan の node 名を plan の順で。resource は読む・書く・履歴を読む・attachment にする node、alias group はメンバーの resource の和、decision(最上位・`lowering_graph`・`planning_opportunities`・`backend_selection` の 4 か所)は `subject` を node → resource → alias group → scope の順で引く(lowering の node は元の node へ開く)。graph 全体の決定は `[]`。backend の候補は failures / diagnostics の `subject` から引くが、実装者の報告では実物で全部 `[]`(候補の拒否の `subject` は候補の名前のため)([`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L2293)) |
 | render / compute / snapshot_copy の node | `view_select` | ✅LP-Va。宣言の `{<軸>: <値>}` |
 | 同上 | `view_axes` | ✅LP-Va2。node の family の軸 `[{axis, length, runtime, labels?}]`。並びは provider の index の順(外側が先)、`length` は今の世代の長さで実行時の軸は `null`・`runtime: true`、`labels` は cube の `face` だけ(`+X` 〜 `-Z`)。`$main`・`$reflection/planar`・provider の無い family は `[]` |
@@ -1779,6 +1921,35 @@ render の編集(`edit_preset_pass`・`add_authored_pass`・`edit_render_targets
 **commit 結果の `documents`(✅RD-1)。**render の編集の ticket の commit 結果(`get_edit_result` / `step_frame` の `edit_results[]`)に `documents: {<reference>: <sha256>}` が付きます。その commit が書いた文書だけで、作った文書は digest、消した文書は `null`、何も書かなかった(`no_change`)なら `{}` です([`writtenDocumentDigests()`](../../src/core/communication/renderconfigeditor.cpp#L4916))。
 
 **undo の手順(契約から言えること)。**編集の前に `get_render_documents` で読み、編集の commit 結果の `documents` で「何が作られ・消されたか」を知り、戻すときは: 置き換えた文書は読んだ `content` と、`documents` の digest を `base_digest` にして送る / 作られた文書は `content: null`・`base_digest: <documents の digest>` で消す / 消された文書は読んだ `content` と `base_digest: null` で作り直す。RD-1 の時点で残っていた「ファイルを作る・消す編集(`add_authored_pass` / `remove_authored_pass`、fork、materialize、import)は戻せない」穴は、RD-1b で閉じました。
+
+**ディスクで書き換えた render 文書を取り込む —— `reload_render_documents`(✅RL-1)。**`--rpc` で起こした engine(Studio の engine)は file watcher の gate が閉じているので
+([第6章](06_rendering.md) §6.7 の「ディスクからの読み直し」)、Studio の外で root(やそれが読む preset・feature・authored の fragment)を書き換えても engine は気づかず、
+次の編集が `external_modification` で断られていました。`reload_render_documents {}` はそれらをディスクから読み直して取り込みます
+([`reloadRenderDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L5758))。
+
+- params は空の object だけです。答えは ticket(`render-config-reload-<N>`)で、結果は `get_edit_result` / `step_frame` の `edit_results[]` に来ます。
+- 読み直すのは `get_render_documents` が返すのと同じ文書です(root、project の preset、project の feature 文書と managed fragment。`engine://` と project の外のものは入りません)。
+  読んだ bytes を候補に固定して組み直し(graph の変種を含む)、公開し、editor が持つ digest を進めます。**ディスクには何も書きません。**commit の時の source commit は、
+  読んだ bytes がまだディスクに在るかを照らすだけで、間に変わっていれば `external_modification` です。
+- committed の結果は `{operation: "reload_render_documents", published_generation, source_commit_called, source_digest, documents: {<reference>: <sha256>}, changed: [<reference>]}` です。
+  `documents` は読んだ全部の文書、`changed` はそのうち editor が知っていた digest と違うもの(editor が書いていない文書は、live の世代を組んだ文書の digest と比べます)。
+  何も違わなければ公開せず、`no_change: true`・`changed: []`・`source_commit_called: false` です。
+- 拒否は 2 段です。ディスクの root が読めない・parse できない、組み立てや変種の preflight が通らないものは、ticket を取らずにすぐ返ります(`render_pipeline_preflight_failed` で
+  `method: "reload_render_documents"`、読めない文書には `reference`)。runtime の組み直しで断られるもの(無い shader など)は ticket の結果で返ります。
+  どちらでも live の世代と editor の文書は前のままで、ディスクの bytes もそのままです。
+- live の material の物理の契約だけが変わる文書は RS-1 と同じく commit して `restart_required`、`material_route_default` が変わる文書は G-4 と同じく `restart_required: true` です
+  (コードの読み。test はこの道を通していません)。
+- **`reload_busy`**(`method`・`reason: "ticket_pending" | "preview_open"`・`tickets`): render の編集の ticket が待っているか処理中、または scene の preview が開いているとき。
+  gate が閉じていれば `gate_closed` です。
+- ディスクが組めないままの間、続く編集は今までどおり `external_modification` で断られます(CAS は緩めません)。ディスクを元の bytes に戻せば、元の digest で編集が通ります(GPU の test)。
+- engine は undo の履歴を持たず、commit の記録では読み直しを undo の項目にしません。Studio はまだこの RPC を呼びません(`src/devstudio` に呼ぶ所はありません)。
+- test: `renderconfigeditor_test` の
+  [「RL-1 reload_render_documents takes in a preset changed on disk without writing it」](../../test/renderconfigeditor_test.cpp#L8869)
+  (fork した preset を外で書き換え、`changed` がその preset だけで、公開が 1 回進み、ディスクを書かず、次の preset の編集の CAS が通ること。`no_change`。待っている ticket での `reload_busy`)と、
+  `engine_primitives_test` の
+  [「RL-1 reload_render_documents takes in a root rewritten on disk, and refuses what cannot compose」](../../test/engine_primitives_test.cpp#L2001)
+  (GPU。`no_change`、外で書いた `target_planning` が読み直しで alias を外し、次の編集が通ること、待っている ticket での `reload_busy`、parse できない root と無い shader が断られて
+  live と文書が前のままであること)。着地の W1 で 59 件が緑(FG-2 との衝突を解消した後。統合側の報告)。
 
 #### 変種と組み直しの拒否の形(✅LP-0a / LP-0d)
 
@@ -1890,7 +2061,7 @@ Undoはノードの宣言順・設定・接続と配置を一緒に復元しま�
 **`audio.playback` の欄(✅Q-10)**: AU-1 で `audio.playback` に入力と parameter が増えました。
 
 - **増えた port は engine の catalog から来ます。**`position`・`source_begin`・`source_end`・`speed`・`delay` と `events` は Studio が
-  他の op と同じく catalog から描き、必須は `time` だけです([engine の宣言](../../src/project/graphmodule.cpp#L677))。`events` は任意の
+  他の op と同じく catalog から描き、必須は `time` だけです([engine の宣言](../../src/project/graphmodule.cpp#L679))。`events` は任意の
   入力なので、繋いでいなくても Studio は問題として扱いません。任意の数値の port に値を入れるのは、今は繋ぐことでだけです(既存の挙動)。
 - **port でない 3 つの parameter は、詳細表の上の欄です**(`pelican.graphCanvasAudioRow`。選んだ node が `audio.playback` のときだけ。
   [欄を合わせる所](../../src/devstudio/view/graphcanvaswidget.cpp#L6066)):

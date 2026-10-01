@@ -245,6 +245,18 @@ FG-1 の宣言(root の `fold_groups`):
   - `get_fold_groups {}` → `[{group, nodes, kind, digest, verified?, state: "verified" | "stale" | "unverified"}]`
   - `fold_nodes {base_source_digest, group, nodes, folded}`: 1 ticket、RD-1 の対象(`restore_render_documents` で戻せる)。`folded.verified` は書かせない(書くのは `verify_fold` だけ)。`folded: null` で group を消す
 
+**着地(FG-1、`61a88f9f`、2026-10-02)。** 上の合意した形は着地前の形として残す。実物は次のとおり(コードで確認):
+
+- 宣言の形は合意どおり(`fold_groups.<group> = {nodes, folded: {kind: "decisions", decisions: {serial, isolate, no_alias}, verified?: {digest, at, frames?}}}`。[`parseGraphFoldGroups()`](../src/project/graphfold.cpp#L128))。決定の `physical`(2026-09-27 の案の例にはあった)は合意どおり無く、書くと形の誤り(`fold_nodes` では invalid params)
+- 主語は `{node, element?, port?}`。`port` は `no_alias` だけで、`{node: <書き手>, port}` はその node の入力 `port` につながった `render.image` / `render.buffer`(`render.target_ref` ならその target)を指す。`no_alias` は `render.buffer` の node 自体と、ループ / instance の node(展開した target と buffer の全部、`element` でその回)も指せる。`render.image` / `render.buffer` の node を `serial` / `isolate` に書いても何も足さない
+- 写す段: [`applyGraphFoldGroups()`](../src/project/graphfold.cpp#L269) を、合成が `graph_origin` を provenance に載せた後・`target_planning` の compile の前に呼ぶ([呼ぶ所](../src/project/featurecompose.cpp#L3904))。pass はその family の graph、compute task と資源は全 family の graph の `target_planning` に `true` で足す。当たらない主語は何も足さない
+- **失効は diagnostics**: 合意どおり断らず、frame plan の `diagnostics` に `{kind: "fold_stale" | "fold_unverified", subject: <group>, detail: {verified_digest?, current_digest}}` を出す([出す所](../src/project/renderpipeline.cpp#L1400))
+- **`fold_decisions` と `fold_decision_applied@1`**: 合意の「`decisions` の要素に `from_fold` を足す」は、既存の要素に印を付ける形ではなくなった。fold group が足した決定を frame plan の最上位の `fold_decisions [{group, kind: "node" | "resource", name, field}]` に並べ、1 件ごとに `physical_target_plan.decisions[]` へ新しい要素 `{id: "pelican.plan.fold_decision_applied@1", subject, selected, detail, from_nodes, from_fold}` を足す([足す所](../src/core/renderingpass/frameplanner.cpp#L2413))
+- **digest は node 間の線だけ**: group の node は、入力のうち group の他の node から来る線だけを残して入れる(外から来る線は入らない)。`parameters` は入るので、ループの count を変えると印が古くなる(宣言は古くならない)。definition は推移的に辿り、`layout` を除く。鍵を整列した JSON の sha256 hex([`graphFoldGroupDigest()`](../src/project/graphfold.cpp#L185))
+- 拒否: `graph.fold_kind_unsupported@1 {group, kind}`、`graph.fold_subject_outside@1 {group, subject}`、`graph.fold_decision_conflict@1 {group, name, field}`(組み立てと、EL-2 の `edit_target_planning` の両方。[EL-2 から断る所](../src/core/communication/renderconfigeditor.cpp#L3852))
+- RPC: `get_fold_groups {}` は合意の配列ではなく `{source_digest, fold_groups: [...]}` を返す。`fold_nodes` は合意どおり。既存の group は丸ごと置き換わるので、書き直すと `verified` も消える
+- 形と test は manual 13 章の「断片の決定を宣言する(✅FG-1)」。着地の W1 で 106 件が緑(統合側の報告)
+
 ### 5.3 検査と印
 
 - `verify_fold {group}`:開いた形と畳んだ形で §3.5 の一致を取り、通れば `verified` を書く(ticket。RD-1 の undo の対象)。通らなければ `graph.fold_mismatch@1 {group, what: "frame_plan" | "queue" | "draws" | "pixels", detail}`
@@ -264,6 +276,19 @@ FG-1 の宣言(root の `fold_groups`):
 - 失効しても自動では走らせ直さない(Studio の Verify ボタンで走らせる)
 - engine 同梱の一体版と雛形は今どおり engine の test が一致を見る(印を持たない。§3.5)
 - 案の「名前の対応表をデータにする」は FG-3 に回した。`kind: "decisions"` の検査は同じ文書の開いた形どうし(決定の有無)を比べるので、一体版と分解版の名前の対応表を使わない
+
+**着地(FG-2、`9c71f97b`、2026-10-02)。** 上の合意した形は着地前の形として残す。実物は次のとおり(コードで確認):
+
+- 要求は `verify_fold {base_source_digest, group, frames?, warmup_seconds?, tolerance?}`(合意の `{group}` に CAS と 3 つの数を足した。`frames` は 1〜600 で既定 3、`warmup_seconds` は 0〜3600 で既定 30、`tolerance` は 1 frame で違ってよい画素の数で既定 0。[`verifyFold()`](../src/core/communication/renderconfigeditor.cpp#L2613))
+- **running の形**: 受けた時は `accepted`。描いている間の `get_edit_result` は `{ticket, status: "running", operation: "verify_fold", group}`。通った後は印を書く root 編集の ticket を同じ番号で並べるので、`pending` を経て `committed`(結果に `group`・`verified`)か `rejected` になる。印の ticket は既に並んでいる ticket より先に commit する([`harvestFoldVerifies()`](../src/core/communication/renderconfigeditor.cpp#L2702))
+- **子の起こし方**: project を丸ごと(最上位の `.git` を除く)system の temp に写し、同じ exe を `--headless --project <写し> --frames N --fps <親> --size <project の窓の大きさ> --start-time <warmup_seconds> --render-out … --vulkan-validation on --log-file …` で 3 回、順に起こす([組み立て](../src/core/communication/graphfoldverify.cpp#L291))。合意に無かった **`--size`** は、子が親の project の窓と同じ大きさで描くため([親から読む所](../src/core/communication/editorruntimefactory.cpp#L1967))。warm-up は `--start-time` の fixed-step の frame の数で数える
+- **validation の判定**: 子の stdout / stderr の `Validation Error` の数を数え、決定ありの形の数が対照の多い方を超えたときだけ `what: "validation"`(合意の「validation が出ないこと」は、対照にも出る error を許す形になった)
+- **compile**: 決定ありの子が 0 以外で終わる(か frame が出ない・時間切れ)と `what: "compile"`
+- **`fold_verify_failed` の新設**: 対照(開いた形)が描けないとき、project の写しが作れないときは、決定のせいとも不安定とも言えないので `fold_verify_failed {group, run: "open" | "setup", detail}` にした
+- ほかに合意に無かった拒否: `fold_verify_busy {group, ticket}`、`fold_verify_unavailable {reason: headless | golden | replay | executable_unknown | no_runner | shutdown}`、走っている間に root が変われば印の ticket が `external_modification`
+- 子は kill-on-close の job object に入れ、時間切れ 900 s と engine の終了時は job の handle を閉じて終わらせる([`runChild()`](../src/core/communication/graphfoldverify.cpp#L157))
+- 残した穴: 子は project の既定の scene を描く。warm-up は frame の数なので、速い Release では実時間で短い(対照どうしの比較が捕まえる)。子を起こせるのは Windows だけ。既定値(30 s・3 frame)での所要時間は測っていない
+- 形と test は manual 13 章の「断片を検査して印を付ける —— `verify_fold`(✅FG-2)」。着地の W1 で 33 件が緑(統合側の報告)
 
 ### 5.4 展開して編集・畳み直す
 
