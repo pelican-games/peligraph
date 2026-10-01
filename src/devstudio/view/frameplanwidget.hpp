@@ -3,6 +3,7 @@
 #include "../model/frameplanmodel.hpp"
 #include "../toollayoutpreset.hpp"
 #include "frameplaneditcapability.hpp"
+#include "shaderdiagnostics.hpp"
 
 #include <QWidget>
 #include <QStringList>
@@ -153,6 +154,20 @@ class FramePlanWidget final : public QWidget {
     // The answer to a reload_shaders request, handed in the way the RPC
     // reply is (tests use it without an engine).
     void receiveShaderReloadOutcome(const ShaderReloadOutcome &outcome);
+    // UX-6a, decision 2: this panel is the one sender of reload_shaders.
+    // It also follows the shader files `sources` names (the Graph tab's
+    // passes, by node), whether or not it has read a plan or is in front,
+    // and calls `reloaded` after a reload committed or was refused for a
+    // pass -- the declarations, and so the sockets, may have moved.
+    void setExtraShaderSources(NodeShaderSources sources);
+    void setShadersReloadedAction(std::function<void()> reloaded);
+    // UX-6a, decision 4: the Physical plan's Remove on an image the planner
+    // keeps out of aliasing because it has TRANSFER_SRC. The action takes
+    // the flag off the image (the Graph tab's document): the resource, and
+    // where a loop's copy came from; false when it could not.
+    using DropTransferSourceAction = std::function<bool(
+        const QString &resource, const std::optional<FramePlanLoopOrigin> &origin)>;
+    void setDropTransferSourceAction(DropTransferSourceAction action);
     // VI-3b. Fix sockets on one pass, as the band's Fix button does: the
     // variadic group of its shader becomes one fixed declaration per
     // connected input (engine://passthrough is copied into the project

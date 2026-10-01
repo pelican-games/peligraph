@@ -4457,6 +4457,11 @@ struct GraphCanvasWidget::Impl {
     // Q-18: who is told that an edit of this tab committed and the plan may
     // have changed with it, and the last commit they were told of.
     std::function<void()> plan_commit_action;
+    // UX-6a, decision 2: who follows the project shader files the render
+    // passes read, and the set last handed to it.
+    using ShaderSources = std::map<std::string, std::vector<std::filesystem::path>, std::less<>>;
+    std::function<void(ShaderSources)> shader_sources_action;
+    std::optional<ShaderSources> published_shader_sources;
     std::uint64_t told_plan_commit = 0;
     // --- GL-1e: a rendering-section pass's input edit, sent from here as
     // the Frame Plan sends it (edit_preset_pass, then get_edit_result).
@@ -6612,6 +6617,38 @@ struct GraphCanvasWidget::Impl {
         if (timeline_panel->isVisible()) timeline->update();
     }
 
+    // UX-6a, decision 2: the project shader files each render pass of the
+    // document reads, to the Frame Plan, which sends reload_shaders when one
+    // is written -- whichever tab is in front.
+    void publishShaderSources() {
+        if (!shader_sources_action) return;
+        ShaderSources sources;
+        if (!project_root.empty())
+            for (const auto &scope : model.scopes())
+                for (const auto &node : model.nodes(scope.id)) {
+                    if (node.op != "render.fullscreen" && node.op != "render.raster") continue;
+                    const auto shader =
+                        model.nodeParameters(scope.id, node.id).value("shader", nlohmann::json::object());
+                    if (!shader.is_object()) continue;
+                    for (const auto &[stage, extension] :
+                         {std::pair{"vertex", ".vert"}, std::pair{"fragment", ".frag"}}) {
+                        const auto found = shader.find(stage);
+                        if (found == shader.end() || !found->is_string()) continue;
+                        constexpr std::string_view prefix = "project://";
+                        const auto reference = found->get<std::string>();
+                        if (!reference.starts_with(prefix)) continue;
+                        auto path = project_root / std::filesystem::path{
+                                                       reference.substr(prefix.size())};
+                        if (!path.has_extension()) path += extension;
+                        const auto key = scope.root ? node.id : scope.id + "/" + node.id;
+                        sources[key].push_back(path.lexically_normal());
+                    }
+                }
+        if (published_shader_sources == sources) return;
+        published_shader_sources = sources;
+        shader_sources_action(std::move(sources));
+    }
+
     void synchronize() {
         const bool history_available = !scene->editingInline() &&
                                        !scene->dragging() && !scene->layoutPending();
@@ -6650,6 +6687,7 @@ struct GraphCanvasWidget::Impl {
             rendered_report = model.reportRevision();
             rendered_placement = model.placementRevision();
             publishEngineShaders();
+            publishShaderSources();
             // Q-5: a read that only moved the placement -- the reply to the
             // drag that was just made -- keeps the scene when the scene is
             // already drawing it. Rebuilding there threw every item away and
@@ -7054,6 +7092,7 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
     if (impl_->project_root != project_root) impl_->model.forgetHistory();
     impl_->project_root = project_root;
     impl_->pass_fields->setProjectRoot(project_root);
+    impl_->publishShaderSources();
     impl_->reloadUiNodes();
     impl_->reloadAudioAssets();
     impl_->audio_row_node.clear();
@@ -7072,6 +7111,50 @@ void GraphCanvasWidget::setRenderConfigDigest(
 void GraphCanvasWidget::setTimelineScrubBlocked(const QString &reason) {
     impl_->model.setScrubBlockedReason(reason.toStdString());
     impl_->timeline->setScrubBlocked(reason);
+}
+
+void GraphCanvasWidget::setShaderSourcesAction(
+    std::function<void(std::map<std::string, std::vector<std::filesystem::path>, std::less<>>)>
+        action) {
+    impl_->shader_sources_action = std::move(action);
+    impl_->published_shader_sources.reset();
+    impl_->publishShaderSources();
+}
+
+void GraphCanvasWidget::shadersReloaded() {
+    // As Refresh does: the document, then the plan with the declarations
+    // the reload may have moved. An edit in the air reads them when it lands.
+    if (!impl_->model.canRefresh()) return;
+    impl_->model.refresh();
+    impl_->dispatch();
+}
+
+bool GraphCanvasWidget::removeImageTransferSource(const QString &resource, const QString &loop,
+                                                  qint64 element, const QString &node) {
+    auto &model = impl_->model;
+    if (!model.canEdit()) return false;
+    std::string scope;
+    std::string id = resource.toStdString();
+    if (!loop.isEmpty()) {
+        id = node.toStdString();
+        scope = model.loopOriginScope(loop.toStdString(), element, id);
+        if (scope.empty()) return false;
+    }
+    const auto nodes = model.nodes(scope);
+    const auto found = std::ranges::find(nodes, id, &GraphCanvasNode::id);
+    if (found == nodes.end() || found->op != "render.image") return false;
+    auto parameters = model.nodeParameters(scope, id);
+    if (!parameters.is_object() || !parameters.contains("usage") ||
+        !parameters.at("usage").is_array())
+        return false;
+    auto &usage = parameters["usage"];
+    const auto before = usage.size();
+    usage.erase(std::remove(usage.begin(), usage.end(), nlohmann::json("TRANSFER_SRC")),
+                usage.end());
+    if (usage.size() == before) return false;
+    if (!model.setNodeParameters(scope, id, parameters)) return false;
+    impl_->dispatch();
+    return true;
 }
 
 GraphCanvasModel &GraphCanvasWidget::model() { return impl_->model; }

@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "graph_from_blank_forward",
-  "description": "GL-1d with RS-2: the same as graph_from_blank with forward_opaque_v1, the palette default and the contract the user first tried from Blank. Blank routes materials to deferred; with no deferred pass in the pipeline Studio sends material_route_default forward with the edit (RS-2), the engine commits it and asks for a restart, and after the restart the pass draws with its draw loop. GL-1e: a Cube added, the material pass's colour output (GL-1f) is dragged onto present's + input in the Graph; Studio sends edit_preset_pass on present (as the Pass Editor saves it), the line is drawn solid, and the viewport shows what the pass drew instead of the gradient (with the engine's RS-3, which puts the graph's pass before present). UX-2: a fullscreen pass from the palette, and its image's format picked in the image's fields (R8G8B8A8_UNORM to R16G16B16A16_SFLOAT) from the engine's list, not typed; the engine commits it.",
+  "description": "GL-1d with RS-2: the same as graph_from_blank with forward_opaque_v1, the palette default and the contract the user first tried from Blank. Blank routes materials to deferred; with no deferred pass in the pipeline Studio sends material_route_default forward with the edit (RS-2), the engine commits it and asks for a restart, and after the restart the pass draws with its draw loop. GL-1e: a Cube added, the material pass's colour output (GL-1f) is dragged onto present's + input in the Graph; Studio sends edit_preset_pass on present (as the Pass Editor saves it), the line is drawn solid, and the viewport shows what the pass drew instead of the gradient (with the engine's RS-3, which puts the graph's pass before present). UX-2: a fullscreen pass from the palette, and its image's format picked in the image's fields (R16G16B16A16_SFLOAT, UX-6a's default, to R8G8B8A8_UNORM) from the engine's list, not typed; the engine commits it.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -414,12 +414,12 @@
       "retry_ms": 60000
     },
     {
-      "label": "in the format the palette gave it",
+      "label": "in the format the palette gave it (UX-6a: half floats)",
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
       "path": "nodes[4].parameters.format",
-      "value": "R8G8B8A8_UNORM"
+      "value": "R16G16B16A16_SFLOAT"
     },
     {
       "label": "fit the graph, so the image is on screen",
@@ -451,14 +451,14 @@
       "name": "pelican.graphCanvasImage.format",
       "visible": true,
       "enabled": true,
-      "text": "R8G8B8A8_UNORM",
+      "text": "R16G16B16A16_SFLOAT",
       "timeout_ms": 60000
     },
     {
       "label": "the format picked from the engine's list, not typed",
       "cmd": "select",
       "name": "pelican.graphCanvasImage.format",
-      "text": "R16G16B16A16_SFLOAT"
+      "text": "R8G8B8A8_UNORM"
     },
     {
       "label": "the engine committed it: the image's format is the one picked",
@@ -466,7 +466,7 @@
       "method": "get_graph_instances",
       "params": {},
       "path": "nodes[4].parameters.format",
-      "value": "R16G16B16A16_SFLOAT",
+      "value": "R8G8B8A8_UNORM",
       "retry_ms": 120000
     },
     {
@@ -474,8 +474,8 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[4].parameters.usage[2]",
-      "value": "TRANSFER_SRC"
+      "path": "nodes[4].parameters.usage[1]",
+      "value": "SAMPLED"
     },
     {
       "label": "the notice says it was saved",
@@ -489,7 +489,7 @@
       "cmd": "wait",
       "name": "pelican.graphCanvasImage.format",
       "enabled": true,
-      "text": "R16G16B16A16_SFLOAT",
+      "text": "R8G8B8A8_UNORM",
       "timeout_ms": 60000
     },
     {

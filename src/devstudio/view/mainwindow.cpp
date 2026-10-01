@@ -500,6 +500,22 @@ void MainWindow::createWorkspace() {
     // Frame Plan's own node positions are the Graph tab's set_layout -- and
     // would read the whole plan again after each drag.
     graph_canvas_->setPlanCommitAction([this] { frame_plan_->planChangedByCommit(); });
+    // UX-6a, decision 2: one sender of reload_shaders, the Frame Plan's
+    // follower, for the shader files either tab's passes read; after a
+    // reload the Graph reads its sockets again, in front or not.
+    graph_canvas_->setShaderSourcesAction([this](NodeShaderSources sources) {
+        frame_plan_->setExtraShaderSources(std::move(sources));
+    });
+    frame_plan_->setShadersReloadedAction([this] { graph_canvas_->shadersReloaded(); });
+    // UX-6a, decision 4: the Physical plan's Remove TRANSFER_SRC edits the
+    // image in the graph document.
+    frame_plan_->setDropTransferSourceAction(
+        [this](const QString &resource, const std::optional<FramePlanLoopOrigin> &origin) {
+            if (!origin) return graph_canvas_->removeImageTransferSource(resource, {}, 0, {});
+            return graph_canvas_->removeImageTransferSource(
+                resource, QString::fromStdString(origin->loop), origin->element,
+                QString::fromStdString(origin->node));
+        });
     // GL-1b: a graph edit the engine can only apply by starting again goes
     // through the Frame Plan's restart (G-4 / G-5), not a second one.
     graph_canvas_->setEngineRestartAction([this](const QString &reason) { requestEngineRestart(reason); });

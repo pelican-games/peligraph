@@ -924,6 +924,23 @@ class GraphCanvasWidget final : public QWidget {
     // PM-3a (design_play_mode 12.6): the Timeline's scrub is refused while
     // `reason` is not empty (the game is playing), and the strip says it.
     void setTimelineScrubBlocked(const QString &reason);
+    // UX-6a, decision 2: the project shader files the render passes of the
+    // document read (`project://shaders/<name>`, by stage), keyed by node
+    // (`<id>` at the root, `<definition>/<id>` in a body), handed to
+    // `action` each time the document moves them -- to the one sender of
+    // reload_shaders, the Frame Plan. shadersReloaded is what that sender
+    // calls after a reload: the document and the plan's declarations are
+    // read again, so the sockets follow the shaders without Refresh.
+    void setShaderSourcesAction(
+        std::function<void(std::map<std::string, std::vector<std::filesystem::path>, std::less<>>)>
+            action);
+    void shadersReloaded();
+    // UX-6a, decision 4: take TRANSFER_SRC off the render.image a plan
+    // resource is (`origin` for a loop's copy: the body node it came from),
+    // as one edit. False, with nothing sent, when the document has no such
+    // image, it has no TRANSFER_SRC, or the tab cannot edit now.
+    bool removeImageTransferSource(const QString &resource, const QString &loop,
+                                   qint64 element, const QString &node);
 
     GraphCanvasModel &model();
     GraphCanvasScene &scene();

@@ -179,6 +179,17 @@ std::vector<std::string> fullscreenTemplateInputFill(
 inline constexpr std::string_view ShadowMapInput = "shadow_map";
 bool isTemplateShadowMapInput(std::string_view resource);
 
+// UX-6a, decision 6: the Deferred lighting template's optional shadow mask
+// (an R8 image: 1 lit, 0 shadowed, as engine://rt_shadow_mask_pipeline
+// writes it). The key light's shadow is the smaller of the shadow map's and
+// the mask's. An input named so (or `<anything>_shadow_mask`) is the mask;
+// a pass with none gets the binding after its inputs declared all the same,
+// so the node shows it as an empty socket to connect a mask to. A binding
+// nothing is connected to reads zeros, alpha included, and the template
+// reads that as no mask (1).
+inline constexpr std::string_view ShadowMaskInput = "shadow_mask";
+bool isTemplateShadowMaskInput(std::string_view resource);
+
 // T-1. The target "New target:" in the colour output's list proposes:
 // <pass>_color, every character a target name cannot hold folded to '_'
 // ("fullscreen_pass_color" for a pass with no name yet), then _2, _3... past

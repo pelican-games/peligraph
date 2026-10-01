@@ -3069,10 +3069,15 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
                         {"arguments", Json{{"reference", "scene"}, {"transfer", "linear"},
                                            {"range", "extended"}}}};
         const auto image = id + "__color";
-        Json image_parameters{{"type", type}, {"format", "R8G8B8A8_UNORM"},
+        // UX-6a, decisions 3 and 4: scene-linear colour brighter than 1 needs
+        // a float image (an eight-bit one clips the light a bloom extracts),
+        // and no TRANSFER_SRC: the engine reads that flag as "read from
+        // outside the frame plan" and never aliases such an image. A pass
+        // made here reads nothing yet and nothing reads it, present
+        // included, so no new image is the last one before present.
+        Json image_parameters{{"type", type}, {"format", "R16G16B16A16_SFLOAT"},
                               {"extent_scale", 1.0},
-                              {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED",
-                                                     "TRANSFER_SRC"})}};
+                              {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}};
         // LP-4f2 (VF-1): in the body of a loop over a view axis, the pass
         // draws in that loop's family, whose passes all draw at one size --
         // the frame plan's family_extent (VF-2). The image is made at it, and the
@@ -4364,6 +4369,17 @@ bool GraphCanvasModel::removeLoopCarry(const std::string &loop, const std::strin
         carry.emplace_back(pair.from, pair.to);
     }
     return found && setLoopCarry(loop, carry);
+}
+
+std::string GraphCanvasModel::loopOriginScope(std::string_view loop, std::int64_t element,
+                                              std::string_view node) const {
+    const auto *found = findNode({}, loop);
+    if (found == nullptr || !isLoop(*found)) return {};
+    const auto bodies = loopBranchBodies(*found);
+    const auto branch = branchForElement(loop, element);
+    if (!branch || *branch >= bodies.size() || bodies[*branch].empty()) return {};
+    if (findNode(bodies[*branch], node) == nullptr) return {};
+    return bodies[*branch];
 }
 
 std::string GraphCanvasModel::showLoopOrigin(std::string_view loop, std::int64_t element,

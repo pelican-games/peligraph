@@ -1858,6 +1858,9 @@ class GraphCanvasModel {
     // ran. Answers the definition the node stands in, or empty -- with
     // nothing changed -- when the loop, the branch or the node is not there.
     std::string showLoopOrigin(std::string_view loop, std::int64_t element, std::string_view node);
+    // UX-6a: the same definition, asked without showing anything.
+    [[nodiscard]] std::string loopOriginScope(std::string_view loop, std::int64_t element,
+                                              std::string_view node) const;
 
     // Decision 9. What the last refused edit pointed at; cleared by the next
     // edit that commits.

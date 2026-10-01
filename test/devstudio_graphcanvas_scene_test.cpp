@@ -8090,6 +8090,55 @@ TEST_CASE("UX-3 decision 3: a render node's socket menu writes its port's previo
     CHECK(none.actions().isEmpty());
 }
 
+TEST_CASE("UX-6a decision 5: the Pass fields show each read image's Filter, Address and mip as "
+          "combos, each pick one set_node_parameters; a numbered input's are there, off, "
+          "saying why",
+          "[devstudio][graph-canvas][scene][ux6a]") {
+    (void)application();
+    Ux2Tab tab{true};
+    auto pass = ux2Pass();
+    pass["ports"]["previous"] = {{"kind", "image"}, {"type", ux2ColorType()}, {"access", "read"}};
+    pass["ports"]["input"] = {{"kind", "image"}, {"type", ux2ColorType()}, {"access", "read"},
+                              {"binding", "input"}, {"input_index", 0}};
+    auto document = ux2Document(ux2Image(), pass);
+    document["nodes"][1]["inputs"]["previous"] = {{"node", "shade__color"}, {"port", "resource"}};
+    document["nodes"][1]["inputs"]["input"] = {{"node", "shade__color"}, {"port", "resource"}};
+    tab.read(document, "ux6a-0");
+    tab.answer("get_graph_catalog", ux2Catalog());
+    tab.widget->scene().selectNode("shade");
+    QCoreApplication::processEvents();
+
+    auto *address = tab.field<QComboBox>("pelican.graphCanvasPass.input.previous.address");
+    CHECK(address->isEnabled());
+    CHECK(address->currentText() == QStringLiteral("default (repeat)"));
+    CHECK(tab.field<QComboBox>("pelican.graphCanvasPass.input.previous.mip")->isEnabled());
+    // The numbered input: the engine takes no sampling or mip for it.
+    auto *numbered = tab.field<QComboBox>("pelican.graphCanvasPass.input.input.address");
+    CHECK_FALSE(numbered->isEnabled());
+    CHECK(numbered->toolTip().contains(QStringLiteral("numbered input")));
+    CHECK_FALSE(tab.field<QComboBox>("pelican.graphCanvasPass.input.input.mip")->isEnabled());
+    // The attachment is not an input.
+    CHECK(tab.widget->findChild<QComboBox *>(
+              QStringLiteral("pelican.graphCanvasPass.input.color.address")) == nullptr);
+
+    tab.pick(address, QStringLiteral("clamp_to_edge"));
+    auto op = tab.sent(1);
+    auto expected = pass;
+    expected["ports"]["previous"]["sampling"] = {{"address", "clamp_to_edge"}};
+    CHECK(op.at("parameters") == expected);
+    document["nodes"][1]["parameters"] = expected;
+    tab.commit(document, "ux6a-1");
+    QCoreApplication::processEvents();
+    // The rows read the document again: the pick is what they show.
+    CHECK(tab.field<QComboBox>("pelican.graphCanvasPass.input.previous.address")->currentText() ==
+          QStringLiteral("clamp_to_edge"));
+    tab.pick(tab.field<QComboBox>("pelican.graphCanvasPass.input.previous.mip"),
+             QStringLiteral("2"));
+    op = tab.sent(2);
+    expected["ports"]["previous"]["subresource"] = {{"mip", 2}};
+    CHECK(op.at("parameters") == expected);
+}
+
 TEST_CASE("UX-3 decisions 4 and 5: the engine's materials, tags and variants are picked in the "
           "draw_loop's fields, the draw steps' and the material pass's; draw.override's "
           "depth_compare is a combo",
@@ -8509,6 +8558,45 @@ TEST_CASE("UX-5b decisions 2 and 3: New... in the Graph's Pass fields writes the
         op = tab.sent(4);
         CHECK_FALSE(op.at("parameters").contains("uses_light_data"));
         CHECK(op.at("parameters").at("color_load_op") == "load");
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+TEST_CASE("UX-6a decision 1: after a Create, picking another template names the new shader "
+          "after that template (a free name past the files already there); a typed name stays",
+          "[devstudio][graph-canvas][scene][ux6a]") {
+    (void)application();
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_ux6a_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    {
+        Ux2Tab tab{false};
+        tab.widget->setProjectRoot(root);
+        tab.read(ux5bDeferredDocument(ux2Pass()), "ux6a-0");
+        tab.answer("get_graph_catalog", ux5bCatalog());
+        tab.widget->scene().selectNode("shade");
+        QCoreApplication::processEvents();
+        tab.field<QPushButton>("pelican.graphCanvasPass.newFragmentShader")->click();
+        QCoreApplication::processEvents();
+        auto *kind = tab.field<QComboBox>("pelican.graphCanvasPass.shaderTemplateKind");
+        auto *name = tab.field<QLineEdit>("pelican.graphCanvasPass.shaderTemplateName");
+        tab.pick(kind, QStringLiteral("deferred_lighting"));
+        REQUIRE(name->text() == QStringLiteral("deferred_lighting"));
+        tab.field<QPushButton>("pelican.graphCanvasPass.createFragmentShader")->click();
+        QCoreApplication::processEvents();
+        REQUIRE(std::filesystem::exists(root / "shaders" / "deferred_lighting.frag"));
+
+        // GB-2's stop: the name the first Create used is not kept.
+        tab.pick(kind, QStringLiteral("tone_map"));
+        CHECK(name->text() == QStringLiteral("tone_map"));
+        tab.pick(kind, QStringLiteral("deferred_lighting"));
+        CHECK(name->text() == QStringLiteral("deferred_lighting_2"));
+        // A name the author typed is theirs.
+        name->setText(QStringLiteral("my_light"));
+        tab.pick(kind, QStringLiteral("tone_map"));
+        CHECK(name->text() == QStringLiteral("my_light"));
     }
     std::error_code ignored;
     std::filesystem::remove_all(root, ignored);

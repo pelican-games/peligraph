@@ -129,6 +129,12 @@ bool isTemplateShadowMapInput(std::string_view resource) {
             resource[resource.size() - ShadowMapInput.size() - 1] == '_');
 }
 
+bool isTemplateShadowMaskInput(std::string_view resource) {
+    return resource == ShadowMaskInput ||
+           (resource.size() > ShadowMaskInput.size() && resource.ends_with(ShadowMaskInput) &&
+            resource[resource.size() - ShadowMaskInput.size() - 1] == '_');
+}
+
 namespace {
 
 // The declarations of every image input, in list order, and the identifier
@@ -139,7 +145,19 @@ struct DeclaredInputs {
     // UX-5b (RS-10): the input that is the directional shadow map, which no
     // role reads.
     std::vector<bool> shadow;
+    // UX-6a, decision 6: the input that is the shadow mask, which no role
+    // reads either.
+    std::vector<bool> mask;
 };
+
+// The lighting template's mask at `number`: declared, and read through
+// PELICAN_TEMPLATE_SHADOW_MASK_READ (the read macro carries the binding).
+std::string shadowMaskDeclaration(const std::string &number, const std::string &identifier,
+                                  std::string_view note) {
+    return "PELICAN_DECLARE_INPUT_" + number + "(" + identifier + ");  // " + std::string{note} +
+           "\n#define PELICAN_TEMPLATE_SHADOW_MASK_READ(uv) PELICAN_TEXTURE_2D_" + number + "(" +
+           identifier + ", uv)\n";
+}
 
 DeclaredInputs declareInputs(
     std::span<const FullscreenShaderTemplateInput> inputs,
@@ -151,6 +169,7 @@ DeclaredInputs declareInputs(
         const std::string number = std::to_string(index);
         result.identifiers.emplace_back();
         result.shadow.push_back(false);
+        result.mask.push_back(false);
         if (!input.image) {
             result.text += "// input " + number + " (" + input.resource +
                            ") is a buffer: declare it yourself at set "
@@ -179,6 +198,14 @@ DeclaredInputs declareInputs(
             result.shadow.back() = true;
             continue;
         }
+        if (lighting && isTemplateShadowMaskInput(input.resource) &&
+            std::ranges::find(result.mask, true) == result.mask.end()) {
+            result.text += shadowMaskDeclaration(
+                number, identifier, input.resource + ": the shadow mask (r: 1 lit, 0 shadowed)");
+            result.identifiers.back() = identifier;
+            result.mask.back() = true;
+            continue;
+        }
         std::string note = input.resource;
         if (!reads.empty()) {
             note += index < reads.size()
@@ -188,6 +215,15 @@ DeclaredInputs declareInputs(
         result.text += "PELICAN_DECLARE_INPUT_" + number + "(" + identifier +
                        ");  // " + note + "\n";
         result.identifiers.back() = identifier;
+    }
+    // UX-6a, decision 6: a pass with no mask among its inputs gets the
+    // binding after them, so its node offers the socket to connect one to.
+    if (lighting && std::ranges::find(result.mask, true) == result.mask.end() &&
+        inputs.size() < FullscreenShaderTemplateMacroInputs) {
+        const auto number = std::to_string(inputs.size());
+        result.text += shadowMaskDeclaration(
+            number, inputIdentifier(ShadowMaskInput, taken),
+            "shadow_mask (optional): connect an R8 mask here, 1 lit, 0 shadowed");
     }
     return result;
 }
@@ -225,7 +261,8 @@ std::string roleReadsText(std::span<const FullscreenShaderTemplateInput> inputs,
         const std::string number = std::to_string(index);
         text += "    " + std::string{read.declaration} + " = ";
         const bool shadow = index < declared.shadow.size() && declared.shadow[index];
-        if (index < inputs.size() && declared.identifiers[index] && !shadow) {
+        const bool mask = index < declared.mask.size() && declared.mask[index];
+        if (index < inputs.size() && declared.identifiers[index] && !shadow && !mask) {
             text += "PELICAN_TEXTURE_2D_" + number + "(" +
                     *declared.identifiers[index] + ", inUV)" +
                     std::string{read.components} + ";\n";
@@ -233,6 +270,7 @@ std::string roleReadsText(std::span<const FullscreenShaderTemplateInput> inputs,
         }
         const std::string_view why =
             shadow                ? "the shadow map is there"
+            : mask                ? "the shadow mask is there"
             : index < inputs.size() ? "not an image"
             : read.role.optional  ? "optional, not in the input list"
                                   : "not in the input list";

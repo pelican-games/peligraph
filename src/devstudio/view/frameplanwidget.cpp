@@ -433,6 +433,12 @@ struct FramePlanWidget::Impl {
     // F-5: where a shader reload's log goes besides the marks (the Pass
     // Editor's log under its form); empty text clears it.
     std::function<void(const QString &)> shader_reload_log_action;
+    // UX-6a, decision 2: the files the Graph tab's passes read, followed
+    // with the plan's; and who hears that a reload moved declarations.
+    NodeShaderSources extra_shader_sources;
+    std::function<void()> shaders_reloaded_action;
+    // UX-6a, decision 4: who takes TRANSFER_SRC off an image.
+    FramePlanWidget::DropTransferSourceAction drop_transfer_source_action;
     // G-5: who restarts the engine for a committed setting it reads only at
     // start. The window sets it, so a scene with unsaved edits is asked about
     // first; without it the viewport restarts at once.
@@ -1474,6 +1480,15 @@ struct FramePlanWidget::Impl {
                 }
             }
         }
+        // UX-6a, decision 2: and the Graph tab's, read or not, in view or not.
+        for (const auto &[node, paths] : extra_shader_sources) {
+            auto &held = sources[node];
+            for (const auto &path : paths)
+                if (std::ranges::none_of(held, [&](const std::filesystem::path &known) {
+                        return sameShaderSource(known, path);
+                    }))
+                    held.push_back(path);
+        }
         reload_follower->setSources(std::move(sources));
     }
 
@@ -1513,6 +1528,7 @@ struct FramePlanWidget::Impl {
             // VI-3a: the sockets are the shader's declarations, which the
             // reload may have changed; and a refusal it lifted comes down.
             if (viewport.rpcReady()) requestRefresh();
+            if (shaders_reloaded_action) shaders_reloaded_action();
             break;
         case Kind::refused:
             // VI-1b: not a success. The pass keeps its previous shader; the
@@ -1521,6 +1537,7 @@ struct FramePlanWidget::Impl {
             if (shader_reload_log_action) shader_reload_log_action(outcome.message);
             if (viewport.rpcReady()) requestRefresh();
             else updateReloadRefusal();
+            if (shaders_reloaded_action) shaders_reloaded_action();
             break;
         case Kind::unchanged:
             break;
@@ -4218,6 +4235,63 @@ struct FramePlanWidget::Impl {
                 }
             }
         }
+        populateTransferSourceRows();
+    }
+
+    // UX-6a, decision 4: an image the planner keeps out of aliasing that has
+    // TRANSFER_SRC, with a button that takes the flag off. The engine reads
+    // the flag as "read from outside the frame plan". PO-1's reason says why
+    // after ": " (causes joined by "; "), e.g. "...: usage TRANSFER_SRC is
+    // outside the alias-safe set {...}": that sentence decides. A reason
+    // with no causes (an engine before PO-1) leaves it to the usage.
+    static bool keptByTransferSource(const FramePlanResource &resource) {
+        if (resource.kind == "buffer" || resource.representation.empty() || resource.aliasable)
+            return false;
+        if (resource.reason.find("usage TRANSFER_SRC is outside") != std::string::npos)
+            return true;
+        if (resource.reason.find(": ") != std::string::npos) return false;
+        return resource.usage &&
+               std::ranges::find(*resource.usage, "TRANSFER_SRC") != resource.usage->end();
+    }
+
+    void populateTransferSourceRows() {
+        std::vector<const FramePlanResource *> kept;
+        for (const auto &resource : model->resources)
+            if (keptByTransferSource(resource)) kept.push_back(&resource);
+        if (kept.empty()) return;
+        auto *group = new QTreeWidgetItem(physical);
+        group->setText(0, owner.tr("Not aliased for TRANSFER_SRC (%1)")
+                              .arg(static_cast<qulonglong>(kept.size())));
+        group->setToolTip(0, owner.tr("TRANSFER_SRC lets an image be read from outside the "
+                                      "frame plan, so the planner never aliases it. Nothing in "
+                                      "Studio reads an image's contents."));
+        QFont font = group->font(0);
+        font.setBold(true);
+        group->setFont(0, font);
+        for (const auto *resource : kept) {
+            auto *item = new QTreeWidgetItem(group);
+            setRowNodes(item, resource->from_nodes);
+            item->setText(0, text(resource->name));
+            item->setText(1, owner.tr("Not aliasable"));
+            item->setText(2, text(resource->reason));
+            auto *drop = new QPushButton(owner.tr("Remove TRANSFER_SRC"));
+            drop->setObjectName(QStringLiteral("pelican.framePlan.dropTransferSrc.") +
+                                text(resource->name));
+            drop->setToolTip(owner.tr("Take TRANSFER_SRC off %1's usage, so the planner may "
+                                      "alias it.")
+                                 .arg(text(resource->name)));
+            drop->setEnabled(static_cast<bool>(drop_transfer_source_action));
+            const auto name = text(resource->name);
+            const auto origin = resource->loop_origin;
+            QObject::connect(drop, &QPushButton::clicked, &owner, [this, name, origin] {
+                if (!drop_transfer_source_action || !drop_transfer_source_action(name, origin))
+                    showStatus(owner.tr("Could not take TRANSFER_SRC off %1: it is not an "
+                                        "image the Graph tab can edit now.")
+                                   .arg(name));
+            });
+            physical->setItemWidget(item, 3, drop);
+        }
+        group->setExpanded(true);
     }
 
     void populateBarriers() {
@@ -4323,6 +4397,20 @@ void FramePlanWidget::setPlanRequest(std::function<qint64(QString *error)> reque
 
 void FramePlanWidget::receiveShaderReloadStatus(const QByteArray &status_json) {
     impl_->reload_follower->consume(status_json);
+}
+
+void FramePlanWidget::setExtraShaderSources(NodeShaderSources sources) {
+    if (impl_->extra_shader_sources == sources) return;
+    impl_->extra_shader_sources = std::move(sources);
+    impl_->followShaderSources();
+}
+
+void FramePlanWidget::setShadersReloadedAction(std::function<void()> reloaded) {
+    impl_->shaders_reloaded_action = std::move(reloaded);
+}
+
+void FramePlanWidget::setDropTransferSourceAction(DropTransferSourceAction action) {
+    impl_->drop_transfer_source_action = std::move(action);
 }
 
 void FramePlanWidget::receiveShaderReloadOutcome(

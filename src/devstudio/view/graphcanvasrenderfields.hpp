@@ -136,6 +136,10 @@ class GraphCanvasPassFields final : public QWidget {
   private:
     void load(const nlohmann::json &parameters);
     void loadPassSettings(const nlohmann::json &parameters);
+    // UX-6a, decision 5: a row per image the pass reads, with the socket's
+    // Filter, Address and Mip level (the right-click entries, which stay).
+    void loadInputSettings(const nlohmann::json &parameters);
+    void commitInputSetting(const std::string &port, const char *field, QComboBox *combo);
     void commit(const char *stage, QComboBox *combo);
     void commitSettings();
     void showTemplateRow(bool shown);
@@ -169,6 +173,10 @@ class GraphCanvasPassFields final : public QWidget {
     // The pass New... was last shown for (scope, node).
     std::string template_for_;
     QLabel *ports_ = nullptr;
+    // Named `pelican.graphCanvasPass.input.<port>.filter` / `.address` /
+    // `.mip`; a setting the socket cannot take is there, off, saying why.
+    QWidget *inputs_ = nullptr;
+    QFormLayout *inputs_form_ = nullptr;
     QWidget *settings_ = nullptr;
     FullscreenPassInterfaceRow *interface_ = nullptr;
     RasterStateForm *raster_ = nullptr;

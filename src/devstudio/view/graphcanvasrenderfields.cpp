@@ -480,6 +480,10 @@ void GraphCanvasImageFields::loadUsage(const Json &parameters) {
         box->setObjectName(imageFieldName(QStringLiteral("usage.") + qtext(flag)));
         box->setFont(studioSmallFont());
         box->setChecked(std::ranges::find(current, flag) != current.end());
+        // UX-6a, decision 4: what the flag costs.
+        if (flag == "TRANSFER_SRC")
+            box->setToolTip(tr("Lets the image be copied or read back from outside the frame "
+                               "plan. With it the image is not aliased."));
         grid->addWidget(box, index / 2, index % 2);
         ++index;
         usage_boxes_.emplace_back(flag, box);
@@ -731,6 +735,15 @@ GraphCanvasPassFields::GraphCanvasPassFields(GraphCanvasModel &model,
     ports_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     form_->addRow(caption(tr("Ports"), fields_), ports_);
 
+    // UX-6a, decision 5: the sampling of each image the pass reads, beside
+    // the canvas -- the right-click entries were the only place, and a
+    // scenario could not reach them.
+    inputs_ = new QWidget(fields_);
+    inputs_->setObjectName(passFieldName(QStringLiteral("inputs")));
+    inputs_form_ = new QFormLayout(inputs_);
+    inputs_form_->setContentsMargins(0, 0, 0, 0);
+    form_->addRow(caption(tr("Inputs"), fields_), inputs_);
+
     // UX-5b, decision 3: the Pass Editor's settings, its UX-4a parts.
     settings_ = new QWidget(fields_);
     settings_->setObjectName(passFieldName(QStringLiteral("settings")));
@@ -882,7 +895,99 @@ void GraphCanvasPassFields::load(const Json &parameters) {
     }
     ports_->setText(lines.isEmpty() ? tr("(none declared)") : lines.join(QLatin1Char{'\n'}));
     ports_->setToolTip(tip);
+    loadInputSettings(parameters);
     loadPassSettings(parameters);
+}
+
+void GraphCanvasPassFields::loadInputSettings(const Json &parameters) {
+    // The rows a load replaces may hold the combo whose signal is handled.
+    while (inputs_form_->rowCount() > 0) {
+        const auto row = inputs_form_->takeRow(0);
+        for (auto *item : {row.labelItem, row.fieldItem}) {
+            if (item == nullptr) continue;
+            if (auto *widget = item->widget()) retire(widget);
+            delete item;
+        }
+    }
+    const auto ports = parameters.is_object() ? parameters.value("ports", Json::object()) : Json::object();
+    int rows = 0;
+    if (ports.is_object())
+        for (const auto &[port, declaration] : ports.items()) {
+            if (!declaration.is_object() || stringOf(declaration, "kind") != "image" ||
+                stringOf(declaration, "access") != "read" || declaration.contains("attachment"))
+                continue;
+            const auto settings = model_.portSettings(scope_, node_, port);
+            if (!settings) continue;
+            auto *row = new QWidget(inputs_);
+            auto *row_layout = new QHBoxLayout(row);
+            row_layout->setContentsMargins(0, 0, 0, 0);
+            const auto name = passFieldName(QStringLiteral("input.") + qtext(port) + QLatin1Char{'.'});
+            const bool numbered = stringOf(declaration, "binding") == "input";
+            const QString sampling_why =
+                numbered ? tr("A numbered input takes no sampling (the engine refuses it): it is "
+                              "read linear, repeat.")
+                         : tr("Only an image the shader samples by a binding of its own takes "
+                              "sampling.");
+            const QString mip_why = tr("A numbered input reads the whole image.");
+            const auto combo = [&](const char *field,
+                                   const std::vector<std::pair<QString, QString>> &values,
+                                   const QString &current, bool allowed, const QString &why) {
+                auto *box = new QComboBox(row);
+                box->setObjectName(name + QLatin1String{field});
+                for (const auto &[label, value] : values) box->addItem(label, value);
+                const int index = box->findData(current);
+                box->setCurrentIndex(index < 0 ? 0 : index);
+                box->setEnabled(allowed);
+                box->setToolTip(allowed ? QString{} : why);
+                box->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+                box->setMinimumContentsLength(6);
+                row_layout->addWidget(box, 1);
+                connect(box, &QComboBox::currentIndexChanged, this,
+                        [this, port, field, box] { commitInputSetting(port, field, box); });
+            };
+            combo("filter",
+                  {{tr("default (linear)"), QString{}},
+                   {QStringLiteral("linear"), QStringLiteral("linear")},
+                   {QStringLiteral("nearest"), QStringLiteral("nearest")}},
+                  qtext(settings->filter), settings->sampling_allowed, sampling_why);
+            combo("address",
+                  {{tr("default (repeat)"), QString{}},
+                   {QStringLiteral("repeat"), QStringLiteral("repeat")},
+                   {QStringLiteral("mirrored_repeat"), QStringLiteral("mirrored_repeat")},
+                   {QStringLiteral("clamp_to_edge"), QStringLiteral("clamp_to_edge")}},
+                  qtext(settings->address), settings->sampling_allowed, sampling_why);
+            std::vector<std::pair<QString, QString>> mips;
+            for (int level = 0; level <= 15; ++level)
+                mips.emplace_back(tr("mip %1").arg(level), QString::number(level));
+            combo("mip", mips, QString::number(settings->mip), settings->subresource_allowed,
+                  mip_why);
+            auto *label = caption(qtext(port), inputs_);
+            label->setObjectName(name + QStringLiteral("label"));
+            inputs_form_->addRow(label, row);
+            ++rows;
+        }
+    form_->setRowVisible(inputs_, rows > 0);
+}
+
+void GraphCanvasPassFields::commitInputSetting(const std::string &port, const char *field,
+                                               QComboBox *combo) {
+    if (node_.empty() || combo == nullptr) return;
+    auto settings = model_.portSettings(scope_, node_, port);
+    if (!settings) return;
+    const auto value = combo->currentData().toString();
+    const std::string_view which{field};
+    if (which == "filter") settings->filter = value.toStdString();
+    else if (which == "address") settings->address = value.toStdString();
+    else if (which == "mip") settings->mip = value.toLongLong();
+    if (settings == model_.portSettings(scope_, node_, port)) return;
+    if (model_.setPortSettings(scope_, node_, port, *settings)) {
+        if (submitted_) submitted_();
+        return;
+    }
+    // Refused: the rows show the document again, from the event loop.
+    QMetaObject::invokeMethod(
+        this, [this] { loadInputSettings(model_.nodeParameters(scope_, node_)); },
+        Qt::QueuedConnection);
 }
 
 std::vector<std::string> GraphCanvasPassFields::colorPorts(const Json &parameters) const {
@@ -1102,7 +1207,9 @@ void GraphCanvasPassFields::createTemplate() {
                        true);
         return;
     }
-    auto_template_name_.clear();
+    // UX-6a, decision 1: the name is used now, typed or not. The next New...
+    // (or the next template picked) proposes its own free name over it.
+    auto_template_name_ = name;
     templateNotice(tr("Wrote %1 reading %2 input(s); the pass draws with %3.")
                        .arg(file)
                        .arg(static_cast<qulonglong>(inputs.size()))

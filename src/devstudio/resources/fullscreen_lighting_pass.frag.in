@@ -26,6 +26,13 @@
 // that reads shadow_map, and the input is declared below as
 // PELICAN_TEMPLATE_SHADOW_MAP. Without either, no light is shadowed.
 //
+// The input after the pass's inputs is an optional shadow mask
+// (PELICAN_TEMPLATE_SHADOW_MASK_READ): an R8 image, 1 lit and 0 shadowed, such
+// as engine://rt_shadow_mask_pipeline writes. Connect one and the key light
+// (the first directional light) is shadowed by the smaller of the shadow map
+// and the mask. Left unconnected, the binding reads zeros, alpha included,
+// which is taken as no mask.
+//
 // The colour it writes is scene-linear and may be brighter than 1. Tone map it
 // once before the display: a pass made with New... > Tone map does that.
 
@@ -61,6 +68,17 @@ float directional_shadow(uint light_index, vec3 world_position) {
 float directional_shadow(uint light_index, vec3 world_position) { return 1.0; }
 #endif
 
+#if defined(PELICAN_TEMPLATE_SHADOW_MASK_READ)
+// An image with an alpha of 1 (an R8 one reads 1 there) is a mask; the zeros
+// an unconnected binding reads are not.
+float shadow_mask(vec2 uv) {
+    vec4 mask = PELICAN_TEMPLATE_SHADOW_MASK_READ(uv);
+    return mask.a > 0.5 ? clamp(mask.r, 0.0, 1.0) : 1.0;
+}
+#else
+float shadow_mask(vec2 uv) { return 1.0; }
+#endif
+
 void main() {
 @INPUT_READS@
     // The geometry pass leaves the normal at zero where it drew nothing.
@@ -88,8 +106,11 @@ void main() {
         vec3 halfway = normalize(light.direction + to_camera);
         float highlight =
             highlight_scale * pow(max(dot(normal, halfway), 0.0), shininess);
-        vec3 radiance = light.radiance * light.attenuation *
-                        directional_shadow(index, world_position);
+        float shadow = directional_shadow(index, world_position);
+        // The key light: the shadow map's shadow or the mask's, the darker.
+        if (index == 0u && pelican_directional_light_count() > 0u)
+            shadow = min(shadow, shadow_mask(inUV));
+        vec3 radiance = light.radiance * light.attenuation * shadow;
         color += (diffuse_color / PI + specular_color * highlight) * radiance * n_dot_l;
     }
     outColor = vec4(color, 1.0);

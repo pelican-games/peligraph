@@ -12159,4 +12159,81 @@ TEST_CASE("Q-18 a commit elsewhere reads the plan again: now in view, after the 
     QApplication::processEvents();
     CHECK(reads.size() == 3);
 }
+
+TEST_CASE("UX-6a decisions 2 and 4: the Frame Plan tells the Graph after a reload that moved "
+          "declarations, and its Physical plan offers Remove TRANSFER_SRC on an image kept out "
+          "of aliasing for it",
+          "[devstudio][frame-plan][ux6a]") {
+    (void)application();
+    Json wire = capturedRuntimeFramePlan();
+    // Four physical resources no alias group holds:
+    //   kept   -- unaliased, a reason with no causes (an engine before PO-1),
+    //             TRANSFER_SRC in its usage: the usage decides;
+    //   po1    -- unaliased, PO-1's cause names TRANSFER_SRC: the sentence
+    //             decides, whatever the usage says;
+    //   other  -- unaliased for another usage (PO-1), TRANSFER_SRC as well:
+    //             removing it would not alias it, so no button;
+    //   aliased -- aliasable, with TRANSFER_SRC: nothing to remove.
+    auto &physical = wire["physical_target_plan"]["resources"];
+    REQUIRE(physical.size() > 4);
+    const auto name_of = [&](std::size_t index) {
+        return physical[index].at("logical_resource").get<std::string>();
+    };
+    const auto kept = name_of(0);
+    const auto po1 = name_of(1);
+    const auto other = name_of(2);
+    const auto aliased = name_of(3);
+    for (std::size_t index = 0; index < 3; ++index) physical[index]["aliasable"] = false;
+    physical[3]["aliasable"] = true;
+    physical[0]["reason"] = "arbitrary read requires a materialized resource";
+    physical[1]["reason"] = "logical materialization requirement is required: usage TRANSFER_SRC "
+                            "is outside the alias-safe set {COLOR_ATTACHMENT, SAMPLED}";
+    physical[2]["reason"] = "logical materialization requirement is required: usage STORAGE is "
+                            "outside the alias-safe set {COLOR_ATTACHMENT, SAMPLED}";
+    for (auto &declaration : wire["resources"]) {
+        const auto name = declaration.at("name").get<std::string>();
+        if (name == kept || name == other || name == aliased)
+            declaration["usage"] = Json::array({"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"});
+        else if (declaration.contains("usage") && declaration.at("usage").is_array()) {
+            auto &usage = declaration["usage"];
+            usage.erase(std::remove(usage.begin(), usage.end(), Json("TRANSFER_SRC")),
+                        usage.end());
+        }
+    }
+
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    std::vector<std::string> dropped;
+    widget.setDropTransferSourceAction(
+        [&](const QString &resource, const std::optional<FramePlanLoopOrigin> &) {
+            dropped.push_back(resource.toStdString());
+            return true;
+        });
+    int reloaded = 0;
+    widget.setShadersReloadedAction([&] { ++reloaded; });
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    QApplication::processEvents();
+
+    // Decision 4: the two TRANSFER_SRC keeps out, and only they.
+    const auto button = [&](const std::string &name) {
+        return widget.findChild<QPushButton *>(QStringLiteral("pelican.framePlan.dropTransferSrc.") +
+                                               QString::fromStdString(name));
+    };
+    auto *drop = button(kept);
+    REQUIRE(drop != nullptr);
+    CHECK(drop->isEnabled());
+    REQUIRE(button(po1) != nullptr);
+    CHECK(button(other) == nullptr);
+    CHECK(button(aliased) == nullptr);
+    drop->click();
+    button(po1)->click();
+    CHECK(dropped == std::vector<std::string>{kept, po1});
+
+    // Decision 2: a reload that committed, or was refused for a pass, tells
+    // the Graph; one that changed nothing does not.
+    widget.receiveShaderReloadOutcome(ShaderReloadOutcome{.kind = ShaderReloadOutcome::Kind::unchanged});
+    CHECK(reloaded == 0);
+    widget.receiveShaderReloadOutcome(ShaderReloadOutcome{.kind = ShaderReloadOutcome::Kind::committed});
+    CHECK(reloaded == 1);
+}
 } // namespace PelicanStudio

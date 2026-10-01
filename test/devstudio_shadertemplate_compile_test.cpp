@@ -155,7 +155,8 @@ TEST_CASE("G-3 the deferred lighting template reads a G-buffer and the "
               std::string::npos);
         CHECK(text.find("pelican_light(index, world_position)") !=
               std::string::npos);
-        CHECK(occurrences(text, "\nPELICAN_DECLARE_INPUT_") == 5);
+        // The five, and UX-6a's optional shadow mask after them.
+        CHECK(occurrences(text, "\nPELICAN_DECLARE_INPUT_") == 6);
         CHECK(text.find("PELICAN_DECLARE_INPUT_3(in_gbuffer_worldpos);  // "
                         "gbuffer_worldpos: world position") !=
               std::string::npos);
@@ -178,14 +179,16 @@ TEST_CASE("G-3 the deferred lighting template reads a G-buffer and the "
             REQUIRE(input != nullptr);
             CHECK(input->type == vk::DescriptorType::eCombinedImageSampler);
         }
-        CHECK(findBinding(reflection, 1, 5) == nullptr);
+        // UX-6a: the mask's binding, for the node to offer as a socket.
+        CHECK(findBinding(reflection, 1, 5) != nullptr);
+        CHECK(findBinding(reflection, 1, 6) == nullptr);
     }
 
     SECTION("six inputs, with the engine's other feature switches on") {
         const auto inputs = gbufferInputs(true);
         const auto text = fullscreenFragmentShaderTemplate(
             "lit", inputs, Kind::deferred_lighting);
-        CHECK(occurrences(text, "\nPELICAN_DECLARE_INPUT_") == 6);
+        CHECK(occurrences(text, "\nPELICAN_DECLARE_INPUT_") == 7);
         CHECK(text.find("float ambient_occlusion = PELICAN_TEXTURE_2D_5("
                         "in_ssao_blur, inUV).r;") != std::string::npos);
         const auto plain = compileFragment(text, "g3_lighting_6.frag");
@@ -235,6 +238,43 @@ TEST_CASE("G-3 the deferred lighting template reads a G-buffer and the "
         CHECK(fullscreenTemplateInputFill(Kind::deferred_lighting,
                                           {"gbuffer_albedo", "shadow_map"}) ==
               std::vector<std::string>{"gbuffer_albedo"});
+    }
+
+    SECTION("UX-6a decision 6: the optional shadow mask is the binding after the "
+            "inputs, and the key light takes the darker of it and the shadow map") {
+        auto inputs = gbufferInputs(false);
+        inputs.push_back({.resource = "shadow_map"});
+        const auto text = fullscreenFragmentShaderTemplate(
+            "lit", inputs, Kind::deferred_lighting);
+        CHECK(text.find("PELICAN_DECLARE_INPUT_6(in_shadow_mask);") != std::string::npos);
+        CHECK(text.find("#define PELICAN_TEMPLATE_SHADOW_MASK_READ(uv) "
+                        "PELICAN_TEXTURE_2D_6(in_shadow_mask, uv)") != std::string::npos);
+        CHECK(text.find("shadow = min(shadow, shadow_mask(inUV));") != std::string::npos);
+        const auto shadowed = compileFragment(
+            text, "ux6a_lighting_mask.frag",
+            {"PELICAN_FEATURE_SHADOW", "PELICAN_INPUT_5_LAYERED=1",
+             "PELICAN_FEATURE_SHADOW_DIRECTIONAL_PCF_RADIUS=1",
+             "PELICAN_FEATURE_SHADOW_DIRECTIONAL_BIAS=0.002",
+             "PELICAN_FEATURE_SHADOW_DIRECTIONAL_STRENGTH=1.0"});
+        INFO(shadowed.log);
+        REQUIRE(shadowed.ok);
+        const auto reflection = Pelican::reflect(shadowed.spirv);
+        const auto *mask = findBinding(reflection, 1, 6);
+        REQUIRE(mask != nullptr);
+        CHECK(mask->type == vk::DescriptorType::eCombinedImageSampler);
+
+        // A pass that already reads a mask (the RT task's, by name): that
+        // input is the mask, no role reads it, and nothing more is declared.
+        inputs.push_back({.resource = "render_compute__shadow_mask"});
+        const auto connected = fullscreenFragmentShaderTemplate(
+            "lit", inputs, Kind::deferred_lighting);
+        CHECK(occurrences(connected, "\nPELICAN_DECLARE_INPUT_") == 7);
+        CHECK(connected.find("#define PELICAN_TEMPLATE_SHADOW_MASK_READ(uv) "
+                             "PELICAN_TEXTURE_2D_6(in_render_compute_shadow_mask, uv)") !=
+              std::string::npos);
+        const auto plain = compileFragment(connected, "ux6a_lighting_mask_connected.frag");
+        INFO(plain.log);
+        REQUIRE(plain.ok);
     }
 
     SECTION("a missing role is a named constant, so it still compiles") {
