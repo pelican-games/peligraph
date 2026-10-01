@@ -1309,6 +1309,7 @@ ResolvedRenderPipeline resolveRenderPipeline(
     result.material_draw_loops = std::move(composed.material_draw_loops);
     result.deactivated_graph_nodes =
         std::move(composed.deactivated_graph_nodes);
+    result.fold_planning = std::move(composed.fold_planning);
     result.used_features = composed.used_features;
     result.graph_variant_policy = graph_variant_policy;
     result.graph_variant_feature_decisions =
@@ -1354,6 +1355,9 @@ ResolvedRenderPipeline resolveRenderPipeline(
     suffixRenderingPassNames(result.normalized_config,
                              result.graph_variant_policy
                                  .rendering_pass_name_suffix);
+    // FG-1: by the frame graph names target_planning was compiled under.
+    for (auto &entry : result.fold_planning)
+        entry.graph += result.graph_variant_policy.rendering_pass_name_suffix;
 
     result.diagnostics.push_back(RenderPipelineDiagnostic{
         RenderPipelineDiagnosticKind::graph_variant_selected,
@@ -1391,6 +1395,21 @@ ResolvedRenderPipeline resolveRenderPipeline(
             std::string{renderPipelineGraphVariantName(
                 result.graph_variant_policy.variant)} +
                 ":" + node.reason + ":" + node.feature,
+        });
+    }
+    // FG-1: a fold group that runs its open form says why.
+    for (const auto &group : composed.fold_groups) {
+        if (group.state == GraphFoldState::verified) continue;
+        const bool stale = group.state == GraphFoldState::stale;
+        nlohmann::json fields = nlohmann::json::object();
+        if (stale) fields["verified_digest"] = group.verified->at("digest");
+        fields["current_digest"] = group.digest;
+        result.diagnostics.push_back(RenderPipelineDiagnostic{
+            .kind = stale ? RenderPipelineDiagnosticKind::fold_stale
+                          : RenderPipelineDiagnosticKind::fold_unverified,
+            .subject = group.group,
+            .detail = std::string{graphFoldStateName(group.state)},
+            .detail_fields = std::move(fields),
         });
     }
     return result;
@@ -2361,6 +2380,7 @@ CompiledRenderPipeline compileRenderPipeline(
     result.graph_loops = pipeline.graph_loops;
     result.material_draw_loops = pipeline.material_draw_loops;
     result.deactivated_graph_nodes = pipeline.deactivated_graph_nodes;
+    result.fold_planning = pipeline.fold_planning;
     synchronizeRenderPipelineProvenance(
         pipeline.normalized_config,
         result.pass_provenance,

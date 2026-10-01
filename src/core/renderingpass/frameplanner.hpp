@@ -195,7 +195,11 @@ std::vector<std::string> framePlanOrder(const FramePlan &plan);
 // [{"reference": "<loop>.<output>", "resource": <what it reads instead>}].
 // With a pipeline, the plan also carries the pipeline's `diagnostics`
 // ([{kind, subject, detail}]) and `deactivated_graph_nodes`
-// ([{node, feature, reason}]).
+// ([{node, feature, reason}]). FG-1: a fold group that runs its open form
+// is a diagnostic {kind: "fold_stale" | "fold_unverified", subject: <group>,
+// detail: {verified_digest?, current_digest}}, and the target_planning
+// entries of this graph the verified fold groups added are `fold_decisions`
+// ([{group, kind: "node" | "resource", name, field}]; absent when none).
 nlohmann::json framePlanToJson(
     const FramePlan &plan,
     const CompiledRenderPipeline *render_pipeline = nullptr,
@@ -214,6 +218,9 @@ nlohmann::json framePlanToJson(
 //                                  diagnostics' subjects name; [] when none
 //                                  names one (the candidate is graph-wide)
 // A plan without `physical_target_plan` is left as it is.
+// FG-1: each `fold_decisions` entry joins physical_target_plan.decisions as
+// {id: "pelican.plan.fold_decision_applied@1", subject: <name>, selected:
+// <field>, detail, from_nodes, from_fold: <group>}.
 void appendFramePlanPhysicalNodeReferences(nlohmann::json &plan_json);
 void applyMaterialDrawFilterResolutionToFramePlanJson(
     nlohmann::json &plan_json,

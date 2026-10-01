@@ -2143,6 +2143,9 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                 .pipeline_preset_bytes = std::move(preset_bytes),
                                 .resource_provenance =
                                     std::move(composed.resource_provenance),
+                                // FG-1: edit_target_planning reads them.
+                                .fold_planning =
+                                    std::move(composed.fold_planning),
                             };
                         },
                     // G-6: the candidate as the engine's start-up

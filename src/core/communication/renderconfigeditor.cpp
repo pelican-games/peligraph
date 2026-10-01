@@ -2502,6 +2502,81 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
         }, layout_only);
 }
 
+// --- FG-1: fold groups (graphfold.hpp).
+
+OrderedJson RenderConfigEditorService::getFoldGroups(const Json &params) const {
+    requireOnly(params, {}, "get_fold_groups");
+    const auto root = Json::parse(document_.bytes());
+    auto groups = OrderedJson::array();
+    for (const auto &report : reportGraphFoldGroups(root, parseGraphFoldGroups(root)))
+        groups.push_back(graphFoldGroupReportToJson(report));
+    return {{"source_digest", digestJson(document_.sourceDigest())}, {"fold_groups", std::move(groups)}};
+}
+
+OrderedJson RenderConfigEditorService::queueFoldGroupEdit(
+    const std::string &method, const std::string &base_digest, const std::string &group,
+    const std::function<OrderedJson(OrderedJson current)> &edit) {
+    return queueRootEdit(base_digest, method,
+        [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+            const auto root = OrderedJson::parse(candidate.bytes());
+            auto groups = root.contains("fold_groups") ? root.at("fold_groups") : OrderedJson::object();
+            if (!groups.is_object())
+                throw std::invalid_argument(method + ": the root's fold_groups is not an object");
+            const auto found = groups.find(group);
+            auto next = edit(found != groups.end() ? *found : OrderedJson());
+            if (next.is_null()) groups.erase(group);
+            else groups[group] = std::move(next);
+            // The root as the composition will read it. A shape error is the
+            // request's (invalid params); a named one keeps its code.
+            auto judged = Json::parse(candidate.bytes());
+            judged["fold_groups"] = Json::parse(groups.dump());
+            try {
+                (void)parseGraphFoldGroups(judged);
+            } catch (const GraphRegistryError &error) {
+                return rejection(error.code(), error.what(), OrderedJson::parse(error.detail().dump()));
+            }
+            candidate = groups.empty() ? candidate.withoutRootValue("fold_groups")
+                                       : candidate.withRootValue("fold_groups", groups.dump(2));
+            return std::nullopt;
+        });
+}
+
+OrderedJson RenderConfigEditorService::foldNodes(const Json &params) {
+    const std::string method = "fold_nodes";
+    requireOnly(params, {"base_source_digest", "group", "nodes", "folded"}, method);
+    const auto base_digest = requireString(params, "base_source_digest", method);
+    const auto group = requireString(params, "group", method);
+    if (group.empty()) throw std::invalid_argument("fold_nodes group must not be empty");
+    const auto folded = params.find("folded");
+    if (folded == params.end())
+        throw std::invalid_argument("fold_nodes requires folded (an object {kind, decisions?}, or null)");
+    if (folded->is_null()) {
+        if (params.contains("nodes"))
+            throw std::invalid_argument("fold_nodes takes no nodes when folded is null");
+        return queueFoldGroupEdit(method, base_digest, group, [](OrderedJson) { return OrderedJson(); });
+    }
+    if (!folded->is_object())
+        throw std::invalid_argument("fold_nodes folded must be an object {kind, decisions?}, or null");
+    if (folded->contains("verified"))
+        throw std::invalid_argument(
+            "fold_nodes may not write folded.verified; verify_fold writes it when the folded form matches");
+    const auto nodes = params.find("nodes");
+    if (nodes == params.end() || !nodes->is_array() || nodes->empty())
+        throw std::invalid_argument("fold_nodes requires nodes, a non-empty array of root node ids");
+    // Every node is one of the root's (the document the CAS names).
+    std::set<std::string> root_ids;
+    for (const auto &node : Json::parse(document_.bytes()).value("nodes", Json::array()))
+        if (node.is_object() && node.contains("id") && node.at("id").is_string())
+            root_ids.insert(node.at("id").get<std::string>());
+    for (const auto &node : *nodes)
+        if (!node.is_string() || !root_ids.contains(node.get<std::string>()))
+            throw std::invalid_argument("fold_nodes nodes must name root nodes; the root has no node " +
+                                        node.dump());
+    OrderedJson entry{{"nodes", OrderedJson::parse(nodes->dump())},
+                      {"folded", OrderedJson::parse(folded->dump())}};
+    return queueFoldGroupEdit(method, base_digest, group, [&](OrderedJson) { return entry; });
+}
+
 namespace {
 
 bool declaresRenderPass(const OrderedJson &owner, const std::string &pass) {
@@ -3579,6 +3654,23 @@ OrderedJson RenderConfigEditorService::editTargetPlanning(const Json &params) {
                         authored->contains(name))
                         continue;
                     return {.value = std::nullopt, .refusal = unknown(kind, name)};
+                }
+                // FG-1: an explicit false against what a verified fold group
+                // decides for the same name.
+                for (const auto &[name, edit] : edits->items()) {
+                    if (!edit.is_object()) continue;
+                    for (const auto &[decision, value] : edit.items()) {
+                        if (!value.is_boolean()) continue;
+                        if (const auto conflict = graphFoldDecisionConflict(
+                                context.fold_planning, graph, kind, name, decision, value.get<bool>()))
+                            return {.value = std::nullopt,
+                                    .refusal = rejection(
+                                        std::string{graphFoldDecisionConflictCode},
+                                        "target_planning." + graph + ": fold group " + conflict->group +
+                                            " decides " + decision + " for " + name,
+                                        OrderedJson::parse(
+                                            graphFoldDecisionConflictDetail(*conflict).dump()))};
+                    }
                 }
                 mergePlanningEntries(declared[field], *edits);
                 eraseIfEmpty(declared, field);

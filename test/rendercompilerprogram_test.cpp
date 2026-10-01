@@ -1932,6 +1932,287 @@ TEST_CASE("GL-2a frame plan nodes carry the graph node that made them",
                entry.at("subject") == "engine://render_pipelines/hybrid_v1.json";
     }));
 }
+
+// FG-1: a fold group's decisions are written in the root's node ids; every
+// composition maps them onto the names it expanded (a loop's elements) and
+// adds them to target_planning, and get_frame_plan marks the decisions they
+// made with the group (from_fold). They are used only while the open form
+// is the one verified; otherwise the open form runs and says why.
+nlohmann::json fg1Image(const char *id) {
+    return {{"id", id},
+            {"op", "render.image"},
+            {"parameters",
+             {{"type",
+               {{"semantic", "pelican.render.color_signal@1"},
+                {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}}},
+              {"format", "R16G16B16A16_SFLOAT"},
+              {"extent_scale", 1.0},
+              {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}}},
+            {"outputs", {"resource"}}};
+}
+
+nlohmann::json fg1Fill(const char *id, const char *target) {
+    return {{"id", id},
+            {"op", "render.fullscreen"},
+            {"parameters",
+             {{"pass_set", "main_render"},
+              {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
+              {"ports",
+               {{"color",
+                 {{"kind", "image"},
+                  {"type",
+                   {{"semantic", "pelican.render.color_signal@1"},
+                    {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}}},
+                  {"access", "write"},
+                  {"attachment", "color"},
+                  {"location", 0}}}}}}},
+            {"inputs", {{"color", {{"node", target}, {"port", "resource"}}}}},
+            {"outputs", {"color"}}};
+}
+
+const std::vector<std::string> fg1GroupNodes{"fold_a", "fold_b", "fold_image", "blur"};
+
+// Two root passes, the image one of them writes, and a loop over `count`
+// elements whose body paints an image of its own; the group "post" holds
+// them all. `folded` is the group's folded form without `verified`.
+nlohmann::json fg1Document(std::int64_t count, const nlohmann::json &folded) {
+    using Json = nlohmann::json;
+    const Json body{{"nodes", Json::array({fg1Image("canvas"), fg1Fill("paint", "canvas")})},
+                    {"outputs", Json::object()}};
+    Json document{
+        {"schema", "pelican.graph"},
+        {"version", 1},
+        {"definitions", {{"blur_body", body}}},
+        {"nodes",
+         Json::array({fg1Image("fold_image"), fg1Fill("fold_a", "fold_image"), fg1Image("other_image"),
+                      fg1Fill("fold_b", "other_image"),
+                      {{"id", "blur"},
+                       {"op", "graph.loop"},
+                       {"parameters",
+                        {{"over", {{"range", {{"count", count}}}}},
+                         {"branches", Json::array({{{"body", "blur_body"}}})}}},
+                       {"inputs", Json::object()},
+                       {"outputs", Json::array()}}})},
+        {"outputs", Json::object()},
+        {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}}},
+    };
+    if (!folded.is_null())
+        document["fold_groups"] = {{"post", {{"nodes", fg1GroupNodes}, {"folded", folded}}}};
+    return document;
+}
+
+// The document with the group marked verified against its open form.
+nlohmann::json fg1Verified(nlohmann::json document) {
+    document["fold_groups"]["post"]["folded"]["verified"] = {
+        {"digest", graphFoldGroupDigest(document, fg1GroupNodes)}, {"at", "2026-10-02T00:00:00Z"}};
+    return document;
+}
+
+struct Fg1Compiled {
+    nlohmann::json plan;
+    TargetPlanningPolicy planning;
+};
+
+Fg1Compiled fg1Compile(const nlohmann::json &config) {
+    ProgramInputFixture fixture;
+    fixture.config = config;
+    fixture.backend_context = VulkanRenderCompilerBackendContext{
+        vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
+        VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}};
+    auto input = fixture.input();
+    input.runtime_shader_compiler_enabled = true;
+    const auto output = runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), input);
+    const auto &variant = output.variants.front();
+    REQUIRE(variant.compiled_pipeline != nullptr);
+    auto plan = framePlanToJson(variant.frame_plans.at("main_render"), variant.compiled_pipeline.get());
+    REQUIRE(variant.physical_package != nullptr);
+    const auto &physical = requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package);
+    REQUIRE(physical.target_plans.contains("main_render"));
+    plan["physical_target_plan"] = vulkanTargetPlanToJson(*physical.target_plans.at("main_render"));
+    appendFramePlanPhysicalNodeReferences(plan);
+    return {std::move(plan), variant.compiled_pipeline->target_planning};
+}
+
+// The code of the graph refusal compiling `config` raises.
+std::string fg1Refusal(const nlohmann::json &config, nlohmann::json *detail = nullptr) {
+    try {
+        (void)fg1Compile(config);
+    } catch (const GraphRegistryError &error) {
+        if (detail != nullptr) *detail = error.detail();
+        return error.code();
+    } catch (const std::exception &error) {
+        return std::string{"not a graph refusal: "} + error.what();
+    }
+    return "not refused";
+}
+
+// What target_planning says for main_render's node / resource `name`.
+std::optional<bool> fg1Isolated(const TargetPlanningPolicy &policy, std::string_view name) {
+    for (const auto &graph : policy.graphs) {
+        if (graph.graph != "main_render") continue;
+        for (const auto &node : graph.nodes)
+            if (node.node == name) return node.isolate;
+    }
+    return std::nullopt;
+}
+
+std::optional<bool> fg1NoAlias(const TargetPlanningPolicy &policy, std::string_view name) {
+    for (const auto &graph : policy.graphs) {
+        if (graph.graph != "main_render") continue;
+        for (const auto &resource : graph.resources)
+            if (resource.resource == name) return resource.no_alias;
+    }
+    return std::nullopt;
+}
+
+bool fg1Aliased(const nlohmann::json &plan, std::string_view resource) {
+    for (const auto &group : plan.at("physical_target_plan").at("alias_groups"))
+        for (const auto &member : group.at("resources"))
+            if (member.is_string() && member.get<std::string>() == resource) return true;
+    return false;
+}
+
+std::vector<nlohmann::json> fg1FoldDecisions(const nlohmann::json &plan) {
+    std::vector<nlohmann::json> result;
+    for (const auto &decision : plan.at("physical_target_plan").at("decisions"))
+        if (decision.contains("from_fold")) result.push_back(decision);
+    return result;
+}
+
+std::vector<nlohmann::json> fg1Diagnostics(const nlohmann::json &plan, std::string_view kind) {
+    std::vector<nlohmann::json> result;
+    for (const auto &diagnostic : plan.at("diagnostics"))
+        if (diagnostic.at("kind").get<std::string>() == kind) result.push_back(diagnostic);
+    return result;
+}
+
+TEST_CASE("FG-1 a verified fold group's decisions reach target_planning and the frame plan by the expanded names",
+          "[rendercompiler][frame-plan][fg1]") {
+    using Json = nlohmann::json;
+    const Json folded{{"kind", "decisions"},
+                      {"decisions",
+                       {{"isolate", Json::array({{{"node", "blur"}}})},
+                        {"no_alias", Json::array({{{"node", "fold_image"}}})}}}};
+
+    // The open form alone: the image is aliased, nothing is isolated.
+    const auto open = fg1Compile(fg1Document(3, nullptr));
+    INFO(open.plan.at("physical_target_plan").at("alias_groups").dump());
+    CHECK(fg1Aliased(open.plan, "fold_image"));
+    CHECK_FALSE(fg1Isolated(open.planning, "blur/0/paint").has_value());
+    CHECK_FALSE(open.plan.contains("fold_decisions"));
+
+    SECTION("verified: each element of the loop is isolated and the image kept out of every alias group") {
+        for (const std::int64_t count : {3, 2}) {
+            INFO("count " << count);
+            // The same decisions, whatever the count; only the mark is the
+            // open form's.
+            const auto compiled = fg1Compile(fg1Verified(fg1Document(count, folded)));
+            INFO(compiled.plan.dump());
+            for (std::int64_t element = 0; element < 3; ++element) {
+                const auto name = "blur/" + std::to_string(element) + "/paint";
+                CHECK(fg1Isolated(compiled.planning, name) ==
+                      (element < count ? std::optional<bool>{true} : std::nullopt));
+            }
+            CHECK_FALSE(fg1Isolated(compiled.planning, "fold_a").has_value());
+            CHECK(fg1NoAlias(compiled.planning, "fold_image") == std::optional<bool>{true});
+            CHECK_FALSE(fg1Aliased(compiled.plan, "fold_image"));
+
+            // The plan says which group each decision came from.
+            std::set<std::pair<std::string, std::string>> marked;
+            for (const auto &decision : fg1FoldDecisions(compiled.plan)) {
+                CHECK(decision.at("id") == "pelican.plan.fold_decision_applied@1");
+                CHECK(decision.at("from_fold") == "post");
+                marked.emplace(decision.at("subject").get<std::string>(),
+                               decision.at("selected").get<std::string>());
+                if (decision.at("selected") == "isolate")
+                    CHECK(decision.at("from_nodes") == Json::array({decision.at("subject")}));
+                else
+                    CHECK(decision.at("from_nodes") == Json::array({"fold_a"}));
+            }
+            std::set<std::pair<std::string, std::string>> expected{{"fold_image", "no_alias"}};
+            for (std::int64_t element = 0; element < count; ++element)
+                expected.emplace("blur/" + std::to_string(element) + "/paint", "isolate");
+            CHECK(marked == expected);
+            CHECK(compiled.plan.at("fold_decisions").size() == expected.size());
+            CHECK(fg1Diagnostics(compiled.plan, "fold_stale").empty());
+            CHECK(fg1Diagnostics(compiled.plan, "fold_unverified").empty());
+        }
+        // One element of the loop only.
+        Json one = folded;
+        one["decisions"]["isolate"] = Json::array({{{"node", "blur"}, {"element", 1}}});
+        const auto compiled = fg1Compile(fg1Verified(fg1Document(3, one)));
+        CHECK_FALSE(fg1Isolated(compiled.planning, "blur/0/paint").has_value());
+        CHECK(fg1Isolated(compiled.planning, "blur/1/paint") == std::optional<bool>{true});
+        CHECK_FALSE(fg1Isolated(compiled.planning, "blur/2/paint").has_value());
+    }
+
+    SECTION("the root's layout is not part of the open form") {
+        auto document = fg1Document(3, folded);
+        const auto digest = graphFoldGroupDigest(document, fg1GroupNodes);
+        document["layout"] = {{"nodes", {{"fold_a", {{"x", 10}, {"y", 20}}}}}};
+        document["definitions"]["blur_body"]["layout"] = {{"nodes", {{"paint", {{"x", 1}, {"y", 2}}}}}};
+        CHECK(graphFoldGroupDigest(document, fg1GroupNodes) == digest);
+        // A node outside the group is not either.
+        document["nodes"].push_back(fg1Image("elsewhere"));
+        CHECK(graphFoldGroupDigest(document, fg1GroupNodes) == digest);
+    }
+
+    SECTION("stale or unverified: the decisions are dropped and the open form runs, said by name") {
+        auto document = fg1Verified(fg1Document(3, folded));
+        const auto verified_digest =
+            document["fold_groups"]["post"]["folded"]["verified"]["digest"].get<std::string>();
+        // A parameter of a node inside the group.
+        for (auto &node : document["nodes"])
+            if (node.at("id") == "fold_image") node["parameters"]["extent_scale"] = 0.5;
+        const auto current_digest = graphFoldGroupDigest(document, fg1GroupNodes);
+        REQUIRE(current_digest != verified_digest);
+        auto compiled = fg1Compile(document);
+        CHECK(fg1Diagnostics(compiled.plan, "fold_stale") ==
+              std::vector<Json>{{{"kind", "fold_stale"},
+                                 {"subject", "post"},
+                                 {"detail", {{"verified_digest", verified_digest},
+                                             {"current_digest", current_digest}}}}});
+        CHECK_FALSE(fg1Isolated(compiled.planning, "blur/0/paint").has_value());
+        CHECK_FALSE(fg1NoAlias(compiled.planning, "fold_image").has_value());
+        CHECK(fg1FoldDecisions(compiled.plan).empty());
+        CHECK_FALSE(compiled.plan.contains("fold_decisions"));
+
+        document["fold_groups"]["post"]["folded"].erase("verified");
+        compiled = fg1Compile(document);
+        CHECK(fg1Diagnostics(compiled.plan, "fold_unverified") ==
+              std::vector<Json>{{{"kind", "fold_unverified"},
+                                 {"subject", "post"},
+                                 {"detail", {{"current_digest", current_digest}}}}});
+        CHECK(fg1Diagnostics(compiled.plan, "fold_stale").empty());
+        CHECK_FALSE(fg1Isolated(compiled.planning, "blur/0/paint").has_value());
+    }
+
+    SECTION("refused by name: an explicit opposite, a subject outside the group, a kind not yet supported") {
+        Json detail;
+        Json opposite = folded;
+        opposite["decisions"]["isolate"].push_back({{"node", "fold_a"}});
+        auto document = fg1Verified(fg1Document(3, opposite));
+        document["rendering"]["target_planning"] = {
+            {"graphs", {{"main_render", {{"nodes", {{"fold_a", {{"isolate", false}}}}}}}}}};
+        CHECK(fg1Refusal(document, &detail) == "graph.fold_decision_conflict@1");
+        CHECK(detail == Json{{"group", "post"}, {"name", "fold_a"}, {"field", "isolate"}});
+        // The same value is no conflict.
+        document["rendering"]["target_planning"]["graphs"]["main_render"]["nodes"]["fold_a"]["isolate"] = true;
+        CHECK(fg1Isolated(fg1Compile(document).planning, "fold_a") == std::optional<bool>{true});
+
+        Json outside = folded;
+        outside["decisions"]["no_alias"].push_back({{"node", "other_image"}});
+        document = fg1Document(3, nullptr);
+        document["fold_groups"] = {{"post", {{"nodes", {"fold_a", "blur", "fold_image"}}, {"folded", outside}}}};
+        CHECK(fg1Refusal(document, &detail) == "graph.fold_subject_outside@1");
+        CHECK(detail == Json{{"group", "post"}, {"subject", {{"node", "other_image"}}}});
+
+        document = fg1Document(3, Json{{"kind", "replacement"}, {"provider", "engine://x"}});
+        CHECK(fg1Refusal(document, &detail) == "graph.fold_kind_unsupported@1");
+        CHECK(detail == Json{{"group", "post"}, {"kind", "replacement"}});
+    }
+}
 #endif
 } // namespace
 } // namespace Pelican

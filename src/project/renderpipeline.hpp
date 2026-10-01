@@ -1,6 +1,7 @@
 #pragma once
 
 #include "graphcomposition.hpp"
+#include "graphfold.hpp"
 #include "graphvariantpolicy.hpp"
 #include "lightingdata.hpp"
 #include "logicalrendergraph.hpp"
@@ -230,6 +231,11 @@ enum class RenderPipelineDiagnosticKind {
     // LP-0d: subject is the graph node, detail
     // "<variant>:<reason>:<excluded feature>" (RenderGraphDeactivatedNode).
     graph_node_deactivated,
+    // FG-1: subject is the fold group, which runs its open form: its
+    // verified digest is not its open form's (fold_stale) or it has none
+    // (fold_unverified). detail_fields {verified_digest?, current_digest}.
+    fold_stale,
+    fold_unverified,
 };
 
 struct RenderPipelineDiagnostic {
@@ -237,6 +243,9 @@ struct RenderPipelineDiagnostic {
         RenderPipelineDiagnosticKind::graph_variant_selected;
     std::string subject;
     std::string detail;
+    // FG-1: a detail with fields; when set, get_frame_plan reports it as
+    // `detail` in place of the string.
+    nlohmann::json detail_fields;
 
     bool operator==(const RenderPipelineDiagnostic &) const = default;
 };
@@ -425,6 +434,9 @@ struct ResolvedRenderPipeline {
     // LP-0d: the graph nodes this variant made inactive because they depend
     // on a feature it excluded (also in `diagnostics`).
     std::vector<RenderGraphDeactivatedNode> deactivated_graph_nodes;
+    // FG-1: what the verified fold groups added to target_planning, by
+    // the expanded names (get_frame_plan marks those decisions from_fold).
+    std::vector<GraphFoldPlanningEntry> fold_planning;
     bool used_features = false;
 };
 
@@ -630,6 +642,9 @@ struct CompiledRenderPipeline {
     std::vector<RenderGraphLoopReport> graph_loops;
     // LP-0d: the graph nodes this variant made inactive.
     std::vector<RenderGraphDeactivatedNode> deactivated_graph_nodes;
+    // FG-1: what the verified fold groups added to target_planning, by
+    // the expanded names (get_frame_plan marks those decisions from_fold).
+    std::vector<GraphFoldPlanningEntry> fold_planning;
     // VF-2: one entry per secondary view family with a raster pass writing a
     // declared target, in the order the families are first written. Set by
     // the render compiler next to VF-1's check.

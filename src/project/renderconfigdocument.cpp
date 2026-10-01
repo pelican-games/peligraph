@@ -668,6 +668,26 @@ AuthoredRenderConfigDocument AuthoredRenderConfigDocument::withRootValue(
     return inspect(std::move(edited));
 }
 
+AuthoredRenderConfigDocument AuthoredRenderConfigDocument::withoutRootValue(
+    std::string_view key) const {
+    auto edited = bytes_;
+    // As withoutSectionValue: every copy of a key written twice goes.
+    for (auto location = locateRootMembers(edited, key); location.selected_found;
+         location = locateRootMembers(edited, key)) {
+        if (location.selected_previous_value_end != std::string::npos) {
+            edited.erase(location.selected_previous_value_end,
+                         location.selected_end - location.selected_previous_value_end);
+        } else if (location.selected_next_key_begin != std::string::npos) {
+            edited.erase(location.selected_key_begin,
+                         location.selected_next_key_begin - location.selected_key_begin);
+        } else {
+            edited.erase(location.root_open + 1,
+                         location.root_close - location.root_open - 1);
+        }
+    }
+    return inspect(std::move(edited));
+}
+
 AuthoredRenderConfigDocument AuthoredRenderConfigDocument::withSectionValue(
     std::string_view key, std::string_view json_value) const {
     if (isGraphRootKey(key)) return withRootValue(key, json_value);

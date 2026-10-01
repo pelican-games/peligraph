@@ -95,6 +95,9 @@ class AuthoredRenderConfigDocument {
 
     AuthoredRenderConfigDocument withRootValue(
         std::string_view key, std::string_view json_value) const;
+    // FG-1: takes the root member `key` out with its comma, every other byte
+    // as it was; an absent key changes nothing.
+    AuthoredRenderConfigDocument withoutRootValue(std::string_view key) const;
     // Writes the key where the composer reads it: the root for a graph
     // root's own keys, `rendering.<key>` otherwise.
     AuthoredRenderConfigDocument withSectionValue(

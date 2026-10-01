@@ -68,6 +68,10 @@ struct RenderFeatureComposeResult {
     // LP-0d: the graph nodes this composition made inactive because they
     // depend on a feature include_feature left out (a graph variant's).
     std::vector<RenderGraphDeactivatedNode> deactivated_graph_nodes;
+    // FG-1: the root's fold groups (their digest and state), and what the
+    // verified ones added to the config's target_planning.
+    std::vector<GraphFoldGroupReport> fold_groups;
+    std::vector<GraphFoldPlanningEntry> fold_planning;
     bool used_features = false;
 };
 

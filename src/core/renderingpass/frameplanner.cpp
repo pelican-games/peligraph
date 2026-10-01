@@ -1669,6 +1669,10 @@ std::string_view renderPipelineDiagnosticKindName(
         return "pipeline_preset_resolved";
     case RenderPipelineDiagnosticKind::graph_node_deactivated:
         return "graph_node_deactivated";
+    case RenderPipelineDiagnosticKind::fold_stale:
+        return "fold_stale";
+    case RenderPipelineDiagnosticKind::fold_unverified:
+        return "fold_unverified";
     }
     throw std::runtime_error("unknown render pipeline diagnostic kind");
 }
@@ -2099,7 +2103,10 @@ nlohmann::json framePlanToJson(
             diagnostics.push_back(nlohmann::json{
                 {"kind", renderPipelineDiagnosticKindName(diagnostic.kind)},
                 {"subject", diagnostic.subject},
-                {"detail", diagnostic.detail},
+                // FG-1: a detail with fields is reported as they are.
+                {"detail", diagnostic.detail_fields.is_null()
+                               ? nlohmann::json(diagnostic.detail)
+                               : diagnostic.detail_fields},
             });
         }
         result["diagnostics"] = std::move(diagnostics);
@@ -2112,6 +2119,20 @@ nlohmann::json framePlanToJson(
             });
         }
         result["deactivated_graph_nodes"] = std::move(deactivated);
+        // FG-1: the target_planning entries of this graph the verified fold
+        // groups added. Absent when there is none.
+        auto fold_decisions = nlohmann::json::array();
+        for (const auto &entry : render_pipeline->fold_planning) {
+            if (entry.graph != plan.name) continue;
+            fold_decisions.push_back(nlohmann::json{
+                {"group", entry.group},
+                {"kind", entry.kind},
+                {"name", entry.name},
+                {"field", entry.field},
+            });
+        }
+        if (!fold_decisions.empty())
+            result["fold_decisions"] = std::move(fold_decisions);
         // LP-1a: every graph.loop, including one that expanded nothing.
         // Absent when the composed graph has no loop.
         if (!render_pipeline->graph_loops.empty()) {
@@ -2313,7 +2334,30 @@ void appendFramePlanPhysicalNodeReferences(nlohmann::json &plan_json) {
         for (auto &decision : *decisions)
             if (decision.is_object()) decision["from_nodes"] = ordered(subjectNodes(field(decision, "subject")));
     };
+    // FG-1: each target_planning entry a fold group added is a decision of
+    // the plan's, marked with the group (from_fold).
+    std::vector<std::pair<std::size_t, std::string>> fold_marks;
+    if (const auto folds = plan_json.find("fold_decisions"); folds != plan_json.end() && folds->is_array()) {
+        auto &decisions = (*physical)["decisions"];
+        if (decisions.is_null()) decisions = nlohmann::json::array();
+        if (decisions.is_array()) {
+            for (const auto &entry : *folds) {
+                if (!entry.is_object()) continue;
+                const auto group = field(entry, "group");
+                const auto kind = field(entry, "kind");
+                fold_marks.emplace_back(decisions.size(), group);
+                decisions.push_back(nlohmann::json{
+                    {"id", "pelican.plan.fold_decision_applied@1"},
+                    {"subject", field(entry, "name")},
+                    {"selected", field(entry, "field")},
+                    {"detail", "fold group " + group + " declared it in target_planning " +
+                                   (kind == "node" ? "nodes" : "resources")},
+                });
+            }
+        }
+    }
     annotateDecisions(*physical);
+    for (const auto &[index, group] : fold_marks) (*physical)["decisions"][index]["from_fold"] = group;
     for (const auto *key : {"lowering_graph", "planning_opportunities", "backend_selection"})
         if (const auto container = physical->find(key); container != physical->end())
             annotateDecisions(*container);

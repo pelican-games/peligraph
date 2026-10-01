@@ -3895,6 +3895,13 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                     provenance.replaces.push_back({entry.feature, entry.pass});
         }
     }
+    // FG-1: the decisions of the root's verified fold groups, written in its
+    // node ids, are mapped through the origins above onto the names this
+    // composition expanded, and join target_planning. A root without
+    // fold_groups is left as it is.
+    GraphFoldApplication fold_application;
+    if (common_graph && config.contains("fold_groups"))
+        fold_application = applyGraphFoldGroups(config, composed, pass_provenance, resource_provenance);
     auto material_routing = resolveMaterialRoutingTable(composed);
     auto draw_sort = composed.contains("draw_sort")
                          ? composed.at("draw_sort")
@@ -3926,6 +3933,8 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         result.material_draw_loops = std::move(rules);
     }
     result.deactivated_graph_nodes = std::move(deactivated_graph_nodes);
+    result.fold_groups = std::move(fold_application.groups);
+    result.fold_planning = std::move(fold_application.planning);
     result.used_features = !feature_instances.empty();
     return result;
 }

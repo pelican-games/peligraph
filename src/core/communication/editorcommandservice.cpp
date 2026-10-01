@@ -1375,6 +1375,17 @@ OrderedJson EditorCommandService::putVulkanPhysicalFragment(const Json &params) 
     return render_config_editor_->putVulkanPhysicalFragment(params);
 }
 
+// FG-1.
+OrderedJson EditorCommandService::getFoldGroups(const Json &params) const {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->getFoldGroups(params);
+}
+
+OrderedJson EditorCommandService::foldNodes(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->foldNodes(params);
+}
+
 OrderedJson EditorCommandService::getGraphInstances(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->getGraphInstances(params);
@@ -2389,6 +2400,15 @@ OrderedJson EditorCommandRpcAdapter::editVulkanPlanPins(const Json &params) cons
 OrderedJson EditorCommandRpcAdapter::putVulkanPhysicalFragment(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
     return mutable_service_->putVulkanPhysicalFragment(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getFoldGroups(const Json &params) const {
+    return service_.getFoldGroups(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::foldNodes(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
+    return mutable_service_->foldNodes(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getGraphInstances(const Json &params) const {

@@ -105,6 +105,10 @@ struct ResolvedRenderConfigAuthoringContext {
     // A resolver that leaves it empty makes every target that is not in the
     // root, the preset or the managed fragment read as "composed".
     std::vector<RenderResourceProvenance> resource_provenance;
+    // FG-1: what the root's verified fold groups added to target_planning
+    // (RenderFeatureComposeResult::fold_planning). edit_target_planning
+    // refuses an explicit opposite of one of them.
+    std::vector<GraphFoldPlanningEntry> fold_planning;
 };
 
 struct RenderConfigEditorDependencies {
@@ -313,6 +317,16 @@ class RenderConfigEditorService {
         const std::string &operation,
         const std::function<std::optional<nlohmann::ordered_json>(AuthoredRenderConfigDocument &)> &transform,
         bool source_only = false);
+    // FG-1: the ticket that writes one group of the root's fold_groups
+    // (fold_nodes; FG-2's verify_fold writes `folded.verified` through it).
+    // `edit` receives the group's current entry (null when the root has no
+    // such group) and returns the new one, or null to remove the group; the
+    // root key goes with its last group. The edited root is judged by
+    // parseGraphFoldGroups (a named refusal keeps its code and fields), then
+    // composed like any root edit (queueRootEdit; RD-1 takes it back).
+    nlohmann::ordered_json queueFoldGroupEdit(
+        const std::string &method, const std::string &base_digest, const std::string &group,
+        const std::function<nlohmann::ordered_json(nlohmann::ordered_json current)> &edit);
     // EL-3: why edit_rendering_keys does not write `key` (nullopt: it does).
     // `selects_preset`: the current root's section names a pipeline preset.
     std::optional<nlohmann::ordered_json> renderingKeyRefusal(
@@ -394,6 +408,16 @@ class RenderConfigEditorService {
 
   public:
     nlohmann::ordered_json getGraphInstances(const nlohmann::json &params) const;
+    // FG-1: get_fold_groups {} -> {source_digest, fold_groups: [{group, nodes,
+    // kind, digest, verified?, state: "verified" | "stale" | "unverified"}]}
+    // (graphfold.hpp), in group name order. Reads only.
+    nlohmann::ordered_json getFoldGroups(const nlohmann::json &params) const;
+    // FG-1: fold_nodes {base_source_digest, group, nodes, folded}: declares
+    // (or replaces) one fold group of the root, `folded` {kind, decisions?}
+    // without `verified` (only verify_fold writes it: invalid params), every
+    // node a root node id; `folded: null` (nodes absent) removes the group.
+    // One ticket (queueFoldGroupEdit).
+    nlohmann::ordered_json foldNodes(const nlohmann::json &params);
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params);
     nlohmann::ordered_json editGraphDocument(const nlohmann::json &params);
     // LP-3b: a one-piece material pass of the rendering section or of a

@@ -675,6 +675,7 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
                         .pipeline_preset_bytes = std::move(preset_bytes),
                         .resource_provenance =
                             std::move(composition.resource_provenance),
+                        .fold_planning = std::move(composition.fold_planning),
                     };
                 },
             .preflight_graph_variants = std::move(preflight_graph_variants),
@@ -10312,6 +10313,104 @@ TEST_CASE("EL-2 edit_target_planning merges a graph's names into the root, erase
         CHECK(error.at("reason") == "preset_declares_key");
         CHECK(readBytes(harness.project.render_config) == before);
     }
+}
+
+// --- FG-1: fold groups of the root graph.
+
+namespace {
+
+nlohmann::ordered_json fg1Fold(Rd1Harness &harness, const std::string &group, Json nodes, Json folded) {
+    Json request{{"base_source_digest", harness.context().at("source_digest").at("hex")},
+                 {"group", group},
+                 {"folded", std::move(folded)}};
+    if (!nodes.is_null()) request["nodes"] = std::move(nodes);
+    return harness.service->foldNodes(request);
+}
+
+Json fg1Groups(Rd1Harness &harness) {
+    return Json(harness.service->getFoldGroups(Json::object()).at("fold_groups"));
+}
+
+} // namespace
+
+TEST_CASE("FG-1 fold_nodes declares a fold group, get_fold_groups reads its digest and state, and RD-1 takes it back",
+          "[render-config-editor][fg1]") {
+    Rd1Harness harness{true};
+    // Root nodes to fold: the material pass decompose_material_pass puts
+    // into the graph, and its draw loop.
+    harness.commit(harness.decompose("forward_opaque"));
+    const auto unfolded = readBytes(harness.project.render_config);
+    const auto read = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+    CHECK(fg1Groups(harness) == Json::array());
+
+    const Json nodes = Json::array({"forward_opaque", "forward_opaque_draws"});
+    const Json folded{{"kind", "decisions"},
+                      {"decisions", {{"isolate", Json::array({{{"node", "forward_opaque"}}})}}}};
+    const auto declared = harness.commit(fg1Fold(harness, "post", nodes, folded));
+    CHECK(declared.at("operation") == "fold_nodes");
+    const auto root = Json::parse(readBytes(harness.project.render_config));
+    CHECK(root.at("fold_groups") == Json{{"post", {{"nodes", nodes}, {"folded", folded}}}});
+    auto groups = fg1Groups(harness);
+    REQUIRE(groups.size() == 1);
+    CHECK(groups.at(0).at("group") == "post");
+    CHECK(groups.at(0).at("nodes") == nodes);
+    CHECK(groups.at(0).at("kind") == "decisions");
+    CHECK(groups.at(0).at("digest") == graphFoldGroupDigest(root, nodes.get<std::vector<std::string>>()));
+    CHECK(groups.at(0).at("state") == "unverified");
+    CHECK_FALSE(groups.at(0).contains("verified"));
+
+    // RD-1 takes the declaration back, byte for byte.
+    harness.commit(harness.service->restoreRenderDocuments(
+        {{"documents",
+          Json::array({rd1Restore(read.at("passes/main.json"),
+                                  renderConfigSourceDigest(readBytes(harness.project.render_config)))})}}));
+    CHECK(readBytes(harness.project.render_config) == unfolded);
+    CHECK(fg1Groups(harness) == Json::array());
+
+    // Only verify_fold writes the mark; a request of the wrong shape or a
+    // node the root does not have is the request's error.
+    auto marked = folded;
+    marked["verified"] = {{"digest", std::string(64, 'a')}, {"at", "2026-10-02T00:00:00Z"}};
+    CHECK_THROWS_AS(fg1Fold(harness, "post", nodes, marked), std::invalid_argument);
+    CHECK_THROWS_AS(fg1Fold(harness, "post", Json::array({"fg1_no_such_node"}), folded), std::invalid_argument);
+    CHECK_THROWS_AS(fg1Fold(harness, "post", nodes, Json{{"kind", "decisions"}, {"physical", Json::array()}}),
+                    std::invalid_argument);
+    // The named refusals keep their code and fields.
+    auto error = rd1Error(fg1Fold(harness, "post", nodes, Json{{"kind", "replacement"}}));
+    CHECK(error.at("code") == "graph.fold_kind_unsupported@1");
+    CHECK(error.at("group") == "post");
+    CHECK(error.at("kind") == "replacement");
+    error = rd1Error(fg1Fold(harness, "post", Json::array({"forward_opaque"}),
+                             Json{{"kind", "decisions"},
+                                  {"decisions", {{"serial", Json::array({{{"node", "forward_opaque_draws"}}})}}}}));
+    CHECK(error.at("code") == "graph.fold_subject_outside@1");
+    CHECK(error.at("subject") == Json{{"node", "forward_opaque_draws"}});
+    CHECK(readBytes(harness.project.render_config) == unfolded);
+
+    // A verified group's decision against an explicit opposite by EL-2.
+    harness.commit(fg1Fold(harness, "post", nodes, folded));
+    auto verified = Json::parse(readBytes(harness.project.render_config));
+    verified["fold_groups"]["post"]["folded"]["verified"] = {
+        {"digest", fg1Groups(harness).at(0).at("digest")}, {"at", "2026-10-02T00:00:00Z"}};
+    harness.commit(harness.service->restoreRenderDocuments(
+        {{"documents",
+          Json::array({rd1Document("passes/main.json",
+                                   renderConfigSourceDigest(readBytes(harness.project.render_config)),
+                                   verified.dump(2) + "\n")})}}));
+    CHECK(fg1Groups(harness).at(0).at("state") == "verified");
+    const auto before_conflict = readBytes(harness.project.render_config);
+    error = rd1Error(el2Planning(harness, {{"forward_opaque", {{"isolate", false}}}}));
+    CHECK(error.at("code") == "graph.fold_decision_conflict@1");
+    CHECK(error.at("group") == "post");
+    CHECK(error.at("name") == "forward_opaque");
+    CHECK(error.at("field") == "isolate");
+    harness.service->commitPending();
+    CHECK(readBytes(harness.project.render_config) == before_conflict);
+
+    // folded: null removes the group, and the key with its last one.
+    harness.commit(fg1Fold(harness, "post", nullptr, nullptr));
+    CHECK_FALSE(Json::parse(readBytes(harness.project.render_config)).contains("fold_groups"));
+    CHECK(fg1Groups(harness) == Json::array());
 }
 
 } // namespace Pelican
