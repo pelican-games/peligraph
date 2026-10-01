@@ -637,7 +637,7 @@ instances.publishModelInstance(std::move(staged_instance));
 | `pelican.scene` | 1〜2 | [`sceneformat.cpp`](../../src/project/sceneformat.cpp#L268) | 保存は元の版を維持。prefabはv2が前提。永続IDは両版で受理 |
 | `pelican.graph` | 1 | [`graphcomposition.cpp`](../../src/project/graphcomposition.cpp#L1116) | 共通グラフ。`definitions` / `nodes` / `outputs`（§3.15） |
 | `pelican.render_feature` | 1 | [`featurecompose.cpp`](../../src/project/featurecompose.cpp#L3061) | 本節「render feature」 |
-| `pelican.render_pipeline` | 1 | [`renderpipeline.cpp`](../../src/project/renderpipeline.cpp#L836) | preset（`hybrid_v1` など） |
+| `pelican.render_pipeline` | 1 | [`renderpipeline.cpp`](../../src/project/renderpipeline.cpp#L834) | preset（`hybrid_v1` など） |
 | `pelican.render_component` | 1 | [`rendercomponent.hpp`](../../src/project/rendercomponent.hpp#L16) | export / import される描画部品（§3.16） |
 | `pelican.package` | 1 | [`packagemanifest.hpp`](../../src/project/packagemanifest.hpp#L19) | vendoringされるディレクトリの封筒（§3.16） |
 | `pelican.graph_catalog` | 1 | [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L538) | `pelican_cli graph-catalog` の出力（module / op / 型の一覧） |
@@ -714,7 +714,7 @@ player CLI / tool -> EngineLaunchConfig.render_feature_overlays
 CLI が project 読み込みとは別に作る process-local module です。この型と名前付き入口の分離により、
 project 読み込みから overlay を発見・保存・再読込するデータ経路そのものが存在しません。
 
-sceneと違い、feature合成は「純粋層で済ませてからruntimeへ渡す」形ではありません。上の登録関数の内側でGPU非依存の [`runRenderCompilerProgram()`](../../src/core/renderingpass/rendercompilerprogram.cpp#L218) が走り、その中の [`resolveRenderPipeline()`](../../src/project/renderpipeline.cpp#L1214) が `composeRenderFeatureConfig()` を呼びます。二段であること自体は同じで、境界が呼び出し順ではなく「GPUに触る前／後」で引かれている、という違いです。詳細は[第6章](06_rendering_vulkan_shader.md)。
+sceneと違い、feature合成は「純粋層で済ませてからruntimeへ渡す」形ではありません。上の登録関数の内側でGPU非依存の [`runRenderCompilerProgram()`](../../src/core/renderingpass/rendercompilerprogram.cpp#L218) が走り、その中の [`resolveRenderPipeline()`](../../src/project/renderpipeline.cpp#L1212) が `composeRenderFeatureConfig()` を呼びます。二段であること自体は同じで、境界が呼び出し順ではなく「GPUに触る前／後」で引かれている、という違いです。詳細は[第6章](06_rendering_vulkan_shader.md)。
 
 ### material / surface
 
@@ -1172,13 +1172,13 @@ instance の入力ポートがどこから値を取るかは `edge > parameters 
 | [`renderloopreport.hpp`](../../src/project/renderloopreport.hpp#L15) | `get_frame_plan` の `loops[]` と `loop_origin`、変種で非活性にした graph の node(`RenderGraphDeactivatedNode`) |
 | [`rendergraphcomposition.hpp`](../../src/project/rendergraphcomposition.hpp#L26) / `.cpp` | `render.target_ref` の検査、置き場所の run(`placeRenderGraphPassRun()` / `placeDeclaredRenderGraphPassRuns()`)、expand の展開、`pass_replacements` の適用、変種で外れる feature への依存 |
 | [`materialdrawloop.hpp`](../../src/project/materialdrawloop.hpp#L97) / `.cpp` | draw_loop の純粋層: `MaterialDrawStep`、material の照合の鍵、分岐の選び方、`get_frame_plan` の要素と paging、LP-2 の拒否 code |
-| [`materialpassdecompose.hpp`](../../src/project/materialpassdecompose.hpp#L74) / `.cpp` | `decompose_material_pass` の文書の書き換え(editor 側は [`RenderConfigEditorService::decomposeMaterialPass()`](../../src/core/communication/renderconfigeditor.cpp#L2513) が 1 つの transaction に載せる) |
+| [`materialpassdecompose.hpp`](../../src/project/materialpassdecompose.hpp#L74) / `.cpp` | `decompose_material_pass` の文書の書き換え(editor 側は [`RenderConfigEditorService::decomposeMaterialPass()`](../../src/core/communication/renderconfigeditor.cpp#L2520) が 1 つの transaction に載せる) |
 | [`viewselect.hpp`](../../src/project/viewselect.hpp#L21) | `view_select` の 4 つの拒否 code と、座標と選択の照合 |
 | `src/core/resources/graphs/*.json` | 出荷する分解版の雛形 4 本(engine は読まない。`decomposes` を持つ) |
 
 合成の中の順は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3061) の中で、(1) graph の lowering(`pass_set` の既定は [`defaultGraphPassFamily()`](../../src/project/featurecompose.cpp#L3035))→ (2) `insert.declared` の run を宣言の列へ置く → (3) feature・integration の合成 → (4) 変種で外れる feature に依存する node を外す([`withoutExcludedGraphDependents()`](../../src/project/rendergraphcomposition.cpp#L2155))→ (5) 残りの run を置く → (6) surface resources の consumer の選択と snapshot → (7) 解決の段(target の参照の検査 → ループの展開 → draw_loop の報告 → [`applyRenderFeaturePassReplacements()`](../../src/project/rendergraphcomposition.cpp#L2328))→ (8) ループの回の中で consumer を選び直す、です。run を consumer の選択より前に置くのは graph で書いた material pass が影の map を受けるため(LP-3a)、(8) は置き換えた consumer の代わりの回が受けるため(LP-Vb)です。
 
-**graph の node の出所(✅GL-2a)。**lowering は node が作った pass・compute task の名前ごとに、展開の [`GraphNodeOrigin`](../../src/project/graphcomposition.hpp#L38)(instance path・definition・node・loop・loop branch)を `LoweredRenderGraphDocument::origins` に残します([残す所](../../src/project/rendergraphcomposition.cpp#L760))。ループの body の node は雛形の id `<loop>/$<branch>/<node>` で残ります。`applyRenderFeaturePassReplacements()` は、置き換え先ごとに置き換えた `{feature, pass}` を `RenderGraphLoopResolution::replacements` に返します(ループでは置き換えた pass と同じ family の回だけ。[返す所](../../src/project/rendergraphcomposition.cpp#L2419))。合成は provenance を同期した直後に、この 2 つを [`RenderPassProvenance`](../../src/project/renderpipeline.hpp#L250) の `graph_origin` と `replaces` へ載せます([載せる所](../../src/project/featurecompose.cpp#L3717)):root と instance の宣言は `graph_declarations` にある名前で引き、ループの回は `loop_origin` の `(loop, element)` が選んだ分岐から雛形の id を作って引き、`instance_path` を空にします。feature の provenance は飛ばします。`get_frame_plan` の `origin` / `replaces`(`framePlanToJson()`)と `get_compute_task_authoring` の `graph_node` は、どちらもこの 1 つを読みます(GL-2a の前は、editor が root を展開し直して task 名と突き合わせていました)。
+**graph の node の出所(✅GL-2a)。**lowering は node が作った pass・compute task の名前ごとに、展開の [`GraphNodeOrigin`](../../src/project/graphcomposition.hpp#L38)(instance path・definition・node・loop・loop branch)を `LoweredRenderGraphDocument::origins` に残します([残す所](../../src/project/rendergraphcomposition.cpp#L760))。ループの body の node は雛形の id `<loop>/$<branch>/<node>` で残ります。`applyRenderFeaturePassReplacements()` は、置き換え先ごとに置き換えた `{feature, pass}` を `RenderGraphLoopResolution::replacements` に返します(ループでは置き換えた pass と同じ family の回だけ。[返す所](../../src/project/rendergraphcomposition.cpp#L2419))。合成は provenance を同期した直後に、この 2 つを [`RenderPassProvenance`](../../src/project/renderpipeline.hpp#L259) の `graph_origin` と `replaces` へ載せます([載せる所](../../src/project/featurecompose.cpp#L3717)):root と instance の宣言は `graph_declarations` にある名前で引き、ループの回は `loop_origin` の `(loop, element)` が選んだ分岐から雛形の id を作って引き、`instance_path` を空にします。feature の provenance は飛ばします。`get_frame_plan` の `origin` / `replaces`(`framePlanToJson()`)と `get_compute_task_authoring` の `graph_node` は、どちらもこの 1 つを読みます(GL-2a の前は、editor が root を展開し直して task 名と突き合わせていました)。
 
 > 🧩 **難所 — 回の順は名前に頼れない**: 展開器は node を id の辞書順に並べるので、`<loop>/10/x` は `<loop>/9/x` より前に来ます。そこで body の外の資源に触る回は、要素の順に明示の `after` でつながれます。回ごとの `render.image` だけに触る回はつながれず、並列にできます。
 
