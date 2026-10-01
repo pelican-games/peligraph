@@ -4966,6 +4966,13 @@ void appendFeatureReferences(const Json &features,
 
 std::vector<RenderConfigEditorService::WritableRenderDocument>
 RenderConfigEditorService::writableRenderDocuments() const {
+    return renderDocumentsOf(currentDocumentSet(), document_.bytes());
+}
+
+std::vector<RenderConfigEditorService::WritableRenderDocument>
+RenderConfigEditorService::renderDocumentsOf(
+    const RenderConfigCandidateDocumentSet &candidate,
+    std::string_view root_bytes) const {
     std::vector<WritableRenderDocument> documents;
     documents.push_back(WritableRenderDocument{
         .reference = dependencies_.source_reference,
@@ -4977,8 +4984,7 @@ RenderConfigEditorService::writableRenderDocuments() const {
         !dependencies_.normalize_reference ||
         !dependencies_.resolve_document_path)
         return documents;
-    const auto current =
-        dependencies_.resolve_authoring_context(currentDocumentSet());
+    const auto current = dependencies_.resolve_authoring_context(candidate);
     // A document is writable only when all of these hold: it is not an
     // engine document or a fragment address, it resolves to a regular file
     // inside the project root (symbolic links resolved), and its bytes are the
@@ -5031,7 +5037,7 @@ RenderConfigEditorService::writableRenderDocuments() const {
         }
     }
     appendFeatureReferences(
-        renderingSectionOrEmpty(Json::parse(document_.bytes()))
+        renderingSectionOrEmpty(Json::parse(root_bytes))
             .value("features", Json::array()),
         features);
     appendFeatureReferences(current.config.value("features", Json::array()),
@@ -5716,6 +5722,252 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
     return result;
 }
 
+void RenderConfigEditorService::rememberWrittenDocuments(
+    const RenderConfigCandidateDocumentSet &documents) {
+    for (const auto &document : documents.documents()) {
+        if (document.normalized_reference == source_normalized_reference_)
+            continue;
+        if (document.operation == RenderConfigDocumentOperation::erase)
+            known_document_digests_.erase(document.normalized_reference);
+        else
+            known_document_digests_.insert_or_assign(
+                document.normalized_reference,
+                renderConfigSourceDigest(document.bytes));
+    }
+}
+
+void RenderConfigEditorService::verifyReloadedDocuments(
+    const RenderConfigCandidateDocumentSet &documents) {
+    for (const auto &document : documents.documents()) {
+        std::string actual;
+        try {
+            actual = renderConfigSourceDigest(readFileBytes(document.path));
+        } catch (const std::exception &error) {
+            throw RenderConfigExternalModification(
+                "Render document " + document.reference +
+                " could not be read again before the reload was published: " +
+                error.what());
+        }
+        if (actual != document.expected.digest)
+            throw RenderConfigExternalModification(
+                "Render document " + document.reference +
+                " changed again after reload_render_documents read it");
+    }
+}
+
+OrderedJson RenderConfigEditorService::reloadRenderDocuments(
+    const Json &params, bool preview_open) {
+    constexpr std::string_view method = "reload_render_documents";
+    requireOnly(params, {}, method);
+    // Taking in what is on disk and an edit of what was there before must
+    // not interleave: an edit queued before the reload would commit over it.
+    if (preview_open || !pending_.empty() || inflight_ticket_) {
+        auto tickets = OrderedJson::array();
+        if (inflight_ticket_) tickets.push_back(*inflight_ticket_);
+        for (const auto &ticket : pending_)
+            if (!inflight_ticket_ || ticket.id != *inflight_ticket_)
+                tickets.push_back(ticket.id);
+        const bool ticket_pending = !tickets.empty();
+        return rejection(
+            std::string{reloadBusyCode},
+            ticket_pending
+                ? "render documents cannot be reloaded while a render edit "
+                  "is pending; reload after its result arrives"
+                : "render documents cannot be reloaded while a scene preview "
+                  "is open",
+            {{"method", std::string{method}},
+             {"reason", ticket_pending ? "ticket_pending" : "preview_open"},
+             {"tickets", std::move(tickets)}});
+    }
+    const auto gate = gateSnapshot();
+    if (!gate.can_edit) {
+        return rejection("gate_closed",
+                         "render config editing is currently disabled",
+                         {{"method", std::string{method}},
+                          {"reason", primaryReason(gate.reasons)},
+                          {"gate_epoch", gate.epoch}});
+    }
+    const auto preflight_details = [&](const std::string &reference = {}) {
+        OrderedJson details{{"participant", "pelican.render_pipeline"},
+                            {"method", std::string{method}}};
+        if (!reference.empty()) details["reference"] = reference;
+        return details;
+    };
+
+    // The root as it is on disk. A root that does not read or parse is
+    // refused here, as restore_render_documents refuses such content.
+    std::string root_bytes;
+    try {
+        root_bytes = readFileBytes(dependencies_.source_path);
+    } catch (const std::exception &error) {
+        return rejection("render_pipeline_preflight_failed", error.what(),
+                         preflight_details(dependencies_.source_reference));
+    }
+    std::optional<AuthoredRenderConfigDocument> root;
+    try {
+        root = AuthoredRenderConfigDocument::inspect(root_bytes);
+    } catch (const RenderConfigLegacyRoot &error) {
+        return rejection(std::string{renderConfigLegacyRootCode}, error.what(),
+                         {{"method", std::string{method}},
+                          {"reference", dependencies_.source_reference}});
+    } catch (const std::exception &error) {
+        return rejection("render_pipeline_preflight_failed", error.what(),
+                         preflight_details(dependencies_.source_reference));
+    }
+
+    // The candidate: the root and the managed fragments it names, then every
+    // other render document the composition reads, each as it is on disk and
+    // held to that digest. The runtime composes these bytes, and the source
+    // commit only checks that they are still what is on disk.
+    std::vector<RenderConfigCandidateDocument> documents;
+    const auto add_document = [&](const std::string &reference,
+                                  const std::string &normalized,
+                                  const std::filesystem::path &path,
+                                  std::string bytes) {
+        const auto digest = renderConfigSourceDigest(bytes);
+        documents.push_back(RenderConfigCandidateDocument{
+            .reference = reference,
+            .normalized_reference = normalized,
+            .path = path,
+            .operation = RenderConfigDocumentOperation::replace,
+            .expected = {RenderConfigDocumentExistence::present, digest},
+            .bytes = std::move(bytes),
+        });
+    };
+    add_document(dependencies_.source_reference, source_normalized_reference_,
+                 dependencies_.source_path, root_bytes);
+    if (dependencies_.normalize_reference && dependencies_.resolve_document_path) {
+        for (const auto &reference : allFeatureReferences(root_bytes)) {
+            try {
+                const auto path = dependencies_.resolve_document_path(reference);
+                if (!isManagedFragmentPath(dependencies_.project_root, path))
+                    continue;
+                std::error_code error;
+                if (!std::filesystem::is_regular_file(path, error) || error)
+                    continue;
+                auto bytes = readFileBytes(path);
+                if (!hasManagedFragmentMarker(bytes)) continue;
+                const auto normalized =
+                    dependencies_.normalize_reference(reference);
+                if (std::any_of(documents.begin(), documents.end(),
+                                [&](const auto &entry) {
+                                    return entry.normalized_reference ==
+                                           normalized;
+                                }))
+                    continue;
+                add_document(reference, normalized, path, std::move(bytes));
+            } catch (const std::exception &) {
+                // As loadManagedDocumentBaselines: not a managed fragment.
+            }
+        }
+    }
+    std::vector<WritableRenderDocument> render_documents;
+    try {
+        render_documents = renderDocumentsOf(
+            RenderConfigCandidateDocumentSet{source_normalized_reference_,
+                                             documents},
+            root_bytes);
+    } catch (const std::exception &error) {
+        return preflightRejection(error, preflight_details());
+    }
+
+    std::map<std::string, std::string> published;
+    if (dependencies_.published_documents) {
+        try {
+            published = dependencies_.published_documents();
+        } catch (const std::exception &) {
+            // Without the live generation's documents, a document this
+            // editor has not written reads as changed.
+        }
+    }
+    auto listed = OrderedJson::object();
+    auto changed = OrderedJson::array();
+    std::map<std::string, std::string> digests;
+    for (const auto &entry : render_documents) {
+        auto index = static_cast<std::size_t>(
+            std::find_if(documents.begin(), documents.end(),
+                         [&](const auto &document) {
+                             return document.normalized_reference ==
+                                    entry.normalized_reference;
+                         }) -
+            documents.begin());
+        if (index == documents.size()) {
+            try {
+                add_document(entry.reference, entry.normalized_reference,
+                             entry.path, readFileBytes(entry.path));
+            } catch (const std::exception &error) {
+                return rejection("render_pipeline_preflight_failed",
+                                 error.what(),
+                                 preflight_details(entry.reference));
+            }
+        }
+        const std::string digest = documents[index].expected.digest;
+        listed[entry.reference] = digest;
+        digests.insert_or_assign(entry.normalized_reference, digest);
+        std::optional<std::string> previous;
+        if (entry.kind == "root") {
+            previous = document_.sourceDigest();
+        } else if (const auto known =
+                       known_document_digests_.find(entry.normalized_reference);
+                   known != known_document_digests_.end()) {
+            previous = known->second;
+        } else if (const auto managed =
+                       managed_documents_.find(entry.normalized_reference);
+                   managed != managed_documents_.end()) {
+            previous = managed->second.digest;
+        } else if (const auto live = published.find(entry.normalized_reference);
+                   live != published.end()) {
+            previous = live->second;
+        }
+        if (previous != digest) changed.push_back(entry.reference);
+    }
+    const bool no_change = changed.empty();
+    RenderConfigCandidateDocumentSet candidate_set{
+        source_normalized_reference_, std::move(documents)};
+
+    // G-4: material_route_default is read once per engine start.
+    bool restart_required = false;
+    try {
+        restart_required =
+            readMaterialRouteDefault(
+                renderingSectionOrEmpty(Json::parse(document_.bytes()))) !=
+            readMaterialRouteDefault(
+                renderingSectionOrEmpty(Json::parse(root->bytes())));
+    } catch (const std::exception &error) {
+        return preflightRejection(error, preflight_details());
+    }
+    // G-6: every variant the engine registered composes it first.
+    if (!no_change) {
+        if (auto refused =
+                preflightGraphVariants(candidate_set, preflight_details()))
+            return *refused;
+    }
+
+    const auto ticket_id =
+        "render-config-reload-" + std::to_string(next_ticket_++);
+    pending_.push_back(Ticket{
+        .id = ticket_id,
+        .accepted_gate_epoch = gate.epoch,
+        .base_source_digest = document_.sourceDigest(),
+        .candidate = std::move(*root),
+        .candidate_documents = std::move(candidate_set),
+        .operation = std::string{method},
+        // The root may be byte-identical while a preset or feature changed.
+        .edits_additional_documents = true,
+        .restart_required = restart_required,
+        .reload_managed_baselines = true,
+        .reload = true,
+        .reload_no_change = no_change,
+        .reload_documents = std::move(listed),
+        .reload_changed = std::move(changed),
+        .reload_digests = std::move(digests),
+    });
+    results_[ticket_id] = {{"ticket", ticket_id}, {"status", "pending"}};
+    return {{"ticket", ticket_id},
+            {"status", "accepted"},
+            {"base_source_digest", digestJson(document_.sourceDigest())}};
+}
+
 OrderedJson RenderConfigEditorService::getResult(
     const Json &params) const {
     requireOnly(params, {"ticket"}, "get_edit_result");
@@ -5788,13 +6040,21 @@ void RenderConfigEditorService::completeCommitTransaction(
             if (restart_reason) {
                 const auto runtime = dependencies_.runtime_snapshot();
                 try {
-                    if (transaction->verify_preset)
-                        transaction->verify_preset();
-                    transaction->source_commit_called = true;
-                    transaction->source_receipt =
-                        commitRenderConfigCandidateDocuments(
-                            dependencies_.project_root,
+                    if (transaction->ticket.reload) {
+                        // RL-1: what is on disk is already the next start's;
+                        // nothing is written.
+                        transaction->source_commit_called = true;
+                        verifyReloadedDocuments(
                             *transaction->ticket.candidate_documents);
+                    } else {
+                        if (transaction->verify_preset)
+                            transaction->verify_preset();
+                        transaction->source_commit_called = true;
+                        transaction->source_receipt =
+                            commitRenderConfigCandidateDocuments(
+                                dependencies_.project_root,
+                                *transaction->ticket.candidate_documents);
+                    }
                 } catch (const RenderConfigExternalModification &error) {
                     finish(rejection(
                         "external_modification", error.what(),
@@ -5877,10 +6137,23 @@ void RenderConfigEditorService::completeCommitTransaction(
         }
 
         document_ = std::move(transaction->ticket.candidate);
+        // RL-1: a reload wrote nothing; its documents are every render
+        // document it read.
         const auto written_documents =
-            transaction->ticket.candidate_documents
+            transaction->ticket.reload
+                ? transaction->ticket.reload_documents
+            : transaction->ticket.candidate_documents
                 ? writtenDocumentDigests(*transaction->ticket.candidate_documents)
                 : OrderedJson::object();
+        if (transaction->ticket.reload) {
+            for (const auto &[normalized, digest] :
+                 transaction->ticket.reload_digests)
+                if (normalized != source_normalized_reference_)
+                    known_document_digests_.insert_or_assign(normalized,
+                                                             digest);
+        } else if (transaction->ticket.candidate_documents) {
+            rememberWrittenDocuments(*transaction->ticket.candidate_documents);
+        }
         if (transaction->ticket.reload_managed_baselines) {
             // RD-1: a restore may have changed which fragments the root
             // names; read them again from what was just written.
@@ -5933,6 +6206,8 @@ void RenderConfigEditorService::completeCommitTransaction(
             completed["fragment_reference"] =
                 transaction->ticket.fragment_reference;
         }
+        if (transaction->ticket.reload)
+            completed["changed"] = transaction->ticket.reload_changed;
         if (!applied.post_commit_error.empty()) {
             completed["post_commit_error"] =
                 applied.post_commit_error;
@@ -6012,13 +6287,44 @@ void RenderConfigEditorService::commitPending() noexcept {
             }
             const auto disk_digest = renderConfigSourceDigest(
                 readFileBytes(dependencies_.source_path));
-            if (disk_digest != ticket.base_source_digest) {
+            // RL-1: a reload expects the disk to hold what it read, which is
+            // not the editor's document.
+            const auto expected_disk_digest =
+                ticket.reload ? ticket.candidate.sourceDigest()
+                              : ticket.base_source_digest;
+            if (disk_digest != expected_disk_digest) {
                 finish(rejection(
                     "external_modification",
-                    "render config source changed outside the editor",
+                    ticket.reload
+                        ? "render config source changed again after "
+                          "reload_render_documents read it"
+                        : "render config source changed outside the editor",
                     {{"ticket", ticket.id},
-                     {"expected_source_digest", ticket.base_source_digest},
+                     {"expected_source_digest", expected_disk_digest},
                      {"actual_source_digest", disk_digest}}));
+                continue;
+            }
+
+            // RL-1: a reload that found every document as the editor knew
+            // it publishes nothing.
+            if (ticket.reload && ticket.reload_no_change) {
+                const auto runtime = dependencies_.runtime_snapshot();
+                for (const auto &[normalized, digest] : ticket.reload_digests)
+                    if (normalized != source_normalized_reference_)
+                        known_document_digests_.insert_or_assign(normalized,
+                                                                 digest);
+                finish(OrderedJson{
+                    {"ticket", ticket.id},
+                    {"status", "committed"},
+                    {"committed", true},
+                    {"no_change", true},
+                    {"operation", ticket.operation},
+                    {"published_generation", runtime.published_generation},
+                    {"source_digest", digestJson(document_.sourceDigest())},
+                    {"source_commit_called", false},
+                    {"documents", ticket.reload_documents},
+                    {"changed", OrderedJson::array()},
+                });
                 continue;
             }
 
@@ -6057,6 +6363,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                 (void)receipt;
                 auto written_documents =
                     writtenDocumentDigests(*ticket.candidate_documents);
+                rememberWrittenDocuments(*ticket.candidate_documents);
                 document_ = std::move(ticket.candidate);
                 const auto runtime = dependencies_.runtime_snapshot();
                 finish(OrderedJson{
@@ -6093,7 +6400,19 @@ void RenderConfigEditorService::commitPending() noexcept {
                 };
             }
             transaction->verify_preset = verify_preset;
-            const auto source_commit =
+            // RL-1: a reload writes nothing; its source commit is the check
+            // that every document is still what was read.
+            const auto reload_commit = [transaction] {
+                transaction->source_commit_called = true;
+                try {
+                    verifyReloadedDocuments(
+                        *transaction->ticket.candidate_documents);
+                } catch (const RenderConfigExternalModification &error) {
+                    transaction->source_external_modification = error.what();
+                    throw;
+                }
+            };
+            const auto edit_commit =
                 [transaction, project_root, verify_preset = std::move(verify_preset)] {
                 transaction->source_commit_called = true;
                 try {
@@ -6115,6 +6434,10 @@ void RenderConfigEditorService::commitPending() noexcept {
                     throw;
                 }
             };
+            const RenderConfigSourceCommit source_commit =
+                transaction->ticket.reload
+                    ? RenderConfigSourceCommit{reload_commit}
+                    : RenderConfigSourceCommit{edit_commit};
             const std::weak_ptr<const void> lifetime =
                 lifetime_;
             const auto completion =

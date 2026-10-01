@@ -8863,6 +8863,59 @@ TEST_CASE("RD-1 restore_render_documents undoes decompose_material_pass of a for
     }
 }
 
+// RL-1: a document the root reads (here the forked preset), rewritten outside
+// the editor, is read again with the root and published without being
+// written; only what differs from what the editor knew is named as changed.
+TEST_CASE("RL-1 reload_render_documents takes in a preset changed on disk without writing it",
+          "[render-config-editor][rl1]") {
+    Rd1Harness harness{false};
+    harness.fork();
+    const std::string preset_reference = "project://passes/local-pipeline.json";
+    const auto root_bytes = readBytes(harness.project.render_config);
+    const auto reload = [&] { return harness.service->reloadRenderDocuments(Json::object()); };
+
+    // The fork wrote both; nothing differs from what the editor knows.
+    const auto unchanged = harness.commit(reload());
+    CHECK(unchanged.at("no_change") == true);
+    CHECK(unchanged.at("operation") == "reload_render_documents");
+    CHECK(Json(unchanged.at("changed")) == Json::array());
+    CHECK(Json(unchanged.at("documents")) ==
+          Json{{"passes/main.json", renderConfigSourceDigest(root_bytes)},
+               {preset_reference, renderConfigSourceDigest(readBytes(harness.presetPath()))}});
+
+    // The same preset in other bytes, as an outside editor would save it.
+    const auto preset_external = Json::parse(readBytes(harness.presetPath())).dump(4) + "\n";
+    writeBytes(harness.presetPath(), preset_external);
+    const auto published = harness.runtime.snapshot.published_generation;
+    const auto accepted = reload();
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    // A second reload before the first commits is busy.
+    const auto busy = rd1Error(reload());
+    CHECK(busy.at("code") == "reload_busy");
+    CHECK(busy.at("reason") == "ticket_pending");
+    CHECK(busy.at("tickets") == Json::array({accepted.at("ticket")}));
+    const auto reloaded = harness.commit(accepted);
+    CHECK(reloaded.at("operation") == "reload_render_documents");
+    CHECK_FALSE(reloaded.contains("no_change"));
+    CHECK(Json(reloaded.at("changed")) == Json::array({preset_reference}));
+    CHECK(reloaded.at("documents").at(preset_reference) == renderConfigSourceDigest(preset_external));
+    CHECK(harness.runtime.snapshot.published_generation == published + 1);
+    CHECK(readBytes(harness.presetPath()) == preset_external);
+    CHECK(readBytes(harness.project.render_config) == root_bytes);
+
+    // The next edit's preset CAS holds against the reloaded bytes, and after
+    // it nothing differs again.
+    const auto current = harness.context();
+    CHECK(current.at("pipeline_preset").at("source_digest").at("hex") ==
+          renderConfigSourceDigest(preset_external));
+    harness.commit(harness.service->editPresetPass(
+        {{"base_source_digest", current.at("source_digest").at("hex")},
+         {"base_preset_digest", current.at("pipeline_preset").at("source_digest").at("hex")},
+         {"graph", "main_render"}, {"pass_name", "forward_transparent"}, {"ray_query", false}}));
+    CHECK(harness.commit(reload()).at("no_change") == true);
+}
+
 TEST_CASE("RD-1 restore_render_documents restores a project feature document",
           "[render-config-editor][rd1]") {
     RenderTargetHarness harness{false};

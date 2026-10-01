@@ -14,6 +14,7 @@
 #include <exception>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <future>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -41,6 +42,11 @@ inline constexpr std::string_view renderDocumentNotWritableCode =
 // null.
 inline constexpr std::string_view renderDocumentMissingCode =
     "render_document_missing";
+
+// RL-1: reload_render_documents was called while a render edit ticket is
+// pending or in flight, or while a scene preview is open. Fields: {method,
+// reason: "ticket_pending" | "preview_open", tickets: [...]}.
+inline constexpr std::string_view reloadBusyCode = "reload_busy";
 
 struct RenderFeatureCatalogEntry {
     std::string name;
@@ -164,6 +170,12 @@ struct RenderConfigEditorDependencies {
     // region_providers[]. Unset: the list is empty.
     std::function<std::vector<RenderAuthoringRegionProvider>()>
         region_providers;
+    // RL-1: the documents the published generation was composed from besides
+    // the root (its preset and features), {normalized reference: sha256 hex}.
+    // reload_render_documents compares a document the editor has not written
+    // with it to say whether the document changed. Unset: such a document is
+    // reported as changed.
+    std::function<std::map<std::string, std::string>()> published_documents;
     // FG-2: draws a verify_fold job's three runs on a worker thread
     // (graphfoldverify.hpp; production: runFoldVerifyProcesses). Unset:
     // verify_fold is fold_verify_unavailable {reason: "no_runner"}.
@@ -202,6 +214,19 @@ class RenderConfigEditorService {
         // RD-1: restore_render_documents may change which managed fragments
         // the root names, so the baselines are read again after it commits.
         bool reload_managed_baselines = false;
+        // RL-1: reload_render_documents. The candidate is what is on disk;
+        // nothing is written, and the source commit only checks that every
+        // document is still what was read. `reload_documents` is every
+        // render document read {reference: sha256 hex}, `reload_changed` the
+        // references whose digest differs from what the editor knew.
+        bool reload = false;
+        bool reload_no_change = false;
+        nlohmann::ordered_json reload_documents =
+            nlohmann::ordered_json::object();
+        nlohmann::ordered_json reload_changed =
+            nlohmann::ordered_json::array();
+        // {normalized reference: sha256 hex} of what was read.
+        std::map<std::string, std::string> reload_digests;
         // FG-2: fields the committed result carries besides the usual ones
         // (verify_fold's {group, verified}).
         nlohmann::ordered_json result_extras = nlohmann::ordered_json::object();
@@ -262,6 +287,10 @@ class RenderConfigEditorService {
     std::unordered_map<std::string, ManagedDocumentBaseline>
         managed_documents_;
     std::string source_normalized_reference_;
+    // RL-1: the digest of each render document (not the root) as this
+    // editor last wrote or reloaded it, {normalized reference: sha256 hex}.
+    // A document absent here is compared with published_documents.
+    std::map<std::string, std::string> known_document_digests_;
     std::uint64_t next_ticket_ = 1;
     EditorGateEpoch<RenderConfigEditorGateObservation> gate_tracker_;
     std::shared_ptr<const void> lifetime_ =
@@ -415,6 +444,20 @@ class RenderConfigEditorService {
     // first. Nothing outside the project root, nothing engine://, and nothing
     // that is not a render document of the kind the composition reads it as.
     std::vector<WritableRenderDocument> writableRenderDocuments() const;
+    // RL-1: the same for a candidate document set whose root is `root_bytes`
+    // (writableRenderDocuments is this for the current set).
+    std::vector<WritableRenderDocument> renderDocumentsOf(
+        const RenderConfigCandidateDocumentSet &documents,
+        std::string_view root_bytes) const;
+    // RL-1: records what a committed candidate wrote in
+    // known_document_digests_.
+    void rememberWrittenDocuments(
+        const RenderConfigCandidateDocumentSet &documents);
+    // RL-1: the reload ticket's source commit: every document of the
+    // candidate is still on disk with the digest it was read with. Writes
+    // nothing; throws RenderConfigExternalModification otherwise.
+    static void verifyReloadedDocuments(
+        const RenderConfigCandidateDocumentSet &documents);
     // The entry of `writable` a request's reference names, or null.
     const WritableRenderDocument *findWritableRenderDocument(
         const std::vector<WritableRenderDocument> &writable,
@@ -598,6 +641,17 @@ class RenderConfigEditorService {
     // the current or the restored composition names.
     nlohmann::ordered_json restoreRenderDocuments(
         const nlohmann::json &params);
+    // RL-1: reload_render_documents {}: the render documents (the root and
+    // every document get_render_documents lists for it) read again from
+    // disk, composed (with the graph variants) and published through one
+    // ticket, as an edit is, without writing anything. The committed result
+    // carries {operation: "reload_render_documents", source_digest,
+    // documents: {reference: digest}, changed: [reference]} and no_change
+    // when nothing differs. A refusal leaves the live generation and the
+    // editor's documents as they were. A pending or in-flight ticket, or
+    // `preview_open`, is reload_busy.
+    nlohmann::ordered_json reloadRenderDocuments(
+        const nlohmann::json &params, bool preview_open = false);
     nlohmann::ordered_json getResult(
         const nlohmann::json &params) const;
     bool ownsTicket(std::string_view ticket) const noexcept;

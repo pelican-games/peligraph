@@ -1514,6 +1514,15 @@ OrderedJson EditorCommandService::restoreRenderDocuments(const Json &params) {
     return render_config_editor_->restoreRenderDocuments(params);
 }
 
+// RL-1. An open scene preview is reload_busy, as a pending render ticket is.
+OrderedJson EditorCommandService::reloadRenderDocuments(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    bool preview_open = edit_ && edit_->hasOpenPreviewLease();
+    if (!preview_open && dependencies_.snapshot_state)
+        preview_open = dependencies_.snapshot_state().open_preview_lease;
+    return render_config_editor_->reloadRenderDocuments(params, preview_open);
+}
+
 OrderedJson EditorCommandService::getEditResult(const Json &params) const {
     if (procedural_asset_editor_ && params.is_object() && params.contains("ticket") &&
         params.at("ticket").is_string() && params.at("ticket").get<std::string>().starts_with("procedural-asset-edit-"))
@@ -2539,6 +2548,12 @@ OrderedJson EditorCommandRpcAdapter::restoreRenderDocuments(const Json &params) 
     if (mutable_service_ == nullptr)
         throw std::logic_error("restore_render_documents requires a mutable editor service");
     return mutable_service_->restoreRenderDocuments(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::reloadRenderDocuments(const Json &params) const {
+    if (mutable_service_ == nullptr)
+        throw std::logic_error("reload_render_documents requires a mutable editor service");
+    return mutable_service_->reloadRenderDocuments(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getEditResult(const Json &params) const {

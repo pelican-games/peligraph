@@ -1995,4 +1995,197 @@ TEST_CASE("EL-2 target planning, plan pins and physical fragments written over R
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+// RL-1: a rendering root rewritten on disk outside the editor is taken in by
+// reload_render_documents (Studio's engine runs with the file watcher's gate
+// closed), and the edits after it are not external_modification.
+TEST_CASE("RL-1 reload_render_documents takes in a root rewritten on disk, and refuses what cannot compose",
+          "[rl1][primitives][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("rl1_reload");
+    const auto root = dir.root / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    {
+        // EL-2's frame: three chained fullscreen passes before the template's
+        // own, so el2_color_a and el2_color_c alias unless planning says not.
+        auto authored = Json::parse(readFile(rendering_path));
+        auto &section = renderingSectionOf(authored);
+        const auto target = [](const char *name) {
+            return Json{{"name", name},
+                        {"extent_scale", 1.0},
+                        {"format", "R8G8B8A8_UNORM"},
+                        {"format_class", "data"},
+                        {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}};
+        };
+        section["render_targets"] =
+            Json::array({target("el2_color_a"), target("el2_color_b"), target("el2_color_c")});
+        const Json shader{{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}};
+        const auto draw = [&](const char *name, Json input, const char *color) {
+            return Json{{"name", name},
+                        {"type", "fullscreen"},
+                        {"input", std::move(input)},
+                        {"output", {{"color", Json::array({color})}, {"depth", nullptr}}},
+                        {"shader", shader}};
+        };
+        auto &passes = section.at("rendering_passes").at(0).at("passes");
+        passes.at(0)["input"] = Json::array({"el2_color_c"});
+        passes.insert(passes.begin(), draw("el2_c", Json::array({"el2_color_b"}), "el2_color_c"));
+        passes.insert(passes.begin(), draw("el2_b", Json::array({"el2_color_a"}), "el2_color_b"));
+        passes.insert(passes.begin(), draw("el2_a", Json::array(), "el2_color_a"));
+        writeFile(rendering_path, authored.dump(2));
+    }
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    GET_MODULE(Renderer).prepareRuntimeModules();
+    (void)rpc.result("step_frame");
+    const auto digest = [&] {
+        return rpc.result("get_render_authoring_context").at("source_digest").at("hex").get<std::string>();
+    };
+    const auto settle = [&](const Json &accepted) {
+        INFO(accepted.dump(2));
+        if (accepted.value("status", std::string{}) == "rejected") return accepted;
+        REQUIRE(accepted.at("status") == "accepted");
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            (void)rpc.result("step_frame");
+            auto result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+            if (result.value("status", std::string{}) != "pending") return result;
+        }
+        FAIL("the ticket stayed pending");
+        return Json{};
+    };
+    const auto reload = [&] { return settle(rpc.result("reload_render_documents")); };
+    const auto physical = [&] {
+        (void)rpc.result("render_frame");
+        const auto plan = rpc.result("get_frame_plan");
+        REQUIRE(plan.contains("physical_target_plan"));
+        return plan.at("physical_target_plan");
+    };
+    const auto aliased = [](const Json &plan) {
+        for (const auto &group : plan.at("alias_groups")) {
+            const auto &members = group.at("resources");
+            if (std::find(members.begin(), members.end(), "el2_color_a") != members.end() &&
+                std::find(members.begin(), members.end(), "el2_color_c") != members.end())
+                return true;
+        }
+        return false;
+    };
+    const auto reference =
+        rpc.result("get_render_documents").at("documents").at(0).at("reference").get<std::string>();
+    const auto original = readFile(rendering_path);
+    const auto original_digest = digest();
+    REQUIRE(aliased(physical()));
+
+    // 2. Nothing changed: no_change, and every document is listed.
+    {
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK(result.at("no_change") == true);
+        CHECK(result.at("operation") == "reload_render_documents");
+        CHECK(result.at("changed") == Json::array());
+        CHECK(result.at("documents").at(reference) == original_digest);
+        CHECK(result.at("source_digest").at("hex") == original_digest);
+    }
+
+    // 1. The root rewritten outside the editor: isolate on el2_a.
+    auto isolated = Json::parse(original);
+    renderingSectionOf(isolated)["target_planning"] = {
+        {"graphs", {{"main_render", {{"nodes", {{"el2_a", {{"isolate", true}}}}}}}}}};
+    const auto isolated_bytes = isolated.dump(2);
+    writeFile(rendering_path, isolated_bytes);
+    std::string isolated_digest;
+    {
+        // Before the reload, an edit on the old digest is the external change.
+        const auto refused = rpc.result(
+            "edit_target_planning", {{"base_source_digest", original_digest},
+                                     {"graph", "main_render"},
+                                     {"resources", {{"el2_color_a", {{"no_alias", true}}}}}});
+        CHECK(refused.at("error").at("code") == "external_modification");
+
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK_FALSE(result.contains("no_change"));
+        CHECK_FALSE(result.contains("restart_required"));
+        CHECK(result.at("changed") == Json::array({reference}));
+        isolated_digest = result.at("source_digest").at("hex").get<std::string>();
+        CHECK(isolated_digest != original_digest);
+        CHECK(result.at("documents").at(reference) == isolated_digest);
+        CHECK(digest() == isolated_digest);
+        CHECK(readFile(rendering_path) == isolated_bytes); // nothing was written
+        CHECK_FALSE(aliased(physical()));
+    }
+    {
+        // The GUI's next edit goes through on the reloaded digest.
+        const auto result = settle(rpc.result(
+            "edit_target_planning", {{"base_source_digest", isolated_digest},
+                                     {"graph", "main_render"},
+                                     {"nodes", {{"el2_a", nullptr}}}}));
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK(aliased(physical()));
+    }
+
+    // 4. A ticket not yet committed: reload_busy, and the ticket still lands.
+    {
+        const auto pending = rpc.result(
+            "edit_target_planning", {{"base_source_digest", digest()},
+                                     {"graph", "main_render"},
+                                     {"nodes", {{"el2_a", {{"isolate", true}}}}}});
+        REQUIRE(pending.at("status") == "accepted");
+        const auto busy = rpc.result("reload_render_documents");
+        INFO(busy.dump(2));
+        REQUIRE(busy.at("status") == "rejected");
+        CHECK(busy.at("error").at("code") == "reload_busy");
+        CHECK(busy.at("error").at("reason") == "ticket_pending");
+        CHECK(busy.at("error").at("tickets") == Json::array({pending.at("ticket")}));
+        CHECK(settle(pending).at("status") == "committed");
+        CHECK_FALSE(aliased(physical()));
+    }
+
+    // 3. What cannot compose is refused by name; the live frame and the
+    // editor's document stay, the disk keeps the bytes, and once the file is
+    // put back an edit on the previous digest goes through.
+    const auto before_refusals = digest();
+    const auto before_bytes = readFile(rendering_path);
+    const auto refused = [&](const std::string &bytes) {
+        writeFile(rendering_path, bytes);
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "rejected");
+        CHECK_FALSE(result.at("error").value("code", std::string{}).empty());
+        CHECK(digest() == before_refusals);
+        CHECK(readFile(rendering_path) == bytes);
+        CHECK_FALSE(aliased(physical()));
+        return result.at("error");
+    };
+    {
+        const auto error = refused("{ \"schema\": \"pelican.graph\", ");
+        CHECK(error.at("code") == "render_pipeline_preflight_failed");
+        CHECK(error.at("method") == "reload_render_documents");
+    }
+    {
+        auto missing = Json::parse(before_bytes);
+        renderingSectionOf(missing)
+            .at("rendering_passes").at(0).at("passes").at(0).at("shader")["fragment"] =
+            "project://shaders/rl1_nowhere";
+        // Composed, then refused by the runtime when it builds the pass.
+        CHECK(refused(missing.dump(2)).at("code") == "render_pipeline_preflight_failed");
+    }
+    writeFile(rendering_path, before_bytes);
+    {
+        const auto result = settle(rpc.result(
+            "edit_target_planning", {{"base_source_digest", before_refusals},
+                                     {"graph", "main_render"},
+                                     {"nodes", {{"el2_a", nullptr}}}}));
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK(aliased(physical()));
+    }
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
 } // namespace Pelican

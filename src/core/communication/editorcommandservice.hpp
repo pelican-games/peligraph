@@ -370,6 +370,7 @@ class EditorCommandService {
     nlohmann::ordered_json editRenderTargets(const nlohmann::json &params);
     nlohmann::ordered_json getRenderDocuments(const nlohmann::json &params) const;
     nlohmann::ordered_json restoreRenderDocuments(const nlohmann::json &params);
+    nlohmann::ordered_json reloadRenderDocuments(const nlohmann::json &params);
     nlohmann::ordered_json getEditResult(const nlohmann::json &params) const;
     nlohmann::ordered_json getPreviewResult(const nlohmann::json &params) const;
     nlohmann::ordered_json queryJournal(const nlohmann::json &params) const;
@@ -479,6 +480,8 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json getRenderDocuments(
         const nlohmann::json &params) const;
     nlohmann::ordered_json restoreRenderDocuments(
+        const nlohmann::json &params) const;
+    nlohmann::ordered_json reloadRenderDocuments(
         const nlohmann::json &params) const;
     nlohmann::ordered_json getEditResult(const nlohmann::json &params) const;
     nlohmann::ordered_json getPreviewResult(const nlohmann::json &params) const;

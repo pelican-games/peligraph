@@ -2266,6 +2266,30 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         }
                         return result;
                     },
+                    // RL-1: the preset and features the live generation was
+                    // composed from, as its programs recorded them.
+                    .published_documents = [runtime] {
+                        std::map<std::string, std::string> result;
+                        const auto generation =
+                            GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+                        if (generation == nullptr) return result;
+                        for (const auto &[id, program] : generation->programs) {
+                            (void)id;
+                            if (!program.frame_graph.source_documents) continue;
+                            for (const auto &[reference, text] :
+                                 *program.frame_graph.source_documents) {
+                                if (reference.starts_with("engine://")) continue;
+                                try {
+                                    result.insert_or_assign(
+                                        runtime->modules.path_resolver
+                                            .normalizedReference(reference),
+                                        renderConfigSourceDigest(text));
+                                } catch (const std::exception &) {
+                                }
+                            }
+                        }
+                        return result;
+                    },
                     // FG-2: verify_fold's runs are this executable, headless,
                     // in a copy of the project (graphfoldverify.hpp). What the
                     // children need of this launch is read once, here: the

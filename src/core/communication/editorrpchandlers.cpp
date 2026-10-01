@@ -327,6 +327,11 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("restore_render_documents", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.restoreRenderDocuments(params); });
     });
+    // RL-1: take in render documents changed on disk outside the editor
+    // (the root and what it reads), through one ticket; nothing is written.
+    server.setHandler("reload_render_documents", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.reloadRenderDocuments(params); });
+    });
     server.setHandler("get_edit_result", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getEditResult(params); });
     });
