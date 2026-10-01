@@ -389,6 +389,40 @@ struct GraphCanvasViewField {
     bool operator==(const GraphCanvasViewField &) const = default;
 };
 
+// UX-2: one argument of a semantic type, as the catalog's type schema
+// declares it -- the values it takes (`parameters[].allowed`, or EL-1's
+// `arguments.<name>.values` where the catalog carries it), and the one it has
+// when it is left out (empty when it has to be given). `allowed` is empty
+// for an argument with no list: its field shows the document's value.
+struct GraphCanvasTypeArgument {
+    std::string name;
+    std::vector<std::string> allowed;
+    std::string default_value;
+
+    bool operator==(const GraphCanvasTypeArgument &) const = default;
+};
+
+// UX-2: a semantic type a render.image can carry (constructor `image` in the
+// catalog), with a name a person reads ("Color signal") and its arguments.
+// `depth` is the schema's depth_like trait; `legacy` its legacy_untyped one.
+struct GraphCanvasImageType {
+    std::string semantic;
+    std::string label;
+    bool depth = false;
+    bool legacy = false;
+    std::vector<GraphCanvasTypeArgument> arguments;
+
+    bool operator==(const GraphCanvasImageType &) const = default;
+};
+
+// UX-2, decision 4: one value a pill offers instead of a line of text. The
+// node's whole parameters object with the choice made, so one pick is one
+// set_node_parameters (a semantic that changes the format too travels as one).
+struct GraphCanvasValueChoice {
+    std::string label;
+    nlohmann::json parameters;
+};
+
 // LP-4c, decision 9: where a refused edit points. A loop refused by name
 // marks the loop; a node of a loop's copy (`loop_origin`) marks the loop and
 // the body node in its own scope.
@@ -895,6 +929,14 @@ class GraphCanvasModel {
     nlohmann::json render_authoring_ = nlohmann::json::object();
     std::uint64_t authoring_revision_ = 0;
     void requestRenderAuthoring();
+    // UX-2: the context was asked for once for its render_target_vocabulary
+    // (askRenderTargetVocabulary), on this connection.
+    bool vocabulary_asked_ = false;
+    // UX-2: the shaders a render pass's `shader` is picked from, handed over
+    // by the canvas's owner (the Pass Editor's list: the project's and the
+    // engine's).
+    std::vector<std::string> vertex_shader_choices_;
+    std::vector<std::string> fragment_shader_choices_;
     // --- GL-2b: the plan's lower layers, by the frame plan node names each
     // element carries (from_nodes, a barrier's ends, a scope's nodes).
     struct PlanBarrier {
@@ -1753,6 +1795,56 @@ class GraphCanvasModel {
     // A pass's input edit is sent by the canvas's owner (edit_preset_pass);
     // what became of it is said on the line a graph edit's is.
     void setEditNotice(InspectorNotice notice);
+
+    // --- UX-2: a node's values chosen rather than typed.
+
+    // The whole parameters object of one node, sent as one
+    // set_node_parameters (one Undo step). Keys the caller did not touch
+    // travel as they were. False when nothing changed or no edit can go out.
+    bool setNodeParameters(std::string_view scope, const std::string &node,
+                           const nlohmann::json &parameters);
+    // get_render_authoring_context's render_target_vocabulary: the image
+    // formats and usage flags the engine's parser accepts. Known once a
+    // context carrying it arrived; an engine without it leaves both empty.
+    [[nodiscard]] bool renderTargetVocabularyKnown() const;
+    [[nodiscard]] std::vector<std::string> renderTargetFormats() const;
+    [[nodiscard]] std::vector<std::string> renderTargetUsages() const;
+    // Ask for the context once on this connection when none has arrived
+    // yet (the plan asks for it only when the rendering section has a pass
+    // of its own); a context without the vocabulary is not asked again. The
+    // request goes out with the next dispatch.
+    void askRenderTargetVocabulary();
+    // The catalog's image types, in its order: the legacy one after the rest.
+    [[nodiscard]] std::vector<GraphCanvasImageType> imageTypes() const;
+    [[nodiscard]] std::optional<GraphCanvasImageType> imageType(std::string_view semantic) const;
+    // "pelican.render.color_signal@1" -> "Color signal".
+    [[nodiscard]] static std::string semanticLabel(std::string_view semantic);
+    // D16_UNORM, D24_UNORM_S8_UINT, D32_SFLOAT: a depth format.
+    [[nodiscard]] static bool depthFormat(std::string_view format);
+    // The formats a render.image with these parameters is offered: the
+    // engine's depth formats for a depth type, the others for the rest.
+    // Empty without the vocabulary.
+    [[nodiscard]] std::vector<std::string> imageFormatChoices(const nlohmann::json &parameters) const;
+    // `parameters` with the image's type made `semantic`: the arguments it
+    // shares with the old type kept where the new one takes their value, a
+    // required one given its first value; and, when depth changes sides, the
+    // format and the attachment usage flag moved with it.
+    [[nodiscard]] nlohmann::json imageParametersWithSemantic(const nlohmann::json &parameters,
+                                                             std::string_view semantic) const;
+    // The Pass Editor's shader list (fullscreenShaderChoices), set by the
+    // owner, who knows the project.
+    void setShaderChoices(std::vector<std::string> vertex, std::vector<std::string> fragment);
+    [[nodiscard]] const std::vector<std::string> &vertexShaderChoices() const noexcept {
+        return vertex_shader_choices_;
+    }
+    [[nodiscard]] const std::vector<std::string> &fragmentShaderChoices() const noexcept {
+        return fragment_shader_choices_;
+    }
+    // Decision 4: what a node's value pill offers to pick, or nothing when
+    // the value is typed: a render.image's format and type, a render pass's
+    // fragment shader.
+    [[nodiscard]] std::vector<GraphCanvasValueChoice>
+    valueChoices(std::string_view scope, std::string_view node, std::string_view port) const;
 
     // --- GL-2b: the lower layers on the root canvas (design_graph_layers
     // 3.2, 4 rules 1 and 5).

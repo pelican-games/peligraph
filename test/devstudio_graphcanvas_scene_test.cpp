@@ -1,3 +1,4 @@
+#include "fullscreenshadertemplate.hpp"
 #include "graphcanvasloopfields.hpp"
 #include "graphcanvaswidget.hpp"
 #include "graphcomposition.hpp"
@@ -37,6 +38,10 @@
 #include <QClipboard>
 #include <QGuiApplication>
 #include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QRadioButton>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QSpinBox>
 #include <QStandardItemModel>
 #include <QToolButton>
@@ -6631,7 +6636,11 @@ TEST_CASE("GL-1e the Graph tab sends a pass's input edit, its Undo reaches the r
         drag(scene, from->sceneBoundingRect().center(), slot->sceneBoundingRect().center());
         QCoreApplication::processEvents();
         REQUIRE(transport.countOf(QStringLiteral("edit_preset_pass")) == before + 1);
-        CHECK(Json::parse(transport.calls.back().body.toStdString()) ==
+        // The edit itself, not whatever was asked last: the tab's clock may
+        // have read the plan again while the line was drawn (UX-2 puts the
+        // image's fields on screen as the drag picks it, which takes time).
+        const auto sent = transport.idOf(QStringLiteral("edit_preset_pass"));
+        CHECK(Json::parse(transport.calls[static_cast<std::size_t>(sent - 1)].body.toStdString()) ==
               gl1eSaved({"shade__color"}));
         answer("edit_preset_pass", Json{{"status", "accepted"}, {"ticket", "gl1e"}});
     };
@@ -7288,4 +7297,385 @@ TEST_CASE("UX-1 a notice's Copy message puts the whole message on the clipboard"
     // Styled twice, still one entry.
     PelicanStudio::applyPanelNoticeStyle(&plain);
     CHECK(plain.actions().size() == 1);
+}
+
+// --- UX-2: a node's values picked rather than typed (the render.image form,
+// a render pass's shaders, the pills that open a list, the JSON that stays).
+
+namespace {
+
+// The catalog's two image types as the engine's schemaJson writes them.
+Json ux2ImageTypeSchema(const std::string &id, const Json &traits, const Json &parameters) {
+    return {{"id", id}, {"constructor", "image"}, {"traits", traits}, {"parameters", parameters}};
+}
+
+Json ux2Catalog() {
+    Json catalog = visualCatalog();
+    auto &render = catalog["modules"][1];
+    for (const char *op : {"render.image", "render.fullscreen"})
+        render["operations"].push_back({{"op", op},
+                                        {"domain", "rendering"},
+                                        {"evaluation", "direct"},
+                                        {"sink", false},
+                                        {"ports", "parameter_dependent"}});
+    const auto argument = [](const char *name, const Json &allowed, const char *fallback = nullptr) {
+        Json entry{{"name", name}, {"role", "identity"}, {"kind", "enum_value"}, {"allowed", allowed}};
+        if (fallback != nullptr) entry["default"] = {{"kind", "enum_value"}, {"value", fallback}};
+        return entry;
+    };
+    const auto topology = argument("topology", {"two_d", "two_d_array", "cube", "volume"}, "two_d");
+    render["types"].push_back(ux2ImageTypeSchema(
+        "pelican.render.color_signal@1", Json::array({"color_like"}),
+        Json::array({argument("range", {"extended", "normalized"}),
+                     argument("reference", {"display", "scene"}), topology,
+                     argument("transfer", {"linear", "output_encoded"})})));
+    // The depth type as an engine with EL-1 writes it: the arguments' table,
+    // not the parameter list.
+    auto depth = ux2ImageTypeSchema("pelican.render.depth@1", Json::array({"depth_like"}), Json::array());
+    depth["arguments"] = {
+        {"representation", {{"kind", "enum_value"}, {"required", true}, {"values", {"device", "linear_distance"}}}},
+        {"space", {{"kind", "enum_value"}, {"required", true}, {"values", {"projection", "view"}}}},
+        {"topology", {{"kind", "enum_value"}, {"required", false},
+                      {"values", {"two_d", "two_d_array", "cube", "volume"}}, {"default", "two_d"}}}};
+    render["types"].push_back(std::move(depth));
+    render["types"].push_back(ux2ImageTypeSchema("pelican.render.legacy_opaque_image@1",
+                                                 Json::array({"legacy_untyped"}), Json::array()));
+    return catalog;
+}
+
+Json ux2ColorType() {
+    return {{"semantic", "pelican.render.color_signal@1"},
+            {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+}
+
+// A fullscreen pass and the image it writes, as the palette adds them, and a
+// key the fields do not show.
+Json ux2Image() {
+    return {{"type", ux2ColorType()},
+            {"format", "R8G8B8A8_UNORM"},
+            {"extent_scale", 1.0},
+            {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+            {"note", "kept"}};
+}
+
+Json ux2Pass() {
+    return {{"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
+            {"ports", {{"color", {{"kind", "image"}, {"type", ux2ColorType()}, {"access", "write"},
+                                  {"attachment", "color"}, {"location", 0}}}}}};
+}
+
+Json ux2Document(const Json &image = ux2Image(), const Json &pass = ux2Pass()) {
+    return {{"definitions", Json::object()},
+            {"nodes", Json::array({{{"id", "shade__color"}, {"op", "render.image"},
+                                    {"parameters", image}, {"outputs", Json::array({"resource"})}},
+                                   {{"id", "shade"}, {"op", "render.fullscreen"},
+                                    {"parameters", pass},
+                                    {"inputs", {{"color", {{"node", "shade__color"}, {"port", "resource"}}}}},
+                                    {"outputs", Json::array({"color"})}}})}};
+}
+
+// get_render_authoring_context with the vocabulary the engine's parser has
+// (a few of its formats; enough to tell the depth ones apart).
+Json ux2Authoring() {
+    return {{"source_digest", {{"hex", "ux2-root"}}},
+            {"graphs", Json::array()},
+            {"render_target_vocabulary",
+             {{"formats", Json::array({"R8G8B8A8_UNORM", "R16G16B16A16_SFLOAT", "B10G11R11_UFLOAT_PACK32",
+                                       "D16_UNORM", "D32_SFLOAT"})},
+              {"usage", Json::array({"COLOR_ATTACHMENT", "DEPTH_STENCIL_ATTACHMENT", "SAMPLED",
+                                     "STORAGE", "TRANSFER_DST", "TRANSFER_SRC"})},
+              {"format_classes", Json::array({"scene", "display", "data", "explicit"})}}}};
+}
+
+// The Graph tab over a recorded transport; `authoring` says whether the
+// engine answers get_render_authoring_context at all.
+struct Ux2Tab {
+    RecordedCapability transport;
+    std::unique_ptr<PelicanStudio::GraphCanvasWidget> widget;
+
+    explicit Ux2Tab(bool authoring) {
+        auto capability = transport.capability();
+        if (authoring)
+            capability.requestRenderAuthoringContext = [this](QString *) {
+                transport.calls.push_back({QStringLiteral("get_render_authoring_context")});
+                return transport.next++;
+            };
+        widget = std::make_unique<PelicanStudio::GraphCanvasWidget>(capability);
+        widget->resize(1100, 800);
+        widget->show();
+        QCoreApplication::processEvents();
+    }
+    void answer(const char *method, const Json &reply) {
+        const qint64 id = transport.idOf(QString::fromLatin1(method));
+        REQUIRE(id != 0);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    }
+    [[nodiscard]] int reads(const char *method) const {
+        return transport.countOf(QString::fromLatin1(method));
+    }
+    void read(const Json &document, const std::string &digest) {
+        auto reply = context(document);
+        reply["source_digest"]["hex"] = digest;
+        answer("get_graph_instances", reply);
+    }
+    // The edit just sent, committed at `digest`, and the document read back.
+    void commit(const Json &document, const std::string &digest) {
+        answer("edit_graph_document", Json{{"status", "accepted"}, {"ticket", "ux2"}});
+        answer("get_edit_result", Json{{"status", "committed"}, {"committed", true},
+                                       {"source_digest", {{"hex", digest}}}});
+        read(document, digest);
+    }
+    // The ops of the last edit, which has to be the `count`th.
+    [[nodiscard]] Json sent(int count) const {
+        REQUIRE(reads("edit_graph_document") == count);
+        const auto ops = Json::parse(transport.calls[static_cast<std::size_t>(
+                                                         transport.idOf(QStringLiteral("edit_graph_document")) - 1)]
+                                         .body.toStdString());
+        REQUIRE(ops.size() == 1);
+        CHECK(ops[0].at("op") == "set_node_parameters");
+        return ops[0];
+    }
+    template <typename T> T *field(const char *name) {
+        auto *found = widget->findChild<T *>(QString::fromLatin1(name));
+        REQUIRE(found != nullptr);
+        return found;
+    }
+    void pick(QComboBox *combo, const QString &data) {
+        const int index = combo->findData(data);
+        REQUIRE(index >= 0);
+        combo->setCurrentIndex(index);
+        Q_EMIT combo->activated(index);
+        QCoreApplication::processEvents();
+    }
+};
+
+QComboBox *ux2PillChoice(QGraphicsScene &scene) {
+    for (QGraphicsItem *item : scene.items())
+        if (auto *proxy = dynamic_cast<QGraphicsProxyWidget *>(item))
+            if (auto *combo = qobject_cast<QComboBox *>(proxy->widget());
+                combo != nullptr &&
+                combo->objectName() == QLatin1String{"pelican.graphCanvasValueChoice"})
+                return combo;
+    return nullptr;
+}
+
+QStringList ux2Items(const QComboBox &combo) {
+    QStringList items;
+    for (int index = 0; index < combo.count(); ++index) items << combo.itemText(index);
+    return items;
+}
+
+} // namespace
+
+TEST_CASE("UX-2 a render.image's format, type, usage and size are picked in its fields, each one "
+          "set_node_parameters; its pills open the list; the details still take JSON; an engine "
+          "without the vocabulary falls back to text",
+          "[devstudio][graph-canvas][scene][ux2]") {
+    (void)application();
+    SECTION("with the engine's vocabulary") {
+        Ux2Tab tab{true};
+        auto image = ux2Image();
+        tab.read(ux2Document(image), "ux2-0");
+        tab.answer("get_graph_catalog", ux2Catalog());
+        tab.widget->scene().selectNode("shade__color");
+        QCoreApplication::processEvents();
+        auto *fields = tab.field<QWidget>("pelican.graphCanvasImage");
+        REQUIRE(fields->isVisible());
+        // The plan names no pass of the rendering section here, so the
+        // fields ask for the context themselves, once.
+        tab.widget->poll();
+        REQUIRE(tab.reads("get_render_authoring_context") == 1);
+        tab.answer("get_render_authoring_context", ux2Authoring());
+        tab.widget->poll();
+        CHECK(tab.reads("get_render_authoring_context") == 1);
+
+        // Decision 1, format: the engine's colour formats, no depth one, not typed.
+        auto *format = tab.field<QComboBox>("pelican.graphCanvasImage.format");
+        CHECK_FALSE(format->isEditable());
+        CHECK(ux2Items(*format) == QStringList{"R8G8B8A8_UNORM", "R16G16B16A16_SFLOAT",
+                                               "B10G11R11_UFLOAT_PACK32"});
+        CHECK(format->currentText() == QStringLiteral("R8G8B8A8_UNORM"));
+        tab.pick(format, QStringLiteral("R16G16B16A16_SFLOAT"));
+        auto op = tab.sent(1);
+        CHECK(op.at("node") == "shade__color");
+        CHECK(op.at("scope") == "root");
+        image["format"] = "R16G16B16A16_SFLOAT";
+        // The whole object, the key the fields do not show included.
+        CHECK(op.at("parameters") == image);
+        tab.commit(ux2Document(image), "ux2-1");
+
+        // Type: by name, and an argument from what its schema allows.
+        auto *semantic = tab.field<QComboBox>("pelican.graphCanvasImage.semantic");
+        CHECK(semantic->currentText() == QStringLiteral("Color signal"));
+        CHECK(ux2Items(*semantic) == QStringList{"Color signal", "Depth"});
+        auto *range = tab.field<QComboBox>("pelican.graphCanvasImage.argument.range");
+        CHECK(ux2Items(*range) == QStringList{"extended", "normalized"});
+        auto *topology = tab.field<QComboBox>("pelican.graphCanvasImage.argument.topology");
+        CHECK(topology->currentText() == QStringLiteral("(default: two_d)"));
+        tab.pick(range, QStringLiteral("normalized"));
+        op = tab.sent(2);
+        image["type"]["arguments"]["range"] = "normalized";
+        CHECK(op.at("parameters") == image);
+        tab.commit(ux2Document(image), "ux2-2");
+
+        // Usage: a check per flag the engine names.
+        auto *storage = tab.field<QCheckBox>("pelican.graphCanvasImage.usage.STORAGE");
+        CHECK(tab.field<QCheckBox>("pelican.graphCanvasImage.usage.SAMPLED")->isChecked());
+        CHECK_FALSE(storage->isChecked());
+        storage->click();
+        QCoreApplication::processEvents();
+        op = tab.sent(3);
+        image["usage"] = Json::array({"COLOR_ATTACHMENT", "SAMPLED", "STORAGE"});
+        CHECK(op.at("parameters") == image);
+        tab.commit(ux2Document(image), "ux2-3");
+
+        // Size: fixed, width and height beside the scale the parser wants.
+        tab.field<QRadioButton>("pelican.graphCanvasImage.sizeFixed")->click();
+        QCoreApplication::processEvents();
+        op = tab.sent(4);
+        image["width"] = 256;
+        image["height"] = 256;
+        CHECK(op.at("parameters") == image);
+        tab.commit(ux2Document(image), "ux2-4");
+        CHECK(tab.field<QSpinBox>("pelican.graphCanvasImage.width")->isEnabled());
+        CHECK_FALSE(tab.field<QDoubleSpinBox>("pelican.graphCanvasImage.extentScale")->isEnabled());
+
+        // Depth: the format and the attachment flag cross with it, in one edit.
+        tab.pick(tab.field<QComboBox>("pelican.graphCanvasImage.semantic"),
+                 QStringLiteral("pelican.render.depth@1"));
+        op = tab.sent(5);
+        auto depth = image;
+        depth["type"] = {{"semantic", "pelican.render.depth@1"},
+                         {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+        depth["format"] = "D32_SFLOAT";
+        depth["usage"] = Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED", "STORAGE"});
+        CHECK(op.at("parameters") == depth);
+        tab.commit(ux2Document(depth), "ux2-5");
+        CHECK(ux2Items(*tab.field<QComboBox>("pelican.graphCanvasImage.format")) ==
+              QStringList{"D16_UNORM", "D32_SFLOAT"});
+        // Its arguments from EL-1's table, the left-out one as its default.
+        CHECK(ux2Items(*tab.field<QComboBox>("pelican.graphCanvasImage.argument.space")) ==
+              QStringList{"projection", "view"});
+        CHECK(tab.field<QComboBox>("pelican.graphCanvasImage.argument.topology")->currentText() ==
+              QStringLiteral("(default: two_d)"));
+
+        // Decision 4: the format's pill opens the same list, not a line.
+        auto &scene = tab.widget->scene();
+        REQUIRE(scene.beginValueEdit("shade__color", "format"));
+        auto *pill = ux2PillChoice(scene);
+        REQUIRE(pill != nullptr);
+        CHECK(ux2Items(*pill) == QStringList{"D16_UNORM", "D32_SFLOAT"});
+        CHECK(scene.inlineEditText() == QStringLiteral("D32_SFLOAT"));
+        scene.setInlineEditText(QStringLiteral("D16_UNORM"));
+        REQUIRE(scene.commitInlineEdit());
+        op = tab.sent(6);
+        depth["format"] = "D16_UNORM";
+        CHECK(op.at("parameters") == depth);
+        tab.commit(ux2Document(depth), "ux2-6");
+        // A number is still a number.
+        REQUIRE(scene.beginValueEdit("shade__color", "extent_scale"));
+        CHECK(ux2PillChoice(scene) == nullptr);
+        scene.cancelInlineEdit();
+
+        // Decision 5: the details' parameters still take JSON, one key.
+        tab.widget->scene().selectNode("shade__color");
+        QCoreApplication::processEvents();
+        auto *details = tab.field<QTreeWidget>("pelican.graphCanvasDetails");
+        // The row under "parameters" (the port table names the key too).
+        auto rows = details->findItems(QStringLiteral("note"), Qt::MatchExactly | Qt::MatchRecursive);
+        rows.removeIf([](const QTreeWidgetItem *row) {
+            return row->parent() == nullptr ||
+                   row->parent()->text(0) != QStringLiteral("parameters");
+        });
+        REQUIRE(rows.size() == 1);
+        Q_EMIT details->itemDoubleClicked(rows.front(), 1);
+        rows.front()->setText(1, QStringLiteral("{\"by\": \"hand\"}"));
+        QCoreApplication::processEvents();
+        op = tab.sent(7);
+        depth["note"] = {{"by", "hand"}};
+        CHECK(op.at("parameters") == depth);
+    }
+
+    SECTION("an engine without the vocabulary: the format is typed, the usage a line") {
+        Ux2Tab tab{false};
+        auto image = ux2Image();
+        tab.read(ux2Document(image), "ux2-0");
+        tab.answer("get_graph_catalog", ux2Catalog());
+        tab.widget->scene().selectNode("shade__color");
+        QCoreApplication::processEvents();
+        tab.widget->poll();
+        QCoreApplication::processEvents();
+        auto *format = tab.field<QComboBox>("pelican.graphCanvasImage.format");
+        REQUIRE(format->isVisible());
+        CHECK(format->isEditable());
+        CHECK(format->currentText() == QStringLiteral("R8G8B8A8_UNORM"));
+        CHECK(tab.field<QLineEdit>("pelican.graphCanvasImage.usageText")->isVisible());
+        CHECK(tab.field<QLineEdit>("pelican.graphCanvasImage.usageText")->text() ==
+              QStringLiteral("COLOR_ATTACHMENT, SAMPLED"));
+        CHECK(tab.field<QLabel>("pelican.graphCanvasImage.note")->isVisible());
+        // The pill is the line it was.
+        REQUIRE(tab.widget->scene().beginValueEdit("shade__color", "format"));
+        CHECK(ux2PillChoice(tab.widget->scene()) == nullptr);
+        tab.widget->scene().cancelInlineEdit();
+        format->lineEdit()->setText(QStringLiteral("R16G16B16A16_SFLOAT"));
+        Q_EMIT format->lineEdit()->returnPressed();
+        QCoreApplication::processEvents();
+        const auto op = tab.sent(1);
+        image["format"] = "R16G16B16A16_SFLOAT";
+        CHECK(op.at("parameters") == image);
+    }
+}
+
+TEST_CASE("UX-2 a render pass's shaders are picked from the Pass Editor's list, its ports shown as "
+          "declared, and its shader pill opens the fragment list",
+          "[devstudio][graph-canvas][scene][ux2]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto pass = ux2Pass();
+    tab.read(ux2Document(ux2Image(), pass), "ux2-0");
+    tab.answer("get_graph_catalog", ux2Catalog());
+    tab.widget->scene().selectNode("shade");
+    QCoreApplication::processEvents();
+    REQUIRE(tab.field<QWidget>("pelican.graphCanvasPass")->isVisible());
+    CHECK_FALSE(tab.field<QWidget>("pelican.graphCanvasImage")->isVisible());
+
+    // The Pass Editor's own list (no project open: the engine's shaders).
+    auto *fragment = tab.field<QComboBox>("pelican.graphCanvasPass.shader.fragment");
+    auto *vertex = tab.field<QComboBox>("pelican.graphCanvasPass.shader.vertex");
+    QStringList expected;
+    for (const auto &reference :
+         PelicanStudio::fullscreenShaderChoices(PelicanStudio::FullscreenShaderStage::fragment, std::nullopt))
+        expected << QString::fromStdString(reference);
+    CHECK(ux2Items(*fragment) == expected);
+    CHECK(fragment->currentText() == QStringLiteral("engine://passthrough"));
+    CHECK(vertex->currentText() == QStringLiteral("engine://fullscreen"));
+    CHECK(tab.field<QLabel>("pelican.graphCanvasPass.ports")->text() ==
+          QStringLiteral("color: image write color"));
+
+    tab.pick(fragment, QStringLiteral("engine://scene_present"));
+    auto op = tab.sent(1);
+    CHECK(op.at("node") == "shade");
+    pass["shader"]["fragment"] = "engine://scene_present";
+    CHECK(op.at("parameters") == pass);
+    tab.commit(ux2Document(ux2Image(), pass), "ux2-1");
+    CHECK(tab.field<QComboBox>("pelican.graphCanvasPass.shader.fragment")->currentText() ==
+          QStringLiteral("engine://scene_present"));
+
+    // Decision 4: the shader's pill is the fragment list too.
+    auto &scene = tab.widget->scene();
+    REQUIRE(scene.beginValueEdit("shade", "shader"));
+    auto *pill = ux2PillChoice(scene);
+    REQUIRE(pill != nullptr);
+    CHECK(ux2Items(*pill) == expected);
+    CHECK(pill->currentText() == QStringLiteral("engine://scene_present"));
+    // The document's own value sends nothing.
+    REQUIRE_FALSE(scene.commitInlineEdit());
+    CHECK(tab.reads("edit_graph_document") == 1);
+    REQUIRE(scene.beginValueEdit("shade", "shader"));
+    scene.setInlineEditText(QStringLiteral("engine://passthrough"));
+    REQUIRE(scene.commitInlineEdit());
+    op = tab.sent(2);
+    pass["shader"]["fragment"] = "engine://passthrough";
+    CHECK(op.at("parameters") == pass);
 }

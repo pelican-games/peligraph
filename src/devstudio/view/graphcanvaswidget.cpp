@@ -1,6 +1,8 @@
 #include "graphcanvaswidget.hpp"
 #include "graphcanvasdrawing.hpp"
 #include "graphcanvasloopfields.hpp"
+#include "graphcanvasrenderfields.hpp"
+#include "fullscreenshadertemplate.hpp"
 
 #include "inlineediteventfilter.hpp"
 #include "jsonrpcrequest.hpp"
@@ -10,6 +12,8 @@
 #include "nodelayout.hpp"
 #include "studiotheme.hpp"
 
+#include <QAbstractItemDelegate>
+#include <QAbstractItemView>
 #include <QAbstractSpinBox>
 #include <QAction>
 #include <QBrush>
@@ -102,7 +106,10 @@ using InlineEditFilter = InlineEditEventFilter;
 
 // What kind of editor one stored value asks for. The current value is the only
 // evidence there is: no schema says what a node's parameter is allowed to be.
-enum class ValueEditorKind { number, boolean, text, json };
+// UX-2, decision 4: except where the model has a list to pick from (a
+// render.image's format and type, a render pass's fragment shader) -- that is
+// a combo, `choice`, never a line to type in.
+enum class ValueEditorKind { number, boolean, text, json, choice };
 
 ValueEditorKind editorKindFor(const nlohmann::json &value) {
     if (value.is_boolean()) return ValueEditorKind::boolean;
@@ -2950,8 +2957,10 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
                 event->accept();
                 const auto node = item->data(NodeGraphNameRole).toString().toStdString();
                 selectNode(scope, node);
-                beginValueEdit(scope, node,
-                               item->data(GraphCanvasPortRole).toString().toStdString());
+                // UX-2, decision 4: a list opens at once, under the pill.
+                if (beginValueEdit(scope, node,
+                                   item->data(GraphCanvasPortRole).toString().toStdString()))
+                    popUpInlineChoice();
                 return;
             }
             // A control point is picked *and* dragged by the same press, so
@@ -3171,6 +3180,9 @@ struct GraphCanvasScene::InlineEditor {
     std::string node;
     std::string port;
     ValueEditorKind value_kind = ValueEditorKind::number;
+    // UX-2: what a `choice` editor's items stand for (an item's data is its
+    // index here; -1 is the document's own value when no choice is it).
+    std::vector<GraphCanvasValueChoice> choices;
     QGraphicsProxyWidget *proxy = nullptr;
     QWidget *widget = nullptr;
     std::unique_ptr<InlineEditFilter> filter;
@@ -3249,6 +3261,7 @@ QGraphicsItem *findPill(QGraphicsScene &scene, const QString &scope, const QStri
 
 QString editorText(const QWidget *widget) {
     if (const auto *line = qobject_cast<const QLineEdit *>(widget)) return line->text();
+    if (const auto *combo = qobject_cast<const QComboBox *>(widget)) return combo->currentText();
     if (const auto *spin = qobject_cast<const QDoubleSpinBox *>(widget))
         return QString::number(spin->value(), 'g', 10);
     if (const auto *check = qobject_cast<const QCheckBox *>(widget))
@@ -3259,6 +3272,10 @@ QString editorText(const QWidget *widget) {
 void setEditorText(QWidget *widget, const QString &text) {
     if (auto *line = qobject_cast<QLineEdit *>(widget)) {
         line->setText(text);
+        return;
+    }
+    if (auto *combo = qobject_cast<QComboBox *>(widget)) {
+        if (const int index = combo->findText(text); index >= 0) combo->setCurrentIndex(index);
         return;
     }
     if (auto *spin = qobject_cast<QDoubleSpinBox *>(widget)) {
@@ -3353,7 +3370,37 @@ bool GraphCanvasScene::beginValueEdit(const std::string &scope, const std::strin
     editor->node = id;
     editor->port = port;
     editor->value_kind = editorKindFor(current);
+    // UX-2, decision 4: a value with a list is picked from it.
+    editor->choices = model_->valueChoices(scope, id, port);
+    if (!editor->choices.empty()) editor->value_kind = ValueEditorKind::choice;
     switch (editor->value_kind) {
+    case ValueEditorKind::choice: {
+        auto *combo = new QComboBox;
+        const auto parameters = model_->nodeParameters(scope, id);
+        int selected = -1;
+        for (std::size_t index = 0; index < editor->choices.size(); ++index) {
+            combo->addItem(qtext(editor->choices[index].label), static_cast<int>(index));
+            if (selected < 0 && editor->choices[index].parameters == parameters)
+                selected = static_cast<int>(index);
+        }
+        if (selected < 0) {
+            // The document's value is none of the choices: it is shown
+            // first, as itself, and picking it changes nothing.
+            combo->insertItem(0, current.is_string() ? qtext(current.get<std::string>())
+                                                     : qtext(current.dump()),
+                              -1);
+            selected = 0;
+        }
+        combo->setCurrentIndex(selected);
+        combo->setObjectName(QStringLiteral("pelican.graphCanvasValueChoice"));
+        // A pick is the whole gesture.
+        QObject::connect(combo, &QComboBox::activated, this, [this] {
+            QMetaObject::invokeMethod(
+                this, [this] { commitInlineEdit(); }, Qt::QueuedConnection);
+        });
+        editor->widget = combo;
+        break;
+    }
     case ValueEditorKind::boolean: {
         auto *check = new QCheckBox;
         check->setChecked(current.get<bool>());
@@ -3412,6 +3459,15 @@ bool GraphCanvasScene::beginValueEdit(const std::string &scope, const std::strin
     return true;
 }
 
+void GraphCanvasScene::popUpInlineChoice() {
+    if (!editor_) return;
+    auto *combo = qobject_cast<QComboBox *>(editor_->widget);
+    if (combo == nullptr) return;
+    // From the event loop: the press that opened it is still being handled.
+    QMetaObject::invokeMethod(
+        combo, [combo] { combo->showPopup(); }, Qt::QueuedConnection);
+}
+
 QString GraphCanvasScene::inlineEditText() const {
     return editor_ ? editorText(editor_->widget) : QString{};
 }
@@ -3437,6 +3493,20 @@ bool GraphCanvasScene::commitInlineEdit() {
     if (auto *spin = qobject_cast<QAbstractSpinBox *>(editor_->widget))
         spin->interpretText();
     const auto text = editorText(editor_->widget);
+    if (value_kind == ValueEditorKind::choice) {
+        // UX-2, decision 4: the pick's whole parameters, one
+        // set_node_parameters. The document's own value sends nothing.
+        const auto *combo = qobject_cast<const QComboBox *>(editor_->widget);
+        const int index = combo != nullptr ? combo->currentData().toInt() : -1;
+        std::optional<nlohmann::json> picked;
+        if (index >= 0 && static_cast<std::size_t>(index) < editor_->choices.size())
+            picked = editor_->choices[static_cast<std::size_t>(index)].parameters;
+        closeEditor();
+        if (!picked || *picked == model_->nodeParameters(scope, node)) return false;
+        const bool submitted = model_->setNodeParameters(scope, node, *picked);
+        afterEdit(submitted);
+        return submitted;
+    }
     closeEditor();
     if (kind == InlineEditor::Kind::label) {
         const bool submitted = model_->setNodeLabel(scope, node, text.toStdString());
@@ -3464,6 +3534,8 @@ bool GraphCanvasScene::commitInlineEdit() {
         value = nlohmann::json::parse(bytes);
         break;
     }
+    case ValueEditorKind::choice:
+        return false;
     }
     const bool submitted = model_->setNodeParameter(scope, node, port, value);
     afterEdit(submitted);
@@ -4177,6 +4249,12 @@ struct GraphCanvasWidget::Impl {
     QLabel *breadcrumb = nullptr;
     QLabel *notice = nullptr;
     QTreeWidget *details = nullptr;
+    // UX-2, decision 5: the parameter row of the details whose value is
+    // being typed as JSON, and the node it belongs to. A redraw waits for it,
+    // as it waits for the canvas's own editor.
+    QTreeWidgetItem *editing_parameter = nullptr;
+    std::string editing_parameter_scope;
+    std::string editing_parameter_node;
     // LP-4c: the Loop fields for a selected root loop (decisions 3, 4), and,
     // inside a loop's body, the branch it shows and whether it is shared.
     GraphCanvasLoopFields *loop_fields = nullptr;
@@ -4184,6 +4262,10 @@ struct GraphCanvasWidget::Impl {
     GraphCanvasDrawFields *draw_fields = nullptr;
     // LP-4f1: a render node's View field.
     GraphCanvasViewFields *view_fields = nullptr;
+    // UX-2: a render.image's values (decision 1) and a render pass's
+    // shaders (decision 2), picked rather than typed.
+    GraphCanvasImageFields *image_fields = nullptr;
+    GraphCanvasPassFields *pass_fields = nullptr;
     QComboBox *loop_branch = nullptr;
     QLabel *shared_mark = nullptr;
     // GL-1, decision 5: Show: one box per domain the root canvas can draw.
@@ -4704,11 +4786,35 @@ struct GraphCanvasWidget::Impl {
         side_layout->addWidget(draw_fields);
         view_fields = new GraphCanvasViewFields(model, [this] { dispatch(); }, side);
         side_layout->addWidget(view_fields);
+        image_fields = new GraphCanvasImageFields(model, [this] { dispatch(); }, side);
+        side_layout->addWidget(image_fields);
+        pass_fields = new GraphCanvasPassFields(model, [this] { dispatch(); }, side);
+        side_layout->addWidget(pass_fields);
         details = new QTreeWidget(side);
         details->setObjectName(QStringLiteral("pelican.graphCanvasDetails"));
         details->setColumnCount(2);
         details->setHeaderLabels({QObject::tr("Field"), QObject::tr("Value")});
         details->setRootIsDecorated(true);
+        // UX-2, decision 5: a parameter's value is still typed as JSON here,
+        // the one place the raw document is written; the fields above are
+        // what is picked. Only a parameter's value opens, on a double-click.
+        details->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        QObject::connect(details, &QTreeWidget::itemDoubleClicked, &view,
+                         [this](QTreeWidgetItem *item, int) { beginParameterEdit(item); });
+        QObject::connect(details, &QTreeWidget::itemChanged, &view,
+                         [this](QTreeWidgetItem *item, int column) {
+                             if (item == nullptr || item != editing_parameter || column != 1) return;
+                             editing_parameter = nullptr;
+                             const auto key = item->data(1, Qt::UserRole).toString().toStdString();
+                             const auto text = item->text(1);
+                             // Not from inside the tree's own signal: the
+                             // edit redraws the details, item included.
+                             QMetaObject::invokeMethod(
+                                 &view, [this, key, text] { commitParameterText(key, text); },
+                                 Qt::QueuedConnection);
+                         });
+        QObject::connect(details->itemDelegate(), &QAbstractItemDelegate::closeEditor, &view,
+                         [this] { editing_parameter = nullptr; });
         side_layout->addWidget(details, 1);
         splitter->addWidget(side);
         splitter->setStretchFactor(0, 3);
@@ -5636,6 +5742,54 @@ struct GraphCanvasWidget::Impl {
         if (model.setNodeParameter(scope, *selected, key, path)) dispatch();
     }
 
+    // UX-2, decision 5: a parameter row of the details, opened for its value
+    // as JSON.
+    void beginParameterEdit(QTreeWidgetItem *item) {
+        if (item == nullptr || !model.canEdit()) return;
+        if (item->data(1, Qt::UserRole).toString().isEmpty()) return;
+        const auto &selected = scene->selectedNode();
+        if (!selected) return;
+        editing_parameter_scope = scene->selectedScope();
+        editing_parameter_node = *selected;
+        editing_parameter = item;
+        details->editItem(item, 1);
+    }
+
+    // One key of the node, from the text written in its row: JSON, or the
+    // row says what the document holds again.
+    void commitParameterText(const std::string &key, const QString &text) {
+        const auto bytes = text.trimmed().toStdString();
+        const auto parameters =
+            model.nodeParameters(editing_parameter_scope, editing_parameter_node);
+        if (!nlohmann::json::accept(bytes)) {
+            model.setEditNotice({InspectorNoticeKind::Error,
+                                 key + " was not changed: its value is not JSON."});
+            showDetails();
+            showNotice();
+            return;
+        }
+        const auto value = nlohmann::json::parse(bytes);
+        if (parameters.contains(key) && parameters.at(key) == value) {
+            showDetails();
+            return;
+        }
+        if (model.setNodeParameter(editing_parameter_scope, editing_parameter_node, key, value))
+            dispatch();
+        else
+            showDetails();
+    }
+
+    // UX-2, decision 2: the shaders a render pass picks from -- the Pass
+    // Editor's list, read again whenever it is about to be offered, as the
+    // project's sounds are.
+    void refreshShaderChoices() {
+        const auto root = project_root.empty()
+                              ? std::optional<std::filesystem::path>{}
+                              : std::optional<std::filesystem::path>{project_root};
+        model.setShaderChoices(fullscreenShaderChoices(FullscreenShaderStage::vertex, root),
+                               fullscreenShaderChoices(FullscreenShaderStage::fragment, root));
+    }
+
     // Q-10. The project's sounds, read again whenever they are about to be
     // offered, as the UI document is.
     void reloadAudioAssets() {
@@ -5865,6 +6019,8 @@ struct GraphCanvasWidget::Impl {
     void showDetails() {
         syncFoldedSummary();
         syncLayers();
+        // UX-2: a row being written goes with the rows.
+        editing_parameter = nullptr;
         details->clear();
         const auto &selected = scene->selectedNode();
         label_edit->setEnabled(selected.has_value() && model.canEdit());
@@ -5877,6 +6033,8 @@ struct GraphCanvasWidget::Impl {
             loop_fields->showLoop({});
             draw_fields->showNode(nullptr);
             view_fields->showNode(nullptr, {});
+            image_fields->showNode(nullptr, {});
+            pass_fields->showNode(nullptr, {});
             return;
         }
         // LP-4d1: the node is looked for in the scope it was picked in -- a
@@ -5891,6 +6049,8 @@ struct GraphCanvasWidget::Impl {
             loop_fields->showLoop({});
             draw_fields->showNode(nullptr);
             view_fields->showNode(nullptr, {});
+            image_fields->showNode(nullptr, {});
+            pass_fields->showNode(nullptr, {});
             return;
         }
         label_edit->setText(qtext(found->label));
@@ -5902,6 +6062,10 @@ struct GraphCanvasWidget::Impl {
         draw_fields->showNode(&*found, scope);
         // LP-4f1: and a render node's views.
         view_fields->showNode(&*found, scope);
+        // UX-2: and a render.image's values, a render pass's shaders.
+        if (found->op == "render.fullscreen" || found->op == "render.raster") refreshShaderChoices();
+        image_fields->showNode(&*found, scope);
+        pass_fields->showNode(&*found, scope);
         const auto row = [this](const QString &field, const QString &value) {
             auto *item = new QTreeWidgetItem(details);
             item->setText(0, field);
@@ -5940,6 +6104,10 @@ struct GraphCanvasWidget::Impl {
                 auto *entry = new QTreeWidgetItem(parameters);
                 entry->setText(0, qtext(name));
                 entry->setText(1, qtext(value.dump()));
+                // UX-2, decision 5: the key, so a double-click edits it.
+                entry->setData(1, Qt::UserRole, qtext(name));
+                entry->setFlags(entry->flags() | Qt::ItemIsEditable);
+                entry->setToolTip(1, QObject::tr("Double-click to write the value as JSON."));
             }
             parameters->setExpanded(true);
         }
@@ -6046,7 +6214,7 @@ struct GraphCanvasWidget::Impl {
         const bool placement_changed =
             rendered_placement != model.placementRevision();
         if ((content_changed || report_changed || placement_changed) &&
-            !scene->editingInline() && !scene->dragging()) {
+            !scene->editingInline() && !scene->dragging() && editing_parameter == nullptr) {
             rendered_content = model.contentRevision();
             rendered_report = model.reportRevision();
             rendered_placement = model.placementRevision();
@@ -6069,6 +6237,9 @@ struct GraphCanvasWidget::Impl {
         // Q-18: and so do the draw.* fields and a render node's View field.
         if (draw_fields != nullptr) draw_fields->followEditable();
         if (view_fields != nullptr) view_fields->followEditable();
+        // UX-2: and so do a render.image's and a render pass's.
+        if (image_fields != nullptr) image_fields->followEditable();
+        if (pass_fields != nullptr) pass_fields->followEditable();
         showNotice();
         refresh->setEnabled(model.canRefresh());
         synchronizeTimeline();

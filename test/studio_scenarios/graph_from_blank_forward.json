@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "graph_from_blank_forward",
-  "description": "GL-1d with RS-2: the same as graph_from_blank with forward_opaque_v1, the palette default and the contract the user first tried from Blank. Blank routes materials to deferred; with no deferred pass in the pipeline Studio sends material_route_default forward with the edit (RS-2), the engine commits it and asks for a restart, and after the restart the pass draws with its draw loop. GL-1e: a Cube added, the material pass's colour output (GL-1f) is dragged onto present's + input in the Graph; Studio sends edit_preset_pass on present (as the Pass Editor saves it), the line is drawn solid, and the viewport shows what the pass drew instead of the gradient (with the engine's RS-3, which puts the graph's pass before present).",
+  "description": "GL-1d with RS-2: the same as graph_from_blank with forward_opaque_v1, the palette default and the contract the user first tried from Blank. Blank routes materials to deferred; with no deferred pass in the pipeline Studio sends material_route_default forward with the edit (RS-2), the engine commits it and asks for a restart, and after the restart the pass draws with its draw loop. GL-1e: a Cube added, the material pass's colour output (GL-1f) is dragged onto present's + input in the Graph; Studio sends edit_preset_pass on present (as the Pass Editor saves it), the line is drawn solid, and the viewport shows what the pass drew instead of the gradient (with the engine's RS-3, which puts the graph's pass before present). UX-2: a fullscreen pass from the palette, and its image's format picked in the image's fields (R8G8B8A8_UNORM to R16G16B16A16_SFLOAT) from the engine's list, not typed; the engine commits it.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -372,6 +372,131 @@
       "expect": "screenshot",
       "name": "pelican.graphCanvas",
       "path": "graph_from_blank_present_graph.png"
+    },
+    {
+      "label": "UX-2: Add again, a pass whose image the engine takes in another format: the palette opens",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the filter narrows the list to the fullscreen pass",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "render.fullscreen"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the palette closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the document has the pass's image, after the material pass's nodes",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[4].id",
+      "value": "render_fullscreen__color",
+      "retry_ms": 60000
+    },
+    {
+      "label": "in the format the palette gave it",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[4].parameters.format",
+      "value": "R8G8B8A8_UNORM"
+    },
+    {
+      "label": "fit the graph, so the image is on screen",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "the image is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen__color",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick the image",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen__color"
+    },
+    {
+      "label": "decision 1: its fields have the engine's usage flags, so the vocabulary has arrived",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.usage.STORAGE",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and its format field says what the document says, and can be used",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.format",
+      "visible": true,
+      "enabled": true,
+      "text": "R8G8B8A8_UNORM",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the format picked from the engine's list, not typed",
+      "cmd": "select",
+      "name": "pelican.graphCanvasImage.format",
+      "text": "R16G16B16A16_SFLOAT"
+    },
+    {
+      "label": "the engine committed it: the image's format is the one picked",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[4].parameters.format",
+      "value": "R16G16B16A16_SFLOAT",
+      "retry_ms": 120000
+    },
+    {
+      "label": "and the keys the field does not show travelled as they were",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[4].parameters.usage[2]",
+      "value": "TRANSFER_SRC"
+    },
+    {
+      "label": "the notice says it was saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the field reads the document back",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.format",
+      "enabled": true,
+      "text": "R16G16B16A16_SFLOAT",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "a picture of the Graph with the image's fields",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "graph_from_blank_image_fields.png"
     }
   ]
 }

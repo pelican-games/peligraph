@@ -568,6 +568,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaswidget.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasdrawing.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasloopfields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasrenderfields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp

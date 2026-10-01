@@ -681,6 +681,7 @@ void GraphCanvasModel::setConnected(bool connected) {
     requests_.clear();
     catalog_requested_ = false;
     catalog_received_ = false;
+    vocabulary_asked_ = false;
     operations_ = Json::object();
     types_ = Json::object();
     failure_ = {};
@@ -5831,6 +5832,249 @@ std::vector<GraphCanvasDomainStub> GraphCanvasModel::domainStubs() const {
         result.push_back(std::move(entry.stub));
     }
     return result;
+}
+
+// --- UX-2: a node's values chosen rather than typed.
+
+bool GraphCanvasModel::setNodeParameters(std::string_view scope, const std::string &node,
+                                         const Json &parameters) {
+    if (!canEdit() || findNode(scope, node) == nullptr || !parameters.is_object()) return false;
+    if (parameters == nodeParameters(scope, node)) return false;
+    return submitOps(Json::array({Json{
+        {"op", "set_node_parameters"}, {"scope", scopeToken(scope)}, {"node", node},
+        {"parameters", parameters}}}));
+}
+
+namespace {
+
+std::vector<std::string> vocabularyList(const Json &context, const char *field) {
+    std::vector<std::string> values;
+    const auto vocabulary = context.find("render_target_vocabulary");
+    if (vocabulary == context.end() || !vocabulary->is_object()) return values;
+    const auto list = vocabulary->find(field);
+    if (list == vocabulary->end() || !list->is_array()) return values;
+    for (const auto &value : *list)
+        if (value.is_string()) values.push_back(value.get<std::string>());
+    return values;
+}
+
+bool hasTrait(const Json &schema, std::string_view trait) {
+    const auto traits = schema.find("traits");
+    return traits != schema.end() && traits->is_array() &&
+           std::ranges::any_of(*traits, [&](const Json &entry) {
+               return entry.is_string() && entry.get<std::string>() == trait;
+           });
+}
+
+// `preferred` when the engine's list has it (or there is no list), else the
+// list's first format on the same side of the depth line; empty when none is.
+std::string pickFormat(const std::vector<std::string> &formats, std::string_view preferred,
+                       bool depth) {
+    if (formats.empty() || std::ranges::find(formats, preferred) != formats.end())
+        return std::string{preferred};
+    for (const auto &format : formats)
+        if (GraphCanvasModel::depthFormat(format) == depth) return format;
+    return {};
+}
+
+} // namespace
+
+bool GraphCanvasModel::renderTargetVocabularyKnown() const {
+    return !vocabularyList(render_authoring_, "formats").empty();
+}
+
+std::vector<std::string> GraphCanvasModel::renderTargetFormats() const {
+    return vocabularyList(render_authoring_, "formats");
+}
+
+std::vector<std::string> GraphCanvasModel::renderTargetUsages() const {
+    return vocabularyList(render_authoring_, "usage");
+}
+
+void GraphCanvasModel::askRenderTargetVocabulary() {
+    if (!connected_ || vocabulary_asked_ || renderTargetVocabularyKnown()) return;
+    // A context that came without it is the engine's answer already.
+    if (!render_authoring_.empty()) return;
+    // The plan's own request may be on its way: its reply serves both.
+    if (std::ranges::any_of(reads_, [](const PendingRequest &pending) {
+            return pending.kind == RequestKind::Authoring;
+        }))
+        return;
+    vocabulary_asked_ = true;
+    read(RequestKind::Authoring, "get_render_authoring_context", Json::object());
+}
+
+std::string GraphCanvasModel::semanticLabel(std::string_view semantic) {
+    auto name = semantic;
+    if (const auto at = name.find('@'); at != std::string_view::npos) name = name.substr(0, at);
+    if (const auto dot = name.rfind('.'); dot != std::string_view::npos) name = name.substr(dot + 1);
+    std::string label{name};
+    std::ranges::replace(label, '_', ' ');
+    if (label.empty()) return std::string{semantic};
+    label.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(label.front())));
+    return label;
+}
+
+bool GraphCanvasModel::depthFormat(std::string_view format) {
+    return format.size() > 2 && format.front() == 'D' &&
+           std::isdigit(static_cast<unsigned char>(format[1])) != 0;
+}
+
+std::vector<GraphCanvasImageType> GraphCanvasModel::imageTypes() const {
+    std::vector<GraphCanvasImageType> types;
+    std::vector<GraphCanvasImageType> legacy;
+    for (const auto &[id, schema] : types_.items()) {
+        if (!schema.is_object() || text(schema, "constructor") != "image") continue;
+        GraphCanvasImageType type;
+        type.semantic = id;
+        type.label = semanticLabel(id);
+        type.depth = hasTrait(schema, "depth_like");
+        type.legacy = hasTrait(schema, "legacy_untyped");
+        for (const auto &parameter : schema.value("parameters", Json::array())) {
+            if (!parameter.is_object()) continue;
+            GraphCanvasTypeArgument argument;
+            argument.name = text(parameter, "name");
+            if (argument.name.empty()) continue;
+            for (const auto &value : parameter.value("allowed", Json::array()))
+                if (value.is_string()) argument.allowed.push_back(value.get<std::string>());
+            // The engine writes a default as {"kind": "enum_value", "value": ...}.
+            if (const auto fallback = parameter.find("default"); fallback != parameter.end()) {
+                if (fallback->is_string())
+                    argument.default_value = fallback->get<std::string>();
+                else if (fallback->is_object())
+                    argument.default_value = text(*fallback, "value");
+            }
+            type.arguments.push_back(std::move(argument));
+        }
+        // EL-1: `arguments: {<name>: {kind, required, values: [...],
+        // default} | {min, max}}`, the engine parser's own table, says what
+        // each argument takes; where it is there it is the list. A {min, max}
+        // one is not a list: the field shows the document's value.
+        if (const auto declared = schema.find("arguments");
+            declared != schema.end() && declared->is_object())
+            for (const auto &[name, range] : declared->items()) {
+                if (!range.is_object()) continue;
+                auto found = std::ranges::find(type.arguments, name, &GraphCanvasTypeArgument::name);
+                if (found == type.arguments.end()) {
+                    type.arguments.push_back(GraphCanvasTypeArgument{name, {}, {}});
+                    found = std::prev(type.arguments.end());
+                }
+                if (const auto fallback = range.find("default"); fallback != range.end()) {
+                    if (fallback->is_string()) found->default_value = fallback->get<std::string>();
+                    else if (fallback->is_object()) found->default_value = text(*fallback, "value");
+                }
+                const auto values = range.find("values");
+                if (values == range.end() || !values->is_array()) continue;
+                found->allowed.clear();
+                for (const auto &value : *values)
+                    if (value.is_string()) found->allowed.push_back(value.get<std::string>());
+            }
+        (type.legacy ? legacy : types).push_back(std::move(type));
+    }
+    std::ranges::move(legacy, std::back_inserter(types));
+    return types;
+}
+
+std::optional<GraphCanvasImageType> GraphCanvasModel::imageType(std::string_view semantic) const {
+    for (auto &type : imageTypes())
+        if (type.semantic == semantic) return std::move(type);
+    return std::nullopt;
+}
+
+std::vector<std::string> GraphCanvasModel::imageFormatChoices(const Json &parameters) const {
+    auto formats = renderTargetFormats();
+    if (formats.empty()) return formats;
+    const auto type = parameters.is_object() ? parameters.value("type", Json::object()) : Json::object();
+    const auto semantic = type.is_object() ? text(type, "semantic") : std::string{};
+    const auto known = semantic.empty() ? std::nullopt : imageType(semantic);
+    // A type the catalog does not name narrows nothing.
+    if (!known) return formats;
+    std::erase_if(formats, [&](const std::string &format) { return depthFormat(format) != known->depth; });
+    return formats;
+}
+
+Json GraphCanvasModel::imageParametersWithSemantic(const Json &parameters,
+                                                   std::string_view semantic) const {
+    Json result = parameters.is_object() ? parameters : Json::object();
+    const auto target = imageType(semantic);
+    if (!target) return result;
+    const auto old_type = result.value("type", Json::object());
+    const auto old_arguments =
+        old_type.is_object() ? old_type.value("arguments", Json::object()) : Json::object();
+    Json arguments = Json::object();
+    for (const auto &argument : target->arguments) {
+        if (old_arguments.is_object()) {
+            const auto kept = old_arguments.find(argument.name);
+            if (kept != old_arguments.end() && kept->is_string() &&
+                (argument.allowed.empty() ||
+                 std::ranges::find(argument.allowed, kept->get<std::string>()) !=
+                     argument.allowed.end())) {
+                arguments[argument.name] = *kept;
+                continue;
+            }
+        }
+        if (!argument.default_value.empty()) continue;
+        if (!argument.allowed.empty()) arguments[argument.name] = argument.allowed.front();
+    }
+    result["type"] = Json{{"semantic", std::string{semantic}}, {"arguments", std::move(arguments)}};
+    // Across the depth line the format and the attachment flag follow.
+    const auto format = result.value("format", std::string{});
+    if (!format.empty() && depthFormat(format) != target->depth) {
+        const auto picked = pickFormat(renderTargetFormats(),
+                                       target->depth ? "D32_SFLOAT" : "R16G16B16A16_SFLOAT",
+                                       target->depth);
+        if (!picked.empty()) result["format"] = picked;
+        if (const auto usage = result.find("usage"); usage != result.end() && usage->is_array()) {
+            const std::string from = target->depth ? "COLOR_ATTACHMENT" : "DEPTH_STENCIL_ATTACHMENT";
+            const std::string to = target->depth ? "DEPTH_STENCIL_ATTACHMENT" : "COLOR_ATTACHMENT";
+            for (auto &flag : *usage)
+                if (flag.is_string() && flag.get<std::string>() == from) flag = to;
+        }
+    }
+    return result;
+}
+
+void GraphCanvasModel::setShaderChoices(std::vector<std::string> vertex,
+                                        std::vector<std::string> fragment) {
+    vertex_shader_choices_ = std::move(vertex);
+    fragment_shader_choices_ = std::move(fragment);
+}
+
+std::vector<GraphCanvasValueChoice> GraphCanvasModel::valueChoices(std::string_view scope,
+                                                                   std::string_view node,
+                                                                   std::string_view port) const {
+    std::vector<GraphCanvasValueChoice> choices;
+    const auto *found = findNode(scope, node);
+    if (found == nullptr) return choices;
+    const auto op = text(*found, "op");
+    const auto parameters = nodeParameters(scope, node);
+    if (op == "render.image" && port == "format") {
+        for (const auto &format : imageFormatChoices(parameters)) {
+            auto changed = parameters;
+            changed["format"] = format;
+            choices.push_back({format, std::move(changed)});
+        }
+    } else if (op == "render.image" && port == "type") {
+        const auto current = parameters.value("type", Json::object());
+        const auto semantic = current.is_object() ? text(current, "semantic") : std::string{};
+        for (const auto &type : imageTypes()) {
+            if (type.legacy && type.semantic != semantic) continue;
+            // The type on the node stays as it is; another one comes with the
+            // arguments imageParametersWithSemantic gives it.
+            choices.push_back({type.label, type.semantic == semantic
+                                               ? parameters
+                                               : imageParametersWithSemantic(parameters, type.semantic)});
+        }
+    } else if ((op == "render.fullscreen" || op == "render.raster") && port == "shader") {
+        const auto shader = parameters.value("shader", Json::object());
+        if (!shader.is_object() || !shader.contains("fragment")) return choices;
+        for (const auto &reference : fragment_shader_choices_) {
+            auto changed = parameters;
+            changed["shader"]["fragment"] = reference;
+            choices.push_back({reference, std::move(changed)});
+        }
+    }
+    return choices;
 }
 
 } // namespace PelicanStudio

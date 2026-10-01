@@ -57,6 +57,8 @@ add_library(pelican_studio_view STATIC
     graphcanvasdrawing.hpp
     graphcanvasloopfields.cpp
     graphcanvasloopfields.hpp
+    graphcanvasrenderfields.cpp
+    graphcanvasrenderfields.hpp
     graphcanvasreadcapability.cpp
     graphcanvasreadcapability.hpp
     proceduralassetdialog.cpp

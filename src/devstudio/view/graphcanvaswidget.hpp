@@ -488,6 +488,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     // What the open editor currently holds, and a way to set it without a
     // keyboard: the same text the user would have typed.
     [[nodiscard]] QString inlineEditText() const;
+    // UX-2, decision 4: an editor that is a list (a value the model offers
+    // choices for) opens its list.
+    void popUpInlineChoice();
     void setInlineEditText(const QString &text);
     bool commitInlineEdit();
     void cancelInlineEdit();
