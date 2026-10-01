@@ -359,9 +359,11 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
                 if (declaration.value("kind", std::string{"buffer"}) != "image" ||
                     declaration.value("access", std::string{}) != "read" || declaration.contains("attachment"))
                     throw std::invalid_argument("an input port reads an image: " + port);
-                for (const auto *key : {"view", "sampling", "subresource"})
-                    if (declaration.contains(key))
-                        throw std::invalid_argument(std::string("an input port takes no ") + key + ": " + port);
+                // RS-14: sampling and subresource are written as on a named
+                // port, and the pass parses them with the same parsers
+                // (input_settings). The view is the shader's, by its number.
+                if (declaration.contains("view"))
+                    throw std::invalid_argument("an input port takes no view: " + port);
                 const auto index = declaration.find("input_index");
                 if (index == declaration.end() || !index->is_number_integer() || index->get<std::int64_t>() < 0)
                     throw std::invalid_argument("an input port requires a non-negative integer input_index: " + port);

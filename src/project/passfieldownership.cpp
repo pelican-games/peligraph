@@ -27,6 +27,7 @@ constexpr std::array material_fields{
 constexpr std::array fullscreen_fields{
     "ray_query"sv,
     "input_sampling"sv,
+    "input_settings"sv,
     "resource_ports"sv,
     "shader"sv,
     "push_constants"sv,
@@ -36,6 +37,7 @@ constexpr std::array fullscreen_fields{
 };
 constexpr std::array raster_fields{
     "ray_query"sv,
+    "input_settings"sv,
     "resource_ports"sv,
     "draw"sv,
     "raster_state"sv,

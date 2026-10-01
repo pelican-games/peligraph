@@ -1603,4 +1603,127 @@ TEST_CASE("RS-8 / RS-11 a graph fullscreen pass draws bloom_highpass, and bloom_
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+// RS-14: the top half red, the bottom half green.
+constexpr std::string_view rs14_split_frag = R"glsl(#version 460
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() { outColor = inUV.y < 0.5 ? vec4(1.0, 0.0, 0.0, 1.0) : vec4(0.0, 1.0, 0.0, 1.0); }
+)glsl";
+
+// RS-14: reads input 0 a quarter below its bottom edge. Repeat wraps to the
+// top quarter (red); clamp_to_edge reads the last row (green).
+constexpr std::string_view rs14_below_edge_frag = R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_sets.glsl"
+#include "pelican_view.glsl"
+
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+PELICAN_DECLARE_INPUT_0(in_a);
+
+void main() { outColor = vec4(PELICAN_TEXTURE_2D_0(in_a, vec2(0.5, 1.25)).rgb, 1.0); }
+)glsl";
+
+// RS-14 acceptance 1 on the device: a graph fullscreen pass's numbered input
+// takes a named port's `sampling` (and `subresource`), and the pass input's
+// sampler is made with it. `wrap` reads below the edge with the default
+// (repeat) and draws red; `clamp` says address clamp_to_edge and draws
+// green. `comp` (bloom_composite) also binds a resource port, so its
+// numbered inputs are set beside a port; its `bloom` asks for nearest,
+// clamp_to_edge and mip 0.
+TEST_CASE("RS-14 a graph numbered input takes a named port's sampling and subresource onto its sampler",
+          "[vi1][lp1d][rs14][sampling][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("rs14_numbered_sampling");
+    const auto root = dir.root / "project";
+    const std::vector<std::string> shown{"vi_clamp", "vi_wrap", "vi_comp"};
+    writeProject(root, {{"vi_split", red}, {"vi_blue", blue}, {"vi_half", Rgb{128, 0, 0}}},
+                 Json{{"input", shown}, {"shader", passthroughShader(Json::array({"PELICAN_PASSTHROUGH_INPUT=0"}))}});
+    writeFile(root / "shaders/solid_vi_split.frag", rs14_split_frag);
+    writeFile(root / "shaders/rs14_below_edge.frag", rs14_below_edge_frag);
+    const auto config_path = root / "passes/main_rendering_config.json";
+    auto document = Json::parse(readFile(config_path));
+    for (const auto &name : shown) {
+        auto target = document.at("rendering").at("render_targets").at(0);
+        target["name"] = name;
+        document["rendering"]["render_targets"].push_back(std::move(target));
+    }
+    const Json type{{"semantic", "pelican.render.color_signal@1"},
+                    {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    const auto ref = [&](const std::string &name) {
+        return Json{{"id", name + "_ref"}, {"op", "render.target_ref"},
+                    {"parameters", {{"name", name}, {"type", type}}}, {"outputs", {"resource"}}};
+    };
+    const auto numbered = [&](int input_index, const Json &extra = Json::object()) {
+        Json port{{"kind", "image"}, {"type", type}, {"access", "read"},
+                  {"binding", "input"}, {"input_index", input_index}};
+        for (const auto &[key, value] : extra.items()) port[key] = value;
+        return port;
+    };
+    const Json color{{"kind", "image"}, {"type", type}, {"access", "write"}, {"attachment", "color"}, {"location", 0}};
+    const auto endpoint = [](const std::string &node) { return Json{{"node", node}, {"port", "resource"}}; };
+    const auto pass = [&](const std::string &id, const Json &shader, Json ports, Json inputs) {
+        return Json{{"id", id}, {"op", "render.fullscreen"},
+                    {"parameters", {{"pass_set", "main_render"}, {"insert", {{"before", "present"}}},
+                                    {"shader", shader}, {"ports", std::move(ports)}}},
+                    {"inputs", std::move(inputs)}, {"outputs", {"color"}}};
+    };
+    auto nodes = Json::array();
+    for (const auto *name : {"vi_split", "vi_blue", "vi_half"}) nodes.push_back(ref(name));
+    for (const auto &name : shown) nodes.push_back(ref(name));
+    nodes.push_back(pass("wrap", projectShader("rs14_below_edge"), {{"source", numbered(0)}, {"color", color}},
+                         {{"source", endpoint("vi_split_ref")}, {"color", endpoint("vi_wrap_ref")}}));
+    nodes.push_back(pass("clamp", projectShader("rs14_below_edge"),
+                         {{"source", numbered(0, {{"sampling", {{"address", "clamp_to_edge"}}}})}, {"color", color}},
+                         {{"source", endpoint("vi_split_ref")}, {"color", endpoint("vi_clamp_ref")}}));
+    nodes.push_back({{"id", "intensity"}, {"op", "render.buffer"},
+                     {"parameters", {{"element", "float"}, {"size", 4}, {"lifetime", "persistent"},
+                                     {"host_source", "runtime_f32"}, {"initial_f32", Json::array({1.0})}}},
+                     {"outputs", {"resource"}}});
+    nodes.push_back(pass("comp",
+                         {{"vertex", "engine://fullscreen"}, {"fragment", "engine://bloom_composite"}},
+                         {{"base", numbered(0)},
+                          {"bloom", numbered(1, {{"sampling", {{"filter", "nearest"}, {"address", "clamp_to_edge"}}},
+                                                 {"subresource", {{"mip", 0}}}})},
+                          {"color", color},
+                          {"bloomIntensity", {{"kind", "buffer"}, {"element", "float"}, {"access", "read"}}}},
+                         {{"base", endpoint("vi_blue_ref")}, {"bloom", endpoint("vi_half_ref")},
+                          {"color", endpoint("vi_comp_ref")}, {"bloomIntensity", endpoint("intensity")}}));
+    document["nodes"] = std::move(nodes);
+    writeFile(config_path, document.dump(2));
+    const auto capture = dir.root / "capture.png";
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+
+    const auto passId = [](const std::string &name) {
+        const auto &passes = GET_MODULE(RenderingPassContainer);
+        std::optional<PassId> found;
+        for (const auto id : passes.getRegisteredPassIds())
+            for (const auto &compiled : passes.getCompiledRenderingPass(id).passes)
+                if (compiled.definition.name == name) found = compiled.pass_id;
+        REQUIRE(found.has_value());
+        return *found;
+    };
+    const auto &container = GET_MODULE(FullscreenPassContainer);
+    using Sampling = std::vector<FullscreenInputSampling>;
+    // Without a setting the sampler stays the default (linear, repeat).
+    CHECK(container.inputSamplingForTesting(passId("wrap")) ==
+          Sampling{{FullscreenInputFilter::linear, FullscreenInputAddressMode::repeat}});
+    CHECK(container.inputSamplingForTesting(passId("clamp")) ==
+          Sampling{{FullscreenInputFilter::linear, FullscreenInputAddressMode::clamp_to_edge}});
+    CHECK(container.inputSamplingForTesting(passId("comp")) ==
+          Sampling{{FullscreenInputFilter::linear, FullscreenInputAddressMode::repeat},
+                   {FullscreenInputFilter::nearest, FullscreenInputAddressMode::clamp_to_edge}});
+
+    // The pixels: clamp reads the last row, repeat wraps round to the top.
+    CHECK(every(rpc.frame(capture), green));
+    requireCommitted(editPresent(rpc, shown, passthroughShader(Json::array({"PELICAN_PASSTHROUGH_INPUT=1"}))));
+    CHECK(every(rpc.frame(capture), red));
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
 } // namespace Pelican

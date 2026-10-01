@@ -12,6 +12,7 @@
 #include "../src/project/renderfeatureoverlay.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/project/passshapepolicy.hpp"
+#include "../src/project/shaderresourceport.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/renderer/viewfamilyproviderregistry.hpp"
@@ -7722,9 +7723,7 @@ TEST_CASE("LP-1d input_index gaps and duplicates are refused by name",
              {"a_second", {{"input_index", "1"}}},
              {"a_second", {{"input_index", nullptr}}},
              {"gamma", {{"input_index", 2}}},
-             {"a_second", {{"sampling", {{"filter", "nearest"}}}}},
              {"a_second", {{"view", "per_view"}}},
-             {"a_second", {{"subresource", {{"mip", 0}}}}},
              {"color", {{"binding", "input"}, {"input_index", 2}}}}) {
         INFO(port << " " << change.dump());
         auto invalid = document;
@@ -7733,6 +7732,13 @@ TEST_CASE("LP-1d input_index gaps and duplicates are refused by name",
             else lp1dShowPorts(invalid)[port][key] = value;
         }
         CHECK_THROWS(partitionGraphDocument(invalid));
+    }
+    // RS-14: sampling and subresource are written as on a named port.
+    for (const auto &change : {Json{{"sampling", {{"filter", "nearest"}}}}, Json{{"subresource", {{"mip", 0}}}}}) {
+        INFO(change.dump());
+        auto accepted = document;
+        for (const auto &[key, value] : change.items()) lp1dShowPorts(accepted)["a_second"][key] = value;
+        CHECK_NOTHROW(partitionGraphDocument(accepted));
     }
     // A compute task binds resource ports only.
     auto compute = document;
@@ -8354,6 +8360,96 @@ TEST_CASE("LP-Vb region_tags reach the pass as its regions, and input_index orde
             CHECK_THROWS_AS(lp0aCompose(graph(refused)), std::invalid_argument);
         }
     }
+}
+
+// RS-14: a numbered input (binding "input") writes `sampling` and
+// `subresource` as a named port does. The pass carries them as
+// input_settings, by input_index, and reads them with the named port's
+// parsers; a graph that writes none lowers as before.
+TEST_CASE("RS-14 a numbered input's sampling and subresource reach the pass as input_settings",
+          "[render-feature][graph-composition][lp1d][rs14]") {
+    using Json = nlohmann::json;
+    const Json color{{"kind", "image"}, {"type", lp0aSceneColorType()}, {"access", "write"},
+                     {"attachment", "color"}, {"location", 0}};
+    const auto read = [](const Json &extra) {
+        Json port{{"kind", "image"}, {"type", lp0aSceneColorType()}, {"access", "read"}};
+        for (const auto &[key, value] : extra.items()) port[key] = value;
+        return port;
+    };
+    const auto numbered = [&](std::int64_t index, Json extra = Json::object()) {
+        extra["binding"] = "input";
+        extra["input_index"] = index;
+        return read(extra);
+    };
+    const auto graph = [&](const Json &first, const Json &second) {
+        Json nodes = Json::array({lp1aLit(), lp0bImage("a_image"), lp0bImage("b_image"), lp0bImage("out_image")});
+        nodes.push_back({{"id", "pass"}, {"op", "render.fullscreen"},
+                         {"parameters", {{"pass_set", "main_render"},
+                                         {"shader", {{"vertex", "engine://fullscreen"},
+                                                     {"fragment", "engine://fullscreen"}}},
+                                         {"ports", {{"first", first}, {"second", second},
+                                                    {"named", read(Json::object())}, {"color", color}}}}},
+                         {"inputs", {{"first", {{"node", "a_image"}, {"port", "resource"}}},
+                                     {"second", {{"node", "b_image"}, {"port", "resource"}}},
+                                     {"named", {{"node", "lit"}, {"port", "resource"}}},
+                                     {"color", {{"node", "out_image"}, {"port", "resource"}}}}},
+                         {"outputs", {"color"}}});
+        return lp1aGraph(nodes);
+    };
+    const Json sampling{{"filter", "nearest"}, {"address", "clamp_to_edge"}};
+    const Json subresource{{"mip", 0}, {"layer", 0}};
+
+    // None written: no input_settings, the pass is as it was.
+    {
+        const auto composed = lp0aCompose(graph(numbered(0), numbered(1)));
+        const auto &pass = passByName(composed.config, "pass");
+        CHECK(pass.at("input") == Json::array({"a_image", "b_image", "lit_color"}));
+        CHECK_FALSE(pass.contains("input_settings"));
+    }
+    // On input 1: input 0 keeps the default (null).
+    {
+        const auto composed = lp0aCompose(
+            graph(numbered(0), numbered(1, {{"sampling", sampling}, {"subresource", subresource}})));
+        const auto &pass = passByName(composed.config, "pass");
+        CHECK(pass.at("input") == Json::array({"a_image", "b_image", "lit_color"}));
+        CHECK(pass.at("input_settings") ==
+              Json::array({nullptr, {{"sampling", sampling}, {"subresource", subresource}}}));
+        CHECK(pass.at("resource_ports").size() == 1);
+        const auto setting = parseShaderResourceInputSetting(pass.at("input_settings").at(1), "input 1");
+        CHECK(setting.sampling == ShaderResourcePortSampling{ShaderResourcePortFilter::nearest,
+                                                             ShaderResourcePortAddressMode::clamp_to_edge});
+        CHECK(setting.subresource == ImageSubresourceRange{});
+    }
+    // On input 0: the array ends at the last input with a setting.
+    {
+        const auto composed =
+            lp0aCompose(graph(numbered(0, {{"sampling", {{"address", "clamp_to_edge"}}}}), numbered(1)));
+        CHECK(passByName(composed.config, "pass").at("input_settings") ==
+              Json::array({{{"sampling", {{"address", "clamp_to_edge"}}}}}));
+    }
+    // The named port's parsers: the same value is refused in the same words.
+    const auto message = [](const auto &call) {
+        try {
+            call();
+        } catch (const std::exception &error) {
+            return std::string{error.what()};
+        }
+        return std::string{};
+    };
+    CHECK(message([] {
+              (void)parseShaderResourceInputSetting(Json{{"sampling", {{"address", "bogus"}}}}, "input 0");
+          }) == "input 0.sampling.address has unknown value 'bogus'");
+    CHECK(message([] {
+              const std::vector<std::string> reads{"source"};
+              (void)parseShaderResourcePortDefinitions(
+                  Json{{"resource_ports", {{"p", {{"resource", "source"}, {"sampling", {{"address", "bogus"}}}}}}}},
+                  reads, {}, "pass");
+          }) == "pass.resource_ports.p.sampling.address has unknown value 'bogus'");
+    CHECK(message([] {
+              (void)parseShaderResourceInputSetting(Json{{"subresource", {{"mip", -1}}}}, "input 0");
+          }) == "input 0.subresource.mip must be a non-negative integer");
+    // The view is the shader's, by the input's number.
+    CHECK_THROWS_AS(lp0aCompose(graph(numbered(0, {{"view", "per_view"}}), numbered(1))), std::invalid_argument);
 }
 
 namespace {

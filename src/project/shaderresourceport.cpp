@@ -579,6 +579,30 @@ parseShaderResourcePortDefinitions(
     return result;
 }
 
+ShaderResourceInputSetting parseShaderResourceInputSetting(
+    const nlohmann::json &entry, std::string_view context) {
+    if (!entry.is_object()) {
+        throw std::runtime_error(
+            std::string{context} + " must be an object");
+    }
+    for (auto field = entry.begin(); field != entry.end();
+         ++field) {
+        if (field.key() != "sampling" &&
+            field.key() != "subresource") {
+            throw std::runtime_error(
+                std::string{context} +
+                " has unknown field '" + field.key() + "'");
+        }
+    }
+    ShaderResourceInputSetting result;
+    if (entry.contains("sampling")) {
+        result.sampling = parseSampling(entry, context);
+    }
+    result.subresource =
+        parseOptionalImageSubresource(entry, context);
+    return result;
+}
+
 ShaderResourcePortAccess effectiveShaderResourcePortAccess(
     const ShaderResourcePortDefinition &port,
     bool resource_is_image, bool written) {

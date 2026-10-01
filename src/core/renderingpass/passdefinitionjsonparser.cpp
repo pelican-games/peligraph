@@ -74,6 +74,46 @@ PassShapeObservation passShapeObservationFromDefinition(
     return observation;
 }
 
+// RS-14: a numbered input's own sampling and subresource, by image input
+// position, in a named resource port's spelling. `null` keeps the default.
+void parsePassInputSettings(
+    PassDefinition &pass_def,
+    const nlohmann::json &pass_json) {
+    const auto found = pass_json.find("input_settings");
+    if (found == pass_json.end()) return;
+    if (!pass_def.isFullscreen() &&
+        !pass_def.isGenericRaster()) {
+        throw std::runtime_error(
+            "Pass input_settings is valid only for fullscreen and "
+            "raster passes: " +
+            pass_def.name);
+    }
+    if (!found->is_array()) {
+        throw std::runtime_error(
+            "Pass input_settings must be an array: " +
+            pass_def.name);
+    }
+    if (found->size() > pass_def.input_targets.size()) {
+        throw std::runtime_error(
+            "Pass input_settings has more entries than image "
+            "inputs: " +
+            pass_def.name);
+    }
+    pass_def.input_target_settings.clear();
+    for (std::size_t index = 0; index < found->size();
+         ++index) {
+        const auto &entry = found->at(index);
+        pass_def.input_target_settings.push_back(
+            entry.is_null()
+                ? ShaderResourceInputSetting{}
+                : parseShaderResourceInputSetting(
+                      entry,
+                      "pass '" + pass_def.name +
+                          "'.input_settings[" +
+                          std::to_string(index) + "]"));
+    }
+}
+
 void parsePassImplementationProvider(
     PassDefinition &pass_def,
     const nlohmann::json &pass_json) {
@@ -223,6 +263,7 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
     }
     parseGenericRasterPassInfoIntoDefinition(
         pass_def, pass_json);
+    parsePassInputSettings(pass_def, pass_json);
     parseDebugDrawPassInfoIntoDefinition(pass_def, pass_json);
     parseGizmoPassInfoIntoDefinition(pass_def, pass_json);
     parseDebugTextPassInfoIntoDefinition(pass_def, pass_json);

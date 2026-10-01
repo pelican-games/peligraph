@@ -475,6 +475,10 @@ struct PassDefinition {
     // definitions leave it empty; runtime compilation fills it from the
     // immutable Vulkan target plan.
     std::vector<PassInputViewDimension> input_target_views;
+    // RS-14: `input_settings`, a fullscreen or raster pass's numbered
+    // inputs' own sampling and subresource, by input_targets position. It
+    // may be shorter than input_targets; a missing entry keeps the default.
+    std::vector<ShaderResourceInputSetting> input_target_settings;
     std::vector<std::string> input_buffers;
     std::vector<std::string> region_tags;
     std::string view_family{

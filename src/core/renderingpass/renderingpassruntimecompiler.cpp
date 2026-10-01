@@ -1667,6 +1667,47 @@ FullscreenInputSampling fullscreenSampling(
     };
 }
 
+// RS-14: a numbered input's own sampling and subresource (input_settings)
+// go onto its sampler and view. An input a resource port binds takes the
+// port's, so naming one in both places is refused.
+void applyPassInputSettings(
+    const PassDefinition &pass,
+    const std::vector<bool> &bound_by_port,
+    CompiledFullscreenResourceInterface &result) {
+    const auto &settings = pass.input_target_settings;
+    if (settings.size() > pass.input_targets.size()) {
+        throw std::runtime_error(
+            "Pass input_settings has more entries than image "
+            "inputs: " +
+            pass.name);
+    }
+    for (std::size_t input = 0; input < settings.size();
+         ++input) {
+        const auto &setting = settings[input];
+        if (!setting.sampling && !setting.subresource) continue;
+        if (input < bound_by_port.size() &&
+            bound_by_port[input]) {
+            throw std::runtime_error(
+                "Pass input " + std::to_string(input) +
+                " is bound by a resource port and also has "
+                "input_settings: " +
+                pass.name);
+        }
+        if (setting.sampling) {
+            result.sampling.at(input) =
+                fullscreenSampling(*setting.sampling);
+        }
+        if (setting.subresource) {
+            if (result.subresources.empty()) {
+                result.subresources.resize(
+                    pass.input_targets.size());
+            }
+            result.subresources.at(input) =
+                setting.subresource;
+        }
+    }
+}
+
 void validateFullscreenSamplingCapabilities(
     const PassDefinition &pass,
     const FullscreenRuntimeDependencies &dependencies,
@@ -1757,6 +1798,7 @@ compileFullscreenResourceInterface(
                     FullscreenInputSampling>(
                     pass.input_targets.size());
         }
+        applyPassInputSettings(pass, {}, result);
         validateFullscreenSamplingCapabilities(
             pass, dependencies,
             result.sampling, local_reads);
@@ -1787,6 +1829,8 @@ compileFullscreenResourceInterface(
         }
     }
     std::size_t matched_ports = 0;
+    std::vector<bool> bound_by_port(
+        pass.input_targets.size(), false);
     for (std::size_t input = 0;
          input < pass.input_targets.size(); ++input) {
         const auto metadata =
@@ -1805,6 +1849,7 @@ compileFullscreenResourceInterface(
             });
         if (port == ports.end()) continue;
         ++matched_ports;
+        bound_by_port[input] = true;
         if (port->kind ==
             ShaderResourcePortKind::buffer) {
             throw std::runtime_error(
@@ -2066,6 +2111,7 @@ compileFullscreenResourceInterface(
             "' (resource '" + unmatched->resource +
             "') is not a fullscreen input");
     }
+    applyPassInputSettings(pass, bound_by_port, result);
     validateFullscreenSamplingCapabilities(
         pass, dependencies,
         result.sampling, local_reads);

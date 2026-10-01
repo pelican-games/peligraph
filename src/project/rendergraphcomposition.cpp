@@ -620,7 +620,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         const bool graphics = node.at("op") != "render.compute";
         forbid(parameters, {"name", "reads", "writes", "resource_ports"});
         moveRegionTags(parameters);
-        if (graphics) forbid(parameters, {"type", "input", "output"});
+        if (graphics) forbid(parameters, {"type", "input", "output", "input_settings"});
         auto ports = parameters.at("ports");
         parameters.erase("ports");
         if (node.at("op") == "render.raster" && parameters.contains("draw")) {
@@ -663,6 +663,9 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         // LP-1d: images read as the pass's numbered inputs (binding "input"),
         // by input_index; the graph module checked the numbers run from 0.
         std::map<std::int64_t, std::string> numbered;
+        // RS-14: a numbered input's sampling and subresource, as a named
+        // port writes them; they go to the pass's input_settings.
+        std::map<std::int64_t, Json> numbered_settings;
         auto after = parameters.value("after", Json::array());
         if (!after.is_array()) throw std::invalid_argument("render after must be an array");
         for (const auto &[port, declaration] : ports.items()) {
@@ -725,7 +728,12 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             if (graphics && declaration.value("binding", std::string{}) == "input") {
                 // No resource port: the shader reads it by its input number
                 // (inputTexture, PELICAN_DECLARE_INPUT_<i>, a variadic group).
-                numbered.emplace(declaration.at("input_index").get<std::int64_t>(), resource);
+                const auto index = declaration.at("input_index").get<std::int64_t>();
+                numbered.emplace(index, resource);
+                Json setting = Json::object();
+                for (const auto *key : {"sampling", "subresource"})
+                    if (declaration.contains(key)) setting[key] = declaration.at(key);
+                if (!setting.empty()) numbered_settings.emplace(index, std::move(setting));
                 continue;
             }
             if (access != "write") reads.insert(resource);
@@ -757,6 +765,16 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             for (const auto &[index, resource] : numbered) input.push_back(resource);
             for (const auto &resource : reads) input.push_back(resource);
             parameters["input"] = std::move(input);
+            // The numbered inputs lead the image inputs, so an entry's
+            // position is its input_index. Absent when none has a setting.
+            if (!numbered_settings.empty()) {
+                Json settings = Json::array();
+                for (std::int64_t index = 0; index <= numbered_settings.rbegin()->first; ++index) {
+                    const auto found = numbered_settings.find(index);
+                    settings.push_back(found != numbered_settings.end() ? found->second : Json());
+                }
+                parameters["input_settings"] = std::move(settings);
+            }
             parameters["output"] = std::move(attachments);
             parameters["type"] = node.at("op") == "render.fullscreen" ? "fullscreen" : "raster";
             landGraphicsPass(id, std::move(parameters), body);

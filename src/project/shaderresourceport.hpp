@@ -128,6 +128,20 @@ parseShaderResourcePortDefinitions(
     std::span<const std::string> writes,
     std::string_view context);
 
+// RS-14: a numbered pass input's own settings (a graph port with binding
+// "input"), written as a named port writes them: `sampling` and
+// `subresource`, read by the same parsers. Absent keeps the default.
+struct ShaderResourceInputSetting {
+    std::optional<ShaderResourcePortSampling> sampling;
+    std::optional<ImageSubresourceRange> subresource;
+
+    bool operator==(
+        const ShaderResourceInputSetting &) const = default;
+};
+
+ShaderResourceInputSetting parseShaderResourceInputSetting(
+    const nlohmann::json &entry, std::string_view context);
+
 ShaderResourcePortAccess effectiveShaderResourcePortAccess(
     const ShaderResourcePortDefinition &port,
     bool resource_is_image, bool written);
