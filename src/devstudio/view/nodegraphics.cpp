@@ -634,6 +634,15 @@ void NodeCanvasView::fitView() {
         std::clamp(reached, DefaultMinimumZoom, DefaultMaximumZoom);
     if (std::abs(bounded - reached) > 0.000001)
         scale(bounded / reached, bounded / reached);
+    // UX-5a: no smaller than words can be read. What no longer fits is
+    // looked at where the canvas says -- the node in hand -- not shrunk.
+    if (const qreal now = transform().m11(); fit_floor_ > 0.0 && now < fit_floor_) {
+        scale(fit_floor_ / now, fit_floor_ / now);
+        const std::optional<QRectF> focus = fit_focus_ ? fit_focus_() : std::nullopt;
+        growPanRoom();
+        centerOn(focus ? focus->center() : content.center());
+        growPanRoom();
+    }
     ++fit_count_;
     setProperty("pelicanFitCount", static_cast<qulonglong>(fit_count_));
     publishZoom(transform().m11(), QString{});

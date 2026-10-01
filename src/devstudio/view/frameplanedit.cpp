@@ -1817,9 +1817,69 @@ std::string renderAuthoringRefusalLine(const Json &error) {
     if (const auto sentence = graphLoopRefusalDescription(error);
         !sentence.empty())
         return line + sentence;
-    if (!code.empty()) line += code;
-    if (!message.empty()) line += (code.empty() ? "" : ": ") + message;
+    // UX-5a: the code and the message's sentence, never its JSON.
+    line += engineRefusalLine(error);
     return line.empty() ? std::string{"the engine refused the edit"} : line;
+}
+
+std::string engineRefusalSentence(std::string_view message) {
+    const auto trimmed = [](std::string_view text) {
+        const auto first = text.find_first_not_of(" \t\r\n");
+        if (first == std::string_view::npos) return std::string_view{};
+        const auto last = text.find_last_not_of(" \t\r\n");
+        return text.substr(first, last - first + 1);
+    };
+    const auto text = trimmed(message);
+    const auto brace = text.find('{');
+    if (brace == std::string_view::npos) return std::string{text};
+    // What comes before the object is a code ("x: {", "x@1 {"), after a
+    // sentence that carried it ("... was rejected: x: {"), or nothing; a
+    // last word with spaces in it is a sentence that only mentions braces.
+    auto head = trimmed(text.substr(0, brace));
+    if (head.ends_with(':')) head = trimmed(head.substr(0, head.size() - 1));
+    std::string_view lead;
+    if (const auto colon = head.rfind(": "); colon != std::string_view::npos) {
+        lead = trimmed(head.substr(0, colon));
+        head = trimmed(head.substr(colon + 2));
+    }
+    if (head.find(' ') != std::string_view::npos) return std::string{text};
+    const auto object = Json::parse(text.substr(brace), nullptr, false);
+    if (object.is_discarded() || !object.is_object()) return std::string{text};
+    std::string code = textOr(object, "code");
+    std::string sentence;
+    for (const char *key : {"message", "reason", "error"}) {
+        const auto found = object.find(key);
+        if (found == object.end()) continue;
+        if (found->is_string()) sentence = engineRefusalSentence(found->get<std::string>());
+        else if (found->is_object()) sentence = engineRefusalLine(*found);
+        if (!sentence.empty()) break;
+    }
+    if (sentence.empty()) {
+        // No sentence: the plain fields, briefly.
+        for (const auto &[key, value] : object.items()) {
+            if (key == "code") continue;
+            std::string shown;
+            if (value.is_string()) shown = value.get<std::string>();
+            else if (value.is_number() || value.is_boolean()) shown = value.dump();
+            else continue;
+            sentence += (sentence.empty() ? "" : ", ") + key + " " + shown;
+        }
+    }
+    std::string line{lead};
+    if (!head.empty()) line += (line.empty() ? "" : ": ") + std::string{head};
+    if (!code.empty() && code != head) line += (line.empty() ? "" : ": ") + code;
+    if (!sentence.empty()) line += (line.empty() ? "" : ": ") + sentence;
+    return line;
+}
+
+std::string engineRefusalLine(const Json &error) {
+    const auto code = textOr(error, "code");
+    auto sentence = engineRefusalSentence(textOr(error, "message"));
+    // The message's own code again after the error's says nothing new.
+    if (!code.empty() && sentence.starts_with(code + ": ")) sentence.erase(0, code.size() + 2);
+    if (sentence == code) sentence.clear();
+    if (code.empty()) return sentence;
+    return sentence.empty() ? code : code + ": " + sentence;
 }
 
 std::string framePlanViewSelectLine(

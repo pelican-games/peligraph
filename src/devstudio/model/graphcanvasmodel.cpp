@@ -5284,12 +5284,17 @@ FramePlanModel GraphCanvasModel::passInputPlan() const {
 }
 
 std::string GraphCanvasModel::outputResource(std::string_view node, std::string_view port) const {
+    return scopeOutputResource({}, node, port);
+}
+
+std::string GraphCanvasModel::scopeOutputResource(std::string_view scope, std::string_view node,
+                                                  std::string_view port) const {
     std::string at{node};
     std::string socket{port};
     // A render node hands on what it wrote: the resource on its input of
     // the output's name (render.fullscreen's `color`), followed a few steps.
     for (int step = 0; step < 8; ++step) {
-        const auto *found = findNode({}, at);
+        const auto *found = findNode(scope, at);
         if (found == nullptr || !found->is_object()) return {};
         const auto op = text(*found, "op");
         if (op == "render.image" || op == "render.buffer" || op == "render.attribute")
@@ -5300,6 +5305,10 @@ std::string GraphCanvasModel::outputResource(std::string_view node, std::string_
                        ? text(*parameters, "name")
                        : std::string{};
         }
+        // UX-5a: a loop's output is no input of the same name (a loop's
+        // `color` in and `color` out are two things): it is what its body
+        // writes, in the copy the engine expands last.
+        if (op == "graph.loop") return scope.empty() ? loopOutputResource(at, socket) : std::string{};
         const auto inputs = found->find("inputs");
         if (inputs == found->end() || !inputs->is_object()) return {};
         const auto input = inputs->find(socket);
@@ -5308,6 +5317,46 @@ std::string GraphCanvasModel::outputResource(std::string_view node, std::string_
         if (source.empty()) return {};
         socket = text(*input, "port");
         at = source;
+    }
+    return {};
+}
+
+std::string GraphCanvasModel::loopOutputResource(const std::string &loop_id,
+                                                 std::string_view port) const {
+    // `p` is the value of the last element that has a body (graph.loop's
+    // contract: the engine repoints a graph reader to it). `p[]` is read one
+    // element at a time; a pass's input names no element, so it reads the
+    // same last one.
+    const std::string base{port.ends_with("[]") ? port.substr(0, port.size() - 2) : port};
+    const auto read = loop(loop_id);
+    const auto *report = loopReport(loop_id);
+    if (!read || report == nullptr || !report->is_object()) return {};
+    const auto elements = report->find("elements");
+    if (elements == report->end() || !elements->is_array()) return {};
+    for (auto element = elements->rbegin(); element != elements->rend(); ++element) {
+        if (!element->is_object()) continue;
+        const auto branch = element->value("branch", std::size_t{0});
+        if (branch >= read->branches.size()) continue;
+        const auto &taken = read->branches[branch];
+        if (taken.nothing || taken.body.empty()) continue;
+        const auto definition = definitions_.find(taken.body);
+        if (definition == definitions_.end() || !definition->is_object()) return {};
+        const auto outputs = definition->find("outputs");
+        if (outputs == definition->end() || !outputs->is_object()) return {};
+        const auto endpoint = outputs->find(base);
+        if (endpoint == outputs->end() || !endpoint->is_object()) return {};
+        const auto local =
+            scopeOutputResource(taken.body, text(*endpoint, "node"), text(*endpoint, "port"));
+        if (local.empty()) return {};
+        // A target the body names by reference is the project's, not a copy's.
+        if (findNode(taken.body, local) == nullptr) return local;
+        // Each copy's image is `<loop>/<element>/<body node>` in the plan.
+        const auto copy = loop_id + "/" +
+                          std::to_string(element->value("element", std::int64_t{0})) + "/" + local;
+        const bool written = std::ranges::any_of(plan_passes_, [&](const GraphCanvasPlanPass &pass) {
+            return std::ranges::find(pass.writes, copy) != pass.writes.end();
+        });
+        return written ? copy : std::string{};
     }
     return {};
 }

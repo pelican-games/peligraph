@@ -986,6 +986,12 @@ class GraphCanvasModel {
     void requestNextLoopPage();
     void receiveLoopPage(const nlohmann::json &plan);
     const nlohmann::json *loopReport(std::string_view id) const;
+    // UX-5a: outputResource in one scope (a loop body's definition, or the
+    // root), and a loop's output in the root.
+    [[nodiscard]] std::string scopeOutputResource(std::string_view scope, std::string_view node,
+                                                  std::string_view port) const;
+    [[nodiscard]] std::string loopOutputResource(const std::string &loop_id,
+                                                 std::string_view port) const;
     // --- GL-1: what the frame plan holds besides the graph's own nodes.
     std::vector<GraphCanvasPlanPass> plan_passes_;
     std::string plan_graph_;
@@ -1871,6 +1877,9 @@ class GraphCanvasModel {
     // render.buffer, render.attribute) its own id, a render.target_ref the
     // target it names, a render node's output the resource node feeding its
     // input of the same name. Empty for anything else.
+    // UX-5a: a graph.loop's output (`p`, or `p[]`) is the image its body's
+    // output resolves to in the last copy the plan expanded
+    // (`<loop>/<element>/<image>`), never the loop's input of the same name.
     [[nodiscard]] std::string outputResource(std::string_view node, std::string_view port) const;
     // A pass's input edit is sent by the canvas's owner (edit_preset_pass);
     // what became of it is said on the line a graph edit's is.

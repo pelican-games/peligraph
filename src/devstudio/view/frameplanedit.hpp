@@ -524,6 +524,18 @@ std::string framePlanRenderTargetRejection(
 // `error` is the rejection's `error` object.
 std::string renderAuthoringRefusalLine(const nlohmann::json &error);
 
+// UX-5a: the words of an engine message that carries a JSON object --
+// "<code>: {...}", "<code>@1 {...}" or "{...}" -- for a line that has room for
+// one sentence: the object's own message (or reason), after its code; with
+// neither, its plain fields ("node loop, port color"). A message that holds
+// no JSON object (a shader's compile log among them) comes back as it is.
+// The whole message is the tooltip's and Copy message's.
+std::string engineRefusalSentence(std::string_view message);
+
+// UX-5a: "<code>: <sentence>" for a rejection's `error` object (either may be
+// missing); empty when it has neither.
+std::string engineRefusalLine(const nlohmann::json &error);
+
 // LP-4c: the details line of a pass, task or target a graph.loop expanded --
 // "loop steps · element 2 · body node fill".
 std::string framePlanLoopOriginLine(const FramePlanLoopOrigin &origin);

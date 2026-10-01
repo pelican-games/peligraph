@@ -2088,6 +2088,43 @@ TEST_CASE("A pan moves the view even when the whole drawing fits",
     REQUIRE(visible.contains(QRectF{0.0, 0.0, 40.0, 30.0}));
 }
 
+// UX-5a, item 3. A Fit view in a small pane (the bottom dock) shrank a big
+// graph until no word could be read nor a band pressed. The Graph's fit stops
+// at a readable zoom and then looks at the node in hand.
+TEST_CASE("UX-5a Fit view stops at a readable zoom and looks at the picked node",
+          "[devstudio][graph-canvas][scene][ux5a][fit]") {
+    (void)application();
+    QGraphicsScene scene;
+    // Far wider than the pane, with the node in hand at its right end.
+    scene.addRect(QRectF{0.0, 0.0, 4000.0, 300.0});
+    const QRectF picked{3700.0, 100.0, 200.0, 120.0};
+    scene.addRect(picked);
+    PelicanStudio::NodeCanvasView view{&scene};
+    view.resize(600, 400);
+    view.show();
+    QCoreApplication::processEvents();
+
+    // The control: no floor, and the fit shrinks to the clamp's minimum.
+    view.fitView();
+    QCoreApplication::processEvents();
+    CHECK(view.zoomScale() < PelicanStudio::GraphCanvasFitFloor);
+
+    view.setFitFloor(PelicanStudio::GraphCanvasFitFloor, [&] { return std::optional<QRectF>{picked}; });
+    view.fitView();
+    QCoreApplication::processEvents();
+    CHECK(std::abs(view.zoomScale() - PelicanStudio::GraphCanvasFitFloor) < 0.000001);
+    const QRectF visible = view.mapToScene(view.viewport()->rect()).boundingRect();
+    CHECK(visible.contains(picked.center()));
+
+    // Content that fits above the floor is fitted as before.
+    QGraphicsScene small;
+    small.addRect(QRectF{0.0, 0.0, 300.0, 200.0});
+    view.setScene(&small);
+    view.fitView();
+    QCoreApplication::processEvents();
+    CHECK(view.zoomScale() > PelicanStudio::GraphCanvasFitFloor);
+}
+
 // Q-2. The canvas ground is a flat fill and a grid at a fixed scene pitch: the
 // same picture every paint until the view moves. It used to be rebuilt -- up
 // to ~180 freshly allocated QLineF -- on every exposed repaint, and a pan is
@@ -6291,6 +6328,30 @@ TEST_CASE("GL-1c the folded nodes never lie on a loop's zone, placed or not, gro
                 before.height() + 200.0);
         gl1cCheckClear(h.scene, true);
     }
+}
+
+// UX-5a, item 4: Add loop's new zone was put on the folded present. It goes
+// clear of all that is drawn, the folded nodes included.
+TEST_CASE("UX-5a Add loop puts the new zone where nothing drawn is, folded nodes included",
+          "[devstudio][graph-canvas][scene][ux5a][add-loop]") {
+    (void)application();
+    auto document = q19ZoneDocument();
+    document["nodes"].erase(1);
+    auto plan = gl1cPlan();
+    auto &nodes = plan["nodes"];
+    nodes.erase(std::remove_if(nodes.begin(), nodes.end(),
+                               [](const Json &node) {
+                                   return node.value("name", std::string{}).starts_with("steps/");
+                               }),
+                nodes.end());
+    ZoneHarness h{document};
+    h.plan = plan;
+    h.open();
+    h.answerReads();
+    h.scene.repopulate();
+    REQUIRE(h.scene.addLoop({}, "fresh_body"));
+    h.commit();
+    gl1cCheckClear(h.scene, false);
 }
 
 // --- GL-1e. A pass of the rendering section takes lines on the Graph:

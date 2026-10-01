@@ -3981,6 +3981,16 @@ TEST_CASE("T-1 Deferred lighting fills its inputs with the G-buffer targets by n
     CHECK(fullscreenTemplateInputFill(deferred, {"g_albedo", "g_normal", "g_material",
                                                  "g_world_position", "g_emissive"})
               .size() == 5);
+    // UX-5a: a Graph material pass's images all carry "material" in the
+    // middle; each is matched by the socket its name ends with.
+    CHECK(fullscreenTemplateInputFill(
+              deferred, {"render_material_pass__emissive", "render_material_pass__worldpos",
+                         "render_material_pass__material", "render_material_pass__normal",
+                         "render_material_pass__albedo", "render_material_pass__color"}) ==
+          std::vector<std::string>{"render_material_pass__albedo", "render_material_pass__normal",
+                                   "render_material_pass__material",
+                                   "render_material_pass__worldpos",
+                                   "render_material_pass__emissive"});
     // Only Deferred lighting fills itself in.
     CHECK(fullscreenTemplateInputFill(FullscreenShaderTemplateKind::tone_map, gbuffer).empty());
     CHECK(fullscreenTemplateInputFill(FullscreenShaderTemplateKind::pass_through, gbuffer).empty());

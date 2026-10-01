@@ -455,15 +455,32 @@ std::vector<std::string> fullscreenTemplateInputFill(
         if (std::ranges::find(declared, role.name) != declared.end()) {
             chosen = std::string{role.name};
         } else {
-            std::vector<std::string> carrying;
-            for (const auto &name : declared)
-                for (const auto word : role.words)
-                    if (!word.empty() && name.find(word) != std::string::npos &&
-                        std::ranges::find(filled, name) == filled.end()) {
-                        carrying.push_back(name);
-                        break;
-                    }
-            if (carrying.size() == 1) chosen = carrying.front();
+            // UX-5a: the name's end first -- the socket a Graph image is
+            // named after (`render_material_pass__material`), or a word after
+            // the last '_' -- and only then the word anywhere in the name: a
+            // Graph pass's five images all carry "material" in the middle.
+            const auto ends = [](const std::string &name, std::string_view word) {
+                return name == word ||
+                       (name.size() > word.size() && name.ends_with(word) &&
+                        name[name.size() - word.size() - 1] == '_');
+            };
+            const auto inside = [](const std::string &name, std::string_view word) {
+                return name.find(word) != std::string::npos;
+            };
+            for (const auto matches : {+ends, +inside}) {
+                std::vector<std::string> carrying;
+                for (const auto &name : declared)
+                    for (const auto word : role.words)
+                        if (!word.empty() && matches(name, word) &&
+                            std::ranges::find(filled, name) == filled.end()) {
+                            carrying.push_back(name);
+                            break;
+                        }
+                // Two names of one kind is no answer, and a looser test
+                // would find at least the same two.
+                if (carrying.size() == 1) chosen = carrying.front();
+                if (!carrying.empty()) break;
+            }
         }
         if (chosen.empty()) break;
         filled.push_back(std::move(chosen));

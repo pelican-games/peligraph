@@ -1893,12 +1893,27 @@ struct FramePlanWidget::Impl {
         return false;
     }
 
+    // A rejection's `error` (or a reply that is one itself).
+    static const Json &refusalOf(const Json &response) {
+        const auto error = response.is_object() ? response.find("error") : response.end();
+        return error != response.end() && error->is_object() ? *error : response;
+    }
+
+    // UX-5a: the code and the message's sentence -- never the JSON a
+    // message can carry, which the line would cut off before its reason.
     static QString responseError(const Json &response) {
-        const auto code = response.value("code", std::string{});
-        const auto message = response.value("message", std::string{});
-        if (!message.empty())
-            return text(code.empty() ? message : code + ": " + message);
-        return text(response.dump());
+        const auto line = engineRefusalLine(refusalOf(response));
+        return line.empty() ? QStringLiteral("the engine refused the edit") : text(line);
+    }
+
+    // UX-5a: all a refusal said, for the tooltip and Copy message.
+    static QString responseDetail(const Json &response) {
+        const auto &reason = refusalOf(response);
+        if (!reason.is_object()) return text(response.dump());
+        const auto code = reason.value("code", std::string{});
+        const auto message = reason.value("message", std::string{});
+        if (code.empty() && message.empty()) return text(response.dump());
+        return text(code.empty() ? message : message.empty() ? code : code + ": " + message);
     }
 
     // An edit the engine did not take. Q-13: a document that moved under it
@@ -1914,7 +1929,10 @@ struct FramePlanWidget::Impl {
         }
         status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
         if (offerShaderContract(response, message)) return;
-        showStatus(oneLine(message), message);
+        // UX-5a: the line is the sentence; the tooltip (and Copy message)
+        // has the engine's whole message as well.
+        const QString whole = responseDetail(response);
+        showStatus(oneLine(message), message.contains(whole) ? message : message + QLatin1Char('\n') + whole);
     }
 
     // --- Q-14. The pass's inputs and its shader's declarations disagree:
@@ -2693,7 +2711,7 @@ struct FramePlanWidget::Impl {
                 !notice.empty())
                 return owner.tr("The engine refused the pass: %1").arg(text(notice));
             return owner.tr("The engine refused the pass: %1")
-                .arg(text(error->value("message", error->dump())));
+                .arg(text(engineRefusalLine(*error)));
         }
         return responseError(response);
     }

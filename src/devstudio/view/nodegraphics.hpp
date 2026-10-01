@@ -18,6 +18,7 @@
 
 #include <functional>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -220,6 +221,15 @@ class NodeCanvasView : public QGraphicsView {
     // Put the whole content on screen, within the zoom clamp.
     void fitView();
 
+    // UX-5a: a canvas whose words must stay readable after a fit. The fit
+    // stops at `floor`; content still bigger than the pane is then looked at
+    // where `focus` says (a scene rect: the picked node, say), or at its
+    // middle when `focus` names nothing. 0, the default, is no floor.
+    void setFitFloor(qreal floor, std::function<std::optional<QRectF>()> focus = {}) {
+        fit_floor_ = floor;
+        fit_focus_ = std::move(focus);
+    }
+
     // Move the view by this many pixels, the way the held middle button does.
     // Public so a test can drive the gesture without a desktop.
     void panBy(const QPointF &pixels);
@@ -280,6 +290,8 @@ class NodeCanvasView : public QGraphicsView {
     Qt::MouseButton pan_button_ = Qt::NoButton;
     DragMode pan_previous_mode_ = QGraphicsView::NoDrag;
     std::size_t fit_count_ = 0;
+    qreal fit_floor_ = 0.0;
+    std::function<std::optional<QRectF>()> fit_focus_;
 };
 
 } // namespace PelicanStudio

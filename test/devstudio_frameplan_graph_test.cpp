@@ -10897,6 +10897,70 @@ TEST_CASE("LP-4a the four view_select refusals read as one sentence each, "
     }
 }
 
+TEST_CASE("UX-5a an engine refusal whose message carries JSON reads as its sentence; "
+          "the whole is the tooltip's",
+          "[devstudio][frame-plan][ux5a][refusal]") {
+    application();
+    const std::string reason =
+        "Pass input target is not produced as an earlier output: lit in pass: present";
+    SECTION("the words of a message") {
+        // A JSON object with its own message: that sentence, its code first.
+        CHECK(engineRefusalSentence("{\"code\":\"pipeline.order\",\"pass\":\"present\","
+                                    "\"message\":\"" + reason + "\"}") ==
+              "pipeline.order: " + reason);
+        // A code and its fields: the fields, briefly.
+        CHECK(engineRefusalSentence("graph.loop_output_empty@1 {\"node\":\"loop\",\"port\":\"color\"}") ==
+              "graph.loop_output_empty@1: node loop, port color");
+        CHECK(engineRefusalSentence("render pipeline candidate was rejected: x.y: {\"reason\":\"" +
+                                    reason + "\"}") ==
+              "render pipeline candidate was rejected: x.y: " + reason);
+        // No object: as it is (a shader's log has braces that are no JSON).
+        CHECK(engineRefusalSentence(reason) == reason);
+        CHECK(engineRefusalSentence("0:12: error: '{' : syntax error") ==
+              "0:12: error: '{' : syntax error");
+        CHECK(engineRefusalLine(Json{{"code", "render_pipeline_preflight_failed"},
+                                     {"message", "{\"message\":\"" + reason + "\"}"}}) ==
+              "render_pipeline_preflight_failed: " + reason);
+        CHECK(engineRefusalLine(Json{{"code", "gate_closed"},
+                                     {"message", "The editor gate is closed"}}) ==
+              "gate_closed: The editor gate is closed");
+    }
+
+    SECTION("the Frame Plan's status line, after a refused drag") {
+        EditingFixture fixture;
+        fixture.open();
+        auto &logical = fixture.logical();
+        fixture.dragSocket(QStringLiteral("wp343_mixed_d"),
+                           QStringLiteral("wp343_mixed_d_output"),
+                           QStringLiteral("output"),
+                           nodeItem(logical, "wp343_mixed_a"));
+        REQUIRE(fixture.recorder.submits == 1);
+        fixture.recorder.result(
+            fixture.recorder.submit_id,
+            QByteArray::fromStdString(
+                Json{{"status", "accepted"}, {"ticket", "ux5a-1"}}.dump()));
+        QApplication::processEvents();
+        REQUIRE(fixture.recorder.ticket_id != 0);
+        const std::string message = "{\"pass\":\"present\",\"message\":\"" + reason + "\"}";
+        fixture.recorder.result(
+            fixture.recorder.ticket_id,
+            QByteArray::fromStdString(
+                Json{{"status", "rejected"},
+                     {"committed", false},
+                     {"error", {{"code", "render_pipeline_preflight_failed"},
+                                {"message", message}}}}
+                    .dump()));
+        QApplication::processEvents();
+        auto *status = fixture.widget.findChild<QLabel *>(
+            QStringLiteral("pelican.framePlanStatus"));
+        REQUIRE(status != nullptr);
+        CHECK(status->text() ==
+              oneLine(QString::fromStdString("render_pipeline_preflight_failed: " + reason)));
+        CHECK_FALSE(status->text().contains(QStringLiteral("{")));
+        CHECK(status->toolTip().contains(QString::fromStdString(message)));
+    }
+}
+
 TEST_CASE("LP-4a an edit on the canvas keeps a pass's and a task's view_select",
           "[devstudio][frame-plan][lp4a][view-select][canvas-edit]") {
     application();

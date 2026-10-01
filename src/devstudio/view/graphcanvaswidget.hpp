@@ -186,6 +186,9 @@ inline constexpr auto GraphCanvasLayerBandItem = "graph_layer_band";
 // The node is a heading band over two socket sections, so its height follows
 // its port count rather than a constant. The numbers are here so the scene
 // test can name the same geometry the canvas draws.
+// UX-5a: the least zoom Fit view goes to -- a node's words still readable in
+// the bottom dock. Content bigger than that is looked at by the picked node.
+inline constexpr qreal GraphCanvasFitFloor = 0.7;
 inline constexpr qreal GraphCanvasNodeMinimumWidth = 196.0;
 inline constexpr qreal GraphCanvasNodeMaximumWidth = 340.0;
 inline constexpr qreal GraphCanvasHeaderHeight = 32.0;
@@ -325,6 +328,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     [[nodiscard]] const std::optional<std::string> &selectedNode() const noexcept {
         return selected_node_;
     }
+    // UX-5a: where a Fit view that stops at a readable zoom looks -- the
+    // picked node's box, else the box of the node added last this session.
+    [[nodiscard]] std::optional<QRectF> fitFocus();
     // LP-4d1: the scope of what is picked -- the node, the edges and the
     // control points all belong to one scope ("" is the root). Picking in
     // another scope lets go of the rest.
@@ -645,10 +651,16 @@ class GraphCanvasScene final : public QGraphicsScene {
     // filed under the scope so the same node id in two definitions does not
     // share one position.
     std::map<std::pair<std::string, std::string>, QPointF> session_node_positions_;
+    // UX-5a: the node placeNewNode placed last ({scope, id}), for fitFocus.
+    std::optional<std::pair<std::string, std::string>> last_added_;
     // GL-1c: the places a placement gave the folded nodes (not a drag), kept
     // for the session under foldedPositionKey. They hold while they stay
     // clear of what the graph draws.
     std::map<std::pair<std::string, std::string>, QPointF> folded_places_;
+    // UX-5a: where the folded nodes stood when a node was added before the
+    // document placed any (the one placement would move them onto it). Held
+    // while they stay clear of the graph; Auto layout lets go of them.
+    std::map<std::pair<std::string, std::string>, QPointF> added_folded_places_;
     std::map<std::pair<std::string, std::string>, bool> session_collapsed_;
     std::map<std::string, ScopePlacement> placements_;
     QTimer *layout_timer_ = nullptr;

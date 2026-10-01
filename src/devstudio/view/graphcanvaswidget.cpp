@@ -596,6 +596,9 @@ void GraphCanvasScene::autoLayout() {
     std::erase_if(folded_places_, [&](const auto &entry) {
         return entry.first.second.starts_with(folded_prefix.second);
     });
+    std::erase_if(added_folded_places_, [&](const auto &entry) {
+        return entry.first.second.starts_with(folded_prefix.second);
+    });
     // Start from nothing: the placement is the whole answer, so a leftover
     // control point from the last one would be a bend nobody asked for.
     {
@@ -665,6 +668,19 @@ void GraphCanvasScene::autoLayout() {
 }
 
 // GL-1b: a folded node's place is session state, per view (GL-1).
+std::optional<QRectF> GraphCanvasScene::fitFocus() {
+    const auto box = [&](const std::string &scope, const std::string &id) -> std::optional<QRectF> {
+        if (QGraphicsItem *item = findNodeItem(*this, graphCanvasKinds(), qtext(scope), qtext(id)))
+            return item->sceneBoundingRect();
+        return std::nullopt;
+    };
+    if (selected_node_)
+        if (const auto picked = box(selection_scope_, *selected_node_)) return picked;
+    if (last_added_)
+        if (const auto added = box(last_added_->first, last_added_->second)) return added;
+    return std::nullopt;
+}
+
 std::pair<std::string, std::string> GraphCanvasScene::foldedPositionKey(const std::string &id) const {
     return {std::string{"\x01" "derived"}, (model_ != nullptr ? model_->viewKey() : std::string{}) + "|" + id};
 }
@@ -1880,6 +1896,7 @@ void GraphCanvasScene::repopulate() {
     // sockets, a value's text running past its box) and each zone's whole
     // frame (heading, edge rows, the carries' arrows, the bottom row).
     std::optional<QRectF> graph_bounds;
+    std::vector<QRectF> graph_boxes;
     for (QGraphicsItem *item : items()) {
         if (item->parentItem() != nullptr ||
             nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem})
@@ -1887,6 +1904,7 @@ void GraphCanvasScene::repopulate() {
         const QRectF drawn_box =
             item->sceneBoundingRect().united(item->mapRectToScene(item->childrenBoundingRect()));
         graph_bounds = graph_bounds ? graph_bounds->united(drawn_box) : drawn_box;
+        graph_boxes.push_back(drawn_box);
     }
 
     // GL-1b, decision 1: a folded node sits where the one placement put it --
@@ -1931,6 +1949,14 @@ void GraphCanvasScene::repopulate() {
             if (!folded_kept) folded_places_.insert_or_assign(key, position);
             else if (const auto kept = folded_places_.find(key); kept != folded_places_.end())
                 position = kept->second;
+        } else if (const auto kept = added_folded_places_.find(key);
+                   kept != added_folded_places_.end() &&
+                   std::ranges::none_of(graph_boxes, [&](const QRectF &box) {
+                       return QRectF{kept->second, drawing.derivedNodeSize(folded)}.intersects(box);
+                   })) {
+            // UX-5a: a node was added before the document placed any: the
+            // folded nodes stay where they were then, clear of it (placeNewNode).
+            position = kept->second;
         }
         if (const auto kept = session_node_positions_.find(key); kept != session_node_positions_.end())
             position = kept->second;
@@ -3340,6 +3366,9 @@ bool GraphCanvasScene::beginLabelEdit(const std::string &scope, const std::strin
     proxy->setData(NodeGraphItemKindRole,
                    QString::fromLatin1(GraphCanvasEditorItem));
     proxy->setData(NodeGraphNameRole, qtext(id));
+    // UX-5a: named as the heading it stands over is -- a body node drawn in a
+    // zone has its definition in front of its id.
+    proxy->setData(GraphCanvasZoneScopeRole, anchor->data(GraphCanvasZoneScopeRole));
     editor->proxy = proxy;
     editor->filter = std::make_unique<InlineEditFilter>([this](bool commit) {
         // The widget is still dispatching the event that ended the edit.
@@ -3460,6 +3489,9 @@ bool GraphCanvasScene::beginValueEdit(const std::string &scope, const std::strin
                    QString::fromLatin1(GraphCanvasEditorItem));
     proxy->setData(NodeGraphNameRole, qtext(id));
     proxy->setData(GraphCanvasPortRole, qtext(port));
+    // UX-5a: named as the pill it opened from is -- a body node drawn in a
+    // zone has its definition in front (`loop_body/render_fullscreen/shader`).
+    proxy->setData(GraphCanvasZoneScopeRole, anchor->data(GraphCanvasZoneScopeRole));
     editor->proxy = proxy;
     editor->filter = std::make_unique<InlineEditFilter>([this](bool commit) {
         QMetaObject::invokeMethod(
@@ -3561,6 +3593,7 @@ bool GraphCanvasScene::commitInlineEdit() {
 void GraphCanvasScene::placeNewNode(const std::string &scope, const std::string &id,
                                     const std::string &op) {
     if (model_ == nullptr || id.empty()) return;
+    last_added_ = std::pair{scope, id};
     const std::string current = model_->currentScope();
     // A box drawn on the canvas, in the scope's own coordinates (a zone's
     // body is drawn inside an item).
@@ -3597,6 +3630,11 @@ void GraphCanvasScene::placeNewNode(const std::string &scope, const std::string 
     // rest aside, into the place it was given.
     std::vector<QRectF> boxes;
     const GraphCanvasLayout &placed = layout(scope);
+    // UX-5a: everything drawn in the scope, the read-only folded nodes too,
+    // each with what it holds (GL-1c's bounds).
+    std::optional<QRectF> bounds;
+    bool anchored = false;
+    std::vector<std::pair<std::string, QPointF>> folded;
     for (QGraphicsItem *item : items()) {
         if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem} ||
             item->data(GraphCanvasScopeRole).toString() != qtext(scope))
@@ -3604,8 +3642,29 @@ void GraphCanvasScene::placeNewNode(const std::string &scope, const std::string 
         const auto name = item->data(NodeGraphNameRole).toString().toStdString();
         if (name == id) continue;
         boxes.push_back(scopeRect(*item));
-        if (!placed.nodes.contains(name)) session_node_positions_.try_emplace({scope, name}, item->pos());
+        const QRectF held =
+            item->sceneBoundingRect().united(item->mapRectToScene(item->childrenBoundingRect()));
+        const QRectF drawn{toScopePoint(scope, held.topLeft()), toScopePoint(scope, held.bottomRight())};
+        bounds = bounds ? bounds->united(drawn) : drawn;
+        if (item->data(GraphCanvasDerivedRole).toBool()) {
+            folded.emplace_back(name, item->pos());
+            continue;
+        }
+        if (placed.nodes.contains(name)) anchored = true;
+        else session_node_positions_.try_emplace({scope, name}, item->pos());
     }
+    // UX-5a: until the document places a node, the folded nodes follow the
+    // one placement, which gives the new node a column of its own and moves
+    // them onto the place it was given. They stay where they stand, while
+    // they stay clear of the graph (GL-1c); Auto layout places them again.
+    if (scope.empty() && !anchored)
+        for (const auto &[name, at] : folded)
+            added_folded_places_.insert_or_assign(foldedPositionKey(name), at);
+    // UX-5a: a new loop from no particular node goes below all of it, the
+    // folded nodes included: a zone grows with its body, right and down,
+    // into nothing.
+    if (op == "graph.loop" && !(selected_node_ && selection_scope_ == scope) && bounds)
+        position = QPointF{bounds->left(), bounds->bottom() + NodeGraphVerticalGap};
     const QSizeF size =
         op == "graph.loop"
             ? QSizeF{GraphCanvasZoneMinimumWidth,
@@ -4676,6 +4735,7 @@ struct GraphCanvasWidget::Impl {
                 definition_menu_target = std::move(target);
             });
         configureGraphCanvasView(*canvas);
+        canvas->setFitFloor(GraphCanvasFitFloor, [this] { return scene->fitFocus(); });
         canvas->setRenderHint(QPainter::Antialiasing, true);
         // Delete has to reach the scene, and a right-click on the canvas has to
         // reach the scene's own handler rather than the view's context menu.
@@ -5084,12 +5144,15 @@ struct GraphCanvasWidget::Impl {
         const auto &reason = error != response.end() && error->is_object() ? *error : response;
         const auto code = reason.value("code", std::string{});
         const auto message = reason.value("message", std::string{});
-        std::string line = message.empty() ? response.dump()
-                           : code.empty()  ? message
-                                           : code + ": " + message;
-        if (line.find("Pass input target is not produced as an earlier output") !=
+        // UX-5a: the line is the code and the message's sentence; the whole
+        // message follows it, on the lines the tooltip shows.
+        std::string line = engineRefusalLine(reason);
+        if (line.empty()) return response.dump();
+        if (message.find("Pass input target is not produced as an earlier output") !=
             std::string::npos)
             line += passRunsAfterHint;
+        const auto whole = code.empty() ? message : code + ": " + message;
+        if (!message.empty() && line.find(whole) == std::string::npos) line += "\n" + whole;
         return line;
     }
 
@@ -6448,10 +6511,13 @@ struct GraphCanvasWidget::Impl {
             // GL-1b, decision 3: the engine's sentence is long; what would
             // have applied the change is kept on the line whatever is cut.
             // GL-1e, decision 3: so is why a pass's input edit was refused.
+            // UX-5a: a refusal's first line is its sentence; what follows it
+            // is the engine's whole message, for the tooltip.
+            const QString first = whole.section(QLatin1Char('\n'), 0, 0);
             QString hint = qtext(std::string{GraphCanvasModel::restartNotOfferedHint});
-            if (!whole.endsWith(hint)) hint = qtext(std::string{passRunsAfterHint});
-            notice->setText(whole.endsWith(hint) ? oneLine(whole.chopped(hint.size())) + hint
-                                                 : oneLine(whole));
+            if (!first.endsWith(hint)) hint = qtext(std::string{passRunsAfterHint});
+            notice->setText(first.endsWith(hint) ? oneLine(first.chopped(hint.size())) + hint
+                                                 : oneLine(first));
             notice->setStyleSheet(message.kind == InspectorNoticeKind::Error
                                       ? QStringLiteral("color: #c0392b;")
                                       : QStringLiteral("color: #7f8c8d;"));

@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_build_C",
-  "description": "GB-1 target C (bloom loop), as far as it goes from File > New Project > Blank with Studio's GUI only. A forward material pass from the Graph tab's palette and a Cube (as gui_build_A); Add fullscreen pass in the root is the bright pass, fed the material pass's colour by a drag onto its + input (it draws with engine://passthrough: there is no threshold shader to pick); Add loop, Add fullscreen pass into its body, Count 4 typed, the bright pass's output dropped on the body pass (a loop input), the body's output on the zone's right edge, and the carry drawn back onto the boundary input. The body pass keeps engine://passthrough: the Pass fields' shader list (UX-2) does not offer the engine's bloom shaders yet (engine EL-4 lists them) and its image's extent_scale pill as 0.5. The engine expands the loop four times, each copy reading the one before. It stops here: extent_scale cannot be made per element (1 / pow2(element + 1)) from the pill, the engine's bloom_highpass needs PELICAN_FEATURE_* defines it reserves, the composite needs a buffer port and additive blending no field offers, and the loop's output dropped on present's + input made present read the loop's input image instead. Typed: the project folder and name, material_pass in the palette filter, 4 in Count, and 0.5.",
+  "description": "GB-1 target C (bloom loop), as far as it goes from File > New Project > Blank with Studio's GUI only. A forward material pass from the Graph tab's palette and a Cube (as gui_build_A); Add fullscreen pass in the root is the bright pass, fed the material pass's colour by a drag onto its + input (it draws with engine://passthrough: there is no threshold shader to pick); Add loop, Add fullscreen pass into its body, Count 4 typed, the bright pass's output dropped on the body pass (a loop input), the body's output on the zone's right edge, and the carry drawn back onto the boundary input. The body pass keeps engine://passthrough: the Pass fields' shader list (UX-2) does not offer the engine's bloom shaders yet (engine EL-4 lists them) and its image's extent_scale pill as 0.5. The engine expands the loop four times, each copy reading the one before. It stops here: extent_scale cannot be made per element (1 / pow2(element + 1)) from the pill, the engine's bloom_highpass needs PELICAN_FEATURE_* defines it reserves, the composite needs a buffer port and additive blending no field offers. Typed: the project folder and name, material_pass in the palette filter, 4 in Count, and 0.5. UX-5a: the loop's output dropped on present's + input sends the image the loop's last copy draws (loop/3/render_fullscreen__color), not the loop's input; the engine refuses it, because the graph's run (and the loop copies beside it) stands after present -- RS-3 moves the run before a rendering-section pass that reads what the run writes, and the copies' images are not counted (an engine WP); the refusal reads as its code and sentence; the body pass's value editor is named with its definition in front (graph_inline_editor#loop_body/...).",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -491,13 +491,13 @@
     {
       "label": "half size",
       "cmd": "type",
-      "name": "pelican.graphCanvasView::graph_inline_editor#render_fullscreen__color/extent_scale",
+      "name": "pelican.graphCanvasView::graph_inline_editor#loop_body/render_fullscreen__color/extent_scale",
       "text": "0.5"
     },
     {
       "label": "Return",
       "cmd": "key",
-      "name": "pelican.graphCanvasView::graph_inline_editor#render_fullscreen__color/extent_scale",
+      "name": "pelican.graphCanvasView::graph_inline_editor#loop_body/render_fullscreen__color/extent_scale",
       "sequence": "Return"
     },
     {
@@ -546,6 +546,58 @@
       "params": {},
       "path": "nodes[4].reads[0]",
       "value": "loop/0/render_fullscreen__color"
+    },
+    {
+      "label": "UX-5a, item 1: fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "present offers an empty + input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the loop's output (p: the last element's value) onto present's + input",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#loop/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+"
+      },
+      "steps": 8
+    },
+    {
+      "label": "Studio sends the image the loop's last copy draws (loop/3/render_fullscreen__color); the engine refuses it, for that run stands after present (RS-3 moves the graph's run before a rendering-section reader of what the run itself writes, not of what the loop beside it writes)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "contains": "Pass input target is not produced as an earlier output",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the line is the code and the sentence, not the engine's JSON",
+      "expect": "text_equals",
+      "name": "pelican.graphCanvasNotice",
+      "value": "render_pipeline_preflight_failed: Pass input target is not produced as an earlier output:… — the graph pass that draws it runs after this pass"
+    },
+    {
+      "label": "present stands first: nothing it reads asks the graph's run (the material pass, the bright pass and the loop's copies) to go before it",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[0].name",
+      "value": "present"
+    },
+    {
+      "label": "and it does not read the loop's input (the bright pass's image), as it did before UX-5a",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[0].reads.$len",
+      "value": 0
     },
     {
       "label": "a picture of the Graph tab with the bright pass and the loop",
