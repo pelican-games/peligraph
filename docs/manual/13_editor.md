@@ -681,7 +681,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 | `query_journal` | `{after_transaction_id?}` | 編集履歴(undo の種) |
 | `can_edit` / `can_preview` | `{}` | 編集・プレビューの可否と理由 |
 | `get_graph_instances` | `{}` | 共通グラフ文書の `source_reference` / `source_digest` / `instances[]`(`graph.instance` だけ)/ root の `nodes[]` 全体 / `definitions` 本体([get_graph_instances の実装](../../src/core/communication/renderconfigeditor.cpp#L2391)) |
-| `get_graph_catalog` | `{}` | 登録済みグラフモジュールのカタログ(`pelican.graph_catalog` v1。`pelican_cli graph-catalog` と同じ値 — [第10章](10_tools.md) §10.4)。✅RS-4 から、op の `outputs` の要素は `{port, type}` のほかに `{port, type_from_input}`(`type` の鍵は無く、名指した入力 socket に入る edge の型になる。`render.shadow_depth` の `depth`、`render.snapshot_copy` の `destination`)がある([第6章](06_rendering.md) §6.17) |
+| `get_graph_catalog` | `{}` | 登録済みグラフモジュールのカタログ(`pelican.graph_catalog` v1。`pelican_cli graph-catalog` と同じ値 — [第10章](10_tools.md) §10.4)。✅RS-4 から、op の `outputs` の要素は `{port, type}` のほかに `{port, type_from_input}`(`type` の鍵は無く、名指した入力 socket に入る edge の型になる。`render.shadow_depth` の `depth`、`render.snapshot_copy` の `destination`)がある([第6章](06_rendering.md) §6.17)。✅EL-1 から、`modules[].types[]` の各 type に `arguments {<引数名>: {kind, required, values | min, max, default}}` が付く。`kind` は値の種類(`enum_value` / `boolean` / `signed_integer` / `unsigned_integer` など)、`required` は既定値が無いとき true、`values` は enum の取れる値、`min` / `max` は整数の範囲、`default` は省いたときの値(enum は文字列)。type の検査が照合するのと同じ schema の表から読む(`pelican.render` の型は `builtinRenderTypeSchemas()`、`render.image` の `type.arguments` を照合する表)ので、並んだ値はどれも通り、外の値は今までどおり `unsupported enum value: <値>` で断られる([arguments を組む所](../../src/project/graphmodule.cpp#L384))。既存の `parameters` はそのまま |
 | `get_graph_values` | `{instance}` | その instance の入力 port の実効値 `{port, value, source, connected\|parameter}` と `published` / `generation` / `frame`。**publish 時の snapshot を読むだけで再評価しません** |
 | `get_graph_node_values` | `{instance?}` | 展開木の全ノードの出力値(`{node, expanded, outputs}`)と `source:"rendering"`。`instance` 省略で root から |
 
@@ -928,6 +928,7 @@ shader の batch、render pipeline の読み直しが shader の変更を一緒�
 | `edit_render_targets` | `base_source_digest`・`ops[]`(✅F-1)。op は `{op:"add", target}` / `{op:"replace", name, target}`(`target.name` を変えれば改名)/ `{op:"remove", name}`。書くのは managed fragment `project://passes/authoring/render-targets.json` 1 つだけで、最初の要求で作って root の `features[]` に足す(空になっても消さない)。ops は順に当て、最後に 1 回 preflight して ticket を返す —— **全部入るか、何も入らないか**。名前付きの拒否は下の 6 種([edit_render_targets の実装](../../src/core/communication/renderconfigeditor.cpp#L3986)) |
 | `add_authored_pass` | `base_source_digest`・`graph`・`insert`(authoring context の挿入位置の token)・`pass`。pass 1 つを managed fragment `project://passes/authoring/pass-<id>.json` に書き、root の `features[]` に足して preflight し、ticket を返す。受ける `type` は `fullscreen` と **`material`**(✅G-1)だけで、それ以外は `authored_pass_type_unavailable`(detail は `requested_type` と **`supported_types`**(配列)。[add_authored_pass の種類の門](../../src/core/communication/renderconfigeditor.cpp#L3718))。material pass の形の検査は下の段落。任意の **`material_route_default`**(`"auto"` / `"forward"`。✅G-4)を渡すと、pass と rendering 文書の root の既定を 1 つの ticket で変える(下の「material の route の既定」) |
 | `set_material_route_default` | `base_source_digest`・`material_route_default`(`"auto"` / `"forward"`)。root の既定だけを変える。root 編集の ticket に乗り、commit の結果に `restart_required: true`(✅G-4。[`RenderConfigEditorService::setMaterialRouteDefault()`](../../src/core/communication/renderconfigeditor.cpp#L3076)) |
+| `edit_rendering_keys` | `base_source_digest`・`set?`(`{キー: 値}`)・`remove?`(キーの配列)。root の rendering 節のうち、ほかの RPC が書かない 8 つのキー(`draw_sort` など)を 1 つの ticket で丸ごと書く / 消す(✅EL-3。下の「rendering 節のほかのキーを書く」) |
 | `edit_graph_document` | `base_source_digest`と`ops[]`で共通グラフ文書を編集する(§13.5「グラフの装着を編集する」)。ops は順に候補文書へ当て、最後に 1 回だけ展開する — **全部通るか、文書ごと拒否か**のどちらか。任意の **`material_route_default`**(`"auto"` / `"forward"`。✅RS-2)を渡すと、graph の変更と rendering 文書の root の既定を 1 つの ticket で変える(下の「material の route の既定」) |
 | `edit_graph_instances` | `base_source_digest`・`attach[]`・`detach[]`。owner を持つ root instance の装着 / 取り外しだけを扱い、中身は `edit_graph_document` の ops へ翻訳される([edit_graph_instances の実装](../../src/core/communication/renderconfigeditor.cpp#L2418))。任意の `material_route_default`(✅RS-2)は `edit_graph_document` と同じ |
 | `export_render_feature` | `scope`(`root` / `preset`)と`index`で feature 1 つを `user://components/<name>/` へ書き出す。`engine://` の feature は `render_component_engine_reference` で拒否([export の実装](../../src/core/communication/renderconfigeditor.cpp#L1282)) |
@@ -963,6 +964,25 @@ feature だけだからです。拒否は次の 6 種で、どれも文書を 1 
 [出所の判定](../../src/core/communication/renderconfigeditor.cpp#L627))。ほかに `render_target_fragment`(fragment の参照)と
 `render_target_vocabulary`(`formats` / `usage` は parser 自身の表、`format_classes` は `scene` / `display` / `data` /
 `explicit`)が付きます。fragment は pass を持たないので `managed_fragments` には出ません。
+
+**draw_loop と region の差し替えが受ける名前も、context から読めます(✅EL-1)。**Studio が利用者に名前を打たせず、
+engine の一覧から選ばせるための 3 つの鍵です([組み立て](../../src/core/communication/renderconfigeditor.cpp#L2194))。
+
+| 鍵 | 中身 |
+|---|---|
+| `materials` | `[{id, name, tags, variants, builtin}]`。今動いている engine に登録された material(名前付き variant のための登録は除く)を `GlobalMaterialId` の昇順で([一覧を作る所](../../src/core/material/materialcontainer.cpp#L2401))。読み方は draw_loop の表が判定に使うものと同じです([`MaterialContainer::drawLoopSubject()`](../../src/core/material/materialcontainer.cpp#L2423))。`id` は `when.material` が照合するキーで、project の material 文書のものは `<文書>#<name>`、glTF のものは `<asset>#material[<i>]`、それ以外は登録名です([キーの作り方](../../src/project/materialdrawloop.cpp#L17))。`tags` は `when.tags` と `where` が見るもの、`variants` は `draw.variant` と `has_variant` が受ける名前(名前順)。engine 自身の material も並び、`builtin`(名前が `pelican.builtin.` で始まる)は常に付きます |
+| `material_tags` | `materials` の `tags` の和。重複なし、辞書順 |
+| `region_providers` | `[{name, builtin, provider_version}]`。`edit_region_replacement` の `provider` に書ける名前を、`resolveRegion` が名前で引くのと同じ表から名前順に([`SubgraphReplacementRegistry::providerListing()`](../../src/core/renderingpass/subgraphreplacementregistry.cpp#L1194))。game の provider が engine のものを同じ名前で覆っていれば、覆った方だけが出ます。`builtin` は engine が登録したもの(`builtin.identity_v1` など)。provider がどの region を受けるかは registry が持たないので出しません |
+
+engine が動いていないとき(service に engine の一覧を読む口が無いとき)は 3 つとも `[]` です。既存の鍵は変わりません。
+test: `engine_primitives_test` の
+[「EL-1 get_render_authoring_context lists the materials a draw_loop judges, by the names it takes」](../../test/engine_primitives_test.cpp#L1398)
+(GPU。tag と variant を持つ material 3 つを足し、一覧の `id` / `tags` / `variants` / `builtin`、`material_tags` の並び、
+`builtin.identity_v1` を見てから、一覧の名前だけで `has_variant` / `tags` / `material` の分岐を書いた draw_loop を `edit_graph_document` で
+commit し、`get_frame_plan` で各 material が名前で選んだ分岐に入ることを見る)と、`renderconfigeditor_test` の
+[「EL-1 get_graph_catalog lists the argument values render.image accepts, and only those」](../../test/renderconfigeditor_test.cpp#L9835)
+(`pelican.render.color_signal@1` と `pelican.render.depth@1` の `arguments` の値を 1 つずつ使った `render.image` を 1 回の編集で commit し、
+一覧に無い値は文書を変えずに断られることを見る)。
 
 **編集は、起動時に登録した graph の変種の全部で合成してから受けます(✅G-6)。**engine は起動時に flat と一緒に preview の
 graph も組み、XR を始めたときは xr も組みます([第6章 §6.13](06_rendering.md))。render の編集の候補は、ticket を取る前に
@@ -1150,16 +1170,71 @@ ticket を次の結果で終えます([型付きの拒否のときだけ commit 
 - `set_layout` だけの `edit_graph_document`(N-6。runtime に行かない)は対象外です。`material_route_default` を付けたもの(✅RS-2)は runtime に行くので対象です。
 - Studio がこの結果を受けて engine を起動し直す流れは、[Studio のノードキャンバス](#studio-のノードキャンバスgraph-タブ)の
   「engine の再起動が要る graph の編集(✅GL-1b)」にあります。
-- ⚠ 残した穴: ディスクからの reload([`Renderer::reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3505))は live の material の検査を
-  切り([`validate_live_materials = false` の所](../../src/core/vkcore/renderer.cpp#L3537))、material の pipeline を reload service の側で組み直します。file
-  watcher が開いていれば、RS-1 が commit したファイルを拾って live に載せる可能性があります(未確認)。authored の経路でもこの
-  組み直しを使う案は、利用者の判断待ちです。
+- ディスクからの読み直しとの関係: [`Renderer::reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3505) は live の material の照合を
+  外し([`validate_live_materials = false` の所](../../src/core/vkcore/renderer.cpp#L3537))、同じ transaction の中で material の shader と pipeline を
+  作り直してから公開し、作り直しが失敗すれば候補世代ごと捨てて旧世代を保ちます([第6章 §6.7](06_rendering.md) の
+  「任意 G-buffer / material output ABI・attachment state」)。RS-1 が commit した文書を、その engine 自身の file watcher が拾うことは
+  ありません。RS-1 の editor は `--rpc` で起こした engine の中でだけ動き([RPC を受け始める所](../../src/core/appflow/loop.cpp#L701))、
+  `--rpc` の engine では watcher の gate が閉じているためです([gate の条件](../../src/core/watch/reloadgate.cpp#L27))。同じ project を
+  `--rpc` 無しの窓ありで開いている別の engine があれば、その watcher がファイルを拾い、ディスクの経路で組み直しを試みます
+  (この道を端から端まで通す test は見当たりません。未確認)。
+- 編集 RPC の経路でもディスクの経路と同じ作り直しを使い、起動し直さずにその場で載せる案は採りません。起動し直しのままです
+  (2026-10-01 利用者の決定)。
 - test: `renderconfigeditor_test` の
   [「RS-1 a candidate refused live only for a material's physical contract is committed with restart_required」](../../test/renderconfigeditor_test.cpp#L7407)
   (runtime を差し替えて、結果の field・2 回目の編集・ほかの拒否が何も書かないことを見る)と、`engine_primitives_test` の
   [「RS-1 a graph edit the live materials cannot take is committed and asks for a restart」](../../test/engine_primitives_test.cpp#L792)
   (GPU。blank の project に palette と同じ op で `render.material_pass`(deferred_geometry_v1)と G-buffer の image 6 枚を足し、
   起動し直すと frame plan にその pass が出ることまで見る)。
+
+**rendering 節のほかのキーを書く(✅EL-3)。**`edit_rendering_keys {base_source_digest, set?, remove?}` は、root の rendering 節のうち
+ほかの RPC が書かないキーを、1 つの ticket で丸ごと書くか消します([`RenderConfigEditorService::editRenderingKeys()`](../../src/core/communication/renderconfigeditor.cpp#L3181))。
+それまでこれらのキーを変える道は、文書を丸ごと戻す `restore_render_documents` しかありませんでした。
+
+- 受けるキーは `draw_sort`・`shader_defines`・`snapshots`・`graph_transforms`・`render_strategy`・`xr`・`multisampling`・`resolver_version`
+  の 8 つです([受けるキーの表](../../src/core/communication/renderconfigeditor.cpp#L3107))。コードの注記では、どれも世代を組むたびに読み直されるキーで、このキーを変えた ticket は
+  それだけでは再起動を求めません。
+- `set` の値は丸ごと置き換えます(配列や object を混ぜ合わせません)。無いキーは足します。`remove` はそのメンバーを前後のカンマごと消し、
+  ほかのバイトはそのまま残します([消す所](../../src/project/renderconfigdocument.cpp#L693))。同じキーを `set` と `remove` の両方に書く要求と、
+  どちらにもキーが無い要求は invalid params です。
+- root の文書のバイトが変わらないとき(無いキーの `remove` だけ、など)は、commit の結果に `no_change: true` が付き、`documents` は空です
+  ([no_change を返す所](../../src/core/communication/renderconfigeditor.cpp#L5371))。
+- 書き先は root の rendering 節だけです。preset を選ぶ root(rendering 節に `pipeline` がある root)では、`multisampling` と
+  `resolver_version` を **`rendering_key_not_allowed_here`**(`key`・`reason`)で断ります。`reason` は `multisampling` が
+  `preset_root_takes_pipeline_settings_msaa`(preset を選ぶ root の MSAA は `pipeline.settings.msaa` に書く)、`resolver_version` が
+  `not_in_preset_root_keys`(preset の config か direct root の rendering 節に書く)です([断る所](../../src/core/communication/renderconfigeditor.cpp#L3135))。
+  ほかの 6 つは preset を選ぶ root の rendering 節にも書けます。
+- ほかの RPC が書くキーは **`rendering_key_owned`**(`key`・`method`)で断り、`method` に書く RPC の名前を返します([表](../../src/core/communication/renderconfigeditor.cpp#L3116))。
+
+  | キー | `method` |
+  |---|---|
+  | `features` | `edit_render_features` |
+  | `rendering_passes` / `material_routing` | `edit_preset_pass` |
+  | `material_route_default` | `set_material_route_default` |
+  | `frame_node_order` | `edit_frame_node_order` |
+  | `scene_acceleration_structures` / `ray_task_acceleration_structures` | `edit_scene_acceleration_structures` |
+  | `ray_task_callable_records` | `edit_ray_callable_records` |
+  | `pipeline` | `fork_render_pipeline` |
+  | `render_targets` | `edit_render_targets` |
+  | `target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments` | `edit_target_planning`(EL-3 の時点では未登録の RPC。コードの注記では EL-2 のもの) |
+
+- それ以外のキー(`ray_group_layout` や graph root のキーなど)は **`rendering_key_not_editable`**(`key`)です。
+- 要求のキーは書く前に全部判定し、1 つでも断れば何も書きません(ticket も取りません)。
+- 値の形を見る専用の検査はありません。ほかの authored の編集と同じく、ticket を取る前の preflight(候補の合成と graph の変種の合成)と、
+  commit のときの engine の組み直しで判定します([ticket を取る所](../../src/core/communication/renderconfigeditor.cpp#L3634))。preflight で断られた値は、ticket を取らずに
+  `render_pipeline_preflight_failed`(`method: "edit_rendering_keys"`)で返ります。preflight を通って組み直しで断られた値は、ticket の結果が
+  `committed: false` と `render_pipeline_preflight_failed` になります。どちらも文書は変わりません。test では、preset を選ぶ root の
+  `draw_sort: "el3_not_an_object"` が前者、direct root の `draw_sort: {"opaque": {"provider": 5}}` が後者でした。
+- ticket の id は authored pass と同じ `render-authored-pass-<N>` で、結果は `get_edit_result` / `step_frame` の `edit_results[]` に来ます。
+  commit の結果は RD-1 の `documents` を持つので、`restore_render_documents` で戻せます。
+- 組み直しが live の material の物理の契約だけで断られたときは、上の RS-1 と同じく commit して `restart_required` を返します
+  (RS-1 の判定は ticket の種類を問わないため。EL-3 の ticket でこれを通す test はありません)。
+- test: `renderconfigeditor_test` の
+  [「EL-3 edit_rendering_keys writes a direct root's keys whole, removes one, and RD-1 restores them」](../../test/renderconfigeditor_test.cpp#L9933)
+  (`draw_sort` と `shader_defines` を書いて組み直しと公開が 1 回ずつ起き、`restart_required` が付かないこと、`remove` がメンバーとカンマだけを
+  消すこと、`restore_render_documents` で元のバイトに戻ること)と
+  [「EL-3 edit_rendering_keys refuses by name, and one refused key writes nothing」](../../test/renderconfigeditor_test.cpp#L9974)
+  (direct root と preset を選ぶ root の 2 SECTION。3 種の拒否、書けるキーと書けないキーを混ぜた要求が何も書かないこと、値の誤りの 2 つの断られ方)。
 
 Render Featuresの **Parameters...**で、選択中 feature instance の scalar パラメータを編集できます
 (`edit_render_features` の `set_parameters`)。欄は engine の `parameters` 宣言から作られ、
@@ -2553,7 +2628,7 @@ engine と**同じ file** から埋め込んだものです(repo に写しは置
 - 既に出している ○ のクリックは `<pass> already shows <resource>.` と言って送りません。`engine://passthrough` 以外の pass では
   クリックしても何も起きません。
 - Pass Editor で、`engine://passthrough` の pass の Fragment を別の shader に替えて Save すると、`PELICAN_PASSTHROUGH_INPUT` を
-  defines から落とします(ほかの define は残ります。[Save で落とす所](../../src/devstudio/view/fullscreenpasswidget.cpp#L2471))。
+  defines から落とします(ほかの define は残ります。[Save で落とす所](../../src/devstudio/view/fullscreenpasswidget.cpp#L2488))。
   Fragment を替えない Save では落としません。⚠ canvas の shader の帯で fragment を替えたときは落としません。
 
 **宣言の無い shader の pass に落とすと(✅VI-3b)**: engine が `pass_inputs` を出していて、shader が入力を 1 つも宣言しない
@@ -2686,7 +2761,7 @@ loop/0/face_pass (loop loop, body node face_pass) writes loop/0/face_pass__color
 **保存の規則(✅LP-4a / LP-4b)**:
 
 - **Pass Editor の Save は、View の欄を変えたときだけ `view_select` を送ります**
-  ([送るかを決める所](../../src/devstudio/view/fullscreenpasswidget.cpp#L2420))。
+  ([送るかを決める所](../../src/devstudio/view/fullscreenpasswidget.cpp#L2438))。
   - `edit_preset_pass` は、渡されなかった member を保ちます。欄を触らない Save(shader や入力だけを変えた Save)では、今の値がそのまま残ります。
   - どの軸も All views に戻すと、`view_select: null` を送ります。engine は member を消します。canvas の View も同じです。
 - **task は宣言ごと送ります。**
@@ -2713,7 +2788,7 @@ fork は要りません(fork する preset がありません)。
 偽の pass(編集できる種類でないもの)を開くと、Pass Editor は保存できない draft を読み込まず、notice 行に
 「`<pass>`: not editable in a direct root」、tooltip に root の参照と「..., which selects no preset, and the engine offers no
 editable declaration of it. Edit that file by hand.」を出します
-([direct root の Pass Editor の拒否](../../src/devstudio/view/fullscreenpasswidget.cpp#L2545))。canvas も同じ文で断り、
+([direct root の Pass Editor の拒否](../../src/devstudio/view/fullscreenpasswidget.cpp#L2573))。canvas も同じ文で断り、
 engine が足した pass には「is added by the engine; it has no declaration in the project to edit.」と言います。どちらも
 fork は勧めません([direct root の canvas の拒否](../../src/devstudio/view/frameplanedit.cpp#L131))。Pass Editor は pass を
 選ぶと最初に form を空にするので、断られた pass の下に前の pass の下書きが残ることはありません(✅F-7)。
@@ -2851,12 +2926,12 @@ Open はそのファイルを使って開きます([書き込み](../../src/devs
 
 **打つものが減りました(✅G-3)**: Vertex 欄の既定は `engine://fullscreen` です。New… は、pass 名が空(か New… 自身が入れた
 名前)なら雛形の名前(`deferred_lighting` / `tone_map`、Pass-through は `fullscreen_pass`。使われていれば `_2`…)を入れ、
-shader 名を pass 名から付けます。自分で打った名前は上書きしません([雛形の名前の提案](../../src/devstudio/view/fullscreenpasswidget.cpp#L1445))。
+shader 名を pass 名から付けます。自分で打った名前は上書きしません([雛形の名前の提案](../../src/devstudio/view/fullscreenpasswidget.cpp#L1499))。
 保存した後も form はその名前を持ったままです。
 
 **shader は一覧から選べます(✅T-1)。**Fragment と Vertex の欄の横に **Pick...** の一覧
 (`pelican.fullscreenPass.shader.fragmentChoice` / `pelican.fullscreenPass.shader.vertexChoice`)があります
-([一覧を欄の横に置く所](../../src/devstudio/view/fullscreenpasswidget.cpp#L1157))。並びは project の `shaders/` の `.frag`(Vertex は
+([一覧を欄の横に置く所](../../src/devstudio/view/fullscreenpasswidget.cpp#L1148))。並びは project の `shaders/` の `.frag`(Vertex は
 `.vert`)を名前順に `project://shaders/<名前>` で、その後に engine の fullscreen shader(Fragment は `engine://passthrough`(✅VI-3a。
 入力をいくつでも取る。[足した所](../../src/devstudio/view/fullscreenshadertemplate.cpp#L409))/ `engine://fullscreen` /
 `engine://scene_present` / `engine://output_transform` / `engine://ssao` / `engine://ssao_blur`、Vertex は `engine://fullscreen`)です
@@ -2868,33 +2943,34 @@ shader 名を pass 名から付けます。自分で打った名前は上書き�
 以外は `_`、pass 名が空なら `fullscreen_pass_color`、使われていれば `_2`…。[名前の提案](../../src/devstudio/view/fullscreenshadertemplate.cpp#L420))。
 選ぶと Frame Plan の New render target の form(F-1)がその名前入りで開き、OK で target が commit されると、その target が
 この pass の color 出力に足されます。plan の読み直しで変わったのがその target が増えたことだけなら、Pass Editor の下書きは
-捨てません([下書きを残す判定](../../src/devstudio/view/fullscreenpasswidget.cpp#L3211))。
+捨てません([下書きを残す判定](../../src/devstudio/view/fullscreenpasswidget.cpp#L3287))。
 
 **既にある shader を読む pass の New…(✅G-5)**: pass が既に `shaders/<pass 名>.frag` を読んでいるとき(New… で作った
 `shaders/present.frag` を読む `present` で、もう一度 New… を押したときなど)、名前の提案は `<pass 名>_<雛形>`(`present_tone_map` / `present_deferred_lighting`)で、
 そのファイルもあれば `_2`、`_3`… を足します。Pass-through なら `<pass 名>_2` からです
-([既存の file を避ける shader 名の提案](../../src/devstudio/view/fullscreenpasswidget.cpp#L1209))。以前は今読んでいるファイルの名前を
+([既存の file を避ける shader 名の提案](../../src/devstudio/view/fullscreenpasswidget.cpp#L1267))。以前は今読んでいるファイルの名前を
 提案したので、Create が「already exists」になっていました。今のファイルは上書きされずに残ります。
 
 **pass の設定欄(✅G-3)**: fullscreen pass の form に 2 つの欄が増えました(add / edit の両方)。
 
 - **Frame data** の行(`pelican.fullscreenPass.interface`): **Uses scene lights**(`uses_light_data`)と push constants の
   combo(No push constants / Camera position / Projection and view = `push_constants` の `camera_position` /
-  `projection_view`)です([Frame data の行](../../src/devstudio/view/fullscreenpasssettings.cpp#L119))。どちらも pass の
+  `projection_view`)です([Frame data の行](../../src/devstudio/view/fullscreenpasssettings.cpp#L50))。どちらも pass の
   contract と fingerprint に載る宣言で、GPU への供給は変わりません —— light の UBO(set 0 binding 2)はこの欄に関係なく
   すべての pass に bind され、camera の位置は push されず、雛形は `pelicanFrame.camera_position` を読みます
   ([第6章](06_rendering.md) §6.2 の fullscreen の項)。
 - **color 出力ごとの行**(`pelican.fullscreenPass.outputOps`、color 出力の欄の下): Load(Default / Load / Clear /
   Don't care)・clear colour(`r, g, b[, a]`)・Store(Default / Store / Don't care)
-  ([Load / Clear / Store の行](../../src/devstudio/view/fullscreenpasssettings.cpp#L267))。列の見出しはありません(左から
-  出力名・Load・clear colour・Store)。**`load_op` / `store_op` の正は今までの `output.color` の JSON 欄**で、この行は JSON 欄を
-  映し、変えると JSON 欄へ書き戻します(`subresource` などほかの field は残ります)。**clear colour は attachment object には
+  ([Load / Clear / Store の行](../../src/devstudio/view/passforms/attachmentopsform.cpp#L225))。列の見出しはありません(左から
+  出力名・Load・clear colour・Store)。✅UX-4a(`ad1e0771`)から、この行は Pass Editor の部品 `AttachmentOpsForm` で、
+  `output.color` の各 attachment object の `load_op` / `store_op` を直接書きます(UX-4a の前は `output.color` の JSON 欄が正で、
+  この行はそれを映していました。その JSON 欄は UX-4a で無くなりました)。`subresource` などほかの field は残ります。**clear colour は attachment object には
   書けない**(attachment object が受けるのは `target` / `subresource` / `load_op` / `store_op` だけ)ので、pass の
   **`clear_colors`**(出力名が鍵)に入ります。swapchain に書く出力の `clear_colors` の鍵が、swapchain → display の正規化の
   下でどうなるかは未確認です。
   clear colour の欄の横には **Colour...**(`pelican.fullscreenPass.outputClearColorPick.<番号>`。✅T-1)があり、OS の色選択
   (modal の `QColorDialog`、alpha つき)で選んだ色を欄に `r, g, b, a` で書きます
-  ([色を選んで欄に書く所](../../src/devstudio/view/fullscreenpasssettings.cpp#L253))。色選択は自動化面から操作できないので、欄への
+  ([色を選んで欄に書く所](../../src/devstudio/view/passforms/attachmentopsform.cpp#L317))。色選択は自動化面から操作できないので、欄への
   直接入力も残っています。
 
 保存は今までどおり `add_authored_pass` / `edit_preset_pass` で、edit は宣言から変わった field だけを送ります(変えずに
@@ -2904,7 +2980,7 @@ shader 名を pass 名から付けます。自分で打った名前は上書き�
 ある)と、form の下の折りたためる欄(`pelican.fullscreenPass.compileLog`)に log 全文が等幅で出ます。行番号が付き、
 log が名指す `file:line` は強調されます。notice 行は「shader compile failed; see the log below」だけで、**form に打った
 値はそのまま残る**ので、shader を直してもう一度 Save できます。成功すると欄は消えます
-([経路](../../src/devstudio/view/fullscreenpasswidget.cpp#L1532))。canvas の帯で直接 stem を変えて compile で断られた
+([経路](../../src/devstudio/view/fullscreenpasswidget.cpp#L1597))。canvas の帯で直接 stem を変えて compile で断られた
 ときは、今も status の 1 行だけです。
 
 **shader が読まない入力を足すと、何をすればよいかを 1 行で言い、その場で直せます(✅Q-14)。**例えば `present` が何も読まない project の shader(入力を宣言せず gradient を書くだけの `shaders/gradient.frag` など)で描いているとき(Blank pipeline の `present` が使う `engine://passthrough` は入力がすべて可変なので、入力を足しても断られません。✅VI-2)、そこへ Pass Editor の Inputs で `gbuffer_albedo` を Add して Save すると、engine は pass の入力と shader の宣言が合わないとして断ります(上の「レンダー設定を編集する」の `shader_input_mismatch`。✅Q-14e)。正しい拒否ですが、以前は engine の文が出るだけで、次に何をすればよいかを言いませんでした。canvas で `present` の node に落としたときは、✅VI-3b から Studio が送る前に止め、`present's shader declares no inputs.` と下の同じ 2 つのボタンを出します(上の「宣言の無い shader の pass に落とすと」。VI-3b より前は送ってから、この拒否を受けていました)。
@@ -2914,7 +2990,7 @@ log が名指す `file:line` は強調されます。notice 行は「shader comp
 - **N の出所**: `shader_input_mismatch.shader_pass_inputs` の数 → 無ければ message の `(shader declares N pass inputs)` → 無ければ `get_frame_plan` がその pass に出した `pass_inputs` から数えた数(固定の宣言の数 + 可変の組の max。宣言がその fragment のもの —— 末尾の `.frag` の違いは見ない —— のときだけ。✅VI-3b。[宣言から数える所](../../src/devstudio/view/shaderinputcontract.cpp#L227))→ どれも無ければ数を言わず、`does not read the inputs the pass lists.` の形になります(`pass_inputs` の無い新しい pass など)。VI-3b より前の 3 番目は、fragment の file の宣言行を数えていました。pass と fragment も、engine が `shader_input_mismatch` で名指せばそちらを使います。
 - **Use engine://passthrough**(✅VI-3b。`pelican.framePlan.shaderContract.usePassthrough` / `pelican.fullscreenPass.shaderContract.usePassthrough`): pass の fragment を `engine://passthrough` にします。入力がすべて可変(max 8)の engine の shader なので、今の入力(足そうとした入力を含む)をそのまま読めます。Frame Plan は入力の一覧と `shader.fragment` を **1 回の `edit_preset_pass`** で送ります。どちらか片方だけの変更は engine が断るためです([入力と shader を 1 回で送る要求](../../src/devstudio/view/frameplanedit.cpp#L425))。Pass Editor は Fragment 欄に入れて、拒否の後ならそのまま保存します。**file は書きません**。`PELICAN_PASSTHROUGH_INPUT` の define が無ければ出すのは入力 0 で、別の入力を出すには上の「passthrough が出す入力を ○ で選ぶ」です。VI-3b より前のこのボタンは **Make a pass-through shader**(`...makePassThrough`)で、F-3 の Pass-through の雛形から `shaders/<pass>_pass_through.frag` を書いていました。
 - **Open the shader**(`pelican.framePlan.shaderContract.openShader` / `pelican.fullscreenPass.shaderContract.openShader`): fragment の file を desktop で開き、足す行を clipboard に入れます。固定の image の宣言の数(`pass_inputs` から。分からなければ 0)の番号から先の入力について、宣言 `PELICAN_DECLARE_INPUT_<i>(<名前>);` と main の中の `vec4 value<i> = PELICAN_TEXTURE_2D_<i>(<名前>, inUV);` で、名前は雛形が付ける名前と同じです。先頭には「shader に無ければ `#version` の後に足す」`#extension GL_GOOGLE_include_directive : require` と `pelican_sets.glsl` / `pelican_view.glsl` の include が注釈で付きます([clipboard に入れる行](../../src/devstudio/view/fullscreenshadertemplate.cpp#L290))。status は `The declarations are on the clipboard: add them to the shader and save, and it reloads by itself. Then connect the input again.`(Pass Editor は最後が `Then press Save again.`)で、保存すると下の F-5 の reload で反映されます。fragment が `engine://passthrough` なら、先に project へ複製してそれを開きます(✅VI-3b。上の「engine://passthrough は project に複製してから直します」。この経路は clipboard に何も入れません)。ほかの `engine://` など project の外の fragment では押せません。
-- **Save の前の注意(Pass Editor)**: 入力の数が、engine がその pass に出した宣言(`get_frame_plan` の `pass_inputs`)の取れる数 —— 固定の宣言の数と可変の組の max の和 —— より多ければ、Save を押す前に入力の欄の下(`pelican.fullscreenPass.inputContract`)に同じ行と 2 つのボタンが出ます([Save の前の検査](../../src/devstudio/view/fullscreenpasswidget.cpp#L935)、[検査の 1 行を決める所](../../src/devstudio/view/shaderinputcontract.cpp#L261))。可変の組を持つ shader は、max までなら入力を足しても「読まない」ことになりません。ここでの Use engine://passthrough は Fragment 欄を埋めるだけで、送るのは Save です。**検査しないとき**: `pass_inputs` の無い pass(まだ保存していない新しい pass など)と、下書きの Fragment が今描いている shader と違うとき(宣言は今の shader のものなので)。どちらも engine の答えに任せます。✅VI-3b より前は、fragment の file の宣言行を正規表現で数えていました(`PELICAN_DECLARE_INPUT_<i>(` と手書きの `set = PELICAN_SET_PASS_INPUT, binding = <i>`)。今は file を読まないので、`#if 0` の中の宣言行を数えたり、可変の組を 0 と数えたりしません。canvas の drag は、shader が入力を宣言している pass では落とした ○ の binding を宣言と照らしてから送り(✅VI-3a)、宣言の無い shader の pass では送りません(✅VI-3b)。それ以外(`pass_inputs` の無い pass)は送ってから拒否を受けます。
+- **Save の前の注意(Pass Editor)**: 入力の数が、engine がその pass に出した宣言(`get_frame_plan` の `pass_inputs`)の取れる数 —— 固定の宣言の数と可変の組の max の和 —— より多ければ、Save を押す前に入力の欄の下(`pelican.fullscreenPass.inputContract`)に同じ行と 2 つのボタンが出ます([Save の前の検査](../../src/devstudio/view/fullscreenpasswidget.cpp#L926)、[検査の 1 行を決める所](../../src/devstudio/view/shaderinputcontract.cpp#L261))。可変の組を持つ shader は、max までなら入力を足しても「読まない」ことになりません。ここでの Use engine://passthrough は Fragment 欄を埋めるだけで、送るのは Save です。**検査しないとき**: `pass_inputs` の無い pass(まだ保存していない新しい pass など)と、下書きの Fragment が今描いている shader と違うとき(宣言は今の shader のものなので)。どちらも engine の答えに任せます。✅VI-3b より前は、fragment の file の宣言行を正規表現で数えていました(`PELICAN_DECLARE_INPUT_<i>(` と手書きの `set = PELICAN_SET_PASS_INPUT, binding = <i>`)。今は file を読まないので、`#if 0` の中の宣言行を数えたり、可変の組を 0 と数えたりしません。canvas の drag は、shader が入力を宣言している pass では落とした ○ の binding を宣言と照らしてから送り(✅VI-3a)、宣言の無い shader の pass では送りません(✅VI-3b)。それ以外(`pass_inputs` の無い pass)は送ってから拒否を受けます。
 
 ⚠ Save の前の検査は型を見ません(buffer の入力も同じ数に入ります)。Open the shader の行は、宣言の番号が 0 から詰まっていると仮定します。
 
@@ -3099,7 +3175,7 @@ driver の stdout / stderr は、cp932 の console で出せない文字があ�
 
 **回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L1253)(Python 3.11以上、標準ライブラリだけ)が Studio を
 `--automation --project --tab` で起動し、step を順に送り、`report.json` を書きます。ctest からは
-`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3375)) —— **実物の窓が要るので
+`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3386)) —— **実物の窓が要るので
 `QT_QPA_PLATFORM=offscreen` は掛けません**。fixture の project は temp に 2 つ複製されるので、シナリオは
 文書を書き換えてよく、「ディスクから読み直す」も試せます([複製](../../test/run_studio_scenario.cmake#L30))。
 CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが見つかった`AUTO`）が必要です。

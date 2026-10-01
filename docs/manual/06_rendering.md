@@ -62,6 +62,8 @@ project.json ──rendering_config_json──▶ rendering config JSON
 
 このほか `target_planning`(§6.6)、`vulkan_plan_pins` / `vulkan_physical_fragments`(§6.6)、`xr`(§6.12)もトップレベルキーです。
 
+editor の RPC から書くときは、`shader_defines`・`snapshots`・`resolver_version`・`draw_sort`・`graph_transforms`・`render_strategy`・`xr`・`multisampling` を `edit_rendering_keys`(✅EL-3)が丸ごと書き、ほかのキーはそれぞれ別の RPC が書きます(`features` は `edit_render_features`、`material_route_default` は `set_material_route_default` など。対応の表は [第13章](13_editor.md) §13.5 の「rendering 節のほかのキーを書く」)。preset を選ぶ root では `multisampling` と `resolver_version` を書けません。
+
 > **上の表のキーはファイルの最上位ではなく `rendering` の下に書きます。** rendering config のファイルは `"schema": "pelican.graph"` を名乗る **`pelican.graph` root** で、最上位には共通グラフ自身の 5 キーだけが並び、**上の表のキーは全部 `rendering` の下に入ります**。ただし `buffers` と `compute_tasks` は `rendering` の下にも書けません(共通グラフのノードか task feature で書きます)。上の表のキーを最上位に直接並べた旧い形(legacy root)は、MG-2b から `render_config.legacy_root@1` で断られます。詳しくは **§6.16** を読んでください。
 
 名前の重複(RT・パス・バッファ)はすべて hard error です。
@@ -1849,17 +1851,37 @@ void pelican_material_outputs_v1(
 ```
 
 生成後の SPIR-V reflection(コンパイル済みシェーダを読み返して要求資源を取り出すこと。§6.4)は全 location と数値型を宣言スキーマへ照合します。
-flat / XR variant は同じ route に同一スキーマを要求します。graph の hot reload で
-生存中 material の schema・format・MSAA・local-read・attachment state contract を
-変える場合、現状は
-候補世代を拒否して旧世代を維持します。これは不整合 pipeline を公開しないための境界で、
-graph と material surface を同時に再構築する将来の coordinated transaction とは別です。
+flat / XR variant は同じ route に同一スキーマを要求します。組み直した graph の候補世代が、生きている material を別の
+output schema・format・MSAA(sample 数)・local-read・attachment state で描くことになる場合の扱いは、候補がどこから来たかで違います。
+
+- **ディスクからの読み直し**(file watcher が rendering 文書の変更を拾ったとき。[`Renderer::reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3505)):
+  ReloadService があると、live の material との照合を外し([`validate_live_materials = false` の所](../../src/core/vkcore/renderer.cpp#L3537))、
+  公開の直前の hook で、同じ watcher の batch に入った shader・material・model の変更と一緒に、material の shader と pipeline を
+  候補世代に合わせて作り直してから公開します([`prepareRenderPipelineModelReload` と `applyRenderPipelineCompanionReload` を呼ぶ所](../../src/core/vkcore/renderer.cpp#L3546)、
+  [作り直しの計画](../../src/core/material/materialgenerationplanner.cpp#L1294))。output schema が変わる material は fragment shader を
+  新しい schema で compile し直し、format・sample 数・local-read・attachment state が変わる material は pipeline を作り直します。
+  作り直しのどれかが失敗すると例外で候補世代を捨て、旧世代を保ちます([`ReloadService::applyRenderPipelineCompanionReload()`](../../src/core/watch/reloadservice.cpp#L420))。
+  graph と material surface を同じ transaction で組み直す仕組みは、この経路では既に動いています。
+  - この経路でも断られるもの: 受け皿の無い route(`material_route_unserved@1`)、1 つの material の route が flat と XR で別の schema や
+    別の物理の契約になる候補、同じ fragment shader や pipeline を共有する material が両立しない契約を要求する候補。
+  - ⚠ 作り直しが commit した後で、その後ろの準備(XR の variant が残っているかの確認、model の reload の `preparePublication`)が失敗した
+    場合に、差し替え済みの material の pipeline が戻るかは確かめていません(未確認)。
+  - ReloadService は Renderer を作るときに必ず作られます([reload の参加者を登録する所](../../src/core/vkcore/renderer.cpp#L3201))。
+    ReloadService が無い場合の分岐では照合が効き、今までどおり断ります([照合を切り替える所](../../src/core/vkcore/renderer_config.cpp#L501))。
+    ただし通常の起動でこの分岐を通る道は見当たりません(コードからの推論)。
+  - file watcher が動くのは、窓ありで、`--rpc`・`--replay`・`--strict-assets` のどれも付けない起動だけです
+    ([gate の条件](../../src/core/watch/reloadgate.cpp#L27)、[headless では読み直しを要求しない所](../../src/player/main.cpp#L502))。
+    Studio が起こす engine には常に `--rpc` が付くので([Studio の起動引数](../../src/devstudio/viewport/studioplayerarguments.cpp#L81))、
+    Studio の中の engine はこの経路を通りません。
+- **編集 RPC の候補**(`edit_graph_document` など): 照合を外しません([`validate_live_materials = true` の所](../../src/core/vkcore/renderer.cpp#L3735))。
+  output schema が変わる候補は断ります。format・MSAA・local-read・attachment state だけが違う候補は、次の段落の RS-1 の扱いです。
 
 編集 RPC の候補では、変わるのが format・MSAA・local-read・attachment state だけで、ほかの検査がすべて通るとき、
 editor は断らずに文書を commit し、`restart_required: true` と `restart_reason`(`code: "material_physical_contract_changed"`)を
 返します(✅RS-1)。live の世代はそのままで、engine を起動し直すと commit した文書で組み直します
 ([第13章](13_editor.md) §13.5 の「live の material が受けられない編集は、書いてから再起動を求めます」)。
-schema の変更は今までどおり断られます。ディスクからの reload の扱いは同じ所の「残した穴」を見てください。
+schema の変更は今までどおり断られます。編集 RPC の経路でもディスクの経路と同じ作り直しを使って、起動し直さずにその場で載せる案は
+採らず、起動し直しのままにしています(2026-10-01 利用者の決定)。
 
 outputごとにblendまたは書き込みchannelを変える場合は、同じpassへ
 `material_output_states`を追加します。キーはRT名やlocation番号ではなく
