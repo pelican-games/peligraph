@@ -1353,6 +1353,12 @@ OrderedJson EditorCommandService::setMaterialRouteDefault(const Json &params) {
     return render_config_editor_->setMaterialRouteDefault(params);
 }
 
+// EL-3.
+OrderedJson EditorCommandService::editRenderingKeys(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->editRenderingKeys(params);
+}
+
 OrderedJson EditorCommandService::getGraphInstances(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->getGraphInstances(params);
@@ -2342,6 +2348,11 @@ OrderedJson EditorCommandRpcAdapter::editFrameNodeOrder(const Json &params) cons
 OrderedJson EditorCommandRpcAdapter::setMaterialRouteDefault(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
     return mutable_service_->setMaterialRouteDefault(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::editRenderingKeys(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
+    return mutable_service_->editRenderingKeys(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getGraphInstances(const Json &params) const {

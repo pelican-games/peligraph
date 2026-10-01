@@ -186,6 +186,12 @@ struct RootLocation {
     bool selected_found = false;
     std::size_t selected_begin = 0;
     std::size_t selected_end = 0;
+    // EL-3: where the selected member starts (its key), where the member
+    // before it ends (npos: it is the first) and where the member after it
+    // starts (npos: it is the last), so it can be taken out with its comma.
+    std::size_t selected_key_begin = 0;
+    std::size_t selected_previous_value_end = std::string::npos;
+    std::size_t selected_next_key_begin = std::string::npos;
 };
 
 // Scans one JSON object's members lexically. `cursor` is positioned at the
@@ -203,8 +209,15 @@ RootLocation locateObjectMembers(JsonCursor cursor, bool require_end,
         result.root_close = cursor.position();
         cursor.require('}');
     } else {
+        bool selected_is_last = false;
         for (;;) {
+            const auto previous_value_end = result.has_members
+                ? result.last_member_value_end : std::string::npos;
             const auto key = cursor.parseString();
+            if (selected_is_last) {
+                result.selected_next_key_begin = key.begin;
+                selected_is_last = false;
+            }
             result.has_members = true;
             result.last_member_key = key.begin;
             cursor.skipWhitespace();
@@ -258,6 +271,10 @@ RootLocation locateObjectMembers(JsonCursor cursor, bool require_end,
                 result.selected_found = true;
                 result.selected_begin = value_begin;
                 result.selected_end = cursor.position();
+                result.selected_key_begin = key.begin;
+                result.selected_previous_value_end = previous_value_end;
+                result.selected_next_key_begin = std::string::npos;
+                selected_is_last = true;
             }
 
             cursor.skipWhitespace();
@@ -669,6 +686,33 @@ AuthoredRenderConfigDocument AuthoredRenderConfigDocument::withSectionValue(
         const auto member = encodedJsonString(key) + ": " + std::string{value};
         const auto insertion = missingRootMemberInsertion(bytes_, location, member);
         edited.insert(insertion.offset, insertion.bytes);
+    }
+    return inspect(std::move(edited));
+}
+
+AuthoredRenderConfigDocument AuthoredRenderConfigDocument::withoutSectionValue(
+    std::string_view key) const {
+    if (isGraphRootKey(key))
+        throw std::invalid_argument("render config section removal cannot take the graph root's " +
+                                    std::string{key});
+    auto edited = bytes_;
+    // A key written twice is read last-wins; every copy goes, or the earlier
+    // one would be read in its place.
+    for (auto location = locateSectionMembers(edited, key); location.selected_found;
+         location = locateSectionMembers(edited, key)) {
+        if (location.selected_previous_value_end != std::string::npos) {
+            // `, "key": value` after the member before it.
+            edited.erase(location.selected_previous_value_end,
+                         location.selected_end - location.selected_previous_value_end);
+        } else if (location.selected_next_key_begin != std::string::npos) {
+            // The first member: `"key": value, ` up to the next one.
+            edited.erase(location.selected_key_begin,
+                         location.selected_next_key_begin - location.selected_key_begin);
+        } else {
+            // The only member: the section becomes `{}`.
+            edited.erase(location.root_open + 1,
+                         location.root_close - location.root_open - 1);
+        }
     }
     return inspect(std::move(edited));
 }

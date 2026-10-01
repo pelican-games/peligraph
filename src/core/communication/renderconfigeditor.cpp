@@ -3099,6 +3099,162 @@ OrderedJson RenderConfigEditorService::setMaterialRouteDefault(const Json &param
     return accepted;
 }
 
+namespace {
+
+// EL-3: the rendering section keys edit_rendering_keys writes, each whole.
+// Every one is read again when a generation is composed (none is read only
+// at start), so none of them asks for a restart by itself.
+constexpr std::array<std::string_view, 8> renderingEditableKeys{
+    "draw_sort", "shader_defines", "snapshots", "graph_transforms",
+    "render_strategy", "xr", "multisampling", "resolver_version"};
+
+// EL-3: the rendering section keys another RPC writes.
+struct OwnedRenderingKey {
+    std::string_view key;
+    std::string_view method;
+};
+constexpr std::array<OwnedRenderingKey, 13> renderingOwnedKeys{{
+    {"features", "edit_render_features"},
+    {"rendering_passes", "edit_preset_pass"},
+    {"material_routing", "edit_preset_pass"},
+    {"material_route_default", "set_material_route_default"},
+    {"frame_node_order", "edit_frame_node_order"},
+    {"scene_acceleration_structures", "edit_scene_acceleration_structures"},
+    {"ray_task_acceleration_structures", "edit_scene_acceleration_structures"},
+    {"ray_task_callable_records", "edit_ray_callable_records"},
+    {"pipeline", "fork_render_pipeline"},
+    {"render_targets", "edit_render_targets"},
+    // EL-2's RPC (not yet registered).
+    {"target_planning", "edit_target_planning"},
+    {"vulkan_plan_pins", "edit_target_planning"},
+    {"vulkan_physical_fragments", "edit_target_planning"},
+}};
+
+} // namespace
+
+std::optional<OrderedJson> RenderConfigEditorService::renderingKeyRefusal(
+    const std::string &key, bool selects_preset) const {
+    for (const auto &owned : renderingOwnedKeys) {
+        if (owned.key != key) continue;
+        return rejection(
+            "rendering_key_owned",
+            "rendering." + key + " is written by " + std::string{owned.method} +
+                "; edit_rendering_keys does not write it",
+            {{"key", key}, {"method", std::string{owned.method}}});
+    }
+    if (std::ranges::find(renderingEditableKeys, key) ==
+        renderingEditableKeys.end()) {
+        std::string listed;
+        for (const auto editable : renderingEditableKeys) {
+            if (!listed.empty()) listed += ", ";
+            listed += editable;
+        }
+        return rejection(
+            "rendering_key_not_editable",
+            "rendering." + key + " is not a key edit_rendering_keys writes; it writes " +
+                listed,
+            {{"key", key}});
+    }
+    if (!selects_preset) return std::nullopt;
+    // What resolveRenderPipelinePreset lets a root that selects a preset say.
+    if (key == "multisampling") {
+        return rejection(
+            "rendering_key_not_allowed_here",
+            "a rendering section that selects a pipeline preset takes "
+            "multisampling only as pipeline.settings.msaa (the root is written "
+            "whole by restore_render_documents); a direct root takes "
+            "rendering.multisampling",
+            {{"key", key}, {"reason", "preset_root_takes_pipeline_settings_msaa"}});
+    }
+    if (key == "resolver_version") {
+        return rejection(
+            "rendering_key_not_allowed_here",
+            "a rendering section that selects a pipeline preset does not take "
+            "resolver_version; it belongs in the preset's config (a project "
+            "preset after fork_render_pipeline) or in a direct root's "
+            "rendering section",
+            {{"key", key}, {"reason", "not_in_preset_root_keys"}});
+    }
+    return std::nullopt;
+}
+
+OrderedJson RenderConfigEditorService::editRenderingKeys(const Json &params) {
+    constexpr std::string_view method = "edit_rendering_keys";
+    requireOnly(params, {"base_source_digest", "set", "remove"}, method);
+    const auto base_digest = requireString(params, "base_source_digest", method);
+    if (!isLowerHexDigest(base_digest))
+        throw std::invalid_argument(
+            "edit_rendering_keys base_source_digest must be 64 lowercase hex characters");
+    const auto set = params.find("set");
+    if (set != params.end() && !set->is_object())
+        throw std::invalid_argument("edit_rendering_keys set must be an object of key: value");
+    std::vector<std::string> keys;
+    if (set != params.end())
+        for (const auto &[key, value] : set->items()) {
+            (void)value;
+            keys.push_back(key);
+        }
+    std::vector<std::string> removed;
+    if (const auto remove = params.find("remove"); remove != params.end()) {
+        if (!remove->is_array())
+            throw std::invalid_argument("edit_rendering_keys remove must be an array of keys");
+        for (const auto &entry : *remove) {
+            if (!entry.is_string())
+                throw std::invalid_argument("edit_rendering_keys remove must be an array of keys");
+            const auto key = entry.get<std::string>();
+            if (set != params.end() && set->contains(key))
+                throw std::invalid_argument("edit_rendering_keys cannot both set and remove " + key);
+            removed.push_back(key);
+            keys.push_back(key);
+        }
+    }
+    if (keys.empty())
+        throw std::invalid_argument("edit_rendering_keys requires a key in set or remove");
+    if (!dependencies_.resolve_authoring_context)
+        return rejection("method_unavailable",
+                         "edit_rendering_keys requires the render authoring resolver",
+                         {{"method", std::string{method}}});
+
+    // Every key is judged before anything is written: one refusal and the
+    // ticket writes none of them.
+    const bool selects_preset =
+        renderingSectionOrEmpty(Json::parse(document_.bytes())).contains("pipeline");
+    for (const auto &key : keys)
+        if (auto refused = renderingKeyRefusal(key, selects_preset)) return *refused;
+
+    const auto gate = gateSnapshot();
+    if (auto rejected = checkAuthoringPreconditions(
+            gate, base_digest, method,
+            "render config editing is currently disabled")) {
+        return *rejected;
+    }
+    auto candidate = document_;
+    try {
+        if (set != params.end())
+            for (const auto &[key, value] : set->items())
+                candidate = candidate.withSectionValue(key, value.dump(2));
+        for (const auto &key : removed) candidate = candidate.withoutSectionValue(key);
+    } catch (const RenderConfigSectionUnlocated &error) {
+        return rejection("render_config_section_unlocated", error.what(),
+                         {{"method", std::string{method}}});
+    }
+    auto documents = currentDocumentSet().documents();
+    const auto root_document = std::find_if(
+        documents.begin(), documents.end(), [&](const auto &entry) {
+            return entry.normalized_reference == source_normalized_reference_;
+        });
+    if (root_document == documents.end())
+        throw std::logic_error("edit_rendering_keys candidate lost its root document");
+    root_document->bytes = candidate.bytes();
+    // The values are judged by the candidate as a whole: the same composition
+    // (and graph variants) every authored ticket goes through, then the
+    // runtime's recomposition when it commits.
+    return enqueueAuthoredPassTicket(
+        std::string{method}, gate, base_digest, std::move(candidate),
+        RenderConfigCandidateDocumentSet{source_normalized_reference_, std::move(documents)},
+        std::string{});
+}
+
 OrderedJson RenderConfigEditorService::editComputeTask(const Json &params) {
     requireOnly(params, {"base_source_digest", "base_task_source_digest", "task_name", "task"}, "edit_compute_task");
     return changeComputeTask(params, false);

@@ -99,6 +99,9 @@ class AuthoredRenderConfigDocument {
     // root's own keys, `rendering.<key>` otherwise.
     AuthoredRenderConfigDocument withSectionValue(
         std::string_view key, std::string_view json_value) const;
+    // EL-3: takes `rendering.<key>` out with its comma, every other byte as
+    // it was; an absent key changes nothing. A graph root key is refused.
+    AuthoredRenderConfigDocument withoutSectionValue(std::string_view key) const;
 
     bool containsFeature(std::string_view reference) const noexcept;
     AuthoredRenderConfigDocument withFeatureAdded(

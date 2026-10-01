@@ -9913,4 +9913,124 @@ TEST_CASE("EL-1 get_graph_catalog lists the argument values render.image accepts
     CHECK(readBytes(harness.project.render_config) == before);
 }
 
+// --- EL-3: edit_rendering_keys writes keys of the root's rendering section.
+
+namespace {
+
+nlohmann::ordered_json el3Edit(Rd1Harness &harness, Json set, Json remove = Json::array()) {
+    Json request{{"base_source_digest", harness.context().at("source_digest").at("hex")}};
+    if (!set.empty()) request["set"] = std::move(set);
+    if (!remove.empty()) request["remove"] = std::move(remove);
+    return harness.service->editRenderingKeys(request);
+}
+
+Json el3Section(const Rd1Harness &harness) {
+    return renderingSectionOrEmpty(Json::parse(readBytes(harness.project.render_config)));
+}
+
+} // namespace
+
+TEST_CASE("EL-3 edit_rendering_keys writes a direct root's keys whole, removes one, and RD-1 restores them",
+          "[render-config-editor][el3]") {
+    Rd1Harness harness{true};
+    REQUIRE(harness.context().at("config_kind") == "direct");
+    const auto root_before = readBytes(harness.project.render_config);
+    const auto read = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+    const Json draw_sort{{"opaque", {{"provider", "state_batched_v1"}}},
+                         {"transparent", {{"provider", "back_to_front_v1"}}}};
+    const auto defines = Json::array({"PELICAN_HYBRID_SCENE_LINEAR", "PELICAN_EL3_PROBE"});
+    REQUIRE(el3Section(harness).at("draw_sort") != draw_sort);
+
+    const auto applies = harness.runtime.apply_calls;
+    const auto published = harness.runtime.snapshot.published_generation;
+    const auto set = harness.commit(
+        el3Edit(harness, {{"draw_sort", draw_sort}, {"shader_defines", defines}}));
+    CHECK(set.at("operation") == "edit_rendering_keys");
+    CHECK_FALSE(set.contains("restart_required"));
+    const auto root_set = readBytes(harness.project.render_config);
+    CHECK(Json(set.at("documents")) == Json{{"passes/main.json", renderConfigSourceDigest(root_set)}});
+    // Recomposed and republished with the new keys.
+    CHECK(harness.runtime.apply_calls == applies + 1);
+    CHECK(harness.runtime.snapshot.published_generation == published + 1);
+    // Each value whole: shader_defines is the array asked for, not a merge.
+    CHECK(el3Section(harness).at("draw_sort") == draw_sort);
+    CHECK(el3Section(harness).at("shader_defines") == defines);
+
+    const auto removed = harness.commit(el3Edit(harness, Json::object(), Json::array({"draw_sort"})));
+    CHECK_FALSE(el3Section(harness).contains("draw_sort"));
+    CHECK(el3Section(harness).at("shader_defines") == defines);
+    // Only the member and its comma went.
+    auto expected = Json::parse(root_set);
+    expected.at("rendering").erase("draw_sort");
+    CHECK(Json::parse(readBytes(harness.project.render_config)) == expected);
+
+    const auto restored = harness.commit(harness.service->restoreRenderDocuments(
+        {{"documents", Json::array({rd1Restore(read.at("passes/main.json"),
+                                               Json(removed.at("documents").at("passes/main.json")))})}}));
+    CHECK(restored.at("operation") == "restore_render_documents");
+    CHECK(readBytes(harness.project.render_config) == root_before);
+}
+
+TEST_CASE("EL-3 edit_rendering_keys refuses by name, and one refused key writes nothing",
+          "[render-config-editor][el3]") {
+    const Json draw_sort{{"opaque", {{"provider", "state_batched_v1"}}}};
+    SECTION("a direct root") {
+        Rd1Harness harness{true};
+        const auto before = readBytes(harness.project.render_config);
+        const auto applies = harness.runtime.apply_calls;
+        auto error = rd1Error(el3Edit(harness, {{"features", Json::array()}}));
+        CHECK(error.at("code") == "rendering_key_owned");
+        CHECK(error.at("key") == "features");
+        CHECK(error.at("method") == "edit_render_features");
+        error = rd1Error(el3Edit(harness, Json::object(), Json::array({"target_planning"})));
+        CHECK(error.at("code") == "rendering_key_owned");
+        CHECK(error.at("method") == "edit_target_planning");
+        error = rd1Error(el3Edit(harness, {{"ray_group_layout", "project://el3.json"}}));
+        CHECK(error.at("code") == "rendering_key_not_editable");
+        CHECK(error.at("key") == "ray_group_layout");
+        // A key that may be written beside one that may not: neither is.
+        error = rd1Error(el3Edit(harness, {{"draw_sort", draw_sort}, {"material_route_default", "forward"}}));
+        CHECK(error.at("code") == "rendering_key_owned");
+        CHECK(error.at("method") == "set_material_route_default");
+        harness.service->commitPending();
+        CHECK(harness.runtime.apply_calls == applies);
+        CHECK(readBytes(harness.project.render_config) == before);
+        // A draw_sort the compiler cannot read: the recomposition refuses it.
+        const auto accepted = el3Edit(harness, {{"draw_sort", {{"opaque", {{"provider", 5}}}}}});
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        harness.service->commitPending();
+        const auto result = harness.service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        CHECK(result.at("committed") == false);
+        CHECK(result.at("error").at("code") == "render_pipeline_preflight_failed");
+        CHECK(readBytes(harness.project.render_config) == before);
+    }
+    SECTION("a root that selects a preset") {
+        Rd1Harness harness{false};
+        const auto before = readBytes(harness.project.render_config);
+        const auto applies = harness.runtime.apply_calls;
+        auto error = rd1Error(el3Edit(harness, {{"multisampling", {{"samples", 4}}}}));
+        CHECK(error.at("code") == "rendering_key_not_allowed_here");
+        CHECK(error.at("key") == "multisampling");
+        CHECK(error.at("reason") == "preset_root_takes_pipeline_settings_msaa");
+        error = rd1Error(el3Edit(harness, Json::object(), Json::array({"resolver_version"})));
+        CHECK(error.at("code") == "rendering_key_not_allowed_here");
+        // A value the composition refuses, before a ticket is taken.
+        const auto refused = el3Edit(harness, {{"draw_sort", "el3_not_an_object"}});
+        error = rd1Error(refused);
+        CHECK(error.at("code") == "render_pipeline_preflight_failed");
+        CHECK(error.at("method") == "edit_rendering_keys");
+        CHECK_THAT(error.at("message").get<std::string>(),
+                   Catch::Matchers::ContainsSubstring("draw_sort must be an object"));
+        CHECK_FALSE(refused.contains("ticket"));
+        harness.service->commitPending();
+        CHECK(harness.runtime.apply_calls == applies);
+        CHECK(readBytes(harness.project.render_config) == before);
+        // The keys a preset root takes are written into its section.
+        harness.commit(el3Edit(harness, {{"draw_sort", draw_sort}}));
+        CHECK(el3Section(harness).at("draw_sort") == draw_sort);
+    }
+}
+
 } // namespace Pelican

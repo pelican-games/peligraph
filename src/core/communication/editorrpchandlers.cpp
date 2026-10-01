@@ -229,6 +229,9 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("set_material_route_default", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.setMaterialRouteDefault(params); });
     });
+    server.setHandler("edit_rendering_keys", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.editRenderingKeys(params); });
+    });
     server.setHandler("get_graph_instances", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getGraphInstances(params); });
     });

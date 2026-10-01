@@ -313,6 +313,10 @@ class RenderConfigEditorService {
         const std::string &operation,
         const std::function<std::optional<nlohmann::ordered_json>(AuthoredRenderConfigDocument &)> &transform,
         bool source_only = false);
+    // EL-3: why edit_rendering_keys does not write `key` (nullopt: it does).
+    // `selects_preset`: the current root's section names a pipeline preset.
+    std::optional<nlohmann::ordered_json> renderingKeyRefusal(
+        const std::string &key, bool selects_preset) const;
     nlohmann::ordered_json rejection(
         std::string code, std::string message,
         nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;
@@ -404,6 +408,15 @@ class RenderConfigEditorService {
     // "forward") through the ordinary root-edit ticket. The committed result
     // carries restart_required: true.
     nlohmann::ordered_json setMaterialRouteDefault(const nlohmann::json &params);
+    // EL-3: {base_source_digest, set?: {key: value}, remove?: [key]} on the
+    // root's rendering section, each value whole, in one ticket. The keys are
+    // draw_sort, shader_defines, snapshots, graph_transforms, render_strategy,
+    // xr, multisampling and resolver_version (the last two not where the
+    // section selects a preset: rendering_key_not_allowed_here). A key
+    // another RPC writes is rendering_key_owned {key, method}; any other is
+    // rendering_key_not_editable {key}. Values are judged by the candidate's
+    // composition (with the graph variants) and the runtime's recomposition.
+    nlohmann::ordered_json editRenderingKeys(const nlohmann::json &params);
     nlohmann::ordered_json editComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json addComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json removeComputeTask(const nlohmann::json &params);
