@@ -812,7 +812,7 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 
 #### 編集系(65) ✅実装済み(WP153〜WP172 で始まり、range はそこを大きく越えます)
 
-すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L379) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L258) です。
+すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L380) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L258) です。
 
 | method | 実装行 | 概要 |
 |---|---|---|
@@ -835,10 +835,10 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | `edit_render_features` | [feature 編集](../../src/core/communication/editorrpchandlers.cpp#L205) | render feature 構成を編集する |
 | `get_scene_acceleration_structures` / `edit_scene_acceleration_structures` | 名前付きASの取得・編集 | AS定義とdigestを取得し、既存render config ticketで変更・保存する |
 | `get_render_authoring_context` | [authoring context](../../src/core/communication/editorrpchandlers.cpp#L208) | authored pass 編集に必要な target / resource context を返す |
-| `add_authored_pass` | [pass 追加](../../src/core/communication/editorrpchandlers.cpp#L289) | authored pass を追加する |
-| `remove_authored_pass` | [pass 削除](../../src/core/communication/editorrpchandlers.cpp#L292) | authored pass を削除する |
-| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L306) / [登録 `get_preview_result`](../../src/core/communication/editorrpchandlers.cpp#L309) | 非同期結果取得 |
-| `query_journal` | [登録 `query_journal`](../../src/core/communication/editorrpchandlers.cpp#L312) | ジャーナル照会 |
+| `add_authored_pass` | [pass 追加](../../src/core/communication/editorrpchandlers.cpp#L292) | authored pass を追加する |
+| `remove_authored_pass` | [pass 削除](../../src/core/communication/editorrpchandlers.cpp#L295) | authored pass を削除する |
+| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L309) / [登録 `get_preview_result`](../../src/core/communication/editorrpchandlers.cpp#L312) | 非同期結果取得 |
+| `query_journal` | [登録 `query_journal`](../../src/core/communication/editorrpchandlers.cpp#L315) | ジャーナル照会 |
 | `get_graph_instances` | [instance 一覧](../../src/core/communication/editorrpchandlers.cpp#L235) | 共通グラフ文書の `source_digest` / `instances[]` / root の `nodes[]` / `definitions` 本体 |
 | `edit_graph_instances` | [装着編集](../../src/core/communication/editorrpchandlers.cpp#L238) | owner 付き root instance の attach / detach。中では `editGraphDocument()` の ops へ翻訳 |
 | `edit_graph_document` | [文書編集](../../src/core/communication/editorrpchandlers.cpp#L241) | `ops[]` を順に当てて最後に 1 回展開。全部通るか文書ごと拒否か |
@@ -855,12 +855,12 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | `fork_render_pipeline` | [preset の fork](../../src/core/communication/editorrpchandlers.cpp#L211) | 選択中 preset を project ファイルへ複製し、root の参照も切り替える |
 | `edit_preset_pass` | [preset pass 編集](../../src/core/communication/editorrpchandlers.cpp#L214) | project preset の pass(fullscreen / material / raster)を部分編集する |
 | `edit_region_replacement` | [領域の差し替え](../../src/core/communication/editorrpchandlers.cpp#L217) | project preset のタグ付き領域に provider を指定 / 解除する |
-| `get_compute_task_authoring` / `edit_compute_task` / `add_compute_task` / `remove_compute_task` | [取得](../../src/core/communication/editorrpchandlers.cpp#L220) / [置換](../../src/core/communication/editorrpchandlers.cpp#L262) / [追加](../../src/core/communication/editorrpchandlers.cpp#L271) / [削除](../../src/core/communication/editorrpchandlers.cpp#L274) | compute / RT task 宣言の著作面 |
+| `get_compute_task_authoring` / `edit_compute_task` / `add_compute_task` / `remove_compute_task` | [取得](../../src/core/communication/editorrpchandlers.cpp#L220) / [置換](../../src/core/communication/editorrpchandlers.cpp#L265) / [追加](../../src/core/communication/editorrpchandlers.cpp#L274) / [削除](../../src/core/communication/editorrpchandlers.cpp#L277) | compute / RT task 宣言の著作面 |
 | `get_frame_node_order` / `edit_frame_node_order` | [順序の取得](../../src/core/communication/editorrpchandlers.cpp#L223) / [順序の保存](../../src/core/communication/editorrpchandlers.cpp#L226) | root の `frame_node_order`(手で決めた node 順)の読みと保存 |
-| `get_procedural_assets` / `edit_procedural_asset` | [一覧](../../src/core/communication/editorrpchandlers.cpp#L265) / [編集](../../src/core/communication/editorrpchandlers.cpp#L268) | procedural asset の宣言。`edit` の op ではなく独立した RPC です |
-| `get_ray_callable_records` / `edit_ray_callable_records` | [callable の読み](../../src/core/communication/editorrpchandlers.cpp#L277) / [初期値の置換](../../src/core/communication/editorrpchandlers.cpp#L280) | task ごとの callable record schema と初期値上書き |
+| `get_procedural_assets` / `edit_procedural_asset` | [一覧](../../src/core/communication/editorrpchandlers.cpp#L268) / [編集](../../src/core/communication/editorrpchandlers.cpp#L271) | procedural asset の宣言。`edit` の op ではなく独立した RPC です |
+| `get_ray_callable_records` / `edit_ray_callable_records` | [callable の読み](../../src/core/communication/editorrpchandlers.cpp#L280) / [初期値の置換](../../src/core/communication/editorrpchandlers.cpp#L283) | task ごとの callable record schema と初期値上書き |
 | `decompose_material_pass` | [一体版の分解](../../src/core/communication/editorrpchandlers.cpp#L244) | ✅LP-3b。rendering 節か fork 済み preset の material pass を、graph の `render.material_pass` + draw_loop に 1 ticket で書き換える |
-| `get_render_documents` / `restore_render_documents` | [丸ごとの読み](../../src/core/communication/editorrpchandlers.cpp#L300) / [CAS の書き戻し](../../src/core/communication/editorrpchandlers.cpp#L303) | ✅RD-1 / RD-1b。render の編集の undo の土台。作る・置き換える・消すを 1 つの transaction で |
+| `get_render_documents` / `restore_render_documents` | [丸ごとの読み](../../src/core/communication/editorrpchandlers.cpp#L303) / [CAS の書き戻し](../../src/core/communication/editorrpchandlers.cpp#L306) | ✅RD-1 / RD-1b。render の編集の undo の土台。作る・置き換える・消すを 1 つの transaction で |
 
 上 11 行(19 メソッド)は P-2a 系・RT 系・prefab 系で足された分で、params と戻り値の正本は
 [manual 第13章](../manual/13_editor.md)です。この表と `editorrpchandlers.cpp` の登録を突き合わせるときは、
@@ -1369,7 +1369,7 @@ with PelicanRpc("projects/example") as rpc:
 
 engine 内蔵の開発者 UI に、読み取り専用の [`AssetBrowserPanel`](../../src/core/imgui/assetbrowser.hpp#L36) と schema 駆動の [`InspectorPanel`](../../src/core/imgui/inspector.hpp#L167) が加わりました。表示は `ImGuiSystem` のメニュー `Asset Browser` / `Inspector` から切り替えます([`imguisystem.cpp` 内](../../src/core/imgui/imguisystem.cpp#L373))。
 
-> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L478) が用意されています。コメントが規範です。
+> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L480) が用意されています。コメントが規範です。
 >
 > The ImGui WP consumes the same typed service. This fake is deliberately kept
 > free of ImGui headers so equivalence is testable in the CPU-only suite.
