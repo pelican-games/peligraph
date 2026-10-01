@@ -287,7 +287,7 @@ if (auto r = ui.setText("root/hud/score", "SCORE 120"); !r)
 
 #### `ui.*` sink — 共通グラフから書く
 
-graph module **`pelican.ui`**(version 1)は常に登録されます(UI にはビルドユニットの ON / OFF が無いため。[登録](../../src/project/graphmodule.cpp#L567))。持ち込む op は sink 2 本です。
+graph module **`pelican.ui`**(version 1)は常に登録されます(UI にはビルドユニットの ON / OFF が無いため。[登録](../../src/project/graphmodule.cpp#L596))。持ち込む op は sink 2 本です。
 
 | sink | 入力 | 書く先 |
 |---|---|---|
