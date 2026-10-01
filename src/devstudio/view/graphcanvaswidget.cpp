@@ -1,5 +1,6 @@
 #include "graphcanvaswidget.hpp"
 #include "graphcanvasdrawing.hpp"
+#include "graphcanvasfoldgroups.hpp"
 #include "graphcanvasloopfields.hpp"
 #include "graphcanvasrenderfields.hpp"
 #include "fullscreenshadertemplate.hpp"
@@ -2562,6 +2563,19 @@ void GraphCanvasScene::selectNode(const std::string &scope, const std::string &i
     if (selectionChanged) selectionChanged();
 }
 
+void GraphCanvasScene::clearPicks() {
+    selected_carry_.reset();
+    selected_node_.reset();
+    selected_edge_.reset();
+    selected_edges_.clear();
+    selected_pass_input_.reset();
+    clearControlSelection();
+    clearSelection();
+    setProperty("pelicanGraphSelectedNode", QString{});
+    applyEdgeEmphasis();
+    if (selectionChanged) selectionChanged();
+}
+
 void GraphCanvasScene::selectEdge(const GraphCanvasEdge &edge, bool additive) {
     selectEdge(model_ != nullptr ? model_->currentScope() : std::string{}, edge, additive);
 }
@@ -2903,6 +2917,16 @@ void GraphCanvasScene::finishConnection(const QPointF &position) {
 }
 
 void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
+    // GL-3a: a fold group's heading, its toggle and its folded node -- not
+    // under a node drawn over them.
+    if (foldItemPressed)
+        for (QGraphicsItem *item : items(event->scenePos())) {
+            if (foldItemPressed(*item, event->button())) {
+                event->accept();
+                return;
+            }
+            if (isNodeSurface(nodeGraphItemKind(*item))) break;
+        }
     // A control point is picked here and then handed to the base class, which
     // is what starts its drag. The node hunt at the bottom must not then take
     // the pick away again.
@@ -3114,6 +3138,15 @@ void GraphCanvasScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
 
 void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     context_position_ = event->scenePos();
+    // GL-3a: a fold group's heading has its own menu.
+    if (foldItemMenu)
+        for (QGraphicsItem *item : items(event->scenePos())) {
+            if (foldItemMenu(*item, event->screenPos())) {
+                event->accept();
+                return;
+            }
+            if (isNodeSurface(nodeGraphItemKind(*item))) break;
+        }
     // GL-1e, decision 2: a line into a rendering-section pass offers Delete.
     for (QGraphicsItem *item : items(event->scenePos())) {
         if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasPassInputEdgeItem}) continue;
@@ -3255,6 +3288,8 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
         menu.addAction(rename_definition_action_);
         menu.addAction(delete_definition_action_);
     }
+    // GL-3a, decision 1: the picked root nodes into one fold group.
+    if (foldMenuEntries && root) foldMenuEntries(menu);
     if (menu.actions().isEmpty()) {
         QGraphicsScene::contextMenuEvent(event);
         return;
@@ -4073,6 +4108,15 @@ bool GraphCanvasScene::showDecomposed() {
 }
 
 void GraphCanvasScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) {
+    // GL-3a: a folded fold group opens (rule 6: a double-click goes in).
+    if (foldItemDoubleClicked && event->button() == Qt::LeftButton)
+        for (QGraphicsItem *item : items(event->scenePos())) {
+            if (foldItemDoubleClicked(*item)) {
+                event->accept();
+                return;
+            }
+            if (isNodeSurface(nodeGraphItemKind(*item))) break;
+        }
     if (model_ != nullptr && event->button() == Qt::LeftButton) {
         // GL-1, decision 3: a folded node is looked inside, read only. Its
         // heading renames nothing, and a line the plan implies takes no
@@ -4411,6 +4455,9 @@ struct GraphCanvasWidget::Impl {
     // shaders (decision 2), picked rather than typed.
     GraphCanvasImageFields *image_fields = nullptr;
     GraphCanvasPassFields *pass_fields = nullptr;
+    // GL-3a: the root's fold groups -- drawn over the canvas, picked by
+    // their headings, written with fold_nodes -- and their Decisions.
+    std::unique_ptr<GraphCanvasFoldController> folds;
     // UX-3, decision 2: where a render node lands.
     GraphCanvasPlaceFields *place_fields = nullptr;
     QComboBox *loop_branch = nullptr;
@@ -5023,12 +5070,26 @@ struct GraphCanvasWidget::Impl {
         });
 
         scene->setModel(&model);
+        // GL-3a: the Decisions section stands where the Pass fields do.
+        folds = std::make_unique<GraphCanvasFoldController>(
+            graph, model, *scene, view,
+            GraphCanvasFoldController::Hooks{
+                .notice = [this] { showNotice(); },
+                .dispatch = [this] { dispatch(); },
+                .details = [this] { showDetails(); },
+                .committed = [this](const nlohmann::json &response, const std::string &line) {
+                    foldEditCommitted(response, line);
+                },
+            });
+        side_layout->insertWidget(side_layout->indexOf(pass_fields), folds->fields());
         scene->scopeChanged = [this] {
             syncScopeControls();
             syncValueControls();
             showDetails();
         };
         scene->selectionChanged = [this] {
+            // GL-3a: a node picked lets go of a picked fold group.
+            if (folds) folds->nodePicked();
             // The Timeline follows the selection: the node a person is looking
             // at is the node whose outputs they mean. (LP-4d1: not a node of a
             // zone's body -- no reading answers for one.)
@@ -5054,7 +5115,11 @@ struct GraphCanvasWidget::Impl {
         // Q-5: the notice says "Saving" the moment a placement changes, not
         // when the wait before sending it runs out. Only the label: this runs
         // from inside a drag and from inside a rebuild.
-        scene->placementChanged = [this] { showNotice(); };
+        scene->placementChanged = [this] {
+            showNotice();
+            // GL-3a: a group's frame follows its nodes.
+            if (folds) folds->scheduleRedraw();
+        };
         // LP-4d2: a zone gesture refused before it was sent says why.
         scene->noticeChanged = [this] { showNotice(); };
         // GL-1e: a line into a rendering-section pass is sent from here.
@@ -5094,6 +5159,8 @@ struct GraphCanvasWidget::Impl {
         scene->repopulated = [this] {
             // GL-1: a folded view is a view of its own, fitted the first time.
             canvas->showScope(qtext(model.viewKey()));
+            // GL-3a: the fold groups over what was just drawn.
+            if (folds) folds->redraw();
         };
         scene->domainFilterChanged = [this] {
             syncDomainFilter();
@@ -5328,6 +5395,29 @@ struct GraphCanvasWidget::Impl {
         dispatch();
     }
 
+    // GL-3a: a fold_nodes committed. What any render edit of this tab does
+    // after its commit, with the controller's line.
+    void foldEditCommitted(const nlohmann::json &response, const std::string &line) {
+        const auto digest = response.value("source_digest", nlohmann::json::object())
+                                .value("hex", std::string{});
+        if (digest_hub && !digest.empty()) digest_hub->publish(digest, &view);
+        scene->noteRenderEdit();
+        if (const auto completion = readRenderEditCompletion(response);
+            completion.restart_required) {
+            model.setEditNotice({InspectorNoticeKind::Information, completion.restart_line});
+            showNotice();
+            if (engine_restart_action) {
+                restart_asked = true;
+                engine_restart_action(qtext(completion.restart_line));
+            }
+            return;
+        }
+        model.setEditNotice({InspectorNoticeKind::Information, line});
+        if (plan_commit_action) plan_commit_action();
+        model.refresh();
+        dispatch();
+    }
+
     // The two replies of a pass's input edit; false for any other.
     bool deliverPassEdit(qint64 request_id, const QByteArray &bytes) {
         if (request_id == 0 ||
@@ -5369,6 +5459,11 @@ struct GraphCanvasWidget::Impl {
 
     void deliverResult(qint64 request_id, const QByteArray &result_json) {
         if (deliverPassEdit(request_id, result_json)) return;
+        // GL-3a: get_fold_groups, the root's decisions, fold_nodes.
+        if (folds && folds->deliverResult(request_id, result_json)) {
+            dispatch();
+            return;
+        }
         const auto found = transport_requests.find(request_id);
         if (found == transport_requests.end()) return;
         const auto model_id = found.value();
@@ -5461,6 +5556,10 @@ struct GraphCanvasWidget::Impl {
     }
 
     void deliverFailure(qint64 request_id, const QString &message) {
+        if (folds && folds->deliverFailure(request_id, message)) {
+            dispatch();
+            return;
+        }
         if (request_id != 0 &&
             (request_id == pass_edit_request || request_id == pass_ticket_request)) {
             pass_edit_request = request_id == pass_edit_request ? 0 : pass_edit_request;
@@ -5749,7 +5848,12 @@ struct GraphCanvasWidget::Impl {
     // GL-2b, decision 3: the plan's diagnostics, one line that unfolds.
     void syncDiagnostics() {
         if (diagnostics_toggle == nullptr || diagnostics_list == nullptr) return;
-        const auto &diagnostics = model.planDiagnostics();
+        // GL-3a, decision 3: a fold group's state is read on its heading,
+        // not here as well.
+        std::vector<GraphCanvasPlanDiagnostic> diagnostics;
+        for (const auto &diagnostic : model.planDiagnostics())
+            if (diagnostic.kind != "fold_unverified" && diagnostic.kind != "fold_stale")
+                diagnostics.push_back(diagnostic);
         if (diagnostics.empty()) {
             diagnostics_toggle->hide();
             diagnostics_list->hide();
@@ -6450,6 +6554,8 @@ struct GraphCanvasWidget::Impl {
     }
 
     void showDetails() {
+        // GL-3a: a picked fold group's Decisions.
+        if (folds) folds->syncFields();
         syncFoldedSummary();
         syncLayers();
         // UX-2: a row being written goes with the rows.
@@ -6650,6 +6756,8 @@ struct GraphCanvasWidget::Impl {
     }
 
     void synchronize() {
+        // GL-3a: the fold groups follow the document the tab holds.
+        if (folds) folds->follow();
         const bool history_available = !scene->editingInline() &&
                                        !scene->dragging() && !scene->layoutPending();
         // GL-1e: the render edit history is reached through these too.
@@ -6711,6 +6819,11 @@ struct GraphCanvasWidget::Impl {
         if (image_fields != nullptr) image_fields->followEditable();
         if (pass_fields != nullptr) pass_fields->followEditable();
         if (place_fields != nullptr) place_fields->followEditable();
+        // GL-4a, decision 2: a node of a group being verified takes no edit
+        // from the side fields until the verify finishes.
+        if (folds)
+            folds->gateNodeFields({loop_fields, draw_fields, view_fields, image_fields,
+                                   pass_fields, place_fields, label_edit, apply_label});
         showNotice();
         refresh->setEnabled(model.canRefresh());
         synchronizeTimeline();

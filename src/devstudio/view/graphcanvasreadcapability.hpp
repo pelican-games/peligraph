@@ -87,6 +87,16 @@ struct GraphCanvasReadCapability {
     std::function<qint64(QString *error)> requestRenderAuthoringContext;
     std::function<qint64(const QJsonObject &params, QString *error)>
         requestEditPresetPass;
+    // GL-3a: the root's fold groups. get_fold_groups reads their state, the
+    // root document (get_render_documents of `reference` alone) their
+    // decisions, and fold_nodes writes one group (a ticket get_edit_result
+    // polls). Any may be left empty: the canvas then folds nothing.
+    std::function<qint64(QString *error)> requestFoldGroups;
+    std::function<qint64(const QString &reference, QString *error)> requestRootDocument;
+    std::function<qint64(const QJsonObject &params, QString *error)> requestFoldNodes;
+    // GL-4a: verify_fold, a ticket get_edit_result polls (running for as
+    // long as the engine's child runs draw).
+    std::function<qint64(const QJsonObject &params, QString *error)> requestVerifyFold;
     std::function<void(QObject *context, ResultHandler handler)> result;
     std::function<void(QObject *context, FailureHandler handler)> failure;
 };

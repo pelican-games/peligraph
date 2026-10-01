@@ -2,6 +2,7 @@
 
 #include "../viewport/embeddedviewport.hpp"
 
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QObject>
 #include <QString>
@@ -47,6 +48,12 @@ FramePlanEditCapability framePlanEditCapability(EmbeddedViewport &viewport) {
         .editRenderTargets = send("edit_render_targets"),
         .addAuthoredPass = send("add_authored_pass"),
         .decomposeMaterialPass = send("decompose_material_pass"),
+        .editTargetPlanning = send("edit_target_planning"),
+        .requestRootDocument = [&viewport](const QString &reference, QString *error) {
+            return viewport.requestRpc(
+                QStringLiteral("get_render_documents"),
+                QJsonObject{{QStringLiteral("references"), QJsonArray{reference}}}, error);
+        },
         .requestEditResult = [&viewport](const QString &ticket, QString *error) {
             return viewport.requestRpc(
                 QStringLiteral("get_edit_result"),

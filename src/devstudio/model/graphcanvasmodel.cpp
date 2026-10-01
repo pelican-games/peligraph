@@ -5602,6 +5602,7 @@ void GraphCanvasModel::readPlanLayers(const Json &plan) {
     plan_access_.clear();
     plan_diagnostics_.clear();
     deactivated_nodes_.clear();
+    plan_fold_decisions_.clear();
     // An engine with GL-2a always publishes these two, empty or not.
     plan_origin_aware_ = plan.contains("diagnostics") || plan.contains("deactivated_graph_nodes") ||
                          std::ranges::any_of(plan_passes_, [](const GraphCanvasPlanPass &pass) {
@@ -5687,6 +5688,33 @@ void GraphCanvasModel::readPlanLayers(const Json &plan) {
             if (node.is_object() && !text(node, "node").empty())
                 deactivated_nodes_.push_back(
                     {text(node, "node"), text(node, "feature"), text(node, "reason")});
+    // GL-3a (FG-1): the decisions verified fold groups added.
+    if (const auto *folds = array(plan, "fold_decisions"))
+        for (const auto &fold : *folds)
+            if (fold.is_object() && !text(fold, "name").empty())
+                plan_fold_decisions_.push_back({text(fold, "group"), text(fold, "kind"),
+                                                text(fold, "name"), text(fold, "field")});
+}
+
+std::vector<std::string> GraphCanvasModel::foldDecisionParts(std::string_view canvas_node) const {
+    std::vector<std::string> parts;
+    if (plan_fold_decisions_.empty()) return parts;
+    const auto passes = planNodesOf(canvas_node);
+    // The resources the node hands on, for a resource's decision.
+    std::vector<std::string> handed;
+    for (const auto &node : nodes({}))
+        if (node.id == canvas_node)
+            for (const auto &output : node.outputs)
+                if (auto resource = outputResource(node.id, output.port); !resource.empty())
+                    handed.push_back(std::move(resource));
+    for (const auto &decision : plan_fold_decisions_) {
+        const bool here = decision.kind == "resource" ? listed(handed, decision.name)
+                                                      : listed(passes, decision.name);
+        if (!here) continue;
+        auto part = decision.field + " (fold " + decision.group + ")";
+        if (!listed(parts, part)) parts.push_back(std::move(part));
+    }
+    return parts;
 }
 
 std::string GraphCanvasModel::graphBackend() const {
@@ -5811,6 +5839,8 @@ std::string GraphCanvasModel::layerBand(std::string_view canvas_node) const {
         if (!pass->backend.empty() && pass->backend != graph && !listed(parts, pass->backend))
             parts.push_back(pass->backend);
     }
+    // GL-3a, decision 6: what a verified fold group decided for it.
+    for (auto &part : foldDecisionParts(canvas_node)) parts.push_back(std::move(part));
     if (const auto *off = deactivatedNode(canvas_node))
         parts.push_back("deactivated: " + off->reason +
                         (off->feature.empty() ? std::string{} : " (" + off->feature + ")"));

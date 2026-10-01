@@ -768,6 +768,19 @@ struct GraphCanvasDeactivatedNode {
     bool operator==(const GraphCanvasDeactivatedNode &) const = default;
 };
 
+// GL-3a, decision 6: one of get_frame_plan's fold_decisions -- a decision a
+// verified fold group added to target_planning, by its expanded name.
+struct GraphCanvasFoldDecision {
+    std::string group;
+    // "node" or "resource".
+    std::string kind;
+    std::string name;
+    // serial, isolate or no_alias.
+    std::string field;
+
+    bool operator==(const GraphCanvasFoldDecision &) const = default;
+};
+
 // One animation sink `get_status.animation` reported for the owner the watched
 // instance names. Read-only: the Timeline draws it beside the value traces so
 // "what the pose side is doing" and "what the values partition produced" are
@@ -1147,6 +1160,8 @@ class GraphCanvasModel {
         plan_access_;
     std::vector<GraphCanvasPlanDiagnostic> plan_diagnostics_;
     std::vector<GraphCanvasDeactivatedNode> deactivated_nodes_;
+    // GL-3a: the plan's fold_decisions (absent while no group is verified).
+    std::vector<GraphCanvasFoldDecision> plan_fold_decisions_;
     void readPlanLayers(const nlohmann::json &plan);
     // The endpoint most of the plan's passes run on.
     [[nodiscard]] std::string graphBackend() const;
@@ -2171,6 +2186,15 @@ class GraphCanvasModel {
     [[nodiscard]] const std::vector<GraphCanvasPlanDiagnostic> &planDiagnostics() const noexcept {
         return plan_diagnostics_;
     }
+    // GL-3a, decision 6: what the verified fold groups decided; the band of
+    // the node each lands on says `isolate (fold <group>)`.
+    [[nodiscard]] const std::vector<GraphCanvasFoldDecision> &planFoldDecisions() const noexcept {
+        return plan_fold_decisions_;
+    }
+    // The band's words for one root node: the fold decisions that landed on
+    // it (a node decision on a pass it made; a resource decision on the
+    // node that hands the resource on).
+    [[nodiscard]] std::vector<std::string> foldDecisionParts(std::string_view canvas_node) const;
 
     // Decision 3: into a folded node (a feature's fold or a material pass),
     // read only; leaveScope() comes back out one step at a time.

@@ -123,6 +123,20 @@ GraphCanvasReadCapability graphCanvasReadCapability(EmbeddedViewport &viewport) 
         .requestEditPresetPass = [&viewport](const QJsonObject &params, QString *error) {
             return viewport.requestRpc(QStringLiteral("edit_preset_pass"), params, error);
         },
+        .requestFoldGroups = [&viewport](QString *error) {
+            return viewport.requestRpc(QStringLiteral("get_fold_groups"), QJsonObject{}, error);
+        },
+        .requestRootDocument = [&viewport](const QString &reference, QString *error) {
+            return viewport.requestRpc(
+                QStringLiteral("get_render_documents"),
+                QJsonObject{{QStringLiteral("references"), QJsonArray{reference}}}, error);
+        },
+        .requestFoldNodes = [&viewport](const QJsonObject &params, QString *error) {
+            return viewport.requestRpc(QStringLiteral("fold_nodes"), params, error);
+        },
+        .requestVerifyFold = [&viewport](const QJsonObject &params, QString *error) {
+            return viewport.requestRpc(QStringLiteral("verify_fold"), params, error);
+        },
         .result = [&viewport](QObject *context,
                               GraphCanvasReadCapability::ResultHandler handler) {
             QObject::connect(

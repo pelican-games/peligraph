@@ -439,6 +439,8 @@ struct FramePlanDecision {
     // GL-2a: the frame plan nodes its subject resolves to; empty for a
     // decision about the whole graph.
     std::vector<std::string> from_nodes;
+    // GL-3a (FG-1): the fold group whose decision this is, or empty.
+    std::string from_fold;
 
     bool operator==(const FramePlanDecision &) const = default;
 };

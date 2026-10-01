@@ -16,6 +16,9 @@ add_library(pelican_studio_inspector_model STATIC
     graphattachmentmodel.hpp
     graphcanvasmodel.cpp
     graphcanvasmodel.hpp
+    # GL-3a: fold groups, read and written from the Graph tab.
+    graphfoldgroups.cpp
+    graphfoldgroups.hpp
     renderedithistory.cpp
     renderedithistory.hpp
     # RSX: the one reading of a render config ticket's last answer.

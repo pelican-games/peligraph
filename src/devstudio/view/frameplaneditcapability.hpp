@@ -47,6 +47,12 @@ struct FramePlanEditCapability {
     // LP-4e: "Decompose into loop" rewrites a material pass as graph nodes.
     std::function<qint64(const QJsonObject &params, QString *error)>
         decomposeMaterialPass;
+    // GL-3a, decision 8: a graph-wide planning decision (EL-2), and the root
+    // document it is read back from (get_render_documents of the root).
+    std::function<qint64(const QJsonObject &params, QString *error)>
+        editTargetPlanning;
+    std::function<qint64(const QString &reference, QString *error)>
+        requestRootDocument;
     std::function<qint64(const QString &ticket, QString *error)>
         requestEditResult;
     std::function<void(QObject *context, ResultHandler handler)> result;

@@ -391,6 +391,11 @@ if(TARGET pelican_studio_inspector_model)
   # RU-1: the render edit history over a list of what was sent -- no Qt, no
   # engine; the test answers each request as the engine does.
   pelican_define_test(devstudio_render_history_test pelican_studio_inspector_model)
+  # GL-3a: fold groups as the Graph tab and the Frame Plan read and write
+  # them, without Qt.
+  pelican_define_test(devstudio_graph_fold_test pelican_studio_inspector_model)
+  target_compile_definitions(pelican_test_devstudio_graph_fold_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   target_compile_definitions(pelican_test_devstudio_graphcanvas_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   pelican_define_test(devstudio_inspector_test
@@ -569,6 +574,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasdrawing.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasloopfields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasrenderfields.cpp
+    # GL-3a: the fold groups the Graph tab draws and writes.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
@@ -586,11 +593,48 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     pelican_studio_resources)
   # UX-5b: the UX-4a parts are QObjects with signals of their own.
   set_target_properties(pelican_test_devstudio_graphcanvas_scene_test PROPERTIES AUTOMOC ON)
+  # Several tests compile graphcanvaswidget.cpp, past the section limit (C1128).
+  if(MSVC)
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaswidget.cpp
+      PROPERTIES COMPILE_OPTIONS /bigobj)
+  endif()
   target_include_directories(pelican_test_devstudio_graphcanvas_scene_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view
   )
   target_compile_definitions(pelican_test_devstudio_graphcanvas_scene_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+  )
+
+  # GL-3a: the Graph tab's fold groups, through the capability it is given.
+  pelican_define_test(devstudio_graph_fold_scene_test QT QT_OFFSCREEN
+    pelican_studio_inspector_model
+    pelican_studio_frame_plan
+    pelican_project
+    Qt6::Core
+    Qt6::Widgets
+  )
+  target_sources(pelican_test_devstudio_graph_fold_scene_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaswidget.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasdrawing.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasloopfields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasrenderfields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenpasssettings.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/passform.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/rasterstateform.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/attachmentopsform.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/studiotheme.cpp
+  )
+  target_link_libraries(pelican_test_devstudio_graph_fold_scene_test PRIVATE
+    pelican_studio_resources)
+  set_target_properties(pelican_test_devstudio_graph_fold_scene_test PROPERTIES AUTOMOC ON)
+  target_include_directories(pelican_test_devstudio_graph_fold_scene_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view
   )
 
   # Q-1b: the input kinds of the automation surface, checked against the widget

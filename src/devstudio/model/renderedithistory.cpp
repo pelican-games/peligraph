@@ -22,7 +22,7 @@ constexpr int TicketPollMs = 25;
 // The render edits: the ones that replace what documents hold (RD-1), and
 // the ones that create or remove files (RD-1b), which RU-1 could not take
 // back.
-constexpr std::array<std::string_view, 18> RecordedMethods{
+constexpr std::array<std::string_view, 21> RecordedMethods{
     "edit_preset_pass",
     "decompose_material_pass",
     // LP-4f2: a shipped graph template in place of a feature (GT-1).
@@ -43,6 +43,12 @@ constexpr std::array<std::string_view, 18> RecordedMethods{
     "import_render_feature",
     // RSX: the rendering section's own keys (EL-3).
     "edit_rendering_keys",
+    // GL-3a: a fold group of the root (FG-1), and a graph-wide planning
+    // decision written from the Frame Plan (EL-2).
+    "fold_nodes",
+    "edit_target_planning",
+    // GL-4a: the verified mark verify_fold writes (FG-2), after it runs.
+    "verify_fold",
 };
 
 std::string stringAt(const Json &object, const char *key) {
@@ -293,6 +299,15 @@ std::string RenderEditHistory::labelFor(const std::string &method, const Json &p
             return "Remove " + remove.front().get<std::string>();
         return "Edit rendering settings";
     }
+    // GL-3a: a group written, or deleted (folded null).
+    if (method == "fold_nodes") {
+        const auto group = stringAt(params, "group");
+        const bool removed = params.is_object() && params.contains("folded") &&
+                             params.at("folded").is_null();
+        return named(removed ? "Unfold " : "Fold group ", group, removed ? "Unfold" : "Fold group");
+    }
+    if (method == "edit_target_planning") return "Edit planning decisions";
+    if (method == "verify_fold") return named("Verify ", stringAt(params, "group"), "Verify");
     return method;
 }
 
@@ -423,11 +438,13 @@ bool RenderEditHistory::receiveResult(std::int64_t id, const Json &result) {
         }
         if (id == edit.poll_request) {
             edit.poll_request = 0;
-            if (status(result) == "pending") {
+            // GL-4a: verify_fold says "running" while its runs draw.
+            if (status(result) == "pending" || status(result) == "running") {
                 const auto key = edit.edit_request;
                 const auto epoch = epoch_;
                 if (transport_.schedule)
-                    transport_.schedule(TicketPollMs, [this, key, epoch] {
+                    // A run of seconds or minutes is asked about less often.
+                    transport_.schedule(status(result) == "running" ? 500 : TicketPollMs, [this, key, epoch] {
                         if (epoch == epoch_) pollEdit(key);
                     });
                 return true;

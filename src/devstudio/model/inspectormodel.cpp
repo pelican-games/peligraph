@@ -841,7 +841,7 @@ struct GraphLoopRefusalText {
     std::string_view code;
     std::string_view sentence;
 };
-constexpr std::array<GraphLoopRefusalText, 28> GraphLoopRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 34> GraphLoopRefusalTexts{{
     {"graph.loop_branch_else_missing@1",
      "Loop {node} has no else: its last branch must have no condition"},
     {"graph.loop_branch_interface@1",
@@ -896,6 +896,19 @@ constexpr std::array<GraphLoopRefusalText, 28> GraphLoopRefusalTexts{{
     {"graph.loop_output_reference_unknown@1", "{pass} reads {reference}, which is no loop output"},
     // UX-5c (RS-9): a render node lacks a parameter its op needs.
     {"graph.render_node_parameters_missing@1", "The {op} node {node} needs {missing}"},
+    // GL-3a (FG-1): a fold group's decisions. `subject` is {node, element?,
+    // port?}, read as "node [element].port".
+    {"graph.fold_decision_conflict@1",
+     "{group} asks {field} for {name}, but the graph-wide setting says otherwise"},
+    {"graph.fold_subject_outside@1",
+     "Fold group {group} names {subject}, which is not one of its nodes"},
+    {"graph.fold_kind_unsupported@1",
+     "Fold group {group} is folded as {kind}; only decisions can be declared for now"},
+    // GL-4a (FG-2): verify_fold could not judge.
+    {"fold_verify_failed",
+     "{group} could not be verified: its open form could not be drawn ({run} run)"},
+    {"fold_verify_unavailable", "This engine cannot verify a fold group now ({reason})"},
+    {"fold_verify_busy", "{group} is being verified already; wait for it to finish"},
 }};
 
 // UX-5c: graph.loop_output_reference_unknown@1's reasons, each a sentence that
@@ -1017,6 +1030,18 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error) {
             }
     }
     if (entry == nullptr) return {};
+    // GL-3a: a fold decision's subject is an object; it reads as the
+    // Decisions section writes it.
+    if (const auto subject = fields.find("subject");
+        subject != fields.end() && subject->is_object()) {
+        auto line = subject->value("node", std::string{"?"});
+        if (const auto element = subject->find("element");
+            element != subject->end() && element->is_number_integer())
+            line += " [" + element->dump() + "]";
+        if (const auto port = subject->find("port"); port != subject->end() && port->is_string())
+            line += "." + port->get<std::string>();
+        fields["subject"] = line;
+    }
     std::string sentence;
     std::string_view pattern = entry->sentence;
     if (entry->code == "graph.loop_tier_unsupported@1") {

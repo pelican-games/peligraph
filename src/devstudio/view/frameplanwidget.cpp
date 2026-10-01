@@ -18,6 +18,7 @@
 #include "rendereditcompletion.hpp"
 #include "shadersourceresolver.hpp"
 #include "inspectormodel.hpp"
+#include "graphfoldgroups.hpp"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -512,6 +513,14 @@ struct FramePlanWidget::Impl {
     FramePlanAuthoring authoring;
     FramePlanTaskAuthoring task_authoring;
     qint64 pending_authoring_request = 0;
+    // GL-3a, decision 8: the root's target_planning (read with the root
+    // document after each authoring context), for the rows' Serial /
+    // Isolate / No alias checks.
+    qint64 pending_planning_request = 0;
+    GraphTargetPlanning planning;
+    QAction *planning_serial = nullptr;
+    QAction *planning_isolate = nullptr;
+    QAction *planning_no_alias = nullptr;
     qint64 pending_task_request = 0;
     qint64 pending_edit_request = 0;
     qint64 pending_ticket_request = 0;
@@ -1160,7 +1169,9 @@ struct FramePlanWidget::Impl {
             tabs);
         decisions = makeTree(
             {owner.tr("Subject"), owner.tr("Decision id"),
-             owner.tr("Selected"), owner.tr("Detail")},
+             owner.tr("Selected"), owner.tr("Detail"),
+             // GL-3a, decision 6: the fold group a decision came from.
+             owner.tr("From")},
             tabs);
         backends = makeTree(
             {owner.tr("Candidate"), owner.tr("Status"),
@@ -1233,6 +1244,24 @@ struct FramePlanWidget::Impl {
             }
             openRowNode(names.front());
         });
+        // GL-3a, decision 8: the graph-wide decisions (EL-2) on the picked
+        // row of Passes or Resources, named so a scenario fires them.
+        const auto planning_action = [this](const char *name, const QString &label,
+                                            const char *field) {
+            auto *action = new QAction(label, &owner);
+            action->setObjectName(QString::fromLatin1(name));
+            action->setCheckable(true);
+            owner.addAction(action);
+            QObject::connect(action, &QAction::triggered, &owner,
+                             [this, field] { togglePlanning(field); });
+            return action;
+        };
+        planning_serial = planning_action("pelican.framePlan.planning.serial",
+                                          owner.tr("Serial"), "serial");
+        planning_isolate = planning_action("pelican.framePlan.planning.isolate",
+                                           owner.tr("Isolate"), "isolate");
+        planning_no_alias = planning_action("pelican.framePlan.planning.noAlias",
+                                            owner.tr("No alias"), "no_alias");
         for (QTreeWidget *tree : {passes, resources, physical, decisions, backends, barriers}) {
             tree->setContextMenuPolicy(Qt::CustomContextMenu);
             QObject::connect(tree, &QWidget::customContextMenuRequested, &owner,
@@ -1787,7 +1816,9 @@ struct FramePlanWidget::Impl {
             : request.method == "add_authored_pass"   ? edit.addAuthoredPass
             : request.method == "decompose_material_pass"
                 ? edit.decomposeMaterialPass
-                : nullptr;
+            // GL-3a, decision 8.
+            : request.method == "edit_target_planning" ? edit.editTargetPlanning
+                                                      : nullptr;
         if (!sender) {
             showStatus(owner.tr("Canvas editing is unavailable: %1").arg(method));
             return false;
@@ -1838,6 +1869,7 @@ struct FramePlanWidget::Impl {
     }
 
     bool receiveEditResult(qint64 request_id, const QByteArray &bytes) {
+        if (receivePlanning(request_id, bytes)) return true;
         if (request_id != 0 && request_id == pending_authoring_request) {
             pending_authoring_request = 0;
             try {
@@ -1851,6 +1883,8 @@ struct FramePlanWidget::Impl {
             // context names the root one.
             task_authoring.root_reference = authoring.source_reference;
             if (authoring.received) publishDigest(authoring.source_digest);
+            // GL-3a, decision 8: and the root's target_planning with it.
+            if (authoring.received) requestPlanning();
             if (model) populate();
             // Q-13: the document moved while this read was on its way.
             if (std::exchange(authoring_reread, false))
@@ -2721,6 +2755,13 @@ struct FramePlanWidget::Impl {
              !viewSelectRefusalDescription(*error).empty() ||
              !graphLoopRefusalDescription(*error).empty()))
             return text(renderAuthoringRefusalLine(*error));
+        // GL-3a, decision 8: a preset that declares target_planning itself.
+        if (error != response.end() && error->is_object() &&
+            submitted_method == "edit_target_planning" &&
+            error->value("code", std::string{}) == "rendering_key_not_allowed_here")
+            return owner.tr("The pipeline preset declares target_planning, which this project "
+                            "cannot override: fork the preset to set it "
+                            "(rendering_key_not_allowed_here).");
         if (error != response.end() && error->is_object() &&
             submitted_method == "add_authored_pass") {
             // G-4: name the materials no pass would draw, and the fix.
@@ -2956,6 +2997,7 @@ struct FramePlanWidget::Impl {
         tree.setCurrentItem(item);
         const auto names = rowNodes(item);
         QMenu menu;
+        addPlanningEntries(menu, item);
         if (names.size() > 1) {
             QMenu *each = menu.addMenu(owner.tr("Open in Graph"));
             for (const auto &name : names) {
@@ -2974,6 +3016,105 @@ struct FramePlanWidget::Impl {
         }
         menu.exec(tree.viewport()->mapToGlobal(at));
     }
+    // --- GL-3a, decision 8: Serial / Isolate on a pass's row, No alias on a
+    // resource's, written with edit_target_planning by the expanded name.
+    static constexpr int PlanningSubjectRole = Qt::UserRole + 72;
+    void setPlanningSubject(QTreeWidgetItem *item, const char *kind, const std::string &name,
+                            bool loop_copy) const {
+        item->setData(0, PlanningSubjectRole,
+                      QStringList{QString::fromLatin1(kind), text(name),
+                                  loop_copy ? QStringLiteral("loop") : QString{}});
+    }
+    // {kind, name, "loop"?} of a row, or empty.
+    static QStringList planningSubject(const QTreeWidgetItem *item) {
+        return item != nullptr ? item->data(0, PlanningSubjectRole).toStringList() : QStringList{};
+    }
+    void addPlanningEntries(QMenu &menu, const QTreeWidgetItem *item) {
+        const auto subject = planningSubject(item);
+        if (subject.size() < 2 || !model || !edit.editTargetPlanning) return;
+        if (subject.value(2) == QLatin1String{"loop"}) {
+            // LP-1a refuses a loop's copy by name: the per-element way.
+            QAction *why = menu.addAction(text(std::string{graphTargetPlanningLoopLine}));
+            why->setObjectName(QStringLiteral("pelican.framePlan.planning.loopLine"));
+            why->setEnabled(false);
+            menu.addSeparator();
+            return;
+        }
+        const auto kind = subject.value(0).toStdString();
+        const auto name = subject.value(1).toStdString();
+        const bool can = authoring.received && pending_edit_request == 0 && pending_ticket.isEmpty();
+        const auto entry = [&](QAction *action, const char *field) {
+            action->setChecked(planning.flag(kind, name, field));
+            action->setEnabled(can);
+            menu.addAction(action);
+        };
+        if (kind == "resource") {
+            entry(planning_no_alias, "no_alias");
+        } else {
+            entry(planning_serial, "serial");
+            entry(planning_isolate, "isolate");
+        }
+        menu.addSeparator();
+    }
+    void togglePlanning(const char *field) {
+        auto *tree = qobject_cast<QTreeWidget *>(tabs->currentWidget());
+        const auto subject = planningSubject(tree != nullptr ? tree->currentItem() : nullptr);
+        if (subject.size() < 2 || !model) {
+            showStatus(owner.tr("Select a pass or a resource row first."));
+            return;
+        }
+        if (subject.value(2) == QLatin1String{"loop"}) {
+            showStatus(text(std::string{graphTargetPlanningLoopLine}) + QLatin1Char('.'));
+            return;
+        }
+        const auto kind = subject.value(0).toStdString();
+        const auto name = subject.value(1).toStdString();
+        const std::string wanted{field};
+        if ((kind == "resource") != (wanted == "no_alias")) {
+            showStatus(kind == "resource" ? owner.tr("A resource takes No alias only.")
+                                          : owner.tr("A pass takes Serial and Isolate."));
+            return;
+        }
+        if (!authoring.received) {
+            showStatus(owner.tr("The authoring context has not been read yet."));
+            return;
+        }
+        const bool on = !planning.flag(kind, name, wanted);
+        FramePlanEditRequest request;
+        request.method = "edit_target_planning";
+        request.params = graphTargetPlanningParams(authoring.source_digest, model->graph, kind,
+                                                   name, wanted, on);
+        const std::string title = wanted == "no_alias" ? "No alias"
+                                  : wanted == "serial" ? "Serial"
+                                                       : "Isolate";
+        request.notice = title + (on ? " set on " : " taken off ") + name + ".";
+        submit(request);
+    }
+    void requestPlanning() {
+        if (!edit.requestRootDocument || authoring.source_reference.empty() ||
+            pending_planning_request != 0)
+            return;
+        QString error;
+        pending_planning_request =
+            edit.requestRootDocument(text(authoring.source_reference), &error);
+    }
+    bool receivePlanning(qint64 request_id, const QByteArray &bytes) {
+        if (request_id == 0 || request_id != pending_planning_request) return false;
+        pending_planning_request = 0;
+        const auto response =
+            Json::parse(bytes.constData(), bytes.constData() + bytes.size(), nullptr, false);
+        if (!response.is_object() || !model) return true;
+        for (const auto &document : response.value("documents", Json::array())) {
+            if (!document.is_object() ||
+                document.value("reference", std::string{}) != authoring.source_reference)
+                continue;
+            const auto content =
+                Json::parse(document.value("content", std::string{}), nullptr, false);
+            planning = GraphTargetPlanning::fromRoot(content, model->graph);
+        }
+        return true;
+    }
+
     // GL-2b, decision 3: the Graph tab's Layers row picks a plan node here.
     void showPlanNode(const std::string &name) {
         tabs->setCurrentWidget(logical_splitter);
@@ -3647,6 +3788,7 @@ struct FramePlanWidget::Impl {
         for (const FramePlanNode &node : nodes) {
             auto *item = new QTreeWidgetItem(tree);
             setRowNodes(item, {node.name});
+            setPlanningSubject(item, "node", node.name, node.loop_origin.has_value());
             item->setText(0, QString::number(static_cast<qulonglong>(node.order)));
             item->setText(1, text(node.name));
             item->setText(2, text(node.kind));
@@ -3909,6 +4051,8 @@ struct FramePlanWidget::Impl {
                 item->setText(1, text(decision.id));
                 item->setText(2, text(decision.selected));
                 item->setText(3, text(decision.detail));
+                if (!decision.from_fold.empty())
+                    item->setText(4, owner.tr("fold %1").arg(text(decision.from_fold)));
             }
         }
     }
@@ -3972,6 +4116,8 @@ struct FramePlanWidget::Impl {
                 names.insert(names.end(), resource.readers.begin(), resource.readers.end());
                 setRowNodes(item, names);
             }
+            setPlanningSubject(item, "resource", resource.name,
+                               resource.loop_origin.has_value());
             item->setText(0, text(resource.name));
             item->setText(1, text(resource.format));
             item->setText(2, joined(resource.writers));

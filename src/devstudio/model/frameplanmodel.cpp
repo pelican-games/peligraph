@@ -521,6 +521,7 @@ FramePlanDecision parseDecision(const Json &value, std::string_view context) {
         .selected = requireStringField(value, "selected", context),
         .detail = requireStringField(value, "detail", context),
         .from_nodes = stringArray(value, "from_nodes", context),
+        .from_fold = optionalStringField(value, "from_fold", context),
     };
 }
 

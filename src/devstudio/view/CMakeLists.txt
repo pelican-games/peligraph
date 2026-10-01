@@ -73,6 +73,9 @@ add_library(pelican_studio_view STATIC
     graphcanvasloopfields.hpp
     graphcanvasrenderfields.cpp
     graphcanvasrenderfields.hpp
+    # GL-3a: fold groups on the Graph canvas, and their Decisions.
+    graphcanvasfoldgroups.cpp
+    graphcanvasfoldgroups.hpp
     graphcanvasreadcapability.cpp
     graphcanvasreadcapability.hpp
     proceduralassetdialog.cpp
@@ -100,6 +103,10 @@ set_target_properties(pelican_studio_view PROPERTIES
     AUTOMOC ON
     CXX_STANDARD 20
 )
+# graphcanvaswidget.cpp grew past the object format's section limit (C1128).
+if(MSVC)
+    target_compile_options(pelican_studio_view PRIVATE /bigobj)
+endif()
 target_include_directories(pelican_studio_view PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )

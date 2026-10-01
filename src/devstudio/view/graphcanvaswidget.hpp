@@ -20,6 +20,7 @@
 #include <vector>
 
 class QAction;
+class QMenu;
 class QTabWidget;
 class QTimer;
 class QGraphicsSceneContextMenuEvent;
@@ -578,6 +579,21 @@ class GraphCanvasScene final : public QGraphicsScene {
     [[nodiscard]] const QPointF &lastContextPosition() const noexcept {
         return context_position_;
     }
+
+    // --- GL-3a: fold groups. The owner draws a group's frame, heading and
+    // folded node over the root after each draw (graphcanvasfoldgroups); a
+    // press, a double-click or a right-click on one of those items is the
+    // owner's to answer, before anything the canvas does with the place.
+    // Each hook is asked about every item under the cursor and says whether
+    // it took the gesture.
+    std::function<bool(QGraphicsItem &item, Qt::MouseButton button)> foldItemPressed;
+    std::function<bool(QGraphicsItem &item)> foldItemDoubleClicked;
+    std::function<bool(QGraphicsItem &item, const QPoint &screen)> foldItemMenu;
+    // The canvas menu's entries for the picked nodes (Fold into group…).
+    std::function<void(QMenu &menu)> foldMenuEntries;
+    // Let go of everything picked on the canvas (a group's heading was
+    // picked instead).
+    void clearPicks();
 
   protected:
     void mousePressEvent(QGraphicsSceneMouseEvent *event) override;

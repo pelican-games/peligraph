@@ -360,6 +360,26 @@ LP-4f2 replaces a feature with its shipped loop version:
 
 `graph_template_bloom` is the example.
 
+GL-3a folds root nodes of the Graph tab into a fold group (`fold_nodes`) and
+draws it over the canvas. Folded or open is only how the group is looked at:
+the document's `fold_groups` does not change with it.
+
+| name | what it is |
+|------|------------|
+| `pelican.graphCanvas.foldIntoGroup` | Fold into group…: the picked root nodes into one group, named by Studio (`fold_1`, `<loop>_fold`), without a question |
+| `graph_fold_group#<group>` | the frame round the group's nodes (drawing only) |
+| `graph_fold_heading#<group>` | its heading: a click picks the group, a right-click opens its menu |
+| `graph_fold_state#<group>` | the state's words: `not verified — decisions are not applied yet`, or `changed since verified — runs the open form` beside `graph_fold_mark#<group>` |
+| `graph_fold_toggle#<group>` | Fold / Open on the heading |
+| `graph_node#fold:<group>` | the group drawn folded; its rows are `graph_derived_socket#fold:<group>/<node>.<port>` |
+| `pelican.graphCanvas.foldAddSelected`, `.unfoldGroup`, `.toggleFoldGroup` | the heading menu's entries, acting on the picked group; Unfold asks in `pelican.graphCanvasFold.unfoldConfirm` (`.ok`, `.cancel`) |
+| `pelican.graphCanvasFold.note`, `.state` | the Decisions section's first lines |
+| `pelican.graphCanvasFold.<field>.node`, `.element`, `.port`, `.add` | the Add row of `serial`, `isolate` or `no_alias` |
+| `pelican.graphCanvasFold.<field>.row<i>`, `.remove<i>` | one decision, and its × |
+| `pelican.framePlan.planning.serial`, `.isolate`, `.noAlias` | the Frame Plan's right-click entries on the picked Passes / Resources row (`edit_target_planning`) |
+
+`graph_fold_decisions` is the example.
+
 The editor the canvas opens over a pill or a heading is a real widget carried by
 a drawn item, and is named the same way:
 `pelican.graphCanvasView::graph_inline_editor#left/gain`. `type`, `key` and
