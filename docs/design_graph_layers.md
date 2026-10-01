@@ -320,8 +320,8 @@ FG-1 の宣言(root の `fold_groups`):
 | **✅GL-1d Blank から Graph で描画を組む**(同上) | palette の `render.material_pass` が draw ループ(`<pass>_draws`、body `<pass>_draw` の `draw.material`)と `draws` の線を同じ列で連れて来る。Loop の欄の Over に Draw items。forward の pass を deferred の pass の無い pipeline に足すときは `material_route_default: "forward"` を同じ編集で送る。palette はキーボードで使える(`565de69b`) | 無し(RS-2 の param を使う) | 台帳の GL-1d の完了記録 |
 | **✅GL-1e Graph から画面に出す**(同上) | root が宣言した rendering 節の fullscreen pass(Blank の `present`)が `input` の各項目をソケットで出し、可変の組があれば `+ input`。graph の node の出力を落とすと、Frame Plan のソケットへの drop と同じ関数が作る `edit_preset_pass` を Graph タブが送る(置き換え / 末尾に追加)。線は実線、Delete で外す。Graph の Undo は、自分の最後の編集が pass の編集である間は RU-1 の履歴へ。RS-3 の前の engine の拒否に 1 句足す(`38da763e`) | 無し(RS-3 の順序に乗る) | 台帳の GL-1e の完了記録 |
 | **✅GL-1f pass の出力のソケット**(同上) | `render.material_pass`(color のソケットと `depth`)/ `render.shadow_depth`(`depth`)/ `render.snapshot_copy`(`destination`)が出力のソケットを出す。型は入力につないだ image の型。線を引くと書き手の `outputs` に port を足し(同じ列、Undo 1 回)、最後の読みが消えると外す。`present` への実線はその image を書いた pass の出力から(`7a3ea86c`) | 無し(RS-4 の port を使う) | 台帳の GL-1f の完了記録 |
-| **GL-3 断片と決定** | `fold_groups`、`decisions` の欄(serial / no_alias / physical)、ローカル名を展開名へ写す段 | §5.2・§3.6 | 断片に付けた決定が展開名で効き、L2 の表に出る |
-| **GL-4 検査と印** | `verify_fold`、失効と `running open form` の表示、複数選択 → Fold | §5.3・§5.4 | 失効させた断片が開いた形で走り、名前付きの警告が出る |
+| **GL-3 断片と決定** | `fold_groups`、`decisions` の欄(serial / no_alias / physical)、ローカル名を展開名へ写す段。Studio 側は ✅GL-3a(`f5579426`) | §5.2・§3.6 | 断片に付けた決定が展開名で効き、L2 の表に出る |
+| **GL-4 検査と印** | `verify_fold`、失効と `running open form` の表示、複数選択 → Fold。Studio 側は ✅GL-4a(`f5579426`) | §5.3・§5.4 | 失効させた断片が開いた形で走り、名前付きの警告が出る |
 | **GL-5 Frame Plan を mode に** | Frame Plan の編集入口を Graph の操作へ束ね、独立の入口を消す | 無し | Frame Plan から送る op が Graph と同じ 1 経路になる |
 | GL-6(後) | 保存形の一本化(§6) | 大 | 別設計 |
 

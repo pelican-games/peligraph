@@ -27221,6 +27221,69 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - **シナリオ**: 新規 `rendering_settings_from_blank`(json の step は 30。Blank → Rendering settings で `shader_defines` に `RSX_TINT` を足す → `Saved shader_defines.` → Edit ▸ Undo Render Edit で `Undid "Set shader_defines".` と root から消える)。シナリオは 48 → 49 本
 - **残る穴**: `snapshots` / `graph_transforms` / `xr` は JSON の欄(次にフォームにする候補)。EL-3 の編集が `restart_required` を返す道を GPU で通す test は無い
 
+### GB-2: Blank から GUI だけで全部を組むシナリオと、今の GUI でできる最適化を測るシナリオ
+
+**test のみ(Studio のシナリオ)。Studio での見え方は `docs/manual/13_editor.md` の「Studio の自動化面」の `gui_build_full` / `gui_build_optimize` の段落。**
+
+#### 着地(2026-10-02、ed615734)
+- 新規 `gui_build_full`(json の step は 314)と `gui_build_optimize`(511)。どちらも File > New Project > Blank pipeline から Studio の GUI だけで進む(`rpc` は読むだけ)。シナリオは 49 → 51 本
+- **full**: GB-1 が 5 本に分けて組んだもの(deferred の material pass、Deferred lighting と `shadow_directional` の影、palette の `engine://rt_shadow_mask_pipeline` の mask、`engine://bloom_highpass` → 4 回の半分の大きさのループと carry → `engine://bloom_composite`、tone map)を 1 つの project に組み、段ごとに viewport の画素を見る
+- **optimize**: 同じ project に、GUI にある速くする方法(draw sort、Replace with loop version、`TRANSFER_SRC` を外して alias させる、ループの回を減らす、Multisampling)を当て、frame plan と Physical plan の barrier / scope / alias / pass の数と `gpu_timing` で読む
+- 止まった所・打った欄(着地時の description): 2 回目の New… の名前が前の名前のまま(`tone_map` を打つ)、Add fullscreen pass の image が `R8G8B8A8_UNORM` で 1 を超える光が切れる、`TRANSFER_SRC` 付きで alias されない、lighting の雛形に mask の場所が無く shader を 2 か所手で書き換える、Frame Plan のタブを前にしないと `reload_shaders` が出ず、Graph タブは Refresh まで binding を出さない、pass の欄が編集のたびに一瞬押せなくなり各操作の前に待つ。これらは UX-6a が受けた(次の節)
+- UX-6a(`1d8644fc`)が 2 本を書き直した(step は 282 / 463)
+
+### UX-6a: GB-2 で打った所・見えなかった所(雛形の名前、Graph からの shader の読み直し、float で TRANSFER_SRC 無しの image、Remove TRANSFER_SRC、pass の欄の Filter / Address / mip、lighting の雛形の shadow_mask)
+
+**Studio のみ。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「pass の欄の Inputs —— 読む image ごとの Filter / Address / mip(✅UX-6a)」「Studio が作る image は float で、TRANSFER_SRC を付けません(✅UX-6a)」「pass の欄の New… の名前は、雛形を選ぶたびに提案し直します(✅UX-6a)」「Graph タブの pass の shader も監視します(✅UX-6a)」、「雛形は 3 種類(✅G-3)」の shadow mask の項、シナリオの `gui_build_full` / `gui_build_optimize`。**
+
+#### 前提
+- GB-2 の 2 本のシナリオ(上の節)が打った欄と、見えなかったもの
+
+#### 着地(2026-10-02、1d8644fc)
+- **決定 1(雛形の名前)**: Create の後、書いた名前(打った名前でも)を Studio の提案として覚え直す([覚え直す所](../src/devstudio/view/graphcanvasrenderfields.cpp#L1212))。次に雛形を選ぶと、その雛形の空き名(`tone_map`、あれば `_2`…)に替わる。打った名前は Create まで上書きしない
+- **決定 2(Graph からの shader の読み直し)**: `reload_shaders` を送るのは Frame Plan の 1 か所のまま。Graph タブが文書の `render.fullscreen` / `render.raster` の `project://` の shader を node ごとに Frame Plan に渡し([`publishShaderSources()`](../src/devstudio/view/graphcanvaswidget.cpp#L6729))、Frame Plan はそれを前に出ているかによらず監視する。読み直しが通るか pass が断ると Graph タブが文書と plan を読み直す([`GraphCanvasWidget::shadersReloaded()`](../src/devstudio/view/graphcanvaswidget.cpp#L7237))
+- **決定 3・4(image の既定)**: Add fullscreen pass・palette の fullscreen / raster・ループの body の pass が作る image を `R16G16B16A16_SFLOAT`、usage `COLOR_ATTACHMENT` / `SAMPLED`(`TRANSFER_SRC` 無し)に([既定](../src/devstudio/model/graphcanvasmodel.cpp#L3078))。palette の snapshot_copy の自前の source は `TRANSFER_SRC` を残す。既存の node は変えない。image の欄の `TRANSFER_SRC` の check に、付けると alias されない旨の tooltip
+- **決定 4(Remove TRANSFER_SRC)**: Physical plan に組 `Not aliased for TRANSFER_SRC (N)` とボタン `Remove TRANSFER_SRC`(`pelican.framePlan.dropTransferSrc.<資源>`)。判定は PO-1 の理由の文 `usage TRANSFER_SRC is outside`、原因の文の無い engine では usage([`keptByTransferSource()`](../src/devstudio/view/frameplanwidget.cpp#L4393))。押すと Graph タブが `render.image`(ループの回なら body の node)の usage から外して `set_node_parameters` 1 回([`GraphCanvasWidget::removeImageTransferSource()`](../src/devstudio/view/graphcanvaswidget.cpp#L7245))
+- **決定 5(Filter / Address / mip)**: pass の欄に Inputs の行(`pelican.graphCanvasPass.input.<port>.filter` / `.address` / `.mip`)。右クリックの節は残す。番号付きの入力では出たまま押せず理由を tooltip に([`GraphCanvasPassFields::loadInputSettings()`](../src/devstudio/view/graphcanvasrenderfields.cpp#L902))。engine の RS-14(`8c1787ca`)が後で番号付きの入力にも sampling を通したが、Studio の判定(`portSettings()` の `binding != "input"`)は台帳のこの記録の時点で変わっていない
+- **決定 6(lighting の mask)**: Deferred lighting の雛形が入力の後ろに任意の `shadow_mask` を宣言し、主光源の影を shadow map と mask の暗い方にする。つながない binding は 0 を読み、mask 無しとして読む([mask の binding を足す所](../src/devstudio/view/fullscreenshadertemplate.cpp#L219)、[主光源の影](../src/devstudio/resources/fullscreen_lighting_pass.frag.in#L110))
+- **決定 7(待ち)**: `gui_build_full` / `gui_build_optimize` から各操作の前の約 2.5 秒の待ちを外した(commit の記録)
+- **test**: 新規 `devstudio_graphcanvas_scene_test` の `UX-6a decision 1: after a Create, picking another template names the new shader after that template (a free name past the files already there); a typed name stays`([test](../test/devstudio_graphcanvas_scene_test.cpp#L8566))と `UX-6a decision 5: the Pass fields show each read image's Filter, Address and mip as combos, each pick one set_node_parameters; a numbered input's are there, off, saying why`([test](../test/devstudio_graphcanvas_scene_test.cpp#L8093))、`devstudio_frameplan_graph_test` の `UX-6a decisions 2 and 4: the Frame Plan tells the Graph after a reload that moved declarations, and its Physical plan offers Remove TRANSFER_SRC on an image kept out of aliasing for it`([test](../test/devstudio_frameplan_graph_test.cpp#L12163))、`devstudio_shadertemplate_compile_test` の G-3 の test に SECTION `UX-6a decision 6: the optional shadow mask is the binding after the inputs, and the key light takes the darker of it and the shadow map`([test](../test/devstudio_shadertemplate_compile_test.cpp#L243))
+- **シナリオ**: `gui_build_full`(314 → 282 step。打った名前・手で書いた mask の 2 か所・Frame Plan への回り道・待ちを外し、Graph タブを前にしたまま `shaders/tone_map.frag` を書き換えて Refresh なしに binding 1 が出ることを見る)、`gui_build_optimize`(511 → 463。image が最初から alias され、lit の image に付けた `TRANSFER_SRC` を Physical plan の Remove で外す)、`graph_from_blank_forward`(UX-2 の後半の format の向きを `R16G16B16A16_SFLOAT` → `R8G8B8A8_UNORM` に、残る鍵の確認を `usage[1]` の `SAMPLED` に)
+
+### GL-3a: Graph で root の node を fold group にまとめ、決定(serial / isolate / no_alias)を一覧から選んで書く / Frame Plan から graph 全体の決定
+
+**Studio のみ(engine は FG-1 `61a88f9f`・EL-2 `b5a58b11`)。実装者: Claude(Opus)。設計は `docs/design_graph_layers.md` の §3.4〜§3.6・§4・§7 の GL-3。Studio での見え方は `docs/manual/13_editor.md` の「root の node を fold group にまとめる(✅GL-3a)」「Frame Plan から graph 全体の決定を書く(✅GL-3a)」、シナリオの `graph_fold_decisions`。**
+
+#### 着地(2026-10-02、f5579426。GL-4a と同じ commit)
+- **決定 1(畳む)**: canvas の右クリックの `Fold into group…`(`pelican.graphCanvas.foldIntoGroup`)。名前は Studio が付ける(`fold_N`、ループを含めば `<loop>_fold`。[`suggestGraphFoldGroupName()`](../src/devstudio/model/graphfoldgroups.cpp#L165))。確認無しで決定の空の `fold_nodes`。ゾーンの中の node と畳んだ node は理由の 1 行で断る([`graphFoldPickRefusal()`](../src/devstudio/model/graphfoldgroups.cpp#L242))
+- **決定 2(見え方)**: 枠と見出しの帯、Fold / Open で 1 つの畳んだ node(`graph_node#fold:<group>`、枠をまたぐ線ごとの行)。開閉はセッションの状態で文書は変えない([`GraphCanvasFoldController::redraw()`](../src/devstudio/view/graphcanvasfoldgroups.cpp#L1030))
+- **決定 3(状態)**: 文書の digest が変わるたびに `get_fold_groups` と root の `get_render_documents`。見出しに `not verified — decisions are not applied yet` / 橙の印と `changed since verified — runs the open form` / verified は何も出さない。`fold_unverified` / `fold_stale` の診断は Graph の diagnostics の一覧から外す
+- **決定 4(Decisions の欄)**: Serial / Isolate / No alias の一覧と Add の行(node・要素・port の combo。[`graphFoldNodeChoices()`](../src/devstudio/model/graphfoldgroups.cpp#L199))。行の × で消す。どの変更も `fold_nodes` 1 回
+- **決定 5(中身を変える)**: 見出しの右クリックに Add selected nodes / Remove node… / Fold / Open / Unfold (delete group)(確認、既定は Cancel)
+- **決定 6(効いた決定)**: plan の `fold_decisions` を読み、node の帯に `isolate (fold <group>)`([`GraphCanvasModel::foldDecisionParts()`](../src/devstudio/model/graphcanvasmodel.cpp#L5699))。Frame Plan の Decisions に 5 列目 From(`fold <group>`)
+- **決定 7(拒否の文)**: `graph.fold_decision_conflict@1` / `graph.fold_subject_outside@1` / `graph.fold_kind_unsupported@1` を inspectormodel の 1 文の表に([表](../src/devstudio/model/inspectormodel.cpp#L901))
+- **決定 8(graph 全体の決定)**: Frame Plan の Passes / Resources の行の右クリックに Serial / Isolate / No alias の check(`pelican.framePlan.planning.*`)。状態は root の `target_planning` を `get_render_documents` で読む。押すと `edit_target_planning`(外すときは `null`)。ループの回の展開名の行には `Fold the loop to set this per element`。preset が鍵を持つときの `rendering_key_not_allowed_here` は 1 文。Physical plan の行、pins と physical fragment の UI は無い
+- render の編集の履歴が `fold_nodes` / `edit_target_planning` を記録する(`Fold group <group>` / `Unfold <group>` / `Edit planning decisions`)。履歴から戻す test は無い
+- `graphcanvaswidget.cpp` が object の section の上限(C1128)を超えたので、MSVC で `/bigobj`
+- **新しいファイル**: `src/devstudio/model/graphfoldgroups.{hpp,cpp}`(Qt 非依存)、`src/devstudio/view/graphcanvasfoldgroups.{hpp,cpp}`(canvas の上の描画と Decisions の欄)
+- **test**: 新規 `devstudio_graph_fold_test` の `GL-3a decision 1` / `3` / `4` / `6` / `7` / `8` の 6 本([decision 1](../test/devstudio_graph_fold_test.cpp#L44))と、新規 `devstudio_graph_fold_scene_test` の `GL-3a the Graph tab folds picked root nodes into a group, says it is not verified, writes its decisions, folds it as it is looked at, and unfolds it`([test](../test/devstudio_graph_fold_scene_test.cpp#L170))
+- **シナリオ**: 新規 `graph_fold_decisions`(json の step は 103。GL-4a の Verify まで含む)。シナリオは 51 → 52 本。`test/studio_scenarios/README.md` に fold group の自動化面の名前の表を足した
+
+### GL-4a: fold group の Verify(等価性の検査)と、印・失効・効いた先の表示
+
+**Studio のみ(engine は FG-2 `9c71f97b`)。実装者: Claude(Opus)。設計は `docs/design_graph_layers.md` の §3.5・§4 の規則 5・§7 の GL-4。Studio での見え方は `docs/manual/13_editor.md` の「fold group を検査する —— Verify(✅GL-4a)」、シナリオの `graph_fold_decisions` の後半。**
+
+#### 着地(2026-10-02、f5579426。GL-3a と同じ commit)
+- **決定 1(Verify)**: 見出しの Verify(`graph_fold_verify#<group>`)と Decisions の欄の Verify / Quick check。既定は engine の既定(frames 3、warm-up 30 s)、Quick check で frames 2・warm-up 1 s。tolerance は送らない([`graphFoldVerifyParams()`](../src/devstudio/model/graphfoldgroups.cpp#L255))
+- **決定 2(走っている間)**: 見出しが `verifying… (n s)`。同時に 1 つ。その group の fold の編集を断り、その group の node の欄を灰色にして `<group> is being verified; edits wait until it finishes`([`GraphCanvasFoldController::gateNodeFields()`](../src/devstudio/view/graphcanvasfoldgroups.cpp#L1008))。`get_edit_result` は 500 ms ごと
+- **決定 3(結果)**: 通れば notice `<group> verified — its decisions now apply` と plan の読み直し。`graph.fold_mismatch@1` は赤の印と frame・画素数(か validation / compile)の 1 文、`graph.fold_verify_unstable@1` は黄の印と Quick check を外す案内、`external_modification` と `fold_verify_failed` / `fold_verify_unavailable` / `fold_verify_busy` は notice の 1 文([`readGraphFoldVerifyOutcome()`](../src/devstudio/model/graphfoldgroups.cpp#L278))
+- **決定 4(失効)**: stale の見出しに `Verify again`(tooltip に loop の Count も比べる対象であること)
+- **決定 5(効いた先)**: verified の group の Decisions の各行に `applied → <展開名>`、当たらない主語は灰色の `no longer matches anything`([`graphFoldAppliedNames()`](../src/devstudio/model/graphfoldgroups.cpp#L367))
+- render の編集の履歴が `verify_fold` を記録する(`Verify <group>`。`running` の間は 500 ms ごとに問う)。履歴から戻す test は無い
+- Quick check と既定のそれぞれの所要時間は、commit の記録に無い(未確認)
+- **test**: `devstudio_graph_fold_test` の `GL-4a decision 1` / `3` / `5` の 3 本([decision 3](../test/devstudio_graph_fold_test.cpp#L307)。mismatch と unstable は手で作った `get_edit_result` の JSON)と、`devstudio_graph_fold_scene_test` の `GL-4a Verify from a group's heading runs verify_fold, holds the group's edits while it runs, and marks what it found; a stale group offers Verify again`([test](../test/devstudio_graph_fold_scene_test.cpp#L304))
+- **シナリオ**: `graph_fold_decisions` の後半(Quick check で Verify → `verified`、帯に `isolate (fold fold_1)`、Decisions の行に `applied → render_fullscreen_2`、Frame Plan の Raw JSON に `"from_fold": "fold_1"`)
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
