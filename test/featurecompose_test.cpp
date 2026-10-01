@@ -8967,4 +8967,214 @@ TEST_CASE("RS-10 shadow_directional composes over a deferred pipeline with the a
                       Catch::Matchers::ContainsSubstring("did not match any material or fullscreen consumer"));
 }
 
+namespace {
+const std::vector<std::string> rs7Sockets{"albedo", "normal", "material", "worldpos", "emissive"};
+
+// The deferred material pass the Graph palette adds (GL-1d): images of its own
+// per socket and a depth, and the draw_loop over its materials. No place of
+// its own.
+void rs7AddMaterialPass(nlohmann::json &document) {
+    using Json = nlohmann::json;
+    const std::string id = "render_material_pass";
+    document["definitions"][id + "_draw"] = Json{
+        {"nodes", Json::array({{{"id", "step"}, {"op", "draw.material"}, {"parameters", Json::object()},
+                                {"outputs", {"draws"}}}})},
+        {"outputs", {{"draws", {{"node", "step"}, {"port", "draws"}}}}}};
+    auto &nodes = document["nodes"];
+    if (nodes.is_null()) nodes = Json::array();
+    nodes.push_back({{"id", id + "_draws"}, {"op", "graph.loop"},
+                     {"parameters", {{"over", {{"draw_items", {{"contract", "deferred_geometry_v1"}}}}},
+                                     {"tier", "draw_loop"}, {"order", {{"by", "phase_default"}}},
+                                     {"branches", Json::array({{{"body", id + "_draw"}}})}}},
+                     {"outputs", {"draws"}}});
+    Json inputs = Json::object();
+    for (const auto &socket : rs7Sockets) {
+        auto image = lp0bImage(id + "__" + socket);
+        if (socket == "material") image["parameters"]["format"] = "R8G8B8A8_UNORM";
+        nodes.push_back(image);
+        inputs[socket] = {{"node", id + "__" + socket}, {"port", "resource"}};
+    }
+    nodes.push_back(rs4DepthImage(id + "__depth"));
+    inputs["depth"] = {{"node", id + "__depth"}, {"port", "resource"}};
+    inputs["draws"] = {{"node", id + "_draws"}, {"port", "draws"}};
+    nodes.push_back({{"id", id}, {"op", "render.material_pass"},
+                     {"parameters", {{"material_contract", "deferred_geometry_v1"}, {"pass_set", "main_render"}}},
+                     {"inputs", std::move(inputs)}, {"outputs", Json::array()}});
+}
+
+// The rendering section's deferred lighting pass, as the Pass Editor writes
+// it: the G-buffer by name in, deferred_lighting_color out.
+nlohmann::json rs7Lighting() {
+    using Json = nlohmann::json;
+    Json inputs = Json::array();
+    for (const auto &socket : rs7Sockets) inputs.push_back("render_material_pass__" + socket);
+    return {{"name", "deferred_lighting"}, {"type", "fullscreen"}, {"input", inputs},
+            {"output", {{"color", Json::array({"deferred_lighting_color"})}, {"depth", nullptr}}},
+            {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}};
+}
+
+nlohmann::json rs7LightingTarget() {
+    return {{"name", "deferred_lighting_color"}, {"format", "R16G16B16A16_SFLOAT"}, {"extent_scale", 1.0},
+            {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}};
+}
+} // namespace
+
+TEST_CASE("RS-7 a scene pass that reads a scene pass reading the graph's output follows it",
+          "[render-feature][graph-composition][rs7]") {
+    using Json = nlohmann::json;
+    auto document = lp1eBlankRenderingConfig();
+    auto &rendering = document.at("rendering");
+    auto &passes = rendering.at("rendering_passes").at(0).at("passes");
+    REQUIRE(passes.at(0).at("name") == "present");
+    passes.at(0)["input"] = Json::array({"deferred_lighting_color"});
+    rendering["render_targets"] = Json::array({rs7LightingTarget()});
+    rs7AddMaterialPass(document);
+    const auto expect_order = [](const RenderFeatureComposeResult &composed) {
+        const auto declared = lp0bDeclared(composed.config);
+        INFO(Json(declared).dump());
+        CHECK(lp0bIndex(declared, "render_material_pass") < lp0bIndex(declared, "deferred_lighting"));
+        CHECK(lp0bIndex(declared, "deferred_lighting") < lp0bIndex(declared, "present"));
+        const auto order = lp0bPlanOrder(composed);
+        CHECK(lp0bIndex(order, "render_material_pass") < lp0bIndex(order, "deferred_lighting"));
+        CHECK(lp0bIndex(order, "deferred_lighting") < lp0bIndex(order, "present"));
+        lp6RequireInputsProduced(composed);
+    };
+    SECTION("the lighting pass written after present") {
+        passes.push_back(rs7Lighting());
+        const auto composed = lp0aCompose(document);
+        expect_order(composed);
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
+    SECTION("the lighting pass written before present") {
+        passes.insert(passes.begin(), rs7Lighting());
+        const auto composed = lp0aCompose(document);
+        expect_order(composed);
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
+    // The Pass Editor writes its pass as a managed fragment: a feature whose
+    // one pass is inserted at the anchor the author chose.
+    const auto authored = [&](const std::string &insert) {
+        const Json fragment{{"schema", "pelican.render_feature"}, {"version", 1},
+                            {"name", "authored_pass_main_render_deferred_lighting"},
+                            {"runtime_shader_compiler", "optional"},
+                            {"passes", Json::array({{{"insert", insert}, {"pass", rs7Lighting()}}})}};
+        auto with = document;
+        with["rendering"]["features"] = Json::array({"project://passes/authoring/deferred_lighting.json"});
+        return composeRenderFeatureConfig(with, RenderFeatureComposeDependencies{
+            [fragment](std::string_view ref) {
+                return ref == "project://passes/authoring/deferred_lighting.json" ? fragment.dump()
+                                                                                  : loadEngineFeature(ref);
+            },
+            true});
+    };
+    SECTION("the Pass Editor's lighting pass after the graph's material pass") {
+        const auto composed = authored("after:render_material_pass");
+        expect_order(composed);
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
+    SECTION("the Pass Editor's lighting pass before present (Position 0)") {
+        const auto composed = authored("before:present");
+        expect_order(composed);
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
+    SECTION("a lighting pass that waits on present is not moved, and present is refused as before") {
+        const auto composed = authored("after:present");
+        const auto declared = lp0bDeclared(composed.config);
+        CHECK(lp0bIndex(declared, "present") < lp0bIndex(declared, "deferred_lighting"));
+        CHECK_THROWS_WITH(validateFramePlanPassInputsProduced(
+                              planFrameGraph(parseFrameGraphDefinitionsFromConfigJson(composed.config).at(0)),
+                              composed.config.at("rendering_passes").at(0), {}),
+                          Catch::Matchers::ContainsSubstring(
+                              "Pass input target is not produced as an earlier output: deferred_lighting_color"));
+    }
+}
+
+TEST_CASE("RS-13 the rendering section reads a loop's output as <loop>.<output>",
+          "[render-feature][graph-composition][rs13]") {
+    using Json = nlohmann::json;
+    auto document = lp1eBlankRenderingConfig();
+    auto &present = document.at("rendering").at("rendering_passes").at(0).at("passes").at(0);
+    REQUIRE(present.at("name") == "present");
+    document["definitions"]["paint"] = lp1aPaintBody();
+    const auto graph = [&](std::int64_t count, const Json &outputs = Json::array({"image"})) {
+        auto with = document;
+        with["nodes"] = Json::array({lp1aLoop("steps", lp1aRange(count), Json::object(), outputs)});
+        return with;
+    };
+    const auto expect_last = [](const RenderFeatureComposeResult &composed, const std::string &last) {
+        const auto &reader = passByName(composed.config, "present");
+        CHECK(reader.at("input") == Json::array({last + "/image"}));
+        CHECK(lp0bListed(reader.at("after"), last + "/fill"));
+        const auto declared = lp0bDeclared(composed.config);
+        INFO(Json(declared).dump());
+        CHECK(lp0bIndex(declared, last + "/fill") < lp0bIndex(declared, "present"));
+        const auto order = lp0bPlanOrder(composed);
+        CHECK(lp0bIndex(order, last + "/fill") < lp0bIndex(order, "present"));
+        lp6RequireInputsProduced(composed);
+    };
+    present["input"] = Json::array({"steps.image"});
+    SECTION("the last element's image, whatever the count") {
+        const auto three = lp0aCompose(graph(3));
+        expect_last(three, "steps/2");
+        REQUIRE_NOTHROW(compileComposition(three));
+        // The frame plan says what present named.
+        const auto compiled = compileComposition(three);
+        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(three.config);
+        const auto json = framePlanToJson(planFrameGraph(graphs.at(0)), &compiled);
+        const auto node = std::find_if(json.at("nodes").begin(), json.at("nodes").end(),
+            [](const Json &candidate) { return candidate.at("name") == "present"; });
+        REQUIRE(node != json.at("nodes").end());
+        CHECK(node->value("loop_outputs", Json()) ==
+              Json::array({{{"reference", "steps.image"}, {"resource", "steps/2/image"}}}));
+        expect_last(lp0aCompose(graph(5)), "steps/4");
+    }
+    SECTION("a loop that stands by a graph pass moves ahead of present with it") {
+        auto with = graph(3);
+        rs7AddMaterialPass(with);
+        const auto composed = lp0aCompose(with);
+        expect_last(composed, "steps/2");
+        const auto declared = lp0bDeclared(composed.config);
+        CHECK(lp0bIndex(declared, "render_material_pass") < lp0bIndex(declared, "present"));
+    }
+    SECTION("an element's image read by its expanded name orders the loop ahead of present too") {
+        auto with = graph(3);
+        rs7AddMaterialPass(with);
+        with.at("rendering").at("rendering_passes").at(0).at("passes").at(0)["input"] =
+            Json::array({"steps/2/image"});
+        const auto composed = lp0aCompose(with);
+        const auto declared = lp0bDeclared(composed.config);
+        INFO(Json(declared).dump());
+        for (const auto *name : {"steps/0/fill", "steps/1/fill", "steps/2/fill", "render_material_pass"})
+            CHECK(lp0bIndex(declared, name) < lp0bIndex(declared, "present"));
+        CHECK(lp0bIndex(lp0bPlanOrder(composed), "steps/2/fill") < lp0bIndex(lp0bPlanOrder(composed), "present"));
+        lp6RequireInputsProduced(composed);
+    }
+    SECTION("what names no loop output is refused by name") {
+        const auto refusal = [&](const std::string &reference, const Json &outputs = Json::array({"image"})) {
+            auto with = graph(3, outputs);
+            rs7AddMaterialPass(with);
+            with.at("rendering").at("rendering_passes").at(0).at("passes").at(0)["input"] = Json::array({reference});
+            return lp0aRefusal(with);
+        };
+        for (const auto &[reference, outputs, reason] : std::vector<std::tuple<std::string, Json, std::string>>{
+                 {"nothing.image", Json::array({"image"}), "loop_unknown"},
+                 {"render_material_pass.albedo", Json::array({"image"}), "not_a_loop"},
+                 {"render_material_pass_draws.draws", Json::array({"image"}), "not_a_loop"},
+                 {"steps.missing", Json::array({"image"}), "output_unknown"},
+                 {"steps.image", Json::array({"image[]"}), "per_element"},
+                 {"steps.image[]", Json::array({"image[]"}), "per_element"}}) {
+            INFO(reference);
+            const auto [code, detail] = refusal(reference, outputs);
+            CHECK(code == "graph.loop_output_reference_unknown@1");
+            CHECK(detail == Json{{"pass", "present"}, {"reference", reference}, {"reason", reason}});
+        }
+        // A target named with a `.` is that target.
+        auto dotted = graph(3);
+        dotted["rendering"]["render_targets"] = Json::array({rs7LightingTarget()});
+        dotted["rendering"]["render_targets"][0]["name"] = "lit.color";
+        dotted.at("rendering").at("rendering_passes").at(0).at("passes").at(0)["input"] = Json::array({"lit.color"});
+        CHECK(passByName(lp0aCompose(dotted).config, "present").at("input") == Json::array({"lit.color"}));
+    }
+}
+
 } // namespace Pelican

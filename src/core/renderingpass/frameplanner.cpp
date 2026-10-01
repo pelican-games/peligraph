@@ -1961,6 +1961,16 @@ nlohmann::json framePlanToJson(
             if (!provenance.added_after.empty()) {
                 node_json["added_after"] = provenance.added_after;
             }
+            if (!provenance.loop_outputs.empty()) {
+                auto references = nlohmann::json::array();
+                for (const auto &entry : provenance.loop_outputs) {
+                    references.push_back(nlohmann::json{
+                        {"reference", entry.reference},
+                        {"resource", entry.resource},
+                    });
+                }
+                node_json["loop_outputs"] = std::move(references);
+            }
         }
         if (node.kind == FramePlanNodeKind::snapshot_copy) {
             node_json["byte_size"] = node.byte_size;

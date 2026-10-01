@@ -142,6 +142,9 @@ Json lowerRenderPassKindNode(const Json &node, Json parameters,
     if (!after.empty()) parameters["after"] = std::move(after);
     return parameters;
 }
+
+// Defined with the expand stage below.
+std::set<std::string> declarationWrites(const Json &declaration);
 }
 
 LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &document,
@@ -906,6 +909,91 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             }
         }
     }
+    // RS-13: the rendering section names a loop's `p` as `<loop>.<output>`.
+    // It reads the template name, as a graph reader of `p` does; the
+    // resolution stage re-points it at the last element's value and orders the
+    // pass after what writes it.
+    {
+        std::map<std::string, const Json *> authored_nodes;
+        if (const auto root = document.find("nodes"); root != document.end() && root->is_array())
+            for (const auto &node : *root)
+                if (node.is_object() && node.contains("id") && node.at("id").is_string())
+                    authored_nodes.emplace(node.at("id").get<std::string>(), &node);
+        const auto resolve = [&](const std::string &pass, Json &value) {
+            if (!value.is_string()) return;
+            const auto text = value.get<std::string>();
+            const auto dot = text.find('.');
+            if (dot == std::string::npos) return;
+            const auto loop = text.substr(0, dot);
+            const auto port = text.substr(dot + 1);
+            const auto refuse = [&](const char *reason) {
+                throw GraphRegistryError("graph.loop_output_reference_unknown@1",
+                                         {{"pass", pass}, {"reference", text}, {"reason", reason}});
+            };
+            // A target or buffer may be named with a `.` (a feature's
+            // parameter buffer, `bloom.intensity`); which exist is known
+            // after composition (resolveGraphDocumentAfterComposition).
+            const auto node = authored_nodes.find(loop);
+            if (node == authored_nodes.end() || node->second->value("op", std::string{}) != "graph.loop" ||
+                !loop_index.contains(loop)) {
+                lowered.unknown_loop_output_references.push_back(
+                    {pass, text, loop, port, node == authored_nodes.end() ? "loop_unknown" : "not_a_loop"});
+                return;
+            }
+            const auto declared = node->second->value("outputs", Json::array());
+            const auto lists = [&](const std::string &name) {
+                return declared.is_array() && std::find(declared.begin(), declared.end(), name) != declared.end();
+            };
+            if (port.ends_with("[]") || (!lists(port) && lists(port + "[]"))) refuse("per_element");
+            if (port.empty() || !lists(port)) refuse("output_unknown");
+            const auto &lowered_loop = lowered.loops.at(loop_index.at(loop));
+            const RenderGraphLoopBody *body = nullptr;
+            for (const auto &branch : lowered_loop.branches)
+                if (branch) {
+                    body = &*branch;
+                    break;
+                }
+            const auto output = body != nullptr ? body->outputs.find(port) : std::map<std::string, std::string>::const_iterator{};
+            if (body == nullptr || output == body->outputs.end()) refuse("not_a_resource");
+            value = output->second;
+            lowered.loop_output_references.push_back({pass, text, loop, port});
+            const auto duplicate = std::find_if(lowered.loop_output_reads.begin(), lowered.loop_output_reads.end(),
+                [&](const RenderGraphLoopOutputRead &other) {
+                    return other.consumer == pass && other.resource == output->second;
+                });
+            if (duplicate == lowered.loop_output_reads.end())
+                lowered.loop_output_reads.push_back({pass, loop, port, output->second, Json{}, {}, {}, false});
+        };
+        if (auto families = config.find("rendering_passes"); families != config.end() && families->is_array())
+            for (auto &family : *families) {
+                if (!family.is_object() || !family.contains("passes") || !family.at("passes").is_array()) continue;
+                for (auto &pass : family.at("passes")) {
+                    if (!pass.is_object() || !pass.contains("name") || !pass.at("name").is_string()) continue;
+                    const auto name = pass.at("name").get<std::string>();
+                    if (graph_pass_family.contains(name)) continue;
+                    for (const auto *key : {"input", "reads"})
+                        if (const auto found = pass.find(key); found != pass.end() && found->is_array())
+                            for (auto &entry : *found) {
+                                if (entry.is_object() && entry.contains("target")) resolve(name, entry.at("target"));
+                                else resolve(name, entry);
+                            }
+                    if (const auto ports = pass.find("resource_ports"); ports != pass.end() && ports->is_object()) {
+                        const auto writes = declarationWrites(pass);
+                        for (auto &[port, binding] : ports->items()) {
+                            (void)port;
+                            auto *resource = binding.is_string() ? &binding
+                                : binding.is_object() && binding.contains("resource") ? &binding.at("resource")
+                                                                                      : nullptr;
+                            if (resource != nullptr && resource->is_string() &&
+                                !writes.contains(resource->get<std::string>()))
+                                resolve(name, *resource);
+                        }
+                    }
+                    if (pass.value("type", std::string{}) == "snapshot_copy")
+                        if (const auto source = pass.find("source"); source != pass.end()) resolve(name, *source);
+                }
+            }
+    }
     // LP-3a: each draw_loop's branch table. A branch's steps are its body's
     // draw.* chain: from the body's `draws` output back along `after` edges,
     // then first to last.
@@ -1146,6 +1234,20 @@ RenderGraphLoopResolution resolveGraphDocumentAfterComposition(Json &composed, c
                                                                const RenderGraphFeatureContext &features) {
     for (const auto &reference : lowered.target_refs) checkTargetReference(composed, reference);
     for (const auto &read : lowered.history_reads) checkHistoryRead(composed, read);
+    // RS-13: a `<loop>.<output>` whose loop is no expanding loop's id names a
+    // loop that is not there, unless a target or buffer has that name.
+    if (!lowered.unknown_loop_output_references.empty()) {
+        std::set<std::string> declared;
+        for (const auto *key : {"render_targets", "buffers"})
+            if (const auto list = composed.find(key); list != composed.end() && list->is_array())
+                for (const auto &entry : *list)
+                    if (entry.is_object() && entry.contains("name") && entry.at("name").is_string())
+                        declared.insert(entry.at("name").get<std::string>());
+        for (const auto &reference : lowered.unknown_loop_output_references)
+            if (!declared.contains(reference.reference))
+                throw GraphRegistryError("graph.loop_output_reference_unknown@1",
+                    {{"pass", reference.pass}, {"reference", reference.reference}, {"reason", reference.reason}});
+    }
     // LP-1a: graph.loop expansion. LP-0d (pass_replacements) continues after
     // it; the variant's removals ran before the runs were placed
     // (withoutExcludedGraphDependents).
@@ -2093,6 +2195,7 @@ RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRe
         for (const auto &consumer : consumerCopies(read.consumer)) {
             const auto value = readValue(read, {});
             if (!value) continue;
+            if (read.element.is_null()) resolution.loop_output_values[{read.loop, read.port}] = value->resource;
             const auto found = declarations.find(consumer.name);
             if (found == declarations.end()) continue;
             auto &declaration = *found->second.declaration;
@@ -2320,6 +2423,15 @@ LoweredRenderGraphDocument withoutExcludedGraphDependents(Json &composed, const 
         changed = false;
         for (const auto &read : lowered.loop_output_reads) {
             if (!inactive.contains(read.loop)) continue;
+            // RS-13: a pass of the rendering section is not the graph's to
+            // take away; what it names is gone.
+            if (const auto reference = std::find_if(lowered.loop_output_references.begin(),
+                    lowered.loop_output_references.end(), [&](const RenderGraphLoopOutputReference &candidate) {
+                        return candidate.pass == read.consumer && candidate.loop == read.loop;
+                    });
+                reference != lowered.loop_output_references.end())
+                throw GraphRegistryError("graph.loop_output_reference_unknown@1",
+                    {{"pass", reference->pass}, {"reference", reference->reference}, {"reason", "loop_inactive"}});
             changed = deactivate(loopOfBody(read.consumer).value_or(read.consumer), featureOf(read.loop),
                                  "loop_output") || changed;
         }
@@ -2738,5 +2850,142 @@ std::vector<GraphTaskReaderWait> waitOnGraphTasksInScenePasses(Json &composed,
         }
     }
     return added;
+}
+
+namespace {
+bool intersects(const std::set<std::string> &lhs, const std::set<std::string> &rhs) {
+    return std::any_of(lhs.begin(), lhs.end(), [&](const std::string &name) { return rhs.contains(name); });
+}
+
+// RS-7: what the frame planner requires an earlier pass of the family to have
+// written (validateFramePlanPassInputsProduced): the `input` names, or a
+// snapshot copy's source.
+std::vector<std::string> requiredInputs(const Json &pass) {
+    std::vector<std::string> names;
+    if (pass.value("type", std::string{}) == "snapshot_copy") {
+        if (const auto source = pass.find("source"); source != pass.end() && source->is_string())
+            names.push_back(source->get<std::string>());
+        return names;
+    }
+    if (const auto input = pass.find("input"); input != pass.end() && input->is_array())
+        for (const auto &name : *input)
+            if (name.is_string()) names.push_back(name.get<std::string>());
+    return names;
+}
+
+// `later` waits on `earlier` by an after / before of theirs.
+bool waitsByName(const Json &later, const Json &earlier) {
+    const auto later_name = later.value("name", std::string{});
+    const auto earlier_name = earlier.value("name", std::string{});
+    const auto after = orderNames(later, "after");
+    const auto before = orderNames(earlier, "before");
+    return std::find(after.begin(), after.end(), earlier_name) != after.end() ||
+           std::find(before.begin(), before.end(), later_name) != before.end();
+}
+
+// One move in one family (moveSceneWritersBeforeReaders); false when none.
+bool moveOneSceneWriter(Json &passes, const std::string &family, const std::set<std::string> &tasks_write,
+                        const std::set<std::string> &buffers,
+                        const std::function<std::string(const std::string &, const Json &)> &block) {
+    std::size_t scene_end = passes.size();
+    for (std::size_t i = 0; i < passes.size(); ++i) {
+        const auto type = passes.at(i).value("type", std::string{});
+        if (type == "canonical_anchor" || type == "output_transform") {
+            scene_end = i;
+            break;
+        }
+    }
+    // The passes that would move for the reader at `r` and its writer at `w`,
+    // in declared order; empty when the move is not made.
+    const auto movable = [&](std::size_t r, std::size_t w, const std::set<std::string> &produced) {
+        const auto &reader = passes.at(r);
+        std::vector<std::size_t> none;
+        if (waitsByName(reader, passes.at(w))) return none;
+        std::set<std::size_t> moving;
+        std::vector<std::size_t> pending;
+        const auto add = [&](std::size_t i) {
+            if (moving.insert(i).second) pending.push_back(i);
+        };
+        add(w);
+        while (!pending.empty()) {
+            const auto m = pending.back();
+            pending.pop_back();
+            const auto &moved = passes.at(m);
+            if (const auto key = block ? block(family, moved) : std::string{}; !key.empty())
+                for (std::size_t j = r + 1; j < scene_end; ++j)
+                    if (block(family, passes.at(j)) == key) add(j);
+            const auto reads = declarationFrameReads(moved);
+            const auto writes = declarationWrites(moved);
+            for (std::size_t x = r + 1; x < m; ++x) {
+                if (moving.contains(x)) continue;
+                const auto &other = passes.at(x);
+                const auto other_writes = declarationWrites(other);
+                if (waitsByName(moved, other) || intersects(reads, other_writes) || intersects(writes, other_writes) ||
+                    intersects(writes, declarationFrameReads(other)))
+                    add(x);
+            }
+        }
+        const auto reader_reads = declarationFrameReads(reader);
+        const auto reader_writes = declarationWrites(reader);
+        for (const auto m : moving) {
+            const auto &moved = passes.at(m);
+            const auto writes = declarationWrites(moved);
+            if (waitsByName(moved, reader) || intersects(declarationFrameReads(moved), reader_writes) ||
+                intersects(writes, reader_writes))
+                return none;
+            for (const auto &name : writes)
+                if (reader_reads.contains(name) && produced.contains(name)) return none;
+        }
+        return std::vector<std::size_t>(moving.begin(), moving.end());
+    };
+    std::set<std::string> produced;
+    for (std::size_t r = 0; r < scene_end; ++r) {
+        const auto &reader = passes.at(r);
+        if (!reader.is_object()) continue;
+        for (const auto &name : requiredInputs(reader)) {
+            if (name.ends_with("@history") || buffers.contains(name) || produced.contains(name) ||
+                tasks_write.contains(name))
+                continue;
+            std::optional<std::size_t> writer;
+            for (std::size_t w = r + 1; w < scene_end && !writer; ++w)
+                if (passes.at(w).is_object() && declarationWrites(passes.at(w)).contains(name)) writer = w;
+            if (!writer) continue;
+            const auto moving = movable(r, *writer, produced);
+            if (moving.empty()) continue;
+            std::vector<Json> run;
+            for (const auto index : moving) run.push_back(std::move(passes.at(index)));
+            for (auto index = moving.rbegin(); index != moving.rend(); ++index)
+                passes.erase(passes.begin() + static_cast<Json::difference_type>(*index));
+            for (std::size_t i = 0; i < run.size(); ++i)
+                passes.insert(passes.begin() + static_cast<Json::difference_type>(r + i), std::move(run[i]));
+            return true;
+        }
+        produced.merge(declarationWrites(reader));
+    }
+    return false;
+}
+} // namespace
+
+void moveSceneWritersBeforeReaders(Json &composed,
+    const std::function<std::string(const std::string &family, const Json &pass)> &block) {
+    const auto families = composed.find("rendering_passes");
+    if (families == composed.end() || !families->is_array()) return;
+    std::set<std::string> tasks_write, buffers;
+    if (const auto tasks = composed.find("compute_tasks"); tasks != composed.end() && tasks->is_array())
+        for (const auto &task : *tasks)
+            if (task.is_object()) tasks_write.merge(declarationWrites(task));
+    if (const auto list = composed.find("buffers"); list != composed.end() && list->is_array())
+        for (const auto &buffer : *list)
+            if (buffer.is_object() && buffer.contains("name") && buffer.at("name").is_string())
+                buffers.insert(buffer.at("name").get<std::string>());
+    for (auto &family : *families) {
+        if (!family.is_object() || !family.contains("passes") || !family.at("passes").is_array()) continue;
+        auto &passes = family.at("passes");
+        const auto name = family.value("name", std::string{});
+        // Each move satisfies an input and moves passes only toward the front;
+        // the bound only guards against a pathological back and forth.
+        for (std::size_t round = 0, limit = passes.size() * passes.size() + 1; round < limit; ++round)
+            if (!moveOneSceneWriter(passes, name, tasks_write, buffers, block)) break;
+    }
 }
 }

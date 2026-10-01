@@ -256,6 +256,15 @@ struct RenderPassReplacedDeclaration {
     bool operator==(const RenderPassReplacedDeclaration &) const = default;
 };
 
+// RS-13: a `<loop>.<output>` a rendering section pass names, and the resource
+// it reads in its place (the loop's last element's value).
+struct RenderPassLoopOutputReference {
+    std::string reference;
+    std::string resource;
+
+    bool operator==(const RenderPassLoopOutputReference &) const = default;
+};
+
 struct RenderPassProvenance {
     std::string name;
     RenderPipelineProvenanceSource source =
@@ -281,6 +290,9 @@ struct RenderPassProvenance {
     // `after` because the pass reads an image they write
     // (waitOnGraphTasksInScenePasses), in the order added.
     std::vector<std::string> added_after;
+    // RS-13: the loop outputs this pass names as `<loop>.<output>`, in the
+    // order its fields list them.
+    std::vector<RenderPassLoopOutputReference> loop_outputs;
 
     bool operator==(const RenderPassProvenance &) const = default;
 };

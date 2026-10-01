@@ -3160,6 +3160,9 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         if (target.is_object() && target.contains("name") && target.at("name").is_string())
             graph_images.insert(target.at("name").get<std::string>());
     for (auto &target : graph_targets) resolved_config["render_targets"].push_back(std::move(target));
+    // RS-7: the graph's passes with no place of their own (and the loops that
+    // stand by them) move as one block when a reader needs one of them.
+    std::set<std::string> graph_appended;
     for (auto &family : graph_passes) {
         auto &families = ensureArray(resolved_config, "rendering_passes");
         auto found = std::find_if(families.begin(), families.end(), [&](const auto &candidate) {
@@ -3201,6 +3204,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         for (const auto &pass : graph_run) {
             run.push_back(&pass);
             run_names.insert(pass.value("name", std::string{}));
+            graph_appended.insert(pass.value("name", std::string{}));
         }
         for (const auto &loop : lowered_graph.loops) {
             if (loop.shape.placement || !loop.positions.contains(family_name)) continue;
@@ -3687,6 +3691,10 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     std::map<std::string, std::vector<RenderFeaturePassReplacement>> graph_replacements;
     // RS-6: the passes and tasks the graph's loops expanded.
     std::set<std::string> graph_loop_declarations;
+    // RS-7: each loop copy's loop.
+    std::map<std::string, std::string> graph_loop_copy_of;
+    // RS-13: what each `<loop>.<output>` was re-pointed at.
+    std::map<std::pair<std::string, std::string>, std::string> graph_loop_output_values;
     // LP-0d: pass_replacements name a graph node, so they need a graph.
     if (!common_graph && !graph_features.replacements.empty()) {
         const auto &replacement = graph_features.replacements.front();
@@ -3715,7 +3723,11 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                                                      inputs.surface_resource_contracts);
             };
         auto loop_resolution = resolveGraphDocumentAfterComposition(composed, active_graph, graph_features);
-        for (const auto &[name, origin] : loop_resolution.passes) graph_loop_declarations.insert(name);
+        for (const auto &[name, origin] : loop_resolution.passes) {
+            graph_loop_declarations.insert(name);
+            graph_loop_copy_of.emplace(name, origin.loop);
+        }
+        graph_loop_output_values = loop_resolution.loop_output_values;
         for (const auto &[name, origin] : loop_resolution.resources) graph_images.insert(name);
         // LP-Vb (docs/design_graph_loops.md 14.7): a loop's copies joined
         // after the surface resources picked their consumers, possibly in the
@@ -3772,6 +3784,19 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         graph_loops = std::move(loop_resolution.loops);
         graph_replacements = std::move(loop_resolution.replacements);
     }
+    // RS-7: the written order stays, except where a scene pass reads an image
+    // only a later scene pass writes: that writer, what it waits on, and its
+    // block move to right before the reader.
+    moveSceneWritersBeforeReaders(composed, [&](const std::string &family, const nlohmann::json &pass) {
+        const auto name = pass.value("name", std::string{});
+        if (graph_appended.contains(name)) return std::string{"graph"};
+        const auto copy = graph_loop_copy_of.find(name);
+        if (copy == graph_loop_copy_of.end()) return std::string{};
+        const auto loop = std::find_if(active_graph.loops.begin(), active_graph.loops.end(),
+                                       [&](const RenderGraphLoop &candidate) { return candidate.shape.node == copy->second; });
+        if (loop == active_graph.loops.end() || loop->shape.placement) return std::string{};
+        return loop->positions.contains(family) ? std::string{"graph"} : "loop:" + copy->second;
+    });
     for (auto &pass_set : ensureArray(composed, "rendering_passes")) {
         enforceCanonicalOrder(pass_set.at("passes"));
     }
@@ -3805,6 +3830,17 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                 std::find(provenance.added_after.begin(), provenance.added_after.end(), wait.task) ==
                     provenance.added_after.end())
                 provenance.added_after.push_back(wait.task);
+    // RS-13: a pass that names `<loop>.<output>` says what it reads instead.
+    for (const auto &reference : active_graph.loop_output_references) {
+        const auto value = graph_loop_output_values.find({reference.loop, reference.port});
+        if (value == graph_loop_output_values.end()) continue;
+        const RenderPassLoopOutputReference entry{reference.reference, value->second};
+        for (auto &provenance : pass_provenance)
+            if (provenance.name == reference.pass &&
+                std::find(provenance.loop_outputs.begin(), provenance.loop_outputs.end(), entry) ==
+                    provenance.loop_outputs.end())
+                provenance.loop_outputs.push_back(entry);
+    }
     // GL-2a: which graph node made each surviving pass and task. A
     // declaration of the root or an instance is named after its node's
     // expanded id; a loop's copy finds its body node through the branch its

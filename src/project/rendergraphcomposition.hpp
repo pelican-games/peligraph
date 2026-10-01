@@ -138,7 +138,10 @@ struct RenderGraphLoop {
 // integer, or an expression object with its `$pointer`) and names the
 // resource by a placeholder of its own (`<loop>/$element/<receiver>/<input>`),
 // which each consumer -- each copy, when the consumer is in a loop body --
-// replaces with the element's copy.
+// replaces with the element's copy. RS-13: the consumer may be a pass of the
+// rendering section that names `<loop>.<output>` (RenderGraphLoopOutputReference);
+// a variant that leaves the loop out does not take that pass with it (the
+// reference is refused, reason loop_inactive).
 struct RenderGraphLoopOutputRead {
     std::string consumer;
     std::string loop;
@@ -151,6 +154,34 @@ struct RenderGraphLoopOutputRead {
     std::string receiver;
     std::string input;
     bool receiver_loop = false;
+};
+
+// RS-13: a pass of the rendering section that names a loop's output as
+// `<loop>.<output>` in what it reads (an `input` or `reads` entry, a resource
+// port that does not write, a snapshot copy's `source`). The lowering spells
+// it as a graph reader of `p` would (the template name; a
+// RenderGraphLoopOutputRead with the pass as its consumer), and the
+// resolution stage re-points it at the last element's value. `<loop>` names a
+// root graph.loop that expands (not a draw_loop) and `<output>` a `p` it
+// declares; otherwise graph.loop_output_reference_unknown@1
+// {pass, reference, reason}, reason one of loop_unknown (no node of that id)
+// or not_a_loop (a node that is no expanding graph.loop) -- both only when
+// the composed config declares no target or buffer of the whole name (a
+// feature's buffer may be named `bloom.intensity`), so checked after
+// composition --, output_unknown (the
+// loop declares no such output), per_element (`p[]`: one element at a time,
+// which a reference cannot name) or not_a_resource (the output is a value,
+// not an image or buffer); and, when a graph variant made the loop inactive
+// (withoutExcludedGraphDependents), loop_inactive.
+struct RenderGraphLoopOutputReference {
+    std::string pass;
+    // As written: `<loop>.<output>`.
+    std::string reference;
+    std::string loop;
+    std::string port;
+    // In unknown_loop_output_references: the reason it is refused when no
+    // target or buffer has the name (loop_unknown, not_a_loop).
+    std::string reason;
 };
 
 // What the lowering leaves for the stage that runs after composition. The
@@ -180,6 +211,13 @@ struct LoweredRenderGraphDocument {
     // expanded id for a declaration of the root or an instance, the
     // template id `<loop>/$<branch>/<node>` for a loop body's.
     std::map<std::string, GraphNodeOrigin> origins;
+    // RS-13: the rendering section's references to loop outputs, in the
+    // order the passes and their fields list them.
+    std::vector<RenderGraphLoopOutputReference> loop_output_references;
+    // RS-13: names with a `.` whose head is no expanding loop's id. Such a
+    // name may be a target or buffer (a feature's `bloom.intensity`); the
+    // resolution stage refuses one that the composed config does not declare.
+    std::vector<RenderGraphLoopOutputReference> unknown_loop_output_references;
 };
 
 // LP-0d: one entry of a feature instance's `pass_replacements`
@@ -226,6 +264,9 @@ struct RenderGraphLoopResolution {
     // (applyRenderFeaturePassReplacements), with the entries it replaced:
     // those of its own pass family (tasks: the tasks), in the order named.
     std::map<std::string, std::vector<RenderFeaturePassReplacement>> replacements;
+    // RS-13: (loop, output) -> the resource a read of `p` was re-pointed at
+    // (the last element's value), for each `p` something read.
+    std::map<std::pair<std::string, std::string>, std::string> loop_output_values;
 };
 
 // LP-0b: places one run in the composed config (see RenderGraphPassRun). The
@@ -393,6 +434,31 @@ struct GraphTaskReaderWait {
 std::vector<GraphTaskReaderWait> waitOnGraphTasksInScenePasses(nlohmann::json &composed,
     const std::set<std::string> &graph_tasks, const std::set<std::string> &graph_images,
     const std::function<bool(const nlohmann::json &)> &reader_candidate);
+
+// RS-7: the written order (the declaration order the canonical order chains)
+// stays, except where the frame planner would refuse it: a scene pass (one
+// before its family's first canonical anchor) whose `input` -- or, for a
+// snapshot copy, `source` -- names a render target that no pass before it
+// writes and no compute task writes, while a later scene pass does. The
+// first such later writer then moves to right before the reader, with:
+//   - the other members of its block (`block` names one for a pass: the
+//     graph's passes with no place of their own, or one loop's copies; ""
+//     for none) that stand after the reader, and
+//   - transitively, every pass between the reader and a moved pass that the
+//     moved pass waits on: its `after` names it, its `before` names the moved
+//     pass, or the two read / write an image in an order the move would
+//     change (one writes what the other reads or writes),
+// all in their declared order. Nothing moves when the reader already waits
+// on the writer by an `after` / `before` of theirs, or when a pass that
+// would move waits on the reader that way (its `after`, the reader's
+// `before`), reads what the reader writes, writes what the reader writes, or
+// writes an image the reader reads that a pass before the reader writes: the
+// move would close a cycle or change what the reader sees, and the reader is
+// refused as before. Repeats until nothing moves. Runs on the composed
+// config after the graph's loops are expanded and before the canonical order
+// is made explicit (composeRenderFeatureConfig).
+void moveSceneWritersBeforeReaders(nlohmann::json &composed,
+    const std::function<std::string(const std::string &family, const nlohmann::json &pass)> &block);
 
 // LP-1a: the expand stage (docs/design_graph_loops.md 5.1, 5.2). For each
 // loop, in dependency order:

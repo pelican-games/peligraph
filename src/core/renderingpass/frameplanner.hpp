@@ -188,7 +188,9 @@ std::vector<std::string> framePlanOrder(const FramePlan &plan);
 // place of feature passes also carries "replaces": [{"feature", "pass"}].
 // RS-6: a pass the engine made wait on the graph's compute tasks (it reads
 // an image they write) carries "added_after": [<task>], the names the engine
-// added to its `after`.
+// added to its `after`. RS-13: a pass of the rendering section that names a
+// graph.loop's output as `<loop>.<output>` carries "loop_outputs":
+// [{"reference": "<loop>.<output>", "resource": <what it reads instead>}].
 // With a pipeline, the plan also carries the pipeline's `diagnostics`
 // ([{kind, subject, detail}]) and `deactivated_graph_nodes`
 // ([{node, feature, reason}]).
