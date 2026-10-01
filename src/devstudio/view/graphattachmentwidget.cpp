@@ -405,6 +405,9 @@ void GraphAttachmentWidget::receiveRpcResult(quint64 id, const QByteArray &resul
     impl_->model.receiveRpcResult(id, std::string_view(result.constData(), result.size()));
     impl_->synchronize();
     impl_->dispatch();
+    // RSX: last, since it can stop the engine the requests above go to.
+    if (const auto line = impl_->model.takeEngineRestart())
+        emit engineRestartRequested(QString::fromStdString(*line));
 }
 void GraphAttachmentWidget::receiveRpcFailure(quint64 id, const QString &message) {
     impl_->model.receiveRpcFailure(id, message.toStdString());

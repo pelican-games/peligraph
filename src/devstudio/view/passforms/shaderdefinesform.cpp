@@ -98,8 +98,10 @@ ShaderDefinesForm::ShaderDefinesForm(const QString &object_prefix, QWidget *pare
     table_->setMaximumHeight(110);
     layout->addWidget(table_);
     auto *buttons = new QHBoxLayout;
-    add_ = new QPushButton(tr("Add define"), this);
+    // N-7: a name, as the Inputs' Add is; what it adds is on the tooltip.
+    add_ = new QPushButton(tr("Add"), this);
     add_->setObjectName(childName("shaderDefines.add"));
+    add_->setToolTip(tr("Add a define: a row, NAME or NAME=VALUE."));
     remove_ = new QPushButton(tr("Remove"), this);
     remove_->setObjectName(childName("shaderDefines.remove"));
     buttons->addWidget(add_);
@@ -136,6 +138,37 @@ ShaderDefinesForm::ShaderDefinesForm(const QString &object_prefix, QWidget *pare
 }
 
 void ShaderDefinesForm::reset() { load(nullptr); }
+
+void ShaderDefinesForm::setRenderingSection(bool rendering_section) {
+    rendering_section_ = rendering_section;
+    setToolTip(rendering_section
+                   ? tr("rendering.shader_defines: added to every shader's compile, one "
+                        "define a row, NAME or NAME=VALUE. A red row is one that cannot "
+                        "be a define.")
+                   : tr("shader.defines: one define a row, NAME or NAME=VALUE. A red "
+                        "row is one the engine refuses."));
+    showRefusals();
+}
+
+std::string ShaderDefinesForm::refusalAt(const Json &defines, std::size_t index) const {
+    if (!rendering_section_) return entryRefusal(defines, index, pass_name_);
+    if (!defines.is_array() || index >= defines.size()) return {};
+    const auto &entry = defines.at(index);
+    const std::string authored = entry.is_string() ? entry.get<std::string>() : entry.dump();
+    const std::string head =
+        "rendering.shader_defines entry " + std::to_string(index) + " ('" + authored + "') ";
+    if (!entry.is_string()) return head + "is not a string";
+    const auto name = authored.substr(0, authored.find('='));
+    if (!identifier(name) || authored.find_first_of("\r\n") != std::string::npos)
+        return head + "is not NAME or NAME=VALUE with NAME a C identifier";
+    for (std::size_t earlier = 0; earlier < index; ++earlier) {
+        const auto &other = defines.at(earlier);
+        if (other.is_string() &&
+            other.get<std::string>().substr(0, other.get<std::string>().find('=')) == name)
+            return head + "defines " + name + " a second time";
+    }
+    return {};
+}
 
 void ShaderDefinesForm::setPassName(const std::string &pass_name) {
     pass_name_ = pass_name;
@@ -208,7 +241,7 @@ QString ShaderDefinesForm::refusal() const {
     const Json entries = defines();
     if (entries.is_null()) return {};
     for (std::size_t index = 0; index < entries.size(); ++index) {
-        const auto sentence = entryRefusal(entries, index, pass_name_);
+        const auto sentence = refusalAt(entries, index);
         if (!sentence.empty()) return text(sentence);
     }
     return {};
@@ -226,8 +259,7 @@ void ShaderDefinesForm::showRefusals() {
         const bool empty = (!name_item || name_item->text().trimmed().isEmpty()) &&
                            (!value_item || value_item->text().trimmed().isEmpty()) &&
                            (!name_item || name_item->data(RawRole).toString().isEmpty());
-        const auto sentence =
-            empty ? std::string{} : entryRefusal(entries, index++, pass_name_);
+        const auto sentence = empty ? std::string{} : refusalAt(entries, index++);
         for (auto *item : {name_item, value_item}) {
             if (!item) continue;
             item->setToolTip(text(sentence));

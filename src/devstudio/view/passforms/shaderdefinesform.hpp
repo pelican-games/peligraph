@@ -28,6 +28,13 @@ class ShaderDefinesForm final : public PassForm {
     void reset();
     // The name the refusal sentences use for the pass.
     void setPassName(const std::string &pass_name);
+    // RSX. The rendering section's own shader_defines (added to every
+    // shader's compile) rather than a pass's: the names the engine defines
+    // when it compiles a pass are not refused there (a feature's
+    // PELICAN_FEATURE_* defines live in that list), and the sentences name
+    // rendering.shader_defines. A name that is not a C identifier, or a name
+    // given twice, is still refused.
+    void setRenderingSection(bool rendering_section);
 
     // shader.defines, or null when there is none.
     [[nodiscard]] nlohmann::json defines() const;
@@ -50,11 +57,14 @@ class ShaderDefinesForm final : public PassForm {
     void addRow(const QString &name, const QString &value, bool equals,
                 const nlohmann::json &raw);
     void showRefusals();
+    [[nodiscard]] std::string refusalAt(const nlohmann::json &defines,
+                                        std::size_t index) const;
 
     QTableWidget *table_ = nullptr;
     QPushButton *add_ = nullptr;
     QPushButton *remove_ = nullptr;
     std::string pass_name_;
+    bool rendering_section_ = false;
     bool filling_ = false;
 };
 

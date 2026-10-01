@@ -2,6 +2,7 @@
 #include "frameplanedit.hpp"
 #include "panelhelp.hpp"
 #include "renderconfigdigest.hpp"
+#include "rendereditcompletion.hpp"
 #include "proceduralassetdialog.hpp"
 #include "jsonrpcrequest.hpp"
 #include "taskresourceconnections.hpp"
@@ -100,7 +101,35 @@ std::optional<QJsonObject> decodeObject(
     return document.object();
 }
 
-class FrameNodeOrderDialog final : public QDialog {
+// RSX, decision 1. What the editors here hand a commit the engine runs only
+// after a restart: Render features' own restartEngine, which says so on its
+// notice and asks the main window to restart (requestEngineRestart).
+using EngineRestartAction = std::function<void(const QString &reason)>;
+
+// RSX, decision 1. Every editor here reads a ticket's last answer through the
+// one reading all panels use (completeRenderEdit). A commit that asks for a
+// restart has handed it to `restart` before this returns; the editor then
+// reads nothing more from the engine about to stop.
+RenderEditCompletion completeEdit(const QJsonObject &response,
+                                  const EngineRestartAction &restart) {
+    return completeRenderEdit(
+        nlohmann::json::parse(
+            QJsonDocument{response}.toJson(QJsonDocument::Compact).toStdString(),
+            nullptr, false),
+        [&restart](const std::string &line) {
+            if (restart) restart(QString::fromStdString(line));
+        });
+}
+
+// RSX: the editors Render features opens are given its restart.
+struct RestartsEngine {
+    EngineRestartAction restart;
+    void setEngineRestartAction(EngineRestartAction action) {
+        restart = std::move(action);
+    }
+};
+
+class FrameNodeOrderDialog final : public QDialog, public RestartsEngine {
   EmbeddedViewport &viewport;
   std::function<void()> committed;
   QString graph, digest, ticket;
@@ -199,9 +228,11 @@ class FrameNodeOrderDialog final : public QDialog {
     } else if (response->value("status").toString() != "pending") {
       poll.stop();
       ticket.clear();
-      if (response->value("status").toString() == "committed" &&
-          response->value("committed").toBool()) {
-        committed();
+      if (const auto completion = completeEdit(*response, restart);
+          completion.committed) {
+        // RSX: Render features says the engine restarts; nothing is read
+        // from the engine about to stop.
+        if (!completion.restart_required) committed();
         close();
         return;
       }
@@ -290,7 +321,7 @@ public:
   }
 };
 
-class ComputeTaskDialog final : public QDialog {
+class ComputeTaskDialog final : public QDialog, public RestartsEngine {
   EmbeddedViewport &viewport;
   std::function<void()> committed;
   // Q-10: the rendering document's own reference, asked for each time it is
@@ -1041,8 +1072,8 @@ private:
     } else if (response->value("status").toString() != "pending") {
       poll.stop();
       ticket.clear();
-      if (response->value("status").toString() == "committed" &&
-          response->value("committed").toBool()) {
+      if (const auto completion = completeEdit(*response, restart);
+          completion.committed) {
         for (const auto &entry : tasks) {
           const auto task = entry.toObject();
           const auto name = task.value("name").toString();
@@ -1055,8 +1086,14 @@ private:
           new_dirty[submitted_creation] = false;
           requested_task = submitted_name;
         }
-        committed();
-        read();
+        // RSX: the engine restarts; the editor reads the tasks again from
+        // the engine that comes back (Refresh).
+        if (completion.restart_required) {
+          notice->setText(QString::fromStdString(completion.restart_line));
+        } else {
+          committed();
+          read();
+        }
       } else if (!refusedForMovedDocument(*response))
         notice->setText(responseError(*response));
     }
@@ -1263,7 +1300,7 @@ public:
   }
 };
 
-class PresetEditDialog final : public QDialog {
+class PresetEditDialog final : public QDialog, public RestartsEngine {
 public:
   enum class Mode { Fork, Region };
 private:
@@ -1422,8 +1459,13 @@ private:
     } else if (response->value("status").toString() != "pending") {
       poll.stop();
       ticket.clear();
-      if (response->value("status").toString() == "committed" &&
-          response->value("committed").toBool()) {
+      if (const auto completion = completeEdit(*response, restart);
+          completion.restart_required) {
+        // RSX: written; the engine that comes back runs it.
+        root_digest.clear();
+        preset_digest.clear();
+        notice->setText(QString::fromStdString(completion.restart_line));
+      } else if (completion.committed) {
         root_digest.clear();
         preset_digest.clear();
         notice->setText(mode == Mode::Fork ? tr("Preset copied and selected: %1").arg(committed_reference)
@@ -1529,7 +1571,7 @@ public:
   }
 };
 
-class CallableRecordsDialog final : public QDialog {
+class CallableRecordsDialog final : public QDialog, public RestartsEngine {
   EmbeddedViewport &viewport;
   QComboBox *task_box;
   QComboBox *record_box;
@@ -1728,8 +1770,10 @@ class CallableRecordsDialog final : public QDialog {
     } else if (response->value("status").toString() != "pending") {
       poll.stop();
       ticket.clear();
-      if (response->value("committed").toBool() &&
-          response->value("status").toString() == "committed")
+      if (const auto completion = completeEdit(*response, restart);
+          completion.restart_required)
+        notice->setText(QString::fromStdString(completion.restart_line));
+      else if (completion.committed)
         read();
       else
         notice->setText(responseError(*response));
@@ -1817,7 +1861,7 @@ public:
   }
 };
 
-class SceneAccelerationStructuresDialog final : public QDialog {
+class SceneAccelerationStructuresDialog final : public QDialog, public RestartsEngine {
     EmbeddedViewport &viewport;
     QTableWidget *table;
     QTableWidget *connections;
@@ -2003,8 +2047,10 @@ class SceneAccelerationStructuresDialog final : public QDialog {
             if (status != QStringLiteral("pending")) {
                 poll.stop();
                 ticket.clear();
-                if (status == QStringLiteral("committed") &&
-                    response->value(QStringLiteral("committed")).toBool()) read();
+                if (const auto completion = completeEdit(*response, restart);
+                    completion.restart_required)
+                    notice->setText(QString::fromStdString(completion.restart_line));
+                else if (completion.committed) read();
                 else notice->setText(responseError(*response));
             }
         }
@@ -2192,6 +2238,23 @@ struct RenderFeaturesWidget::Impl {
     bool submitted_retried = false;
     bool retrying = false;
     bool retry_pending = false;
+    // --- RSX, decision 1: the main window's engine restart, and whether this
+    // panel (or an editor it opened) asked for the one on the way.
+    EngineRestartAction engine_restart_action;
+    bool restart_asked = false;
+
+    // A commit the engine runs only after a restart: the window restarts it
+    // (asking about unsaved scene edits first), and the panel says so. The
+    // line goes up after the call, so it is what stays while the engine
+    // stops.
+    void restartEngine(const QString &line) {
+        restart_asked = true;
+        if (engine_restart_action) engine_restart_action(line);
+        showInformation(line);
+    }
+    EngineRestartAction restartAction() {
+        return [this](const QString &line) { restartEngine(line); };
+    }
 
     Impl(RenderFeaturesWidget &widget,
          EmbeddedViewport &embedded_viewport)
@@ -2335,6 +2398,7 @@ struct RenderFeaturesWidget::Impl {
         actions->addWidget(fork_preset);
         QObject::connect(fork_preset, &QPushButton::clicked, &owner, [this] {
             auto *dialog = new PresetEditDialog(viewport, &owner, [this] { requestRefresh(); });
+            dialog->setEngineRestartAction(restartAction());
             adoptHistoryActions(dialog);
             dialog->show();
         });
@@ -2346,6 +2410,7 @@ struct RenderFeaturesWidget::Impl {
                 requestRefresh();
                 emit owner.renderConfigCommitted();
             }, PresetEditDialog::Mode::Region);
+            dialog->setEngineRestartAction(restartAction());
             adoptHistoryActions(dialog);
             dialog->show();
         });
@@ -2354,6 +2419,7 @@ struct RenderFeaturesWidget::Impl {
         actions->addWidget(callable_records);
         QObject::connect(callable_records, &QPushButton::clicked, &owner, [this] {
             auto *dialog = new CallableRecordsDialog(viewport, &owner);
+            dialog->setEngineRestartAction(restartAction());
             adoptHistoryActions(dialog);
             dialog->show();
         });
@@ -2361,6 +2427,7 @@ struct RenderFeaturesWidget::Impl {
         actions->addWidget(scene_as);
         QObject::connect(scene_as, &QPushButton::clicked, &owner, [this] {
             auto *dialog = new SceneAccelerationStructuresDialog(viewport, &owner);
+            dialog->setEngineRestartAction(restartAction());
             adoptHistoryActions(dialog);
             dialog->show();
         });
@@ -2409,6 +2476,7 @@ struct RenderFeaturesWidget::Impl {
                 active_ticket.clear();
                 result_poll->stop();
                 can_edit = false;
+                restart_asked = false;
                 showError(message);
                 updateControls();
             });
@@ -3053,6 +3121,15 @@ struct RenderFeaturesWidget::Impl {
                                     .toString()
                                     .toStdString(),
                                 &owner);
+        // RSX, decision 1: written, but run only after a restart -- the
+        // window restarts the engine and the notice says so instead of
+        // "Applied without restarting". The list is read from the engine that
+        // comes back.
+        const auto completion = completeEdit(response, restartAction());
+        if (completion.restart_required) {
+            applied_loop.clear();
+            return;
+        }
         const auto generation = response.value(
             QStringLiteral("published_generation"))
                                     .toVariant()
@@ -3076,10 +3153,13 @@ struct RenderFeaturesWidget::Impl {
                 loop_applied_action(QString::fromStdString(loop));
             return;
         }
+        // RSX: said only for a commit that ran live, and kept while the list
+        // is read again (the refresh's own line used to replace it at once).
+        requestRefresh();
         showSuccess(owner.tr(
             "Applied without restarting (runtime generation %1).")
                         .arg(generation));
-        requestRefresh();
+        notice_sticky = true;
     }
 
     // --- LP-4f2: Replace with loop version.
@@ -3315,6 +3395,7 @@ void RenderFeaturesWidget::editComputeTaskConnection(const QString &name, const 
     dialog->setViewAxesProvider(impl_->task_view_axes);
     // Q-15: the Task Editor follows the other panels' commits too.
     dialog->setRenderConfigDigest(impl_->digest_hub);
+    dialog->setEngineRestartAction(impl_->restartAction());
     impl_->adoptHistoryActions(dialog);
     dialog->show();
 }
@@ -3324,6 +3405,7 @@ void RenderFeaturesWidget::editFrameNodeOrder(const QString &graph, const QStrin
         impl_->requestRefresh();
         emit renderConfigCommitted();
     });
+    dialog->setEngineRestartAction(impl_->restartAction());
     impl_->adoptHistoryActions(dialog);
     dialog->show();
 }
@@ -3371,6 +3453,20 @@ std::optional<QString> RenderFeaturesWidget::loopVersionOffered(
     auto *item = impl_->itemForFeature(feature_reference);
     if (item == nullptr || impl_->templateFor(item) == nullptr) return std::nullopt;
     return impl_->loopVersionRefusal(item);
+}
+
+void RenderFeaturesWidget::setEngineRestartAction(
+    std::function<void(const QString &reason)> action) {
+    impl_->engine_restart_action = std::move(action);
+}
+
+void RenderFeaturesWidget::engineRestartDeclined(const QString &message) {
+    if (!std::exchange(impl_->restart_asked, false)) return;
+    // The running engine stays; the list is read from it, and the line says
+    // why nothing restarted.
+    impl_->requestRefresh();
+    impl_->showInformation(message);
+    impl_->notice_sticky = true;
 }
 
 void RenderFeaturesWidget::setLoopVersionAppliedAction(

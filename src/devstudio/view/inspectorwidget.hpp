@@ -85,6 +85,9 @@ class InspectorWidget final : public QWidget {
     // the producing node; the composition root decides which view shows it.
     void setGraphSourceRevealAction(
         std::function<void(const QString &node, const QString &port)> action);
+    // RSX, decision 1. A graph attachment edit that committed with
+    // restart_required hands the restart to this action.
+    void setEngineRestartAction(std::function<void(const QString &reason)> action);
 
   protected:
     bool eventFilter(QObject *watched, QEvent *event) override;

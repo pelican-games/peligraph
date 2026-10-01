@@ -8,6 +8,7 @@
 #include "jsonrpcrequest.hpp"
 #include "panelhelp.hpp"
 #include "renderconfigdigest.hpp"
+#include "rendereditcompletion.hpp"
 
 #include "nodelayout.hpp"
 #include "studiotheme.hpp"
@@ -5136,6 +5137,19 @@ struct GraphCanvasWidget::Impl {
         const auto digest = response.value("source_digest", nlohmann::json::object())
                                 .value("hex", std::string{});
         if (digest_hub && !digest.empty()) digest_hub->publish(digest, &view);
+        // RSX, decision 1: a pass edit the engine can run only after a
+        // restart restarts it, as the tab's own graph edits do (GL-1b).
+        if (const auto completion = readRenderEditCompletion(response);
+            completion.restart_required) {
+            model.setEditNotice({InspectorNoticeKind::Information, completion.restart_line});
+            scene->noteRenderEdit();
+            showNotice();
+            if (engine_restart_action) {
+                restart_asked = true;
+                engine_restart_action(qtext(completion.restart_line));
+            }
+            return;
+        }
         model.setEditNotice({InspectorNoticeKind::Information,
                              pass_edit_notice.empty() ? std::string{"Pass inputs saved."}
                                                       : pass_edit_notice});

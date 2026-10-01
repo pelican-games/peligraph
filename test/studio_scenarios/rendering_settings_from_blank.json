@@ -1,0 +1,212 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "rendering_settings_from_blank",
+  "description": "RSX: the Render tools' Rendering settings tab, from nothing. From a Blank project, the tab reads the root's rendering section; Add define opens a row, the name is typed and Return commits it, which sends one edit_rendering_keys and the root holds the define (get_render_documents says so). Edit > Undo Render Edit takes it back -- the render edit history names it Set shader_defines -- and the root no longer holds it.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "File > New Project..., fired by name",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "settings_project"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the blank project's present is on the Frame Plan canvas",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "nothing to undo yet: the Frame Plan's Undo is off",
+      "cmd": "wait",
+      "name": "pelican.framePlan.undoButton",
+      "enabled": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "View > Render Tools > Rendering settings brings the tab forward",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.rendering_settings"
+    },
+    {
+      "label": "the tab has read the new project's root and can edit it",
+      "cmd": "wait",
+      "name": "pelican.renderingSettings.shaderDefines.add",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the root holds no RSX_TINT yet",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_documents",
+        "params": {}
+      },
+      "path": "result.documents[0].content",
+      "op": "excludes",
+      "value": "RSX_TINT"
+    },
+    {
+      "label": "and that document is the root",
+      "expect": "rpc_equals",
+      "method": "get_render_documents",
+      "params": {},
+      "path": "documents[0].kind",
+      "value": "root"
+    },
+    {
+      "label": "Add define: a row opens with its name being edited",
+      "cmd": "click",
+      "name": "pelican.renderingSettings.shaderDefines.add"
+    },
+    {
+      "label": "the name, typed where the row's editor has the keyboard",
+      "cmd": "type",
+      "text": "RSX_TINT"
+    },
+    {
+      "label": "Return ends the edit: the change is sent",
+      "cmd": "key",
+      "sequence": "Return"
+    },
+    {
+      "label": "the tab says it was saved",
+      "cmd": "wait",
+      "name": "pelican.renderingSettings.notice",
+      "contains": "Saved shader_defines.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the root's rendering section holds the define",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_documents",
+        "params": {}
+      },
+      "path": "result.documents[0].content",
+      "op": "contains",
+      "value": "RSX_TINT",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the engine still draws",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "a picture of the Rendering settings tab with the define",
+      "expect": "screenshot",
+      "name": "pelican.renderingSettings",
+      "path": "rendering_settings_from_blank.png"
+    },
+    {
+      "label": "the edit is in the history: Undo is on",
+      "cmd": "wait",
+      "name": "pelican.framePlan.undoButton",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Edit > Undo Render Edit, fired by name",
+      "cmd": "action",
+      "name": "pelican.edit.undoRenderEdit"
+    },
+    {
+      "label": "one line names what was undone",
+      "cmd": "wait",
+      "name": "pelican.framePlanStatus",
+      "contains": "Undid \"Set shader_defines\".",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Undo: the root no longer holds the define",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_documents",
+        "params": {}
+      },
+      "path": "result.documents[0].content",
+      "op": "excludes",
+      "value": "RSX_TINT",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the tab has read the root the Undo wrote and can edit it again",
+      "cmd": "wait",
+      "name": "pelican.renderingSettings.shaderDefines.add",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the engine draws after the Undo",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "a picture of the Rendering settings tab after the Undo",
+      "expect": "screenshot",
+      "name": "pelican.renderingSettings",
+      "path": "rendering_settings_from_blank_undone.png"
+    }
+  ]
+}

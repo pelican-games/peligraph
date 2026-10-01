@@ -15,6 +15,7 @@
 #include "materialpassedit.hpp"
 #include "materialpassform.hpp"
 #include "renderconfigdigest.hpp"
+#include "rendereditcompletion.hpp"
 #include "shadersourceresolver.hpp"
 #include "inspectormodel.hpp"
 
@@ -2285,12 +2286,14 @@ struct FramePlanWidget::Impl {
                 requestAuthoringContext(true);
             }
             if (submitted_method == "add_authored_pass") material_targets_made.clear();
-            // G-4: the change is a setting the engine reads once at start
-            // (material_route_default). Restart the engine on the same
-            // project; the Frame Plan comes back when it is ready again.
-            if (response.value("restart_required", false)) {
-                const QString reason = owner.tr(
-                    "Restarting the engine to apply the material route setting...");
+            // G-4 / RS-1: the change is written, but the engine runs it only
+            // after a restart (material_route_default is read once at start;
+            // a material's physical contract is built once). Restart the
+            // engine on the same project; the Frame Plan comes back when it
+            // is ready again. RSX: read the way every panel reads a commit.
+            if (const auto completion = readRenderEditCompletion(response);
+                completion.restart_required) {
+                const QString reason = text(completion.restart_line);
                 status->setStyleSheet({});
                 showStatus(reason);
                 if (engine_restart_action) engine_restart_action(reason);

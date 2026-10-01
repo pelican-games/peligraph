@@ -46,6 +46,10 @@ class FullscreenPassWidget final : public QWidget {
     // Deterministic projection-test boundaries. Production authoring context
     // arrives only through RenderPassAuthoringCapability.
     void setCommittedAction(std::function<void()> action);
+    // RSX, decision 1. A commit that answers restart_required hands the
+    // restart to this action (the main window's requestEngineRestart) and
+    // the status row says "Restarting the engine to apply this change...".
+    void setEngineRestartAction(std::function<void(const QString &reason)> action);
     void editPresetPass(const QString &graph, const QString &pass_name);
     // N-8. "Add fullscreen pass..." on the Frame Plan canvas: the same form,
     // opened for a new pass, with the insert position already standing after

@@ -53,6 +53,7 @@ class PlayControls;
 class ProjectMigrationWidget;
 class RenderConfigDigest;
 class RenderFeaturesWidget;
+class RenderingSettingsWidget;
 class RuntimeOutliner;
 enum class AddObjectKind : std::uint8_t;
 struct SceneEditOutcome;
@@ -116,6 +117,8 @@ class MainWindow : public QMainWindow {
     InspectorWidget *inspector_ = nullptr;
     FramePlanWidget *frame_plan_ = nullptr;
     RenderFeaturesWidget *render_features_ = nullptr;
+    // RSX: the rendering section's own keys (EL-3), beside Features.
+    RenderingSettingsWidget *rendering_settings_ = nullptr;
     GraphCanvasWidget *graph_canvas_ = nullptr;
     QTabWidget *render_tabs_ = nullptr;
     FullscreenPassWidget *fullscreen_pass_ = nullptr;

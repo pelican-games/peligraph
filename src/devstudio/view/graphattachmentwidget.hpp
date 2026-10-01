@@ -26,6 +26,9 @@ class GraphAttachmentWidget final : public QWidget {
     // The producer of a connected input, for a scope view to select. v0 has
     // no such view yet, so the panel also names it in its notice.
     void sourceRevealRequested(const QString &node, const QString &port);
+    // RSX, decision 1. An edit committed with restart_required: the engine
+    // has to start again to run it.
+    void engineRestartRequested(const QString &reason);
 };
 
 } // namespace PelicanStudio

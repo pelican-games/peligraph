@@ -85,6 +85,9 @@ add_library(pelican_studio_view STATIC
     taskconnectiongraphics.hpp
     renderfeatureswidget.cpp
     renderfeatureswidget.hpp
+    # RSX: the rendering section's own keys (EL-3).
+    renderingsettingswidget.cpp
+    renderingsettingswidget.hpp
     viewselectfield.cpp
     viewselectfield.hpp
     playcontrols.cpp

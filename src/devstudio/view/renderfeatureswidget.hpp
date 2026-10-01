@@ -70,6 +70,15 @@ class RenderFeaturesWidget final : public QWidget {
         const QString &feature_reference) const;
     // Who hears the loop an apply_graph_template added, once it committed.
     void setLoopVersionAppliedAction(std::function<void(const QString &loop)> action);
+    // RSX, decision 1. A commit -- of this panel or of an editor it opens
+    // (Tasks, Fork, Regions, Records, Scene AS, the node order) -- that
+    // answers restart_required hands the restart to this action (the main
+    // window's requestEngineRestart), and the notice says "Restarting the
+    // engine to apply this change (<code>)..." instead of "Applied without
+    // restarting". When the restart is declined, engineRestartDeclined says
+    // why and reads the list from the engine that stays.
+    void setEngineRestartAction(std::function<void(const QString &reason)> action);
+    void engineRestartDeclined(const QString &message);
 
   signals:
     void renderConfigCommitted();

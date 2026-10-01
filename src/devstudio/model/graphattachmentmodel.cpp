@@ -1,4 +1,5 @@
 #include "graphattachmentmodel.hpp"
+#include "rendereditcompletion.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -225,6 +226,15 @@ void GraphAttachmentModel::receiveRpcResult(std::uint64_t id, std::string_view t
             if (status != "committed")
                 throw std::invalid_argument("Graph edit did not commit: " + status);
             ticket_.clear();
+            // RSX, decision 1: written, but the engine runs it only after a
+            // restart. The owner restarts it; the attachments are read from
+            // the engine that comes back.
+            if (auto completion = readRenderEditCompletion(response);
+                completion.restart_required) {
+                notice_ = {InspectorNoticeKind::Information, completion.restart_line};
+                engine_restart_ = std::move(completion.restart_line);
+                return;
+            }
             if (revision == selection_revision_)
                 notice_ = {InspectorNoticeKind::Success, "Graph changes saved."};
             refresh();

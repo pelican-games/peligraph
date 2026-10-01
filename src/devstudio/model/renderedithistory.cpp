@@ -1,6 +1,7 @@
 #include "renderedithistory.hpp"
 
 #include "renderconfigdocument.hpp"
+#include "rendereditcompletion.hpp"
 
 #include <algorithm>
 #include <array>
@@ -21,7 +22,7 @@ constexpr int TicketPollMs = 25;
 // The render edits: the ones that replace what documents hold (RD-1), and
 // the ones that create or remove files (RD-1b), which RU-1 could not take
 // back.
-constexpr std::array<std::string_view, 17> RecordedMethods{
+constexpr std::array<std::string_view, 18> RecordedMethods{
     "edit_preset_pass",
     "decompose_material_pass",
     // LP-4f2: a shipped graph template in place of a feature (GT-1).
@@ -40,6 +41,8 @@ constexpr std::array<std::string_view, 17> RecordedMethods{
     "remove_authored_pass",
     "fork_render_pipeline",
     "import_render_feature",
+    // RSX: the rendering section's own keys (EL-3).
+    "edit_rendering_keys",
 };
 
 std::string stringAt(const Json &object, const char *key) {
@@ -55,10 +58,8 @@ std::string named(std::string prefix, const std::string &name, std::string fallb
 
 std::string status(const Json &result) { return stringAt(result, "status"); }
 
-bool committed(const Json &result) {
-    return status(result) == "committed" && result.is_object() &&
-           result.value("committed", false);
-}
+// RSX: the reading every panel uses.
+bool committed(const Json &result) { return readRenderEditCompletion(result).committed; }
 
 std::map<std::string, RenderEditHistory::Document> documentsOf(const Json &result) {
     std::map<std::string, RenderEditHistory::Document> documents;
@@ -281,6 +282,17 @@ std::string RenderEditHistory::labelFor(const std::string &method, const Json &p
         return named("Remove pass ", stringAt(params, "fragment_reference"), "Remove pass");
     if (method == "fork_render_pipeline") return "Fork render pipeline";
     if (method == "import_render_feature") return "Import feature";
+    // RSX: one key named, more than one as the panel's own name.
+    if (method == "edit_rendering_keys") {
+        const auto set = params.is_object() ? params.value("set", Json::object()) : Json::object();
+        const auto remove = params.is_object() ? params.value("remove", Json::array()) : Json::array();
+        const auto set_count = set.is_object() ? set.size() : 0;
+        const auto remove_count = remove.is_array() ? remove.size() : 0;
+        if (set_count == 1 && remove_count == 0) return "Set " + set.begin().key();
+        if (set_count == 0 && remove_count == 1 && remove.front().is_string())
+            return "Remove " + remove.front().get<std::string>();
+        return "Edit rendering settings";
+    }
     return method;
 }
 
@@ -515,7 +527,7 @@ void RenderEditHistory::finishEdit(PendingEdit edit, const Json &commit) {
     Entry entry;
     entry.label = edit.label;
     entry.serial = next_serial_++;
-    entry.restart_required = commit.value("restart_required", false);
+    entry.restart_required = readRenderEditCompletion(commit).restart_required;
     if (!edit.snapshot_received) {
         entry.barrier = true;
         entry.barrier_reason = "its documents could not be read before it";
@@ -727,7 +739,10 @@ void RenderEditHistory::finishOperation(const Json &commit) {
     }
     entry.written = std::move(next);
     say(std::string{undoing ? "Undid" : "Redid"} + " \"" + entry.label + "\".");
-    const bool restart = entry.restart_required;
+    // RSX: the restore's own answer counts too -- taking an edit back can
+    // be what changes a material's physical contract.
+    const bool restart =
+        entry.restart_required || readRenderEditCompletion(commit).restart_required;
     (undoing ? redo_ : undo_).push_back(std::move(entry));
     operation_.reset();
     if (restored) restored(commit, restart);

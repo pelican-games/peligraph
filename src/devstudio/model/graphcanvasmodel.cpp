@@ -3,6 +3,7 @@
 #include "frameplanmodel.hpp"
 #include "projectformat.hpp"
 #include "projectpathresolver.hpp"
+#include "rendereditcompletion.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1184,22 +1185,13 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             refusal_marks_.clear();
             // GL-1b, decision 2: written, but the engine can only run it
             // after a restart (RS-1). The owner restarts it; the document and
-            // the plan are read from the engine that comes back.
-            if (response.value("restart_required", false)) {
+            // the plan are read from the engine that comes back. RSX: read
+            // the way every panel reads a render edit's commit.
+            if (auto completion = readRenderEditCompletion(response);
+                completion.restart_required) {
                 pending_placement_only_ = false;
-                std::string line = "Restarting the engine to apply this change";
-                if (const auto reason = response.find("restart_reason");
-                    reason != response.end() && reason->is_object()) {
-                    // RS-1: `detail` is a list (color_formats, depth_format,
-                    // ...); the code says enough for one line.
-                    const auto found = reason->find("code");
-                    if (found != reason->end() && found->is_string() &&
-                        !found->get<std::string>().empty())
-                        line += " (" + found->get<std::string>() + ")";
-                }
-                line += "...";
-                edit_notice_ = {InspectorNoticeKind::Information, line};
-                engine_restart_ = std::move(line);
+                edit_notice_ = {InspectorNoticeKind::Information, completion.restart_line};
+                engine_restart_ = std::move(completion.restart_line);
                 return;
             }
             edit_notice_ = {InspectorNoticeKind::Success, "Graph change saved."};

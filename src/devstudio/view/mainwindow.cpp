@@ -14,6 +14,8 @@
 #include "projectmigrationwidget.hpp"
 #include "renderconfigdigest.hpp"
 #include "renderfeatureswidget.hpp"
+#include "renderingsettingswidget.hpp"
+#include "rendereditcompletion.hpp"
 #include "runtimeoutliner.hpp"
 #include "studiotheme.hpp"
 #include "../viewport/embeddedviewport.hpp"
@@ -363,7 +365,10 @@ void MainWindow::createWorkspace() {
         graphCanvasReadCapability(*viewport_), render_tabs);
     render_tabs->addTab(frame_plan_, tr("Frame Plan"));
     render_tabs->addTab(render_features_, tr("Features"));
-    // The common graph is a third tab of the render tools, not a new dock:
+    // RSX, decision 3: the rendering section's keys no other panel writes.
+    rendering_settings_ = new RenderingSettingsWidget(viewport_, render_tabs);
+    render_tabs->addTab(rendering_settings_, tr("Rendering settings"));
+    // The common graph is a tab of the render tools too, not a new dock:
     // one more dock would be a new place to lose, and this is a read-only view
     // of the same render configuration the other two tabs already describe.
     render_tabs->addTab(graph_canvas_, tr("Graph"));
@@ -440,6 +445,12 @@ void MainWindow::createWorkspace() {
         return frame_plan_->taskViewAxes(task);
     });
     frame_plan_->setEngineRestartAction([this](const QString &reason) { requestEngineRestart(reason); });
+    // RSX, decision 1: every panel that sends a render edit restarts the
+    // engine through the same restart when a commit asks for one.
+    render_features_->setEngineRestartAction([this](const QString &reason) { requestEngineRestart(reason); });
+    rendering_settings_->setEngineRestartAction([this](const QString &reason) { requestEngineRestart(reason); });
+    fullscreen_pass_->setEngineRestartAction([this](const QString &reason) { requestEngineRestart(reason); });
+    inspector_->setEngineRestartAction([this](const QString &reason) { requestEngineRestart(reason); });
     // "Open the source" in the Inspector lands on the same node in the Graph
     // tab: the producer it names is a root node of the common graph.
     inspector_->setGraphSourceRevealAction(
@@ -577,6 +588,7 @@ void MainWindow::createWorkspace() {
     fullscreen_pass_->setRenderConfigDigest(render_digest_);
     graph_canvas_->setRenderConfigDigest(render_digest_);
     render_features_->setRenderConfigDigest(render_digest_);
+    rendering_settings_->setRenderConfigDigest(render_digest_);
     // RU-1: and one history of their edits.
     createRenderHistory(pass_editor_scroll);
     frame_plan_->setLayoutCapability(FramePlanLayoutCapability{
@@ -868,6 +880,7 @@ void MainWindow::createRenderHistory(QWidget *pass_editor) {
     pass_editor->addAction(render_undo_action_);
     pass_editor->addAction(render_redo_action_);
     render_features_->setRenderHistoryActions({render_undo_action_, render_redo_action_});
+    rendering_settings_->setRenderHistoryActions({render_undo_action_, render_redo_action_});
     renderHistoryChanged();
 }
 
@@ -911,10 +924,14 @@ void MainWindow::renderDocumentsRestored(const nlohmann::json &commit,
     frame_plan_->refresh();
     frame_plan_->refreshAuthoringContext();
     fullscreen_pass_->documentRestored();
-    // G-4: the edit taken back was a setting the engine reads at start.
-    if (restart_required)
-        requestEngineRestart(
-            tr("Restarting the engine to apply the material route setting..."));
+    // G-4 / RS-1: the edit taken back (or the restore itself) is one the
+    // engine runs only after a restart. RSX: the line every panel says.
+    if (restart_required) {
+        const auto completion = readRenderEditCompletion(commit);
+        requestEngineRestart(QString::fromStdString(
+            completion.restart_required ? completion.restart_line
+                                        : renderEditRestartLine({})));
+    }
 }
 
 void MainWindow::updateModalTransformPolling() {
@@ -1060,6 +1077,7 @@ void MainWindow::createMenus() {
     const std::pair<QString, QString> render_tool_tabs[] = {
         {QStringLiteral("frame_plan"), tr("&Frame Plan")},
         {QStringLiteral("render_features"), tr("F&eatures")},
+        {QStringLiteral("rendering_settings"), tr("&Rendering settings")},
         {QStringLiteral("graph"), tr("&Graph")},
     };
     for (const auto &[id, label] : render_tool_tabs) {
@@ -1373,13 +1391,14 @@ void MainWindow::updatePlayPresentation() {
 
 QStringList MainWindow::renderToolsTabIds() {
     return {QStringLiteral("frame_plan"), QStringLiteral("render_features"),
-            QStringLiteral("graph")};
+            QStringLiteral("rendering_settings"), QStringLiteral("graph")};
 }
 
 bool MainWindow::showRenderToolsTab(const QString &id) {
     QWidget *tab = nullptr;
     if (id == QLatin1String{"frame_plan"}) tab = frame_plan_;
     else if (id == QLatin1String{"render_features"}) tab = render_features_;
+    else if (id == QLatin1String{"rendering_settings"}) tab = rendering_settings_;
     else if (id == QLatin1String{"graph"}) tab = graph_canvas_;
     if (tab == nullptr || render_tabs_ == nullptr) return false;
     docks_[FramePlanDock]->show();
@@ -1428,6 +1447,8 @@ void MainWindow::requestEngineRestart(const QString &reason) {
         statusBar()->showMessage(declined);
         frame_plan_->engineRestartDeclined(declined);
         graph_canvas_->engineRestartDeclined(declined);
+        render_features_->engineRestartDeclined(declined);
+        rendering_settings_->engineRestartDeclined(declined);
         return;
     }
     // Set first: with nothing unsaved the restart happens inside this call.
@@ -1559,6 +1580,8 @@ void MainWindow::cancelNavigation(const QString &message) {
         statusBar()->showMessage(message.isEmpty() ? declined : message + QLatin1Char(' ') + declined);
         frame_plan_->engineRestartDeclined(declined);
         graph_canvas_->engineRestartDeclined(declined);
+        render_features_->engineRestartDeclined(declined);
+        rendering_settings_->engineRestartDeclined(declined);
         return;
     }
     if (!message.isEmpty()) statusBar()->showMessage(message, 8000);

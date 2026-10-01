@@ -9,6 +9,7 @@
 #include "fullscreenshadertemplate.hpp"
 #include "panelhelp.hpp"
 #include "renderconfigdigest.hpp"
+#include "rendereditcompletion.hpp"
 #include "shadercompilelogpanel.hpp"
 #include "shaderinputcontract.hpp"
 #include "shaderdiagnostics.hpp"
@@ -142,6 +143,9 @@ struct FullscreenPassWidget::Impl {
     FullscreenPassWidget &owner;
     FramePlanReadCapability frame_plan;
     std::function<void()> committed_action;
+    // RSX: the main window's engine restart, for a commit the engine runs
+    // only after one.
+    std::function<void(const QString &reason)> engine_restart_action;
     RenderPassAuthoringCapability authoring;
     Pelican::PassShapePolicy shape_policy;
     QPushButton *refresh = nullptr;
@@ -485,8 +489,11 @@ struct FullscreenPassWidget::Impl {
         skinned_layout->addWidget(skinned_vertex_choice);
         form->addRow(owner.tr("Skinned vertex stem"), skinned_vertex_row);
         form->setRowVisible(skinned_vertex_row, false);
-        ray_query = new QCheckBox(owner.tr("Scene ray query"), &owner);
+        // N-7: a name; what it turns on is on the tooltip.
+        ray_query = new QCheckBox(owner.tr("Ray query"), &owner);
         ray_query->setObjectName("pelican.fullscreenPass.rayQuery");
+        ray_query->setToolTip(owner.tr("The shader queries the scene with rays "
+                                       "(the Ray scene below)."));
         form->addRow(ray_query);
         ray_query_scene = new QComboBox(&owner);
         ray_query_scene->setObjectName("pelican.fullscreenPass.rayQueryScene");
@@ -504,7 +511,9 @@ struct FullscreenPassWidget::Impl {
         raster_form->setDepthShown(false);
         raster_form->setDrawShown(false);
         raster_form->setColorAttachments({owner.tr("Output").toStdString()});
-        form->addRow(owner.tr("Raster state"), raster_form);
+        // N-7: "Raster", the raster_state key on the form's tooltip.
+        raster_form->setToolTip(owner.tr("raster_state: how the pass rasterizes and blends."));
+        form->addRow(owner.tr("Raster"), raster_form);
         defines_form = new ShaderDefinesForm(form_prefix, &owner);
         form->addRow(owner.tr("Defines"), defines_form);
         material_form = new MaterialSettingsForm(form_prefix, &owner);
@@ -3085,6 +3094,21 @@ struct FullscreenPassWidget::Impl {
                     digest_hub->publish(response.value("source_digest", Json::object())
                                             .value("hex", std::string{}),
                                         &owner);
+                // RSX, decision 1: written, but the engine runs it only after
+                // a restart. The window restarts it; the form is read from the
+                // engine that comes back.
+                if (const auto completion = readRenderEditCompletion(response);
+                    completion.restart_required) {
+                    const auto line = text(completion.restart_line);
+                    compile_log->clear();
+                    authoring_status->setStyleSheet({});
+                    setPanelNotice(authoring_status, line, line);
+                    updateAuthoringButtons();
+                    if (editing_preset_pass) { load_edit_requested = true; authoring_available = false; }
+                    requested_insert_after.reset();
+                    if (engine_restart_action) engine_restart_action(line);
+                    return;
+                }
                 compile_log->clear();
                 authoring_status->setStyleSheet({});
                 setPanelNotice(authoring_status, owner.tr("committed"),
@@ -3698,6 +3722,11 @@ FullscreenPassWidget::~FullscreenPassWidget() = default;
 
 void FullscreenPassWidget::setCommittedAction(std::function<void()> action) {
     impl_->committed_action = std::move(action);
+}
+
+void FullscreenPassWidget::setEngineRestartAction(
+    std::function<void(const QString &reason)> action) {
+    impl_->engine_restart_action = std::move(action);
 }
 
 void FullscreenPassWidget::editPresetPass(const QString &graph, const QString &pass_name) {

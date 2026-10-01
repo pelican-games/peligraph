@@ -142,6 +142,8 @@ struct InspectorWidget::Impl {
     QPushButton *ray_tasks = nullptr;
     std::function<void(const QString &)> ray_group_action;
     std::function<void(const QString &, const QString &)> graph_source_reveal_action;
+    // RSX: the main window's engine restart.
+    std::function<void(const QString &)> engine_restart_action;
     std::optional<Json> displayed_ray_payload;
     QPointer<QDialog> add_component_dialog;
     QComboBox *component_types = nullptr;
@@ -282,6 +284,11 @@ struct InspectorWidget::Impl {
                          [this](const QString &node, const QString &port) {
                              if (graph_source_reveal_action)
                                  graph_source_reveal_action(node, port);
+                         });
+        QObject::connect(graph_attachments,
+                         &GraphAttachmentWidget::engineRestartRequested, &owner,
+                         [this](const QString &reason) {
+                             if (engine_restart_action) engine_restart_action(reason);
                          });
 
         notice_label = new QLabel(&owner);
@@ -2281,6 +2288,11 @@ InspectorWidget::~InspectorWidget() = default;
 void InspectorWidget::setGraphSourceRevealAction(
     std::function<void(const QString &, const QString &)> action) {
     impl_->graph_source_reveal_action = std::move(action);
+}
+
+void InspectorWidget::setEngineRestartAction(
+    std::function<void(const QString &reason)> action) {
+    impl_->engine_restart_action = std::move(action);
 }
 
 void InspectorWidget::setRayGroupAction(std::function<void(const QString &)> action) {

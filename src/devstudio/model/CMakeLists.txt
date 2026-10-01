@@ -18,6 +18,9 @@ add_library(pelican_studio_inspector_model STATIC
     graphcanvasmodel.hpp
     renderedithistory.cpp
     renderedithistory.hpp
+    # RSX: the one reading of a render config ticket's last answer.
+    rendereditcompletion.cpp
+    rendereditcompletion.hpp
     playstatemodel.cpp
     playstatemodel.hpp
     # PM-3c: reads the play state through playstatemodel's parsePlayStatus.

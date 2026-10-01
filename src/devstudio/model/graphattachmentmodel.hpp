@@ -3,6 +3,7 @@
 #include "inspectormodel.hpp"
 
 #include <optional>
+#include <utility>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -79,6 +80,9 @@ class GraphAttachmentModel {
     nlohmann::json catalog_ = nlohmann::json::object();
     std::string values_instance_;
     nlohmann::json values_ = nlohmann::json::array();
+    // RSX: the line of a commit that asked for an engine restart, until the
+    // owner takes it.
+    std::optional<std::string> engine_restart_;
 
     void request(RequestKind kind, std::string method, nlohmann::json params);
     void read(RequestKind kind, std::string method, nlohmann::json params);
@@ -138,6 +142,12 @@ class GraphAttachmentModel {
     auto contentRevision() const noexcept { return content_revision_; }
     auto reportRevision() const noexcept { return report_revision_; }
     bool busy() const noexcept { return pending_.has_value() || !ticket_.empty(); }
+    // RSX, decision 1. An edit that committed with restart_required: the
+    // line to restart the engine with ("Restarting the engine to apply this
+    // change (<code>)..."), once.
+    [[nodiscard]] std::optional<std::string> takeEngineRestart() {
+        return std::exchange(engine_restart_, std::nullopt);
+    }
     bool canRefresh() const noexcept { return connected_ && owner_ && !busy(); }
     bool canEdit() const noexcept { return canRefresh() && !digest_.empty(); }
 };

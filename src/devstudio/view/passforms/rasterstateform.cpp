@@ -165,10 +165,12 @@ RasterStateForm::RasterStateForm(const QString &object_prefix, QWidget *parent)
     cull_ = combo("rasterState.cull", tr("raster_state.cull"));
     passform::fillOptionalChoices(*cull_, tr("Default (none)"), cullNames());
     form_->addRow(tr("Cull"), cull_);
-    front_face_ = combo("rasterState.frontFace", tr("raster_state.front_face"));
+    front_face_ = combo("rasterState.frontFace",
+                        tr("raster_state.front_face: the winding that faces the camera"));
     passform::fillOptionalChoices(*front_face_, tr("Default (counter_clockwise)"),
                                   frontFaceNames());
-    form_->addRow(tr("Front face"), front_face_);
+    // N-7: the shorter name; the key is on the combo's tooltip.
+    form_->addRow(tr("Winding"), front_face_);
     depth_test_ = combo("rasterState.depthTest", tr("raster_state.depth_test"));
     fillBoolChoices(*depth_test_);
     form_->addRow(tr("Depth test"), depth_test_);
