@@ -1,0 +1,407 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_palette_kinds",
+  "description": "UX-3, decision 1: the Graph palette places the render nodes whose ports follow their parameters, each seeded so the engine takes it as placed. From a Blank project, New render target... declares ux3_scene with only a name. In the Graph tab the palette's render.target_ref offers the declared targets in a combo: picking ux3_scene places ux3_scene_ref, its type read off the declaration. render.raster arrives drawing the engine's passthrough over three vertices into an image of its own, and the frame plan runs it. render.snapshot_copy offers the plan's passes: after render_raster, it copies what the raster pass wrote into an image shaped like it, and the frame plan runs the copy. Nothing is typed but the project's and the target's names.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "File > New Project..., fired by name",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "palette_project"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the blank project's present is on the Frame Plan canvas",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "New render target..., fired by name",
+      "cmd": "action",
+      "name": "pelican.framePlan.newRenderTarget"
+    },
+    {
+      "label": "the form is open",
+      "cmd": "wait",
+      "name": "pelican.renderTargetForm.name",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "type only a name",
+      "cmd": "type",
+      "name": "pelican.renderTargetForm.name",
+      "text": "ux3_scene"
+    },
+    {
+      "label": "OK",
+      "cmd": "click",
+      "name": "pelican.renderTargetForm.ok"
+    },
+    {
+      "label": "the new target is drawn as a node",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::resource_node#ux3_scene",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine declares it",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "render_targets[0].name",
+      "value": "ux3_scene",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the Graph tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the canvas has read the new document and can edit it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add: the palette opens",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the filter narrows the list to the target reference",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "target_ref"
+    },
+    {
+      "label": "decision 1: the declared targets are offered in a combo",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteTarget",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "pick the target just declared: no name is typed",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPaletteTarget",
+      "text": "ux3_scene"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the palette closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the reference is drawn on the canvas",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#ux3_scene_ref",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine took it: the document names the target",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.name",
+      "value": "ux3_scene",
+      "retry_ms": 60000
+    },
+    {
+      "label": "its type was read off the declaration: a colour image",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.type.semantic",
+      "value": "pelican.render.color_signal@1"
+    },
+    {
+      "label": "the engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add: the palette opens again",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the filter narrows the list to the raster pass, offered with the engine's shaders",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "render.raster"
+    },
+    {
+      "label": "Enter adds it",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the palette closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the raster pass is drawn on the canvas",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_raster",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine took it: it draws three vertices",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[2].parameters.draw.vertex_count",
+      "value": 3,
+      "retry_ms": 60000
+    },
+    {
+      "label": "with the engine's passthrough",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[2].parameters.shader.fragment",
+      "value": "engine://passthrough"
+    },
+    {
+      "label": "into the image it arrived with",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[2].inputs.color.node",
+      "value": "render_raster__color"
+    },
+    {
+      "label": "the engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the Frame Plan tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "the frame plan runs the raster pass",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#render_raster",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the Graph tab is in front again",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the canvas can edit",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add: the palette opens a third time",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the filter narrows the list to the snapshot copy",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "snapshot_copy"
+    },
+    {
+      "label": "decision 1: the plan's passes are offered for snapshot_after",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteSnapshotAfter",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "copy after the raster pass: no pass name is typed",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPaletteSnapshotAfter",
+      "text": "render_raster"
+    },
+    {
+      "label": "Enter adds it",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the palette closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the copy is drawn on the canvas",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_snapshot_copy",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine took it: after the raster pass",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[4].parameters.snapshot_after",
+      "value": "render_raster",
+      "retry_ms": 60000
+    },
+    {
+      "label": "copying what the raster pass wrote",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[4].inputs.source.node",
+      "value": "render_raster"
+    },
+    {
+      "label": "into an image of its own, written by a transfer",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].parameters.usage[0]",
+      "value": "TRANSFER_DST"
+    },
+    {
+      "label": "the engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "a picture of the Graph tab with the three nodes",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "graph_palette_kinds.png"
+    },
+    {
+      "label": "the Frame Plan tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "the frame plan runs the copy",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#render_snapshot_copy",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "a picture of the Frame Plan with the raster pass and the copy",
+      "expect": "screenshot",
+      "name": "pelican.framePlan",
+      "path": "graph_palette_kinds_frame_plan.png"
+    }
+  ]
+}

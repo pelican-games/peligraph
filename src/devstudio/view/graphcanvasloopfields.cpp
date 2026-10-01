@@ -11,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -53,8 +54,8 @@ constexpr WhenChoice WhenChoices[] = {
 
 // What one loop's fields show, as one string: when it changes, the rows are
 // built again; when it does not, nothing under the cursor is replaced.
-QString signature(const GraphCanvasLoop &loop, const std::vector<std::string> &choices,
-                  bool editable) {
+QString signature(const GraphCanvasModel &model, const GraphCanvasLoop &loop,
+                  const std::vector<std::string> &choices, bool editable) {
     QStringList parts{qtext(loop.id), QString::number(loop.count),
                       loop.count_expression ? qtext(loop.count_text) : QString{},
                       loop.descending ? QStringLiteral("d") : QStringLiteral("a"),
@@ -95,6 +96,14 @@ QString signature(const GraphCanvasLoop &loop, const std::vector<std::string> &c
     for (const auto &input : loop.body_inputs) parts << qtext(input);
     for (const auto &output : loop.body_outputs) parts << qtext(output);
     for (const auto &choice : choices) parts << qtext(choice);
+    // UX-3, decision 5: the engine's materials, tags and variants.
+    parts << QStringLiteral("\x1ematerials");
+    for (const auto &material : model.materials())
+        parts << qtext(material.id) << qtext(material.name)
+              << GraphCanvasLoopFields::namesText(material.variants);
+    parts << GraphCanvasLoopFields::namesText(model.materialTags());
+    for (const auto &branch : loop.branches)
+        parts << qtext(branch.draw_when.has_variant_named.value_or("\x1e"));
     // LP-4f1: what the loop runs over, and what the frame plan offers.
     parts << qtext(loop.view_family) << qtext(loop.view_axis)
           << (loop.known_count ? QString::number(*loop.known_count) : QStringLiteral("?"));
@@ -122,6 +131,56 @@ bool selectableAxis(const FramePlanViewAxis &axis) {
 }
 
 } // namespace
+
+// --- UX-3, decision 5: the engine's material tags, picked.
+
+GraphCanvasTagPicker::GraphCanvasTagPicker(const QString &object_name, const QString &empty_text,
+                                           QWidget *parent)
+    : QToolButton{parent}, empty_text_{empty_text} {
+    setObjectName(object_name);
+    setPopupMode(QToolButton::InstantPopup);
+    setToolButtonStyle(Qt::ToolButtonTextOnly);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto *list = new QMenu(this);
+    list->setObjectName(object_name + QStringLiteral(".menu"));
+    setMenu(list);
+    showSelection();
+}
+
+void GraphCanvasTagPicker::setTags(const std::vector<std::string> &all,
+                                   const std::vector<std::string> &selected) {
+    menu()->clear();
+    checks_.clear();
+    auto tags = all;
+    // What the document names stays visible, even a tag no material has.
+    for (const auto &tag : selected)
+        if (std::ranges::find(tags, tag) == tags.end()) tags.push_back(tag);
+    for (const auto &tag : tags) {
+        auto *check = menu()->addAction(qtext(tag));
+        check->setObjectName(objectName() + QLatin1Char{'.'} + qtext(tag));
+        check->setCheckable(true);
+        check->setChecked(std::ranges::find(selected, tag) != selected.end());
+        connect(check, &QAction::triggered, this, [this] {
+            showSelection();
+            if (changed) changed();
+        });
+        checks_.emplace_back(tag, check);
+    }
+    showSelection();
+}
+
+std::vector<std::string> GraphCanvasTagPicker::selected() const {
+    std::vector<std::string> tags;
+    for (const auto &[tag, check] : checks_)
+        if (check->isChecked()) tags.push_back(tag);
+    return tags;
+}
+
+void GraphCanvasTagPicker::showSelection() {
+    QStringList names;
+    for (const auto &tag : selected()) names << qtext(tag);
+    setText(names.isEmpty() ? empty_text_ : names.join(QStringLiteral(", ")));
+}
 
 QString GraphCanvasLoopFields::elementText(const GraphCanvasLoop &loop, std::int64_t element) {
     if (loop.view_axis_info && element >= 0)
@@ -401,6 +460,23 @@ GraphCanvasLoopFields::GraphCanvasLoopFields(
                                tr("Leave out materials with any of these tags"));
     tags_require_all_ = tags_field("whereTagsRequireAll", tr("all of"),
                                    tr("Only materials with every one of these tags"));
+    // UX-3, decision 5: the same three, picked among the engine's tags.
+    const auto tags_picker = [this, tags_layout](const char *name, const QString &empty,
+                                                 const QString &tip) {
+        auto *picker =
+            new GraphCanvasTagPicker(fieldName(QString::fromLatin1(name)), empty, tags_row_);
+        picker->setToolTip(tip);
+        picker->changed = [this] { commitWhereTags(); };
+        picker->hide();
+        tags_layout->addWidget(picker, 1);
+        return picker;
+    };
+    pick_include_ = tags_picker("whereTagsIncludePick", tr("any of: (every material)"),
+                                tr("Materials with any of these tags; none checked: every material"));
+    pick_exclude_ = tags_picker("whereTagsExcludePick", tr("none of: -"),
+                                tr("Leave out materials with any of these tags"));
+    pick_require_all_ = tags_picker("whereTagsRequireAllPick", tr("all of: -"),
+                                    tr("Only materials with every one of these tags"));
     form->addRow(caption(tr("Tags")), tags_row_);
     form_ = form;
     // Q-17: the form and the rows in one widget, switched off together while
@@ -434,7 +510,10 @@ void GraphCanvasLoopFields::showLoop(const std::string &id) {
         return;
     }
     const auto choices = model_.loopBodyChoices(id);
-    const auto shown = (signature(*loop, choices, model_.canEdit()) + QChar{0x1d} +
+    // UX-3, decision 5: a draw_loop's tags and materials come with the
+    // authoring context.
+    if (loop->draw_items) model_.askRenderTargetVocabulary();
+    const auto shown = (signature(model_, *loop, choices, model_.canEdit()) + QChar{0x1d} +
                         viewSignature(model_))
                            .toStdString();
     loop_ = id;
@@ -618,8 +697,21 @@ void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop) {
         tags_include_->setText(namesText(loop.where_tags.include));
         tags_exclude_->setText(namesText(loop.where_tags.exclude));
         tags_require_all_->setText(namesText(loop.where_tags.require_all));
-        for (QLineEdit *field : {tags_include_, tags_exclude_, tags_require_all_})
+        // UX-3, decision 5: picked among the engine's tags while it lists
+        // any; typed, as before, while it does not.
+        const auto tags = model_.materialTags();
+        tags_listed_ = !tags.empty();
+        pick_include_->setTags(tags, loop.where_tags.include);
+        pick_exclude_->setTags(tags, loop.where_tags.exclude);
+        pick_require_all_->setTags(tags, loop.where_tags.require_all);
+        for (QLineEdit *field : {tags_include_, tags_exclude_, tags_require_all_}) {
             field->setEnabled(editable);
+            field->setVisible(!tags_listed_);
+        }
+        for (GraphCanvasTagPicker *picker : {pick_include_, pick_exclude_, pick_require_all_}) {
+            picker->setEnabled(editable);
+            picker->setVisible(tags_listed_);
+        }
     }
 
     clearRows();
@@ -1097,6 +1189,38 @@ std::optional<bool> readAnyYesNo(const QComboBox &combo) {
     return combo.currentIndex() == 1;
 }
 
+// UX-3, decision 5: has_variant's item data -- "" any, "\x1fyes" / "\x1fno"
+// (some variant / none), or a variant's name.
+QString hasVariantData(const GraphCanvasDrawWhen &when) {
+    if (when.has_variant)
+        return *when.has_variant ? QStringLiteral("\x1fyes") : QStringLiteral("\x1fno");
+    if (when.has_variant_named) return qtext(*when.has_variant_named);
+    return {};
+}
+
+void fillHasVariant(QComboBox &combo, const std::vector<std::string> &variants,
+                    const GraphCanvasDrawWhen &when) {
+    combo.addItem(QString::fromLatin1(AnyYesNo[0]), QString{});
+    combo.addItem(QString::fromLatin1(AnyYesNo[1]), QStringLiteral("\x1fyes"));
+    combo.addItem(QString::fromLatin1(AnyYesNo[2]), QStringLiteral("\x1fno"));
+    auto names = variants;
+    if (when.has_variant_named &&
+        std::ranges::find(names, *when.has_variant_named) == names.end())
+        names.push_back(*when.has_variant_named);
+    for (const auto &name : names)
+        combo.addItem(QObject::tr("= %1").arg(qtext(name)), qtext(name));
+    combo.setCurrentIndex(std::max(0, combo.findData(hasVariantData(when))));
+}
+
+void readHasVariant(const QComboBox &combo, GraphCanvasDrawWhen &when) {
+    const auto data = combo.currentData().toString();
+    when.has_variant.reset();
+    when.has_variant_named.reset();
+    if (data == QLatin1String{"\x1fyes"}) when.has_variant = true;
+    else if (data == QLatin1String{"\x1fno"}) when.has_variant = false;
+    else if (!data.isEmpty()) when.has_variant_named = data.toStdString();
+}
+
 } // namespace
 
 void GraphCanvasLoopFields::addDrawBranchRow(QGridLayout &grid, const GraphCanvasLoop &loop,
@@ -1109,13 +1233,22 @@ void GraphCanvasLoopFields::addDrawBranchRow(QGridLayout &grid, const GraphCanva
         caption->setFont(studioSmallFont());
         line->addWidget(caption);
     };
-    // material = <key>: the materials the report names, all pages read.
+    // material = <key>: the engine's materials by name (UX-3, decision 5),
+    // then the ones the report names that it does not list, by key.
     label(tr("material"));
     drawn.material = new QComboBox(rows_);
     drawn.material->setObjectName(branchFieldName(index, "material"));
     drawn.material->addItem(tr("(any)"), QString{});
+    for (const auto &material : model_.materials()) {
+        drawn.material->addItem(material.builtin ? tr("%1 (built in)").arg(qtext(material.name))
+                                                 : qtext(material.name),
+                                qtext(material.id));
+        drawn.material->setItemData(drawn.material->count() - 1, qtext(material.id),
+                                    Qt::ToolTipRole);
+    }
     for (const auto &material : loop.materials)
-        drawn.material->addItem(qtext(material), qtext(material));
+        if (drawn.material->findData(qtext(material)) < 0)
+            drawn.material->addItem(qtext(material), qtext(material));
     // A key the report does not name (yet) stays, as the document spells it.
     if (when.material && drawn.material->findData(qtext(*when.material)) < 0)
         drawn.material->addItem(qtext(*when.material), qtext(*when.material));
@@ -1129,6 +1262,17 @@ void GraphCanvasLoopFields::addDrawBranchRow(QGridLayout &grid, const GraphCanva
     drawn.tags->setPlaceholderText(tr("any of"));
     drawn.tags->setToolTip(tr("Materials with any of these tags (commas between)"));
     line->addWidget(drawn.tags, 1);
+    // UX-3, decision 5: picked among the engine's tags while it lists any.
+    const auto engine_tags = model_.materialTags();
+    drawn.tag_picker = new GraphCanvasTagPicker(branchFieldName(index, "tagsPick"),
+                                                tr("any of: -"), rows_);
+    drawn.tag_picker->setToolTip(tr("Materials with any of these tags"));
+    drawn.tag_picker->setTags(engine_tags,
+                              when.tags ? when.tags->include : std::vector<std::string>{});
+    drawn.tag_picker->changed = [this, index] { commitDrawWhen(index); };
+    line->addWidget(drawn.tag_picker, 1);
+    drawn.tags->setVisible(engine_tags.empty());
+    drawn.tag_picker->setVisible(!engine_tags.empty());
     label(tr("contract"));
     drawn.contract = new QComboBox(rows_);
     drawn.contract->setObjectName(branchFieldName(index, "contract"));
@@ -1146,10 +1290,13 @@ void GraphCanvasLoopFields::addDrawBranchRow(QGridLayout &grid, const GraphCanva
     label(tr("has variant"));
     drawn.has_variant = new QComboBox(rows_);
     drawn.has_variant->setObjectName(branchFieldName(index, "hasVariant"));
-    fillAnyYesNo(*drawn.has_variant, when.has_variant);
+    // UX-3, decision 5: any / some variant / none, then one variant by
+    // name among those the engine's materials have.
+    fillHasVariant(*drawn.has_variant, model_.materialVariants(), when);
     line->addWidget(drawn.has_variant);
     for (QWidget *field : std::initializer_list<QWidget *>{
-             drawn.material, drawn.tags, drawn.contract, drawn.skinned, drawn.has_variant})
+             drawn.material, drawn.tags, drawn.tag_picker, drawn.contract, drawn.skinned,
+             drawn.has_variant})
         field->setEnabled(editable);
     grid.addLayout(line, row, 0, 1, 6);
     for (QComboBox *combo : {drawn.material, drawn.contract, drawn.skinned, drawn.has_variant})
@@ -1170,12 +1317,14 @@ void GraphCanvasLoopFields::commitDrawWhen(std::size_t branch) {
     auto tags = branch < current_->branches.size() && current_->branches[branch].draw_when.tags
                     ? *current_->branches[branch].draw_when.tags
                     : GraphCanvasTagFilter{};
-    tags.include = parseNames(row.tags->text());
+    tags.include = row.tag_picker != nullptr && !row.tag_picker->isHidden()
+                       ? row.tag_picker->selected()
+                       : parseNames(row.tags->text());
     if (!tags.empty()) when.tags = std::move(tags);
     if (const auto contract = row.contract->currentData().toString(); !contract.isEmpty())
         when.contract = contract.toStdString();
     when.skinned = readAnyYesNo(*row.skinned);
-    when.has_variant = readAnyYesNo(*row.has_variant);
+    readHasVariant(*row.has_variant, when);
     if (when.empty()) {
         // Nothing left to test would make this row a second else.
         row.material->setToolTip(tr("Pick what this branch is for: only the last row has no "
@@ -1208,15 +1357,21 @@ void GraphCanvasLoopFields::restoreBranch(std::size_t branch) {
         put(row.contract, when.contract ? row.contract->findData(qtext(*when.contract)) : 0);
     if (row.skinned != nullptr) put(row.skinned, !when.skinned ? 0 : (*when.skinned ? 1 : 2));
     if (row.has_variant != nullptr)
-        put(row.has_variant, !when.has_variant ? 0 : (*when.has_variant ? 1 : 2));
+        put(row.has_variant, row.has_variant->findData(hasVariantData(when)));
 }
 
 void GraphCanvasLoopFields::commitWhereTags() {
     if (!current_ || loop_.empty() || !current_->draw_items) return;
     GraphCanvasTagFilter tags;
-    tags.include = parseNames(tags_include_->text());
-    tags.exclude = parseNames(tags_exclude_->text());
-    tags.require_all = parseNames(tags_require_all_->text());
+    if (tags_listed_) {
+        tags.include = pick_include_->selected();
+        tags.exclude = pick_exclude_->selected();
+        tags.require_all = pick_require_all_->selected();
+    } else {
+        tags.include = parseNames(tags_include_->text());
+        tags.exclude = parseNames(tags_exclude_->text());
+        tags.require_all = parseNames(tags_require_all_->text());
+    }
     if (tags == current_->where_tags) return;
     after(model_.setLoopWhereTags(loop_, tags));
 }
@@ -1278,6 +1433,18 @@ GraphCanvasDrawFields::GraphCanvasDrawFields(GraphCanvasModel &model, std::funct
         contract_->addItem(qtext(contract), qtext(contract));
     contract_->setToolTip(tr("The materials this pass draws; its sockets follow it."));
     contract_form->addRow(caption(tr("Contract"), contract_row_), contract_);
+    // UX-3, decision 5: the variant every material of the pass draws with,
+    // among the variants the engine's materials have.
+    material_variant_ = new QComboBox(contract_row_);
+    material_variant_->setObjectName(drawFieldName("materialVariant"));
+    material_variant_->setToolTip(tr("The variant each material draws with in this pass; a "
+                                     "material without it is refused."));
+    contract_form->addRow(caption(tr("Variant"), contract_row_), material_variant_);
+    connect(material_variant_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (index < 0 || node_.empty()) return;
+        after(model_.setMaterialPassVariant(
+            node_, material_variant_->itemData(index).toString().toStdString()));
+    });
     layout->addWidget(contract_row_);
     connect(contract_, &QComboBox::currentIndexChanged, this, [this](int index) {
         if (index < 0 || node_.empty()) return;
@@ -1301,7 +1468,8 @@ GraphCanvasDrawFields::GraphCanvasDrawFields(GraphCanvasModel &model, std::funct
         after(model_.setDrawVariant(scope_, node_, variant_->currentText().trimmed().toStdString()));
     };
     connect(variant_, &QComboBox::activated, this, commit_variant);
-    connect(variant_->lineEdit(), &QLineEdit::returnPressed, this, commit_variant);
+    variant_line_ = variant_->lineEdit();
+    connect(variant_line_, &QLineEdit::returnPressed, this, commit_variant);
 
     // draw.override: the render state it replaces, and its defines.
     override_rows_ = new QWidget(this);
@@ -1315,10 +1483,16 @@ GraphCanvasDrawFields::GraphCanvasDrawFields(GraphCanvasModel &model, std::funct
                               tr("Whether the draw writes depth (not with the test off)"));
     blend_ = stateCombo(override_rows_, drawFieldName("blend"), {"opaque", "blend", "additive"},
                         tr("How the draw's colour meets what is there"));
+    // UX-3, decision 4: the comparison the depth test makes.
+    depth_compare_ = stateCombo(override_rows_, drawFieldName("depthCompare"),
+                                {"never", "less", "equal", "less_equal", "greater", "not_equal",
+                                 "greater_equal", "always"},
+                                tr("What the depth test compares the draw's depth by"));
     override_form->addRow(caption(tr("Cull"), override_rows_), cull_);
     override_form->addRow(caption(tr("Depth test"), override_rows_), depth_test_);
     override_form->addRow(caption(tr("Depth write"), override_rows_), depth_write_);
     override_form->addRow(caption(tr("Blend"), override_rows_), blend_);
+    override_form->addRow(caption(tr("Depth compare"), override_rows_), depth_compare_);
     defines_ = new QPlainTextEdit(override_rows_);
     defines_->setObjectName(drawFieldName("defines"));
     defines_->setMaximumHeight(70);
@@ -1329,7 +1503,7 @@ GraphCanvasDrawFields::GraphCanvasDrawFields(GraphCanvasModel &model, std::funct
     apply_defines_->setObjectName(drawFieldName("applyDefines"));
     override_form->addRow(QString{}, apply_defines_);
     layout->addWidget(override_rows_);
-    for (QComboBox *combo : {cull_, depth_test_, depth_write_, blend_})
+    for (QComboBox *combo : {cull_, depth_test_, depth_write_, blend_, depth_compare_})
         connect(combo, &QComboBox::currentIndexChanged, this, [this] { commitOverride(); });
     connect(apply_defines_, &QPushButton::clicked, this, [this] { commitOverride(); });
     hide();
@@ -1368,7 +1542,10 @@ void GraphCanvasDrawFields::showNode(const GraphCanvasNode *node, const std::str
     else
         heading_->setText(tr("Draw %1 with another render state").arg(qtext(node_)));
     // What is being typed into the node on screen stays.
-    showParameters(node->parameters, same && variant_->lineEdit()->hasFocus(),
+    // UX-3, decision 5: the variants come with the authoring context.
+    model_.askRenderTargetVocabulary();
+    showParameters(node->parameters,
+                   same && variant_->lineEdit() != nullptr && variant_->lineEdit()->hasFocus(),
                    same && defines_->hasFocus());
     followEditable();
     show();
@@ -1388,16 +1565,46 @@ void GraphCanvasDrawFields::showParameters(const nlohmann::json &parameters, boo
         if (contract_->findData(contract) < 0 && !contract.isEmpty())
             contract_->addItem(contract, contract);
         contract_->setCurrentIndex(contract_->findData(contract));
+        // UX-3, decision 5: shown while the engine lists variants, or the
+        // pass names one.
+        const auto variants = model_.materialVariants();
+        const auto current = string(parameters, "material_variant");
+        const QSignalBlocker block_variant{material_variant_};
+        material_variant_->clear();
+        material_variant_->addItem(tr("(each material's own)"), QString{});
+        for (const auto &variant : variants) material_variant_->addItem(qtext(variant), qtext(variant));
+        if (!current.isEmpty() && material_variant_->findData(current) < 0)
+            material_variant_->addItem(current, current);
+        material_variant_->setCurrentIndex(std::max(0, material_variant_->findData(current)));
+        static_cast<QFormLayout *>(contract_row_->layout())
+            ->setRowVisible(material_variant_, !variants.empty() || !current.isEmpty());
     } else if (op_ == "draw.variant") {
         if (!keep_variant) {
             const QSignalBlocker block{variant_};
-            variant_->clear();
-            const auto suggested = qtext(model_.suggestDrawVariant(scope_));
-            if (suggested != QLatin1String{"variant"}) variant_->addItem(suggested);
+            // UX-3, decision 5: picked among the variants the engine's
+            // materials have; typed, as before, while it lists none.
+            const auto variants = model_.materialVariants();
             const auto current = string(parameters, "variant");
+            variant_->clear();
+            variant_->setEditable(variants.empty());
+            if (variant_->isEditable() && variant_->lineEdit() != variant_line_) {
+                // The combo makes its line again each time it becomes
+                // editable: Enter in the new one sends, as in the first.
+                variant_line_ = variant_->lineEdit();
+                connect(variant_line_, &QLineEdit::returnPressed, this, [this] {
+                    if (node_.empty()) return;
+                    after(model_.setDrawVariant(scope_, node_,
+                                                variant_->currentText().trimmed().toStdString()));
+                });
+            }
+            if (variants.empty()) {
+                const auto suggested = qtext(model_.suggestDrawVariant(scope_));
+                if (suggested != QLatin1String{"variant"}) variant_->addItem(suggested);
+            }
+            for (const auto &variant : variants) variant_->addItem(qtext(variant));
             if (variant_->findText(current) < 0) variant_->addItem(current);
             variant_->setCurrentIndex(variant_->findText(current));
-            variant_->setEditText(current);
+            if (variant_->isEditable()) variant_->setEditText(current);
         }
     } else if (op_ == "draw.override") {
         const auto state = parameters.is_object() ? parameters.value("render_state", nlohmann::json::object())
@@ -1418,6 +1625,7 @@ void GraphCanvasDrawFields::showParameters(const nlohmann::json &parameters, boo
         pick(depth_test_, "depth_test", true);
         pick(depth_write_, "depth_write", true);
         pick(blend_, "blend", false);
+        pick(depth_compare_, "depth_compare", false);
         if (!keep_defines) {
             QStringList lines;
             if (parameters.is_object())
@@ -1436,6 +1644,7 @@ void GraphCanvasDrawFields::followEditable() {
     const bool editable = model_.canEdit();
     contract_row_->setEnabled(editable);
     variant_row_->setEnabled(editable);
+    material_variant_->setEnabled(editable);
     override_rows_->setEnabled(editable);
 }
 
@@ -1460,6 +1669,7 @@ void GraphCanvasDrawFields::commitOverride() {
     put(depth_test_, "depth_test", true);
     put(depth_write_, "depth_write", true);
     put(blend_, "blend", false);
+    put(depth_compare_, "depth_compare", false);
     const auto defines = parseDefines(defines_->toPlainText());
     if (state.empty() && defines.empty()) {
         // The engine refuses an override that replaces nothing.

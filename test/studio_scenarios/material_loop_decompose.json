@@ -311,10 +311,10 @@
       "timeout_ms": 120000
     },
     {
-      "label": "pick the box's material: no key is typed",
+      "label": "pick the box's material by its name (UX-3: the engine's materials list): no key is typed",
       "cmd": "select",
       "name": "pelican.graphCanvasLoop.branch0.material",
-      "text": "materials/g1_flat.material.json#g1_flat"
+      "text": "g1_flat"
     },
     {
       "label": "the branch is for the box's material",

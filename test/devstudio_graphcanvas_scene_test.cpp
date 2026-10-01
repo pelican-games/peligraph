@@ -1,5 +1,6 @@
 #include "fullscreenshadertemplate.hpp"
 #include "graphcanvasloopfields.hpp"
+#include "graphcanvasrenderfields.hpp"
 #include "graphcanvaswidget.hpp"
 #include "graphcomposition.hpp"
 #include "graphmodule.hpp"
@@ -8,6 +9,7 @@
 #include "studiotheme.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -48,6 +50,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QWidget>
@@ -5924,9 +5927,13 @@ TEST_CASE("Q-19 Rename definition… and Delete definition act on the zone picke
     rename->trigger();
     QCoreApplication::processEvents();
     REQUIRE(row->isVisible());
-    CHECK(name->text() == QStringLiteral("body"));
-    CHECK(name->selectedText() == QStringLiteral("body"));
+    // UX-3, decision 4: the name Studio proposes, after the loop that runs
+    // it, chosen.
+    CHECK(name->text() == QStringLiteral("steps_body"));
+    CHECK(name->selectedText() == QStringLiteral("steps_body"));
+    CHECK(apply->isEnabled());
     // The same name renames nothing.
+    name->setText(QStringLiteral("body"));
     CHECK_FALSE(apply->isEnabled());
 
     // "root" names the root document: said, and not sent.
@@ -7678,4 +7685,471 @@ TEST_CASE("UX-2 a render pass's shaders are picked from the Pass Editor's list, 
     op = tab.sent(2);
     pass["shader"]["fragment"] = "engine://passthrough";
     CHECK(op.at("parameters") == pass);
+}
+
+// --- UX-3: the palette's other render nodes, Place, a socket's settings,
+// a definition's proposed name and depth_compare, the engine's lists.
+
+namespace {
+
+// A fullscreen pass and its image, as a document the engine's graph
+// validation reads (partitionGraphDocument), its image copyable.
+Json ux3Document() {
+    auto image = ux2Image();
+    image.erase("note");
+    image["usage"] = Json::array({"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"});
+    auto document = ux2Document(image);
+    document["schema"] = "pelican.graph";
+    document["version"] = 1;
+    document["outputs"] = Json::object();
+    return document;
+}
+
+// get_render_authoring_context as an engine with EL-1 answers it: two
+// declared targets (and the graph's own image, which is not one), two
+// families, the materials with their tags and variants, the providers.
+Json ux3Authoring() {
+    auto authoring = ux2Authoring();
+    authoring["graphs"] = Json::array({{{"name", "main_render"}, {"passes", Json::array()}},
+                                       {{"name", "overlay"}, {"passes", Json::array()}}});
+    authoring["render_targets"] = Json::array({
+        {{"name", "scene_color"},
+         {"declaration", {{"name", "scene_color"}, {"format", "R16G16B16A16_SFLOAT"},
+                          {"extent_scale", 1.0}}},
+         {"editable", true}, {"source", "authoring"}},
+        {{"name", "shadow_map"},
+         {"declaration", {{"name", "shadow_map"}, {"format", "D32_SFLOAT"}, {"layers", 4},
+                          {"width", 1024}, {"height", 1024}}},
+         {"editable", false}, {"source", "preset"}},
+        {{"name", "shade__color"},
+         {"declaration", {{"name", "shade__color"}, {"format", "R8G8B8A8_UNORM"}}},
+         {"editable", false}, {"source", "composed"}}});
+    authoring["materials"] = Json::array({
+        {{"id", "materials/m.material.json#metal"}, {"name", "metal"},
+         {"tags", {"hero"}}, {"variants", {"outline"}}, {"builtin", false}},
+        {{"id", "materials/m.material.json#glass"}, {"name", "glass"},
+         {"tags", {"crowd", "hero"}}, {"variants", {"depth_only", "outline"}}, {"builtin", false}},
+        {{"id", "pelican.builtin.transparent"}, {"name", "pelican.builtin.transparent"},
+         {"tags", Json::array()}, {"variants", Json::array()}, {"builtin", true}}});
+    authoring["material_tags"] = Json::array({"crowd", "hero"});
+    authoring["region_providers"] =
+        Json::array({{{"name", "builtin.identity_v1"}, {"builtin", true}, {"provider_version", 1}}});
+    return authoring;
+}
+
+bool ux3Offered(const GraphCanvasModel &model, std::string_view op) {
+    return std::ranges::any_of(model.paletteOperationsIn({}, op),
+                               [&](const auto &entry) { return entry.op == op; });
+}
+
+} // namespace
+
+TEST_CASE("UX-3 decision 1: the palette places target_ref, image, buffer, attribute, raster, "
+          "compute, shadow_depth and snapshot_copy seeded, each in one edit the engine's graph "
+          "validation takes",
+          "[devstudio][graph-canvas][scene][ux3]") {
+    (void)application();
+    const auto catalog = engineCatalog();
+    const auto registry = Pelican::makeBuiltinGraphModuleRegistry();
+    const auto document = ux3Document();
+    const auto placedWith = [&](const Json &ops) {
+        auto placed = document;
+        for (const auto &op : ops) {
+            REQUIRE(op.at("op") == "add_node");
+            REQUIRE(op.at("scope") == "root");
+            placed["nodes"].push_back(op.at("node"));
+        }
+        return placed;
+    };
+    // What the palette's plain path placed before: a copy naming no pass to
+    // copy after (and no parameters at all) is refused by the engine.
+    {
+        auto bare = document;
+        bare["nodes"].push_back({{"id", "copy"}, {"op", "render.snapshot_copy"},
+                                 {"inputs", {{"source", {{"node", "shade__color"}, {"port", "resource"}}},
+                                             {"destination", {{"node", "shade__color"}, {"port", "resource"}}}}},
+                                 {"outputs", {"destination"}}});
+        CHECK_THROWS(Pelican::partitionGraphDocument(bare, registry));
+        bare["nodes"].back()["parameters"] = Json::object();
+        CHECK_THROWS_WITH(Pelican::partitionGraphDocument(bare, registry),
+                          Catch::Matchers::ContainsSubstring("snapshot_after"));
+    }
+
+    GraphCanvasModel model;
+    model.setConnected(true);
+    answer(model, document, catalog);
+    REQUIRE(model.canEdit());
+    // Without the shaders they start from, no raster pass and no compute task.
+    CHECK_FALSE(ux3Offered(model, "render.raster"));
+    CHECK_FALSE(ux3Offered(model, "render.compute"));
+    model.setShaderChoices({"engine://fullscreen"}, {"engine://passthrough", "engine://fullscreen"});
+    model.setComputeShaderChoices({"project://shaders/blur", "project://shaders/compute"});
+    for (const char *op : {"render.target_ref", "render.image", "render.buffer", "render.attribute",
+                           "render.raster", "render.compute", "render.shadow_depth",
+                           "render.snapshot_copy"}) {
+        INFO(op);
+        CHECK(ux3Offered(model, op));
+    }
+    // The declared targets come with the authoring context.
+    model.askRenderTargetVocabulary();
+    for (const auto &request : model.takeRpcRequests())
+        if (request.method == "get_render_authoring_context")
+            model.receiveRpcResult(request.request_id, ux3Authoring().dump());
+    const auto targets = model.declaredRenderTargets();
+    REQUIRE(targets.size() == 2);
+    CHECK(targets[0].name == "scene_color");
+    CHECK(targets[1].name == "shadow_map");
+    CHECK(targets[1].depth);
+
+    struct Case {
+        const char *op;
+        Json seed;
+    };
+    const std::vector<Case> cases{
+        {"render.target_ref", {{"name", "shadow_map"}}},
+        {"render.image", Json::object()},
+        {"render.buffer", {{"element", "vec4"}, {"count", 4}}},
+        {"render.attribute", {{"element", "vec3"}, {"domain", "index"}, {"count", 6}}},
+        {"render.raster", Json::object()},
+        {"render.compute", Json::object()},
+        {"render.shadow_depth", Json::object()},
+        {"render.snapshot_copy", {{"snapshot_after", "shade"}}}};
+    std::map<std::string, Json> added;
+    for (const auto &[op, seed] : cases) {
+        INFO(op);
+        const auto ops = model.addNodeOpsIn({}, op, {}, seed);
+        REQUIRE_FALSE(ops.empty());
+        CHECK_NOTHROW(Pelican::partitionGraphDocument(placedWith(ops), registry));
+        added[op] = ops.back().at("node");
+    }
+    // The reference: by name, its type from the declaration (a layered depth).
+    CHECK(added["render.target_ref"].at("id") == "shadow_map_ref");
+    CHECK(added["render.target_ref"].at("parameters") ==
+          Json{{"name", "shadow_map"},
+               {"type", {{"semantic", "pelican.render.depth@1"},
+                         {"arguments", {{"representation", "device"}, {"space", "projection"},
+                                        {"topology", "two_d_array"}}}}}});
+    // The image: the size of the screen, scene colour, sixteen bits a channel.
+    CHECK(added["render.image"].at("parameters").at("format") == "R16G16B16A16_SFLOAT");
+    CHECK(added["render.image"].at("parameters").at("extent_scale") == 1.0);
+    // A buffer's bytes; an index attribute is uint, its size its count's.
+    CHECK(added["render.buffer"].at("parameters") == Json{{"element", "vec4"}, {"size", 64}});
+    CHECK(added["render.attribute"].at("parameters") ==
+          Json{{"element", "uint"}, {"domain", "index"}, {"count", 6}});
+    // The raster pass draws the screen-covering triangle with the engine's
+    // shaders; the compute task starts from the project's `compute`.
+    CHECK(added["render.raster"].at("parameters").at("draw") == Json{{"vertex_count", 3}});
+    CHECK(added["render.compute"].at("parameters").at("shader") == "project://shaders/compute");
+    // The shadow pass draws into a depth image of its own.
+    CHECK(added["render.shadow_depth"].at("inputs").at("depth").at("node") ==
+          "render_shadow_depth__depth");
+    // The copy: after `shade`, of what `shade` wrote, into an image shaped
+    // like it.
+    const auto &copy = added["render.snapshot_copy"];
+    CHECK(copy.at("parameters") == Json{{"snapshot_after", "shade"}});
+    CHECK(copy.at("inputs").at("source") == Json{{"node", "shade"}, {"port", "color"}});
+    const auto copy_ops = model.addNodeOpsIn({}, "render.snapshot_copy", {}, {{"snapshot_after", "shade"}});
+    REQUIRE(copy_ops.size() == 2);
+    CHECK(copy_ops[0].at("node").at("parameters").at("format") == "R8G8B8A8_UNORM");
+    CHECK(copy_ops[0].at("node").at("parameters").at("usage") ==
+          Json::array({"TRANSFER_DST", "SAMPLED"}));
+    // Nothing to name: nothing is placed.
+    CHECK(model.addNodeOpsIn({}, "render.target_ref", {}, {{"name", "nowhere"}}).empty());
+    CHECK(model.addNodeOpsIn({}, "render.snapshot_copy", {}, Json::object()).empty());
+
+    // One gesture is one edit: the copy and its image together (one Undo).
+    REQUIRE(model.addNodeIn({}, "render.snapshot_copy", {}, {{"snapshot_after", "shade"}}));
+    const auto edit = takeEdit(model);
+    CHECK(edit.at("ops") == copy_ops);
+}
+
+TEST_CASE("UX-3 decision 2: a render node's Place and family are picked, each one "
+          "set_node_parameters; a compute task takes none",
+          "[devstudio][graph-canvas][scene][ux3]") {
+    (void)application();
+    Ux2Tab tab{true};
+    auto document = ux2Document();
+    tab.read(document, "ux3-0");
+    tab.answer("get_graph_catalog", ux2Catalog());
+    tab.widget->scene().selectNode("shade");
+    QCoreApplication::processEvents();
+    auto *fields = tab.field<QWidget>("pelican.graphCanvasPlace");
+    REQUIRE(fields->isVisible());
+    tab.widget->poll();
+    REQUIRE(tab.reads("get_render_authoring_context") == 1);
+    tab.answer("get_render_authoring_context", ux3Authoring());
+    tab.widget->poll();
+    QCoreApplication::processEvents();
+    auto *place = tab.field<QComboBox>("pelican.graphCanvasPlace.place");
+    auto *family = tab.field<QComboBox>("pelican.graphCanvasPlace.passSet");
+    CHECK(place->currentData().toString() == QStringLiteral("automatic|"));
+    CHECK(place->findData(QStringLiteral("anchor|post_ldr")) >= 0);
+    CHECK(family->findData(QStringLiteral("overlay")) >= 0);
+
+    // After an anchor: one edit, the anchor and nothing else changed.
+    tab.pick(place, QStringLiteral("anchor|post_ldr"));
+    auto op = tab.sent(1);
+    auto expected = ux2Pass();
+    expected["canonical_anchor"] = "post_ldr";
+    CHECK(op.at("parameters") == expected);
+    document["nodes"][1]["parameters"] = expected;
+    tab.commit(document, "ux3-1");
+    QCoreApplication::processEvents();
+    // The family: the place stays.
+    family = tab.field<QComboBox>("pelican.graphCanvasPlace.passSet");
+    tab.pick(family, QStringLiteral("overlay"));
+    op = tab.sent(2);
+    expected["pass_set"] = "overlay";
+    CHECK(op.at("parameters") == expected);
+
+    // An image has no place.
+    tab.widget->scene().selectNode("shade__color");
+    QCoreApplication::processEvents();
+    CHECK_FALSE(fields->isVisible());
+
+    // A compute task shows the field, and takes no place.
+    CHECK(GraphCanvasModel::showsPlace("render.compute"));
+    CHECK_FALSE(GraphCanvasModel::takesPlace("render.compute"));
+    CHECK_FALSE(GraphCanvasModel::showsPlace("render.image"));
+    CHECK(PelicanStudio::GraphCanvasPlaceFields::placeData({"before", "lighting", true, {}}) ==
+          QStringLiteral("before|lighting"));
+}
+
+TEST_CASE("UX-3 decision 3: a render node's socket menu writes its port's previous frame, "
+          "sampling, mip / layer and location, each one set_node_parameters",
+          "[devstudio][graph-canvas][scene][ux3]") {
+    (void)application();
+    Ux2Tab tab{true};
+    auto pass = ux2Pass();
+    // A port the shader samples by a binding of its own, and the attachment.
+    pass["ports"]["previous"] = {{"kind", "image"}, {"type", ux2ColorType()}, {"access", "read"}};
+    auto document = ux2Document(ux2Image(), pass);
+    document["nodes"][1]["inputs"]["previous"] = {{"node", "shade__color"}, {"port", "resource"}};
+    tab.read(document, "ux3-0");
+    tab.answer("get_graph_catalog", ux2Catalog());
+    auto &model = tab.widget->model();
+    REQUIRE(model.canEdit());
+    int submitted = 0;
+
+    // The read port: everything but a location.
+    QMenu menu;
+    PelicanStudio::addGraphCanvasSocketEntries(menu, model, {}, "shade", "previous",
+                                               [&] {
+                                                   ++submitted;
+                                                   // What the canvas does after an edit: posts it.
+                                                   tab.widget->poll();
+                                               });
+    auto *history = menu.findChild<QAction *>(QStringLiteral("pelican.graphCanvasSocket.history"));
+    REQUIRE(history != nullptr);
+    CHECK(history->isEnabled());
+    CHECK_FALSE(history->isChecked());
+    auto *location = menu.findChild<QSpinBox *>(QStringLiteral("pelican.graphCanvasSocket.location"));
+    REQUIRE(location != nullptr);
+    CHECK_FALSE(location->isEnabled());
+    history->trigger();
+    QCoreApplication::processEvents();
+    CHECK(submitted == 1);
+    auto op = tab.sent(1);
+    auto expected = pass;
+    expected["ports"]["previous"]["history"] = true;
+    CHECK(op.at("parameters") == expected);
+    document["nodes"][1]["parameters"] = expected;
+    tab.commit(document, "ux3-1");
+
+    // Its sampling: one pick, the history kept.
+    QMenu sampling;
+    PelicanStudio::addGraphCanvasSocketEntries(sampling, model, {}, "shade", "previous",
+                                               [&] {
+                                                   ++submitted;
+                                                   // What the canvas does after an edit: posts it.
+                                                   tab.widget->poll();
+                                               });
+    auto *nearest = sampling.findChild<QAction *>(QStringLiteral("pelican.graphCanvasSocket.filter.nearest"));
+    REQUIRE(nearest != nullptr);
+    nearest->trigger();
+    QCoreApplication::processEvents();
+    op = tab.sent(2);
+    expected["ports"]["previous"]["sampling"] = {{"filter", "nearest"}};
+    CHECK(op.at("parameters") == expected);
+    document["nodes"][1]["parameters"] = expected;
+    tab.commit(document, "ux3-2");
+
+    // The mip it reads.
+    QMenu mips;
+    PelicanStudio::addGraphCanvasSocketEntries(mips, model, {}, "shade", "previous",
+                                               [&] {
+                                                   ++submitted;
+                                                   // What the canvas does after an edit: posts it.
+                                                   tab.widget->poll();
+                                               });
+    auto *mip = mips.findChild<QSpinBox *>(QStringLiteral("pelican.graphCanvasSocket.mip"));
+    REQUIRE(mip != nullptr);
+    REQUIRE(mip->isEnabled());
+    mip->setValue(2);
+    QCoreApplication::processEvents();
+    op = tab.sent(3);
+    expected["ports"]["previous"]["subresource"] = {{"mip", 2}};
+    CHECK(op.at("parameters") == expected);
+    document["nodes"][1]["parameters"] = expected;
+    tab.commit(document, "ux3-3");
+
+    // The attachment: a location, and no previous frame.
+    QMenu attachment;
+    PelicanStudio::addGraphCanvasSocketEntries(attachment, model, {}, "shade", "color",
+                                               [&] {
+                                                   ++submitted;
+                                                   // What the canvas does after an edit: posts it.
+                                                   tab.widget->poll();
+                                               });
+    auto *written = attachment.findChild<QAction *>(QStringLiteral("pelican.graphCanvasSocket.history"));
+    REQUIRE(written != nullptr);
+    CHECK_FALSE(written->isEnabled());
+    auto *at = attachment.findChild<QSpinBox *>(QStringLiteral("pelican.graphCanvasSocket.location"));
+    REQUIRE(at != nullptr);
+    REQUIRE(at->isEnabled());
+    at->setValue(1);
+    QCoreApplication::processEvents();
+    op = tab.sent(4);
+    expected["ports"]["color"]["location"] = 1;
+    CHECK(op.at("parameters") == expected);
+    CHECK(submitted == 4);
+
+    // A port the node does not declare offers nothing.
+    QMenu none;
+    PelicanStudio::addGraphCanvasSocketEntries(none, model, {}, "shade", "missing", {});
+    CHECK(none.actions().isEmpty());
+}
+
+TEST_CASE("UX-3 decisions 4 and 5: the engine's materials, tags and variants are picked in the "
+          "draw_loop's fields, the draw steps' and the material pass's; draw.override's "
+          "depth_compare is a combo",
+          "[devstudio][graph-canvas][scene][ux3]") {
+    (void)application();
+    const Json color{{"semantic", "pelican.render.color_signal@1"},
+                     {"arguments", {{"reference", "scene"}, {"transfer", "linear"},
+                                    {"range", "extended"}}}};
+    const Json depth{{"semantic", "pelican.render.depth@1"},
+                     {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+    const std::string metal = "materials/m.material.json#metal";
+    Json document{
+        {"definitions", {{"forward_opaque_draw",
+            {{"nodes", Json::array({
+                 {{"id", "outline"}, {"op", "draw.variant"}, {"parameters", {{"variant", "outline"}}},
+                  {"outputs", {"draws"}}},
+                 {{"id", "over"}, {"op", "draw.override"},
+                  {"parameters", {{"render_state", {{"cull", "none"}}}}},
+                  {"inputs", {{"after", {{"node", "outline"}, {"port", "draws"}}}}},
+                  {"outputs", {"draws"}}},
+                 {{"id", "step"}, {"op", "draw.material"}, {"parameters", Json::object()},
+                  {"inputs", {{"after", {{"node", "over"}, {"port", "draws"}}}}},
+                  {"outputs", {"draws"}}}})},
+             {"outputs", {{"draws", {{"node", "step"}, {"port", "draws"}}}}}}}}},
+        {"nodes", Json::array({
+            {{"id", "scene_color_ref"}, {"op", "render.target_ref"},
+             {"parameters", {{"name", "scene_color"}, {"type", color}}}, {"outputs", {"resource"}}},
+            {{"id", "scene_depth_ref"}, {"op", "render.target_ref"},
+             {"parameters", {{"name", "scene_depth"}, {"type", depth}}}, {"outputs", {"resource"}}},
+            {{"id", "forward_opaque_draws"}, {"op", "graph.loop"},
+             {"parameters", {{"over", {{"draw_items", {{"contract", "forward_opaque_v1"}}}}},
+                             {"order", {{"by", "phase_default"}}},
+                             {"where", {{"tags", {{"exclude", {"crowd"}}}}}},
+                             {"branches", Json::array({
+                                 {{"when", {{"material", metal}}}, {"body", nullptr}},
+                                 {{"body", "forward_opaque_draw"}}})}}},
+             {"outputs", {"draws"}}},
+            {{"id", "forward_opaque"}, {"op", "render.material_pass"},
+             {"parameters", {{"material_contract", "forward_opaque_v1"}, {"pass_set", "main_render"}}},
+             {"inputs", {{"color", {{"node", "scene_color_ref"}, {"port", "resource"}}},
+                         {"depth", {{"node", "scene_depth_ref"}, {"port", "resource"}}},
+                         {"draws", {{"node", "forward_opaque_draws"}, {"port", "draws"}}}}},
+             {"outputs", Json::array()}}})}};
+    Json catalog = visualCatalog();
+    for (const char *op : {"render.target_ref", "render.material_pass", "draw.material",
+                           "draw.variant", "draw.override"})
+        catalog["modules"][1]["operations"].push_back(
+            {{"op", op}, {"domain", "rendering"}, {"evaluation", "direct"}, {"sink", false},
+             {"ports", "parameter_dependent"}});
+    Ux2Tab tab{true};
+    tab.read(document, "ux3-0");
+    tab.answer("get_graph_catalog", catalog);
+    tab.widget->scene().selectNode("forward_opaque_draws");
+    QCoreApplication::processEvents();
+    tab.widget->poll();
+    REQUIRE(tab.reads("get_render_authoring_context") == 1);
+    tab.answer("get_render_authoring_context", ux3Authoring());
+    tab.widget->poll();
+    QCoreApplication::processEvents();
+    int edits = 0;
+
+    // The where tags: picks among the engine's tags, the line out of sight.
+    auto *exclude_line = tab.field<QLineEdit>("pelican.graphCanvasLoop.whereTagsExclude");
+    CHECK_FALSE(exclude_line->isVisibleTo(tab.widget.get()));
+    auto *exclude = tab.field<QToolButton>("pelican.graphCanvasLoop.whereTagsExcludePick");
+    CHECK(exclude->isVisibleTo(tab.widget.get()));
+    CHECK(exclude->text() == QStringLiteral("crowd"));
+    auto *hero = tab.field<QAction>("pelican.graphCanvasLoop.whereTagsExcludePick.hero");
+    hero->trigger();
+    QCoreApplication::processEvents();
+    auto op = tab.sent(++edits);
+    CHECK(op.at("parameters").at("where") == Json{{"tags", {{"exclude", {"crowd", "hero"}}}}});
+    document["nodes"][2]["parameters"] = op.at("parameters");
+    tab.commit(document, "ux3-1");
+    QCoreApplication::processEvents();
+
+    // The branch's material by name, matched by its id; has_variant one of
+    // the variants by name.
+    auto *material = tab.field<QComboBox>("pelican.graphCanvasLoop.branch0.material");
+    CHECK(material->currentText() == QStringLiteral("metal"));
+    CHECK(material->currentData().toString() == QString::fromStdString(metal));
+    CHECK(material->findText(QStringLiteral("pelican.builtin.transparent (built in)")) >= 0);
+    auto *has_variant = tab.field<QComboBox>("pelican.graphCanvasLoop.branch0.hasVariant");
+    const int outline = has_variant->findData(QStringLiteral("outline"));
+    REQUIRE(outline >= 0);
+    CHECK(has_variant->findData(QStringLiteral("depth_only")) >= 0);
+    has_variant->setCurrentIndex(outline);
+    QCoreApplication::processEvents();
+    op = tab.sent(++edits);
+    CHECK(op.at("parameters").at("branches").at(0).at("when") ==
+          Json{{"material", metal}, {"has_variant", "outline"}});
+    document["nodes"][2]["parameters"] = op.at("parameters");
+    tab.commit(document, "ux3-2");
+    QCoreApplication::processEvents();
+    // Read back, the row shows it.
+    CHECK(tab.field<QComboBox>("pelican.graphCanvasLoop.branch0.hasVariant")->currentData() ==
+          QStringLiteral("outline"));
+
+    // The material pass's variant: none, or one the materials have.
+    tab.widget->scene().selectNode("forward_opaque");
+    QCoreApplication::processEvents();
+    auto *pass_variant = tab.field<QComboBox>("pelican.graphCanvasDraw.materialVariant");
+    REQUIRE(pass_variant->isVisibleTo(tab.widget.get()));
+    CHECK(ux2Items(*pass_variant) ==
+          QStringList({QStringLiteral("(each material's own)"), QStringLiteral("depth_only"),
+                       QStringLiteral("outline")}));
+    pass_variant->setCurrentIndex(pass_variant->findData(QStringLiteral("depth_only")));
+    QCoreApplication::processEvents();
+    op = tab.sent(++edits);
+    CHECK(op.at("parameters").at("material_variant") == "depth_only");
+    document["nodes"][3]["parameters"] = op.at("parameters");
+    tab.commit(document, "ux3-3");
+    QCoreApplication::processEvents();
+
+    // draw.variant: picked, not typed.
+    tab.widget->scene().selectNode("forward_opaque_draw", "outline");
+    QCoreApplication::processEvents();
+    auto *variant = tab.field<QComboBox>("pelican.graphCanvasDraw.variant");
+    CHECK_FALSE(variant->isEditable());
+    CHECK(ux2Items(*variant) == QStringList({QStringLiteral("depth_only"), QStringLiteral("outline")}));
+
+    // Decision 4: draw.override's depth_compare.
+    tab.widget->scene().selectNode("forward_opaque_draw", "over");
+    QCoreApplication::processEvents();
+    auto *compare = tab.field<QComboBox>("pelican.graphCanvasDraw.depthCompare");
+    REQUIRE(compare->isVisibleTo(tab.widget.get()));
+    compare->setCurrentIndex(compare->findData(QStringLiteral("greater_equal")));
+    QCoreApplication::processEvents();
+    op = tab.sent(++edits);
+    CHECK(op.at("scope") == "forward_opaque_draw");
+    CHECK(op.at("parameters").at("render_state") ==
+          Json{{"cull", "none"}, {"depth_compare", "greater_equal"}});
 }

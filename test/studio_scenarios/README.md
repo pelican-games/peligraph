@@ -344,7 +344,7 @@ controls. `loop_zone_read` is the example.
 | `pelican.graphCanvas.renameDefinition`, `.deleteDefinition` | the QActions on the breadcrumb, a zone's header and the Scope combo; fired by name they act on the definition on screen, else the one the picked zone shows. Off while there is no definition to act on |
 | `pelican.graphCanvasDefinitionRow` | the row they open, hidden until then |
 | `pelican.graphCanvasDefinitionCaption` | `Rename definition <name> to` / `Delete definition <name>? Nothing runs it.` |
-| `pelican.graphCanvasDefinitionName` | the new name (Rename only; starts as the old one) |
+| `pelican.graphCanvasDefinitionName` | the new name (Rename only; starts as the one Studio proposes, `<runner>_body` after the first node that runs it, or the old one when nothing does) |
 | `pelican.graphCanvasDefinitionApply`, `pelican.graphCanvasDefinitionCancel` | `Rename` or `Delete`, and Cancel |
 | `pelican.graphCanvasDefinitionLine` | the one line saying why the new name cannot be sent (empty, a slash, `root`, another definition's name). A definition something still runs opens no row: the Graph tab's notice says what runs it |
 

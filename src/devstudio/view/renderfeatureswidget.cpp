@@ -1273,6 +1273,11 @@ private:
   QLabel *notice;
   QLineEdit *destination;
   QComboBox *regions = nullptr;
+  // UX-3, decision 5: the provider picked among the engine's
+  // (get_render_authoring_context's region_providers), shown in place of
+  // the line while the engine lists any.
+  QComboBox *providers = nullptr;
+  QLabel *provider_caption = nullptr;
   QPushButton *apply;
   QPushButton *refresh;
   QTimer poll;
@@ -1283,6 +1288,7 @@ private:
     const bool idle = request_id == 0 && ticket.isEmpty();
     destination->setEnabled(idle);
     if (regions) regions->setEnabled(idle);
+    if (providers) providers->setEnabled(idle);
     apply->setEnabled(idle && viewport.rpcReady() && !root_digest.isEmpty() &&
                       !preset_digest.isEmpty() && (!regions || regions->currentIndex() >= 0));
     refresh->setEnabled(viewport.rpcReady() && request_id == 0);
@@ -1310,6 +1316,35 @@ private:
       result();
     else
       request(Request::Context, QStringLiteral("get_render_authoring_context"));
+  }
+  // UX-3, decision 5: the engine's providers as a combo; an engine that
+  // lists none (before EL-1, or none running) keeps the line to type in.
+  void fillProviders(const QJsonArray &listed) {
+    if (!providers) return;
+    providers->clear();
+    providers->addItem(tr("(authored nodes)"), QString{});
+    for (const auto &value : listed) {
+      const auto entry = value.toObject();
+      const auto name = entry["name"].toString();
+      if (name.isEmpty()) continue;
+      providers->addItem(entry["builtin"].toBool() ? tr("%1 (built in)").arg(name) : name, name);
+    }
+    const bool listed_any = providers->count() > 1;
+    providers->setVisible(listed_any);
+    destination->setVisible(!listed_any);
+    if (provider_caption)
+      provider_caption->setText(listed_any ? tr("Replacement provider")
+                                           : tr("Replacement provider (empty = authored nodes)"));
+  }
+  void selectProvider(const QString &provider) {
+    if (!providers) return;
+    int index = providers->findData(provider);
+    // A provider the region names that the engine does not list stays.
+    if (index < 0 && !provider.isEmpty()) {
+      providers->addItem(provider, provider);
+      index = providers->count() - 1;
+    }
+    providers->setCurrentIndex(std::max(0, index));
   }
   void receive(qint64 id, const QByteArray &bytes) {
     if (!id || id != request_id)
@@ -1344,6 +1379,7 @@ private:
         if (mode == Mode::Region) {
           regions->clear();
           destination->clear();
+          fillProviders(response->value("region_providers").toArray());
           if (!preset["reference"].toString().startsWith(QStringLiteral("project://"))) {
             preset_digest.clear();
             notice->setText(tr("Fork the preset into the project before editing region replacements."));
@@ -1417,14 +1453,25 @@ public:
       regions->setObjectName(QStringLiteral("pelican.regionReplacement.region"));
       layout->addWidget(regions);
     }
-    layout->addWidget(new QLabel(mode == Mode::Fork ? tr("New project preset reference") : tr("Replacement provider (empty = authored nodes)"), this));
+    provider_caption = new QLabel(mode == Mode::Fork ? tr("New project preset reference") : tr("Replacement provider (empty = authored nodes)"), this);
+    layout->addWidget(provider_caption);
     destination =
         new QLineEdit(mode == Mode::Fork ? QStringLiteral("project://pipelines/custom.json") : QString{}, this);
     destination->setObjectName(
         mode == Mode::Fork ? QStringLiteral("pelican.presetFork.destination") : QStringLiteral("pelican.regionReplacement.provider"));
     layout->addWidget(destination);
+    if (mode == Mode::Region) {
+      providers = new QComboBox(this);
+      providers->setObjectName(QStringLiteral("pelican.regionReplacement.providerChoice"));
+      providers->setToolTip(tr("The provider the engine resolves the region with, or the "
+                               "region's authored nodes"));
+      providers->hide();
+      layout->addWidget(providers);
+    }
     if (regions) connect(regions, &QComboBox::currentIndexChanged, this, [this] {
-      destination->setText(regions->currentData().toJsonObject()["provider"].toString());
+      const auto provider = regions->currentData().toJsonObject()["provider"].toString();
+      destination->setText(provider);
+      selectProvider(provider);
       controls();
     });
     auto *buttons = new QHBoxLayout;
@@ -1438,7 +1485,9 @@ public:
     connect(apply, &QPushButton::clicked, this, [this] {
       if (mode == Mode::Region) {
         const auto region = regions->currentData().toJsonObject();
-        const auto provider = destination->text().trimmed();
+        const auto provider = providers && providers->isVisibleTo(this)
+                                  ? providers->currentData().toString()
+                                  : destination->text().trimmed();
         request(Request::Fork, QStringLiteral("edit_region_replacement"),
                 {{"base_source_digest", root_digest}, {"base_preset_digest", preset_digest},
                  {"graph", region["graph"]}, {"region", region["region"]},

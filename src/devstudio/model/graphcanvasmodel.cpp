@@ -5,6 +5,7 @@
 #include "projectpathresolver.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -130,6 +131,14 @@ bool isDrawStep(std::string_view op) {
     return op == "draw.material" || op == "draw.variant" || op == "draw.override";
 }
 
+// UX-3, decision 1: the render nodes the palette seeds besides
+// render.fullscreen and render.material_pass (addNodeOpsIn).
+bool isPaletteSeededRender(std::string_view op) {
+    return op == "render.target_ref" || op == "render.image" || op == "render.buffer" ||
+           op == "render.attribute" || op == "render.compute" || op == "render.shadow_depth" ||
+           op == "render.snapshot_copy";
+}
+
 bool isDrawItemsLoop(const Json &node) {
     if (!isLoop(node)) return false;
     const auto parameters = node.find("parameters");
@@ -174,7 +183,7 @@ Json tagFilterJson(const GraphCanvasTagFilter &filter) {
 }
 
 // A draw_loop `when`, or nothing when it holds a key (or an operand) the
-// table has no form for -- has_variant naming a variant, say.
+// table has no form for -- an expression, say.
 std::optional<GraphCanvasDrawWhen> readDrawWhen(const Json &when) {
     if (!when.is_object() || when.empty()) return std::nullopt;
     GraphCanvasDrawWhen read;
@@ -187,6 +196,9 @@ std::optional<GraphCanvasDrawWhen> readDrawWhen(const Json &when) {
             read.tags = std::move(*tags);
         } else if ((key == "skinned" || key == "has_variant") && operand.is_boolean()) {
             (key == "skinned" ? read.skinned : read.has_variant) = operand.get<bool>();
+        } else if (key == "has_variant" && operand.is_string()) {
+            // UX-3, decision 5: one variant by its name.
+            read.has_variant_named = operand.get<std::string>();
         } else {
             return std::nullopt;
         }
@@ -201,6 +213,7 @@ Json drawWhenJson(const GraphCanvasDrawWhen &when) {
     if (when.contract) value["contract"] = *when.contract;
     if (when.skinned) value["skinned"] = *when.skinned;
     if (when.has_variant) value["has_variant"] = *when.has_variant;
+    else if (when.has_variant_named) value["has_variant"] = *when.has_variant_named;
     return value;
 }
 
@@ -2742,7 +2755,7 @@ Json GraphCanvasModel::addNodeOps(const std::string &op, const std::string &defi
 }
 
 Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string &op,
-                                    const std::string &definition) const {
+                                    const std::string &definition, const Json &seed) const {
     Json ops = Json::array();
     if (op.empty()) return ops;
     const auto scope = scopeToken(in_scope);
@@ -2769,7 +2782,133 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
         ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", std::move(node)}});
         return ops;
     }
-    if (op == kFullscreenTemplate) {
+    // UX-3, decision 1: the render nodes whose ports follow their
+    // parameters arrive with parameters the engine takes, in one list.
+    if (isPaletteSeededRender(op)) {
+        if (operation(op) == nullptr || drawBodyScope(in_scope)) return Json::array();
+        const auto seedText = [&](const char *key) {
+            return seed.is_object() ? text(seed, key) : std::string{};
+        };
+        const auto add = [&](Json added) {
+            ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", std::move(added)}});
+        };
+        // An id beside the scope's others: `base`, else base_2, base_3...
+        const auto freeId = [&](const std::string &base) {
+            if (findNode(in_scope, base) == nullptr) return base;
+            for (int suffix = 2; suffix < 10000; ++suffix) {
+                auto candidate = base + "_" + std::to_string(suffix);
+                if (findNode(in_scope, candidate) == nullptr) return candidate;
+            }
+            return base;
+        };
+        if (op == "render.target_ref") {
+            const auto name = seedText("name");
+            const auto targets = declaredRenderTargets();
+            const auto target = std::ranges::find(targets, name, &GraphCanvasDeclaredTarget::name);
+            if (target == targets.end()) return Json::array();
+            node["id"] = freeId(name + "_ref");
+            node["parameters"] = Json{{"name", name}, {"type", target->type}};
+            node["outputs"] = Json::array({"resource"});
+            add(std::move(node));
+            return ops;
+        }
+        if (op == "render.image") {
+            // UX-2's defaults: the size of the screen (or of the loop's view
+            // family), scene colour, sixteen bits a channel.
+            Json parameters{{"type", sceneColorType()}, {"format", "R16G16B16A16_SFLOAT"},
+                            {"extent_scale", 1.0},
+                            {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}};
+            const auto family = viewAxisFamilyOf(in_scope);
+            if (const auto extent = family.empty() ? std::nullopt : viewFamilyImageExtent(family))
+                for (const auto &[key, value] : extent->items()) parameters[key] = value;
+            node["parameters"] = std::move(parameters);
+            node["outputs"] = Json::array({"resource"});
+            add(std::move(node));
+            return ops;
+        }
+        if (op == "render.buffer" || op == "render.attribute") {
+            const bool attribute = op == "render.attribute";
+            auto element = seedText("element");
+            if (element.empty()) element = "float";
+            if (std::ranges::find(bufferElements(), element) == bufferElements().end())
+                return Json::array();
+            auto domain = seedText("domain");
+            if (attribute && domain.empty()) domain = attributeDomains().front();
+            if (attribute &&
+                std::ranges::find(attributeDomains(), domain) == attributeDomains().end())
+                return Json::array();
+            // An index attribute is read as uint (graphmodule's bufferType).
+            if (attribute && domain == "index") element = "uint";
+            std::int64_t count = 1;
+            if (seed.is_object())
+                if (const auto found = seed.find("count");
+                    found != seed.end() && found->is_number_integer())
+                    count = found->get<std::int64_t>();
+            if (count <= 0) return Json::array();
+            Json parameters{{"element", element}};
+            // An attribute's size follows its count; a buffer's is its bytes.
+            if (attribute) {
+                parameters["domain"] = domain;
+                parameters["count"] = count;
+            } else {
+                parameters["size"] = static_cast<std::uint64_t>(count) * bufferElementSize(element);
+            }
+            node["parameters"] = std::move(parameters);
+            node["outputs"] = Json::array({"resource"});
+            add(std::move(node));
+            return ops;
+        }
+        if (op == "render.compute") {
+            // The Task Editor's new task: a shader of the project's, one
+            // group, nothing bound yet.
+            if (compute_shader_choices_.empty()) return Json::array();
+            const auto preferred = std::ranges::find(compute_shader_choices_,
+                                                     std::string{"project://shaders/compute"});
+            node["parameters"] = Json{
+                {"shader", preferred != compute_shader_choices_.end() ? *preferred
+                                                                      : compute_shader_choices_.front()},
+                {"dispatch", Json{{"groups", Json::array({1, 1, 1})}}},
+                {"ports", Json::object()}};
+            node["outputs"] = Json::array();
+            add(std::move(node));
+            return ops;
+        }
+        if (op == "render.shadow_depth") {
+            // As a material pass's: the depth image it draws, beside it.
+            const auto image = id + "__depth";
+            add(Json{{"id", image}, {"op", "render.image"},
+                     {"parameters",
+                      Json{{"type", Json{{"semantic", "pelican.render.depth@1"},
+                                         {"arguments", Json{{"representation", "device"},
+                                                            {"space", "projection"}}}}},
+                           {"format", "D32_SFLOAT"}, {"extent_scale", 1.0},
+                           {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"})}}},
+                     {"outputs", Json::array({"resource"})}});
+            node["parameters"] = Json::object();
+            node["inputs"] = Json{{"depth", Json{{"node", image}, {"port", "resource"}}}};
+            node["outputs"] = Json::array({"depth"});
+            add(std::move(node));
+            return ops;
+        }
+        if (op == "render.snapshot_copy") {
+            // The engine refuses a copy that names no pass it copies after.
+            const auto after = seedText("snapshot_after");
+            if (after.empty()) return Json::array();
+            Json inputs = Json::object();
+            snapshotCopySeedOps(in_scope, scope, id, after, ops, inputs);
+            node["parameters"] = Json{{"snapshot_after", after}};
+            node["inputs"] = std::move(inputs);
+            node["outputs"] = Json::array({"destination"});
+            add(std::move(node));
+            return ops;
+        }
+    }
+    if (op == kFullscreenTemplate || op == "render.raster") {
+        // UX-3, decision 1: a raster pass arrives as a fullscreen one does,
+        // drawing the engine's passthrough over three vertices; without
+        // those shaders in the list it is not offered.
+        if (op == "render.raster" && (!rasterTemplateAvailable() || drawBodyScope(in_scope)))
+            return Json::array();
         // LP-4c. A fullscreen pass is not a name alone: its ports, its shader
         // and the family it runs in are its parameters. It arrives drawing
         // with the engine's passthrough into an image of its own -- the
@@ -2804,6 +2943,9 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
             {"shader", Json{{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
             {"ports", Json{{"color", Json{{"kind", "image"}, {"type", type}, {"access", "write"},
                                           {"attachment", "color"}, {"location", 0}}}}}};
+        // A raster pass draws what its `draw` says: the three vertices of
+        // the screen-covering triangle engine://fullscreen makes.
+        if (op == "render.raster") node["parameters"]["draw"] = Json{{"vertex_count", 3}};
         if (!family.empty()) {
             node["parameters"]["view_family"] = family;
             // A fixed size is not the screen's: the pass is resolved on its
@@ -2911,7 +3053,14 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
         Json parameters = Json::object();
         // Something to draw differently, so the step is one the engine
         // takes: the proposed variant, or both faces.
-        if (op == "draw.variant") parameters["variant"] = suggestDrawVariant(in_scope);
+        if (op == "draw.variant") {
+            // UX-3, decision 5: a variant some material has, when the engine
+            // lists them and the pass names none.
+            auto variant = suggestDrawVariant(in_scope);
+            if (const auto known = materialVariants(); variant == "variant" && !known.empty())
+                variant = known.front();
+            parameters["variant"] = variant;
+        }
         if (op == "draw.override") parameters["render_state"] = Json{{"cull", "none"}};
         node["parameters"] = std::move(parameters);
         node["outputs"] = Json::array({"draws"});
@@ -3003,9 +3152,9 @@ bool GraphCanvasModel::addNode(const std::string &op, const std::string &definit
 }
 
 bool GraphCanvasModel::addNodeIn(std::string_view scope, const std::string &op,
-                                 const std::string &definition) {
+                                 const std::string &definition, const Json &seed) {
     if (!canEdit()) return false;
-    auto ops = addNodeOpsIn(scope, op, definition);
+    auto ops = addNodeOpsIn(scope, op, definition, seed);
     if (ops.empty()) return false;
     auto params = addNodeParams(scope, op, definition);
     if (params.empty()) return submitOps(std::move(ops));
@@ -4156,9 +4305,18 @@ std::vector<GraphCanvasCatalogEntry> GraphCanvasModel::paletteOperationsIn(
         // LP-4e: and two more families, each on its own side: a material
         // pass in the root, which arrives with its attachments, and the draw
         // steps in a body a draw_loop runs.
-        const bool seeded = op == kFullscreenTemplate ||
-                            (op == kMaterialPass && scope.empty()) ||
-                            (isDrawStep(op) && drawBodyScope(scope));
+        // UX-3, decision 1: and the rest of the render nodes, each seeded
+        // with what it needs -- a raster pass only with the shaders it
+        // starts from, a compute task only with a shader of the project's,
+        // none of them in a draw_loop's body.
+        const bool body_of_draws = drawBodyScope(scope);
+        const bool seeded =
+            op == kFullscreenTemplate || (op == kMaterialPass && scope.empty()) ||
+            (isDrawStep(op) && body_of_draws) ||
+            (!body_of_draws &&
+             ((isPaletteSeededRender(op) &&
+               (op != "render.compute" || !compute_shader_choices_.empty())) ||
+              (op == "render.raster" && rasterTemplateAvailable())));
         if (text(declaration, "ports") != "declared" && !seeded) continue;
         GraphCanvasCatalogEntry entry{op, text(declaration, "domain"),
                                       text(declaration, "evaluation"),
@@ -6075,6 +6233,429 @@ std::vector<GraphCanvasValueChoice> GraphCanvasModel::valueChoices(std::string_v
         }
     }
     return choices;
+}
+
+// --- UX-3: the palette's other render nodes, a render node's place, its
+// ports' settings, and the engine's lists (EL-1) where names were typed.
+
+namespace {
+
+// The render nodes the Place field is shown for.
+constexpr std::array<std::string_view, 6> kPlacedRenderOps{
+    "render.fullscreen", "render.raster", "render.material_pass",
+    "render.shadow_depth", "render.snapshot_copy", "render.compute"};
+
+std::vector<std::string> stringsAt(const Json &object, const char *key) {
+    std::vector<std::string> values;
+    if (!object.is_object()) return values;
+    const auto found = object.find(key);
+    if (found == object.end() || !found->is_array()) return values;
+    for (const auto &value : *found)
+        if (value.is_string()) values.push_back(value.get<std::string>());
+    return values;
+}
+
+// The keys of a render.image (or a target declaration) that say its size.
+void copyImageSize(const Json &from, Json &to) {
+    if (from.is_object())
+        for (const char *key : {"extent_scale", "width", "height", "layers"})
+            if (const auto found = from.find(key); found != from.end() && found->is_number())
+                to[key] = *found;
+    if (!to.contains("extent_scale")) to["extent_scale"] = 1.0;
+}
+
+} // namespace
+
+Json GraphCanvasModel::targetRefType(const Json &declaration) {
+    if (declaration.is_object())
+        if (const auto type = declaration.find("type");
+            type != declaration.end() && type->is_object() && !text(*type, "semantic").empty())
+            return *type;
+    std::string topology;
+    if (declaration.is_object()) {
+        if (text(declaration, "dimension") == "cube") topology = "cube";
+        else if (const auto layers = declaration.find("layers");
+                 layers != declaration.end() && layers->is_number_integer() &&
+                 layers->get<std::int64_t>() > 1)
+            topology = "two_d_array";
+    }
+    // A depth format is a depth image; anything else (or no format yet) is
+    // a scene colour, the type a render pass's ports carry.
+    const bool depth = declaration.is_object() && depthFormat(text(declaration, "format"));
+    Json type = depth ? Json{{"semantic", "pelican.render.depth@1"},
+                             {"arguments", Json{{"representation", "device"}, {"space", "projection"}}}}
+                      : sceneColorType();
+    if (!topology.empty()) type["arguments"]["topology"] = topology;
+    return type;
+}
+
+std::vector<GraphCanvasDeclaredTarget> GraphCanvasModel::declaredRenderTargets() const {
+    std::vector<GraphCanvasDeclaredTarget> targets;
+    const auto found = render_authoring_.find("render_targets");
+    if (found == render_authoring_.end() || !found->is_array()) return targets;
+    for (const auto &entry : *found) {
+        if (!entry.is_object()) continue;
+        GraphCanvasDeclaredTarget target;
+        target.name = text(entry, "name");
+        if (target.name.empty()) continue;
+        // The graph's own images are read by their node, not by name.
+        if (const auto *node = findNode({}, target.name);
+            node != nullptr && text(*node, "op") == "render.image")
+            continue;
+        if (std::ranges::find(targets, target.name, &GraphCanvasDeclaredTarget::name) != targets.end())
+            continue;
+        target.source = text(entry, "source");
+        target.declaration = entry.value("declaration", Json::object());
+        target.type = targetRefType(target.declaration);
+        target.depth = text(target.type, "semantic") == "pelican.render.depth@1";
+        targets.push_back(std::move(target));
+    }
+    return targets;
+}
+
+void GraphCanvasModel::setComputeShaderChoices(std::vector<std::string> choices) {
+    compute_shader_choices_ = std::move(choices);
+}
+
+bool GraphCanvasModel::rasterTemplateAvailable() const {
+    return std::ranges::find(vertex_shader_choices_, std::string{"engine://fullscreen"}) !=
+               vertex_shader_choices_.end() &&
+           std::ranges::find(fragment_shader_choices_, std::string{"engine://passthrough"}) !=
+               fragment_shader_choices_.end();
+}
+
+const std::vector<std::string> &GraphCanvasModel::bufferElements() {
+    // shaderresourceport's element names, in the combo's order.
+    static const std::vector<std::string> elements{"float", "vec2",  "vec3",  "vec4", "int",
+                                                   "ivec2", "ivec3", "ivec4", "uint", "uvec2",
+                                                   "uvec3", "uvec4", "mat4"};
+    return elements;
+}
+
+const std::vector<std::string> &GraphCanvasModel::attributeDomains() {
+    static const std::vector<std::string> domains{"vertex", "instance", "index"};
+    return domains;
+}
+
+std::uint64_t GraphCanvasModel::bufferElementSize(std::string_view element) {
+    // shaderResourceBufferElementStride, restated: a three-wide element takes
+    // the room of four (std430).
+    if (element == "mat4") return 64;
+    if (element.ends_with("vec2")) return 8;
+    if (element.ends_with("vec3") || element.ends_with("vec4")) return 16;
+    return 4;
+}
+
+void GraphCanvasModel::snapshotCopySeedOps(std::string_view in_scope, const std::string &scope_token,
+                                           const std::string &id, const std::string &after,
+                                           Json &ops, Json &inputs) const {
+    const auto add = [&](Json node) {
+        ops.push_back(Json{{"op", "add_node"}, {"scope", scope_token}, {"node", std::move(node)}});
+    };
+    // What the copy reads is what the pass it follows wrote: the image the
+    // copy's own image is shaped after.
+    Json source_image = Json::object();
+    Json source_type;
+    const auto targets = declaredRenderTargets();
+    const auto readImageNode = [&](const std::string &resource) {
+        const auto *image = findNode({}, resource);
+        if (image == nullptr || text(*image, "op") != "render.image") return false;
+        source_image = image->value("parameters", Json::object());
+        source_type = source_image.value("type", Json{});
+        return true;
+    };
+    const auto readTarget = [&](const std::string &resource) -> const GraphCanvasDeclaredTarget * {
+        const auto found = std::ranges::find(targets, resource, &GraphCanvasDeclaredTarget::name);
+        if (found == targets.end()) return nullptr;
+        source_image = found->declaration;
+        source_type = found->type;
+        return &*found;
+    };
+    bool have_source = false;
+    if (in_scope.empty()) {
+        // A pass a root node made: its first output that hands on an image.
+        if (const auto *writer = findNode({}, after); writer != nullptr)
+            for (const auto &output : writer->value("outputs", Json::array())) {
+                if (!output.is_string()) continue;
+                const auto port = output.get<std::string>();
+                const auto resource = outputResource(after, port);
+                if (resource.empty()) continue;
+                if (!readImageNode(resource)) readTarget(resource);
+                inputs["source"] = Json{{"node", after}, {"port", port}};
+                have_source = true;
+                break;
+            }
+        // A pass of the rendering section, the preset or a feature: a target
+        // it writes, read by its node or by name.
+        const auto pass = std::ranges::find(plan_passes_, after, &GraphCanvasPlanPass::name);
+        if (!have_source && pass != plan_passes_.end())
+            for (const auto &written : pass->writes) {
+                if (readImageNode(written)) {
+                    inputs["source"] = Json{{"node", written}, {"port", "resource"}};
+                    have_source = true;
+                    break;
+                }
+                const auto *target = readTarget(written);
+                if (target == nullptr) continue;
+                std::string reference;
+                for (const auto &node : nodes_)
+                    if (node.is_object() && text(node, "op") == "render.target_ref" &&
+                        text(node.value("parameters", Json::object()), "name") == written)
+                        reference = text(node, "id");
+                if (reference.empty()) {
+                    reference = written + "_ref";
+                    for (int suffix = 2; findNode({}, reference) != nullptr && suffix < 10000; ++suffix)
+                        reference = written + "_ref_" + std::to_string(suffix);
+                    add(Json{{"id", reference}, {"op", "render.target_ref"},
+                             {"parameters", Json{{"name", written}, {"type", target->type}}},
+                             {"outputs", Json::array({"resource"})}});
+                }
+                inputs["source"] = Json{{"node", reference}, {"port", "resource"}};
+                have_source = true;
+                break;
+            }
+    }
+    if (!have_source) {
+        // Nothing known to copy: an image of its own, which a pass can write.
+        Json parameters{{"type", sceneColorType()}, {"format", "R16G16B16A16_SFLOAT"},
+                        {"extent_scale", 1.0},
+                        {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"})}};
+        source_image = parameters;
+        source_type = sceneColorType();
+        add(Json{{"id", id + "__source"}, {"op", "render.image"},
+                 {"parameters", std::move(parameters)}, {"outputs", Json::array({"resource"})}});
+        inputs["source"] = Json{{"node", id + "__source"}, {"port", "resource"}};
+    }
+    // The copy: the source's type, format and size, written by a transfer.
+    auto format = text(source_image, "format");
+    if (format.empty()) format = "R16G16B16A16_SFLOAT";
+    Json destination{{"type", source_type.is_object() ? source_type : sceneColorType()},
+                     {"format", format},
+                     {"usage", Json::array({"TRANSFER_DST", "SAMPLED"})}};
+    copyImageSize(source_image, destination);
+    add(Json{{"id", id + "__copy"}, {"op", "render.image"}, {"parameters", std::move(destination)},
+             {"outputs", Json::array({"resource"})}});
+    inputs["destination"] = Json{{"node", id + "__copy"}, {"port", "resource"}};
+}
+
+std::vector<std::string> GraphCanvasModel::placePasses(std::string_view except) const {
+    std::vector<std::string> passes;
+    for (const auto &pass : plan_passes_) {
+        if (pass.kind == "anchor" || !pass.loop.empty() || pass.name.empty() || pass.name == except)
+            continue;
+        appendUnique(passes, pass.name);
+    }
+    return passes;
+}
+
+std::vector<std::string> GraphCanvasModel::passFamilies() const {
+    std::vector<std::string> families;
+    const auto graphs = render_authoring_.find("graphs");
+    if (graphs == render_authoring_.end() || !graphs->is_array()) return families;
+    for (const auto &graph : *graphs)
+        if (const auto name = text(graph, "name"); !name.empty()) appendUnique(families, name);
+    return families;
+}
+
+bool GraphCanvasModel::showsPlace(std::string_view op) noexcept {
+    return std::ranges::find(kPlacedRenderOps, op) != kPlacedRenderOps.end();
+}
+
+bool GraphCanvasModel::takesPlace(std::string_view op) noexcept {
+    return showsPlace(op) && op != "render.compute";
+}
+
+GraphCanvasPlace GraphCanvasModel::place(std::string_view scope, std::string_view node) const {
+    GraphCanvasPlace result;
+    const auto parameters = nodeParameters(scope, node);
+    if (!parameters.is_object()) return result;
+    result.pass_set = text(parameters, "pass_set");
+    if (const auto insert = parameters.find("insert"); insert != parameters.end()) {
+        result.kind = "other";
+        result.target = insert->dump();
+        if (!insert->is_object()) return result;
+        const auto declared = insert->find("declared");
+        result.declared = declared != insert->end() && declared->is_boolean() && declared->get<bool>();
+        std::size_t sides = 0;
+        for (const auto &[key, value] : insert->items()) {
+            if (key == "declared") continue;
+            ++sides;
+            if ((key == "before" || key == "after") && value.is_string() &&
+                !value.get<std::string>().empty()) {
+                result.kind = key;
+                result.target = value.get<std::string>();
+            }
+        }
+        if (sides != 1) {
+            result.kind = "other";
+            result.target = insert->dump();
+        }
+        return result;
+    }
+    if (const auto anchor = text(parameters, "canonical_anchor"); !anchor.empty()) {
+        result.kind = "anchor";
+        result.target = anchor;
+    }
+    return result;
+}
+
+bool GraphCanvasModel::setPlace(std::string_view scope, const std::string &node,
+                                const GraphCanvasPlace &place) {
+    const auto *found = findNode(scope, node);
+    if (found == nullptr || !takesPlace(text(*found, "op"))) return false;
+    if (place.kind == "other") return false;
+    if ((place.kind == "before" || place.kind == "after" || place.kind == "anchor") &&
+        place.target.empty())
+        return false;
+    if (place.kind == "anchor" &&
+        std::ranges::find(loopAnchors(), place.target) == loopAnchors().end())
+        return false;
+    auto parameters = nodeParameters(scope, node);
+    // One place at a time: an insert and an anchor exclude each other.
+    parameters.erase("insert");
+    parameters.erase("canonical_anchor");
+    if (place.kind == "before" || place.kind == "after") {
+        Json insert{{place.kind, place.target}};
+        // A material pass among the declared passes stays among them; the
+        // pass kinds' insert takes no `declared` (graphmodule).
+        if (place.declared && text(*found, "op") == kMaterialPass) insert["declared"] = true;
+        parameters["insert"] = std::move(insert);
+    } else if (place.kind == "anchor") {
+        parameters["canonical_anchor"] = place.target;
+    }
+    if (place.pass_set.empty()) parameters.erase("pass_set");
+    else parameters["pass_set"] = place.pass_set;
+    return setNodeParameters(scope, node, parameters);
+}
+
+std::optional<GraphCanvasPortSettings>
+GraphCanvasModel::portSettings(std::string_view scope, std::string_view node,
+                               std::string_view port) const {
+    const auto *found = findNode(scope, node);
+    if (found == nullptr || port.empty()) return std::nullopt;
+    const auto op = text(*found, "op");
+    if (op != "render.fullscreen" && op != "render.raster" && op != "render.compute")
+        return std::nullopt;
+    const auto parameters = nodeParameters(scope, node);
+    const auto ports = parameters.value("ports", Json::object());
+    if (!ports.is_object()) return std::nullopt;
+    const auto entry = ports.find(std::string{port});
+    if (entry == ports.end() || !entry->is_object()) return std::nullopt;
+    const auto &declaration = *entry;
+    GraphCanvasPortSettings settings;
+    const bool image = declaration.value("kind", std::string{"buffer"}) == "image";
+    const auto access = text(declaration, "access");
+    const auto attachment = text(declaration, "attachment");
+    const auto binding = text(declaration, "binding");
+    const bool graphics = op != "render.compute";
+    // graphmodule.cpp / rendergraphcomposition.cpp, restated: a previous
+    // frame is read, never written; an attachment takes no shader resource
+    // setting, a numbered input no sampling or subresource.
+    settings.history_allowed = image && access == "read" && attachment.empty();
+    settings.sampling_allowed = image && access == "read" && attachment.empty() &&
+                                binding != "input" &&
+                                (graphics ? binding != "storage" : binding == "sampled");
+    settings.subresource_allowed = image && attachment.empty() && binding != "input";
+    settings.location_allowed = graphics && attachment == "color";
+    if (const auto history = declaration.find("history");
+        history != declaration.end() && history->is_boolean())
+        settings.history = history->get<bool>();
+    if (const auto sampling = declaration.find("sampling");
+        sampling != declaration.end() && sampling->is_object()) {
+        settings.filter = text(*sampling, "filter");
+        settings.address = text(*sampling, "address");
+    }
+    if (const auto subresource = declaration.find("subresource");
+        subresource != declaration.end() && subresource->is_object()) {
+        settings.mip = subresource->value("mip", std::int64_t{0});
+        settings.layer = subresource->value("layer", std::int64_t{0});
+    }
+    if (const auto location = declaration.find("location");
+        location != declaration.end() && location->is_number_integer())
+        settings.location = location->get<std::int64_t>();
+    return settings;
+}
+
+bool GraphCanvasModel::setPortSettings(std::string_view scope, const std::string &node,
+                                       const std::string &port,
+                                       const GraphCanvasPortSettings &settings) {
+    const auto current = portSettings(scope, node, port);
+    if (!current) return false;
+    auto parameters = nodeParameters(scope, node);
+    auto &declaration = parameters["ports"][port];
+    if (current->history_allowed) {
+        if (settings.history) declaration["history"] = true;
+        else declaration.erase("history");
+    }
+    if (current->sampling_allowed) {
+        Json sampling = Json::object();
+        if (!settings.filter.empty()) sampling["filter"] = settings.filter;
+        if (!settings.address.empty()) sampling["address"] = settings.address;
+        if (sampling.empty()) declaration.erase("sampling");
+        else declaration["sampling"] = std::move(sampling);
+    }
+    if (current->subresource_allowed) {
+        auto subresource = declaration.value("subresource", Json::object());
+        if (!subresource.is_object()) subresource = Json::object();
+        // Mip and layer 0 are what a port without the key reads; the
+        // counts the document holds stay.
+        if (settings.mip > 0) subresource["mip"] = settings.mip;
+        else subresource.erase("mip");
+        if (settings.layer > 0) subresource["layer"] = settings.layer;
+        else subresource.erase("layer");
+        if (subresource.empty()) declaration.erase("subresource");
+        else declaration["subresource"] = std::move(subresource);
+    }
+    if (current->location_allowed && settings.location >= 0)
+        declaration["location"] = settings.location;
+    return setNodeParameters(scope, node, parameters);
+}
+
+std::string GraphCanvasModel::proposeDefinitionName(std::string_view definition) const {
+    const auto referrers = definitionReferrers(definition);
+    if (referrers.empty()) return std::string{definition};
+    const auto base = referrers.front() + "_body";
+    if (base == definition) return std::string{definition};
+    return suggestDefinitionName(base);
+}
+
+std::vector<GraphCanvasMaterial> GraphCanvasModel::materials() const {
+    std::vector<GraphCanvasMaterial> result;
+    const auto found = render_authoring_.find("materials");
+    if (found == render_authoring_.end() || !found->is_array()) return result;
+    for (const auto &entry : *found) {
+        if (!entry.is_object()) continue;
+        GraphCanvasMaterial material;
+        material.id = text(entry, "id");
+        if (material.id.empty()) continue;
+        material.name = text(entry, "name");
+        if (material.name.empty()) material.name = material.id;
+        material.tags = stringsAt(entry, "tags");
+        material.variants = stringsAt(entry, "variants");
+        material.builtin = entry.value("builtin", false);
+        result.push_back(std::move(material));
+    }
+    return result;
+}
+
+std::vector<std::string> GraphCanvasModel::materialTags() const {
+    return stringsAt(render_authoring_, "material_tags");
+}
+
+std::vector<std::string> GraphCanvasModel::materialVariants() const {
+    std::set<std::string> variants;
+    for (const auto &material : materials())
+        variants.insert(material.variants.begin(), material.variants.end());
+    return {variants.begin(), variants.end()};
+}
+
+bool GraphCanvasModel::setMaterialPassVariant(const std::string &node, const std::string &variant) {
+    const auto *found = findNode({}, node);
+    if (found == nullptr || text(*found, "op") != kMaterialPass) return false;
+    auto parameters = nodeParameters({}, node);
+    if (variant.empty()) parameters.erase("material_variant");
+    else parameters["material_variant"] = variant;
+    return setNodeParameters({}, node, parameters);
 }
 
 } // namespace PelicanStudio

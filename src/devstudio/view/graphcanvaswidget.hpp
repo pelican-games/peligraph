@@ -499,8 +499,10 @@ class GraphCanvasScene final : public QGraphicsScene {
     // named (or beside the selection when it came from elsewhere), in
     // addScope().
     bool addFromPalette(const std::string &op, const std::string &definition = {});
+    // UX-3: `seed` is what the palette chose beside the op (addNodeIn).
     bool addFromPalette(const std::string &scope, const std::string &op,
-                        const std::string &definition);
+                        const std::string &definition,
+                        const nlohmann::json &seed = nlohmann::json::object());
     // LP-4d1: the scope an addition goes into. The canvas menu opened inside
     // a zone names that zone's body; otherwise a picked zone (or a node inside
     // one) does; otherwise the scope on screen.

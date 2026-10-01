@@ -15,6 +15,7 @@ class QDoubleSpinBox;
 class QFormLayout;
 class QLabel;
 class QLineEdit;
+class QMenu;
 class QRadioButton;
 class QSpinBox;
 
@@ -109,5 +110,48 @@ class GraphCanvasPassFields final : public QWidget {
     QComboBox *fragment_ = nullptr;
     QLabel *ports_ = nullptr;
 };
+
+// UX-3, decision 2: where the selected render node (fullscreen, raster,
+// material pass, shadow_depth, snapshot_copy, compute) lands among the
+// passes -- automatic, before or after a pass of the frame plan, or after a
+// canonical anchor -- and the family (pass_set) it runs in. Each pick is one
+// set_node_parameters. A compute task takes no place (graph.insert_on_compute)
+// and says so. Named `pelican.graphCanvasPlace.<field>`.
+class GraphCanvasPlaceFields final : public QWidget {
+  public:
+    GraphCanvasPlaceFields(GraphCanvasModel &model, std::function<void()> submitted,
+                           QWidget *parent = nullptr);
+    void showNode(const GraphCanvasNode *node, const std::string &scope);
+    void followEditable();
+    // "before|<pass>", "after|<pass>", "anchor|<anchor>", "automatic|": the
+    // data a Place item carries.
+    [[nodiscard]] static QString placeData(const GraphCanvasPlace &place);
+
+  private:
+    void load();
+    void commit();
+
+    GraphCanvasModel &model_;
+    std::function<void()> submitted_;
+    std::string node_;
+    std::string scope_;
+    std::string op_;
+    std::string shown_;
+    QWidget *fields_ = nullptr;
+    QComboBox *place_ = nullptr;
+    QComboBox *pass_set_ = nullptr;
+    QLabel *note_ = nullptr;
+};
+
+// UX-3, decision 3: the entries a render node's input socket offers on a
+// right-click -- Previous frame, the sampling filter and address, the mip and
+// layer it reads, a colour attachment's location -- added to `menu` for the
+// port. What the port cannot take is there, switched off, and says why. Each
+// change is one set_node_parameters; `submitted` is called after it. Nothing
+// is added for a port the node's `ports` does not declare. The entries are
+// named `pelican.graphCanvasSocket.<field>`.
+void addGraphCanvasSocketEntries(QMenu &menu, GraphCanvasModel &model, const std::string &scope,
+                                 const std::string &node, const std::string &port,
+                                 std::function<void()> submitted);
 
 } // namespace PelicanStudio

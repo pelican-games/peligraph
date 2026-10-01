@@ -2,12 +2,14 @@
 
 #include "../model/graphcanvasmodel.hpp"
 
+#include <QToolButton>
 #include <QWidget>
 
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 class QCheckBox;
@@ -26,6 +28,27 @@ class QVBoxLayout;
 namespace PelicanStudio {
 
 class ViewSelectField;
+
+// UX-3, decision 5: a choice of any number of the engine's material tags
+// (get_render_authoring_context's material_tags), in place of a line of
+// comma-separated names: a button whose menu holds one check per tag. A tag
+// the document names that the engine does not list stays, checked. Each
+// check sends `changed`. The button is named `object_name`, each check
+// `<object_name>.<tag>`.
+class GraphCanvasTagPicker final : public QToolButton {
+  public:
+    GraphCanvasTagPicker(const QString &object_name, const QString &empty_text,
+                         QWidget *parent = nullptr);
+    void setTags(const std::vector<std::string> &all, const std::vector<std::string> &selected);
+    [[nodiscard]] std::vector<std::string> selected() const;
+    std::function<void()> changed;
+
+  private:
+    void showSelection();
+
+    QString empty_text_;
+    std::vector<std::pair<std::string, QAction *>> checks_;
+};
 
 // LP-4c, decisions 3 and 4: the Loop fields beside the Graph tab's canvas, for
 // the root graph.loop that is selected. The loop's parameters are edited here
@@ -145,6 +168,12 @@ class GraphCanvasLoopFields final : public QWidget {
     QLineEdit *tags_include_ = nullptr;
     QLineEdit *tags_exclude_ = nullptr;
     QLineEdit *tags_require_all_ = nullptr;
+    // UX-3, decision 5: the same three as picks among the engine's tags,
+    // shown in their place while the engine lists any.
+    GraphCanvasTagPicker *pick_include_ = nullptr;
+    GraphCanvasTagPicker *pick_exclude_ = nullptr;
+    GraphCanvasTagPicker *pick_require_all_ = nullptr;
+    bool tags_listed_ = false;
     QWidget *rows_ = nullptr;
     QVBoxLayout *rows_layout_ = nullptr;
     // The rows of the carry list, the outputs and the branch table, rebuilt
@@ -166,6 +195,8 @@ class GraphCanvasLoopFields final : public QWidget {
         // LP-4e: a draw_loop branch's condition, one field per attribute.
         QComboBox *material = nullptr;
         QLineEdit *tags = nullptr;
+        // UX-3, decision 5: the tags as picks, while the engine lists any.
+        GraphCanvasTagPicker *tag_picker = nullptr;
         QComboBox *contract = nullptr;
         QComboBox *skinned = nullptr;
         QComboBox *has_variant = nullptr;
@@ -258,11 +289,18 @@ class GraphCanvasDrawFields final : public QWidget {
     std::string scope_;
     QLabel *heading_ = nullptr;
     QComboBox *contract_ = nullptr;
+    // UX-3, decision 5: a material pass's material_variant, from the
+    // variants the engine's materials have.
+    QComboBox *material_variant_ = nullptr;
     QComboBox *variant_ = nullptr;
+    // The line the variant combo types into while it is editable (no list).
+    QLineEdit *variant_line_ = nullptr;
     QComboBox *cull_ = nullptr;
     QComboBox *depth_test_ = nullptr;
     QComboBox *depth_write_ = nullptr;
     QComboBox *blend_ = nullptr;
+    // UX-3, decision 4.
+    QComboBox *depth_compare_ = nullptr;
     QPlainTextEdit *defines_ = nullptr;
     QPushButton *apply_defines_ = nullptr;
     QWidget *contract_row_ = nullptr;

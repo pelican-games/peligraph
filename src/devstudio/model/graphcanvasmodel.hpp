@@ -263,9 +263,12 @@ struct GraphCanvasDrawWhen {
     std::optional<std::string> contract;
     std::optional<bool> skinned;
     std::optional<bool> has_variant;
+    // UX-3, decision 5: has_variant naming one variant (EL-1's variants).
+    std::optional<std::string> has_variant_named;
 
     [[nodiscard]] bool empty() const noexcept {
-        return !material && !tags && !contract && !skinned && !has_variant;
+        return !material && !tags && !contract && !skinned && !has_variant &&
+               !has_variant_named;
     }
     bool operator==(const GraphCanvasDrawWhen &) const = default;
 };
@@ -421,6 +424,70 @@ struct GraphCanvasImageType {
 struct GraphCanvasValueChoice {
     std::string label;
     nlohmann::json parameters;
+};
+
+// UX-3, decision 1: a render target declared outside the graph (the rendering
+// section, the preset, a feature), as get_render_authoring_context lists it,
+// and the image type a render.target_ref names it with: the declaration's own
+// `type` when it has one, else its kind (a depth format or not) and topology
+// (cube, layers) in a logical type -- materialpassdecompose's targetType.
+struct GraphCanvasDeclaredTarget {
+    std::string name;
+    std::string source;
+    nlohmann::json declaration;
+    nlohmann::json type;
+    bool depth = false;
+
+    bool operator==(const GraphCanvasDeclaredTarget &) const = default;
+};
+
+// UX-3, decision 2: where a render node lands among the passes. `kind` is
+// "automatic" (no insert, no canonical_anchor), "before" / "after" (an
+// insert naming `target`, a pass), "anchor" (canonical_anchor `target`) or
+// "other" (an insert the field has no form for, shown as it is). `declared`
+// is an insert's `declared: true`, kept while the pass stays where it is.
+struct GraphCanvasPlace {
+    std::string kind = "automatic";
+    std::string target;
+    bool declared = false;
+    // The family it runs in; empty: the frame's first.
+    std::string pass_set;
+
+    bool operator==(const GraphCanvasPlace &) const = default;
+};
+
+// UX-3, decision 3: what one port of a render node's `ports` says about how
+// it is read or written, and which of it the engine lets the port say: a
+// previous frame only on an image read that is no attachment, sampling on a
+// sampled image read, a subresource on an image that is no attachment and no
+// numbered input, a location on a colour attachment.
+struct GraphCanvasPortSettings {
+    bool history = false;
+    // Empty: the engine's default (linear, repeat).
+    std::string filter;
+    std::string address;
+    std::int64_t mip = 0;
+    std::int64_t layer = 0;
+    std::int64_t location = 0;
+    bool history_allowed = false;
+    bool sampling_allowed = false;
+    bool subresource_allowed = false;
+    bool location_allowed = false;
+
+    bool operator==(const GraphCanvasPortSettings &) const = default;
+};
+
+// UX-3, decision 5 (engine EL-1): one material the running engine has, as
+// get_render_authoring_context's materials[] lists it. `id` is what a
+// draw_loop branch's when.material compares; `name` what a person reads.
+struct GraphCanvasMaterial {
+    std::string id;
+    std::string name;
+    std::vector<std::string> tags;
+    std::vector<std::string> variants;
+    bool builtin = false;
+
+    bool operator==(const GraphCanvasMaterial &) const = default;
 };
 
 // LP-4c, decision 9: where a refused edit points. A loop refused by name
@@ -937,6 +1004,13 @@ class GraphCanvasModel {
     // engine's).
     std::vector<std::string> vertex_shader_choices_;
     std::vector<std::string> fragment_shader_choices_;
+    // UX-3: the project's compute shaders (shaders/*.comp), handed over by
+    // the owner, for a new render.compute.
+    std::vector<std::string> compute_shader_choices_;
+    // UX-3: the ops of a new render.snapshot_copy's images, and its inputs.
+    void snapshotCopySeedOps(std::string_view in_scope, const std::string &scope_token,
+                             const std::string &id, const std::string &after,
+                             nlohmann::json &ops, nlohmann::json &inputs) const;
     // --- GL-2b: the plan's lower layers, by the frame plan node names each
     // element carries (from_nodes, a barrier's ends, a scope's nodes).
     struct PlanBarrier {
@@ -1408,8 +1482,13 @@ class GraphCanvasModel {
     bool removeNode(std::string_view scope, const std::string &node);
     bool setNodeLabel(std::string_view scope, const std::string &node,
                       const std::string &label);
+    // UX-3, decision 1: `seed` is what the palette chose beside the op --
+    // a render.target_ref's {"name"}, a render.snapshot_copy's
+    // {"snapshot_after"}, a render.buffer's / render.attribute's {"element",
+    // "domain", "count"} -- and is empty for every other one.
     bool addNodeIn(std::string_view scope, const std::string &op,
-                   const std::string &definition = {});
+                   const std::string &definition = {},
+                   const nlohmann::json &seed = nlohmann::json::object());
     // GL-1d, decision 3: the params the palette's addition sends beside its
     // ops: `material_route_default: "forward"` for a Forward opaque material
     // pass in a pipeline with no pass for deferred materials (the Frame
@@ -1420,8 +1499,9 @@ class GraphCanvasModel {
     // Whether a material pass of the last frame plan, or one the root
     // document holds, takes the deferred_geometry route.
     [[nodiscard]] bool pipelineHasDeferredMaterialPass() const;
-    [[nodiscard]] nlohmann::json addNodeOpsIn(std::string_view scope, const std::string &op,
-                                              const std::string &definition = {}) const;
+    [[nodiscard]] nlohmann::json addNodeOpsIn(
+        std::string_view scope, const std::string &op, const std::string &definition = {},
+        const nlohmann::json &seed = nlohmann::json::object()) const;
     [[nodiscard]] std::vector<GraphCanvasCatalogEntry> paletteOperationsIn(
         std::string_view scope, std::string_view text = {}, std::string_view domain = {}) const;
     [[nodiscard]] std::vector<std::string> paletteDomainsIn(std::string_view scope) const;
@@ -1845,6 +1925,70 @@ class GraphCanvasModel {
     // fragment shader.
     [[nodiscard]] std::vector<GraphCanvasValueChoice>
     valueChoices(std::string_view scope, std::string_view node, std::string_view port) const;
+
+    // --- UX-3: the palette's other render nodes, a render node's place, its
+    // ports' settings, and the engine's lists (EL-1) where names were typed.
+
+    // Decision 1. The targets a render.target_ref can name: the authoring
+    // context's render_targets, less the graph's own images (a render.image
+    // is read by its node). Empty before a context arrives.
+    [[nodiscard]] std::vector<GraphCanvasDeclaredTarget> declaredRenderTargets() const;
+    // The image type a reference to `declaration` carries.
+    [[nodiscard]] static nlohmann::json targetRefType(const nlohmann::json &declaration);
+    // The compute shaders a new render.compute is offered (set by the owner,
+    // who knows the project); none, and the palette does not offer one.
+    void setComputeShaderChoices(std::vector<std::string> choices);
+    [[nodiscard]] const std::vector<std::string> &computeShaderChoices() const noexcept {
+        return compute_shader_choices_;
+    }
+    // A render.raster is offered with the engine's shaders the Pass Editor
+    // starts from (engine://fullscreen, engine://passthrough), when the
+    // owner's shader list has them.
+    [[nodiscard]] bool rasterTemplateAvailable() const;
+    // render.buffer / render.attribute elements and attribute domains, in the
+    // order the combos list them, and the bytes one element takes.
+    [[nodiscard]] static const std::vector<std::string> &bufferElements();
+    [[nodiscard]] static const std::vector<std::string> &attributeDomains();
+    [[nodiscard]] static std::uint64_t bufferElementSize(std::string_view element);
+
+    // Decision 2. The plan's passes a node can be placed before or after
+    // (no anchor, no loop copy, not `except`), in the plan's order; the
+    // families (pass sets) of the authoring context's graphs.
+    [[nodiscard]] std::vector<std::string> placePasses(std::string_view except = {}) const;
+    [[nodiscard]] std::vector<std::string> passFamilies() const;
+    // The render nodes that show the Place field, and the ones that can take
+    // a place (a compute task runs after every pass: graph.insert_on_compute).
+    [[nodiscard]] static bool showsPlace(std::string_view op) noexcept;
+    [[nodiscard]] static bool takesPlace(std::string_view op) noexcept;
+    [[nodiscard]] GraphCanvasPlace place(std::string_view scope, std::string_view node) const;
+    // One set_node_parameters: `place` written over the node's insert /
+    // canonical_anchor / pass_set, every other key as it was.
+    bool setPlace(std::string_view scope, const std::string &node, const GraphCanvasPlace &place);
+
+    // Decision 3. A port of a render node's `ports`, or nothing when the
+    // node has no such port.
+    [[nodiscard]] std::optional<GraphCanvasPortSettings>
+    portSettings(std::string_view scope, std::string_view node, std::string_view port) const;
+    // One set_node_parameters with the port's history / sampling /
+    // subresource / location as `settings` says (a default leaves the key
+    // out); what the port cannot take is not written.
+    bool setPortSettings(std::string_view scope, const std::string &node, const std::string &port,
+                         const GraphCanvasPortSettings &settings);
+
+    // Decision 4. The name Rename proposes for a definition: `<runner>_body`
+    // after the first node that runs it, free of every other definition's
+    // name; the definition's own name when nothing runs it.
+    [[nodiscard]] std::string proposeDefinitionName(std::string_view definition) const;
+
+    // Decision 5. The engine's materials, their tags and the variants any
+    // of them has (sorted, each once). All empty when the engine did not list
+    // them (an engine before EL-1, or none running): the fields then stay
+    // what they were.
+    [[nodiscard]] std::vector<GraphCanvasMaterial> materials() const;
+    [[nodiscard]] std::vector<std::string> materialTags() const;
+    [[nodiscard]] std::vector<std::string> materialVariants() const;
+    // A root render.material_pass's material_variant; empty takes it out.
+    bool setMaterialPassVariant(const std::string &node, const std::string &variant);
 
     // --- GL-2b: the lower layers on the root canvas (design_graph_layers
     // 3.2, 4 rules 1 and 5).

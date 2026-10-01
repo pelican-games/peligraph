@@ -11,7 +11,10 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QActionGroup>
+#include <QMenu>
 #include <QRadioButton>
+#include <QWidgetAction>
 #include <QRegularExpression>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -34,6 +37,14 @@ QString imageFieldName(const QString &field) {
 
 QString passFieldName(const QString &field) {
     return QStringLiteral("pelican.graphCanvasPass.") + field;
+}
+
+QString placeFieldName(const QString &field) {
+    return QStringLiteral("pelican.graphCanvasPlace.") + field;
+}
+
+QString socketFieldName(const QString &field) {
+    return QStringLiteral("pelican.graphCanvasSocket.") + field;
 }
 
 std::string stringOf(const Json &object, const char *key) {
@@ -576,6 +587,247 @@ void GraphCanvasPassFields::commit(const char *stage, QComboBox *combo) {
         return;
     }
     load(model_.nodeParameters(scope_, node_));
+}
+
+// --- UX-3, decision 2: Place.
+
+QString GraphCanvasPlaceFields::placeData(const GraphCanvasPlace &place) {
+    if (place.kind == "automatic") return QStringLiteral("automatic|");
+    return qtext(place.kind) + QLatin1Char{'|'} + qtext(place.target);
+}
+
+GraphCanvasPlaceFields::GraphCanvasPlaceFields(GraphCanvasModel &model,
+                                               std::function<void()> submitted, QWidget *parent)
+    : QWidget{parent}, model_{model}, submitted_{std::move(submitted)} {
+    setObjectName(QStringLiteral("pelican.graphCanvasPlace"));
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 2, 0, 2);
+    fields_ = new QWidget(this);
+    auto *form = new QFormLayout(fields_);
+    form->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(fields_);
+    place_ = new QComboBox(fields_);
+    place_->setObjectName(placeFieldName(QStringLiteral("place")));
+    place_->setToolTip(tr("Where the pass runs among the frame's passes: where the engine "
+                          "puts it, before or after a pass, or after an anchor."));
+    form->addRow(caption(tr("Place"), fields_), place_);
+    pass_set_ = new QComboBox(fields_);
+    pass_set_->setObjectName(placeFieldName(QStringLiteral("passSet")));
+    pass_set_->setToolTip(tr("The pass family (pass_set) it runs in."));
+    form->addRow(caption(tr("Family"), fields_), pass_set_);
+    connect(place_, &QComboBox::currentIndexChanged, this, [this] { commit(); });
+    connect(pass_set_, &QComboBox::currentIndexChanged, this, [this] { commit(); });
+    note_ = new QLabel(this);
+    note_->setObjectName(placeFieldName(QStringLiteral("note")));
+    note_->setFont(studioSmallFont());
+    note_->setWordWrap(true);
+    note_->hide();
+    layout->addWidget(note_);
+    hide();
+}
+
+void GraphCanvasPlaceFields::showNode(const GraphCanvasNode *node, const std::string &scope) {
+    if (node == nullptr || !GraphCanvasModel::showsPlace(node->op)) {
+        node_.clear();
+        scope_.clear();
+        op_.clear();
+        shown_.clear();
+        hide();
+        return;
+    }
+    node_ = node->id;
+    scope_ = scope;
+    op_ = node->op;
+    // The families come with the authoring context.
+    model_.askRenderTargetVocabulary();
+    QStringList parts{qtext(scope_), qtext(node_), qtext(op_),
+                      qtext(model_.nodeParameters(scope_, node_).dump())};
+    for (const auto &pass : model_.placePasses(node_)) parts << qtext(pass);
+    parts << QStringLiteral("|");
+    for (const auto &family : model_.passFamilies()) parts << qtext(family);
+    const auto shown = parts.join(QChar{0x1f}).toStdString();
+    if (shown != shown_) {
+        shown_ = shown;
+        load();
+    }
+    followEditable();
+    show();
+}
+
+void GraphCanvasPlaceFields::followEditable() {
+    fields_->setEnabled(model_.canEdit() && GraphCanvasModel::takesPlace(op_));
+}
+
+void GraphCanvasPlaceFields::load() {
+    const auto place = model_.place(scope_, node_);
+    {
+        const QSignalBlocker block{place_};
+        place_->clear();
+        place_->addItem(tr("automatic"), QStringLiteral("automatic|"));
+        for (const auto &pass : model_.placePasses(node_)) {
+            place_->addItem(tr("before %1").arg(qtext(pass)), QStringLiteral("before|") + qtext(pass));
+            place_->addItem(tr("after %1").arg(qtext(pass)), QStringLiteral("after|") + qtext(pass));
+        }
+        for (const auto &anchor : GraphCanvasModel::loopAnchors())
+            place_->addItem(tr("after anchor %1").arg(qtext(anchor)),
+                            QStringLiteral("anchor|") + qtext(anchor));
+        // What the document says stays visible, a pass the plan does not
+        // list (yet) and an insert the field has no form for included.
+        const auto current = placeData(place);
+        if (place_->findData(current) < 0) {
+            const auto label = place.kind == "other" ? tr("insert %1").arg(qtext(place.target))
+                               : place.kind == "anchor"
+                                   ? tr("after anchor %1").arg(qtext(place.target))
+                                   : tr("%1 %2").arg(qtext(place.kind), qtext(place.target));
+            place_->addItem(label, current);
+        }
+        place_->setCurrentIndex(place_->findData(current));
+    }
+    {
+        const QSignalBlocker block{pass_set_};
+        pass_set_->clear();
+        pass_set_->addItem(tr("(the frame's first)"), QString{});
+        for (const auto &family : model_.passFamilies())
+            pass_set_->addItem(qtext(family), qtext(family));
+        if (!place.pass_set.empty() && pass_set_->findData(qtext(place.pass_set)) < 0)
+            pass_set_->addItem(qtext(place.pass_set), qtext(place.pass_set));
+        pass_set_->setCurrentIndex(std::max(0, pass_set_->findData(qtext(place.pass_set))));
+    }
+    const bool compute = !GraphCanvasModel::takesPlace(op_);
+    note_->setVisible(compute);
+    note_->setText(compute ? tr("A compute task runs after every pass; it takes no place.")
+                           : QString{});
+}
+
+void GraphCanvasPlaceFields::commit() {
+    if (node_.empty()) return;
+    const auto data = place_->currentData().toString();
+    const auto bar = data.indexOf(QLatin1Char{'|'});
+    GraphCanvasPlace place;
+    place.kind = data.left(bar).toStdString();
+    place.target = data.mid(bar + 1).toStdString();
+    const auto current = model_.place(scope_, node_);
+    // A pass that stays where it is keeps its insert's `declared`.
+    place.declared =
+        current.declared && current.kind == place.kind && current.target == place.target;
+    place.pass_set = pass_set_->currentData().toString().toStdString();
+    if (place.kind == "other") return;
+    if (model_.setPlace(scope_, node_, place)) {
+        if (submitted_) submitted_();
+        return;
+    }
+    // Refused, or nothing changed: the field says what the document says.
+    load();
+}
+
+// --- UX-3, decision 3: a socket's settings, on its right-click.
+
+void addGraphCanvasSocketEntries(QMenu &menu, GraphCanvasModel &model, const std::string &scope,
+                                 const std::string &node, const std::string &port,
+                                 std::function<void()> submitted) {
+    const auto settings = model.portSettings(scope, node, port);
+    if (!settings) return;
+    const bool editable = model.canEdit();
+    // Each entry sends the settings with its one change, read again at the
+    // moment it fires.
+    const auto send = [&model, scope, node, port, submitted](
+                          const std::function<void(GraphCanvasPortSettings &)> &change) {
+        auto now = model.portSettings(scope, node, port);
+        if (!now) return;
+        change(*now);
+        if (model.setPortSettings(scope, node, port, *now) && submitted) submitted();
+    };
+    auto *heading = menu.addSection(QObject::tr("Socket %1").arg(qtext(port)));
+    heading->setObjectName(socketFieldName(QStringLiteral("heading")));
+
+    auto *history = menu.addAction(QObject::tr("Previous frame"));
+    history->setObjectName(socketFieldName(QStringLiteral("history")));
+    history->setCheckable(true);
+    history->setChecked(settings->history);
+    history->setEnabled(editable && settings->history_allowed);
+    history->setToolTip(settings->history_allowed
+                            ? QObject::tr("Read the image as the previous frame left it.")
+                            : QObject::tr("Only an image the pass reads (not an attachment) can "
+                                          "be read as the previous frame."));
+    QObject::connect(history, &QAction::triggered, &menu, [send](bool checked) {
+        send([checked](GraphCanvasPortSettings &now) { now.history = checked; });
+    });
+
+    const auto choiceMenu = [&](const QString &title, const char *field,
+                                const std::vector<std::pair<QString, QString>> &values,
+                                const std::string &current, bool allowed,
+                                std::string GraphCanvasPortSettings::*member) {
+        auto *sub = menu.addMenu(title);
+        sub->setObjectName(socketFieldName(QString::fromLatin1(field)));
+        sub->setEnabled(editable && allowed);
+        if (!allowed)
+            sub->setToolTip(QObject::tr("Only an image the shader samples by a binding of its "
+                                        "own takes sampling."));
+        auto *group = new QActionGroup(sub);
+        for (const auto &[label, value] : values) {
+            auto *action = sub->addAction(label);
+            action->setObjectName(socketFieldName(
+                QString::fromLatin1(field) + QLatin1Char{'.'} +
+                (value.isEmpty() ? QStringLiteral("default") : value)));
+            action->setCheckable(true);
+            action->setChecked(qtext(current) == value);
+            group->addAction(action);
+            QObject::connect(action, &QAction::triggered, &menu, [send, member, value] {
+                send([&](GraphCanvasPortSettings &now) { now.*member = value.toStdString(); });
+            });
+        }
+    };
+    choiceMenu(QObject::tr("Filter"), "filter",
+               {{QObject::tr("default (linear)"), QString{}},
+                {QStringLiteral("linear"), QStringLiteral("linear")},
+                {QStringLiteral("nearest"), QStringLiteral("nearest")}},
+               settings->filter, settings->sampling_allowed, &GraphCanvasPortSettings::filter);
+    choiceMenu(QObject::tr("Address"), "address",
+               {{QObject::tr("default (repeat)"), QString{}},
+                {QStringLiteral("repeat"), QStringLiteral("repeat")},
+                {QStringLiteral("mirrored_repeat"), QStringLiteral("mirrored_repeat")},
+                {QStringLiteral("clamp_to_edge"), QStringLiteral("clamp_to_edge")}},
+               settings->address, settings->sampling_allowed, &GraphCanvasPortSettings::address);
+
+    // The numbers: a spin each, inside the menu.
+    const auto spinEntry = [&](const QString &label, const char *field, std::int64_t value,
+                               int maximum, bool allowed, const QString &why,
+                               std::int64_t GraphCanvasPortSettings::*member) {
+        auto *row = new QWidget(&menu);
+        auto *row_layout = new QHBoxLayout(row);
+        row_layout->setContentsMargins(24, 2, 8, 2);
+        auto *name = new QLabel(label, row);
+        name->setFont(studioSmallFont());
+        auto *spin = new QSpinBox(row);
+        spin->setObjectName(socketFieldName(QString::fromLatin1(field)));
+        spin->setRange(0, maximum);
+        spin->setValue(static_cast<int>(std::clamp<std::int64_t>(value, 0, maximum)));
+        spin->setKeyboardTracking(false);
+        spin->setEnabled(editable && allowed);
+        row->setToolTip(allowed ? QString{} : why);
+        row_layout->addWidget(name, 1);
+        row_layout->addWidget(spin);
+        auto *entry = new QWidgetAction(&menu);
+        entry->setObjectName(socketFieldName(QString::fromLatin1(field) + QStringLiteral("Row")));
+        entry->setDefaultWidget(row);
+        entry->setEnabled(editable && allowed);
+        menu.addAction(entry);
+        // Each value the spin takes is one edit (typed digits count once:
+        // no keyboard tracking); the menu may close before a focus leaves.
+        QObject::connect(spin, &QSpinBox::valueChanged, &menu, [send, member](int picked) {
+            send([&](GraphCanvasPortSettings &now) { now.*member = picked; });
+        });
+    };
+    const auto no_subresource =
+        QObject::tr("An attachment or a numbered input reads the whole image.");
+    spinEntry(QObject::tr("Mip level"), "mip", settings->mip, 15, settings->subresource_allowed,
+              no_subresource, &GraphCanvasPortSettings::mip);
+    spinEntry(QObject::tr("Layer"), "layer", settings->layer, 2047, settings->subresource_allowed,
+              no_subresource, &GraphCanvasPortSettings::layer);
+    spinEntry(QObject::tr("Attachment location"), "location", settings->location, 7,
+              settings->location_allowed, QObject::tr("Only a colour attachment has a location."),
+              &GraphCanvasPortSettings::location);
+    menu.addSeparator();
 }
 
 } // namespace PelicanStudio
