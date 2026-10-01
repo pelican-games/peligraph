@@ -74,6 +74,10 @@ GraphCanvasReadCapability graphCanvasReadCapability(EmbeddedViewport &viewport) 
             return viewport.requestRpc(QStringLiteral("get_graph_templates"),
                                        QJsonObject{}, error);
         },
+        .requestEngineShaders = [&viewport](QString *error) {
+            return viewport.requestRpc(QStringLiteral("get_engine_shaders"),
+                                       QJsonObject{}, error);
+        },
         .requestSetTime = [&viewport](double time, QString *error) {
             return viewport.requestRpc(
                 QStringLiteral("set_time"),

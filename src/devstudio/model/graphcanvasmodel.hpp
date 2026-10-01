@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -426,6 +427,40 @@ struct GraphCanvasValueChoice {
     nlohmann::json parameters;
 };
 
+// UX-5b, decision 1: one shader of get_graph_catalog.engine_shaders (EL-4).
+// `ports_by_hand`: the engine could not reflect it on its own because it
+// includes the resource-port header (bloom_composite, ssao): its ports come
+// from the pass that runs it, so the author connects them. `resource_ports`
+// are "<port> (<descriptor type>)" as the reflection named them.
+struct GraphCanvasEngineShader {
+    std::string reference;
+    std::string stage;
+    bool ports_by_hand = false;
+    std::vector<std::string> resource_ports;
+
+    bool operator==(const GraphCanvasEngineShader &) const = default;
+};
+
+// UX-5b, decision 4: a render.image a root render.material_pass draws into
+// at one of its contract's sockets, and the formats the contract takes there
+// (get_graph_catalog.material_pass_contracts).
+struct GraphCanvasMaterialPassImage {
+    std::string pass;
+    std::string contract;
+    std::string socket;
+    std::vector<std::string> formats;
+};
+
+// UX-5b, decision 2: an image a fullscreen template can read, and the end a
+// line to it starts from -- the pass that writes it (GL-1f), else the image.
+struct GraphCanvasTemplateSource {
+    std::string resource;
+    std::string node;
+    std::string port;
+
+    bool operator==(const GraphCanvasTemplateSource &) const = default;
+};
+
 // UX-3, decision 1: a render target declared outside the graph (the rendering
 // section, the preset, a feature), as get_render_authoring_context lists it,
 // and the image type a render.target_ref names it with: the declaration's own
@@ -778,6 +813,9 @@ class GraphCanvasModel {
         // GL-1e: get_render_authoring_context, the rendering section's
         // passes as edit_preset_pass takes them.
         Authoring,
+        // UX-5b: get_engine_shaders (EL-4b), asked only when a shader list
+        // is opened -- the engine compiles its shaders to answer it.
+        EngineShaders,
     };
     struct PendingRequest {
         std::uint64_t id = 0;
@@ -821,6 +859,24 @@ class GraphCanvasModel {
     // semantic type id -> type schema, flattened the same way. The sockets are
     // drawn from these: the traits, and a module's own display declaration.
     nlohmann::json types_ = nlohmann::json::object();
+    // UX-5b (EL-4): the catalog's engine_shaders and material_pass_contracts
+    // as they arrived, and each engine shader's pass-input declarations in
+    // the Frame Plan's terms, by reference.
+    nlohmann::json engine_shaders_ = nlohmann::json::array();
+    nlohmann::json material_pass_contracts_ = nlohmann::json::array();
+    std::map<std::string, FramePlanPassInputs, std::less<>> engine_shader_inputs_;
+    // Known once a catalog (EL-4) or get_engine_shaders (EL-4b) carried it;
+    // asked once a connection; wanted before the catalog said whether it
+    // carries the list itself.
+    bool engine_shaders_known_ = false;
+    bool engine_shaders_asked_ = false;
+    bool engine_shaders_wanted_ = false;
+    std::uint64_t engine_shaders_revision_ = 0;
+    void takeEngineShaders(const nlohmann::json &shaders);
+    // passInputs' lookup in the plan alone.
+    [[nodiscard]] const FramePlanPassInputs *passInputsFromPlan(
+        std::string_view scope, std::string_view node,
+        const std::function<const FramePlanPassInputs *(std::string_view)> &find) const;
 
     std::string values_instance_;
     bool values_received_ = false;
@@ -1998,6 +2054,57 @@ class GraphCanvasModel {
     [[nodiscard]] std::vector<std::string> materialVariants() const;
     // A root render.material_pass's material_variant; empty takes it out.
     bool setMaterialPassVariant(const std::string &node, const std::string &variant);
+
+    // --- UX-5b: the Graph's fullscreen pass used as the Pass Editor's is.
+
+    // Decision 1. The catalog's engine_shaders (EL-4), in its order; empty
+    // before the catalog arrives or from an engine without the list.
+    [[nodiscard]] std::vector<GraphCanvasEngineShader> engineShaders() const;
+    // EL-4b: the list is the engine's answer to get_engine_shaders, which
+    // takes it seconds; it is asked for only when a shader list is opened
+    // (never on connecting), once a connection. An engine whose catalog
+    // carries engine_shaders (EL-4) is not asked. The request goes out with
+    // the next dispatch; until it is answered the lists are the fixed ones.
+    void askEngineShaders();
+    [[nodiscard]] std::uint64_t engineShadersRevision() const noexcept {
+        return engine_shaders_revision_;
+    }
+    [[nodiscard]] std::optional<GraphCanvasEngineShader>
+    engineShader(std::string_view reference) const;
+    // Decision 4. render_target_vocabulary.format_aspects: "color", "depth",
+    // "depth_stencil" or "stencil"; empty for a format the engine did not
+    // list (or an engine before it).
+    [[nodiscard]] std::string formatAspect(std::string_view format) const;
+    // Not a colour format, by the engine's aspects; by the name's first
+    // letters (depthFormat) only when the engine did not list them.
+    [[nodiscard]] bool isDepthFormat(std::string_view format) const;
+    // The material pass socket a root render.image is drawn into, with the
+    // formats its contract takes there; nothing for any other image, a pass
+    // that declares its own material_outputs, or before the catalog.
+    [[nodiscard]] std::optional<GraphCanvasMaterialPassImage>
+    materialPassImage(std::string_view scope, std::string_view image) const;
+    // The formats the image's Format combo offers: its material pass
+    // socket's, else imageFormatChoices.
+    [[nodiscard]] std::vector<std::string> imageFormatChoicesFor(std::string_view scope,
+                                                                 std::string_view node) const;
+    // One edit (one Undo step): the image's format, and -- for a material
+    // pass's image -- the formats of its other sockets' images moved to the
+    // contract's combination that holds the new one. False when nothing
+    // changed or no edit can go out.
+    bool setImageFormat(std::string_view scope, const std::string &node, const std::string &format);
+    // Decision 2. The images a fullscreen template's inputs are filled
+    // from, in `scope`, `node` itself left out: each image by its id, with
+    // the end of the pass that writes it (its output of the socket's name)
+    // when one does, else the image's own `resource`.
+    [[nodiscard]] std::vector<GraphCanvasTemplateSource>
+    templateSources(std::string_view scope, std::string_view node) const;
+    // One edit: the pass draws with `fragment`, asks for the scene lights
+    // and `push_constants` when they are set (never turns them off), and
+    // reads `connect` in order as numbered inputs after the ones it has.
+    bool setPassShaderTemplate(std::string_view scope, const std::string &node,
+                               const std::string &fragment, bool uses_light_data,
+                               std::string_view push_constants,
+                               const std::vector<GraphCanvasTemplateSource> &connect);
 
     // --- GL-2b: the lower layers on the root canvas (design_graph_layers
     // 3.2, 4 rules 1 and 5).

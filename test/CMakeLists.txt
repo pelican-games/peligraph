@@ -572,12 +572,20 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
+    # UX-5b: the Pass fields hold the Pass Editor's Frame data row and its
+    # UX-4a parts.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenpasssettings.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/passform.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/rasterstateform.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/attachmentopsform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/studiotheme.cpp
   )
   target_link_libraries(pelican_test_devstudio_graphcanvas_scene_test PRIVATE
     pelican_studio_resources)
+  # UX-5b: the UX-4a parts are QObjects with signals of their own.
+  set_target_properties(pelican_test_devstudio_graphcanvas_scene_test PROPERTIES AUTOMOC ON)
   target_include_directories(pelican_test_devstudio_graphcanvas_scene_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view
   )

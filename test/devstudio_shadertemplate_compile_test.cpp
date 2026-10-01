@@ -201,6 +201,42 @@ TEST_CASE("G-3 the deferred lighting template reads a G-buffer and the "
         REQUIRE(featured.ok);
     }
 
+    SECTION("UX-5b (RS-10): shadow_map after the G-buffer is the directional "
+            "shadow, sampled when the feature defines PELICAN_FEATURE_SHADOW") {
+        auto inputs = gbufferInputs(false);
+        inputs.push_back({.resource = "shadow_map"});
+        const auto text = fullscreenFragmentShaderTemplate(
+            "lit", inputs, Kind::deferred_lighting);
+        CHECK(text.find("#define PELICAN_TEMPLATE_SHADOW_MAP in_shadow_map") !=
+              std::string::npos);
+        // No role reads it: ambient occlusion keeps its constant.
+        CHECK(text.find("float ambient_occlusion = 1.0;  // input 5 (ambient "
+                        "occlusion): the shadow map is there") != std::string::npos);
+        const auto plain = compileFragment(text, "ux5b_lighting_shadow_off.frag");
+        INFO(plain.log);
+        REQUIRE(plain.ok);
+        // Bound whatever the feature says: the pass lists it.
+        CHECK(findBinding(Pelican::reflect(plain.spirv), 1, 5) != nullptr);
+        const auto shadowed = compileFragment(
+            text, "ux5b_lighting_shadow_on.frag",
+            {"PELICAN_FEATURE_SHADOW", "PELICAN_INPUT_5_LAYERED=1",
+             "PELICAN_FEATURE_SHADOW_DIRECTIONAL_PCF_RADIUS=1",
+             "PELICAN_FEATURE_SHADOW_DIRECTIONAL_BIAS=0.002",
+             "PELICAN_FEATURE_SHADOW_DIRECTIONAL_STRENGTH=1.0"});
+        INFO(shadowed.log);
+        REQUIRE(shadowed.ok);
+        // The feature's shadow data block is read.
+        CHECK(findBinding(Pelican::reflect(shadowed.spirv), 0, 5) != nullptr);
+        // And the fill puts it after a whole G-buffer only.
+        CHECK(fullscreenTemplateInputFill(Kind::deferred_lighting,
+                                          {"gbuffer_albedo", "gbuffer_normal", "gbuffer_material",
+                                           "gbuffer_worldpos", "gbuffer_emissive", "shadow_map"})
+                  .back() == "shadow_map");
+        CHECK(fullscreenTemplateInputFill(Kind::deferred_lighting,
+                                          {"gbuffer_albedo", "shadow_map"}) ==
+              std::vector<std::string>{"gbuffer_albedo"});
+    }
+
     SECTION("a missing role is a named constant, so it still compiles") {
         const std::vector<FullscreenShaderTemplateInput> inputs{
             {.resource = "gbuffer_albedo"},

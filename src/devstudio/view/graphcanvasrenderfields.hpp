@@ -4,6 +4,7 @@
 
 #include <QWidget>
 
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <utility>
@@ -16,10 +17,16 @@ class QFormLayout;
 class QLabel;
 class QLineEdit;
 class QMenu;
+class QPushButton;
 class QRadioButton;
 class QSpinBox;
+class QTimer;
 
 namespace PelicanStudio {
+
+class AttachmentOpsForm;
+class FullscreenPassInterfaceRow;
+class RasterStateForm;
 
 // UX-2, decision 1: the fields of the selected render.image, beside the Graph
 // tab's canvas above the details (as the Loop, Draw and View fields). Every
@@ -87,28 +94,73 @@ class GraphCanvasImageFields final : public QWidget {
 // declared -- a pass's input sockets follow its shader's declarations (VI-1),
 // so they are connected on the canvas, not typed. Each pick is one
 // set_node_parameters. Named `pelican.graphCanvasPass.<field>`.
+//
+// UX-5b: a fullscreen pass is used as the Pass Editor's is.
+//   - New... beside the fragment opens the Pass Editor's templates
+//     (Pass-through, Deferred lighting, Tone map): Create writes the shader
+//     into the project with the Pass Editor's own template functions and puts
+//     it on the pass, in one edit with what the template needs (Uses scene
+//     lights, Camera position) and -- for a template that reads the G-buffer
+//     -- the lines from the pass that writes each image to its input
+//     (fullscreenTemplateInputFill, the match UX-5a fixed);
+//   - Frame data (uses_light_data, push_constants), the raster state's blend
+//     (UX-4a's RasterStateForm) and each colour output's Load / Clear / Store
+//     (UX-4a's AttachmentOpsForm, written as the pass's color_load_op,
+//     color_store_op and clear_color: a graph pass names no output list).
 class GraphCanvasPassFields final : public QWidget {
   public:
     GraphCanvasPassFields(GraphCanvasModel &model, std::function<void()> submitted,
                           QWidget *parent = nullptr);
     void showNode(const GraphCanvasNode *node, const std::string &scope);
     void followEditable();
+    // Where New... writes shaders/<name>.frag; none offers no New....
+    void setProjectRoot(const std::filesystem::path &root);
+    // Called after New... wrote a shader, so the lists hold it.
+    void setShadersChanged(std::function<void()> changed);
 
   private:
     void load(const nlohmann::json &parameters);
+    void loadPassSettings(const nlohmann::json &parameters);
     void commit(const char *stage, QComboBox *combo);
+    void commitSettings();
+    void showTemplateRow(bool shown);
+    void proposeTemplateName();
+    void createTemplate();
+    void templateNotice(const QString &text, bool failure);
+    // The colour attachment ports, by location.
+    [[nodiscard]] std::vector<std::string> colorPorts(const nlohmann::json &parameters) const;
 
     GraphCanvasModel &model_;
     std::function<void()> submitted_;
+    std::function<void()> shaders_changed_;
+    std::filesystem::path project_root_;
     std::string node_;
     std::string scope_;
+    std::string op_;
     std::string shown_;
+    bool loading_ = false;
     QLabel *heading_ = nullptr;
     QWidget *fields_ = nullptr;
     QFormLayout *form_ = nullptr;
     QComboBox *vertex_ = nullptr;
     QComboBox *fragment_ = nullptr;
+    QPushButton *new_shader_ = nullptr;
+    QWidget *template_row_ = nullptr;
+    QComboBox *template_kind_ = nullptr;
+    QLineEdit *template_name_ = nullptr;
+    QPushButton *create_shader_ = nullptr;
+    QLabel *template_notice_ = nullptr;
+    std::string auto_template_name_;
+    // The pass New... was last shown for (scope, node).
+    std::string template_for_;
     QLabel *ports_ = nullptr;
+    QWidget *settings_ = nullptr;
+    FullscreenPassInterfaceRow *interface_ = nullptr;
+    RasterStateForm *raster_ = nullptr;
+    AttachmentOpsForm *outputs_ = nullptr;
+    QTimer *settings_timer_ = nullptr;
+    // The colour attachment settings as last loaded, to tell which row moved.
+    nlohmann::json loaded_settings_ = nlohmann::json::object();
 };
 
 // UX-3, decision 2: where the selected render node (fullscreen, raster,

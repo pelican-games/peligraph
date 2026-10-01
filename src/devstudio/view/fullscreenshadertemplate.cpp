@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <map>
 #include <optional>
 #include <set>
 #include <span>
@@ -120,22 +121,36 @@ constexpr std::array deferred_lighting_roles{
 };
 constexpr std::array tone_map_roles{tone_map_reads[0].role};
 
+} // namespace
+
+bool isTemplateShadowMapInput(std::string_view resource) {
+    return resource == ShadowMapInput ||
+           (resource.size() > ShadowMapInput.size() && resource.ends_with(ShadowMapInput) &&
+            resource[resource.size() - ShadowMapInput.size() - 1] == '_');
+}
+
+namespace {
+
 // The declarations of every image input, in list order, and the identifier
 // each declared input got (none for a buffer or an input past the macros).
 struct DeclaredInputs {
     std::string text;
     std::vector<std::optional<std::string>> identifiers;
+    // UX-5b (RS-10): the input that is the directional shadow map, which no
+    // role reads.
+    std::vector<bool> shadow;
 };
 
 DeclaredInputs declareInputs(
     std::span<const FullscreenShaderTemplateInput> inputs,
-    std::span<const RoleRead> reads) {
+    std::span<const RoleRead> reads, bool lighting = false) {
     DeclaredInputs result;
     std::set<std::string> taken;
     for (std::size_t index = 0; index < inputs.size(); ++index) {
         const auto &input = inputs[index];
         const std::string number = std::to_string(index);
         result.identifiers.emplace_back();
+        result.shadow.push_back(false);
         if (!input.image) {
             result.text += "// input " + number + " (" + input.resource +
                            ") is a buffer: declare it yourself at set "
@@ -152,6 +167,18 @@ DeclaredInputs declareInputs(
         }
         const std::string identifier =
             inputIdentifier(input.resource, taken);
+        if (lighting && isTemplateShadowMapInput(input.resource) &&
+            std::ranges::find(result.shadow, true) == result.shadow.end()) {
+            // The lighting template's shadow: declared whatever the feature
+            // says (the binding is the pass's), sampled only under
+            // PELICAN_FEATURE_SHADOW.
+            result.text += "PELICAN_DECLARE_INPUT_" + number + "(" + identifier + ");  // " +
+                           input.resource + ": the directional shadow map\n" +
+                           "#define PELICAN_TEMPLATE_SHADOW_MAP " + identifier + "\n";
+            result.identifiers.back() = identifier;
+            result.shadow.back() = true;
+            continue;
+        }
         std::string note = input.resource;
         if (!reads.empty()) {
             note += index < reads.size()
@@ -197,14 +224,16 @@ std::string roleReadsText(std::span<const FullscreenShaderTemplateInput> inputs,
         const auto &read = reads[index];
         const std::string number = std::to_string(index);
         text += "    " + std::string{read.declaration} + " = ";
-        if (index < inputs.size() && declared.identifiers[index]) {
+        const bool shadow = index < declared.shadow.size() && declared.shadow[index];
+        if (index < inputs.size() && declared.identifiers[index] && !shadow) {
             text += "PELICAN_TEXTURE_2D_" + number + "(" +
                     *declared.identifiers[index] + ", inUV)" +
                     std::string{read.components} + ";\n";
             continue;
         }
         const std::string_view why =
-            index < inputs.size() ? "not an image"
+            shadow                ? "the shadow map is there"
+            : index < inputs.size() ? "not an image"
             : read.role.optional  ? "optional, not in the input list"
                                   : "not in the input list";
         text += std::string{read.fallback} + ";  // input " + number + " (" +
@@ -274,7 +303,8 @@ std::string fullscreenFragmentShaderTemplate(
     std::span<const FullscreenShaderTemplateInput> inputs,
     FullscreenShaderTemplateKind kind) {
     const auto reads = roleReads(kind);
-    const auto declared = declareInputs(inputs, reads);
+    const auto declared =
+        declareInputs(inputs, reads, kind == FullscreenShaderTemplateKind::deferred_lighting);
     std::string text = shippedTemplate(kind);
     replaceAll(text, "@PASS_NAME@", pass_name);
     replaceAll(text, "@INPUT_DECLARATIONS@", declared.text);
@@ -401,6 +431,14 @@ std::vector<std::string> fullscreenShaderChoices(
         std::ranges::sort(names);
         for (const auto &name : names) result.push_back(shaderTemplateReference(name));
     }
+    // UX-5b: the engine's own list, by stage, when a catalog handed it over.
+    if (std::ranges::any_of(engineShaderList(), [&](const EngineShaderListEntry &entry) {
+            return entry.stage == stage;
+        })) {
+        for (const auto &entry : engineShaderList())
+            if (entry.stage == stage) result.push_back(entry.reference);
+        return result;
+    }
     // The fullscreen shaders the render compiler knows by name
     // (vulkanrendercompilerprogram.cpp), and the one vertex they all draw.
     if (stage == FullscreenShaderStage::vertex) {
@@ -415,6 +453,78 @@ std::vector<std::string> fullscreenShaderChoices(
             result.emplace_back(reference);
     }
     return result;
+}
+
+namespace {
+
+std::vector<EngineShaderListEntry> &engineShaderListStore() {
+    static std::vector<EngineShaderListEntry> entries;
+    return entries;
+}
+
+std::function<void()> &engineShaderListRequester() {
+    static std::function<void()> requester;
+    return requester;
+}
+
+std::map<std::size_t, std::function<void()>> &engineShaderListObservers() {
+    static std::map<std::size_t, std::function<void()>> observers;
+    return observers;
+}
+
+} // namespace
+
+bool setEngineShaderList(std::vector<EngineShaderListEntry> entries) {
+    auto &store = engineShaderListStore();
+    if (store == entries) return false;
+    store = std::move(entries);
+    // A copy: an observer may take itself out.
+    const auto observers = engineShaderListObservers();
+    for (const auto &[id, observer] : observers)
+        if (observer) observer();
+    return true;
+}
+
+void setEngineShaderListRequester(std::function<void()> requester) {
+    engineShaderListRequester() = std::move(requester);
+}
+
+void requestEngineShaderList() {
+    if (const auto &requester = engineShaderListRequester()) requester();
+}
+
+std::size_t addEngineShaderListObserver(std::function<void()> observer) {
+    static std::size_t next = 1;
+    const auto id = next++;
+    engineShaderListObservers().emplace(id, std::move(observer));
+    return id;
+}
+
+void removeEngineShaderListObserver(std::size_t id) {
+    engineShaderListObservers().erase(id);
+}
+
+const std::vector<EngineShaderListEntry> &engineShaderList() {
+    return engineShaderListStore();
+}
+
+bool engineShaderPortsByHand(std::string_view reference) {
+    return std::ranges::any_of(engineShaderList(), [&](const EngineShaderListEntry &entry) {
+        return entry.ports_by_hand && entry.reference == reference;
+    });
+}
+
+std::string shaderChoiceLabel(std::string_view reference) {
+    std::string label{reference};
+    if (engineShaderPortsByHand(reference)) label += "  (ports by hand)";
+    return label;
+}
+
+std::string shaderChoiceTooltip(std::string_view reference) {
+    if (!engineShaderPortsByHand(reference)) return std::string{reference};
+    return std::string{reference} +
+           ": the engine reads its ports from the pass that runs it (a feature's JSON "
+           "declares them), so it has no sockets of its own -- connect its ports yourself.";
 }
 
 std::string proposedColorTargetName(std::string_view pass_name,
@@ -484,6 +594,15 @@ std::vector<std::string> fullscreenTemplateInputFill(
         }
         if (chosen.empty()) break;
         filled.push_back(std::move(chosen));
+    }
+    // UX-5b (RS-10): with the shadow_directional feature its shadow_map is
+    // declared, and the lighting reads it after the G-buffer -- only behind a
+    // whole G-buffer, for the inputs are read by position.
+    if (filled.size() == deferred_targets.size()) {
+        const auto shadow = std::ranges::find_if(declared, [](const std::string &name) {
+            return name == ShadowMapInput;
+        });
+        if (shadow != declared.end()) filled.push_back(*shadow);
     }
     return filled;
 }

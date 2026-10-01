@@ -47,20 +47,19 @@ void selectValue(QComboBox &combo, const std::string &value) {
 
 // --- FullscreenPassInterfaceRow
 
-FullscreenPassInterfaceRow::FullscreenPassInterfaceRow(QWidget *parent)
+FullscreenPassInterfaceRow::FullscreenPassInterfaceRow(QWidget *parent,
+                                                       const QString &prefix)
     : QWidget(parent) {
-    setObjectName(QStringLiteral("pelican.fullscreenPass.interface"));
+    setObjectName(prefix + QStringLiteral(".interface"));
     auto *layout = new QHBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     uses_light_data_ = new QCheckBox(tr("Uses scene lights"), this);
-    uses_light_data_->setObjectName(
-        QStringLiteral("pelican.fullscreenPass.usesLightData"));
+    uses_light_data_->setObjectName(prefix + QStringLiteral(".usesLightData"));
     uses_light_data_->setToolTip(
         tr("uses_light_data: the pass reads the scene lights "
            "(pelicanLights, pelican_lighting_v1.glsl)."));
     push_constants_ = new QComboBox(this);
-    push_constants_->setObjectName(
-        QStringLiteral("pelican.fullscreenPass.pushConstants"));
+    push_constants_->setObjectName(prefix + QStringLiteral(".pushConstants"));
     push_constants_->addItem(tr("No push constants"), QString{});
     push_constants_->addItem(tr("Camera position"),
                              QStringLiteral("camera_position"));

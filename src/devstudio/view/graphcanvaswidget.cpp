@@ -4867,6 +4867,8 @@ struct GraphCanvasWidget::Impl {
         image_fields = new GraphCanvasImageFields(model, [this] { dispatch(); }, side);
         side_layout->addWidget(image_fields);
         pass_fields = new GraphCanvasPassFields(model, [this] { dispatch(); }, side);
+        // UX-5b: New... wrote a shader; the lists hold it from now on.
+        pass_fields->setShadersChanged([this] { refreshShaderChoices(); });
         side_layout->addWidget(pass_fields);
         place_fields = new GraphCanvasPlaceFields(model, [this] { dispatch(); }, side);
         side_layout->addWidget(place_fields);
@@ -5404,6 +5406,8 @@ struct GraphCanvasWidget::Impl {
                 transport = graph.requestFramePlan(&error);
             else if (request.method == "get_graph_templates" && graph.requestGraphTemplates)
                 transport = graph.requestGraphTemplates(&error);
+            else if (request.method == "get_engine_shaders" && graph.requestEngineShaders)
+                transport = graph.requestEngineShaders(&error);
             else if (request.method == "get_render_authoring_context" &&
                      graph.requestRenderAuthoringContext)
                 transport = graph.requestRenderAuthoringContext(&error);
@@ -5874,6 +5878,25 @@ struct GraphCanvasWidget::Impl {
             dispatch();
         else
             showDetails();
+    }
+
+    // UX-5b, decision 1: the engine's shader list, once it arrived, is every
+    // shader field's (the Pass Editor's too): handed to the shared list, and
+    // this canvas's choices read again.
+    std::uint64_t published_engine_shaders = 0;
+    void publishEngineShaders() {
+        if (published_engine_shaders == model.engineShadersRevision()) return;
+        published_engine_shaders = model.engineShadersRevision();
+        std::vector<EngineShaderListEntry> entries;
+        for (const auto &shader : model.engineShaders()) {
+            if (shader.stage != "vertex" && shader.stage != "fragment") continue;
+            entries.push_back({shader.reference,
+                               shader.stage == "vertex" ? FullscreenShaderStage::vertex
+                                                        : FullscreenShaderStage::fragment,
+                               shader.ports_by_hand});
+        }
+        setEngineShaderList(std::move(entries));
+        refreshShaderChoices();
     }
 
     // UX-2, decision 2: the shaders a render pass picks from -- the Pass
@@ -6466,6 +6489,7 @@ struct GraphCanvasWidget::Impl {
             rendered_content = model.contentRevision();
             rendered_report = model.reportRevision();
             rendered_placement = model.placementRevision();
+            publishEngineShaders();
             // Q-5: a read that only moved the placement -- the reply to the
             // drag that was just made -- keeps the scene when the scene is
             // already drawing it. Rebuilding there threw every item away and
@@ -6553,9 +6577,15 @@ GraphCanvasWidget::GraphCanvasWidget(GraphCanvasReadCapability graph,
                                      QWidget *parent)
     : QWidget{parent}, impl_{std::make_unique<Impl>(*this, std::move(graph))} {
     setObjectName(QStringLiteral("pelican.graphCanvas"));
+    // UX-5b (EL-4b): a shader list opened anywhere (the Pass Editor's too)
+    // asks the engine through this canvas's connection.
+    setEngineShaderListRequester([impl = impl_.get()] {
+        impl->model.askEngineShaders();
+        impl->dispatch();
+    });
 }
 
-GraphCanvasWidget::~GraphCanvasWidget() = default;
+GraphCanvasWidget::~GraphCanvasWidget() { setEngineShaderListRequester({}); }
 
 void GraphCanvasWidget::refresh() {
     impl_->model.refresh();
@@ -6863,6 +6893,7 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
     // switch.
     if (impl_->project_root != project_root) impl_->model.forgetHistory();
     impl_->project_root = project_root;
+    impl_->pass_fields->setProjectRoot(project_root);
     impl_->reloadUiNodes();
     impl_->reloadAudioAssets();
     impl_->audio_row_node.clear();

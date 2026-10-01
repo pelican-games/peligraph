@@ -2261,6 +2261,9 @@ struct RecordedCapability {
         seam.requestEditResult = [note](const QString &, QString *) {
             return note(QStringLiteral("get_edit_result"));
         };
+        seam.requestEngineShaders = [note](QString *) {
+            return note(QStringLiteral("get_engine_shaders"));
+        };
         seam.result = [this](QObject *, auto handler) { deliver = handler; };
         seam.failure = [](QObject *, auto) {};
         return seam;
@@ -8213,4 +8216,343 @@ TEST_CASE("UX-3 decisions 4 and 5: the engine's materials, tags and variants are
     CHECK(op.at("scope") == "forward_opaque_draw");
     CHECK(op.at("parameters").at("render_state") ==
           Json{{"cull", "none"}, {"depth_compare", "greater_equal"}});
+}
+
+// --- UX-5b: the Graph's fullscreen pass used as the Pass Editor's is.
+
+namespace {
+
+// get_engine_shaders as an EL-4b engine answers it: the one vertex, the
+// passthrough's variadic group, a shader whose ports come from the pass that
+// runs it, one that declares two inputs and a resource port, and a compute
+// shader (no list shows it).
+Json ux5bEngineShaders() {
+    return {{"engine_shaders",
+             Json::array({
+                 {{"reference", "engine://fullscreen"}, {"stage", "vertex"},
+                  {"forms", {"source"}}, {"loads", "source"}, {"resource_port_include", false},
+                  {"reflected_from", "source"}, {"pass_inputs", Json::array()},
+                  {"variadic_inputs", nullptr}, {"resource_ports", Json::array()}},
+                 {{"reference", "engine://passthrough"}, {"stage", "fragment"},
+                  {"forms", {"source"}}, {"loads", "source"}, {"resource_port_include", false},
+                  {"reflected_from", "source"},
+                  {"pass_inputs", Json::array({{{"binding", 0}, {"type", "sampler2D"},
+                                                {"name", "pelican_variadic_inputs"},
+                                                {"variadic", true}}})},
+                  {"variadic_inputs", {{"first", 0}, {"max", 8}}},
+                  {"resource_ports", Json::array()}},
+                 {{"reference", "engine://bloom_composite"}, {"stage", "fragment"},
+                  {"forms", {"source"}}, {"loads", "source"}, {"resource_port_include", true},
+                  {"reflection_error", "cannot open pelican_resource_ports.glsl"}},
+                 {{"reference", "engine://lit"}, {"stage", "fragment"}, {"forms", {"source"}},
+                  {"loads", "source"}, {"resource_port_include", false},
+                  {"reflected_from", "source"},
+                  {"pass_inputs",
+                   Json::array({{{"binding", 0}, {"type", "sampler2D"}, {"name", "in_albedo"},
+                                 {"variadic", false}},
+                                {{"binding", 1}, {"type", "sampler2D"}, {"name", "in_normal"},
+                                 {"variadic", false}}})},
+                  {"variadic_inputs", nullptr},
+                  {"resource_ports",
+                   Json::array({{{"port", "lights"}, {"binding", 9}, {"type", "storage_buffer"}}})}},
+                 {{"reference", "engine://cull"}, {"stage", "compute"}, {"forms", {"source"}},
+                  {"loads", "source"}, {"resource_port_include", false}}})}};
+}
+
+// The ops of the `count`th edit, all of them.
+Json ux5bOps(const Ux2Tab &tab, int count) {
+    REQUIRE(tab.reads("edit_graph_document") == count);
+    return Json::parse(tab.transport.calls[static_cast<std::size_t>(
+                                               tab.transport.idOf(QStringLiteral("edit_graph_document")) - 1)]
+                           .body.toStdString());
+}
+
+// A deferred material pass `mp` and the images it draws into, beside
+// ux2Document's fullscreen pass `shade` and its image.
+Json ux5bDeferredDocument(const Json &pass = ux2Pass()) {
+    Json nodes = Json::array();
+    Json inputs = Json::object();
+    for (const char *socket : {"albedo", "normal", "material", "worldpos", "emissive"}) {
+        const std::string id = std::string{"mp__"} + socket;
+        nodes.push_back({{"id", id}, {"op", "render.image"},
+                         {"parameters", {{"type", ux2ColorType()},
+                                         {"format", std::string_view{socket} == "material"
+                                                        ? "R8G8B8A8_UNORM"
+                                                        : "R16G16B16A16_SFLOAT"},
+                                         {"extent_scale", 1.0},
+                                         {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}}},
+                         {"outputs", Json::array({"resource"})}});
+        inputs[socket] = {{"node", id}, {"port", "resource"}};
+    }
+    nodes.push_back({{"id", "mp__depth"}, {"op", "render.image"},
+                     {"parameters", {{"type", {{"semantic", "pelican.render.depth@1"},
+                                               {"arguments", {{"representation", "device"},
+                                                              {"space", "projection"}}}}},
+                                     {"format", "D32_SFLOAT"}, {"extent_scale", 1.0},
+                                     {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT"})}}},
+                     {"outputs", Json::array({"resource"})}});
+    inputs["depth"] = {{"node", "mp__depth"}, {"port", "resource"}};
+    nodes.push_back({{"id", "mp"}, {"op", "render.material_pass"},
+                     {"parameters", {{"material_contract", "deferred_geometry_v1"},
+                                     {"pass_set", "main_render"}}},
+                     {"inputs", inputs}, {"outputs", Json::array()}});
+    const auto fullscreen = ux2Document(ux2Image(), pass);
+    for (const auto &node : fullscreen.at("nodes")) nodes.push_back(node);
+    return {{"definitions", Json::object()}, {"nodes", std::move(nodes)}};
+}
+
+// The catalog with the material pass and EL-4's contract table for it.
+Json ux5bCatalog() {
+    auto catalog = ux2Catalog();
+    catalog["modules"][1]["operations"].push_back({{"op", "render.material_pass"},
+                                                   {"domain", "rendering"},
+                                                   {"evaluation", "direct"},
+                                                   {"sink", false},
+                                                   {"ports", "parameter_dependent"}});
+    const Json wide = "R16G16B16A16_SFLOAT";
+    catalog["material_pass_contracts"] = Json::array({
+        {{"contract", "deferred_geometry_v1"},
+         {"material_outputs", false},
+         {"sockets", Json::array({
+             {{"socket", "albedo"}, {"aspect", "color"}, {"formats", {"B8G8R8A8_SRGB", wide}}},
+             {{"socket", "normal"}, {"aspect", "color"}, {"formats", {wide}}},
+             {{"socket", "material"}, {"aspect", "color"}, {"formats", {"R8G8B8A8_UNORM"}}},
+             {{"socket", "worldpos"}, {"aspect", "color"}, {"formats", {wide}}},
+             {{"socket", "emissive"}, {"aspect", "color"}, {"formats", {"B8G8R8A8_SRGB", wide}}},
+             {{"socket", "depth"}, {"aspect", "depth"}, {"formats", {"D32_SFLOAT"}}}})},
+         {"combinations",
+          Json::array({{{"albedo", "B8G8R8A8_SRGB"}, {"normal", wide}, {"material", "R8G8B8A8_UNORM"},
+                        {"worldpos", wide}, {"emissive", "B8G8R8A8_SRGB"}, {"depth", "D32_SFLOAT"}},
+                       {{"albedo", wide}, {"normal", wide}, {"material", "R8G8B8A8_UNORM"},
+                        {"worldpos", wide}, {"emissive", wide}, {"depth", "D32_SFLOAT"}}})}}});
+    return catalog;
+}
+
+} // namespace
+
+TEST_CASE("UX-5b decision 1: the shader lists are the engine's (get_engine_shaders, asked only "
+          "when a list is opened), a shader whose ports are connected by hand is marked, and "
+          "a picked engine shader's declarations are the pass's sockets before the plan",
+          "[devstudio][graph-canvas][scene][ux5b]") {
+    (void)application();
+    PelicanStudio::setEngineShaderList({});
+    {
+        Ux2Tab tab{false};
+        auto pass = ux2Pass();
+        tab.read(ux2Document(ux2Image(), pass), "ux5b-0");
+        tab.answer("get_graph_catalog", ux2Catalog());
+        tab.widget->poll();
+        // Not on connecting, nor with the catalog: the engine compiles its
+        // shaders to answer.
+        CHECK(tab.reads("get_engine_shaders") == 0);
+        tab.widget->scene().selectNode("shade");
+        QCoreApplication::processEvents();
+        tab.widget->poll();
+        REQUIRE(tab.reads("get_engine_shaders") == 1);
+        auto *fragment = tab.field<QComboBox>("pelican.graphCanvasPass.shader.fragment");
+        // Until it answers, the fixed list.
+        QStringList fixed;
+        for (const auto &reference : PelicanStudio::fullscreenShaderChoices(
+                 PelicanStudio::FullscreenShaderStage::fragment, std::nullopt))
+            fixed << QString::fromStdString(reference);
+        CHECK(ux2Items(*fragment) == fixed);
+
+        tab.answer("get_engine_shaders", ux5bEngineShaders());
+        tab.widget->poll();
+        CHECK(tab.reads("get_engine_shaders") == 1);
+        fragment = tab.field<QComboBox>("pelican.graphCanvasPass.shader.fragment");
+        CHECK(ux2Items(*fragment) ==
+              QStringList({QStringLiteral("engine://passthrough"),
+                           QStringLiteral("engine://bloom_composite  (ports by hand)"),
+                           QStringLiteral("engine://lit")}));
+        const int bloom = fragment->findData(QStringLiteral("engine://bloom_composite"));
+        REQUIRE(bloom >= 0);
+        CHECK(fragment->itemData(bloom, Qt::ToolTipRole)
+                  .toString()
+                  .contains(QStringLiteral("connect its ports yourself")));
+        CHECK(ux2Items(*tab.field<QComboBox>("pelican.graphCanvasPass.shader.vertex")) ==
+              QStringList({QStringLiteral("engine://fullscreen")}));
+        // The Pass Editor's list is the same one.
+        CHECK(PelicanStudio::fullscreenShaderChoices(PelicanStudio::FullscreenShaderStage::fragment,
+                                                     std::nullopt) ==
+              std::vector<std::string>{"engine://passthrough", "engine://bloom_composite",
+                                       "engine://lit"});
+
+        // A picked engine shader: its sockets are its declarations at once.
+        tab.pick(fragment, QStringLiteral("engine://lit"));
+        const auto op = tab.sent(1);
+        pass["shader"]["fragment"] = "engine://lit";
+        CHECK(op.at("parameters") == pass);
+        tab.commit(ux2Document(ux2Image(), pass), "ux5b-1");
+        const auto *declared = tab.widget->model().passInputs({}, "shade");
+        REQUIRE(declared != nullptr);
+        REQUIRE(declared->declarations.size() == 2);
+        CHECK(declared->declarations[1].name == "in_normal");
+        CHECK(tab.field<QLabel>("pelican.graphCanvasPass.ports")
+                  ->text()
+                  .contains(QStringLiteral("resource port lights (storage_buffer)")));
+    }
+    PelicanStudio::setEngineShaderList({});
+}
+
+TEST_CASE("UX-5b decisions 2 and 3: New... in the Graph's Pass fields writes the Pass Editor's "
+          "Deferred lighting template and puts it on the pass in one edit, with the scene "
+          "lights, Camera position and a line from the material pass to each G-buffer input; "
+          "Frame data, blend and the colour output's Load are fields",
+          "[devstudio][graph-canvas][scene][ux5b]") {
+    (void)application();
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_ux5b_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    {
+        Ux2Tab tab{false};
+        tab.widget->setProjectRoot(root);
+        auto pass = ux2Pass();
+        tab.read(ux5bDeferredDocument(pass), "ux5b-0");
+        tab.answer("get_graph_catalog", ux5bCatalog());
+        tab.widget->scene().selectNode("shade");
+        QCoreApplication::processEvents();
+
+        auto *new_shader = tab.field<QPushButton>("pelican.graphCanvasPass.newFragmentShader");
+        REQUIRE(new_shader->isVisibleTo(tab.widget.get()));
+        REQUIRE(new_shader->isEnabled());
+        new_shader->click();
+        QCoreApplication::processEvents();
+        tab.widget->poll();
+        QCoreApplication::processEvents();
+        CHECK(new_shader->isChecked());
+        REQUIRE(tab.field<QComboBox>("pelican.graphCanvasPass.shaderTemplateKind")
+                    ->isVisibleTo(tab.widget.get()));
+        tab.pick(tab.field<QComboBox>("pelican.graphCanvasPass.shaderTemplateKind"),
+                 QStringLiteral("deferred_lighting"));
+        // Named after the template, nothing typed.
+        CHECK(tab.field<QLineEdit>("pelican.graphCanvasPass.shaderTemplateName")->text() ==
+              QStringLiteral("deferred_lighting"));
+        tab.field<QPushButton>("pelican.graphCanvasPass.createFragmentShader")->click();
+        QCoreApplication::processEvents();
+
+        // The Pass Editor's template, reading the five images in role order.
+        const auto file = root / "shaders" / "deferred_lighting.frag";
+        REQUIRE(std::filesystem::exists(file));
+        std::stringstream source;
+        source << std::ifstream{file}.rdbuf();
+        std::vector<PelicanStudio::FullscreenShaderTemplateInput> inputs;
+        for (const char *socket : {"albedo", "normal", "material", "worldpos", "emissive"})
+            inputs.push_back({std::string{"mp__"} + socket, true});
+        CHECK(source.str() == PelicanStudio::fullscreenFragmentShaderTemplate(
+                                  "shade", inputs,
+                                  PelicanStudio::FullscreenShaderTemplateKind::deferred_lighting));
+
+        // One edit: the shader, the settings it needs, and the five lines.
+        // (The material pass lists each output read from it: GL-1f's
+        // replace_node, beside each line.)
+        auto ops = ux5bOps(tab, 1);
+        INFO(ops.dump());
+        Json lines = Json::array();
+        for (const auto &entry : ops)
+            if (entry.at("op") == "set_input") lines.push_back(entry);
+        REQUIRE(lines.size() == 5);
+        CHECK(ops[0].at("op") == "set_node_parameters");
+        CHECK(ops[0].at("node") == "shade");
+        const auto &parameters = ops[0].at("parameters");
+        CHECK(parameters.at("shader").at("fragment") == "project://shaders/deferred_lighting");
+        CHECK(parameters.at("uses_light_data") == true);
+        CHECK(parameters.at("push_constants") == "camera_position");
+        int index = 0;
+        for (const char *socket : {"albedo", "normal", "material", "worldpos", "emissive"}) {
+            const auto &port = parameters.at("ports").at(socket);
+            CHECK(port.at("binding") == "input");
+            CHECK(port.at("input_index") == index);
+            const auto &line = lines[static_cast<std::size_t>(index)];
+            CHECK(line.at("port") == socket);
+            // From the pass that writes it (GL-1f), not the image.
+            CHECK(line.at("source") == Json{{"node", "mp"}, {"port", socket}});
+            ++index;
+        }
+        pass = parameters;
+        auto document = ux5bDeferredDocument(pass);
+        for (const char *socket : {"albedo", "normal", "material", "worldpos", "emissive"})
+            document["nodes"].back()["inputs"][socket] = {{"node", "mp"}, {"port", socket}};
+        tab.commit(document, "ux5b-1");
+        QCoreApplication::processEvents();
+
+        // Decision 3: the Pass Editor's settings, as fields.
+        CHECK(tab.field<QCheckBox>("pelican.graphCanvasPass.usesLightData")->isChecked());
+        CHECK(tab.field<QComboBox>("pelican.graphCanvasPass.pushConstants")->currentData() ==
+              QStringLiteral("camera_position"));
+        tab.pick(tab.field<QComboBox>("pelican.graphCanvasPass.rasterState.blend.0"),
+                 QStringLiteral("additive"));
+        auto op = tab.sent(2);
+        CHECK(op.at("parameters").at("raster_state") ==
+              Json{{"color_attachments", Json::array({{{"blend", "additive"}}})}});
+        pass = op.at("parameters");
+        document["nodes"].back()["parameters"] = pass;
+        tab.commit(document, "ux5b-2");
+        QCoreApplication::processEvents();
+        tab.pick(tab.field<QComboBox>("pelican.graphCanvasPass.outputLoad.0"),
+                 QStringLiteral("load"));
+        op = tab.sent(3);
+        CHECK(op.at("parameters").at("color_load_op") == "load");
+        CHECK(op.at("parameters").at("raster_state") == pass.at("raster_state"));
+        document["nodes"].back()["parameters"] = op.at("parameters");
+        tab.commit(document, "ux5b-3");
+        QCoreApplication::processEvents();
+        tab.field<QCheckBox>("pelican.graphCanvasPass.usesLightData")->click();
+        QCoreApplication::processEvents();
+        op = tab.sent(4);
+        CHECK_FALSE(op.at("parameters").contains("uses_light_data"));
+        CHECK(op.at("parameters").at("color_load_op") == "load");
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+TEST_CASE("UX-5b decision 4: a material pass's image offers its contract's formats, and a new "
+          "albedo format moves the other images to the combination that holds it, in one edit; "
+          "depth is the engine's format_aspects, not the name",
+          "[devstudio][graph-canvas][scene][ux5b]") {
+    (void)application();
+    const auto document = ux5bDeferredDocument();
+    REQUIRE(document.at("nodes").size() == 9);
+    const auto catalog = ux5bCatalog();
+    REQUIRE(catalog.at("material_pass_contracts").size() == 1);
+    Ux2Tab tab{true};
+    tab.read(document, "ux5b-0");
+    REQUIRE(tab.widget->model().nodes({}).size() == 9);
+    tab.answer("get_graph_catalog", catalog);
+    REQUIRE(tab.reads("get_graph_catalog") == 1);
+    tab.widget->scene().selectNode("mp__albedo");
+    QCoreApplication::processEvents();
+    tab.widget->poll();
+    auto authoring = ux2Authoring();
+    // A depth format whose name does not start with D and a digit.
+    authoring["render_target_vocabulary"]["formats"].push_back("X8_D24_UNORM_PACK32");
+    authoring["render_target_vocabulary"]["format_aspects"] = {
+        {"R8G8B8A8_UNORM", "color"}, {"R16G16B16A16_SFLOAT", "color"},
+        {"B10G11R11_UFLOAT_PACK32", "color"}, {"D16_UNORM", "depth"}, {"D32_SFLOAT", "depth"},
+        {"X8_D24_UNORM_PACK32", "depth"}};
+    tab.answer("get_render_authoring_context", authoring);
+    tab.widget->poll();
+    auto *format = tab.field<QComboBox>("pelican.graphCanvasImage.format");
+    CHECK(ux2Items(*format) == QStringList({QStringLiteral("B8G8R8A8_SRGB"),
+                                            QStringLiteral("R16G16B16A16_SFLOAT")}));
+    tab.pick(format, QStringLiteral("B8G8R8A8_SRGB"));
+    const auto ops = ux5bOps(tab, 1);
+    REQUIRE(ops.size() == 2);
+    CHECK(ops[0].at("node") == "mp__albedo");
+    CHECK(ops[0].at("parameters").at("format") == "B8G8R8A8_SRGB");
+    CHECK(ops[1].at("node") == "mp__emissive");
+    CHECK(ops[1].at("parameters").at("format") == "B8G8R8A8_SRGB");
+
+    // An image no material pass draws into: the engine's formats, its side
+    // of the depth line by the aspects.
+    const auto &model = tab.widget->model();
+    CHECK(model.isDepthFormat("X8_D24_UNORM_PACK32"));
+    CHECK_FALSE(model.isDepthFormat("R16G16B16A16_SFLOAT"));
+    const auto depth_choices = model.imageFormatChoices(
+        {{"type", {{"semantic", "pelican.render.depth@1"}, {"arguments", Json::object()}}}});
+    CHECK(depth_choices ==
+          std::vector<std::string>{"D16_UNORM", "D32_SFLOAT", "X8_D24_UNORM_PACK32"});
+    CHECK(model.imageFormatChoicesFor({}, "mp__depth") == std::vector<std::string>{"D32_SFLOAT"});
 }

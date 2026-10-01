@@ -1,17 +1,27 @@
 #include "graphcanvasrenderfields.hpp"
 
+#include "fullscreenpasssettings.hpp"
+#include "fullscreenshadertemplate.hpp"
+#include "passforms/attachmentopsform.hpp"
+#include "passforms/rasterstateform.hpp"
 #include "studiotheme.hpp"
 
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
+#include <QEvent>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QLayout>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QActionGroup>
+#include <QApplication>
+#include <QPushButton>
+#include <QTimer>
 #include <QMenu>
 #include <QRadioButton>
 #include <QWidgetAction>
@@ -22,6 +32,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cctype>
 #include <tuple>
 
 namespace PelicanStudio {
@@ -225,6 +236,9 @@ void GraphCanvasImageFields::showNode(const GraphCanvasNode *node, const std::st
     QStringList parts{qtext(scope_), qtext(node_), qtext(current.dump())};
     for (const auto &format : model_.renderTargetFormats()) parts << qtext(format);
     parts << QStringLiteral("|");
+    // UX-5b, decision 4: a material pass's image offers its socket's formats.
+    for (const auto &format : model_.imageFormatChoicesFor(scope_, node_)) parts << qtext(format);
+    parts << QStringLiteral("|");
     for (const auto &usage : model_.renderTargetUsages()) parts << qtext(usage);
     parts << QStringLiteral("|");
     for (const auto &type : model_.imageTypes()) parts << qtext(type.semantic);
@@ -246,7 +260,7 @@ void GraphCanvasImageFields::load(const Json &parameters) {
     {
         const QSignalBlocker block{format_};
         format_->clear();
-        const auto formats = model_.imageFormatChoices(parameters);
+        const auto formats = model_.imageFormatChoicesFor(scope_, node_);
         // Without the engine's list the format is typed, as it was.
         format_->setEditable(formats.empty());
         for (const auto &choice : formats) format_->addItem(qtext(choice), qtext(choice));
@@ -409,10 +423,14 @@ void GraphCanvasImageFields::commit(const Json &parameters) {
 }
 
 void GraphCanvasImageFields::commitFormat(const QString &format) {
-    if (format.isEmpty()) return;
-    auto changed = parameters();
-    changed["format"] = format.toStdString();
-    commit(changed);
+    if (format.isEmpty() || node_.empty()) return;
+    // UX-5b, decision 4: one edit, which for a material pass's image moves
+    // its other sockets' images to the combination the format belongs to.
+    if (model_.setImageFormat(scope_, node_, format.toStdString())) {
+        if (submitted_) submitted_();
+        return;
+    }
+    load(parameters());
 }
 
 void GraphCanvasImageFields::commitSemantic() {
@@ -477,6 +495,35 @@ void GraphCanvasImageFields::commitSize() {
 
 // --- Decision 2: render.fullscreen / render.raster.
 
+namespace {
+
+// UX-5b: a shader list's entry shows the engine's mark for a shader whose
+// ports are connected by hand; its data is the reference itself.
+void addShaderChoice(QComboBox &combo, const std::string &reference) {
+    combo.addItem(qtext(shaderChoiceLabel(reference)), qtext(reference));
+    combo.setItemData(combo.count() - 1, qtext(shaderChoiceTooltip(reference)), Qt::ToolTipRole);
+}
+
+// The Pass Editor's parts are as wide as their longest choice; beside the
+// canvas they take what the column gives them, so the canvas keeps its width.
+void compactCombos(QWidget &parent) {
+    for (auto *combo : parent.findChildren<QComboBox *>()) {
+        combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        combo->setMinimumContentsLength(6);
+    }
+    for (auto *line : parent.findChildren<QLineEdit *>()) line->setMinimumWidth(40);
+}
+
+std::string lowerOp(const Json &parameters, const char *key) {
+    auto value = stringOf(parameters, key);
+    std::ranges::transform(value, value.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (value == "dontcare") value = "dont_care";
+    return value;
+}
+
+} // namespace
+
 GraphCanvasPassFields::GraphCanvasPassFields(GraphCanvasModel &model,
                                              std::function<void()> submitted, QWidget *parent)
     : QWidget{parent}, model_{model}, submitted_{std::move(submitted)} {
@@ -506,42 +553,167 @@ GraphCanvasPassFields::GraphCanvasPassFields(GraphCanvasModel &model,
                             tr("The fragment shader: the project's shaders folder and the "
                                "engine's fullscreen shaders."));
     form_->addRow(caption(tr("Vertex"), fields_), vertex_);
-    form_->addRow(caption(tr("Fragment"), fields_), fragment_);
+    auto *fragment_row = new QWidget(fields_);
+    auto *fragment_layout = new QHBoxLayout(fragment_row);
+    fragment_layout->setContentsMargins(0, 0, 0, 0);
+    fragment_layout->addWidget(fragment_, 1);
+    new_shader_ = new QPushButton(tr("New…"), fragment_row);
+    new_shader_->setObjectName(passFieldName(QStringLiteral("newFragmentShader")));
+    new_shader_->setToolTip(tr("Write a new fragment shader into the project from one of the "
+                               "Pass Editor's templates, and draw with it."));
+    new_shader_->setCheckable(true);
+    fragment_layout->addWidget(new_shader_);
+    form_->addRow(caption(tr("Fragment"), fields_), fragment_row);
     connect(vertex_, &QComboBox::currentIndexChanged, this, [this] { commit("vertex", vertex_); });
     connect(fragment_, &QComboBox::currentIndexChanged, this, [this] { commit("fragment", fragment_); });
+
+    // UX-5b, decision 2: the Pass Editor's New... row.
+    template_row_ = new QWidget(fields_);
+    template_row_->setObjectName(passFieldName(QStringLiteral("shaderTemplateRow")));
+    auto *template_layout = new QGridLayout(template_row_);
+    template_layout->setContentsMargins(0, 0, 0, 0);
+    template_kind_ = new QComboBox(template_row_);
+    template_kind_->setObjectName(passFieldName(QStringLiteral("shaderTemplateKind")));
+    for (const auto kind : FullscreenShaderTemplateKinds)
+        template_kind_->addItem(qtext(std::string{fullscreenShaderTemplateKindLabel(kind)}),
+                                qtext(std::string{fullscreenShaderTemplateKindName(kind)}));
+    template_kind_->setToolTip(tr("What the new shader starts as. Deferred lighting also turns "
+                                  "on Uses scene lights and Camera position, and reads the "
+                                  "G-buffer the graph's material pass writes."));
+    template_name_ = new QLineEdit(template_row_);
+    template_name_->setObjectName(passFieldName(QStringLiteral("shaderTemplateName")));
+    template_name_->setToolTip(tr("Written to shaders/<name>.frag in the project. Letters, "
+                                  "digits, '_' and '-'."));
+    create_shader_ = new QPushButton(tr("Create"), template_row_);
+    create_shader_->setObjectName(passFieldName(QStringLiteral("createFragmentShader")));
+    template_notice_ = new QLabel(template_row_);
+    template_notice_->setObjectName(passFieldName(QStringLiteral("shaderTemplateNotice")));
+    template_notice_->setFont(studioSmallFont());
+    template_notice_->setWordWrap(true);
+    template_layout->addWidget(template_kind_, 0, 0, 1, 2);
+    template_layout->addWidget(template_name_, 1, 0);
+    template_layout->addWidget(create_shader_, 1, 1);
+    template_layout->addWidget(template_notice_, 2, 0, 1, 2);
+    form_->addRow(QString{}, template_row_);
+    form_->setRowVisible(template_row_, false);
+    connect(new_shader_, &QPushButton::toggled, this, [this](bool on) { showTemplateRow(on); });
+    connect(template_kind_, &QComboBox::currentIndexChanged, this, [this] { proposeTemplateName(); });
+    connect(create_shader_, &QPushButton::clicked, this, [this] { createTemplate(); });
+    connect(template_name_, &QLineEdit::returnPressed, this, [this] { createTemplate(); });
+
     ports_ = new QLabel(fields_);
     ports_->setObjectName(passFieldName(QStringLiteral("ports")));
     ports_->setFont(studioSmallFont());
     ports_->setWordWrap(true);
     ports_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     form_->addRow(caption(tr("Ports"), fields_), ports_);
+
+    // UX-5b, decision 3: the Pass Editor's settings, its UX-4a parts.
+    settings_ = new QWidget(fields_);
+    settings_->setObjectName(passFieldName(QStringLiteral("settings")));
+    auto *settings_form = new QFormLayout(settings_);
+    settings_form->setContentsMargins(0, 0, 0, 0);
+    const auto prefix = QStringLiteral("pelican.graphCanvasPass");
+    interface_ = new FullscreenPassInterfaceRow(settings_, prefix);
+    settings_form->addRow(caption(tr("Frame data"), settings_), interface_);
+    raster_ = new RasterStateForm(prefix, settings_);
+    raster_->setDepthShown(false);
+    raster_->setDrawShown(false);
+    raster_->setToolTip(tr("raster_state: how the pass rasterizes and blends (additive for a "
+                           "light added onto what is there)."));
+    settings_form->addRow(caption(tr("Raster"), settings_), raster_);
+    outputs_ = new AttachmentOpsForm(prefix, settings_);
+    outputs_->setDepthOpsShown(false);
+    outputs_->setToolTip(tr("Load, clear and store of the colour output: the pass's "
+                            "color_load_op, color_store_op and clear_color."));
+    settings_form->addRow(caption(tr("Output"), settings_), outputs_);
+    form_->addRow(settings_);
+    compactCombos(*settings_);
+    // A typed clear colour is one edit when the typing stops, not one a key.
+    settings_timer_ = new QTimer(this);
+    settings_timer_->setSingleShot(true);
+    settings_timer_->setInterval(500);
+    connect(settings_timer_, &QTimer::timeout, this, [this] { commitSettings(); });
+    interface_->setChangedAction([this] {
+        if (!loading_) commitSettings();
+    });
+    connect(raster_, &PassForm::changed, this, [this] {
+        if (!loading_) commitSettings();
+    });
+    connect(outputs_, &PassForm::changed, this, [this] {
+        if (loading_) return;
+        // A Load / Store pick goes now; a clear colour waits for the typing.
+        if (qobject_cast<QLineEdit *>(QApplication::focusWidget()) != nullptr &&
+            outputs_->isAncestorOf(QApplication::focusWidget()))
+            settings_timer_->start();
+        else
+            commitSettings();
+    });
     hide();
+}
+
+void GraphCanvasPassFields::setProjectRoot(const std::filesystem::path &root) {
+    project_root_ = root;
+    new_shader_->setEnabled(!project_root_.empty());
+    if (project_root_.empty()) new_shader_->setChecked(false);
+}
+
+void GraphCanvasPassFields::setShadersChanged(std::function<void()> changed) {
+    shaders_changed_ = std::move(changed);
 }
 
 void GraphCanvasPassFields::showNode(const GraphCanvasNode *node, const std::string &scope) {
     if (node == nullptr || (node->op != "render.fullscreen" && node->op != "render.raster")) {
         node_.clear();
         scope_.clear();
+        op_.clear();
         shown_.clear();
         hide();
         return;
     }
+    // New... stays open over a passing reselection of the same pass (a
+    // redraw shows no node for a moment); another pass closes it.
+    const auto template_key = scope + "|" + node->id;
+    const bool other = template_key != template_for_;
+    template_for_ = template_key;
+    // EL-4b: the shader combos are on screen: the engine's list is asked for
+    // now (once), and replaces the fixed one when it arrives.
+    model_.askEngineShaders();
     node_ = node->id;
     scope_ = scope;
+    op_ = node->op;
     const auto current = model_.nodeParameters(scope_, node_);
     QStringList parts{qtext(scope_), qtext(node_), qtext(node->op), qtext(current.dump())};
-    for (const auto &reference : model_.vertexShaderChoices()) parts << qtext(reference);
+    for (const auto &reference : model_.vertexShaderChoices()) parts << qtext(shaderChoiceLabel(reference));
     parts << QStringLiteral("|");
-    for (const auto &reference : model_.fragmentShaderChoices()) parts << qtext(reference);
+    for (const auto &reference : model_.fragmentShaderChoices()) parts << qtext(shaderChoiceLabel(reference));
     const auto shown = parts.join(QChar{0x1f}).toStdString();
-    if (shown != shown_) {
+    const bool shown_changed = shown != shown_;
+    if (shown_changed) {
         shown_ = shown;
         heading_->setText(node->op == "render.raster" ? tr("Raster pass %1").arg(qtext(node_))
                                                       : tr("Fullscreen pass %1").arg(qtext(node_)));
         load(current);
     }
+    if (other) {
+        // Another pass: New... starts closed, its name proposed afresh.
+        const QSignalBlocker block{new_shader_};
+        new_shader_->setChecked(false);
+        showTemplateRow(false);
+        templateNotice({}, false);
+    }
     followEditable();
+    const bool appearing = isHidden() || shown_changed;
     show();
+    // The rows a load showed have their places now, not after the event
+    // loop's next layout pass: a press that comes first (a scenario's click
+    // right after the pick) lands on the button, not on a row of no height.
+    if (appearing) {
+        for (QWidget *widget = this; widget != nullptr; widget = widget->parentWidget())
+            if (QLayout *own = widget->layout()) own->activate();
+        // A scroll area sizes what it holds on its own layout request.
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+    }
 }
 
 void GraphCanvasPassFields::followEditable() { fields_->setEnabled(model_.canEdit()); }
@@ -553,11 +725,16 @@ void GraphCanvasPassFields::load(const Json &parameters) {
           std::tuple{fragment_, "fragment", &model_.fragmentShaderChoices()}}) {
         const QSignalBlocker block{combo};
         combo->clear();
-        for (const auto &reference : *choices) combo->addItem(qtext(reference), qtext(reference));
+        for (const auto &reference : *choices) addShaderChoice(*combo, reference);
         selectOrAdd(*combo, qtext(stringOf(shader, stage)));
         // A pass that names no shader for the stage has none to replace.
-        form_->setRowVisible(combo, shader.is_object() && shader.contains(stage));
+        form_->setRowVisible(combo == fragment_ ? combo->parentWidget() : combo,
+                             shader.is_object() && shader.contains(stage));
     }
+    // A template is a fullscreen pass's: a raster pass draws its own vertices.
+    new_shader_->setVisible(op_ == "render.fullscreen");
+    new_shader_->setEnabled(!project_root_.empty());
+    if (op_ != "render.fullscreen") showTemplateRow(false);
     QStringList lines;
     const auto ports = parameters.is_object() ? parameters.value("ports", Json::object()) : Json::object();
     if (ports.is_object())
@@ -567,10 +744,123 @@ void GraphCanvasPassFields::load(const Json &parameters) {
                 if (const auto value = stringOf(port, key); !value.empty()) facts << qtext(value);
             lines << QStringLiteral("%1: %2").arg(qtext(name), facts.join(QLatin1Char{' '}));
         }
+    QString tip = tr("A pass's input sockets follow its shader's declarations: connect a line to "
+                     "one on the canvas. The ports are still in the details' parameters as JSON.");
+    // UX-5b, decision 1: what the engine says of the shader it draws with.
+    const auto fragment = stringOf(shader, "fragment");
+    if (const auto engine = model_.engineShader(fragment)) {
+        if (engine->ports_by_hand) {
+            lines << tr("%1 takes its ports from the pass that runs it: connect them yourself.")
+                         .arg(qtext(fragment));
+            tip = qtext(shaderChoiceTooltip(fragment));
+        }
+        for (const auto &port : engine->resource_ports)
+            lines << tr("resource port %1 (declared by the shader)").arg(qtext(port));
+    }
     ports_->setText(lines.isEmpty() ? tr("(none declared)") : lines.join(QLatin1Char{'\n'}));
-    ports_->setToolTip(tr("A pass's input sockets follow its shader's declarations: connect a "
-                          "line to one on the canvas. The ports are still in the details' "
-                          "parameters as JSON."));
+    ports_->setToolTip(tip);
+    loadPassSettings(parameters);
+}
+
+std::vector<std::string> GraphCanvasPassFields::colorPorts(const Json &parameters) const {
+    std::vector<std::pair<std::int64_t, std::string>> found;
+    const auto ports = parameters.is_object() ? parameters.value("ports", Json::object()) : Json::object();
+    if (ports.is_object())
+        for (const auto &[name, port] : ports.items()) {
+            if (!port.is_object() || stringOf(port, "attachment") != "color") continue;
+            const auto location = port.value("location", Json(0));
+            found.emplace_back(location.is_number_integer() ? location.get<std::int64_t>() : 0, name);
+        }
+    std::ranges::sort(found);
+    std::vector<std::string> names;
+    for (auto &[location, name] : found) names.push_back(std::move(name));
+    return names;
+}
+
+void GraphCanvasPassFields::loadPassSettings(const Json &parameters) {
+    // Frame data, blend and the colour output's ops are a fullscreen pass's.
+    const bool fullscreen = op_ == "render.fullscreen";
+    form_->setRowVisible(settings_, fullscreen);
+    if (!fullscreen) return;
+    loading_ = true;
+    const Json declaration = parameters.is_object() ? parameters : Json::object();
+    interface_->load(declaration);
+    const auto colors = colorPorts(declaration);
+    raster_->setColorAttachments(colors);
+    raster_->load(declaration.value("raster_state", Json(nullptr)), Json(nullptr));
+    // The pass's own ops stand for each colour output: a graph pass names no
+    // output list for them to sit in.
+    loaded_settings_ = Json{{"load", lowerOp(declaration, "color_load_op")},
+                            {"store", lowerOp(declaration, "color_store_op")},
+                            {"clear", declaration.value("clear_color", Json(nullptr))}};
+    Json entries = Json::array();
+    Json clear = Json::object();
+    for (const auto &port : colors) {
+        Json entry{{"target", port}};
+        if (!loaded_settings_["load"].get<std::string>().empty())
+            entry["load_op"] = loaded_settings_["load"];
+        if (!loaded_settings_["store"].get<std::string>().empty())
+            entry["store_op"] = loaded_settings_["store"];
+        entries.push_back(entry.size() == 1 ? Json(port) : entry);
+        if (loaded_settings_["clear"].is_array()) clear[port] = loaded_settings_["clear"];
+    }
+    outputs_->load(entries, clear.empty() ? Json(nullptr) : clear, Json(nullptr));
+    outputs_->setDepthOpsShown(false);
+    // The rows a load built are new widgets.
+    compactCombos(*settings_);
+    loading_ = false;
+}
+
+void GraphCanvasPassFields::commitSettings() {
+    settings_timer_->stop();
+    if (node_.empty() || op_ != "render.fullscreen") return;
+    auto changed = model_.nodeParameters(scope_, node_);
+    if (!changed.is_object()) return;
+    interface_->apply(changed);
+    if (const auto state = raster_->rasterState(); state.is_null())
+        changed.erase("raster_state");
+    else
+        changed["raster_state"] = state;
+    // The row that moved says what the pass's ops become.
+    auto load = loaded_settings_.value("load", std::string{});
+    auto store = loaded_settings_.value("store", std::string{});
+    const auto entries = outputs_->color();
+    for (const auto &entry : entries.is_array() ? entries : Json::array({entries})) {
+        const auto row_load = entry.is_object() ? lowerOp(entry, "load_op") : std::string{};
+        const auto row_store = entry.is_object() ? lowerOp(entry, "store_op") : std::string{};
+        if (row_load != loaded_settings_.value("load", std::string{})) load = row_load;
+        if (row_store != loaded_settings_.value("store", std::string{})) store = row_store;
+    }
+    if (load.empty()) changed.erase("color_load_op");
+    else changed["color_load_op"] = load;
+    if (store.empty()) changed.erase("color_store_op");
+    else changed["color_store_op"] = store;
+    Json clear = loaded_settings_.value("clear", Json(nullptr));
+    try {
+        const auto colors = outputs_->clearColors();
+        bool any = false;
+        if (colors.is_object())
+            for (const auto &[target, value] : colors.items()) {
+                any = true;
+                if (value != loaded_settings_.value("clear", Json(nullptr))) clear = value;
+            }
+        if (!any) clear = nullptr;
+    } catch (const std::exception &) {
+        // A colour still being typed: nothing is sent for it yet.
+        return;
+    }
+    if (clear.is_null()) changed.erase("clear_color");
+    else changed["clear_color"] = clear;
+    if (changed == model_.nodeParameters(scope_, node_)) return;
+    if (model_.setNodeParameters(scope_, node_, changed)) {
+        if (submitted_) submitted_();
+        return;
+    }
+    // Refused: the fields show the document again -- from the event loop,
+    // for the row whose signal is being handled is one a load replaces.
+    QMetaObject::invokeMethod(
+        this, [this] { loadPassSettings(model_.nodeParameters(scope_, node_)); },
+        Qt::QueuedConnection);
 }
 
 void GraphCanvasPassFields::commit(const char *stage, QComboBox *combo) {
@@ -587,6 +877,115 @@ void GraphCanvasPassFields::commit(const char *stage, QComboBox *combo) {
         return;
     }
     load(model_.nodeParameters(scope_, node_));
+}
+
+void GraphCanvasPassFields::showTemplateRow(bool shown) {
+    form_->setRowVisible(template_row_, shown);
+    if (shown) proposeTemplateName();
+}
+
+void GraphCanvasPassFields::proposeTemplateName() {
+    if (project_root_.empty()) return;
+    const auto kind = fullscreenShaderTemplateKindFromName(
+                          template_kind_->currentData().toString().toStdString())
+                          .value_or(FullscreenShaderTemplateKind::pass_through);
+    // Named after what it is, or the pass for a pass-through; a file
+    // already there is never the proposal.
+    const std::string base = kind == FullscreenShaderTemplateKind::pass_through
+                                 ? node_
+                                 : std::string{fullscreenShaderTemplateKindName(kind)};
+    const auto current = template_name_->text().trimmed().toStdString();
+    if (!current.empty() && current != auto_template_name_) return;
+    auto_template_name_ = engineShaderCopyName(project_root_, base);
+    template_name_->setText(qtext(auto_template_name_));
+}
+
+void GraphCanvasPassFields::templateNotice(const QString &text, bool failure) {
+    template_notice_->setStyleSheet(failure ? QStringLiteral("color: #d94c3d;") : QString{});
+    template_notice_->setText(text);
+}
+
+void GraphCanvasPassFields::createTemplate() {
+    if (node_.empty() || project_root_.empty() || op_ != "render.fullscreen") return;
+    const auto name = template_name_->text().trimmed().toStdString();
+    if (!isValidShaderTemplateName(name)) {
+        templateNotice(tr("A shader name is letters, digits, '_' and '-'."), true);
+        return;
+    }
+    const auto kind = fullscreenShaderTemplateKindFromName(
+                          template_kind_->currentData().toString().toStdString())
+                          .value_or(FullscreenShaderTemplateKind::pass_through);
+    const auto parameters = model_.nodeParameters(scope_, node_);
+    // What the shader reads: the inputs the pass has, in their order; with
+    // none, the images the template's roles name, each connected by a line
+    // from the pass that writes it.
+    std::vector<FullscreenShaderTemplateInput> inputs;
+    std::vector<GraphCanvasTemplateSource> connect;
+    const auto numbered = GraphCanvasModel::numberedPorts(parameters);
+    const auto sources = model_.templateSources(scope_, node_);
+    if (!numbered.empty()) {
+        for (const auto &[index, port] : numbered) {
+            (void)index;
+            inputs.push_back({port, true});
+        }
+    } else {
+        std::vector<std::string> names;
+        for (const auto &source : sources) names.push_back(source.resource);
+        // RS-10: the shadow_directional feature's shadow_map, declared outside
+        // the graph, is read through a reference the edit adds.
+        bool shadow_declared = false;
+        for (const auto &target : model_.declaredRenderTargets())
+            if (target.name == ShadowMapInput &&
+                std::ranges::find(names, target.name) == names.end()) {
+                names.push_back(target.name);
+                shadow_declared = true;
+            }
+        for (const auto &resource : fullscreenTemplateInputFill(kind, names)) {
+            const auto found = std::ranges::find(sources, resource, &GraphCanvasTemplateSource::resource);
+            if (found == sources.end()) {
+                if (!shadow_declared || resource != ShadowMapInput) break;
+                inputs.push_back({resource, true});
+                connect.push_back({resource, {}, "resource"});
+                continue;
+            }
+            inputs.push_back({resource, true});
+            connect.push_back(*found);
+        }
+    }
+    ShaderTemplateWrite written;
+    try {
+        written = writeShaderTemplate(project_root_, name,
+                                      fullscreenFragmentShaderTemplate(node_, inputs, kind));
+    } catch (const std::exception &error) {
+        templateNotice(tr("Could not write the shader: %1").arg(QString::fromUtf8(error.what())),
+                       true);
+        return;
+    }
+    const auto file = QStringLiteral("shaders/%1.frag").arg(qtext(name));
+    if (!written.created) {
+        templateNotice(tr("%1 is already in the project and was left as it is: pick it from the "
+                          "Fragment list, or name the new one otherwise.")
+                           .arg(file),
+                       true);
+        return;
+    }
+    if (shaders_changed_) shaders_changed_();
+    const auto settings = fullscreenShaderTemplatePassSettings(kind);
+    if (!model_.setPassShaderTemplate(scope_, node_, written.reference, settings.uses_light_data,
+                                      settings.push_constants, connect)) {
+        templateNotice(tr("Wrote %1, but the pass could not take it now: pick it from the "
+                          "Fragment list.")
+                           .arg(file),
+                       true);
+        return;
+    }
+    auto_template_name_.clear();
+    templateNotice(tr("Wrote %1 reading %2 input(s); the pass draws with %3.")
+                       .arg(file)
+                       .arg(static_cast<qulonglong>(inputs.size()))
+                       .arg(qtext(written.reference)),
+                   false);
+    if (submitted_) submitted_();
 }
 
 // --- UX-3, decision 2: Place.

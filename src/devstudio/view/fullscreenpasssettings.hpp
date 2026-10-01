@@ -28,7 +28,11 @@ class FullscreenPassInterfaceRow final : public QWidget {
     std::function<void()> changed_;
 
   public:
-    explicit FullscreenPassInterfaceRow(QWidget *parent = nullptr);
+    // UX-5b: the Graph's Pass fields hold one too, named under their own
+    // prefix (`<prefix>.usesLightData`, `<prefix>.pushConstants`).
+    explicit FullscreenPassInterfaceRow(
+        QWidget *parent = nullptr,
+        const QString &prefix = QStringLiteral("pelican.fullscreenPass"));
 
     void setChangedAction(std::function<void()> action);
     // Back to a pass that asks for nothing.

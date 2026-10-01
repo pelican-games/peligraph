@@ -60,6 +60,10 @@ struct GraphCanvasReadCapability {
     // GL-1: get_graph_templates, for which features have a decomposed
     // version a feature's folded node can show (read only).
     std::function<qint64(QString *error)> requestGraphTemplates;
+    // UX-5b (EL-4b): get_engine_shaders, the engine's shaders and what each
+    // declares -- asked only when a shader list is opened (it takes the
+    // engine seconds), never on connecting.
+    std::function<qint64(QString *error)> requestEngineShaders;
     // The scrub, as two explicit writes. Nothing else on this canvas moves the
     // engine's clock or asks it to draw.
     std::function<qint64(double time, QString *error)> requestSetTime;

@@ -20,6 +20,12 @@
 // "camera_position" (Uses scene lights and Camera position in the Pass
 // Editor), as the engine's lighting pass does.
 //
+// The directional light casts a shadow when the project has the
+// shadow_directional feature and the pass lists shadow_map among its inputs
+// (New... adds it then): the feature defines PELICAN_FEATURE_SHADOW for a pass
+// that reads shadow_map, and the input is declared below as
+// PELICAN_TEMPLATE_SHADOW_MAP. Without either, no light is shadowed.
+//
 // The colour it writes is scene-linear and may be brighter than 1. Tone map it
 // once before the display: a pass made with New... > Tone map does that.
 
@@ -28,6 +34,33 @@ layout(location = 0) out vec4 outColor;
 
 const float PI = 3.14159265359;
 @INPUT_DECLARATIONS@
+#if defined(PELICAN_FEATURE_SHADOW) && defined(PELICAN_TEMPLATE_SHADOW_MAP)
+// As the engine's lighting pass (engine://fullscreen) reads its shadow map:
+// the cascade the point falls in, filtered with the feature's radius, bias
+// and strength.
+#include "pelican_shadow_filter.glsl"
+vec4 sample_shadow_map(vec2 uv, uint layer, float lod) {
+    return textureLod(PELICAN_TEMPLATE_SHADOW_MAP, vec3(uv, float(layer)), lod);
+}
+ivec2 shadow_map_size() { return textureSize(PELICAN_TEMPLATE_SHADOW_MAP, 0).xy; }
+PELICAN_DEFINE_SHADOW_FILTER(filter_shadow_map, sample_shadow_map, shadow_map_size)
+float directional_shadow(uint light_index, vec3 world_position) {
+    vec3 shadow_ndc;
+    vec2 shadow_uv;
+    uint shadow_layer;
+    if (light_index >= pelican_directional_light_count() ||
+        !pelican_directional_shadow_projection(light_index, world_position, shadow_ndc,
+                                               shadow_uv, shadow_layer))
+        return 1.0;
+    return filter_shadow_map(shadow_uv, shadow_layer, shadow_ndc.z,
+                             PELICAN_FEATURE_SHADOW_DIRECTIONAL_PCF_RADIUS,
+                             PELICAN_FEATURE_SHADOW_DIRECTIONAL_BIAS,
+                             PELICAN_FEATURE_SHADOW_DIRECTIONAL_STRENGTH);
+}
+#else
+float directional_shadow(uint light_index, vec3 world_position) { return 1.0; }
+#endif
+
 void main() {
 @INPUT_READS@
     // The geometry pass leaves the normal at zero where it drew nothing.
@@ -55,7 +88,8 @@ void main() {
         vec3 halfway = normalize(light.direction + to_camera);
         float highlight =
             highlight_scale * pow(max(dot(normal, halfway), 0.0), shininess);
-        vec3 radiance = light.radiance * light.attenuation;
+        vec3 radiance = light.radiance * light.attenuation *
+                        directional_shadow(index, world_position);
         color += (diffuse_color / PI + specular_color * highlight) * radiance * n_dot_l;
     }
     outColor = vec4(color, 1.0);

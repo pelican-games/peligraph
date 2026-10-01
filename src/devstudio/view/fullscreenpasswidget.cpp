@@ -34,6 +34,7 @@
 #include <QComboBox>
 #include <QCheckBox>
 #include <QDesktopServices>
+#include <QEvent>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -120,6 +121,24 @@ QStringList stringList(const std::set<std::string, std::less<>> &values) {
     }
     return result;
 }
+
+} // namespace
+
+namespace {
+
+// UX-5b (EL-4b): a shader list asks the engine for its own list when it is
+// opened -- pressed, or reached by the keyboard -- and only then.
+class EngineShaderListAsker final : public QObject {
+  public:
+    using QObject::QObject;
+
+  protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::KeyPress)
+            requestEngineShaderList();
+        return QObject::eventFilter(watched, event);
+    }
+};
 
 } // namespace
 
@@ -235,6 +254,8 @@ struct FullscreenPassWidget::Impl {
     qint64 pending_scene_structures = 0;
     // UX-4a: the forms that stand where the raw JSON fields stood.
     RasterStateForm *raster_form = nullptr;
+    // UX-5b: this panel's place among the engine shader list's observers.
+    std::size_t engine_list_observer = 0;
     ShaderDefinesForm *defines_form = nullptr;
     MaterialSettingsForm *material_form = nullptr;
     MaterialRoutingForm *routing_form = nullptr;
@@ -1159,6 +1180,7 @@ struct FullscreenPassWidget::Impl {
         auto *choice = new QComboBox(parent);
         choice->setObjectName(QString::fromLatin1(object_name));
         choice->setInsertPolicy(QComboBox::NoInsert);
+        choice->installEventFilter(new EngineShaderListAsker(choice));
         choice->setPlaceholderText(owner.tr("Pick..."));
         choice->setSizeAdjustPolicy(QComboBox::AdjustToContents);
         choice->setToolTip(owner.tr(
@@ -1188,8 +1210,13 @@ struct FullscreenPassWidget::Impl {
               std::pair{vertex_choice, FullscreenShaderStage::vertex}}) {
             const QSignalBlocker blocker{choice};
             choice->clear();
-            for (const auto &reference : fullscreenShaderChoices(stage, project_root))
-                choice->addItem(text(reference));
+            // UX-5b: the engine's own list once a catalog handed it over;
+            // a shader whose ports are connected by hand says so.
+            for (const auto &reference : fullscreenShaderChoices(stage, project_root)) {
+                choice->addItem(text(shaderChoiceLabel(reference)), text(reference));
+                choice->setItemData(choice->count() - 1, text(shaderChoiceTooltip(reference)),
+                                    Qt::ToolTipRole);
+            }
             choice->setCurrentIndex(-1);
         }
         // UX-4a: a skinned vertex stem is the engine's own or a project .vert.
@@ -1297,6 +1324,7 @@ struct FullscreenPassWidget::Impl {
 
     void beginShaderTemplate() {
         if (!project_root) return;
+        requestEngineShaderList();
         const QString proposed = proposedShaderName();
         {
             const QSignalBlocker blocker{shader_template_name};
@@ -3716,9 +3744,14 @@ FullscreenPassWidget::FullscreenPassWidget(
     setObjectName(QStringLiteral("pelican.fullscreenPass"));
     impl_ = std::make_unique<Impl>(
         *this, std::move(frame_plan), std::move(authoring), shape_policy);
+    // UX-5b: the engine's shader list replaces the fixed one when it arrives.
+    impl_->engine_list_observer =
+        addEngineShaderListObserver([impl = impl_.get()] { impl->refreshShaderChoices(); });
 }
 
-FullscreenPassWidget::~FullscreenPassWidget() = default;
+FullscreenPassWidget::~FullscreenPassWidget() {
+    removeEngineShaderListObserver(impl_->engine_list_observer);
+}
 
 void FullscreenPassWidget::setCommittedAction(std::function<void()> action) {
     impl_->committed_action = std::move(action);

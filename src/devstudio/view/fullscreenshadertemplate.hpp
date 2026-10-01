@@ -2,6 +2,7 @@
 
 #include <array>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -123,6 +124,39 @@ std::vector<std::string> fullscreenShaderChoices(
     FullscreenShaderStage stage,
     const std::optional<std::filesystem::path> &project_root);
 
+// UX-5b, decision 1: the engine part of that list is the engine's own
+// (get_graph_catalog.engine_shaders, EL-4), by stage, once a catalog has
+// handed it over; the fixed table above is kept for an engine that did not
+// list them. `ports_by_hand`: the engine could not reflect the shader alone
+// (it includes the resource-port header the pass's ports generate), so its
+// ports are connected by the author. Studio talks to one engine, so the list
+// is the process's: whoever reads the catalog sets it, and every shader
+// field (the Graph's and the Pass Editor's) reads it.
+struct EngineShaderListEntry {
+    std::string reference;
+    FullscreenShaderStage stage = FullscreenShaderStage::fragment;
+    bool ports_by_hand = false;
+
+    bool operator==(const EngineShaderListEntry &) const = default;
+};
+// False when the list was already this one.
+bool setEngineShaderList(std::vector<EngineShaderListEntry> entries);
+const std::vector<EngineShaderListEntry> &engineShaderList();
+bool engineShaderPortsByHand(std::string_view reference);
+// What a shader list shows for a reference: the reference, and for one whose
+// ports are connected by hand a mark after it. The tooltip says why.
+std::string shaderChoiceLabel(std::string_view reference);
+std::string shaderChoiceTooltip(std::string_view reference);
+// EL-4b: the engine answers its list only when asked (get_engine_shaders,
+// seconds of shader compiling), so a field that shows the list asks for it
+// when it is opened. Whoever can ask the engine sets the requester; a field
+// that shows the list is told when it changed (an observer per field, taken
+// out by the id addEngineShaderListObserver gave).
+void setEngineShaderListRequester(std::function<void()> requester);
+void requestEngineShaderList();
+std::size_t addEngineShaderListObserver(std::function<void()> observer);
+void removeEngineShaderListObserver(std::size_t id);
+
 // T-1. What a template reads fills itself in: for each role, in order, the
 // declared resource named as G-1 names that role's target (gbuffer_albedo,
 // gbuffer_normal, gbuffer_material, gbuffer_worldpos, gbuffer_emissive), else
@@ -130,9 +164,20 @@ std::vector<std::string> fullscreenShaderChoices(
 // position, so the list stops at the first role nothing matches; an optional
 // role is never filled. Empty for a kind with no roles filled this way (only
 // Deferred lighting has them).
+// UX-5b (RS-10): when the five are filled and `declared` holds shadow_map
+// (the shadow_directional feature's), it follows them: the template's shadow.
 std::vector<std::string> fullscreenTemplateInputFill(
     FullscreenShaderTemplateKind kind,
     const std::vector<std::string> &declared);
+
+// UX-5b (RS-10): the target the shadow_directional feature declares, which a
+// fullscreen pass lists among its inputs to be the feature's receiver. In the
+// Deferred lighting template an input named so (or `<anything>_shadow_map`)
+// is the directional shadow, not a G-buffer role: it is declared as
+// PELICAN_TEMPLATE_SHADOW_MAP and sampled only when the feature defines
+// PELICAN_FEATURE_SHADOW for the pass.
+inline constexpr std::string_view ShadowMapInput = "shadow_map";
+bool isTemplateShadowMapInput(std::string_view resource);
 
 // T-1. The target "New target:" in the colour output's list proposes:
 // <pass>_color, every character a target name cannot hold folded to '_'
