@@ -362,7 +362,7 @@ get_frame_plan 応答 = pelican.frame_plan v1
 
 2 つの層は互いに引けます(✅GL-2a)。名前の層の node の出所の鍵(`source` / `provider_*` / `authored_name` / `loop_origin` と、GL-2a の
 `origin` / `replaces`、✅RS-6 の `added_after`)は、`framePlanToJson()` が compiled pipeline の `RenderPassProvenance` から写します
-([写す所](../../src/core/renderingpass/frameplanner.cpp#L1926))。`origin` の `graph`(rendering root 文書の参照)は raw の planner が知らないので、
+([写す所](../../src/core/renderingpass/frameplanner.cpp#L1926))。resource の側の ✅RS-6b の `added_usage`(engine が宣言の `usage` に足した `SAMPLED`)も、`RenderResourceProvenance` から `resources[]` へ写します([`added_usage` を写す所](../../src/core/renderingpass/frameplanner.cpp#L2084))。`origin` の `graph`(rendering root 文書の参照)は raw の planner が知らないので、
 renderer が `framePlanToJson()` に渡します。物理の層は、`physical_target_plan` を足した直後に renderer が
 [`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L2199) を呼び
 ([呼ぶ所](../../src/core/vkcore/renderer.cpp#L4239))、resources / alias_groups / decisions / backend の候補に、関わる node 名の

@@ -581,6 +581,18 @@ compute task は常に全 pass の後に宣言され、frame planner は前に�
 - 残した穴(実装者の報告): ループの展開で生まれる task を介した塊の移動、`render.target_ref` を介した読み
 - test: `featurecompose_test.cpp` の「RS-6 a scene pass that reads what a graph compute task wrote waits on that task」([3 SECTION](../test/featurecompose_test.cpp#L8769)。present が task を待ち SAMPLED と added_after が付き task は何も名指さない / task が読む graph の pass が task と一緒に present の前へ / present を待つ graph の pass があれば動かず今どおり断られる)
 
+**feature の compute task が書いた image を rendering 節の pass が読むとき(RS-6b、`b8015064`)**
+
+feature の compute task(`rt_shadow_mask_pipeline` の task など。ray tracing を含む)も全 pass の後に宣言されるので、`present` がその mask を読む構成は RS-6 の後も同じ言葉で断られていた。RS-6b から RS-6 の規則が feature と integration の compute task にも効く。
+
+- 対象の task: RS-6 の graph の task に、`graph_features.feature_passes` に載る task(feature と integration の task。integration の task は provider の feature のもの)を足す([選ぶ所](../src/project/featurecompose.cpp#L3821))。関数名 `waitOnGraphTasksInScenePasses` はそのまま
+- 読み手の候補は RS-6 のまま(rendering 節と preset の pass。feature の pass は候補にしない)。feature が `before` / `after` で決めた順は変わらない。足すのは読み手の `after` だけで task には足さない。足さない場合も RS-6 と同じ
+- R が X を `input` として読み、X が feature の render target で `usage` に `SAMPLED` が無ければ、合成した config の宣言に足す(feature の文書は書き換えない)。合成は `resource_provenance` の source が feature の名前を `graph_images` に加えて渡す([加える所](../src/project/featurecompose.cpp#L3826))
+- 足した flag は `GraphTaskReaderWait::sampled` を経て `RenderResourceProvenance::added_usage` に載り([載せる所](../src/project/featurecompose.cpp#L3852))、frame plan の `resources[]` の `added_usage: ["SAMPLED"]` に出る(足したときだけ。graph の `render.image` に足したときも同じ)
+- 適用は root が `pelican.graph` の文書だけ(RS-6 と同じ)
+- 残した穴(実装者の報告): feature の task が読む G-buffer を書く pass が `present` より後ろにある構成は断られたまま
+- test: `featurecompose_test.cpp` の「RS-6b a scene pass that reads what a feature's compute task wrote waits on that task」([2 SECTION](../test/featurecompose_test.cpp#L8852)。blank に G-buffer の pass 2 つと `rt_shadow_mask_pipeline` を足し present に mask を読ませると、present が task を待ち SAMPLED と `added_after` / `added_usage` が付き task は何も名指さない / `clustered_lighting`・`planar_reflection`・`rt_shadow_mask_pipeline` の構成は graph の root の有無で順が同じで、`added_after` も `added_usage` も付かない)
+
 ## 7. view の軸を選ぶ(cascade と cube の 6 面)
 
 ### 7.1 考え方
@@ -821,6 +833,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | RS-3 | 置き場所の無い graph の pass の塊を、その出力を読む rendering 節の最初の pass の直前へ(§6 の表の下) | LP-1e | `1b4f7527` |
 | RS-4 | `render.material_pass` / `render.shadow_depth` / `render.snapshot_copy` の書いた socket を出力 port にする(§6 の表の下) | LP-0e、LP-3a | `010c038f` |
 | RS-6 | graph の compute task が書く image を読む rendering 節の最初の pass に `after: <task>`。task が待つ置き場所の無い graph の pass の塊もその前へ(§6 の表の下) | RS-3 | `257cdef0` |
+| RS-6b | RS-6 の規則を feature と integration の compute task にも。読み手が `input` で読む feature の render target に `SAMPLED` を足し、frame plan の `resources[]` に `added_usage`(§6 の表の下) | RS-6 | `b8015064` |
 | RS-9 | render の node の `parameters` の欠落を `graph.render_node_parameters_missing@1` で名前付きに(§10) | — | `5d065436` |
 
 **docs**:各 WP で次を更新する。
