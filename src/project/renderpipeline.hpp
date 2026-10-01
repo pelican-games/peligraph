@@ -277,6 +277,10 @@ struct RenderPassProvenance {
     // GL-2a: the feature passes this one took the place of, in the order
     // the instance named them (one node may replace several).
     std::vector<RenderPassReplacedDeclaration> replaces;
+    // RS-6: the graph's compute tasks the engine added to this pass's
+    // `after` because the pass reads an image they write
+    // (waitOnGraphTasksInScenePasses), in the order added.
+    std::vector<std::string> added_after;
 
     bool operator==(const RenderPassProvenance &) const = default;
 };

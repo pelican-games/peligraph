@@ -3154,6 +3154,11 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     // declarations. Add the common graph's declarations after preset expansion.
     for (auto &buffer : graph_buffers) resolved_config["buffers"].push_back(std::move(buffer));
     for (auto &task : graph_tasks) resolved_config["compute_tasks"].push_back(std::move(task));
+    // RS-6: the graph's render.image declarations (a loop's copies join later).
+    std::set<std::string> graph_images;
+    for (const auto &target : graph_targets)
+        if (target.is_object() && target.contains("name") && target.at("name").is_string())
+            graph_images.insert(target.at("name").get<std::string>());
     for (auto &target : graph_targets) resolved_config["render_targets"].push_back(std::move(target));
     for (auto &family : graph_passes) {
         auto &families = ensureArray(resolved_config, "rendering_passes");
@@ -3187,7 +3192,9 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         // that stand by them included) and nothing before it writes that:
         // then the graph's passes, in their own order, stand right before the
         // first such reader. A pass the canonical order puts past the first
-        // anchor already stands after them and is not a reader here.
+        // anchor already stands after them and is not a reader here. RS-6:
+        // what a graph compute task that waits on them writes counts as
+        // theirs (the reader waits on the task, waitOnGraphTasksInScenePasses).
         const auto family_name = found->at("name").get<std::string>();
         std::vector<const nlohmann::json *> run;
         std::set<std::string> run_names;
@@ -3678,6 +3685,8 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     std::vector<RenderGraphLoopReport> graph_loops;
     // GL-2a: the graph passes and tasks that took the place of feature passes.
     std::map<std::string, std::vector<RenderFeaturePassReplacement>> graph_replacements;
+    // RS-6: the passes and tasks the graph's loops expanded.
+    std::set<std::string> graph_loop_declarations;
     // LP-0d: pass_replacements name a graph node, so they need a graph.
     if (!common_graph && !graph_features.replacements.empty()) {
         const auto &replacement = graph_features.replacements.front();
@@ -3706,6 +3715,8 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                                                      inputs.surface_resource_contracts);
             };
         auto loop_resolution = resolveGraphDocumentAfterComposition(composed, active_graph, graph_features);
+        for (const auto &[name, origin] : loop_resolution.passes) graph_loop_declarations.insert(name);
+        for (const auto &[name, origin] : loop_resolution.resources) graph_images.insert(name);
         // LP-Vb (docs/design_graph_loops.md 14.7): a loop's copies joined
         // after the surface resources picked their consumers, possibly in the
         // place of feature passes that were consumers (a shadow's receivers).
@@ -3765,9 +3776,35 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         enforceCanonicalOrder(pass_set.at("passes"));
     }
     enforceTerminalAfterComputeTasks(composed);
+    // RS-6: a scene pass of the rendering section or the preset that reads an
+    // image the graph's compute task writes waits on that task (RS-3 placed
+    // the graph's passes the task waits on before it already).
+    std::vector<GraphTaskReaderWait> graph_task_waits;
+    if (common_graph) {
+        const auto graph_made = [&](const std::string &name) {
+            return active_graph.graph_declarations.contains(name) || graph_loop_declarations.contains(name);
+        };
+        std::set<std::string> graph_task_names;
+        for (const auto &task : ensureArray(composed, "compute_tasks"))
+            if (const auto name = task.value("name", std::string{}); graph_made(name)) graph_task_names.insert(name);
+        graph_task_waits = waitOnGraphTasksInScenePasses(composed, graph_task_names, graph_images,
+            [&](const nlohmann::json &pass) {
+                const auto name = pass.value("name", std::string{});
+                const auto type = pass.value("type", std::string{});
+                return !graph_made(name) && !graph_features.feature_passes.contains(name) && type != "ui" &&
+                       type != "debug_draw" && type != "gizmo" && type != "debug_text" &&
+                       !passWritesSwapchain(pass);
+            });
+    }
     synchronizeRenderPipelineProvenance(
         composed, pass_provenance,
         resource_provenance);
+    for (const auto &wait : graph_task_waits)
+        for (auto &provenance : pass_provenance)
+            if (provenance.name == wait.pass &&
+                std::find(provenance.added_after.begin(), provenance.added_after.end(), wait.task) ==
+                    provenance.added_after.end())
+                provenance.added_after.push_back(wait.task);
     // GL-2a: which graph node made each surviving pass and task. A
     // declaration of the root or an instance is named after its node's
     // expanded id; a loop's copy finds its body node through the branch its

@@ -8740,6 +8740,115 @@ TEST_CASE("RS-4 a graph pass hands on the images it wrote as output ports",
     }
 }
 
+namespace {
+nlohmann::json rs6Mask(const nlohmann::json &usage) {
+    return {{"id", "mask"}, {"op", "render.image"},
+            {"parameters", {{"type", lp0aSceneColorType()}, {"format", "R16G16B16A16_SFLOAT"},
+                            {"extent_scale", 1.0}, {"usage", usage}}},
+            {"outputs", {"resource"}}};
+}
+
+// A compute task that writes `mask` as a storage image and, when `source` is
+// given, samples it.
+nlohmann::json rs6Trace(const nlohmann::json &source = nullptr) {
+    using Json = nlohmann::json;
+    Json ports{{"shadow_mask", {{"kind", "image"}, {"type", lp0aSceneColorType()}, {"access", "write"},
+                                {"binding", "storage"}}}};
+    Json inputs{{"shadow_mask", {{"node", "mask"}, {"port", "resource"}}}};
+    if (!source.is_null()) {
+        ports["world_position"] = {{"kind", "image"}, {"type", lp0aSceneColorType()}, {"access", "read"},
+                                   {"binding", "sampled"}};
+        inputs["world_position"] = source;
+    }
+    return Json{{"id", "trace"}, {"op", "render.compute"},
+                {"parameters", {{"shader", "engine://ray_deform"}, {"ports", std::move(ports)}}},
+                {"inputs", std::move(inputs)}, {"outputs", {"shadow_mask"}}};
+}
+} // namespace
+
+TEST_CASE("RS-6 a scene pass that reads what a graph compute task wrote waits on that task",
+          "[render-feature][graph-composition][rs6]") {
+    using Json = nlohmann::json;
+    // The blank project's present shows what the graph's task writes.
+    auto document = lp1eBlankRenderingConfig();
+    auto &present = document.at("rendering").at("rendering_passes").at(0).at("passes").at(0);
+    REQUIRE(present.at("name") == "present");
+    present["input"] = Json::array({"mask"});
+    const auto plan = [](const RenderFeatureComposeResult &composed) {
+        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+        const auto graph = std::find_if(graphs.begin(), graphs.end(),
+            [](const auto &candidate) { return candidate.name == "main_render"; });
+        REQUIRE(graph != graphs.end());
+        return planFrameGraph(*graph);
+    };
+    const auto inputs_produced = [&](const RenderFeatureComposeResult &composed) {
+        validateFramePlanPassInputsProduced(plan(composed), composed.config.at("rendering_passes").at(0), {});
+    };
+    SECTION("present waits on the task that writes its input") {
+        // The image is declared for the task only; present samples it.
+        document["nodes"] = Json::array({rs6Mask(Json::array({"STORAGE"})), rs6Trace()});
+        const auto composed = lp0aCompose(document);
+        const auto &reader = passByName(composed.config, "present");
+        CHECK(lp0bListed(reader.at("after"), "trace"));
+        // The task names no pass (it is in every family's graph).
+        const auto &task = lp1bTask(composed.config, "trace");
+        CHECK_FALSE(task.contains("before"));
+        CHECK_FALSE(lp0bListed(task.value("after", Json::array()), "present"));
+        const auto order = lp0bPlanOrder(composed);
+        CHECK(lp0bIndex(order, "trace") < lp0bIndex(order, "present"));
+        REQUIRE_NOTHROW(inputs_produced(composed));
+        // A sampled read needs SAMPLED.
+        const auto &targets = composed.config.at("render_targets");
+        const auto mask = std::find_if(targets.begin(), targets.end(),
+            [](const Json &target) { return target.value("name", std::string{}) == "mask"; });
+        REQUIRE(mask != targets.end());
+        CHECK(lp0bListed(mask->at("usage"), "STORAGE"));
+        CHECK(lp0bListed(mask->at("usage"), "SAMPLED"));
+        // The engine says it added the wait.
+        const auto compiled = compileComposition(composed);
+        const auto json = framePlanToJson(plan(composed), &compiled);
+        const auto node = std::find_if(json.at("nodes").begin(), json.at("nodes").end(),
+            [](const Json &candidate) { return candidate.at("name") == "present"; });
+        REQUIRE(node != json.at("nodes").end());
+        CHECK(node->value("added_after", Json()) == Json::array({"trace"}));
+    }
+    SECTION("the graph pass the task reads moves ahead of present with it") {
+        // blit -> trace -> present: blit has no place of its own, and LP-1e
+        // alone would put it after present.
+        document["nodes"] = Json::array({lp0bImage("blit_image"),
+                                         lp1aFullscreen("blit", {{"node", "blit_image"}, {"port", "resource"}}),
+                                         rs6Mask(Json::array({"STORAGE", "SAMPLED"})),
+                                         rs6Trace({{"node", "blit"}, {"port", "color"}})});
+        const auto composed = lp0aCompose(document);
+        const auto declared = lp0bDeclared(composed.config);
+        CHECK(lp0bIndex(declared, "blit") < lp0bIndex(declared, "present"));
+        CHECK(lp0bListed(lp1bTask(composed.config, "trace").at("after"), "blit"));
+        CHECK(lp0bListed(passByName(composed.config, "present").at("after"), "trace"));
+        const auto order = lp0bPlanOrder(composed);
+        CHECK(lp0bIndex(order, "blit") < lp0bIndex(order, "trace"));
+        CHECK(lp0bIndex(order, "trace") < lp0bIndex(order, "present"));
+        REQUIRE_NOTHROW(inputs_produced(composed));
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
+    SECTION("a graph pass that waits on present keeps both where they were") {
+        // The task's upstream cannot stand before present, so present does
+        // not wait on the task either (that would be a cycle): refused as
+        // before, by the frame planner.
+        document["nodes"] = Json::array({lp0bImage("blit_image"),
+                                         lp1aFullscreen("blit", {{"node", "blit_image"}, {"port", "resource"}},
+                                                        {{"after", {"present"}}}),
+                                         rs6Mask(Json::array({"STORAGE", "SAMPLED"})),
+                                         rs6Trace({{"node", "blit"}, {"port", "color"}})});
+        const auto composed = lp0aCompose(document);
+        const auto declared = lp0bDeclared(composed.config);
+        CHECK(lp0bIndex(declared, "present") < lp0bIndex(declared, "blit"));
+        CHECK_FALSE(lp0bListed(passByName(composed.config, "present").value("after", Json::array()), "trace"));
+        CHECK_THROWS_WITH(inputs_produced(composed),
+                          Catch::Matchers::ContainsSubstring(
+                              "Pass input target is not produced as an earlier output: mask in pass: present"));
+    }
+}
+
 // RS-9: a render node whose parameters lack what its op requires is refused
 // by name, listing what is missing; absent parameters are empty ones. A
 // render.shadow_depth requires nothing (it draws with engine://shadow_depth

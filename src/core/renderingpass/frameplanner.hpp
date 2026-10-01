@@ -186,6 +186,9 @@ std::vector<std::string> framePlanOrder(const FramePlan &plan);
 // the root and in a loop body), and for a loop's copy `loop`, `loop_branch`
 // and `element` (the same element as loop_origin). A node that took the
 // place of feature passes also carries "replaces": [{"feature", "pass"}].
+// RS-6: a pass the engine made wait on the graph's compute tasks (it reads
+// an image they write) carries "added_after": [<task>], the names the engine
+// added to its `after`.
 // With a pipeline, the plan also carries the pipeline's `diagnostics`
 // ([{kind, subject, detail}]) and `deactivated_graph_nodes`
 // ([{node, feature, reason}]).

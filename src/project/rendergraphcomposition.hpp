@@ -358,9 +358,41 @@ void placeDeclaredRenderGraphPassRuns(nlohmann::json &config, LoweredRenderGraph
 // reader or a later pass (its `after` names it, its `before` names the run
 // -- `run_names` -- or it writes an image the run reads): the run then stays
 // where it is, and the reader is refused as before.
+// RS-6: a compute task of `config` that waits on the run (its `after` names a
+// pass of the run or such a task, or their `before` names it) hands on what
+// the run wrote: a scene pass that reads an image such a task writes (and no
+// other task writes) reads the run through it, and the run stands before
+// that reader too when it comes first -- unless the run or such a task waits
+// on that reader or a later pass (what such a task reads and waits on counts
+// for this reader only). The reader's wait on the task is
+// waitOnGraphTasksInScenePasses's.
 std::optional<std::size_t> graphPassRunReaderPosition(const nlohmann::json &config, const nlohmann::json &passes,
     const std::vector<const nlohmann::json *> &run, const std::set<std::string> &run_names,
     const std::function<bool(const nlohmann::json &)> &scene_pass, std::size_t end);
+
+// RS-6: an `after` waitOnGraphTasksInScenePasses added.
+struct GraphTaskReaderWait {
+    std::string family;
+    std::string pass;
+    std::string task;
+};
+
+// RS-6: a scene pass that reads an image a graph compute task writes waits on
+// that task. For each task named in `graph_tasks` and each render target it
+// writes, the first pass of each family that `reader_candidate` admits, that
+// stands before the family's first canonical anchor (or output_transform)
+// and that reads the image this frame (LP-6's reads, as RS-3: no history
+// read) gets `after: <task>` -- unless a pass before it writes the image, a
+// writer of the image (the task included) already runs before it, or the
+// task runs after it (an after would close a cycle). The task gets nothing:
+// it is in every family's graph and may name no pass. When the reader lists
+// the image as an `input` and the image is one of `graph_images` (a graph's
+// render.image), SAMPLED joins its usage. Called on the composed config once
+// the canonical order and the terminal's waits are explicit. Returns what it
+// added.
+std::vector<GraphTaskReaderWait> waitOnGraphTasksInScenePasses(nlohmann::json &composed,
+    const std::set<std::string> &graph_tasks, const std::set<std::string> &graph_images,
+    const std::function<bool(const nlohmann::json &)> &reader_candidate);
 
 // LP-1a: the expand stage (docs/design_graph_loops.md 5.1, 5.2). For each
 // loop, in dependency order:

@@ -1298,44 +1298,107 @@ std::set<std::string> declarationFrameReads(const Json &declaration) {
 std::optional<std::size_t> graphPassRunReaderPosition(const Json &config, const Json &passes,
     const std::vector<const Json *> &run, const std::set<std::string> &run_names,
     const std::function<bool(const Json &)> &scene_pass, std::size_t end) {
+    // The first scene pass that reads one of `written` no scene pass before
+    // it writes, unless what `group` stands for waits on it or a later pass:
+    // `waited` names it, its `before` names `group`, or it writes one of
+    // `read`.
+    const auto first_reader = [&](const std::set<std::string> &written, const std::set<std::string> &read,
+                                  const std::set<std::string> &waited,
+                                  const std::set<std::string> &group) -> std::optional<std::size_t> {
+        if (written.empty() || !passes.is_array()) return std::nullopt;
+        std::set<std::string> produced;
+        std::optional<std::size_t> reader;
+        for (std::size_t i = 0; i < std::min(end, passes.size()); ++i) {
+            const auto &pass = passes.at(i);
+            if (!pass.is_object() || !scene_pass(pass) || run_names.contains(pass.value("name", std::string{})))
+                continue;
+            if (!reader) {
+                const auto reads = declarationFrameReads(pass);
+                if (std::any_of(reads.begin(), reads.end(), [&](const std::string &name) {
+                        return written.contains(name) && !produced.contains(name);
+                    }))
+                    reader = i;
+            }
+            if (!reader) {
+                produced.merge(declarationWrites(pass));
+                continue;
+            }
+            // The run waits on this pass: it cannot stand before the reader.
+            const auto before = orderNames(pass, "before");
+            const auto writes = declarationWrites(pass);
+            if (waited.contains(pass.value("name", std::string{})) ||
+                std::any_of(before.begin(), before.end(), [&](const std::string &name) { return group.contains(name); }) ||
+                std::any_of(writes.begin(), writes.end(), [&](const std::string &name) { return read.contains(name); }))
+                return std::nullopt;
+        }
+        return reader;
+    };
     std::set<std::string> written, read, waited;
     for (const auto *pass : run) {
         written.merge(declarationWrites(*pass));
         read.merge(declarationFrameReads(*pass));
         for (const auto &name : orderNames(*pass, "after")) waited.insert(name);
     }
+    std::vector<const Json *> tasks;
+    if (const auto found = config.find("compute_tasks"); found != config.end() && found->is_array())
+        for (const auto &task : *found)
+            if (task.is_object() && task.contains("name") && task.at("name").is_string()) tasks.push_back(&task);
     // What a compute task writes may reach the reader without the run.
-    if (const auto tasks = config.find("compute_tasks"); tasks != config.end() && tasks->is_array())
-        for (const auto &task : *tasks)
-            if (task.is_object())
-                for (const auto &name : declarationWrites(task)) written.erase(name);
-    if (written.empty() || !passes.is_array()) return std::nullopt;
-    std::set<std::string> produced;
-    std::optional<std::size_t> reader;
-    for (std::size_t i = 0; i < std::min(end, passes.size()); ++i) {
-        const auto &pass = passes.at(i);
-        if (!pass.is_object() || !scene_pass(pass) || run_names.contains(pass.value("name", std::string{})))
-            continue;
-        if (!reader) {
-            const auto reads = declarationFrameReads(pass);
-            if (std::any_of(reads.begin(), reads.end(), [&](const std::string &name) {
-                    return written.contains(name) && !produced.contains(name);
-                }))
-                reader = i;
+    std::set<std::string> tasks_write;
+    for (const auto *task : tasks) tasks_write.merge(declarationWrites(*task));
+    auto direct = written;
+    for (const auto &name : tasks_write) direct.erase(name);
+    const auto position = first_reader(direct, read, waited, run_names);
+    // RS-6: a compute task that waits on the run -- its after names a pass of
+    // the run (an edge, LP-6's wait) or such a task, or their before names it
+    // -- hands on what the run wrote. A scene pass that reads an image it
+    // writes (and no other task writes) reads the run through it: the run
+    // stands before that reader too, unless the run or such a task waits on
+    // the reader or a later pass (waitOnGraphTasksInScenePasses then adds no
+    // after either).
+    auto group = run_names;
+    std::set<std::string> dependents;
+    for (bool grew = true; grew;) {
+        grew = false;
+        for (const auto *task : tasks) {
+            const auto name = task->at("name").get<std::string>();
+            if (dependents.contains(name)) continue;
+            const auto names_it = [&](const Json &declaration) {
+                const auto before = orderNames(declaration, "before");
+                return std::find(before.begin(), before.end(), name) != before.end();
+            };
+            const auto after = orderNames(*task, "after");
+            if (std::any_of(after.begin(), after.end(), [&](const std::string &other) { return group.contains(other); }) ||
+                std::any_of(run.begin(), run.end(), [&](const Json *pass) { return names_it(*pass); }) ||
+                std::any_of(tasks.begin(), tasks.end(), [&](const Json *other) {
+                    return dependents.contains(other->at("name").get<std::string>()) && names_it(*other);
+                })) {
+                dependents.insert(name);
+                group.insert(name);
+                grew = true;
+            }
         }
-        if (!reader) {
-            produced.merge(declarationWrites(pass));
-            continue;
-        }
-        // The run waits on this pass: it cannot stand before the reader.
-        const auto before = orderNames(pass, "before");
-        const auto writes = declarationWrites(pass);
-        if (waited.contains(pass.value("name", std::string{})) ||
-            std::any_of(before.begin(), before.end(), [&](const std::string &name) { return run_names.contains(name); }) ||
-            std::any_of(writes.begin(), writes.end(), [&](const std::string &name) { return read.contains(name); }))
-            return std::nullopt;
     }
-    return reader;
+    if (dependents.empty()) return position;
+    std::set<std::string> images, elsewhere, through;
+    if (const auto targets = config.find("render_targets"); targets != config.end() && targets->is_array())
+        for (const auto &target : *targets)
+            if (target.is_object() && target.contains("name") && target.at("name").is_string())
+                images.insert(target.at("name").get<std::string>());
+    for (const auto *task : tasks) {
+        if (!dependents.contains(task->at("name").get<std::string>())) {
+            elsewhere.merge(declarationWrites(*task));
+            continue;
+        }
+        for (const auto &name : declarationWrites(*task))
+            if (images.contains(name)) through.insert(name);
+        read.merge(declarationFrameReads(*task));
+        for (const auto &name : orderNames(*task, "after")) waited.insert(name);
+    }
+    for (const auto &name : elsewhere) through.erase(name);
+    const auto via = first_reader(through, read, waited, group);
+    if (via && (!position || *via < *position)) return via;
+    return position;
 }
 
 namespace {
@@ -2538,5 +2601,142 @@ void applyRenderFeaturePassReplacements(Json &composed, const LoweredRenderGraph
                 contract["producer"] = producer;
             }
     }
+}
+
+namespace {
+// RS-6: what runs after what in one family's frame graph, as the frame
+// planner orders it: an after / before, and a read after the last pass or
+// task declared before it that writes the image (the family's passes first,
+// then every compute task).
+class FamilyOrder {
+public:
+    FamilyOrder(const Json &passes, const Json &tasks) {
+        for (const auto *list : {&passes, &tasks})
+            if (list->is_array())
+                for (const auto &declaration : *list)
+                    if (declaration.is_object() && declaration.contains("name") && declaration.at("name").is_string()) {
+                        index_.emplace(declaration.at("name").get<std::string>(), nodes_.size());
+                        nodes_.push_back(&declaration);
+                    }
+        next_.resize(nodes_.size());
+        std::map<std::string, std::size_t> last_writer;
+        for (std::size_t i = 0; i < nodes_.size(); ++i) {
+            for (const auto &name : orderNames(*nodes_[i], "after"))
+                if (const auto found = index_.find(name); found != index_.end()) next_[found->second].insert(i);
+            for (const auto &name : orderNames(*nodes_[i], "before"))
+                if (const auto found = index_.find(name); found != index_.end()) next_[i].insert(found->second);
+            for (const auto &name : declarationFrameReads(*nodes_[i]))
+                if (const auto found = last_writer.find(name); found != last_writer.end() && found->second != i)
+                    next_[found->second].insert(i);
+            for (const auto &name : declarationWrites(*nodes_[i])) last_writer[name] = i;
+        }
+    }
+    std::optional<std::size_t> find(const std::string &name) const {
+        const auto found = index_.find(name);
+        return found == index_.end() ? std::nullopt : std::optional{found->second};
+    }
+    std::size_t size() const { return nodes_.size(); }
+    const Json &at(std::size_t i) const { return *nodes_[i]; }
+    bool reaches(std::size_t from, std::size_t to) const {
+        std::vector<bool> seen(nodes_.size(), false);
+        std::vector<std::size_t> pending{from};
+        seen[from] = true;
+        while (!pending.empty()) {
+            const auto next = pending.back();
+            pending.pop_back();
+            if (next == to) return true;
+            for (const auto later : next_[next])
+                if (!seen[later]) {
+                    seen[later] = true;
+                    pending.push_back(later);
+                }
+        }
+        return false;
+    }
+
+private:
+    std::vector<const Json *> nodes_;
+    std::map<std::string, std::size_t> index_;
+    std::vector<std::set<std::size_t>> next_;
+};
+} // namespace
+
+std::vector<GraphTaskReaderWait> waitOnGraphTasksInScenePasses(Json &composed,
+    const std::set<std::string> &graph_tasks, const std::set<std::string> &graph_images,
+    const std::function<bool(const Json &)> &reader_candidate) {
+    std::vector<GraphTaskReaderWait> added;
+    const auto families = composed.find("rendering_passes");
+    const auto tasks = composed.find("compute_tasks");
+    if (families == composed.end() || !families->is_array() || tasks == composed.end() || !tasks->is_array())
+        return added;
+    std::set<std::string> images;
+    if (const auto targets = composed.find("render_targets"); targets != composed.end() && targets->is_array())
+        for (const auto &target : *targets)
+            if (target.is_object() && target.contains("name") && target.at("name").is_string())
+                images.insert(target.at("name").get<std::string>());
+    for (auto &family : *families) {
+        if (!family.is_object() || !family.contains("passes") || !family.at("passes").is_array()) continue;
+        auto &passes = family.at("passes");
+        // The scene passes: the canonical order puts every other pass past
+        // the first anchor.
+        std::size_t scene_end = passes.size();
+        for (std::size_t i = 0; i < passes.size(); ++i) {
+            const auto type = passes.at(i).value("type", std::string{});
+            if (type == "canonical_anchor" || type == "output_transform") {
+                scene_end = i;
+                break;
+            }
+        }
+        for (const auto &task : *tasks) {
+            if (!task.is_object() || !graph_tasks.contains(task.value("name", std::string{}))) continue;
+            const auto task_name = task.at("name").get<std::string>();
+            for (const auto &image : declarationWrites(task)) {
+                if (!images.contains(image)) continue;
+                // The first scene pass that reads the image this frame, unless
+                // a pass before it writes the image.
+                std::optional<std::size_t> reader;
+                for (std::size_t i = 0; i < scene_end; ++i) {
+                    const auto &pass = passes.at(i);
+                    if (!pass.is_object()) continue;
+                    if (reader_candidate(pass) && declarationFrameReads(pass).contains(image)) {
+                        reader = i;
+                        break;
+                    }
+                    if (declarationWrites(pass).contains(image)) break;
+                }
+                if (!reader) continue;
+                auto &pass = passes.at(*reader);
+                const FamilyOrder order(passes, *tasks);
+                const auto reader_node = order.find(pass.at("name").get<std::string>());
+                const auto task_node = order.find(task_name);
+                if (!reader_node || !task_node) continue;
+                // A writer the reader already waits on feeds it (the task
+                // itself included); a task that waits on the reader cannot run
+                // before it (the after would close a cycle).
+                bool fed = false;
+                for (std::size_t i = 0; i < order.size() && !fed; ++i)
+                    fed = i != *reader_node && declarationWrites(order.at(i)).contains(image) &&
+                          order.reaches(i, *reader_node);
+                if (fed || order.reaches(*reader_node, *task_node)) continue;
+                appendOrder(pass, "after", task_name);
+                added.push_back({family.value("name", std::string{}), pass.at("name").get<std::string>(), task_name});
+                // The pass samples what the task stored: a graph image it
+                // reads as an input needs SAMPLED.
+                const auto input = pass.find("input");
+                if (!graph_images.contains(image) || input == pass.end() || !input->is_array() ||
+                    std::none_of(input->begin(), input->end(), [&](const Json &entry) {
+                        return entry == image || (entry.is_object() && entry.value("target", Json()) == image);
+                    }))
+                    continue;
+                for (auto &target : composed.at("render_targets"))
+                    if (target.is_object() && target.value("name", std::string{}) == image &&
+                        target.contains("usage") && target.at("usage").is_array() &&
+                        std::find(target.at("usage").begin(), target.at("usage").end(), "SAMPLED") ==
+                            target.at("usage").end())
+                        target.at("usage").push_back("SAMPLED");
+            }
+        }
+    }
+    return added;
 }
 }

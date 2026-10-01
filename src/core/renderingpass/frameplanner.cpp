@@ -1958,6 +1958,9 @@ nlohmann::json framePlanToJson(
                 }
                 node_json["replaces"] = std::move(replaces);
             }
+            if (!provenance.added_after.empty()) {
+                node_json["added_after"] = provenance.added_after;
+            }
         }
         if (node.kind == FramePlanNodeKind::snapshot_copy) {
             node_json["byte_size"] = node.byte_size;
