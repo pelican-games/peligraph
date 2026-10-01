@@ -1190,6 +1190,22 @@ SubgraphReplacementRegistry::snapshot() const {
             std::move(lock), impl_.get())};
 }
 
+std::vector<SubgraphReplacementProviderListing>
+SubgraphReplacementRegistry::providerListing() const {
+    std::shared_lock lock{impl_->mutex};
+    std::vector<SubgraphReplacementProviderListing> result;
+    for (const auto *slot : impl_->visibleProviders()) {
+        result.push_back({
+            .name = slot->name,
+            .engine_owned =
+                slot->owner ==
+                internal::engineRegistrationOwner,
+            .provider_version = slot->provider_version,
+        });
+    }
+    return result;
+}
+
 void SubgraphReplacementRegistry::activateOwner(
     internal::RegistrationOwner owner) noexcept {
     impl_->activateOwner(owner);

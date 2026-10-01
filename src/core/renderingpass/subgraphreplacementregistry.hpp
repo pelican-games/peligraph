@@ -49,6 +49,21 @@ struct ResolvedTaggedRegionReplacement {
     LogicalSubgraphReplacementSelection selection;
 };
 
+// EL-1: one provider a region replacement may name (resolveRegion's
+// requested_provider), as get_render_authoring_context lists it. The
+// registry knows nothing of the regions a provider accepts: it is handed the
+// region's contract only when it resolves one.
+struct SubgraphReplacementProviderListing {
+    std::string name;
+    // Registered by the engine itself (the builtin identity provider), not
+    // by the game DLL.
+    bool engine_owned = false;
+    std::uint32_t provider_version = 0;
+
+    bool operator==(
+        const SubgraphReplacementProviderListing &) const = default;
+};
+
 TaggedRegionContract makeTaggedRegionContract(
     const CompiledLogicalRenderGraph &graph,
     std::string_view region_tag);
@@ -104,6 +119,11 @@ class SubgraphReplacementRegistry {
         internal::RegistrationOwner owner) noexcept;
 
     SubgraphReplacementRegistrySnapshot snapshot() const;
+
+    // EL-1: every provider resolveRegion would select by its name now, by
+    // name.
+    std::vector<SubgraphReplacementProviderListing>
+    providerListing() const;
 
     void activateOwner(
         internal::RegistrationOwner owner) noexcept;

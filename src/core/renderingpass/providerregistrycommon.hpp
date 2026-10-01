@@ -380,6 +380,25 @@ struct ProviderRegistry {
         return selected;
     }
 
+    // EL-1: the names a request may give -- each slot findActiveProvider
+    // resolves its own name to -- sorted by name. A game provider that
+    // shadows the engine's under one name is listed; the shadowed engine
+    // slot is not. The caller holds the registry lock, as for
+    // findActiveProvider.
+    std::vector<const ProviderSlot *> visibleProviders() const {
+        std::vector<const ProviderSlot *> result;
+        for (const auto &slot : providers) {
+            if (slot.active && findActiveProvider(slot.name) == &slot) {
+                result.push_back(&slot);
+            }
+        }
+        std::sort(result.begin(), result.end(),
+                  [](const ProviderSlot *left, const ProviderSlot *right) {
+                      return left->name < right->name;
+                  });
+        return result;
+    }
+
   private:
     static void clearSlot(ProviderSlot &slot) noexcept {
         slot.active = false;

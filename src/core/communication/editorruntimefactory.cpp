@@ -25,10 +25,12 @@
 #include "../loader/pathresolver.hpp"
 #include "../loader/renderconfigcandidate.hpp"
 #include "../loader/scene.hpp"
+#include "../material/materialcontainer.hpp"
 #include "../os/inputsequence.hpp"
 #include "../phys/physworld.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/previewgraph.hpp"
+#include "../renderingpass/subgraphreplacementregistry.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../renderer/viewfamilyproviderregistry.hpp"
@@ -2205,6 +2207,37 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                     // Read what the draw path published; never evaluate again.
                     .graph_values = [runtime] {
                         return runtime->modules.scene_loader.graphValues();
+                    },
+                    // EL-1: the materials the draw-loop tables judge, read
+                    // the way get_frame_plan's draw_loop elements read them.
+                    .draw_loop_materials = [] {
+                        std::vector<MaterialDrawSubject> subjects;
+                        if (!FastModuleContainer::isInitialized<
+                                MaterialContainer>()) {
+                            return subjects;
+                        }
+                        const auto &materials =
+                            GET_MODULE(MaterialContainer);
+                        for (const auto material :
+                             materials.drawLoopMaterials()) {
+                            subjects.push_back(
+                                materials.drawLoopSubject(material));
+                        }
+                        return subjects;
+                    },
+                    .region_providers = [] {
+                        std::vector<RenderAuthoringRegionProvider> result;
+                        for (auto &provider :
+                             subgraphReplacementRegistry()
+                                 .providerListing()) {
+                            result.push_back({
+                                .name = std::move(provider.name),
+                                .engine_owned = provider.engine_owned,
+                                .provider_version =
+                                    provider.provider_version,
+                            });
+                        }
+                        return result;
                     },
                 });
         }

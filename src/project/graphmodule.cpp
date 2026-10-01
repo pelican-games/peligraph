@@ -381,6 +381,35 @@ OrderedJson schemaJson(const SemanticTypeSchema &schema) {
         }
         result["parameters"].push_back(std::move(entry));
     }
+    // EL-1: the values each argument takes, in the form a node's
+    // `type.arguments` writes them (resourceType reads an enum as its plain
+    // string), read off the schema canonicalize checks them against: `values`
+    // for an enum, `min` / `max` for an integer, `default` when it may be
+    // left out.
+    auto arguments = OrderedJson::object();
+    for (const auto &parameter : schema.parameters) {
+        OrderedJson entry{{"kind", std::string{typeArgumentValueKindName(parameter.value_kind)}},
+                          {"required", !parameter.default_value.has_value()}};
+        if (!parameter.allowed_enum_values.empty()) {
+            auto values = OrderedJson::array();
+            for (const auto &value : parameter.allowed_enum_values) values.push_back(value.value);
+            entry["values"] = std::move(values);
+        }
+        if (parameter.signed_minimum) entry["min"] = *parameter.signed_minimum;
+        if (parameter.signed_maximum) entry["max"] = *parameter.signed_maximum;
+        if (parameter.unsigned_minimum) entry["min"] = *parameter.unsigned_minimum;
+        if (parameter.unsigned_maximum) entry["max"] = *parameter.unsigned_maximum;
+        if (parameter.default_value) {
+            const auto &value = *parameter.default_value;
+            if (const auto *enum_value = std::get_if<EnumValueId>(&value)) entry["default"] = enum_value->value;
+            else if (const auto *flag = std::get_if<bool>(&value)) entry["default"] = *flag;
+            else if (const auto *number = std::get_if<std::int64_t>(&value)) entry["default"] = *number;
+            else if (const auto *count = std::get_if<std::uint64_t>(&value)) entry["default"] = *count;
+            else entry["default"] = typeArgumentValueToJson(value);
+        }
+        arguments[parameter.name] = std::move(entry);
+    }
+    result["arguments"] = std::move(arguments);
     return result;
 }
 

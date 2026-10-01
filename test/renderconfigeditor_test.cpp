@@ -9828,4 +9828,89 @@ TEST_CASE("GT-1 the template procedure merges pass_replacements and refuses a co
     CHECK(conflicting == before);
 }
 
+// EL-1: get_graph_catalog says which values the arguments of render.image's
+// semantic types take, so Studio offers them instead of a text field. They
+// come from the table the type is checked against: every listed value
+// composes, and a value off the list is refused as it is today.
+TEST_CASE("EL-1 get_graph_catalog lists the argument values render.image accepts, and only those",
+          "[render-config-editor][el1][graph-catalog]") {
+    G6Harness harness{false};
+    harness.service = makeProjectService(harness.project, harness.resolver, harness.runtime);
+    const auto catalog = Json(harness.service->getGraphCatalog(Json::object()));
+    const auto arguments_of = [&](std::string_view id) {
+        for (const auto &module : catalog.at("modules"))
+            for (const auto &type : module.at("types"))
+                if (type.at("id") == std::string{id}) return type.at("arguments");
+        FAIL("the catalog lists no type " << id);
+        return Json{};
+    };
+    const auto color = arguments_of("pelican.render.color_signal@1");
+    const auto depth = arguments_of("pelican.render.depth@1");
+    INFO(color.dump() << "\n" << depth.dump());
+    CHECK(color.at("reference").at("values") == Json::array({"display", "scene"}));
+    CHECK(color.at("reference").at("required") == true);
+    CHECK(color.at("topology").at("default") == "two_d");
+    CHECK(color.at("topology").at("required") == false);
+    CHECK(depth.at("space").at("values") == Json::array({"projection", "view"}));
+    // The existing description of the type is unchanged beside it.
+    for (const auto &module : catalog.at("modules"))
+        for (const auto &type : module.at("types")) CHECK(type.contains("parameters"));
+
+    // One image per listed value of each argument, the others at their first
+    // value (or default), in one edit.
+    const auto image = [](const std::string &id, const char *semantic, const Json &arguments) {
+        const bool is_depth = std::string_view{semantic} == "pelican.render.depth@1";
+        return Json{{"op", "add_node"},
+                    {"scope", "root"},
+                    {"node",
+                     {{"id", id},
+                      {"op", "render.image"},
+                      {"parameters",
+                       {{"type", {{"semantic", semantic}, {"arguments", arguments}}},
+                        {"format", is_depth ? "D32_SFLOAT" : "R16G16B16A16_SFLOAT"},
+                        {"extent_scale", 1.0},
+                        {"usage", Json::array({is_depth ? "DEPTH_STENCIL_ATTACHMENT" : "COLOR_ATTACHMENT",
+                                               "SAMPLED"})}}},
+                      {"outputs", Json::array({"resource"})}}}};
+    };
+    const auto base_of = [](const Json &arguments) {
+        auto base = Json::object();
+        for (const auto &[name, argument] : arguments.items())
+            base[name] = argument.contains("default") ? argument.at("default") : argument.at("values").at(0);
+        return base;
+    };
+    Json ops = Json::array();
+    std::size_t count = 0;
+    for (const auto &[semantic, arguments] :
+         {std::pair{"pelican.render.color_signal@1", color}, std::pair{"pelican.render.depth@1", depth}}) {
+        for (const auto &[name, argument] : arguments.items()) {
+            REQUIRE(argument.contains("values"));
+            for (const auto &value : argument.at("values")) {
+                auto chosen = base_of(arguments);
+                chosen[name] = value;
+                ops.push_back(image("el1_image_" + std::to_string(count++), semantic, chosen));
+            }
+        }
+    }
+    CHECK(count >= 10);
+    const auto edit = [&](Json edit_ops) {
+        return harness.settle(harness.service->editGraphDocument(
+            {{"base_source_digest", harness.digest()}, {"ops", std::move(edit_ops)}}));
+    };
+    const auto accepted = edit(ops);
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("committed") == true);
+
+    // A value off the list is refused by the same check, and nothing is written.
+    const auto before = readBytes(harness.project.render_config);
+    auto off_list = base_of(color);
+    off_list["reference"] = "el1_not_a_reference";
+    const auto refused = edit(Json::array({image("el1_off_list", "pelican.render.color_signal@1", off_list)}));
+    INFO(refused.dump());
+    REQUIRE(refused.at("status") == "rejected");
+    CHECK_THAT(refused.at("error").dump(),
+               Catch::Matchers::ContainsSubstring("unsupported enum value: el1_not_a_reference"));
+    CHECK(readBytes(harness.project.render_config) == before);
+}
+
 } // namespace Pelican

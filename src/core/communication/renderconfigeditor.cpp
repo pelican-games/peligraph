@@ -2191,6 +2191,41 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         {"usage", imageUsageFlagNames()},
         {"format_classes", OrderedJson::array({"scene", "display", "data", "explicit"})},
     };
+    // EL-1: the names a draw_loop branch's `when` and draw.variant take, from
+    // what the draw-loop tables judge (MaterialDrawSubject): `id` is the
+    // matching key `when.material` compares, `tags` what `when.tags` / `where`
+    // test, `variants` the names draw.variant and has_variant accept. A
+    // built-in engine material is the one named under
+    // builtinMaterialNamePrefix (describeUnservedMaterial reads it so too).
+    auto materials = OrderedJson::array();
+    std::set<std::string> material_tags;
+    if (dependencies_.draw_loop_materials) {
+        for (const auto &subject : dependencies_.draw_loop_materials()) {
+            material_tags.insert(subject.tags.begin(), subject.tags.end());
+            materials.push_back({
+                {"id", subject.key},
+                {"name", subject.name},
+                {"tags", subject.tags},
+                {"variants", subject.variants},
+                {"builtin", subject.name.starts_with(builtinMaterialNamePrefix)},
+            });
+        }
+    }
+    result["materials"] = std::move(materials);
+    result["material_tags"] = material_tags;
+    // EL-1: the provider names edit_region_replacement may give. The registry
+    // holds no region a provider accepts, so none is listed.
+    auto region_providers = OrderedJson::array();
+    if (dependencies_.region_providers) {
+        for (const auto &provider : dependencies_.region_providers()) {
+            region_providers.push_back({
+                {"name", provider.name},
+                {"builtin", provider.engine_owned},
+                {"provider_version", provider.provider_version},
+            });
+        }
+    }
+    result["region_providers"] = std::move(region_providers);
     if (resolved.pipeline_preset) {
         result["preset_material_routing"] = resolved.pipeline_preset_bytes
             ? Json::parse(*resolved.pipeline_preset_bytes).at("config").value("material_routing", Json(nullptr))

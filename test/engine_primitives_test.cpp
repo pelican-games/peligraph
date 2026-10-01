@@ -4,6 +4,7 @@
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/launchconfig.hpp"
+#include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
@@ -16,8 +17,10 @@
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
+#include "../src/project/materialpassdecompose.hpp"
 #include "../src/project/projecttemplate.hpp"
 #include "../src/project/renderconfigsection.hpp"
+#include "lp3a_decompose_support.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "vulkan_test_support.hpp"
 
@@ -1384,6 +1387,138 @@ TEST_CASE("Q-14f a present that supplies one input refuses a uniform buffer its 
                              {{"binding", 1}, {"type", "uniform_buffer"}, {"name", "q14f_tint"}, {"variadic", false}}})},
                {"variadic_range", nullptr}});
     CHECK(readFile(rendering_path) == root_before);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+// EL-1: Studio picks a draw_loop branch's material, tags and variant, and a
+// region replacement's provider, from get_render_authoring_context instead of
+// typing them. The names listed are the ones the loop judges by: the loop
+// rewritten with them through edit_graph_document sends each material down
+// the branch its name chose, in the running frame plan.
+TEST_CASE("EL-1 get_render_authoring_context lists the materials a draw_loop judges, by the names it takes",
+          "[el1][primitives][draw-loop][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("el1_materials");
+    const auto root = makeBlankProject(dir.root);
+    constexpr auto surface = "engine://surfaces/openpbr/opaque_single.surface";
+    const auto material = [&](const char *name, Json tags) {
+        return Json{{"name", name},
+                    {"surface", surface},
+                    {"tags", std::move(tags)},
+                    {"base", {{"baseColorFactor", {0.5, 0.5, 0.5, 1.0}}}},
+                    {"routing", {{"alpha_mode", "opaque"}, {"double_sided", false}}}};
+    };
+    auto outlined = material("el1_outlined", Json::array({"el1_hero"}));
+    outlined["variants"] = {{"outline", {{"surface", surface}}}};
+    writeFile(root / "materials/el1.material.json",
+              Json{{"schema", "pelican.material"},
+                   {"version", 1},
+                   {"materials", Json::array({outlined,
+                                              material("el1_tagged", Json::array({"el1_crowd", "el1_hero"})),
+                                              material("el1_named", Json::array())})}}
+                  .dump(2));
+    auto assets = Json::parse(readFile(root / "assets/asset_data.json"));
+    assets["materials"] = Json::array({{{"path", "materials/el1.material.json"}}});
+    writeFile(root / "assets/asset_data.json", assets.dump(2));
+    // The hybrid preset forked into the root, its deferred_geometry written as
+    // a draw_loop the way decompose_material_pass writes it.
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    auto authored = Json::parse(readFile(rendering_path));
+    authored["rendering"] = TestSupport::lp3aForkPreset(
+        authored.at("rendering"),
+        Json::parse(engineResourceOrThrow("render_pipelines/hybrid_v1.json")).at("config"));
+    auto decomposed = nlohmann::ordered_json::parse(authored.dump());
+    (void)decomposeMaterialPass(decomposed.at("rendering"), decomposed, "deferred_geometry");
+    writeFile(rendering_path, decomposed.dump(2));
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    GET_MODULE(Renderer).prepareRuntimeModules();
+    (void)GET_MODULE(ProjectMaterialAssetContainer);
+    (void)rpc.result("step_frame");
+
+    const auto context = rpc.result("get_render_authoring_context");
+    INFO(context.at("materials").dump(2));
+    const auto listed = [&](const char *name) {
+        for (const auto &entry : context.at("materials"))
+            if (entry.at("name") == name) return entry;
+        FAIL("get_render_authoring_context lists no material " << name);
+        return Json{};
+    };
+    const auto outlined_entry = listed("el1_outlined");
+    const auto tagged_entry = listed("el1_tagged");
+    const auto named_entry = listed("el1_named");
+    CHECK(outlined_entry.at("id") == "materials/el1.material.json#el1_outlined");
+    CHECK(outlined_entry.at("tags") == Json::array({"el1_hero"}));
+    CHECK(outlined_entry.at("variants") == Json::array({"outline"}));
+    CHECK(outlined_entry.at("builtin") == false);
+    CHECK(tagged_entry.at("variants") == Json::array());
+    // The engine's own materials are listed too, marked.
+    CHECK(std::any_of(context.at("materials").begin(), context.at("materials").end(),
+                      [](const Json &entry) { return entry.at("builtin") == true; }));
+    // Every tag once, sorted.
+    const auto &tags = context.at("material_tags");
+    CHECK(std::find(tags.begin(), tags.end(), "el1_crowd") != tags.end());
+    CHECK(std::find(tags.begin(), tags.end(), "el1_hero") != tags.end());
+    CHECK(std::is_sorted(tags.begin(), tags.end()));
+    CHECK(std::adjacent_find(tags.begin(), tags.end()) == tags.end());
+    // The engine's identity provider is the one any project can name.
+    CHECK(std::any_of(context.at("region_providers").begin(), context.at("region_providers").end(),
+                      [](const Json &provider) {
+                          return provider.at("name") == "builtin.identity_v1" && provider.at("builtin") == true;
+                      }));
+
+    // A loop whose branches are chosen by those names, and nothing typed.
+    Json parameters;
+    const auto written = Json::parse(readFile(rendering_path));
+    for (const auto &node : written.at("nodes"))
+        if (node.at("id") == "deferred_geometry_draws") parameters = node.at("parameters");
+    REQUIRE(parameters.is_object());
+    const auto body = parameters.at("branches").back().at("body");
+    parameters["branches"] = Json::array({
+        {{"when", {{"has_variant", outlined_entry.at("variants").at(0)}}}, {"body", body}},
+        {{"when", {{"tags", {{"include", Json::array({tagged_entry.at("tags").at(0)})}}}}}, {"body", body}},
+        {{"when", {{"material", named_entry.at("id")}}}, {"body", body}},
+        {{"body", body}},
+    });
+    const auto accepted = rpc.result(
+        "edit_graph_document",
+        {{"base_source_digest", context.at("source_digest").at("hex")},
+         {"ops", Json::array({{{"op", "set_node_parameters"},
+                               {"scope", "root"},
+                               {"node", "deferred_geometry_draws"},
+                               {"parameters", parameters}}})}});
+    INFO(accepted.dump(2));
+    REQUIRE(accepted.at("status") == "accepted");
+    Json committed;
+    for (int attempt = 0; attempt < 8 && committed.is_null(); ++attempt) {
+        (void)rpc.result("step_frame");
+        auto result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+        if (result.value("status", std::string{}) != "pending") committed = std::move(result);
+    }
+    INFO(committed.dump(2));
+    REQUIRE(committed.at("status") == "committed");
+    CHECK(committed.value("restart_required", false) == false);
+
+    // The running frame plan sends each material down the branch its name chose.
+    (void)rpc.result("render_frame");
+    const auto plan = rpc.result("get_frame_plan");
+    Json loop;
+    for (const auto &entry : plan.at("loops"))
+        if (entry.at("node") == "deferred_geometry_draws") loop = entry;
+    INFO(loop.dump(2));
+    REQUIRE(loop.is_object());
+    const auto branch_of = [&](const Json &material_entry) {
+        for (const auto &element : loop.at("elements"))
+            if (element.at("element") == material_entry.at("id")) return element.at("branch").get<int>();
+        FAIL("the draw_loop has no element " << material_entry.at("id"));
+        return -1;
+    };
+    CHECK(branch_of(outlined_entry) == 0);
+    CHECK(branch_of(tagged_entry) == 1);
+    CHECK(branch_of(named_entry) == 2);
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 

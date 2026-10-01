@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../../project/materialdrawloop.hpp"
 #include "../../project/renderconfigdocument.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "renderconfigtransaction.hpp"
@@ -51,6 +52,18 @@ struct RenderFeatureCatalogEntry {
     std::string source = "engine";
 
     bool operator==(const RenderFeatureCatalogEntry &) const = default;
+};
+
+// EL-1: one region replacement provider edit_region_replacement may name, as
+// the subgraph replacement registry resolves names now.
+struct RenderAuthoringRegionProvider {
+    std::string name;
+    // Registered by the engine (the builtin identity provider), not by the
+    // game DLL.
+    bool engine_owned = false;
+    std::uint32_t provider_version = 0;
+
+    bool operator==(const RenderAuthoringRegionProvider &) const = default;
 };
 
 struct RenderConfigEditorGateObservation {
@@ -133,6 +146,17 @@ struct RenderConfigEditorDependencies {
     // unset outside a running engine, and then no values are reported: the
     // service never evaluates a graph of its own to fill the gap.
     std::function<ValueGraph::PublishedInstanceInputs()> graph_values;
+    // EL-1: what a draw_loop judges -- every registered material that is not
+    // a variant record, in registration order, as the running generation's
+    // draw-loop tables see it (MaterialContainer::drawLoopSubject).
+    // get_render_authoring_context lists them as materials[] and
+    // material_tags[]. Unset (no running engine): both lists are empty.
+    std::function<std::vector<MaterialDrawSubject>()> draw_loop_materials;
+    // EL-1: the providers a region replacement may name now
+    // (SubgraphReplacementRegistry::providerListing), listed as
+    // region_providers[]. Unset: the list is empty.
+    std::function<std::vector<RenderAuthoringRegionProvider>()>
+        region_providers;
 };
 
 // Engine-owned render-authoring document/ticket service. Feature toggles edit
