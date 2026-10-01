@@ -156,7 +156,7 @@ SBT の byte layout は [`shaderbindingtable.cpp`](../../src/core/shader/shaderb
 
 ## AS 宣言を編集する RPC は「節 locator」を通る
 
-`scene_acceleration_structures` を読み書きする 2 本の RPC — [`getSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L1846) と [`editSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L1870) — は、rendering config の root を直接触りません。読みは [`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49)、書きは [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L671) を通します。したがって扱うのは **`pelican.graph` root の `rendering.scene_acceleration_structures`** です。P-2a-4b から MG-2b までは legacy root の最上位の `scene_acceleration_structures` も同じ RPC で扱えましたが、MG-2b で legacy root 自体が `render_config.legacy_root@1` で拒否されるようになりました([第6章 §6.1](06_rendering_vulkan_shader.md) の「rendering config の root は `pelican.graph` だけ」)。
+`scene_acceleration_structures` を読み書きする 2 本の RPC — [`getSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L1846) と [`editSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L1870) — は、rendering config の root を直接触りません。読みは [`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49)、書きは [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L691) を通します。したがって扱うのは **`pelican.graph` root の `rendering.scene_acceleration_structures`** です。P-2a-4b から MG-2b までは legacy root の最上位の `scene_acceleration_structures` も同じ RPC で扱えましたが、MG-2b で legacy root 自体が `render_config.legacy_root@1` で拒否されるようになりました([第6章 §6.1](06_rendering_vulkan_shader.md) の「rendering config の root は `pelican.graph` だけ」)。
 
 read が返すのは 6 キーです。
 
