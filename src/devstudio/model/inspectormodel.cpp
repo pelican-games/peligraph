@@ -841,7 +841,7 @@ struct GraphLoopRefusalText {
     std::string_view code;
     std::string_view sentence;
 };
-constexpr std::array<GraphLoopRefusalText, 26> GraphLoopRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 28> GraphLoopRefusalTexts{{
     {"graph.loop_branch_else_missing@1",
      "Loop {node} has no else: its last branch must have no condition"},
     {"graph.loop_branch_interface@1",
@@ -890,6 +890,32 @@ constexpr std::array<GraphLoopRefusalText, 26> GraphLoopRefusalTexts{{
     // `reason` says which way they do not (GraphInputIndexReasonTexts).
     {"graph.input_index_invalid@1",
      "The numbered inputs of {node} are not 0, 1, 2...: input {input_index} is {reason}"},
+    // UX-5c (RS-13): a pass of the rendering section names a loop's output
+    // as <loop>.<output>; `reason` says what is wrong with the name
+    // (GraphLoopOutputReferenceReasonTexts).
+    {"graph.loop_output_reference_unknown@1", "{pass} reads {reference}, which is no loop output"},
+    // UX-5c (RS-9): a render node lacks a parameter its op needs.
+    {"graph.render_node_parameters_missing@1", "The {op} node {node} needs {missing}"},
+}};
+
+// UX-5c: graph.loop_output_reference_unknown@1's reasons, each a sentence that
+// says what to change.
+struct GraphLoopOutputReferenceReasonText {
+    std::string_view reason;
+    std::string_view sentence;
+};
+constexpr std::array<GraphLoopOutputReferenceReasonText, 6> GraphLoopOutputReferenceReasonTexts{{
+    {"loop_unknown",
+     "{pass} reads {reference}, but no loop, target or buffer has that name"},
+    {"not_a_loop", "{pass} reads {reference}, but the node before the dot is not a loop"},
+    {"output_unknown", "{pass} reads {reference}, but the loop has no output of that name"},
+    {"per_element",
+     "{pass} reads {reference}, an output with one value per element: a pass reads a loop's "
+     "single output (the last element's)"},
+    {"not_a_resource",
+     "{pass} reads {reference}, which is a value, not an image or a buffer"},
+    {"loop_inactive",
+     "{pass} reads {reference}, but this graph variant leaves that loop out"},
 }};
 
 // Q-19: graph.input_index_invalid@1's two reasons, each a sentence of its own.
@@ -1001,6 +1027,11 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error) {
     if (entry->code == "graph.input_index_invalid@1") {
         const auto reason = graphRefusalFieldText(fields, "reason");
         for (const auto &candidate : GraphInputIndexReasonTexts)
+            if (candidate.reason == reason) pattern = candidate.sentence;
+    }
+    if (entry->code == "graph.loop_output_reference_unknown@1") {
+        const auto reason = graphRefusalFieldText(fields, "reason");
+        for (const auto &candidate : GraphLoopOutputReferenceReasonTexts)
             if (candidate.reason == reason) pattern = candidate.sentence;
     }
     for (std::size_t index = 0; index < pattern.size();) {

@@ -52,6 +52,7 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QScrollArea>
 #include <QSplitter>
 #include <QTabWidget>
 #include <QStringList>
@@ -1411,6 +1412,29 @@ void GraphCanvasScene::repopulate() {
             }
             return found;
         };
+        // UX-5c: the root loop and output a pass's input names, by the
+        // plan's loop_outputs (RS-13).
+        const auto loopOutputOf = [&](const std::string &reader, const std::string &resource)
+            -> std::optional<std::pair<std::string, std::string>> {
+            const auto pass = std::ranges::find(model_->planPasses(), reader,
+                                                &GraphCanvasPlanPass::name);
+            if (pass == model_->planPasses().end()) return std::nullopt;
+            for (const auto &output : pass->loop_outputs) {
+                if (resource != output.reference && resource != output.resource) continue;
+                const auto dot = output.reference.find('.');
+                if (dot == std::string::npos) continue;
+                const auto loop = output.reference.substr(0, dot);
+                const auto port = output.reference.substr(dot + 1);
+                const auto drawn = std::ranges::find(nodes, loop, &GraphCanvasNode::id);
+                if (drawn == nodes.end() ||
+                    std::ranges::none_of(drawn->outputs, [&](const auto &socket) {
+                        return socket.port == port;
+                    }))
+                    continue;
+                return std::pair{loop, port};
+            }
+            return std::nullopt;
+        };
         for (auto &folded : folded_nodes) {
             if (folded.feature_group) continue;
             const auto sockets = passInputSockets(folded.id);
@@ -1434,10 +1458,15 @@ void GraphCanvasScene::repopulate() {
                 folded.input_sockets.push_back(row);
                 if (!row.input_index) continue;
                 PassLine line{{}, {}, folded.id, socket.resource, *row.input_index};
-                // GL-1f, decision 3: from the graph pass's output that hands
-                // the image on (a material pass's `color`), when one does --
-                // the last such pass before this one in the plan.
-                if (const auto writer = writerOutput(folded.id, socket.resource)) {
+                // UX-5c: a loop's output the pass names (`loop.color`, or
+                // what the engine resolved it to) is a line from that output.
+                // GL-1f, decision 3: else from the graph pass's output that
+                // hands the image on (a material pass's `color`), when one
+                // does -- the last such pass before this one in the plan.
+                if (const auto loop_output = loopOutputOf(folded.id, socket.resource)) {
+                    line.from = loop_output->first;
+                    line.from_port = loop_output->second;
+                } else if (const auto writer = writerOutput(folded.id, socket.resource)) {
                     line.from = writer->first;
                     line.from_port = writer->second;
                 } else if (const auto named = resource_nodes.find(socket.resource);
@@ -2608,6 +2637,7 @@ void GraphCanvasScene::beginConnection(const QGraphicsItem &socket) {
     pending.from_output = direction == QLatin1String{"output"};
     pending.socket_key = socket.data(GraphCanvasSocketKeyRole).toString().toStdString();
     pending.origin = socket.sceneBoundingRect().center();
+    pending.from_folded = nodeGraphItemKind(socket) == QLatin1String{GraphCanvasDerivedSocketItem};
     pending_connection_ = std::move(pending);
     pending_edge_ = new QGraphicsPathItem;
     addItem(pending_edge_);
@@ -2717,10 +2747,20 @@ std::function<void()> GraphCanvasScene::dropAction(const PendingConnection &pend
         if (!pending.from_output || !pending.scope.empty() || !current.empty()) return {};
         const auto pass = item.data(NodeGraphNameRole).toString().toStdString();
         QGraphicsItem *socket = &item;
+        // UX-5c: a folded node's row is the resource it names (a feature's
+        // image, the ray-traced mask).
+        if (pending.from_folded) {
+            if (pending.node == pass) return {};
+            return [this, pass, socket, resource = pending.port] {
+                dropResourceOnPassInput(pass, *socket, resource);
+            };
+        }
         return [this, pass, socket, node = pending.node, port = pending.port] {
             dropOnPassInput(pass, *socket, node, port);
         };
     }
+    // Nothing else takes a folded node's row: it is no graph node's output.
+    if (pending.from_folded) return {};
     // LP-4d2, decisions 1 and 2: the empty slot at the end of a zone's edge.
     // Left, a root output there is a new loop input; right, a body output
     // there is a new output of every body.
@@ -2978,6 +3018,20 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
             if (kind == QLatin1String{GraphCanvasSocketItem}) {
                 event->accept();
                 selectNode(scope, item->data(NodeGraphNameRole).toString().toStdString());
+                beginConnection(*item);
+                return;
+            }
+            // UX-5c: a folded node's output row (what a feature, the preset
+            // or the rendering section writes, by name) starts a line that a
+            // rendering-section pass's input takes -- the ray-traced mask onto
+            // present's + input.
+            if (kind == QLatin1String{GraphCanvasDerivedSocketItem} && scope.empty() &&
+                model_ != nullptr && model_->currentScope().empty() &&
+                !item->data(GraphCanvasPassInputRole).isValid() &&
+                item->data(GraphCanvasSocketDirectionRole).toString() ==
+                    QLatin1String{"output"} &&
+                !item->data(GraphCanvasPortRole).toString().isEmpty()) {
+                event->accept();
                 beginConnection(*item);
                 return;
             }
@@ -3933,12 +3987,28 @@ void GraphCanvasScene::dropOnPassInput(const std::string &pass, const QGraphicsI
                                        const std::string &from_port) {
     const auto resource = model_->outputResource(from_node, from_port);
     if (resource.empty()) {
-        model_->setEditNotice({InspectorNoticeKind::Error,
-                               from_node + "." + from_port +
-                                   " is not an image or a buffer " + pass + " can read."});
+        // UX-5c: a loop's `p[]` is one value per element; a pass reads its
+        // `p`, the last element's.
+        const bool per_element =
+            from_port.ends_with("[]") && model_->loop(from_node).has_value();
+        model_->setEditNotice(
+            {InspectorNoticeKind::Error,
+             per_element
+                 ? from_node + "." + from_port + " holds one image per element, which " + pass +
+                       " cannot read: a pass reads a loop's single output (" + from_node + "." +
+                       from_port.substr(0, from_port.size() - 2) +
+                       ", the last element's)."
+                 : from_node + "." + from_port + " is not an image or a buffer " + pass +
+                       " can read."});
         if (noticeChanged) noticeChanged();
         return;
     }
+    dropResourceOnPassInput(pass, socket, resource);
+}
+
+void GraphCanvasScene::dropResourceOnPassInput(const std::string &pass,
+                                               const QGraphicsItem &socket,
+                                               const std::string &resource) {
     // Where it landed, in the Frame Plan's terms: the `+ input` slot, a
     // socket by its binding (in place of what is connected there), or the
     // pass as a whole (a shader whose declarations are not published).
@@ -4742,7 +4812,17 @@ struct GraphCanvasWidget::Impl {
         canvas->setFocusPolicy(Qt::StrongFocus);
         canvas->setContextMenuPolicy(Qt::DefaultContextMenu);
         splitter->addWidget(canvas);
-        auto *side = new QWidget(splitter);
+        // UX-5d: the column beside the canvas scrolls rather than widens. A
+        // node's fields appear the moment it is pressed -- also as the press
+        // that starts a line from its socket -- and a column that grew to fit
+        // them moved the splitter, so the canvas, and the socket the line was
+        // being drawn to, slid away under the pointer mid-drag.
+        auto *side_scroll = new QScrollArea(splitter);
+        side_scroll->setObjectName(QStringLiteral("pelican.graphCanvasSide"));
+        side_scroll->setWidgetResizable(true);
+        side_scroll->setFrameShape(QFrame::NoFrame);
+        side_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+        auto *side = new QWidget(side_scroll);
         auto *side_layout = new QVBoxLayout(side);
         side_layout->setContentsMargins(0, 0, 0, 0);
         folded_summary = new QLabel(side);
@@ -4898,7 +4978,8 @@ struct GraphCanvasWidget::Impl {
         QObject::connect(details->itemDelegate(), &QAbstractItemDelegate::closeEditor, &view,
                          [this] { editing_parameter = nullptr; });
         side_layout->addWidget(details, 1);
-        splitter->addWidget(side);
+        side_scroll->setWidget(side);
+        splitter->addWidget(side_scroll);
         splitter->setStretchFactor(0, 3);
         splitter->setStretchFactor(1, 2);
         layout->addWidget(splitter, 1);
@@ -4957,7 +5038,14 @@ struct GraphCanvasWidget::Impl {
         };
         // Every canvas gesture is applied the moment it finishes, so the only
         // thing left to do here is post what the model already built.
-        scene->editSubmitted = [this] { dispatch(); };
+        // UX-5d: and the notice says "Saving" the moment the gesture is
+        // made. An edit can wait to go out (behind get_engine_shaders, which
+        // the engine takes seconds over), and until then the line still said
+        // the last edit was saved.
+        scene->editSubmitted = [this] {
+            dispatch();
+            showNotice();
+        };
         // Q-5: the notice says "Saving" the moment a placement changes, not
         // when the wait before sending it runs out. Only the label: this runs
         // from inside a drag and from inside a rebuild.
@@ -5141,7 +5229,7 @@ struct GraphCanvasWidget::Impl {
     // Decision 3: the engine's own sentence, and -- for a pass that reads an
     // image drawn later in the frame -- why (an engine before RS-3 puts the
     // graph's pass after the rendering section's).
-    static std::string passEditRefusal(const nlohmann::json &response) {
+    std::string passEditRefusal(const nlohmann::json &response) const {
         const auto error = response.find("error");
         const auto &reason = error != response.end() && error->is_object() ? *error : response;
         const auto code = reason.value("code", std::string{});
@@ -5150,8 +5238,18 @@ struct GraphCanvasWidget::Impl {
         // message follows it, on the lines the tooltip shows.
         std::string line = engineRefusalLine(reason);
         if (line.empty()) return response.dump();
+        // UX-5c: a refusal Studio has a sentence for (a loop output the pass
+        // names, RS-13; a render node's missing parameters, RS-9) reads as
+        // that sentence, after the code of the refusal that carried it.
+        if (auto known = knownRefusalDescription(code, message); !known.empty())
+            line = code.empty() || known.find(code) != std::string::npos ? known
+                                                                         : code + ": " + known;
+        // UX-5d, decision 3: only when a graph node's pass writes the image
+        // (the frame plan says who does): not for a feature's task or a pass
+        // of the rendering section, which the phrase would misname.
         if (message.find("Pass input target is not produced as an earlier output") !=
-            std::string::npos)
+                std::string::npos &&
+            model.graphWritesResourceNamedIn(message))
             line += passRunsAfterHint;
         const auto whole = code.empty() ? message : code + ": " + message;
         if (!message.empty() && line.find(whole) == std::string::npos) line += "\n" + whole;
@@ -6107,6 +6205,15 @@ struct GraphCanvasWidget::Impl {
                                                "what that pass wrote"));
         snapshot_after->hide();
         layout->addWidget(snapshot_after);
+        // UX-5d, decision 2: what a compute task runs -- a compute shader of
+        // the project's, or one of the engine's ray tracing pipelines.
+        auto *compute_shader = new QComboBox(&dialog);
+        compute_shader->setObjectName(QStringLiteral("pelican.graphCanvasPaletteComputeShader"));
+        compute_shader->setToolTip(QObject::tr("The project's compute shaders, and the engine's "
+                                               "ray tracing pipelines (raygen, miss and "
+                                               "closesthit), whose ports the task arrives with"));
+        compute_shader->hide();
+        layout->addWidget(compute_shader);
         auto *buffer_row = new QWidget(&dialog);
         auto *buffer_layout = new QHBoxLayout(buffer_row);
         buffer_layout->setContentsMargins(0, 0, 0, 0);
@@ -6183,8 +6290,37 @@ struct GraphCanvasWidget::Impl {
             const bool snapshot = op == QLatin1String{"render.snapshot_copy"};
             const bool buffer = op == QLatin1String{"render.buffer"};
             const bool attribute = op == QLatin1String{"render.attribute"};
+            const bool compute = op == QLatin1String{"render.compute"};
             QString note;
             bool ready = row != nullptr;
+            if (compute) {
+                // UX-5d, decision 2: the engine's ray tracing pipelines are in
+                // its shader list, asked for when a compute task is picked --
+                // not as the palette opens: the engine takes seconds over it
+                // and answers nothing else meanwhile, so a quick pick of
+                // another node would time out behind it.
+                if (!model.engineShadersKnown()) {
+                    model.askEngineShaders();
+                    dispatch();
+                }
+                const auto kept = compute_shader->currentData().toString();
+                const QSignalBlocker block{compute_shader};
+                compute_shader->clear();
+                for (const auto &shader : model.computeShaderChoices())
+                    compute_shader->addItem(qtext(shader), QStringLiteral("shader|") + qtext(shader));
+                for (const auto &pipeline : model.rayTracingPipelines())
+                    compute_shader->addItem(
+                        QObject::tr("%1  (ray tracing)").arg(qtext(pipeline.reference)),
+                        QStringLiteral("ray_tracing|") + qtext(pipeline.reference));
+                compute_shader->setCurrentIndex(std::max(0, compute_shader->findData(kept)));
+                if (compute_shader->count() == 0) {
+                    ready = false;
+                    note = model.engineShadersKnown()
+                               ? QObject::tr("Neither the project (shaders/<name>.comp) nor the "
+                                             "engine has a shader a compute task can run.")
+                               : QObject::tr("Reading the engine's ray tracing pipelines...");
+                }
+            }
             if (target_ref) {
                 const auto kept = targets->currentData().toString();
                 const QSignalBlocker block{targets};
@@ -6219,6 +6355,7 @@ struct GraphCanvasWidget::Impl {
             }
             targets->setVisible(target_ref);
             snapshot_after->setVisible(snapshot);
+            compute_shader->setVisible(compute);
             buffer_row->setVisible(buffer || attribute);
             attribute_domain->setVisible(attribute);
             element->setEnabled(!(attribute && attribute_domain->currentData().toString() ==
@@ -6249,6 +6386,23 @@ struct GraphCanvasWidget::Impl {
         QObject::connect(search, &QLineEdit::returnPressed, &dialog, &QDialog::accept);
         reload();
         syncDefinition();
+        // UX-5d, decision 2: the engine's list arrives while the palette is
+        // open; the rows and the compute list are read again then, the row
+        // in hand kept.
+        QTimer engine_shaders_arrive{&dialog};
+        engine_shaders_arrive.setInterval(200);
+        auto shaders_seen = model.engineShadersRevision();
+        QObject::connect(&engine_shaders_arrive, &QTimer::timeout, &dialog, [&] {
+            if (model.engineShadersRevision() == shaders_seen) return;
+            shaders_seen = model.engineShadersRevision();
+            auto *current = list->currentItem();
+            const auto kept = current != nullptr ? current->data(Qt::UserRole).toString() : QString{};
+            reload();
+            for (int index = 0; index < list->count(); ++index)
+                if (list->item(index)->data(Qt::UserRole).toString() == kept) list->setCurrentRow(index);
+            syncDefinition();
+        });
+        engine_shaders_arrive.start();
         search->setFocus(Qt::PopupFocusReason);
         QTimer::singleShot(0, search, [search] { search->setFocus(Qt::PopupFocusReason); });
         if (dialog.exec() != QDialog::Accepted) return;
@@ -6271,6 +6425,12 @@ struct GraphCanvasWidget::Impl {
             seed["name"] = targets->currentData().toString().toStdString();
         else if (op == "render.snapshot_copy")
             seed["snapshot_after"] = snapshot_after->currentData().toString().toStdString();
+        else if (op == "render.compute") {
+            // UX-5d, decision 2: "shader|<reference>" or "ray_tracing|<reference>".
+            const auto picked = compute_shader->currentData().toString();
+            const auto bar = picked.indexOf(QLatin1Char{'|'});
+            if (bar > 0) seed[picked.left(bar).toStdString()] = picked.mid(bar + 1).toStdString();
+        }
         else if (op == "render.buffer" || op == "render.attribute") {
             seed["element"] = element->currentData().toString().toStdString();
             seed["count"] = count->value();

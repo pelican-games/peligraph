@@ -602,6 +602,10 @@ class GraphCanvasScene final : public QGraphicsScene {
         // Q-19: grabbed on a socket of a render node's shader declarations
         // (its key); `port` is then the key too.
         std::string socket_key;
+        // UX-5c: grabbed on a folded node's output row; `port` is the
+        // resource it names, and only a rendering-section pass's input
+        // takes it.
+        bool from_folded = false;
     };
     // Decision 7: what a zone's frame is drawn around, per body, so the
     // frame can follow a body node through a drag.
@@ -708,6 +712,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     // A drop on a pass's input socket: the edit, or the notice why not.
     void dropOnPassInput(const std::string &pass, const QGraphicsItem &socket,
                          const std::string &from_node, const std::string &from_port);
+    // UX-5c: and of a resource by name (a folded node's output row).
+    void dropResourceOnPassInput(const std::string &pass, const QGraphicsItem &socket,
+                                 const std::string &resource);
     void handPassInputEdit(const FramePlanEditRequest &request,
                            std::function<FramePlanEditRequest()> rebuild);
     std::unique_ptr<InlineEditor> editor_;

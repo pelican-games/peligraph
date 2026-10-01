@@ -699,6 +699,7 @@ void GraphCanvasModel::setConnected(bool connected) {
     // UX-5b: the engine's shader list is its binary's; one that arrived
     // stays, one that did not is asked again when a list is opened.
     engine_shaders_asked_ = false;
+    engine_shaders_again_at_.reset();
     operations_ = Json::object();
     types_ = Json::object();
     failure_ = {};
@@ -885,6 +886,12 @@ bool GraphCanvasModel::scrub(double time) {
 }
 
 void GraphCanvasModel::poll() {
+    // UX-5d (EL-4c): a list the engine is still building is asked for again.
+    if (engine_shaders_again_at_ && connected_ && !engine_shaders_known_ &&
+        std::chrono::steady_clock::now() >= *engine_shaders_again_at_) {
+        engine_shaders_again_at_.reset();
+        read(RequestKind::EngineShaders, "get_engine_shaders", Json::object());
+    }
     if (!pollWanted()) return;
     requestCatalog();
     // Live is the only thing that reads on a clock. Off, the overlay follows
@@ -983,7 +990,12 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         const auto pending = *slot;
         try {
             const auto response = Json::parse(json);
-            if (response.contains("error")) {
+            // EL-4c: a list the engine failed to build carries its `error`
+            // beside status "failed"; that is the list's answer, read below.
+            const bool shaders_failed = pending.kind == RequestKind::EngineShaders &&
+                                        response.is_object() &&
+                                        text(response, "status") == "failed";
+            if (response.contains("error") && !shaders_failed) {
                 if (pending.kind == RequestKind::Templates ||
                     pending.kind == RequestKind::Authoring ||
                     pending.kind == RequestKind::EngineShaders)
@@ -1042,6 +1054,25 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 return;
             }
             if (pending.kind == RequestKind::EngineShaders) {
+                // UX-5d (EL-4c): the engine builds the list behind its frames
+                // from start-up and answers at once -- "building" (asked
+                // again in half a second, from poll), "failed" with its
+                // error, or "ready" with the list. A reply without a status
+                // is the list as before.
+                const auto status = response.is_object() ? text(response, "status") : std::string{};
+                if (status == "building") {
+                    engine_shaders_again_at_ =
+                        std::chrono::steady_clock::now() + std::chrono::milliseconds{500};
+                    return;
+                }
+                if (status == "failed") {
+                    takeEngineShaders(Json::array());
+                    edit_notice_ = {InspectorNoticeKind::Error,
+                                    "The engine could not list its shaders: " +
+                                        text(response, "error")};
+                    ++report_revision_;
+                    return;
+                }
                 const auto shaders =
                     response.is_array() ? response
                     : response.contains("engine_shaders") ? response.at("engine_shaders")
@@ -2875,10 +2906,112 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
             add(std::move(node));
             return ops;
         }
+        if (op == "render.compute" && !seedText("ray_tracing").empty()) {
+            // UX-5d, decision 2: a task tracing with one of the engine's ray
+            // tracing pipelines. Its ports are the shader's resource ports
+            // (RS-5 binds them by name): an image it writes gets an image of
+            // its own beside it, and the rays are as many as that image's
+            // pixels; an image it samples is read from the image of the
+            // scope whose name says the same (world_position from a
+            // G-buffer's worldpos), from the pass that writes it.
+            const auto pipelines = rayTracingPipelines();
+            const auto pipeline = std::ranges::find(pipelines, seedText("ray_tracing"),
+                                                    &GraphCanvasRayTracingPipeline::reference);
+            if (pipeline == pipelines.end()) return Json::array();
+            const auto key = [](std::string name) {
+                std::ranges::transform(name, name.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::tolower(c));
+                });
+                std::erase(name, '_');
+                return name;
+            };
+            const auto sources = templateSources(in_scope, id);
+            std::vector<std::string> taken;
+            const auto matchSource = [&](const std::string &port) -> const GraphCanvasTemplateSource * {
+                const auto wanted = key(port);
+                std::vector<const GraphCanvasTemplateSource *> found;
+                for (const auto &source : sources) {
+                    auto tail = source.resource;
+                    if (const auto split = tail.rfind("__"); split != std::string::npos)
+                        tail = tail.substr(split + 2);
+                    else if (tail.starts_with("gbuffer_"))
+                        tail = tail.substr(8);
+                    const auto have = key(tail);
+                    if (have.size() < 3 || wanted.size() < 3) continue;
+                    if ((have == wanted || wanted.starts_with(have) || have.starts_with(wanted)) &&
+                        std::ranges::find(taken, source.resource) == taken.end())
+                        found.push_back(&source);
+                }
+                return found.size() == 1 ? found.front() : nullptr;
+            };
+            Json ports = Json::object();
+            Json inputs = Json::object();
+            Json outputs = Json::array();
+            std::string rays_from;
+            for (const auto &[port, type] : pipeline->ports) {
+                if (type == "storage_image") {
+                    const auto image = freeId(id + "__" + port);
+                    // EL-4c: the format the shader writes it in, when the
+                    // engine could read it.
+                    const auto format = pipeline->formats.contains(port)
+                                            ? pipeline->formats.at(port)
+                                            : std::string{"R16G16B16A16_SFLOAT"};
+                    add(Json{{"id", image}, {"op", "render.image"},
+                             {"parameters", Json{{"type", sceneColorType()},
+                                                 {"format", format},
+                                                 {"extent_scale", 1.0},
+                                                 {"usage", Json::array({"STORAGE", "SAMPLED"})}}},
+                             {"outputs", Json::array({"resource"})}});
+                    ports[port] = Json{{"kind", "image"}, {"type", sceneColorType()},
+                                       {"access", "write"}, {"binding", "storage"}};
+                    inputs[port] = Json{{"node", image}, {"port", "resource"}};
+                    outputs.push_back(port);
+                    if (rays_from.empty()) rays_from = port;
+                } else if (type == "sampled_image") {
+                    Json read_type = sceneColorType();
+                    if (const auto *source = matchSource(port)) {
+                        taken.push_back(source->resource);
+                        if (const auto *image = findNode(in_scope, source->resource);
+                            image != nullptr && image->is_object())
+                            if (const auto declared = image->value("parameters", Json::object())
+                                                          .value("type", Json{});
+                                declared.is_object())
+                                read_type = declared;
+                        inputs[port] = Json{{"node", source->node}, {"port", source->port}};
+                    }
+                    ports[port] = Json{{"kind", "image"}, {"type", std::move(read_type)},
+                                       {"access", "read"}, {"binding", "sampled"},
+                                       {"sampling", Json{{"filter", "nearest"},
+                                                         {"address", "clamp_to_edge"}}}};
+                }
+                // A buffer port has nothing here to bind; the engine names it.
+            }
+            if (rays_from.empty()) return Json::array();
+            node["parameters"] = Json{
+                {"ray_tracing", Json{{"raygen", pipeline->raygen},
+                                     {"miss", pipeline->miss},
+                                     {"closesthit", pipeline->closesthit}}},
+                {"dispatch", Json{{"rays_from", Json{{"port", rays_from}}}}},
+                {"ports", std::move(ports)}};
+            node["inputs"] = std::move(inputs);
+            node["outputs"] = std::move(outputs);
+            add(std::move(node));
+            return ops;
+        }
         if (op == "render.compute") {
             // The Task Editor's new task: a shader of the project's, one
             // group, nothing bound yet.
             if (compute_shader_choices_.empty()) return Json::array();
+            if (const auto picked = seedText("shader"); !picked.empty()) {
+                if (std::ranges::find(compute_shader_choices_, picked) == compute_shader_choices_.end())
+                    return Json::array();
+                node["parameters"] = Json{{"shader", picked},
+                                          {"dispatch", Json{{"groups", Json::array({1, 1, 1})}}},
+                                          {"ports", Json::object()}};
+                node["outputs"] = Json::array();
+                add(std::move(node));
+                return ops;
+            }
             const auto preferred = std::ranges::find(compute_shader_choices_,
                                                      std::string{"project://shaders/compute"});
             node["parameters"] = Json{
@@ -4332,7 +4465,8 @@ std::vector<GraphCanvasCatalogEntry> GraphCanvasModel::paletteOperationsIn(
             (isDrawStep(op) && body_of_draws) ||
             (!body_of_draws &&
              ((isPaletteSeededRender(op) &&
-               (op != "render.compute" || !compute_shader_choices_.empty())) ||
+               (op != "render.compute" || !compute_shader_choices_.empty() ||
+                !engine_shaders_known_ || !rayTracingPipelines().empty())) ||
               (op == "render.raster" && rasterTemplateAvailable())));
         if (text(declaration, "ports") != "declared" && !seeded) continue;
         GraphCanvasCatalogEntry entry{op, text(declaration, "domain"),
@@ -5057,6 +5191,12 @@ void GraphCanvasModel::readPlanPasses(const Json &plan) {
                     element != origin->end() && element->is_number_integer())
                     pass.loop_element = element->get<std::int64_t>();
             }
+            if (const auto references = node.find("loop_outputs");
+                references != node.end() && references->is_array())
+                for (const auto &entry : *references)
+                    if (entry.is_object() && !text(entry, "reference").empty())
+                        pass.loop_outputs.push_back(
+                            {text(entry, "reference"), text(entry, "resource")});
             // GL-2b: the graph node that made it, and the feature passes
             // it took the place of.
             if (const auto origin = node.find("origin");
@@ -5292,6 +5432,29 @@ std::string GraphCanvasModel::canvasNodeOfPass(std::string_view name) const {
     return foldedOwnerOf(*pass);
 }
 
+bool GraphCanvasModel::graphWritesResourceNamedIn(std::string_view message) const {
+    std::set<std::string, std::less<>> words;
+    std::size_t at = 0;
+    while (at < message.size()) {
+        const auto start = message.find_first_not_of(" \t\r\n", at);
+        if (start == std::string_view::npos) break;
+        auto end = message.find_first_of(" \t\r\n", start);
+        if (end == std::string_view::npos) end = message.size();
+        auto word = message.substr(start, end - start);
+        while (!word.empty() && (word.back() == ':' || word.back() == ',' ||
+                                 word.back() == ';' || word.back() == '.'))
+            word.remove_suffix(1);
+        if (!word.empty()) words.emplace(word);
+        at = end;
+    }
+    return std::ranges::any_of(plan_passes_, [&](const GraphCanvasPlanPass &pass) {
+        return pass.kind != "anchor" && !graphOwnerOf(pass).empty() &&
+               std::ranges::any_of(pass.writes, [&](const std::string &written) {
+                   return words.contains(written);
+               });
+    });
+}
+
 // --- GL-1e: a rendering-section pass's inputs.
 
 void GraphCanvasModel::requestRenderAuthoring() {
@@ -5317,6 +5480,7 @@ FramePlanModel GraphCanvasModel::passInputPlan() const {
         node.reads = pass.reads;
         node.history_reads = pass.history_reads;
         node.writes = pass.writes;
+        node.loop_outputs = pass.loop_outputs;
         if (const auto inputs = plan_pass_inputs_.find(pass.name);
             inputs != plan_pass_inputs_.end())
             node.pass_inputs = inputs->second;
@@ -5354,8 +5518,8 @@ std::string GraphCanvasModel::scopeOutputResource(std::string_view scope, std::s
                        : std::string{};
         }
         // UX-5a: a loop's output is no input of the same name (a loop's
-        // `color` in and `color` out are two things): it is what its body
-        // writes, in the copy the engine expands last.
+        // `color` in and `color` out are two things). UX-5c: it is named as
+        // the loop's (`loop.color`), and the engine resolves it.
         if (op == "graph.loop") return scope.empty() ? loopOutputResource(at, socket) : std::string{};
         const auto inputs = found->find("inputs");
         if (inputs == found->end() || !inputs->is_object()) return {};
@@ -5371,42 +5535,20 @@ std::string GraphCanvasModel::scopeOutputResource(std::string_view scope, std::s
 
 std::string GraphCanvasModel::loopOutputResource(const std::string &loop_id,
                                                  std::string_view port) const {
-    // `p` is the value of the last element that has a body (graph.loop's
-    // contract: the engine repoints a graph reader to it). `p[]` is read one
-    // element at a time; a pass's input names no element, so it reads the
-    // same last one.
-    const std::string base{port.ends_with("[]") ? port.substr(0, port.size() - 2) : port};
-    const auto read = loop(loop_id);
-    const auto *report = loopReport(loop_id);
-    if (!read || report == nullptr || !report->is_object()) return {};
-    const auto elements = report->find("elements");
-    if (elements == report->end() || !elements->is_array()) return {};
-    for (auto element = elements->rbegin(); element != elements->rend(); ++element) {
-        if (!element->is_object()) continue;
-        const auto branch = element->value("branch", std::size_t{0});
-        if (branch >= read->branches.size()) continue;
-        const auto &taken = read->branches[branch];
-        if (taken.nothing || taken.body.empty()) continue;
-        const auto definition = definitions_.find(taken.body);
-        if (definition == definitions_.end() || !definition->is_object()) return {};
-        const auto outputs = definition->find("outputs");
-        if (outputs == definition->end() || !outputs->is_object()) return {};
-        const auto endpoint = outputs->find(base);
-        if (endpoint == outputs->end() || !endpoint->is_object()) return {};
-        const auto local =
-            scopeOutputResource(taken.body, text(*endpoint, "node"), text(*endpoint, "port"));
-        if (local.empty()) return {};
-        // A target the body names by reference is the project's, not a copy's.
-        if (findNode(taken.body, local) == nullptr) return local;
-        // Each copy's image is `<loop>/<element>/<body node>` in the plan.
-        const auto copy = loop_id + "/" +
-                          std::to_string(element->value("element", std::int64_t{0})) + "/" + local;
-        const bool written = std::ranges::any_of(plan_passes_, [&](const GraphCanvasPlanPass &pass) {
-            return std::ranges::find(pass.writes, copy) != pass.writes.end();
-        });
-        return written ? copy : std::string{};
-    }
-    return {};
+    // UX-5c: a pass of the rendering section names a loop's `p` as
+    // `<loop>.<output>` (RS-13); the engine reads it as a graph reader of `p`
+    // does -- the last element's value, whatever Count is. `p[]` is one value
+    // per element, which no pass's input names (dropOnPassInput says so).
+    if (port.empty() || port.ends_with("[]")) return {};
+    const auto *found = findNode({}, loop_id);
+    if (found == nullptr || text(*found, "op") != "graph.loop") return {};
+    const auto outputs = found->find("outputs");
+    if (outputs != found->end() && outputs->is_array() &&
+        std::ranges::none_of(*outputs, [&](const Json &output) {
+            return output.is_string() && output.get<std::string>() == port;
+        }))
+        return {};
+    return loop_id + "." + std::string{port};
 }
 
 void GraphCanvasModel::setEditNotice(InspectorNotice notice) {
@@ -6814,6 +6956,37 @@ void GraphCanvasModel::takeEngineShaders(const Json &shaders) {
             // A shader whose declarations Studio cannot read keeps the plan's.
         }
     }
+}
+
+std::vector<GraphCanvasRayTracingPipeline> GraphCanvasModel::rayTracingPipelines() const {
+    std::vector<GraphCanvasRayTracingPipeline> pipelines;
+    // The stems with a raygen stage, in the list's order.
+    for (const auto &entry : engine_shaders_)
+        if (entry.is_object() && text(entry, "stage") == "raygen" && !text(entry, "reference").empty() &&
+            std::ranges::find(pipelines, text(entry, "reference"),
+                              &GraphCanvasRayTracingPipeline::reference) == pipelines.end())
+            pipelines.push_back({text(entry, "reference"), text(entry, "reference"), {}, {}, {}, {}});
+    for (auto &pipeline : pipelines)
+        for (const auto &entry : engine_shaders_) {
+            if (!entry.is_object() || text(entry, "reference") != pipeline.reference) continue;
+            const auto stage = text(entry, "stage");
+            if (stage == "miss") pipeline.miss = pipeline.reference;
+            if (stage == "closesthit") pipeline.closesthit = pipeline.reference;
+            for (const auto &port : entry.value("resource_ports", Json::array())) {
+                const auto name = port.is_object() ? text(port, "port") : std::string{};
+                if (name.empty() ||
+                    std::ranges::any_of(pipeline.ports, [&](const auto &known) { return known.first == name; }))
+                    continue;
+                pipeline.ports.emplace_back(name, text(port, "type"));
+                if (const auto format = text(port, "format"); !format.empty())
+                    pipeline.formats[name] = format;
+            }
+        }
+    // A pipeline traces with all three.
+    std::erase_if(pipelines, [](const GraphCanvasRayTracingPipeline &pipeline) {
+        return pipeline.miss.empty() || pipeline.closesthit.empty();
+    });
+    return pipelines;
 }
 
 std::optional<GraphCanvasEngineShader>

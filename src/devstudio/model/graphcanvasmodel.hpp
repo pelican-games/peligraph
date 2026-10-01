@@ -5,6 +5,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -441,6 +442,23 @@ struct GraphCanvasEngineShader {
     bool operator==(const GraphCanvasEngineShader &) const = default;
 };
 
+// UX-5d, decision 2: a ray tracing pipeline get_engine_shaders lists, which a
+// new render.compute can trace with (`ray_tracing {raygen, miss,
+// closesthit}`), and its resource ports: {port, descriptor type} --
+// sampled_image, storage_image, storage_buffer...
+struct GraphCanvasRayTracingPipeline {
+    std::string reference;
+    std::string raygen;
+    std::string miss;
+    std::string closesthit;
+    std::vector<std::pair<std::string, std::string>> ports;
+    // EL-4c: a storage image port's format, when the engine read it from the
+    // shader (rt_shadow_mask_pipeline's shadow_mask: R8_UNORM).
+    std::map<std::string, std::string> formats;
+
+    bool operator==(const GraphCanvasRayTracingPipeline &) const = default;
+};
+
 // UX-5b, decision 4: a render.image a root render.material_pass draws into
 // at one of its contract's sockets, and the formats the contract takes there
 // (get_graph_catalog.material_pass_contracts).
@@ -580,6 +598,9 @@ struct GraphCanvasPlanPass {
     // And loop_origin's element and body node.
     std::int64_t loop_element = 0;
     std::string loop_node;
+    // UX-5c: the loop outputs it names as `<loop>.<output>` (RS-13), and
+    // what each read this frame.
+    std::vector<FramePlanLoopOutput> loop_outputs;
     // GL-2b: the graph node that made it; none for a pass of the preset, a
     // feature or the rendering section (and for any pass of an engine that
     // predates GL-2a).
@@ -871,6 +892,9 @@ class GraphCanvasModel {
     bool engine_shaders_known_ = false;
     bool engine_shaders_asked_ = false;
     bool engine_shaders_wanted_ = false;
+    // UX-5d (EL-4c): when a list the engine answered "building" is asked
+    // for again.
+    std::optional<std::chrono::steady_clock::time_point> engine_shaders_again_at_;
     std::uint64_t engine_shaders_revision_ = 0;
     void takeEngineShaders(const nlohmann::json &shaders);
     // passInputs' lookup in the plan alone.
@@ -1915,6 +1939,11 @@ class GraphCanvasModel {
     // the graph node that made it, or the folded node it is in. Empty when
     // the plan does not list it (or it is an anchor).
     [[nodiscard]] std::string canvasNodeOfPass(std::string_view pass) const;
+    // UX-5d, decision 3: whether a resource a refusal's message names is
+    // written, in the plan, by a pass or task a graph node made -- not by a
+    // feature's task or a pass of the rendering section. The message's words
+    // are matched against what the plan's passes write.
+    [[nodiscard]] bool graphWritesResourceNamedIn(std::string_view message) const;
 
     // --- GL-1e: a rendering-section pass's inputs, edited from the Graph.
 
@@ -1933,9 +1962,9 @@ class GraphCanvasModel {
     // render.buffer, render.attribute) its own id, a render.target_ref the
     // target it names, a render node's output the resource node feeding its
     // input of the same name. Empty for anything else.
-    // UX-5a: a graph.loop's output (`p`, or `p[]`) is the image its body's
-    // output resolves to in the last copy the plan expanded
-    // (`<loop>/<element>/<image>`), never the loop's input of the same name.
+    // UX-5a: a graph.loop's output is never the loop's input of the same
+    // name. UX-5c: its `p` is `<loop>.<output>` (RS-13: the engine reads the
+    // last element's value); its `p[]` is no resource (empty).
     [[nodiscard]] std::string outputResource(std::string_view node, std::string_view port) const;
     // A pass's input edit is sent by the canvas's owner (edit_preset_pass);
     // what became of it is said on the line a graph edit's is.
@@ -2069,8 +2098,15 @@ class GraphCanvasModel {
     [[nodiscard]] std::uint64_t engineShadersRevision() const noexcept {
         return engine_shaders_revision_;
     }
+    // UX-5d: whether the engine's list has arrived (or its catalog carried it).
+    [[nodiscard]] bool engineShadersKnown() const noexcept { return engine_shaders_known_; }
     [[nodiscard]] std::optional<GraphCanvasEngineShader>
     engineShader(std::string_view reference) const;
+    // UX-5d, decision 2: the engine's ray tracing pipelines -- a shader stem
+    // the list gives a raygen stage (and a miss and a closesthit), with the
+    // resource ports its stages declare (port, descriptor type), in the
+    // list's order. Empty until get_engine_shaders is answered.
+    [[nodiscard]] std::vector<GraphCanvasRayTracingPipeline> rayTracingPipelines() const;
     // Decision 4. render_target_vocabulary.format_aspects: "color", "depth",
     // "depth_stencil" or "stencil"; empty for a format the engine did not
     // list (or an engine before it).

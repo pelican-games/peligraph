@@ -2,494 +2,94 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_build_D",
-  "description": "GB-1 target D (shadows), as far as it goes from File > New Project > Blank with Studio's GUI only. A forward material pass from the Graph tab's palette, a Cube and a Floor, the pass's colour onto present's + input (as gui_build_A). Features: shadow_directional picked in the catalog, Add, Apply -- the engine binds its shadow_map to the forward material pass (a deferred pipeline is refused: surface_resources did not match any material or fullscreen consumer). On the Graph tab, Add loop with Over: View axis offers the shadow family ($shadow/directional, cascade x1) from the frame plan with nothing typed. Adding render.shadow_depth into that loop's body from the palette is refused by the engine (render node parameters must be an object), so the scenario stops building by hand there; Features' Replace with loop version... puts the engine's shadow cascade loop in its place, and the frame plan draws cascade 0 into shadow_map, which the material pass's lighting reads. Typed: the project folder and name, and material_pass in the palette filter.",
+  "description": "GB-1 target D (shadows), from File > New Project > Blank with Studio's GUI only, on the Graph tab. As gui_build_B: the palette adds a render.material_pass of deferred_geometry_v1, Add Object > Cube and Add Object > Floor (a board under the box) give it something to draw, and Add fullscreen pass adds the lighting pass. Its Frame data's Uses scene lights is ticked first, so the frame has a lighting pass of its own; Features: shadow_directional picked in the catalog, Add, Apply -- RS-10 takes it for the deferred pipeline (no material or fullscreen consumer needed), and the frame plan draws shadow_map first. Back on the Graph tab, the lighting pass's New... > Deferred lighting > Create (UX-5b) writes the template with the shadow parts: shadow_map is one of its inputs, read through a render.target_ref the same edit adds, and the feature defines PELICAN_FEATURE_SHADOW for it. The lighting pass's colour dragged onto present's + input, the viewport shows the lit box and its shadow on the floor: a floor point on the box's left side is not the colour of the point opposite it on the right. Not built by hand: the shadow depth pass itself is the feature's (shadow_directional), not a render.shadow_depth from the palette. Typed: the project folder and the name gb_d in New Project, and material_pass in the palette's filter.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
-    {
-      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
-      "cmd": "wait_engine",
-      "timeout_ms": 180000
-    },
-    {
-      "label": "File > New Project...",
-      "cmd": "action",
-      "name": "pelican.file.newProject"
-    },
-    {
-      "label": "the dialog is on screen",
-      "cmd": "wait",
-      "name": "pelican.newProjectDialog",
-      "visible": true,
-      "timeout_ms": 10000
-    },
-    {
-      "label": "the folder: this run's own artifacts",
-      "cmd": "type",
-      "name": "pelican.newProject.location",
-      "text": "{artifacts}"
-    },
-    {
-      "label": "the name",
-      "cmd": "type",
-      "name": "pelican.newProject.name",
-      "text": "gb_d"
-    },
-    {
-      "label": "the Blank pipeline template",
-      "cmd": "select",
-      "name": "pelican.newProject.template",
-      "text": "Blank pipeline"
-    },
-    {
-      "label": "Create",
-      "cmd": "click",
-      "name": "pelican.newProject.create"
-    },
-    {
-      "label": "the dialog closed",
-      "cmd": "wait",
-      "name": "pelican.newProjectDialog",
-      "missing": true,
-      "timeout_ms": 10000
-    },
-    {
-      "label": "the blank project's present is on the Frame Plan canvas",
-      "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#present",
-      "visible": true,
-      "timeout_ms": 180000
-    },
-    {
-      "label": "the new engine answers and has presented frames",
-      "cmd": "wait_engine",
-      "timeout_ms": 180000,
-      "frames": 30
-    },
-    {
-      "label": "the Graph tab is in front",
-      "cmd": "action",
-      "name": "pelican.view.renderTools.graph"
-    },
-    {
-      "label": "the canvas has read the new document and can edit it",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasAddNode",
-      "enabled": true,
-      "timeout_ms": 120000
-    },
-    {
-      "label": "Add: the palette opens",
-      "cmd": "click",
-      "name": "pelican.graphCanvasAddNode"
-    },
-    {
-      "label": "the palette is on screen",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasPalette",
-      "visible": true,
-      "timeout_ms": 10000
-    },
-    {
-      "label": "the filter narrows the list to the material pass",
-      "cmd": "type",
-      "name": "pelican.graphCanvasPaletteFilter",
-      "text": "material_pass"
-    },
-    {
-      "label": "the contract combo is offered for it",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasPaletteContract",
-      "visible": true,
-      "timeout_ms": 10000
-    },
-    {
-      "label": "a forward pass",
-      "cmd": "select",
-      "name": "pelican.graphCanvasPaletteContract",
-      "text": "forward_opaque_v1"
-    },
-    {
-      "label": "Enter in the filter is OK",
-      "cmd": "key",
-      "name": "pelican.graphCanvasPaletteFilter",
-      "sequence": "Return"
-    },
-    {
-      "label": "the palette closed",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasPalette",
-      "missing": true,
-      "timeout_ms": 10000
-    },
-    {
-      "label": "the pass's draw loop is drawn as a zone (after the restart the route default asks for)",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasView::graph_zone#render_material_pass_draws",
-      "visible": true,
-      "timeout_ms": 180000
-    },
-    {
-      "label": "the engine answers and has presented frames",
-      "cmd": "wait_engine",
-      "timeout_ms": 180000,
-      "frames": 30
-    },
-    {
-      "label": "the material pass is drawn",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasView::graph_node#render_material_pass",
-      "visible": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "the frame plan runs its draw loop",
-      "expect": "rpc_equals",
-      "method": "get_frame_plan",
-      "params": {},
-      "path": "loops[0].tier",
-      "value": "draw_loop",
-      "retry_ms": 120000
-    },
-    {
-      "label": "Add Object > Cube",
-      "cmd": "action",
-      "name": "pelican.outliner.addObject.cube"
-    },
-    {
-      "label": "the engine has a Cube",
-      "expect": "rpc_equals",
-      "method": "scene_tree",
-      "params": {
-        "scene_id": "default_scene"
-      },
-      "path": "objects[2].name",
-      "value": "Cube",
-      "retry_ms": 60000
-    },
-    {
-      "label": "the Inspector has read the Cube",
-      "cmd": "wait",
-      "name": "pelican.inspectorModelChoice",
-      "text": "Cube (built-in)",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "Add Object > Floor",
-      "cmd": "action",
-      "name": "pelican.outliner.addObject.floor"
-    },
-    {
-      "label": "the engine has a Floor",
-      "expect": "rpc_equals",
-      "method": "scene_tree",
-      "params": {
-        "scene_id": "default_scene"
-      },
-      "path": "objects[3].name",
-      "value": "Floor",
-      "retry_ms": 60000
-    },
-    {
-      "label": "the Floor is selected",
-      "cmd": "wait",
-      "name": "pelican.inspectorSelection",
-      "contains": "Floor\n",
-      "timeout_ms": 30000
-    },
-    {
-      "label": "the Inspector has read the Floor",
-      "cmd": "wait",
-      "name": "pelican.inspectorVector.transform.pos.1",
-      "contains": "-0.5000",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "File > Save Scene",
-      "cmd": "action",
-      "name": "pelican.file.saveScene"
-    },
-    {
-      "label": "the save is done",
-      "cmd": "wait",
-      "name": "pelican.inspectorNotice",
-      "contains": "Scene saved",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "pick the camera",
-      "cmd": "select",
-      "name": "pelican.outliner",
-      "text": "MainCamera"
-    },
-    {
-      "label": "the Graph tab is in front again",
-      "cmd": "action",
-      "name": "pelican.view.renderTools.graph"
-    },
-    {
-      "label": "fit the graph",
-      "cmd": "action",
-      "name": "pelican.graphCanvas.fitView"
-    },
-    {
-      "label": "present offers an empty + input",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+",
-      "visible": true,
-      "timeout_ms": 120000
-    },
-    {
-      "label": "the material pass's colour output onto present's + input",
-      "cmd": "drag",
-      "from": {
-        "name": "pelican.graphCanvasView::graph_socket#render_material_pass/out:color"
-      },
-      "to": {
-        "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+"
-      },
-      "steps": 8
-    },
-    {
-      "label": "present's inputs saved",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasNotice",
-      "text": "Pass inputs saved.",
-      "timeout_ms": 120000
-    },
-    {
-      "label": "Features tab",
-      "cmd": "action",
-      "name": "pelican.view.renderTools.render_features"
-    },
-    {
-      "label": "catalog read",
-      "cmd": "wait",
-      "name": "pelican.renderFeatures.catalog",
-      "visible": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "pick shadow_directional",
-      "cmd": "select",
-      "name": "pelican.renderFeatures.catalog",
-      "text": "shadow_directional"
-    },
-    {
-      "label": "Add",
-      "cmd": "click",
-      "name": "pelican.renderFeatures.add"
-    },
-    {
-      "label": "Apply ready",
-      "cmd": "wait",
-      "name": "pelican.renderFeatures.apply",
-      "enabled": true,
-      "timeout_ms": 30000
-    },
-    {
-      "label": "Apply",
-      "cmd": "click",
-      "name": "pelican.renderFeatures.apply"
-    },
-    {
-      "label": "the root lists shadow_directional",
-      "expect": "rpc_equals",
-      "method": "get_render_features",
-      "params": {},
-      "path": "features[0]",
-      "value": "engine://features/shadow_directional.json",
-      "retry_ms": 120000
-    },
-    {
-      "label": "the frame plan draws the shadow map, and the material pass reads it",
-      "expect": "rpc_equals",
-      "method": "get_frame_plan",
-      "params": {},
-      "path": "nodes[0].writes[0]",
-      "value": "shadow_map",
-      "retry_ms": 120000
-    },
-    {
-      "label": "engine frames",
-      "cmd": "wait_engine",
-      "timeout_ms": 180000,
-      "frames": 30
-    },
-    {
-      "label": "Graph tab",
-      "cmd": "action",
-      "name": "pelican.view.renderTools.graph"
-    },
-    {
-      "label": "canvas editable",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasAddNode",
-      "enabled": true,
-      "timeout_ms": 120000
-    },
-    {
-      "label": "Add loop",
-      "cmd": "action",
-      "name": "pelican.graphCanvas.addLoop"
-    },
-    {
-      "label": "saved",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasNotice",
-      "text": "Graph change saved.",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "zone",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasView::graph_zone#loop",
-      "visible": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "fit",
-      "cmd": "action",
-      "name": "pelican.graphCanvas.fitView"
-    },
-    {
-      "label": "pick zone",
-      "cmd": "click",
-      "name": "pelican.graphCanvasView::graph_node#loop"
-    },
-    {
-      "label": "over",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasLoop.over",
-      "visible": true,
-      "timeout_ms": 10000
-    },
-    {
-      "label": "summary read",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasLoop.summary",
-      "contains": "expand",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "Over: View axis",
-      "cmd": "select",
-      "name": "pelican.graphCanvasLoop.over",
-      "text": "View axis"
-    },
-    {
-      "label": "the loop runs over the shadow family, chosen from the frame plan's",
-      "expect": "rpc_equals",
-      "method": "get_graph_instances",
-      "params": {},
-      "path": "nodes[4].parameters.over.view_axis.family",
-      "value": "$shadow/directional",
-      "retry_ms": 60000
-    },
-    {
-      "label": "and its cascade axis",
-      "expect": "rpc_equals",
-      "method": "get_graph_instances",
-      "params": {},
-      "path": "nodes[4].parameters.over.view_axis.axis",
-      "value": "cascade"
-    },
-    {
-      "label": "the count is the axis's length, read only",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasLoop.viewCount",
-      "text": "×1 (cascade)",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "pick zone",
-      "cmd": "click",
-      "name": "pelican.graphCanvasView::graph_node#loop"
-    },
-    {
-      "label": "Features tab",
-      "cmd": "action",
-      "name": "pelican.view.renderTools.render_features"
-    },
-    {
-      "label": "pick shadow_directional in current",
-      "cmd": "select",
-      "name": "pelican.renderFeatures.current",
-      "text": "shadow_directional"
-    },
-    {
-      "label": "Replace offered",
-      "cmd": "wait",
-      "name": "pelican.renderFeatures.replaceWithLoop",
-      "visible": true,
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "Replace with loop version...",
-      "cmd": "click",
-      "name": "pelican.renderFeatures.replaceWithLoop"
-    },
-    {
-      "label": "confirm shown",
-      "cmd": "wait",
-      "name": "pelican.renderFeatures.replaceConfirm",
-      "visible": true,
-      "timeout_ms": 30000
-    },
-    {
-      "label": "Replace",
-      "cmd": "click",
-      "name": "pelican.renderFeatures.replaceConfirm.ok"
-    },
-    {
-      "label": "the graph gains the cascade loop",
-      "expect": "rpc_equals",
-      "method": "get_graph_instances",
-      "params": {},
-      "path": "nodes[5].id",
-      "value": "shadow_cascades",
-      "retry_ms": 120000
-    },
-    {
-      "label": "which the engine expands once a cascade",
-      "expect": "rpc_equals",
-      "method": "get_frame_plan",
-      "params": {},
-      "path": "loops[2].node",
-      "value": "shadow_cascades",
-      "retry_ms": 120000
-    },
-    {
-      "label": "its copy draws cascade 0 into the shadow map",
-      "expect": "rpc_equals",
-      "method": "get_frame_plan",
-      "params": {},
-      "path": "nodes[0].name",
-      "value": "shadow_cascades/0/depth",
-      "retry_ms": 60000
-    },
-    {
-      "label": "for cascade 0",
-      "expect": "rpc_equals",
-      "method": "get_frame_plan",
-      "params": {},
-      "path": "nodes[0].view_select.cascade",
-      "value": 0
-    },
-    {
-      "label": "the material pass's lighting reads the shadow map",
-      "expect": "rpc_equals",
-      "method": "get_frame_plan",
-      "params": {},
-      "path": "nodes[1].reads[0]",
-      "value": "shadow_map"
-    },
-    {
-      "label": "a picture of the Graph tab with both loops",
-      "expect": "screenshot",
-      "name": "pelican.graphCanvas",
-      "path": "gui_build_D_graph.png"
-    }
+    {"label": "the fixture's engine is up, so the switch to the new project is something that happens", "cmd": "wait_engine", "timeout_ms": 180000},
+    {"label": "start from the default layout", "cmd": "action", "name": "pelican.layout.resetDefault"},
+    {"label": "File > New Project...", "cmd": "action", "name": "pelican.file.newProject"},
+    {"label": "the dialog is on screen", "cmd": "wait", "name": "pelican.newProjectDialog", "visible": true, "timeout_ms": 10000},
+    {"label": "the folder: this run's own artifacts", "cmd": "type", "name": "pelican.newProject.location", "text": "{artifacts}"},
+    {"label": "the name", "cmd": "type", "name": "pelican.newProject.name", "text": "gb_d"},
+    {"label": "the Blank pipeline template", "cmd": "select", "name": "pelican.newProject.template", "text": "Blank pipeline"},
+    {"label": "Create", "cmd": "click", "name": "pelican.newProject.create"},
+    {"label": "the dialog closed", "cmd": "wait", "name": "pelican.newProjectDialog", "missing": true, "timeout_ms": 10000},
+    {"label": "the blank project's present is on the Frame Plan canvas", "cmd": "wait", "name": "pelican.framePlanLogicalView::node#present", "visible": true, "timeout_ms": 180000},
+    {"label": "the new engine answers and has presented frames", "cmd": "wait_engine", "timeout_ms": 180000, "frames": 30},
+    {"label": "the Graph tab is in front", "cmd": "action", "name": "pelican.view.renderTools.graph"},
+    {"label": "the canvas has read the new document and can edit it", "cmd": "wait", "name": "pelican.graphCanvasAddNode", "enabled": true, "timeout_ms": 120000},
+    {"label": "Add: the palette opens", "cmd": "click", "name": "pelican.graphCanvasAddNode"},
+    {"label": "the palette is on screen", "cmd": "wait", "name": "pelican.graphCanvasPalette", "visible": true, "timeout_ms": 10000},
+    {"label": "the filter narrows the list to the material pass", "cmd": "type", "name": "pelican.graphCanvasPaletteFilter", "text": "material_pass"},
+    {"label": "the contract combo is offered for it", "cmd": "wait", "name": "pelican.graphCanvasPaletteContract", "visible": true, "timeout_ms": 10000},
+    {"label": "a deferred pass: the G-buffer", "cmd": "select", "name": "pelican.graphCanvasPaletteContract", "text": "deferred_geometry_v1"},
+    {"label": "Enter in the filter is OK", "cmd": "key", "name": "pelican.graphCanvasPaletteFilter", "sequence": "Return"},
+    {"label": "the palette closed", "cmd": "wait", "name": "pelican.graphCanvasPalette", "missing": true, "timeout_ms": 10000},
+    {"label": "the pass's draw loop is drawn as a zone (after the restart the route default asks for)", "cmd": "wait", "name": "pelican.graphCanvasView::graph_zone#render_material_pass_draws", "visible": true, "timeout_ms": 180000},
+    {"label": "the engine answers and has presented frames", "cmd": "wait_engine", "timeout_ms": 180000, "frames": 30},
+    {"label": "the material pass is drawn", "cmd": "wait", "name": "pelican.graphCanvasView::graph_node#render_material_pass", "visible": true, "timeout_ms": 60000},
+    {"label": "Add Object > Cube", "cmd": "action", "name": "pelican.outliner.addObject.cube"},
+    {"label": "the engine has a Cube", "expect": "rpc_equals", "method": "scene_tree", "params": {"scene_id": "default_scene"}, "path": "objects[2].name", "value": "Cube", "retry_ms": 60000},
+    {"label": "the Inspector has read the Cube", "cmd": "wait", "name": "pelican.inspectorModelChoice", "text": "Cube (built-in)", "timeout_ms": 60000},
+    {"label": "Add Object > Floor", "cmd": "action", "name": "pelican.outliner.addObject.floor"},
+    {"label": "the engine has a Floor", "expect": "rpc_equals", "method": "scene_tree", "params": {"scene_id": "default_scene"}, "path": "objects[3].name", "value": "Floor", "retry_ms": 60000},
+    {"label": "the Floor is selected", "cmd": "wait", "name": "pelican.inspectorSelection", "contains": "Floor\n", "timeout_ms": 30000},
+    {"label": "the Inspector has read the Floor", "cmd": "wait", "name": "pelican.inspectorVector.transform.pos.1", "contains": "-0.5000", "timeout_ms": 60000},
+    {"label": "File > Save Scene", "cmd": "action", "name": "pelican.file.saveScene"},
+    {"label": "the save is done", "cmd": "wait", "name": "pelican.inspectorNotice", "contains": "Scene saved", "timeout_ms": 60000},
+    {"label": "pick the camera, so no gizmo is drawn over the box", "cmd": "select", "name": "pelican.outliner", "text": "MainCamera"},
+    {"label": "the Inspector holds the camera", "cmd": "wait", "name": "pelican.inspectorSelection", "contains": "MainCamera\n", "timeout_ms": 30000},
+    {"label": "the Graph tab is in front again", "cmd": "action", "name": "pelican.view.renderTools.graph"},
+    {"label": "fit the graph", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
+    {"label": "Add fullscreen pass: the lighting pass", "cmd": "action", "name": "pelican.graphCanvas.addFullscreenPass"},
+    {"label": "saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 60000},
+    {"label": "auto layout", "cmd": "action", "name": "pelican.graphCanvas.autoLayout"},
+    {"label": "saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 60000},
+    {"label": "fit", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
+    {"label": "the new pass is the document's tenth node", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "nodes[9].id", "value": "render_fullscreen", "retry_ms": 60000},
+    {"label": "pick it", "cmd": "click", "name": "pelican.graphCanvasView::graph_node#render_fullscreen"},
+    {"label": "its Frame data offers Uses scene lights", "cmd": "wait", "name": "pelican.graphCanvasPass.usesLightData", "visible": true, "enabled": true, "timeout_ms": 30000},
+    {"label": "Uses scene lights: the pass is the frame's lighting pass", "cmd": "click", "name": "pelican.graphCanvasPass.usesLightData"},
+    {"label": "saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 60000},
+    {"label": "it uses the scene lights", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "nodes[9].parameters.uses_light_data", "value": true, "retry_ms": 60000},
+    {"label": "the engine has presented frames", "cmd": "wait_engine", "timeout_ms": 180000, "frames": 30},
+    {"label": "Features tab", "cmd": "action", "name": "pelican.view.renderTools.render_features"},
+    {"label": "catalog read", "cmd": "wait", "name": "pelican.renderFeatures.catalog", "visible": true, "timeout_ms": 60000},
+    {"label": "pick shadow_directional", "cmd": "select", "name": "pelican.renderFeatures.catalog", "text": "shadow_directional"},
+    {"label": "Add", "cmd": "click", "name": "pelican.renderFeatures.add"},
+    {"label": "Apply ready", "cmd": "wait", "name": "pelican.renderFeatures.apply", "enabled": true, "timeout_ms": 30000},
+    {"label": "Apply", "cmd": "click", "name": "pelican.renderFeatures.apply"},
+    {"label": "RS-10: the root lists shadow_directional, the deferred pipeline with a lighting pass of its own is taken", "expect": "rpc_equals", "method": "get_render_features", "params": {}, "path": "features[0]", "value": "engine://features/shadow_directional.json", "retry_ms": 120000},
+    {"label": "the engine has presented frames", "cmd": "wait_engine", "timeout_ms": 180000, "frames": 30},
+    {"label": "the frame plan draws the shadow map first", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "nodes[0].writes[0]", "value": "shadow_map", "retry_ms": 120000},
+    {"label": "Graph tab", "cmd": "action", "name": "pelican.view.renderTools.graph"},
+    {"label": "canvas editable", "cmd": "wait", "name": "pelican.graphCanvasAddNode", "enabled": true, "timeout_ms": 120000},
+    {"label": "fit", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
+    {"label": "pick the lighting pass", "cmd": "click", "name": "pelican.graphCanvasView::graph_node#render_fullscreen"},
+    {"label": "its Pass fields offer New... beside the fragment, once the graph takes edits", "cmd": "wait", "name": "pelican.graphCanvasPass.newFragmentShader", "visible": true, "timeout_ms": 180000, "enabled": true},
+    {"label": "New...", "cmd": "click", "name": "pelican.graphCanvasPass.newFragmentShader"},
+    {"label": "the Pass Editor's templates, once the graph takes edits again", "cmd": "wait", "name": "pelican.graphCanvasPass.shaderTemplateKind", "visible": true, "enabled": true, "timeout_ms": 180000},
+    {"label": "start from Deferred lighting", "cmd": "select", "name": "pelican.graphCanvasPass.shaderTemplateKind", "text": "Deferred lighting"},
+    {"label": "named after it, nothing typed", "expect": "text_equals", "name": "pelican.graphCanvasPass.shaderTemplateName", "value": "deferred_lighting"},
+    {"label": "Create", "cmd": "click", "name": "pelican.graphCanvasPass.createFragmentShader"},
+    {"label": "the shader is written and the pass takes it", "cmd": "wait", "name": "pelican.graphCanvasPass.shaderTemplateNotice", "contains": "the pass draws with project://shaders/deferred_lighting", "timeout_ms": 30000},
+    {"label": "saved, as one edit", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 120000},
+    {"label": "the pass draws with the new shader", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "nodes[9].parameters.shader.fragment", "value": "project://shaders/deferred_lighting", "retry_ms": 60000},
+    {"label": "a line from the material pass's albedo output", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "nodes[9].inputs.albedo.node", "value": "render_material_pass"},
+    {"label": "the edit added a reference to the feature's shadow map", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "nodes[10].parameters.name", "value": "shadow_map"},
+    {"label": "and a line from it to the lighting pass", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "nodes[9].inputs.shadow_map.node", "value": "shadow_map_ref"},
+    {"label": "fit", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
+    {"label": "present offers an empty + input", "cmd": "wait", "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+", "visible": true, "timeout_ms": 120000},
+    {"label": "the lit colour onto present's + input", "cmd": "drag", "from": {"name": "pelican.graphCanvasView::graph_socket#render_fullscreen/out:color"}, "to": {"name": "pelican.graphCanvasView::graph_derived_socket#present/in:+"}, "steps": 8},
+    {"label": "present's inputs saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Pass inputs saved.", "timeout_ms": 120000},
+    {"label": "the engine has presented frames", "cmd": "wait_engine", "timeout_ms": 180000, "frames": 30},
+    {"label": "the lighting pass reads the shadow map the feature drew", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "nodes[2].reads[5]", "value": "shadow_map", "retry_ms": 60000},
+    {"label": "and present reads the lighting pass", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "nodes[3].reads[0]", "value": "render_fullscreen__color"},
+    {"label": "the lit floor right of the box, read", "expect": "result", "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/lit.png", "pixels": [[0.69, 0.7], [0.31, 0.7], [0.5, 0.5]]}, "path": "pixels[0]", "remember": "lit_floor", "retry_ms": 120000},
+    {"label": "the floor left of the box is in its shadow: not the lit floor's colour", "expect": "result", "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/lit.png", "pixels": [[0.69, 0.7], [0.31, 0.7], [0.5, 0.5]]}, "path": "pixels[1]", "op": "ne", "value_of": "lit_floor", "retry_ms": 120000},
+    {"label": "and the box is not the floor either", "expect": "result", "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/lit.png", "pixels": [[0.69, 0.7], [0.31, 0.7], [0.5, 0.5]]}, "path": "pixels[2]", "op": "ne", "value_of": "lit_floor"},
+    {"label": "a picture of the window", "expect": "screenshot", "path": "gui_build_D_window.png"},
+    {"label": "a picture of the Graph tab", "expect": "screenshot", "name": "pelican.graphCanvas", "path": "gui_build_D_graph.png"}
   ]
 }

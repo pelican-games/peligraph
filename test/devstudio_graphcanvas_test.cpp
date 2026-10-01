@@ -3244,3 +3244,57 @@ TEST_CASE("GL-1f a material pass, a shadow_depth and a snapshot_copy hand on wha
     h.commit();
     CHECK(nodeIn(h.document, "shadow").at("outputs") == Json::array({"depth"}));
 }
+
+// UX-5c, decision 2: RS-13's refusal of a <loop>.<output> a pass names reads
+// as one sentence per reason; RS-9's names the node, its op and what it lacks.
+TEST_CASE("UX-5c a loop output reference and a render node's missing parameters read as sentences",
+          "[studio][graph-canvas][ux5c][refusal]") {
+    using PelicanStudio::graphLoopRefusalDescription;
+    using PelicanStudio::knownRefusalDescription;
+    const auto reference = [](const char *reason) {
+        return Json{{"code", "graph.loop_output_reference_unknown@1"},
+                    {"pass", "present"}, {"reference", "loop.color"}, {"reason", reason}};
+    };
+    CHECK(graphLoopRefusalDescription(reference("loop_unknown")) ==
+          "present reads loop.color, but no loop, target or buffer has that name "
+          "(graph.loop_output_reference_unknown@1).");
+    CHECK(graphLoopRefusalDescription(reference("not_a_loop")) ==
+          "present reads loop.color, but the node before the dot is not a loop "
+          "(graph.loop_output_reference_unknown@1).");
+    CHECK(graphLoopRefusalDescription(reference("output_unknown")) ==
+          "present reads loop.color, but the loop has no output of that name "
+          "(graph.loop_output_reference_unknown@1).");
+    CHECK(graphLoopRefusalDescription(reference("per_element")) ==
+          "present reads loop.color, an output with one value per element: a pass reads a "
+          "loop's single output (the last element's) (graph.loop_output_reference_unknown@1).");
+    CHECK(graphLoopRefusalDescription(reference("not_a_resource")) ==
+          "present reads loop.color, which is a value, not an image or a buffer "
+          "(graph.loop_output_reference_unknown@1).");
+    CHECK(graphLoopRefusalDescription(reference("loop_inactive")) ==
+          "present reads loop.color, but this graph variant leaves that loop out "
+          "(graph.loop_output_reference_unknown@1).");
+    // A reason Studio has no sentence for reads as the code's own.
+    CHECK(graphLoopRefusalDescription(reference("later")) ==
+          "present reads loop.color, which is no loop output "
+          "(graph.loop_output_reference_unknown@1).");
+    // Quoted in the message of the refusal that carried it, as the engine
+    // spells a GraphRegistryError -- the line the Graph's pass edit shows.
+    CHECK(knownRefusalDescription(
+              "render_pipeline_preflight_failed",
+              "graph.loop_output_reference_unknown@1 {\"pass\":\"present\",\"reason\":"
+              "\"per_element\",\"reference\":\"loop.color[]\"}") ==
+          "present reads loop.color[], an output with one value per element: a pass reads a "
+          "loop's single output (the last element's) (graph.loop_output_reference_unknown@1).");
+
+    CHECK(graphLoopRefusalDescription({{"code", "graph.render_node_parameters_missing@1"},
+                                       {"node", "bright"}, {"op", "render.fullscreen"},
+                                       {"missing", {"ports", "shader"}}}) ==
+          "The render.fullscreen node bright needs ports, shader "
+          "(graph.render_node_parameters_missing@1).");
+    CHECK(knownRefusalDescription(
+              "invalid_graph_document",
+              "graph.render_node_parameters_missing@1 {\"missing\":[\"material_contract\"],"
+              "\"node\":\"mp\",\"op\":\"render.material_pass\"}") ==
+          "The render.material_pass node mp needs material_contract "
+          "(graph.render_node_parameters_missing@1).");
+}

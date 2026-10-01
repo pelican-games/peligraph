@@ -22,6 +22,7 @@
 #include <QApplication>
 #include <QPushButton>
 #include <QTimer>
+#include <QToolButton>
 #include <QMenu>
 #include <QRadioButton>
 #include <QWidgetAction>
@@ -165,6 +166,23 @@ GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
     extent_scale_->setKeyboardTracking(false);
     size_layout->addWidget(size_scale_);
     size_layout->addWidget(extent_scale_, 1);
+    // UX-5d, decision 1: as the loop's Count, the size can be an expression
+    // the engine evaluates when it composes the pipeline -- in a loop's body,
+    // over `element`.
+    extent_expression_ = new QLineEdit(size_row);
+    extent_expression_->setObjectName(imageFieldName(QStringLiteral("extentScaleExpression")));
+    extent_expression_->setPlaceholderText(QStringLiteral("1 / pow2(element + 1)"));
+    extent_expression_->setToolTip(
+        tr("The screen's size times this expression, evaluated when the pipeline is composed "
+           "(in a loop's body, `element` is the copy's number)."));
+    extent_expression_->hide();
+    size_layout->addWidget(extent_expression_, 1);
+    size_expression_toggle_ = new QToolButton(size_row);
+    size_expression_toggle_->setObjectName(imageFieldName(QStringLiteral("sizeExpressionToggle")));
+    size_expression_toggle_->setText(QStringLiteral("ƒ"));
+    size_expression_toggle_->setCheckable(true);
+    size_expression_toggle_->setToolTip(tr("Write the size as an expression"));
+    size_layout->addWidget(size_expression_toggle_);
     form->addRow(caption(tr("Size"), fields_), size_row);
 
     auto *fixed_row = new QWidget(fields_);
@@ -182,11 +200,42 @@ GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
         spin->setValue(256);
         spin->setKeyboardTracking(false);
     }
+    width_expression_ = new QLineEdit(fixed_row);
+    width_expression_->setObjectName(imageFieldName(QStringLiteral("widthExpression")));
+    width_expression_->setPlaceholderText(QStringLiteral("256 / pow2(element)"));
+    height_expression_ = new QLineEdit(fixed_row);
+    height_expression_->setObjectName(imageFieldName(QStringLiteral("heightExpression")));
+    height_expression_->setPlaceholderText(QStringLiteral("256 / pow2(element)"));
+    for (QLineEdit *line : {width_expression_, height_expression_}) {
+        line->setToolTip(tr("An expression for the size in pixels, evaluated when the pipeline "
+                            "is composed."));
+        line->hide();
+    }
     fixed_layout->addWidget(size_fixed_);
     fixed_layout->addWidget(width_, 1);
+    fixed_layout->addWidget(width_expression_, 1);
     fixed_layout->addWidget(new QLabel(QStringLiteral("×"), fixed_row));
     fixed_layout->addWidget(height_, 1);
+    fixed_layout->addWidget(height_expression_, 1);
     form->addRow(QString{}, fixed_row);
+    // The forms a body's image is usually given, one press each.
+    size_expression_row_ = new QWidget(fields_);
+    auto *forms_layout = new QHBoxLayout(size_expression_row_);
+    forms_layout->setContentsMargins(0, 0, 0, 0);
+    half_each_ = new QPushButton(tr("Half each element"), size_expression_row_);
+    half_each_->setObjectName(imageFieldName(QStringLiteral("sizeHalfEachElement")));
+    half_each_->setToolTip(tr("Each copy half the size of the one before: the screen times "
+                              "1 / pow2(element + 1) (a fixed size: divided by pow2(element))."));
+    double_each_ = new QPushButton(tr("Double each element"), size_expression_row_);
+    double_each_->setObjectName(imageFieldName(QStringLiteral("sizeDoubleEachElement")));
+    double_each_->setToolTip(tr("Each copy twice the size of the one before: times "
+                                "pow2(element)."));
+    forms_layout->addWidget(half_each_);
+    forms_layout->addWidget(double_each_);
+    forms_layout->addStretch(1);
+    form->addRow(QString{}, size_expression_row_);
+    form->setRowVisible(size_expression_row_, false);
+    size_form_ = form;
     auto *group = new QButtonGroup(this);
     group->addButton(size_scale_);
     group->addButton(size_fixed_);
@@ -203,6 +252,15 @@ GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
     for (QAbstractSpinBox *spin : std::initializer_list<QAbstractSpinBox *>{extent_scale_, width_,
                                                                            height_, layers_})
         connect(spin, &QAbstractSpinBox::editingFinished, this, [this] { commitSize(); });
+    connect(size_expression_toggle_, &QToolButton::toggled, this, [this](bool expression) {
+        showSizeExpression(expression);
+        // Back to a number: the number the field shows.
+        if (!expression) commitSize();
+    });
+    for (QLineEdit *line : {extent_expression_, width_expression_, height_expression_})
+        connect(line, &QLineEdit::returnPressed, this, [this] { commitSize(); });
+    connect(half_each_, &QPushButton::clicked, this, [this] { putSizeExpression(true); });
+    connect(double_each_, &QPushButton::clicked, this, [this] { putSizeExpression(false); });
 
     note_ = new QLabel(this);
     note_->setObjectName(imageFieldName(QStringLiteral("note")));
@@ -319,9 +377,27 @@ void GraphCanvasImageFields::load(const Json &parameters) {
         const QSignalBlocker block{spin};
         spin->setValue(static_cast<int>(number(key, spin == layers_ ? 1.0 : 256.0)));
     }
-    extent_scale_->setEnabled(!fixed);
-    width_->setEnabled(fixed);
-    height_->setEnabled(fixed);
+    // UX-5d, decision 1: a size the document writes as {"$expr": ...}.
+    const auto expression = [&](const char *key) -> std::optional<QString> {
+        if (!parameters.is_object()) return std::nullopt;
+        const auto found = parameters.find(key);
+        if (found == parameters.end() || !found->is_object()) return std::nullopt;
+        const auto text = found->find("$expr");
+        if (text == found->end() || !text->is_string()) return std::nullopt;
+        return qtext(text->get<std::string>());
+    };
+    const auto extent_text = fixed ? std::nullopt : expression("extent_scale");
+    const auto width_text = fixed ? expression("width") : std::nullopt;
+    const auto height_text = fixed ? expression("height") : std::nullopt;
+    const bool written = extent_text || width_text || height_text;
+    extent_expression_->setText(extent_text.value_or(QString{}));
+    width_expression_->setText(width_text.value_or(QString::number(width_->value())));
+    height_expression_->setText(height_text.value_or(QString::number(height_->value())));
+    {
+        const QSignalBlocker block{size_expression_toggle_};
+        size_expression_toggle_->setChecked(written);
+    }
+    showSizeExpression(written);
 
     note_->setVisible(!missing.isEmpty());
     if (!missing.isEmpty())
@@ -474,23 +550,70 @@ void GraphCanvasImageFields::commitUsage() {
 
 void GraphCanvasImageFields::commitSize() {
     auto changed = parameters();
+    // UX-5d, decision 1: behind the f button the size is an expression the
+    // engine evaluates (and refuses, with its sentence, when it cannot).
+    const bool expression = size_expression_toggle_->isChecked();
+    const auto written = [](QLineEdit *line, Json number) {
+        const auto text = line->text().trimmed();
+        if (text.isEmpty()) return number;
+        bool plain = false;
+        const double value = text.toDouble(&plain);
+        if (plain) return number.is_number_integer() ? Json(static_cast<int>(value)) : Json(value);
+        return Json{{"$expr", text.toStdString()}};
+    };
     if (size_fixed_->isChecked()) {
         // The parser wants extent_scale beside a fixed size; it is 1 there.
         changed["extent_scale"] = 1.0;
-        changed["width"] = width_->value();
-        changed["height"] = height_->value();
+        changed["width"] = expression ? written(width_expression_, width_->value()) : Json(width_->value());
+        changed["height"] =
+            expression ? written(height_expression_, height_->value()) : Json(height_->value());
     } else {
         changed.erase("width");
         changed.erase("height");
-        changed["extent_scale"] = extent_scale_->value();
+        changed["extent_scale"] = expression ? written(extent_expression_, extent_scale_->value())
+                                             : Json(extent_scale_->value());
     }
     // One layer is what an image without the key has.
     if (layers_->value() > 1 || changed.contains("layers")) changed["layers"] = layers_->value();
-    extent_scale_->setEnabled(!size_fixed_->isChecked());
-    width_->setEnabled(size_fixed_->isChecked());
-    height_->setEnabled(size_fixed_->isChecked());
+    showSizeExpression(expression);
     if (changed == parameters()) return;
     commit(changed);
+}
+
+void GraphCanvasImageFields::showSizeExpression(bool expression) {
+    const bool fixed = size_fixed_->isChecked();
+    extent_scale_->setVisible(!expression);
+    extent_expression_->setVisible(expression);
+    width_->setVisible(!expression);
+    height_->setVisible(!expression);
+    width_expression_->setVisible(expression);
+    height_expression_->setVisible(expression);
+    extent_scale_->setEnabled(!fixed);
+    extent_expression_->setEnabled(!fixed);
+    width_->setEnabled(fixed);
+    height_->setEnabled(fixed);
+    width_expression_->setEnabled(fixed);
+    height_expression_->setEnabled(fixed);
+    if (size_form_ != nullptr) size_form_->setRowVisible(size_expression_row_, expression);
+}
+
+void GraphCanvasImageFields::putSizeExpression(bool half) {
+    {
+        const QSignalBlocker block{size_expression_toggle_};
+        size_expression_toggle_->setChecked(true);
+    }
+    if (size_fixed_->isChecked()) {
+        const auto pixels = [&](QSpinBox *spin) {
+            return half ? QStringLiteral("%1 / pow2(element)").arg(spin->value())
+                        : QStringLiteral("%1 * pow2(element)").arg(spin->value());
+        };
+        width_expression_->setText(pixels(width_));
+        height_expression_->setText(pixels(height_));
+    } else {
+        extent_expression_->setText(half ? QStringLiteral("1 / pow2(element + 1)")
+                                         : QStringLiteral("pow2(element)"));
+    }
+    commitSize();
 }
 
 // --- Decision 2: render.fullscreen / render.raster.

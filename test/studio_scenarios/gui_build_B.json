@@ -45,7 +45,7 @@
     {"label": "fit", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
     {"label": "the new pass is the document's tenth node", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "nodes[9].id", "value": "render_fullscreen", "retry_ms": 60000},
     {"label": "pick it", "cmd": "click", "name": "pelican.graphCanvasView::graph_node#render_fullscreen"},
-    {"label": "its Pass fields offer New... beside the fragment", "cmd": "wait", "name": "pelican.graphCanvasPass.newFragmentShader", "visible": true, "timeout_ms": 30000},
+    {"label": "its Pass fields offer New... beside the fragment, once the graph takes edits (UX-5d: the canvas waits while the engine reads its shader list)", "cmd": "wait", "name": "pelican.graphCanvasPass.newFragmentShader", "visible": true, "timeout_ms": 180000, "enabled": true},
     {"label": "it draws with the engine's passthrough until then", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "nodes[9].parameters.shader.fragment", "value": "engine://passthrough"},
     {"label": "and its fields say so", "cmd": "wait", "name": "pelican.graphCanvasPass.shader.fragment", "text": "engine://passthrough", "timeout_ms": 30000},
     {"label": "New...", "cmd": "click", "name": "pelican.graphCanvasPass.newFragmentShader"},

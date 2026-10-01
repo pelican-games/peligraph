@@ -223,6 +223,23 @@ std::optional<FramePlanLoopOrigin> optionalLoopOrigin(const Json &object,
     return origin;
 }
 
+// UX-5c: `loop_outputs` (RS-13) on a pass of the rendering section that
+// names a loop's output -- [{reference, resource}]. Absent reads as none.
+std::vector<FramePlanLoopOutput> optionalLoopOutputs(const Json &object,
+                                                     std::string_view context) {
+    std::vector<FramePlanLoopOutput> outputs;
+    const auto found = object.find("loop_outputs");
+    if (found == object.end() || found->is_null()) return outputs;
+    const std::string where = std::string{context} + ".loop_outputs";
+    if (!found->is_array()) throw invalid(where + " must be an array");
+    for (const auto &entry : *found) {
+        if (!entry.is_object()) throw invalid(where + " must hold objects");
+        outputs.push_back({requireStringField(entry, "reference", where),
+                           requireStringField(entry, "resource", where)});
+    }
+    return outputs;
+}
+
 // LP-4c: the top-level `loops` (LP-1a): {node, tier, count, elements:
 // [{element, index, branch}], unmatched_branches}. Absent when the composed
 // graph has no graph.loop.
@@ -1203,6 +1220,7 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
             optionalBoolField(value, "no_selected_view", context)
                 .value_or(false);
         node.loop_origin = optionalLoopOrigin(value, context);
+        node.loop_outputs = optionalLoopOutputs(value, context);
         node.snapshot_after =
             optionalStringField(value, "snapshot_after", context);
         node.byte_size = optionalSizeField(value, "byte_size", context).value_or(0);

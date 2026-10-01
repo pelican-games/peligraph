@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_build_C",
-  "description": "GB-1 target C (bloom loop), as far as it goes from File > New Project > Blank with Studio's GUI only. A forward material pass from the Graph tab's palette and a Cube (as gui_build_A); Add fullscreen pass in the root is the bright pass, fed the material pass's colour by a drag onto its + input (it draws with engine://passthrough: there is no threshold shader to pick); Add loop, Add fullscreen pass into its body, Count 4 typed, the bright pass's output dropped on the body pass (a loop input), the body's output on the zone's right edge, and the carry drawn back onto the boundary input. The body pass keeps engine://passthrough: the Pass fields' shader list (UX-2) does not offer the engine's bloom shaders yet (engine EL-4 lists them) and its image's extent_scale pill as 0.5. The engine expands the loop four times, each copy reading the one before. It stops here: extent_scale cannot be made per element (1 / pow2(element + 1)) from the pill, the engine's bloom_highpass needs PELICAN_FEATURE_* defines it reserves, the composite needs a buffer port and additive blending no field offers. Typed: the project folder and name, material_pass in the palette filter, 4 in Count, and 0.5. UX-5a: the loop's output dropped on present's + input sends the image the loop's last copy draws (loop/3/render_fullscreen__color), not the loop's input; the engine refuses it, because the graph's run (and the loop copies beside it) stands after present -- RS-3 moves the run before a rendering-section pass that reads what the run writes, and the copies' images are not counted (an engine WP); the refusal reads as its code and sentence; the body pass's value editor is named with its definition in front (graph_inline_editor#loop_body/...).",
+  "description": "GB-1 target C (bloom loop), from File > New Project > Blank with Studio's GUI only. A forward material pass from the Graph tab's palette and a Cube (as gui_build_A), and the scene's KeyLight at intensity 6 in the Inspector, so the box is bright enough to pass a threshold. Add fullscreen pass in the root is the bright pass, fed the material pass's colour by a drag onto its + input; Add loop, Add fullscreen pass into its body, Count 4 typed, the bright pass's output dropped on the body pass (a loop input), the body's output on the zone's right edge, the carry drawn back onto the boundary input, and the body image's extent_scale pill as 0.5. The engine expands the loop four times, each copy reading the one before. The bright pass then draws with engine://bloom_highpass, picked from the Pass fields' Fragment list (RS-8: no define needed). UX-5c, decision 1: the loop's output dropped on present's + input is sent as loop.color (RS-13), not as an image of the loop's last copy; the engine takes it, puts present after the last copy, and the frame plan's loop_outputs says loop.color read loop/3/render_fullscreen__color, which present's row shows (← loop.color → loop/3/...); the line is drawn from the loop's output, and the viewport shows the bright part of the box. Then a second root fullscreen pass is the composite: the material pass's colour and the loop's output onto its + input in that order, and engine://bloom_composite picked from the Fragment list (RS-11: no intensity port; the shader adds the second input, times 2, to the first). Its output dropped on present's connected input replaces the loop's; the plan runs the composite after the loop's last copy, and the viewport's box is the scene with its bloom added (brighter than the bloom alone). UX-5d: the body's image is then picked, its Size row's f pressed and Half each element pressed (nothing typed): extent_scale becomes {\"$expr\": \"1 / pow2(element + 1)\"}, the copies shrink one by one, and the bloom spreads past the box -- the points just outside its four edges, black before, are lit. Where it still stops: the body pass draws with engine://passthrough (no blur shader is picked). Typed: the project folder and name, material_pass in the palette filter, 6 in the light's intensity, 4 in Count, and 0.5.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -173,6 +173,61 @@
       "name": "pelican.inspectorModelChoice",
       "text": "Cube (built-in)",
       "timeout_ms": 60000
+    },
+    {
+      "label": "pick the key light",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "KeyLight"
+    },
+    {
+      "label": "the Inspector holds it",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "KeyLight\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "let the Inspector settle",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "contains": "zz-never-shown",
+      "timeout_ms": 1500,
+      "expect_error": "automation.wait_timeout@1"
+    },
+    {
+      "label": "its intensity takes input",
+      "cmd": "wait",
+      "name": "pelican.inspectorNumeric.light.intensity",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "a light bright enough to bloom: 6",
+      "cmd": "type",
+      "name": "pelican.inspectorNumeric.light.intensity",
+      "text": "6"
+    },
+    {
+      "label": "commit it",
+      "cmd": "key",
+      "name": "pelican.inspectorNumeric.light.intensity",
+      "sequence": "Return"
+    },
+    {
+      "label": "the scene's light is 6",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_components",
+        "params": {
+          "name": "KeyLight"
+        }
+      },
+      "path": "result.components[0].authored_json.intensity",
+      "value": 6.0,
+      "retry_ms": 30000
     },
     {
       "label": "File > Save Scene",
@@ -372,6 +427,34 @@
       "name": "pelican.graphCanvas.fitView"
     },
     {
+      "label": "the engine has taken Count 4 (the zone is drawn at its final size before the drag)",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].count",
+      "value": 4,
+      "retry_ms": 120000
+    },
+    {
+      "label": "let the canvas settle",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "contains": "zz-never-shown",
+      "timeout_ms": 2000,
+      "expect_error": "automation.wait_timeout@1"
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "zoom out under the readable floor, so the bright pass and the body are both on screen",
+      "cmd": "wheel",
+      "name": "pelican.graphCanvasView",
+      "delta": -480
+    },
+    {
       "label": "the bright pass's output onto the body pass's + input",
       "cmd": "drag",
       "from": {
@@ -416,6 +499,13 @@
       "label": "fit",
       "cmd": "action",
       "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "the boundary input's value socket is drawn again after the save",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_socket#loop_body/color/value",
+      "visible": true,
+      "timeout_ms": 60000
     },
     {
       "label": "carry: the body output's inside end back onto the boundary input",
@@ -548,7 +638,52 @@
       "value": "loop/0/render_fullscreen__color"
     },
     {
-      "label": "UX-5a, item 1: fit",
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick the bright pass",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen"
+    },
+    {
+      "label": "its Pass fields",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.shader.fragment",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the engine's bright pass",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPass.shader.fragment",
+      "text": "engine://bloom_highpass"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "RS-8: the bright pass draws with engine://bloom_highpass, no define given",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[5].parameters.shader.fragment",
+      "value": "engine://bloom_highpass",
+      "retry_ms": 30000
+    },
+    {
+      "label": "fit",
       "cmd": "action",
       "name": "pelican.graphCanvas.fitView"
     },
@@ -560,7 +695,25 @@
       "timeout_ms": 60000
     },
     {
-      "label": "the loop's output (p: the last element's value) onto present's + input",
+      "label": "before",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "gradient_middle"
+    },
+    {
+      "label": "UX-5c, decision 1: the loop's output (p: the last element's value) onto present's + input",
       "cmd": "drag",
       "from": {
         "name": "pelican.graphCanvasView::graph_socket#loop/out:color"
@@ -571,36 +724,695 @@
       "steps": 8
     },
     {
-      "label": "Studio sends the image the loop's last copy draws (loop/3/render_fullscreen__color); the engine refuses it, for that run stands after present (RS-3 moves the graph's run before a rendering-section reader of what the run itself writes, not of what the loop beside it writes)",
+      "label": "the engine takes it (RS-13): present's inputs saved",
       "cmd": "wait",
       "name": "pelican.graphCanvasNotice",
-      "contains": "Pass input target is not produced as an earlier output",
+      "text": "Pass inputs saved.",
       "timeout_ms": 120000
     },
     {
-      "label": "the line is the code and the sentence, not the engine's JSON",
+      "label": "the document names the loop's output, not a copy's image",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[6].root_declaration.input[0]",
+      "value": "loop.color",
+      "retry_ms": 60000
+    },
+    {
+      "label": "present stands after the loop's last copy",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[6].name",
+      "value": "present",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the plan says what loop.color named this frame",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[6].loop_outputs[0].reference",
+      "value": "loop.color"
+    },
+    {
+      "label": "the last copy's image",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[6].loop_outputs[0].resource",
+      "value": "loop/3/render_fullscreen__color"
+    },
+    {
+      "label": "which present reads",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[6].reads[0]",
+      "value": "loop/3/render_fullscreen__color"
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "the line is from the loop's output",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_pass_input_edge#loop->present",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "present's row says both names",
       "expect": "text_equals",
+      "name": "pelican.graphCanvasView::graph_node_label#present/loop/3/render_fullscreen__color",
+      "value": "← loop.color → loop/3/render_fullscreen__color"
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the viewport shows the loop's last image, not the gradient",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/bloom.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.04,
+            0.04
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "gradient_middle",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the bright part of the box, read",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/bloom.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.04,
+            0.04
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "bloom_middle"
+    },
+    {
+      "label": "the corner, read",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/bloom.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.04,
+            0.04
+          ]
+        ]
+      },
+      "path": "pixels[1]",
+      "remember": "corner"
+    },
+    {
+      "label": "pick the material pass",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_material_pass"
+    },
+    {
+      "label": "Add fullscreen pass: the composite",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addFullscreenPass"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
       "name": "pelican.graphCanvasNotice",
-      "value": "render_pipeline_preflight_failed: Pass input target is not produced as an earlier output:… — the graph pass that draws it runs after this pass"
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
     },
     {
-      "label": "present stands first: nothing it reads asks the graph's run (the material pass, the bright pass and the loop's copies) to go before it",
+      "label": "auto layout",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.autoLayout"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "the scene colour onto the composite's + input",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#render_material_pass/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen_2/in:variadic"
+      },
+      "steps": 8
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "the loop's output onto the composite's + input",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#loop/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen_2/in:variadic"
+      },
+      "steps": 8
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick the composite",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen_2"
+    },
+    {
+      "label": "its Pass fields",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.shader.fragment",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the engine's composite",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPass.shader.fragment",
+      "text": "engine://bloom_composite"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the composite reads the scene colour first",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[8].inputs.color_2.node",
+      "value": "render_material_pass",
+      "retry_ms": 30000
+    },
+    {
+      "label": "and the loop's output second",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[8].inputs.color_3.node",
+      "value": "loop"
+    },
+    {
+      "label": "RS-11: with engine://bloom_composite, no intensity port",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[8].parameters.shader.fragment",
+      "value": "engine://bloom_composite"
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "the composite onto present's input, in place of the loop's",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen_2/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_derived_socket#present/loop/3/render_fullscreen__color"
+      },
+      "steps": 8
+    },
+    {
+      "label": "present's inputs saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Pass inputs saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the composite runs after the loop's last copy",
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[0].name",
-      "value": "present"
+      "path": "nodes[6].reads[1]",
+      "value": "loop/3/render_fullscreen__color",
+      "retry_ms": 120000
     },
     {
-      "label": "and it does not read the loop's input (the bright pass's image), as it did before UX-5a",
+      "label": "and present reads the composite",
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[0].reads.$len",
-      "value": 0
+      "path": "nodes[7].reads[0]",
+      "value": "render_fullscreen_2__color",
+      "retry_ms": 60000
     },
     {
-      "label": "a picture of the Graph tab with the bright pass and the loop",
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the middle is the scene with its bloom added, not the bloom alone",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/composite.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.04,
+            0.04
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "bloom_middle",
+      "retry_ms": 120000
+    },
+    {
+      "label": "and the box stands out from the corner",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/composite.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.04,
+            0.04
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "corner"
+    },
+    {
+      "label": "UX-5d, before the spread: the point just right of the box, read",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before_spread.png",
+        "pixels": [
+          [
+            0.655,
+            0.5
+          ],
+          [
+            0.345,
+            0.5
+          ],
+          [
+            0.5,
+            0.235
+          ],
+          [
+            0.5,
+            0.765
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "edge_right"
+    },
+    {
+      "label": "UX-5d, before the spread: the point just left of the box, read",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before_spread.png",
+        "pixels": [
+          [
+            0.655,
+            0.5
+          ],
+          [
+            0.345,
+            0.5
+          ],
+          [
+            0.5,
+            0.235
+          ],
+          [
+            0.5,
+            0.765
+          ]
+        ]
+      },
+      "path": "pixels[1]",
+      "remember": "edge_left"
+    },
+    {
+      "label": "UX-5d, before the spread: the point just above of the box, read",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before_spread.png",
+        "pixels": [
+          [
+            0.655,
+            0.5
+          ],
+          [
+            0.345,
+            0.5
+          ],
+          [
+            0.5,
+            0.235
+          ],
+          [
+            0.5,
+            0.765
+          ]
+        ]
+      },
+      "path": "pixels[2]",
+      "remember": "edge_above"
+    },
+    {
+      "label": "UX-5d, before the spread: the point just below of the box, read",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before_spread.png",
+        "pixels": [
+          [
+            0.655,
+            0.5
+          ],
+          [
+            0.345,
+            0.5
+          ],
+          [
+            0.5,
+            0.235
+          ],
+          [
+            0.5,
+            0.765
+          ]
+        ]
+      },
+      "path": "pixels[3]",
+      "remember": "edge_below"
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick the body's image",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#loop_body/render_fullscreen__color"
+    },
+    {
+      "label": "its Size row offers f",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.sizeExpressionToggle",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "f: the size as an expression",
+      "cmd": "click",
+      "name": "pelican.graphCanvasImage.sizeExpressionToggle"
+    },
+    {
+      "label": "the usual forms are offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.sizeHalfEachElement",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Half each element: nothing typed",
+      "cmd": "click",
+      "name": "pelican.graphCanvasImage.sizeHalfEachElement"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the body's image is the screen times 1 / pow2(element + 1)",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.loop_body.nodes[0].parameters.extent_scale",
+      "value": {
+        "$expr": "1 / pow2(element + 1)"
+      },
+      "retry_ms": 30000
+    },
+    {
+      "label": "the expression is in the field",
+      "expect": "text_equals",
+      "name": "pelican.graphCanvasImage.extentScaleExpression",
+      "value": "1 / pow2(element + 1)"
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the bloom spreads: the point just right of the box is lit now",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/after_spread.png",
+        "pixels": [
+          [
+            0.655,
+            0.5
+          ],
+          [
+            0.345,
+            0.5
+          ],
+          [
+            0.5,
+            0.235
+          ],
+          [
+            0.5,
+            0.765
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "edge_right",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the bloom spreads: the point just left of the box is lit now",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/after_spread.png",
+        "pixels": [
+          [
+            0.655,
+            0.5
+          ],
+          [
+            0.345,
+            0.5
+          ],
+          [
+            0.5,
+            0.235
+          ],
+          [
+            0.5,
+            0.765
+          ]
+        ]
+      },
+      "path": "pixels[1]",
+      "op": "ne",
+      "value_of": "edge_left",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the bloom spreads: the point just above of the box is lit now",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/after_spread.png",
+        "pixels": [
+          [
+            0.655,
+            0.5
+          ],
+          [
+            0.345,
+            0.5
+          ],
+          [
+            0.5,
+            0.235
+          ],
+          [
+            0.5,
+            0.765
+          ]
+        ]
+      },
+      "path": "pixels[2]",
+      "op": "ne",
+      "value_of": "edge_above",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the bloom spreads: the point just below of the box is lit now",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/after_spread.png",
+        "pixels": [
+          [
+            0.655,
+            0.5
+          ],
+          [
+            0.345,
+            0.5
+          ],
+          [
+            0.5,
+            0.235
+          ],
+          [
+            0.5,
+            0.765
+          ]
+        ]
+      },
+      "path": "pixels[3]",
+      "op": "ne",
+      "value_of": "edge_below",
+      "retry_ms": 120000
+    },
+    {
+      "label": "a picture of the window",
+      "expect": "screenshot",
+      "path": "gui_build_C_window.png"
+    },
+    {
+      "label": "a picture of the Graph tab with the bright pass, the loop and the composite",
       "expect": "screenshot",
       "name": "pelican.graphCanvas",
       "path": "gui_build_C_graph.png"

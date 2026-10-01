@@ -552,6 +552,21 @@ std::string connectedLabel(const std::string &resource, bool history) {
     return history ? resource + " (history)" : resource;
 }
 
+// UX-5c: a loop's output the pass names (`loop.color`, RS-13) shows what the
+// engine read for it this frame too: "loop.color → loop/3/...". The plan's
+// loop_outputs say both; the input may be either (the document's name, or
+// the composed declaration's resolved one).
+std::string connectedLabel(const FramePlanNode &node, const std::string &resource,
+                           bool history) {
+    if (!history)
+        for (const auto &output : node.loop_outputs)
+            if (resource == output.reference || resource == output.resource)
+                return output.resource.empty() || output.resource == output.reference
+                           ? output.reference
+                           : output.reference + " → " + output.resource;
+    return connectedLabel(resource, history);
+}
+
 const FramePlanNode *findNode(const FramePlanModel &model,
                               const std::string &pass) {
     const auto found =
@@ -690,7 +705,7 @@ FramePlanInputSockets framePlanInputSockets(
                 socket.binding = ordinal;
                 connect(socket, split.textures[ordinal]);
                 socket.label = "← " +
-                               connectedLabel(socket.resource, socket.history);
+                               connectedLabel(node, socket.resource, socket.history);
                 // VI-3b: the member engine://passthrough shows.
                 if (shown && *shown == slot) {
                     socket.shown = true;
@@ -726,7 +741,7 @@ FramePlanInputSockets framePlanInputSockets(
         socket.label =
             socket.connected()
                 ? declaration.name + " ← " +
-                      connectedLabel(socket.resource, socket.history)
+                      connectedLabel(node, socket.resource, socket.history)
                 : declaration.name;
         mark(socket);
         result.sockets.push_back(std::move(socket));
@@ -740,7 +755,7 @@ FramePlanInputSockets framePlanInputSockets(
             socket.kind = FramePlanInputSocket::Kind::undeclared;
             socket.buffer = buffer;
             connect(socket, list[ordinal]);
-            socket.label = connectedLabel(socket.resource, socket.history);
+            socket.label = connectedLabel(node, socket.resource, socket.history);
             result.sockets.push_back(std::move(socket));
         }
     };

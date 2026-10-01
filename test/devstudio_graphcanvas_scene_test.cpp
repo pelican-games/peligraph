@@ -61,6 +61,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -7813,7 +7815,11 @@ TEST_CASE("UX-3 decision 1: the palette places target_ref, image, buffer, attrib
           "validation takes",
           "[devstudio][graph-canvas][scene][ux3]") {
     (void)application();
-    const auto catalog = engineCatalog();
+    // UX-5d: an engine whose shader list is known and holds no ray tracing
+    // pipeline (until the list is known, a compute task is offered: the
+    // engine's pipelines are read when it is picked).
+    auto catalog = engineCatalog();
+    catalog["engine_shaders"] = Json::array();
     const auto registry = Pelican::makeBuiltinGraphModuleRegistry();
     const auto document = ux3Document();
     const auto placedWith = [&](const Json &ops) {
@@ -8555,4 +8561,369 @@ TEST_CASE("UX-5b decision 4: a material pass's image offers its contract's forma
     CHECK(depth_choices ==
           std::vector<std::string>{"D16_UNORM", "D32_SFLOAT", "X8_D24_UNORM_PACK32"});
     CHECK(model.imageFormatChoicesFor({}, "mp__depth") == std::vector<std::string>{"D32_SFLOAT"});
+}
+
+// --- UX-5c, decision 1. A loop's output dropped on present's + input is
+// named as the loop's (`steps.color`, RS-13), not as the image its last copy
+// draws; the engine resolves it, and present's row shows both names from the
+// plan's loop_outputs. `p[]` names no resource.
+
+namespace {
+
+// The plan of q19ZoneDocument's loop (two copies of `pass`, each writing its
+// own canvas) and present, reading `present_reads`.
+Json ux5cPlan(const Json &present_reads, const Json &loop_outputs) {
+    auto plan = q19ZonePlan();
+    plan["graph"] = "main_render";
+    for (int element = 0; element < 2; ++element) {
+        auto &copy = plan["nodes"][static_cast<std::size_t>(element)];
+        copy["order"] = element;
+        copy["writes"] = Json::array({"steps/" + std::to_string(element) + "/canvas"});
+    }
+    auto present = gl1bPass("present", 2, "project", present_reads, Json::array({"display"}));
+    present["pass_inputs"] = gl1ePassthrough();
+    if (!loop_outputs.is_null()) present["loop_outputs"] = loop_outputs;
+    plan["nodes"].push_back(std::move(present));
+    return plan;
+}
+
+// The context: what the engine composed for present's `input` (`composed`)
+// beside what the root declares (`root`).
+Json ux5cAuthoring(const std::vector<std::string> &composed,
+                   const std::vector<std::string> &root) {
+    auto context = gl1eAuthoring(root);
+    context["graphs"][0]["passes"][0]["declaration"]["input"] = composed;
+    return context;
+}
+
+void openUx5c(ZoneHarness &h, const Json &plan, const Json &authoring) {
+    h.model.setConnected(true);
+    for (int round = 0; round < 6; ++round)
+        for (const auto &request : h.model.takeRpcRequests()) {
+            if (request.method == "get_graph_instances")
+                h.model.receiveRpcResult(request.request_id, h.snapshot().dump());
+            else if (request.method == "get_graph_catalog")
+                h.model.receiveRpcResult(request.request_id, h.catalog.dump());
+            else if (request.method == "get_frame_plan") {
+                auto reply = plan;
+                reply["loops"] = q19ZoneLoops();
+                h.model.receiveRpcResult(request.request_id, reply.dump());
+            } else if (request.method == "get_render_authoring_context")
+                h.model.receiveRpcResult(request.request_id, authoring.dump());
+        }
+    h.scene.setModel(&h.model);
+}
+
+} // namespace
+
+TEST_CASE("UX-5c a loop's output onto present's + input sends <loop>.<output>, and present's row "
+          "shows what the engine read for it",
+          "[devstudio][graph-canvas][scene][ux5c]") {
+    (void)application();
+    ZoneHarness h{q19ZoneDocument()};
+    addRenderOperations(h);
+    std::vector<PelicanStudio::FramePlanEditRequest> sent;
+    h.scene.passInputEditRequested = [&](const PelicanStudio::FramePlanEditRequest &request,
+                                         std::function<PelicanStudio::FramePlanEditRequest()>) {
+        sent.push_back(request);
+    };
+
+    SECTION("the drop names the loop's output, whatever the plan expanded") {
+        openUx5c(h, ux5cPlan(Json::array(), Json()), ux5cAuthoring({}, {}));
+        CHECK(h.model.outputResource("steps", "color") == "steps.color");
+        // p[] is one value per element: no pass's input names it.
+        CHECK(h.model.outputResource("steps", "color[]").empty());
+        // Not the loop's input of the same name either (UX-5a).
+        CHECK(h.model.outputResource("steps", "target").empty());
+        QGraphicsItem *from = socketItem(h.scene, QStringLiteral("steps"), QStringLiteral("color"),
+                                         QStringLiteral("output"));
+        QGraphicsItem *slot = passSocket(h.scene, QStringLiteral("present"), QStringLiteral("in:+"));
+        REQUIRE(from != nullptr);
+        REQUIRE(slot != nullptr);
+        drag(h.scene, from->sceneBoundingRect().center(), slot->sceneBoundingRect().center());
+        REQUIRE(sent.size() == 1);
+        CHECK(sent[0].method == "edit_preset_pass");
+        CHECK(sent[0].params.at("input") == Json::array({"steps.color"}));
+    }
+
+    SECTION("present reading it: the row says both names, and the line is from the loop") {
+        const Json resolved = Json::array(
+            {{{"reference", "steps.color"}, {"resource", "steps/1/canvas"}}});
+        openUx5c(h, ux5cPlan(Json::array({"steps/1/canvas"}), resolved),
+                 ux5cAuthoring({"steps/1/canvas"}, {"steps.color"}));
+        const auto sockets = h.scene.passInputSockets("present");
+        REQUIRE(sockets.has_value());
+        REQUIRE(sockets->sockets.size() == 2);
+        CHECK(sockets->sockets[0].label == "← steps.color → steps/1/canvas");
+        const auto lines = itemsOfKind(h.scene, PelicanStudio::GraphCanvasPassInputEdgeItem);
+        REQUIRE(lines.size() == 1);
+        CHECK(lines.front()->data(PelicanStudio::NodeGraphFromNameRole).toString() ==
+              QStringLiteral("steps"));
+        CHECK(lines.front()->data(PelicanStudio::NodeGraphToNameRole).toString() ==
+              QStringLiteral("present"));
+
+        // The Frame Plan tab's rows are the same function's; a plan without
+        // loop_outputs (an engine before RS-13) shows the resource alone.
+        const auto bare = PelicanStudio::framePlanInputSockets(
+            h.model.passInputPlan(), h.model.passInputPlan().nodes.back(),
+            std::vector<std::string>{"steps/1/canvas"});
+        REQUIRE_FALSE(bare.sockets.empty());
+        CHECK(bare.sockets[0].label == "← steps.color → steps/1/canvas");
+        auto older = h.model.passInputPlan();
+        older.nodes.back().loop_outputs.clear();
+        const auto unresolved = PelicanStudio::framePlanInputSockets(
+            older, older.nodes.back(), std::vector<std::string>{"steps/1/canvas"});
+        REQUIRE_FALSE(unresolved.sockets.empty());
+        CHECK(unresolved.sockets[0].label == "← steps/1/canvas");
+    }
+}
+
+// --- UX-5d. A body's image sized by an expression, a ray tracing pipeline
+// from the palette, and the phrase a refusal gets only when a graph pass
+// writes the image.
+
+// Decision 1: behind the Size row's f button the size is {"$expr": ...};
+// "Half each element" puts the usual form in without a key typed.
+TEST_CASE("UX-5d a render.image's size is an expression behind f, and Half each element writes "
+          "1 / pow2(element + 1)",
+          "[devstudio][graph-canvas][scene][ux5d]") {
+    (void)application();
+    Ux2Tab tab{true};
+    auto image = ux2Image();
+    tab.read(ux2Document(image), "ux5d-0");
+    tab.answer("get_graph_catalog", ux2Catalog());
+    tab.widget->scene().selectNode("shade__color");
+    QCoreApplication::processEvents();
+    tab.widget->poll();
+    tab.answer("get_render_authoring_context", ux2Authoring());
+
+    auto *toggle = tab.field<QToolButton>("pelican.graphCanvasImage.sizeExpressionToggle");
+    auto *expression = tab.field<QLineEdit>("pelican.graphCanvasImage.extentScaleExpression");
+    auto *half = tab.field<QPushButton>("pelican.graphCanvasImage.sizeHalfEachElement");
+    CHECK_FALSE(toggle->isChecked());
+    CHECK_FALSE(expression->isVisible());
+    CHECK_FALSE(half->isVisible());
+    toggle->click();
+    QCoreApplication::processEvents();
+    CHECK(expression->isVisible());
+    CHECK(half->isVisible());
+    // Nothing is sent until there is an expression.
+    CHECK(tab.reads("edit_graph_document") == 0);
+
+    half->click();
+    QCoreApplication::processEvents();
+    auto op = tab.sent(1);
+    image["extent_scale"] = Json{{"$expr", "1 / pow2(element + 1)"}};
+    CHECK(op.at("parameters") == image);
+    tab.commit(ux2Document(image), "ux5d-1");
+    // Read back: the f is on and the expression is shown, not a number.
+    toggle = tab.field<QToolButton>("pelican.graphCanvasImage.sizeExpressionToggle");
+    CHECK(toggle->isChecked());
+    CHECK(tab.field<QLineEdit>("pelican.graphCanvasImage.extentScaleExpression")->text() ==
+          QStringLiteral("1 / pow2(element + 1)"));
+    CHECK_FALSE(tab.field<QDoubleSpinBox>("pelican.graphCanvasImage.extentScale")->isVisible());
+
+    // Double each element, and a fixed size takes the forms in pixels.
+    tab.field<QPushButton>("pelican.graphCanvasImage.sizeDoubleEachElement")->click();
+    QCoreApplication::processEvents();
+    op = tab.sent(2);
+    image["extent_scale"] = Json{{"$expr", "pow2(element)"}};
+    CHECK(op.at("parameters") == image);
+    tab.commit(ux2Document(image), "ux5d-2");
+    tab.field<QRadioButton>("pelican.graphCanvasImage.sizeFixed")->click();
+    QCoreApplication::processEvents();
+    op = tab.sent(3);
+    image["extent_scale"] = 1.0;
+    image["width"] = 256;
+    image["height"] = 256;
+    CHECK(op.at("parameters") == image);
+    tab.commit(ux2Document(image), "ux5d-3");
+    tab.field<QPushButton>("pelican.graphCanvasImage.sizeHalfEachElement")->click();
+    QCoreApplication::processEvents();
+    op = tab.sent(4);
+    image["width"] = Json{{"$expr", "256 / pow2(element)"}};
+    image["height"] = Json{{"$expr", "256 / pow2(element)"}};
+    CHECK(op.at("parameters") == image);
+
+    // f off: the numbers the fields hold.
+    tab.commit(ux2Document(image), "ux5d-4");
+    tab.field<QToolButton>("pelican.graphCanvasImage.sizeExpressionToggle")->click();
+    QCoreApplication::processEvents();
+    op = tab.sent(5);
+    image["width"] = 256;
+    image["height"] = 256;
+    CHECK(op.at("parameters") == image);
+}
+
+namespace {
+
+// get_engine_shaders' entries of a ray tracing pipeline, as EL-4b lists them.
+Json ux5dEngineShaders() {
+    const auto port = [](const char *name, int binding, const char *type) {
+        return Json{{"port", name}, {"binding", binding}, {"type", type}};
+    };
+    // EL-4c: a storage image's format, as the engine read it from the shader.
+    auto mask = port("shadow_mask", 2, "storage_image");
+    mask["format"] = "R8_UNORM";
+    const Json ports = Json::array({port("world_position", 0, "sampled_image"),
+                                    port("normal", 1, "sampled_image"), mask});
+    return Json::array({{{"reference", "engine://passthrough"}, {"stage", "fragment"}},
+                        {{"reference", "engine://rt_mask"}, {"stage", "raygen"},
+                         {"resource_ports", ports}},
+                        {{"reference", "engine://rt_mask"}, {"stage", "miss"},
+                         {"resource_ports", Json::array()}},
+                        {{"reference", "engine://rt_mask"}, {"stage", "closesthit"},
+                         {"resource_ports", Json::array()}},
+                        // A raygen with no miss is no pipeline.
+                        {{"reference", "engine://half"}, {"stage", "raygen"}}});
+}
+
+} // namespace
+
+// Decision 2: the palette's render.compute traces with an engine pipeline:
+// its ports from the shader's resource ports, the image it writes beside it,
+// the images it samples read from the scope's images of the same name, and
+// the rays as many as the written image's pixels.
+TEST_CASE("UX-5d a render.compute from the palette traces with an engine ray tracing pipeline",
+          "[devstudio][graph-canvas][scene][ux5d]") {
+    (void)application();
+    const auto image = [](const char *id) {
+        return Json{{"id", id}, {"op", "render.image"},
+                    {"parameters", {{"type", {{"semantic", "pelican.render.color_signal@1"}, {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}}}, {"format", "R16G16B16A16_SFLOAT"},
+                                    {"extent_scale", 1.0}}},
+                    {"outputs", {"resource"}}};
+    };
+    const Json document{{"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
+                        {"definitions", Json::object()},
+                        {"nodes", Json::array({image("gb__worldpos"), image("gb__normal"),
+                                               image("gb__albedo")})}};
+    const Json compute{{"op", "render.compute"}, {"domain", "rendering"}, {"evaluation", "direct"},
+                       {"sink", false}, {"ports", "parameter_dependent"}};
+    const auto offered = [](GraphCanvasModel &model) {
+        return std::ranges::any_of(model.paletteOperationsIn({}, "render.compute", {}),
+                                   [](const auto &entry) { return entry.op == "render.compute"; });
+    };
+    // Before the engine's list is known a compute task is offered: picking
+    // it asks for the list. A list with no pipeline, and no project compute
+    // shader, leaves nothing to run.
+    ZoneHarness unknown{document};
+    unknown.catalog["modules"][1]["operations"].push_back(compute);
+    unknown.open();
+    CHECK(offered(unknown.model));
+    ZoneHarness bare{document};
+    bare.catalog["modules"][1]["operations"].push_back(compute);
+    bare.catalog["engine_shaders"] = Json::array();
+    bare.open();
+    CHECK_FALSE(offered(bare.model));
+
+    ZoneHarness h{document};
+    h.catalog["modules"][1]["operations"].push_back(compute);
+    h.catalog["engine_shaders"] = ux5dEngineShaders();
+    h.open();
+    const auto pipelines = h.model.rayTracingPipelines();
+    REQUIRE(pipelines.size() == 1);
+    CHECK(pipelines[0].reference == "engine://rt_mask");
+    CHECK(offered(h.model));
+
+    REQUIRE(h.scene.addFromPalette({}, "render.compute", {},
+                                   Json{{"ray_tracing", "engine://rt_mask"}}));
+    const auto ops = h.commit(false);
+    REQUIRE(ops.size() == 2);
+    const auto &written = ops[0].at("node");
+    CHECK(written.at("op") == "render.image");
+    CHECK(written.at("parameters").at("usage") == Json::array({"STORAGE", "SAMPLED"}));
+    CHECK(written.at("parameters").at("format") == "R8_UNORM");
+    const auto &task = ops[1].at("node");
+    CHECK(task.at("op") == "render.compute");
+    CHECK(task.at("parameters").at("ray_tracing") ==
+          Json{{"raygen", "engine://rt_mask"}, {"miss", "engine://rt_mask"},
+               {"closesthit", "engine://rt_mask"}});
+    CHECK(task.at("parameters").at("dispatch") ==
+          Json{{"rays_from", {{"port", "shadow_mask"}}}});
+    const auto &ports = task.at("parameters").at("ports");
+    CHECK(ports.at("world_position").at("access") == "read");
+    CHECK(ports.at("world_position").at("binding") == "sampled");
+    CHECK(ports.at("shadow_mask").at("access") == "write");
+    CHECK(ports.at("shadow_mask").at("binding") == "storage");
+    CHECK(task.at("inputs").at("world_position") == Json{{"node", "gb__worldpos"}, {"port", "resource"}});
+    CHECK(task.at("inputs").at("normal") == Json{{"node", "gb__normal"}, {"port", "resource"}});
+    CHECK(task.at("inputs").at("shadow_mask") ==
+          Json{{"node", written.at("id")}, {"port", "resource"}});
+    CHECK(task.at("outputs") == Json::array({"shadow_mask"}));
+
+    // EL-4c: get_engine_shaders answers at once. "building" is asked again
+    // half a second later (from poll); "ready" carries the list; "failed"
+    // says why on the notice line.
+    const auto shadersAsked = [](ZoneHarness &harness) -> std::uint64_t {
+        for (const auto &request : harness.model.takeRpcRequests())
+            if (request.method == "get_engine_shaders") return request.request_id;
+        return 0;
+    };
+    ZoneHarness later{document};
+    later.open();
+    later.model.askEngineShaders();
+    auto asked = shadersAsked(later);
+    REQUIRE(asked != 0);
+    later.model.receiveRpcResult(asked, Json{{"status", "building"}}.dump());
+    CHECK_FALSE(later.model.engineShadersKnown());
+    later.model.poll();
+    CHECK(shadersAsked(later) == 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds{600});
+    later.model.poll();
+    asked = shadersAsked(later);
+    REQUIRE(asked != 0);
+    later.model.receiveRpcResult(
+        asked, Json{{"status", "ready"}, {"engine_shaders", ux5dEngineShaders()}}.dump());
+    CHECK(later.model.engineShadersKnown());
+    CHECK(later.model.rayTracingPipelines().size() == 1);
+
+    ZoneHarness failed{document};
+    failed.open();
+    failed.model.askEngineShaders();
+    asked = shadersAsked(failed);
+    REQUIRE(asked != 0);
+    failed.model.receiveRpcResult(asked, Json{{"status", "failed"}, {"error", "no compiler"}}.dump());
+    CHECK(failed.model.engineShadersKnown());
+    CHECK(failed.model.rayTracingPipelines().empty());
+    CHECK(failed.model.editNotice().kind == PelicanStudio::InspectorNoticeKind::Error);
+    CHECK(failed.model.editNotice().message.find("no compiler") != std::string::npos);
+}
+
+// Decision 3: "the graph pass that draws it runs after this pass" only when a
+// graph node's pass writes the image the refusal names.
+TEST_CASE("UX-5d a refusal names a graph pass's image only when a graph pass writes it",
+          "[devstudio][graph-canvas][scene][ux5d]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    openGl1e(model, scene, {});
+    // gl1ePlan: the graph's `shade` writes shade__color.
+    CHECK(model.graphWritesResourceNamedIn(
+        "Pass input target is not produced as an earlier output: shade__color in pass: present"));
+    CHECK(model.graphWritesResourceNamedIn(
+        "Pass input target is not produced as an earlier output: present reads shade__color."));
+    // A feature's task writes the mask; the plan knows no writer of `nothing`.
+    auto plan = gl1ePlan({});
+    auto task = gl1bPass("rt_mask", 2, "feature:rt_mask", Json::array(), Json::array({"rt_mask"}));
+    task["kind"] = "compute";
+    task["provider_feature"] = "rt_mask";
+    plan["nodes"].push_back(task);
+    for (const auto &request : model.takeRpcRequests()) (void)request;
+    model.refresh();
+    for (int round = 0; round < 3; ++round)
+        for (const auto &request : model.takeRpcRequests()) {
+            if (request.method == "get_graph_instances")
+                model.receiveRpcResult(request.request_id, gl1eRead().dump());
+            else if (request.method == "get_frame_plan")
+                model.receiveRpcResult(request.request_id, plan.dump());
+            else if (request.method == "get_render_authoring_context")
+                model.receiveRpcResult(request.request_id, gl1eAuthoring({}).dump());
+        }
+    REQUIRE(model.planPasses().size() == 3);
+    CHECK_FALSE(model.graphWritesResourceNamedIn(
+        "Pass input target is not produced as an earlier output: rt_mask in pass: present"));
+    CHECK_FALSE(model.graphWritesResourceNamedIn(
+        "Pass input target is not produced as an earlier output: nothing in pass: present"));
+    // present (the rendering section's) writes display: no graph pass either.
+    CHECK_FALSE(model.graphWritesResourceNamedIn("display in pass: output_transform"));
 }

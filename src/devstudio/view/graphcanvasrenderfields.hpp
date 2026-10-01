@@ -21,6 +21,7 @@ class QPushButton;
 class QRadioButton;
 class QSpinBox;
 class QTimer;
+class QToolButton;
 
 namespace PelicanStudio {
 
@@ -86,6 +87,20 @@ class GraphCanvasImageFields final : public QWidget {
     QSpinBox *height_ = nullptr;
     QSpinBox *layers_ = nullptr;
     QLabel *note_ = nullptr;
+    // UX-5d, decision 1: the size as an expression ({"$expr": ...}), behind
+    // the f button as the loop's Count is -- extent_scale for a screen-sized
+    // image, width and height for a fixed one -- with the usual forms one
+    // press away.
+    QFormLayout *size_form_ = nullptr;
+    QToolButton *size_expression_toggle_ = nullptr;
+    QWidget *size_expression_row_ = nullptr;
+    QLineEdit *extent_expression_ = nullptr;
+    QLineEdit *width_expression_ = nullptr;
+    QLineEdit *height_expression_ = nullptr;
+    QPushButton *half_each_ = nullptr;
+    QPushButton *double_each_ = nullptr;
+    void showSizeExpression(bool expression);
+    void putSizeExpression(bool half);
 };
 
 // UX-2, decision 2: the shaders of the selected render.fullscreen or

@@ -204,6 +204,16 @@ struct FramePlanLoopOrigin {
     bool operator==(const FramePlanLoopOrigin &) const = default;
 };
 
+// UX-5c: a loop's output a pass of the rendering section names as
+// `<loop>.<output>` (RS-13), and the resource it read this frame: the last
+// element's (`loop/3/...`).
+struct FramePlanLoopOutput {
+    std::string reference;
+    std::string resource;
+
+    bool operator==(const FramePlanLoopOutput &) const = default;
+};
+
 struct FramePlanLoopElement {
     std::int64_t element = 0;
     std::size_t index = 0;
@@ -293,6 +303,8 @@ struct FramePlanNode {
     bool no_selected_view = false;
     // LP-4c: set for a pass or task a graph.loop expanded.
     std::optional<FramePlanLoopOrigin> loop_origin;
+    // UX-5c: the plan's loop_outputs (RS-13).
+    std::vector<FramePlanLoopOutput> loop_outputs;
     std::string snapshot_after;
     std::size_t byte_size = 0;
     std::optional<FramePlanMaterialFilter> material_filter;
