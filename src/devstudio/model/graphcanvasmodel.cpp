@@ -1424,6 +1424,13 @@ std::size_t GraphCanvasModel::loopBranch(std::string_view id) const {
     const auto *node = findNode({}, id);
     if (node == nullptr || !isLoop(*node)) return 0;
     const auto bodies = loopBranchBodies(*node);
+    // UX-1, decision 4: the branch the tab chose, even when an earlier
+    // branch runs the same body -- found by its body, the tab of the else
+    // could never be the one shown as chosen.
+    if (const auto chosen = loop_branch_.find(std::string{id});
+        chosen != loop_branch_.end() && chosen->second < bodies.size() &&
+        !bodies[chosen->second].empty() && definitions_.contains(bodies[chosen->second]))
+        return chosen->second;
     const auto body = loopEntryBody(*node);
     const auto found = std::ranges::find(bodies, body);
     return found == bodies.end() ? 0 : static_cast<std::size_t>(found - bodies.begin());
@@ -2585,7 +2592,13 @@ bool GraphCanvasModel::canConnect(std::string_view scope, std::string_view from_
                                   std::string_view from_port, std::string_view to_node,
                                   std::string_view to_port) const {
     if (from_node.empty() || to_node.empty() || from_node == to_node) return false;
-    const auto drawn = nodes(scope);
+    return canConnectAmong(nodes(scope), from_node, from_port, to_node, to_port);
+}
+
+bool GraphCanvasModel::canConnectAmong(const std::vector<GraphCanvasNode> &drawn,
+                                       std::string_view from_node, std::string_view from_port,
+                                       std::string_view to_node, std::string_view to_port) {
+    if (from_node.empty() || to_node.empty() || from_node == to_node) return false;
     const auto producer = std::ranges::find(drawn, std::string{from_node}, &GraphCanvasNode::id);
     const auto consumer = std::ranges::find(drawn, std::string{to_node}, &GraphCanvasNode::id);
     if (producer == drawn.end() || consumer == drawn.end()) return false;
@@ -3589,9 +3602,27 @@ bool GraphCanvasModel::addLoopBranch(const std::string &id) {
                                           : Json{{"material", materials.front()}};
     }
     added["body"] = last.is_object() && last.contains("body") ? last.at("body") : Json{};
+    // UX-1, decision 4: a branch that ran the else's own body could not be
+    // told from the else -- its tab showed the same body, and an edit there
+    // changed both. It runs a copy of that body, a new definition under a
+    // name Studio proposes (as New definition… does), in the same list:
+    // one Undo takes both back.
+    Json ops = Json::array();
+    if (const auto &body = added.at("body"); body.is_string() &&
+                                             definitions_.contains(body.get<std::string>())) {
+        const auto name = suggestDefinitionName(id + "_body");
+        ops.push_back(Json{{"op", "add_definition"},
+                           {"name", name},
+                           {"definition", definitions_.at(body.get<std::string>())}});
+        added["body"] = name;
+    }
     branches.insert(branches.end() - 1, std::move(added));
     parameters["branches"] = std::move(branches);
-    return setLoopParameters(id, std::move(parameters));
+    if (ops.empty()) return setLoopParameters(id, std::move(parameters));
+    if (!canEdit()) return false;
+    ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", "root"}, {"node", id},
+                       {"parameters", std::move(parameters)}});
+    return submitOps(std::move(ops));
 }
 
 bool GraphCanvasModel::removeLoopBranch(const std::string &id, std::size_t branch) {

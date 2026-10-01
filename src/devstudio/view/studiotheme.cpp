@@ -41,6 +41,8 @@ StudioCanvasColors builtInCanvas() {
     canvas.pill_bg = QColor{QStringLiteral("#3a444f")};
     canvas.derived_border = QColor{QStringLiteral("#7d8a97")};
     canvas.derived_body = QColor{QStringLiteral("#22282f")};
+    canvas.tab_selected = QColor{QStringLiteral("#f2c14e")};
+    canvas.tab_selected_text = QColor{QStringLiteral("#1b2027")};
     return canvas;
 }
 
@@ -173,6 +175,8 @@ StudioTheme themeFromJson(const QString &name, const Json &entry) {
         readColor(canvas, "pill_bg", &theme.canvas.pill_bg);
         readColor(canvas, "derived_border", &theme.canvas.derived_border);
         readColor(canvas, "derived_body", &theme.canvas.derived_body);
+        readColor(canvas, "tab_selected", &theme.canvas.tab_selected);
+        readColor(canvas, "tab_selected_text", &theme.canvas.tab_selected_text);
     }
     readFonts(entry.value("font", Json::object()), &theme.font);
     readTints(entry.value("domain_tint", Json::object()), &theme.domain_tint);

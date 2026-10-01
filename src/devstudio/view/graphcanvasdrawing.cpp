@@ -220,7 +220,8 @@ Node Builder::prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &
 NodeGraphLayout placeNodes(const std::vector<Node> &nodes,
                           const std::vector<GraphCanvasEdge> &edges, qreal top,
                           const std::vector<LayoutNode> &extra_nodes,
-                          const std::vector<LayoutEdge> &extra_edges) {
+                          const std::vector<LayoutEdge> &extra_edges,
+                          const std::set<std::string, std::less<>> &last_column) {
     std::vector<LayoutNode> layout_nodes;
     layout_nodes.reserve(nodes.size() + extra_nodes.size());
     for (const Node &entry : nodes)
@@ -236,6 +237,7 @@ NodeGraphLayout placeNodes(const std::vector<Node> &nodes,
     layout_options.horizontal_gap = NodeGraphHorizontalGap;
     layout_options.vertical_gap = NodeGraphVerticalGap;
     layout_options.origin_y = top;
+    layout_options.last_column = last_column;
     return layoutNodeGraph(layout_nodes, layout_edges, layout_options);
 }
 
@@ -718,6 +720,17 @@ qreal zoneExpansionHeight(const Zone &zone) {
     return zone.expansion.isEmpty() ? 0.0 : GraphCanvasZoneFooterHeight;
 }
 
+// UX-1, decision 4: what a tab says -- its branch, and the mark of a body
+// another branch runs too.
+QString zoneTabText(const ZoneTab &tab) {
+    return tab.shared_with.isEmpty()
+               ? tab.text
+               : QObject::tr("%1 · shared with %2").arg(tab.text, tab.shared_with);
+}
+
+// The chosen tab is set bold, which is wider: the room is kept for it.
+constexpr qreal ZoneTabBoldSlack = 1.12;
+
 } // namespace
 
 void layoutZone(Zone &zone, const QFontMetricsF &heading_metrics,
@@ -737,7 +750,7 @@ void layoutZone(Zone &zone, const QFontMetricsF &heading_metrics,
                                : row_metrics.horizontalAdvance(zone.shared) + 18.0);
     qreal tabs = 12.0;
     for (const ZoneTab &tab : zone.tabs)
-        tabs += row_metrics.horizontalAdvance(tab.text) + 22.0;
+        tabs += row_metrics.horizontalAdvance(zoneTabText(tab)) * ZoneTabBoldSlack + 22.0;
     for (const QString &label : zone.axis_labels)
         tabs += row_metrics.horizontalAdvance(label) + 10.0;
     // LP-4d2: the bottom line, and the carry arrows' lanes above it.
@@ -945,26 +958,41 @@ QGraphicsItem *Builder::addZone(const Zone &zone, int column, const QPointF &pos
     // The branches' tabs, under the heading: if / elif / else.
     qreal tab_x = frame.left() + 12.0;
     for (const ZoneTab &tab : zone.tabs) {
-        const qreal width = row_metrics_.horizontalAdvance(tab.text) + 18.0;
+        // UX-1, decision 4: the chosen tab is the theme's own colour, its
+        // text bold -- not the frame's tint, which is the heading's too and
+        // left the chosen tab looking like the band above it.
+        const QString shown = zoneTabText(tab);
+        QFont font = detail_font_;
+        font.setBold(tab.current);
+        const QFontMetricsF metrics{font};
+        const qreal width = metrics.horizontalAdvance(shown) + 18.0;
         const qreal height = GraphCanvasZoneTabHeight - 5.0;
         auto *chip = new QGraphicsPathItem(roundedEntityPath(width, height, 5.0), item);
         chip->setPos(tab_x, frame.top() + GraphCanvasHeaderHeight + 2.0);
         chip->setZValue(2.0);
-        chip->setBrush(tab.current ? tint : theme_.canvas.pill_bg);
-        chip->setPen(QPen{tab.current ? theme_.canvas.heading_text : theme_.canvas.node_border,
-                          tab.current ? 1.2 : 0.8});
-        if (!tab.runs) chip->setOpacity(0.5);
+        chip->setBrush(tab.current ? theme_.canvas.tab_selected : theme_.canvas.pill_bg);
+        chip->setPen(QPen{tab.current ? theme_.canvas.tab_selected_text : theme_.canvas.node_border,
+                          tab.current ? 1.4 : 0.8});
+        if (!tab.runs || !tab.reason.isEmpty()) chip->setOpacity(0.5);
         tagged(chip, GraphCanvasZoneTabItem);
         chip->setData(GraphCanvasPortRole, QString::number(static_cast<qulonglong>(tab.branch)));
         chip->setData(GraphCanvasBranchRole, static_cast<qulonglong>(tab.branch));
         chip->setData(GraphCanvasLabelRole, tab.text);
-        chip->setToolTip(tab.runs ? QObject::tr("Show this branch's body")
-                                  : QObject::tr("This branch runs nothing"));
+        chip->setData(GraphCanvasValueTextRole, tab.shared_with);
+        chip->setToolTip(
+            !tab.runs                 ? QObject::tr("This branch runs nothing")
+            : !tab.reason.isEmpty()   ? tab.reason
+            : !tab.shared_with.isEmpty()
+                ? QObject::tr("Show this branch's body. It runs the same body as %1: an edit "
+                              "here changes both (New definition… in the Loop fields gives it "
+                              "one of its own).")
+                      .arg(tab.shared_with)
+                : QObject::tr("Show this branch's body"));
         anchored(chip, GraphCanvasZoneAnchor::left);
-        auto *text = new QGraphicsSimpleTextItem(tab.text, chip);
-        text->setFont(detail_font_);
-        text->setBrush(theme_.canvas.heading_text);
-        text->setPos(9.0, (height - row_metrics_.height()) / 2.0);
+        auto *text = new QGraphicsSimpleTextItem(shown, chip);
+        text->setFont(font);
+        text->setBrush(tab.current ? theme_.canvas.tab_selected_text : theme_.canvas.heading_text);
+        text->setPos(9.0, (height - metrics.height()) / 2.0);
         tagged(text, GraphCanvasZoneTabItem);
         text->setData(GraphCanvasPortRole, QString::number(static_cast<qulonglong>(tab.branch)));
         text->setData(GraphCanvasBranchRole, static_cast<qulonglong>(tab.branch));

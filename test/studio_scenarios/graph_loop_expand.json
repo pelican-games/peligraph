@@ -470,12 +470,12 @@
       "timeout_ms": 60000
     },
     {
-      "label": "the branch runs the body again",
+      "label": "the branch runs its own body again (UX-1: Add branch gave it a copy of the else body)",
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
       "path": "nodes[0].parameters.branches[0].body",
-      "value": "loop_body"
+      "value": "loop_body_2"
     },
     {
       "label": "Undo is offered again",

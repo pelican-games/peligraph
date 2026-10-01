@@ -68,11 +68,13 @@ struct Node {
 
 // GL-1b: `extra_nodes` and `extra_edges` go into the same one placement after
 // the graph's own -- the root's folded nodes and the lines the plan implies --
-// so `bends[i]` still belongs to `edges[i]`.
+// so `bends[i]` still belongs to `edges[i]`. UX-1, decision 6: the ids in
+// `last_column` (LayoutOptions::last_column) stand in the last column.
 NodeGraphLayout placeNodes(const std::vector<Node> &nodes,
                           const std::vector<GraphCanvasEdge> &edges, qreal top,
                           const std::vector<LayoutNode> &extra_nodes = {},
-                          const std::vector<LayoutEdge> &extra_edges = {});
+                          const std::vector<LayoutEdge> &extra_edges = {},
+                          const std::set<std::string, std::less<>> &last_column = {});
 
 // LP-4d1, the loop zone. One row of a frame's left or right edge: the loop's
 // own port outside (empty when the loop has none of that name) and the body's
@@ -91,6 +93,13 @@ struct ZoneTab {
     bool current = false;
     // A branch that runs nothing (`"body": null`) has no body to show.
     bool runs = true;
+    // UX-1, decision 4: the tab of another branch that runs the same body
+    // ("else", "branch 1"), drawn as a mark on the tab; empty when the body
+    // is this branch's alone.
+    QString shared_with;
+    // Why a press on the tab would change nothing (a body the document does
+    // not define); the tab is drawn faint and says so in its tooltip.
+    QString reason;
 };
 
 // LP-4d2, decision 3: one pair of the loop's `carry`, drawn as an arrow

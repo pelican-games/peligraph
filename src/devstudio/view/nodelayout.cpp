@@ -293,6 +293,51 @@ NodeGraphLayout layoutNodeGraph(const std::vector<LayoutNode> &nodes,
             if (found != options.columns.end()) vertex.column = found->second;
         }
     }
+    // (3b) UX-1, decision 6: the ends the caller named go to the last
+    // column, and what follows them with them.
+    if (!options.last_column.empty()) {
+        int last = 0;
+        for (const Vertex &vertex : verts) last = std::max(last, vertex.column);
+        // The relation as the layering laid it: an edge turned round for a
+        // cycle runs the other way, and one the caller's columns do not
+        // lay left to right is not followed.
+        std::vector<std::pair<std::size_t, std::size_t>> forward;
+        for (std::size_t edge = 0; edge < uniques.size(); ++edge) {
+            const std::size_t from = back[edge] ? uniques[edge].to : uniques[edge].from;
+            const std::size_t to = back[edge] ? uniques[edge].from : uniques[edge].to;
+            if (verts[to].column > verts[from].column) forward.emplace_back(from, to);
+        }
+        std::vector<bool> moved(verts.size(), false);
+        std::vector<std::size_t> pending;
+        for (std::size_t index = 0; index < verts.size(); ++index)
+            if (options.last_column.contains(verts[index].id)) {
+                moved[index] = true;
+                pending.push_back(index);
+            }
+        while (!pending.empty()) {
+            const std::size_t at = pending.back();
+            pending.pop_back();
+            for (const auto &[from, to] : forward)
+                if (from == at && !moved[to]) {
+                    moved[to] = true;
+                    pending.push_back(to);
+                }
+        }
+        // The longest path out of each node, in edges.
+        std::vector<int> tail(verts.size(), 0);
+        for (std::size_t pass = 0; pass < verts.size(); ++pass) {
+            bool changed = false;
+            for (const auto &[from, to] : forward)
+                if (tail[from] < tail[to] + 1) {
+                    tail[from] = tail[to] + 1;
+                    changed = true;
+                }
+            if (!changed) break;
+        }
+        for (std::size_t index = 0; index < verts.size(); ++index)
+            if (moved[index])
+                verts[index].column = std::max(verts[index].column, last - tail[index]);
+    }
     const std::size_t real_count = verts.size();
     std::set<int> occupied;
     for (const Vertex &vertex : verts) occupied.insert(vertex.column);

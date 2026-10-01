@@ -30,6 +30,11 @@ struct StudioCanvasColors {
     // is this colour, dashed, around a body a step dimmer than a node's.
     QColor derived_border;
     QColor derived_body;
+    // UX-1, decision 4: the tab of the branch a loop's zone shows -- its
+    // ground and its (bold) text -- so the chosen one reads at a glance in
+    // either theme.
+    QColor tab_selected;
+    QColor tab_selected_text;
 };
 
 // What every Studio panel sets its text in. One table, so two panels cannot

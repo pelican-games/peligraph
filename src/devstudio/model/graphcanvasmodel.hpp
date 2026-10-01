@@ -1349,6 +1349,13 @@ class GraphCanvasModel {
     [[nodiscard]] bool canConnect(std::string_view scope, std::string_view from_node,
                                   std::string_view from_port, std::string_view to_node,
                                   std::string_view to_port) const;
+    // UX-1: the same judgement over a scope's nodes already read -- a line
+    // being drawn asks it of every socket on the canvas at once.
+    [[nodiscard]] static bool canConnectAmong(const std::vector<GraphCanvasNode> &drawn,
+                                              std::string_view from_node,
+                                              std::string_view from_port,
+                                              std::string_view to_node,
+                                              std::string_view to_port);
     bool connectInput(std::string_view scope, const std::string &node,
                       const std::string &port, const std::string &source_node,
                       const std::string &source_port);

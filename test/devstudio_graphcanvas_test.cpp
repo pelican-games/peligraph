@@ -1380,11 +1380,15 @@ TEST_CASE("LP-4c the branch table adds, removes, orders and conditions branches"
     const auto branches = [&] {
         return h.document.at("nodes").at(1).at("parameters").at("branches");
     };
-    // Added in front of the else, running the else's body.
+    // Added in front of the else, running a copy of the else's body (UX-1,
+    // decision 4): a definition of its own, in the same list.
     REQUIRE(h.client.model.addLoopBranch("steps"));
     h.commit();
+    REQUIRE(h.last_ops.size() == 2);
+    CHECK(h.last_ops[0] == Json{{"op", "add_definition"}, {"name", "steps_body"},
+                                {"definition", lp4cBody("fill")}});
     CHECK(branches() == Json::array({{{"when", {{"element", 0}}}, {"body", "first"}},
-                                     {{"when", {{"element", 0}}}, {"body", "paint"}},
+                                     {{"when", {{"element", 0}}}, {"body", "steps_body"}},
                                      {{"body", "paint"}}}));
     REQUIRE(h.client.model.setLoopBranchWhen("steps", 1, "element_in", {1, 2}));
     h.commit();
@@ -2074,9 +2078,16 @@ TEST_CASE("LP-4e a draw_loop's fields: tags where, material branches, and every 
     }
     SECTION("a new branch is for the first material the report names") {
         REQUIRE(h.client.model.addLoopBranch("forward_opaque_draws"));
-        const auto parameters = h.loopParameters(h.refuse());
+        // UX-1, decision 4: over a copy of the else's body.
+        auto ops = h.refuse();
+        REQUIRE(ops.size() == 2);
+        CHECK(ops[0].at("op") == "add_definition");
+        CHECK(ops[0].at("name") == "forward_opaque_draws_body");
+        ops.erase(ops.begin());
+        const auto parameters = h.loopParameters(ops);
         CHECK(parameters.at("branches") ==
-              Json::array({{{"when", {{"material", lp4eMaterial(0)}}}, {"body", "forward_opaque_draw"}},
+              Json::array({{{"when", {{"material", lp4eMaterial(0)}}},
+                            {"body", "forward_opaque_draws_body"}},
                            {{"body", "forward_opaque_draw"}}}));
     }
     SECTION("each attribute of a branch's condition, and all of them ANDed") {

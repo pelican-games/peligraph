@@ -383,6 +383,11 @@ class GraphCanvasScene final : public QGraphicsScene {
     // How long that wait is. A named constant because the acceptance is about
     // the number, not about a timer being involved.
     static constexpr int GraphCanvasLayoutDebounceMs = 300;
+    // UX-1, decision 1: how close, in pixels on the screen (whatever the
+    // zoom), a line being drawn has to come to a socket it can land on to
+    // be drawn onto it and land there when let go (Node Wrangler's lazy
+    // connect).
+    static constexpr qreal GraphCanvasSnapRadius = 32.0;
 
     // N-8. `set_layout` replaces the whole `layout` member, so a second panel
     // that keeps a placement in it cannot write on its own without erasing
@@ -721,6 +726,10 @@ class GraphCanvasScene final : public QGraphicsScene {
     // in folded_places_, apart from the places a drag gave).
     [[nodiscard]] std::pair<std::string, std::string> foldedPositionKey(const std::string &id) const;
     void keepFoldedPlaces();
+    // UX-1, decision 3: the root's graph nodes keep, for the session, the
+    // places they are drawn at now (a body node is being dragged in a root
+    // the document does not place).
+    void holdRootPlaces(const std::string &root);
     void scheduleSceneRectUpdate();
     void applySceneRectNow(bool grow_only = false);
     void clearControlSelection();
@@ -746,6 +755,27 @@ class GraphCanvasScene final : public QGraphicsScene {
     void beginConnection(const QGraphicsItem &socket);
     void finishConnection(const QPointF &position);
     void clearPendingConnection();
+    // UX-1, decision 1. What letting the line go over `item` would do -- the
+    // one judgement both the drop and the lit sockets use. Empty when the
+    // item takes no line from this connection.
+    [[nodiscard]] std::function<void()> dropAction(const PendingConnection &pending,
+                                                   QGraphicsItem &item);
+    // While a line is drawn: the sockets it can land on are lit, the others
+    // dimmed, and the line is drawn onto the nearest one in reach.
+    struct LitSocket {
+        QGraphicsItem *item = nullptr;
+        qreal opacity = 1.0;
+        qreal scale = 1.0;
+        QPointF centre;
+        bool target = false;
+    };
+    std::vector<LitSocket> lit_sockets_;
+    QGraphicsItem *snap_target_ = nullptr;
+    // The scopes' nodes, read once while one line asks dropAction about
+    // every socket; emptied when it is done.
+    std::map<std::string, std::vector<GraphCanvasNode>> drop_nodes_;
+    void lightDropTargets(const QGraphicsItem *origin);
+    void followCursor(const QPointF &at);
     void closeEditor();
     // The two halves of carrying an editor across a rebuild.
     [[nodiscard]] std::optional<CarriedInlineEdit> carryInlineEdit() const;
@@ -874,6 +904,13 @@ class GraphCanvasWidget final : public QWidget {
     GraphCanvasModel &model();
     GraphCanvasScene &scene();
 };
+
+// How the Graph tab's view is set up: a press on empty canvas draws a
+// rubber band, and -- UX-1, decision 2 -- both scroll bars are always shown.
+// A scene rect that grew under a drag made one appear; the viewport shrank
+// by its width and the view, which keeps its middle on a resize, moved
+// everything on screen by half of it (the zone under the hand slid away).
+void configureGraphCanvasView(NodeCanvasView &view);
 
 // Q-12. "Open in Graph": reveal the node, and only when it is there make the
 // Graph tab the current one of `tabs`. A node the Graph tab cannot show

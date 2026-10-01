@@ -37,6 +37,7 @@
 #include <QMenu>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLineF>
 #include <QListWidget>
 #include <QMetaObject>
 #include <QMouseEvent>
@@ -657,6 +658,19 @@ void GraphCanvasScene::autoLayout() {
 // GL-1b: a folded node's place is session state, per view (GL-1).
 std::pair<std::string, std::string> GraphCanvasScene::foldedPositionKey(const std::string &id) const {
     return {std::string{"\x01" "derived"}, (model_ != nullptr ? model_->viewKey() : std::string{}) + "|" + id};
+}
+
+void GraphCanvasScene::holdRootPlaces(const std::string &root) {
+    const QString scope = qtext(root);
+    for (QGraphicsItem *item : items()) {
+        if (item->parentItem() != nullptr ||
+            nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem} ||
+            item->data(GraphCanvasDerivedRole).toBool() ||
+            item->data(GraphCanvasScopeRole).toString() != scope)
+            continue;
+        session_node_positions_.try_emplace(
+            {root, item->data(NodeGraphNameRole).toString().toStdString()}, item->pos());
+    }
 }
 
 void GraphCanvasScene::keepFoldedPlaces() {
@@ -1566,6 +1580,7 @@ void GraphCanvasScene::repopulate() {
                 loop && loop->reported && loop->reported_tier == "draw_loop";
             if (loop && loop->branches.size() > 1) {
                 const std::size_t shown = model_->loopBranch(node.id);
+                const auto defined = model_->scopes();
                 for (std::size_t index = 0; index < loop->branches.size(); ++index) {
                     const auto &branch = loop->branches[index];
                     const bool last = index + 1 == loop->branches.size();
@@ -1581,6 +1596,27 @@ void GraphCanvasScene::repopulate() {
                     tab.branch = index;
                     tab.runs = !branch.nothing && !branch.body.empty();
                     tab.current = tab.runs && index == shown;
+                    // UX-1, decision 4: a body another branch runs too is
+                    // said on the tab (the else's first), and a body the
+                    // document does not define is why a press does nothing.
+                    if (tab.runs) {
+                        for (std::size_t other = loop->branches.size(); other-- > 0;) {
+                            const auto &sibling = loop->branches[other];
+                            if (other == index || sibling.nothing || sibling.body != branch.body)
+                                continue;
+                            tab.shared_with = other + 1 == loop->branches.size()
+                                                  ? QObject::tr("else")
+                                                  : QObject::tr("branch %1").arg(
+                                                        static_cast<qulonglong>(other));
+                            break;
+                        }
+                        if (std::ranges::none_of(defined, [&](const GraphCanvasScope &known) {
+                                return !known.root && known.id == branch.body;
+                            }))
+                            tab.reason = QObject::tr("This branch runs %1, which the document "
+                                                     "does not define")
+                                             .arg(qtext(branch.body));
+                    }
                     zone.tabs.push_back(std::move(tab));
                 }
             }
@@ -1717,8 +1753,27 @@ void GraphCanvasScene::repopulate() {
             folded_only_edges.push_back(line);
         derived_layout_edges.push_back(std::move(line));
     }
+    // UX-1, decision 6: the frame's ends stand in the last column, however
+    // short the path to them -- a sink, and what writes to the screen (a
+    // folded pass such as the Blank's present, or the graph node whose pass
+    // does).
+    const auto writesDisplay = [](const std::vector<std::string> &writes) {
+        return std::ranges::any_of(writes, [](const std::string &resource) {
+            return resource == "display" || resource == "swapchain";
+        });
+    };
+    std::set<std::string, std::less<>> last_column;
+    for (const auto &entry : drawn)
+        if (entry.node->sink) last_column.insert(entry.node->id);
+    for (const auto &folded : folded_nodes)
+        if (writesDisplay(folded.writes)) last_column.insert(foldedLayoutKey(folded.id));
+    for (const auto &pass : model_->planPasses()) {
+        if (!writesDisplay(pass.writes)) continue;
+        if (const auto owner = model_->canvasNodeOfPass(pass.name); graph_ids.contains(owner))
+            last_column.insert(owner);
+    }
     const NodeGraphLayout layout = GraphCanvasDrawing::placeNodes(
-        drawn, edges, top, folded_layout_nodes, derived_layout_edges);
+        drawn, edges, top, folded_layout_nodes, derived_layout_edges, last_column);
     // A zone's frame can reach left of or above the item's position (a body
     // node dragged there); the placement is of the frame, so the item goes
     // that much further in.
@@ -1841,7 +1896,7 @@ void GraphCanvasScene::repopulate() {
     bool folded_kept = false;
     if (anchored && !folded_nodes.empty()) {
         folded_alone = GraphCanvasDrawing::placeNodes({}, {}, top, folded_layout_nodes,
-                                                      folded_only_edges);
+                                                      folded_only_edges, last_column);
         std::optional<qreal> right;
         for (const auto &[id, box] : folded_alone->boxes)
             right = std::max(right.value_or(box.right()), box.right());
@@ -2004,8 +2059,16 @@ void GraphCanvasScene::repopulate() {
         for (const auto &entry : plan.drawn) {
             const auto key = std::pair{body, entry.node->id};
             inside.addNode(entry, 0, plan.positions.at(entry.node->id),
-                [this, key](const QPointF &moved) {
+                [this, key, scope, anchored](const QPointF &moved) {
                     if (rebuilding_) return;
+                    // UX-1, decision 3: the zone stays where it is drawn. A
+                    // root the document places nothing of is placed again
+                    // on every draw, and a frame grown left or up by this
+                    // drag would be placed that much further in -- the
+                    // zone, and the node with it, back where the hand took
+                    // it from. The root's nodes keep the places they have
+                    // for the session; the root is not written.
+                    if (!anchored) holdRootPlaces(scope);
                     session_node_positions_[key] = moved;
                     placement(key.first).layout.nodes[key.second] = moved;
                     noteLayoutChange(key.first);
@@ -2264,6 +2327,13 @@ void GraphCanvasScene::beginCarry(const QGraphicsItem &socket, const std::string
     pending_connection_->node = output;
     pending_connection_->from_output = true;
     pending_connection_->scope = zones_.contains(loop) ? zones_.at(loop) : std::string{};
+    // It is a carry now: what it can land on is a boundary input.
+    for (const LitSocket &lit : lit_sockets_) {
+        lit.item->setOpacity(lit.opacity);
+        lit.item->setScale(lit.scale);
+    }
+    lit_sockets_.clear();
+    lightDropTargets(&socket);
 }
 
 QPointF GraphCanvasScene::toScopePoint(const std::string &scope, const QPointF &at) const {
@@ -2386,9 +2456,28 @@ void GraphCanvasScene::applySceneRectNow(bool grow_only) {
     }
     // A redraw sets the rect anew and may shrink it; each view keeps the
     // scene point it had in its middle, so what is on screen stays put.
+    //
+    // UX-1, decision 2: keeping the middle is not enough on its own. A view
+    // centres a scene rect that is narrower (or shorter) than its viewport --
+    // which a fitted graph always is along one side -- so a rect that grew
+    // under a drag, or was set anew by the redraw after it, moved everything
+    // on screen by half the change: the zone the hand had just put down was
+    // drawn back where it came from, and during the drag Qt replayed the
+    // move against the shifted view and the zone lagged behind the hand.
+    // Each view is given the rect together with what it shows now -- before
+    // the scene's own changes, so no view ever follows a rect it would
+    // centre -- and keeps its scroll as it is: what it shows lies inside
+    // the new rect, so nothing on screen moves. (Centring on the old middle
+    // again was off by the half pixel QRect::center() rounds away, and the
+    // drag's every step added another.)
     std::vector<std::pair<QGraphicsView *, QPointF>> centres;
-    for (QGraphicsView *view : views())
-        centres.emplace_back(view, view->mapToScene(view->viewport()->rect().center()));
+    for (QGraphicsView *view : views()) {
+        const QRectF visible = view->mapToScene(view->viewport()->rect()).boundingRect();
+        if (visible.isValid() && !visible.isEmpty())
+            view->setSceneRect(rect.united(visible));
+        else
+            centres.emplace_back(view, view->mapToScene(view->viewport()->rect().center()));
+    }
     setSceneRect(rect);
     for (const auto &[view, centre] : centres) view->centerOn(centre);
 }
@@ -2455,6 +2544,14 @@ void GraphCanvasScene::afterEdit(bool submitted) {
 
 void GraphCanvasScene::clearPendingConnection() {
     pending_connection_.reset();
+    // UX-1: the sockets go back to how they were drawn. Called before every
+    // redraw deletes them, so the pointers are still the scene's.
+    for (const LitSocket &lit : lit_sockets_) {
+        lit.item->setOpacity(lit.opacity);
+        lit.item->setScale(lit.scale);
+    }
+    lit_sockets_.clear();
+    snap_target_ = nullptr;
     if (pending_edge_ != nullptr) {
         removeItem(pending_edge_);
         delete pending_edge_;
@@ -2490,6 +2587,187 @@ void GraphCanvasScene::beginConnection(const QGraphicsItem &socket) {
     pending_edge_->setPath(
         curveGeometryBetween(pending_connection_->origin,
                              pending_connection_->origin).path);
+    lightDropTargets(&socket);
+}
+
+void GraphCanvasScene::lightDropTargets(const QGraphicsItem *origin) {
+    if (!pending_connection_) return;
+    const auto pending = *pending_connection_;
+    for (QGraphicsItem *item : items()) {
+        if (item == origin || !item->isVisible()) continue;
+        const QString kind = nodeGraphItemKind(*item);
+        const bool socket = kind == QLatin1String{GraphCanvasSocketItem} ||
+                            kind == QLatin1String{GraphCanvasZoneSocketItem} ||
+                            (kind == QLatin1String{GraphCanvasDerivedSocketItem} &&
+                             item->data(GraphCanvasPassInputRole).isValid());
+        if (!socket) continue;
+        // The `+` drawn on an empty slot is the slot's; the slot answers.
+        if (item->parentItem() != nullptr && nodeGraphItemKind(*item->parentItem()) == kind)
+            continue;
+        LitSocket lit{item, item->opacity(), item->scale(), item->sceneBoundingRect().center(),
+                      static_cast<bool>(dropAction(pending, *item))};
+        // Lit a size up; the rest drawn faint, so what is left to aim at
+        // is what the line can land on.
+        if (lit.target) item->setScale(lit.scale * 1.35);
+        else item->setOpacity(lit.opacity * 0.3);
+        lit_sockets_.push_back(lit);
+    }
+    drop_nodes_.clear();
+}
+
+void GraphCanvasScene::followCursor(const QPointF &at) {
+    if (!pending_connection_ || pending_edge_ == nullptr) return;
+    // The reach is pixels on the screen: the scene units it covers follow
+    // the zoom.
+    qreal zoom = 1.0;
+    if (!views().isEmpty()) zoom = views().front()->transform().m11();
+    const qreal reach = GraphCanvasSnapRadius / (zoom > 0.0 ? zoom : 1.0);
+    const LitSocket *nearest = nullptr;
+    qreal best = reach;
+    for (const LitSocket &lit : lit_sockets_) {
+        if (!lit.target) continue;
+        const qreal distance = QLineF{lit.centre, at}.length();
+        if (distance <= best) {
+            best = distance;
+            nearest = &lit;
+        }
+    }
+    QGraphicsItem *snapped = nearest != nullptr ? nearest->item : nullptr;
+    if (snapped != snap_target_) {
+        for (const LitSocket &lit : lit_sockets_) {
+            if (lit.item == snap_target_) lit.item->setScale(lit.scale * 1.35);
+            if (lit.item == snapped) lit.item->setScale(lit.scale * 1.7);
+        }
+        snap_target_ = snapped;
+        pending_edge_->setData(NodeGraphToNameRole, snapped != nullptr
+                                                        ? snapped->data(NodeGraphNameRole)
+                                                        : QVariant{});
+        pending_edge_->setData(GraphCanvasToPortRole, snapped != nullptr
+                                                          ? snapped->data(GraphCanvasPortRole)
+                                                          : QVariant{});
+    }
+    const QPointF end = nearest != nullptr ? nearest->centre : at;
+    const bool from_output = pending_connection_->from_output;
+    pending_edge_->setPath(curveGeometryBetween(from_output ? pending_connection_->origin : end,
+                                                from_output ? end : pending_connection_->origin)
+                               .path);
+}
+
+std::function<void()> GraphCanvasScene::dropAction(const PendingConnection &pending,
+                                                   QGraphicsItem &item) {
+    if (model_ == nullptr) return {};
+    const QString kind = nodeGraphItemKind(item);
+    const std::string current = model_->currentScope();
+    // LP-4d2, decision 3: from a body output's inside end to a boundary
+    // input's (the left edge's inside socket): the loop carries it.
+    if (!pending.carry_loop.empty()) {
+        if (kind != QLatin1String{GraphCanvasSocketItem} || itemScope(item) != pending.scope ||
+            item.data(GraphCanvasZoneScopeRole).toString().isEmpty() ||
+            item.data(GraphCanvasSocketDirectionRole).toString() != QLatin1String{"output"} ||
+            item.data(GraphCanvasPortRole).toString() != QLatin1String{"value"} ||
+            item.parentItem() == nullptr ||
+            nodeGraphItemKind(*item.parentItem()) != QLatin1String{GraphCanvasNodeItem} ||
+            item.parentItem()->data(NodeGraphNameRole).toString() != qtext(pending.carry_loop))
+            return {};
+        const auto to = item.data(NodeGraphNameRole).toString().toStdString();
+        return [this, loop = pending.carry_loop, from = pending.node, to] {
+            afterEdit(model_->addLoopCarry(loop, from, to));
+        };
+    }
+    // GL-1e, decision 2: onto an input socket of a rendering-section pass
+    // (or its `+ input`): that pass's `input`, edited as the Frame Plan's
+    // socket drop edits it.
+    if (kind == QLatin1String{GraphCanvasDerivedSocketItem} &&
+        item.data(GraphCanvasPassInputRole).isValid()) {
+        if (!pending.from_output || !pending.scope.empty() || !current.empty()) return {};
+        const auto pass = item.data(NodeGraphNameRole).toString().toStdString();
+        QGraphicsItem *socket = &item;
+        return [this, pass, socket, node = pending.node, port = pending.port] {
+            dropOnPassInput(pass, *socket, node, port);
+        };
+    }
+    // LP-4d2, decisions 1 and 2: the empty slot at the end of a zone's edge.
+    // Left, a root output there is a new loop input; right, a body output
+    // there is a new output of every body.
+    if (kind == QLatin1String{GraphCanvasZoneSocketItem}) {
+        const auto slot = item.data(GraphCanvasPortRole).toString();
+        const auto loop = item.data(NodeGraphNameRole).toString().toStdString();
+        if (!pending.from_output) return {};
+        if (slot == QLatin1String{"in:+"} && current.empty() && pending.scope.empty())
+            return [this, loop, node = pending.node, port = pending.port] {
+                afterEdit(model_->addZoneInput(loop, node, port));
+            };
+        if (slot == QLatin1String{"out:+"} && zones_.contains(loop) &&
+            zones_.at(loop) == pending.scope)
+            return [this, loop, scope = pending.scope, node = pending.node, port = pending.port] {
+                const bool submitted = model_->addZoneOutput(loop, scope, node, port);
+                afterEdit(submitted);
+                if (!submitted && noticeChanged) noticeChanged();
+            };
+        return {};
+    }
+    if (kind != QLatin1String{GraphCanvasSocketItem}) return {};
+    const QString wanted = pending.from_output ? QStringLiteral("input") : QStringLiteral("output");
+    if (item.data(GraphCanvasSocketDirectionRole).toString() != wanted) return {};
+    // LP-4d1: an edge stays in one scope. A zone's body and the root around
+    // it are two documents' worth of nodes. LP-4d2, decision 1: a root output
+    // dropped on a body node's input inside a zone is the one exception -- a
+    // new loop input, its graph.input in every body, and the input reading
+    // it, in one list.
+    if (itemScope(item) != pending.scope) {
+        const auto body = itemScope(item);
+        const auto loop = zoneLoopOf(body);
+        if (!pending.from_output || !pending.scope.empty() || !current.empty() || loop.empty() ||
+            item.data(GraphCanvasZoneScopeRole).toString().isEmpty())
+            return {};
+        const auto target = item.data(NodeGraphNameRole).toString().toStdString();
+        // Q-19, decision 3: onto a socket of a body pass's shader, the new
+        // graph.input is read through a numbered port.
+        const auto key = item.data(GraphCanvasSocketKeyRole).toString().toStdString();
+        if (!key.empty())
+            return [this, loop, body, target, key, node = pending.node, port = pending.port] {
+                const bool submitted =
+                    model_->addZoneInputToSocket(loop, node, port, body, target, key);
+                afterEdit(submitted);
+                if (!submitted && noticeChanged) noticeChanged();
+            };
+        const auto target_port = item.data(GraphCanvasPortRole).toString().toStdString();
+        if (target_port.empty()) return {};
+        return [this, loop, body, target, target_port, node = pending.node, port = pending.port] {
+            afterEdit(model_->addZoneInput(loop, node, port, body, target, target_port));
+        };
+    }
+    const auto port = item.data(GraphCanvasPortRole).toString().toStdString();
+    if (port.empty()) return {}; // A folded node names no single port.
+    const auto node = item.data(NodeGraphNameRole).toString().toStdString();
+    // Q-19, decision 2: a socket of a render node's shader declarations takes
+    // the line as a numbered port at its binding -- or refuses it in one line
+    // (a skipped binding, a full band).
+    const auto key = item.data(GraphCanvasSocketKeyRole).toString().toStdString();
+    if (!key.empty() || !pending.socket_key.empty())
+        return [this, pending, node, port, key] {
+            const bool submitted =
+                pending.from_output
+                    ? model_->connectSocket(pending.scope, node, key, pending.node, pending.port)
+                    : model_->connectSocket(pending.scope, pending.node, pending.socket_key, node,
+                                            port);
+            afterEdit(submitted);
+            if (!submitted && noticeChanged) noticeChanged();
+        };
+    const auto from_node = pending.from_output ? pending.node : node;
+    const auto from_port = pending.from_output ? pending.port : port;
+    const auto to_node = pending.from_output ? node : pending.node;
+    const auto to_port = pending.from_output ? port : pending.port;
+    // A line that does not type-check does not land: the socket is simply not
+    // one this edge can end on.
+    auto drawn = drop_nodes_.find(pending.scope);
+    if (drawn == drop_nodes_.end())
+        drawn = drop_nodes_.emplace(pending.scope, model_->nodes(pending.scope)).first;
+    if (!GraphCanvasModel::canConnectAmong(drawn->second, from_node, from_port, to_node, to_port))
+        return {};
+    return [this, scope = pending.scope, from_node, from_port, to_node, to_port] {
+        afterEdit(model_->connectInput(scope, to_node, to_port, from_node, from_port));
+    };
 }
 
 void GraphCanvasScene::finishConnection(const QPointF &position) {
@@ -2498,124 +2776,38 @@ void GraphCanvasScene::finishConnection(const QPointF &position) {
         return;
     }
     const auto pending = *pending_connection_;
+    QGraphicsItem *snapped = snap_target_;
     clearPendingConnection();
-    // LP-4d2, decision 3: from a body output's inside end to a boundary
-    // input's (the left edge's inside socket): the loop carries it.
-    if (!pending.carry_loop.empty()) {
-        for (QGraphicsItem *item : items(position)) {
-            if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasSocketItem}) continue;
-            if (itemScope(*item) != pending.scope ||
-                item->data(GraphCanvasZoneScopeRole).toString().isEmpty() ||
-                item->data(GraphCanvasSocketDirectionRole).toString() != QLatin1String{"output"} ||
-                item->data(GraphCanvasPortRole).toString() != QLatin1String{"value"} ||
-                item->parentItem() == nullptr ||
-                nodeGraphItemKind(*item->parentItem()) != QLatin1String{GraphCanvasNodeItem} ||
-                item->parentItem()->data(NodeGraphNameRole).toString() != qtext(pending.carry_loop))
-                continue;
-            afterEdit(model_->addLoopCarry(pending.carry_loop, pending.node,
-                                           item->data(NodeGraphNameRole).toString().toStdString()));
-            return;
-        }
+    drop_nodes_.clear();
+    // UX-1, decision 1: the socket the line was drawn onto, else what is
+    // under the hand -- judged by the one function that lit them.
+    std::function<void()> drop;
+    if (snapped != nullptr) drop = dropAction(pending, *snapped);
+    if (!drop)
+        for (QGraphicsItem *item : items(position))
+            if ((drop = dropAction(pending, *item))) break;
+    drop_nodes_.clear();
+    if (drop) {
+        drop();
         return;
     }
-    const QString wanted = pending.from_output ? QStringLiteral("input")
-                                               : QStringLiteral("output");
-    const std::string current = model_->currentScope();
+    // Nothing takes it. A carry, or a line from an output, lands nowhere.
+    if (!pending.carry_loop.empty() || pending.from_output) return;
+    // From an input, let go over a socket it could have been meant for (an
+    // output of its scope of another type, a pass's input, a zone's slot):
+    // that is a drop that does not land, not a cut.
     for (QGraphicsItem *item : items(position)) {
-        // GL-1e, decision 2: onto an input socket of a rendering-section
-        // pass (or its `+ input`): that pass's `input`, edited as the Frame
-        // Plan's socket drop edits it.
-        if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasDerivedSocketItem} &&
-            item->data(GraphCanvasPassInputRole).isValid()) {
-            if (!pending.from_output || !pending.scope.empty() || !current.empty()) return;
-            dropOnPassInput(item->data(NodeGraphNameRole).toString().toStdString(), *item,
-                            pending.node, pending.port);
+        const QString kind = nodeGraphItemKind(*item);
+        if ((kind == QLatin1String{GraphCanvasDerivedSocketItem} &&
+             item->data(GraphCanvasPassInputRole).isValid()) ||
+            kind == QLatin1String{GraphCanvasZoneSocketItem} ||
+            (kind == QLatin1String{GraphCanvasSocketItem} &&
+             item->data(GraphCanvasSocketDirectionRole).toString() == QLatin1String{"output"} &&
+             itemScope(*item) == pending.scope))
             return;
-        }
-        // LP-4d2, decisions 1 and 2: the empty slot at the end of a zone's
-        // edge. Left, a root output there is a new loop input; right, a body
-        // output there is a new output of every body.
-        if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasZoneSocketItem}) {
-            const auto slot = item->data(GraphCanvasPortRole).toString();
-            const auto loop = item->data(NodeGraphNameRole).toString().toStdString();
-            if (!pending.from_output) return;
-            if (slot == QLatin1String{"in:+"} && current.empty() && pending.scope.empty()) {
-                afterEdit(model_->addZoneInput(loop, pending.node, pending.port));
-                return;
-            }
-            if (slot == QLatin1String{"out:+"} && zones_.contains(loop) &&
-                zones_.at(loop) == pending.scope) {
-                const bool submitted =
-                    model_->addZoneOutput(loop, pending.scope, pending.node, pending.port);
-                afterEdit(submitted);
-                if (!submitted && noticeChanged) noticeChanged();
-                return;
-            }
-            continue;
-        }
-        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasSocketItem}) continue;
-        if (item->data(GraphCanvasSocketDirectionRole).toString() != wanted) continue;
-        // LP-4d1: an edge stays in one scope. A zone's body and the root
-        // around it are two documents' worth of nodes. LP-4d2, decision 1: a
-        // root output dropped on a body node's input inside a zone is the
-        // one exception -- a new loop input, its graph.input in every body,
-        // and the input reading it, in one list.
-        if (itemScope(*item) != pending.scope) {
-            const auto body = itemScope(*item);
-            const auto loop = zoneLoopOf(body);
-            // Q-19, decision 3: onto a socket of a body pass's shader, the
-            // new graph.input is read through a numbered port.
-            const auto key = item->data(GraphCanvasSocketKeyRole).toString().toStdString();
-            if (pending.from_output && pending.scope.empty() && current.empty() &&
-                !loop.empty() && !item->data(GraphCanvasZoneScopeRole).toString().isEmpty() &&
-                !key.empty()) {
-                const bool submitted = model_->addZoneInputToSocket(
-                    loop, pending.node, pending.port, body,
-                    item->data(NodeGraphNameRole).toString().toStdString(), key);
-                afterEdit(submitted);
-                if (!submitted && noticeChanged) noticeChanged();
-                return;
-            }
-            if (pending.from_output && pending.scope.empty() && current.empty() &&
-                !loop.empty() && !item->data(GraphCanvasZoneScopeRole).toString().isEmpty() &&
-                !item->data(GraphCanvasPortRole).toString().isEmpty()) {
-                afterEdit(model_->addZoneInput(
-                    loop, pending.node, pending.port, body,
-                    item->data(NodeGraphNameRole).toString().toStdString(),
-                    item->data(GraphCanvasPortRole).toString().toStdString()));
-                return;
-            }
-            continue;
-        }
-        const auto port = item->data(GraphCanvasPortRole).toString();
-        if (port.isEmpty()) return; // A folded node names no single port.
-        const auto node = item->data(NodeGraphNameRole).toString().toStdString();
-        // Q-19, decision 2: a socket of a render node's shader declarations
-        // takes the line as a numbered port at its binding -- or refuses it
-        // in one line (a skipped binding, a full band).
-        const auto key = item->data(GraphCanvasSocketKeyRole).toString().toStdString();
-        if (!key.empty() || !pending.socket_key.empty()) {
-            const bool submitted =
-                pending.from_output
-                    ? model_->connectSocket(pending.scope, node, key, pending.node, pending.port)
-                    : model_->connectSocket(pending.scope, pending.node, pending.socket_key,
-                                            node, port.toStdString());
-            afterEdit(submitted);
-            if (!submitted && noticeChanged) noticeChanged();
-            return;
-        }
-        const auto from_node = pending.from_output ? pending.node : node;
-        const auto from_port = pending.from_output ? pending.port : port.toStdString();
-        const auto to_node = pending.from_output ? node : pending.node;
-        const auto to_port = pending.from_output ? port.toStdString() : pending.port;
-        // A drag that does not type-check does not land: the socket is simply
-        // not one this edge can end on.
-        afterEdit(model_->connectInput(pending.scope, to_node, to_port, from_node, from_port));
-        return;
     }
     // Dropped on nothing. From an input socket that is standing on an edge,
-    // that is how the edge is cut; from an output socket it means nothing.
-    if (pending.from_output) return;
+    // that is how the edge is cut.
     const auto drawn = model_->nodes(pending.scope);
     const auto owner = std::ranges::find(drawn, pending.node, &GraphCanvasNode::id);
     if (owner == drawn.end()) return;
@@ -2814,14 +3006,7 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
 void GraphCanvasScene::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
     if (pending_connection_ && pending_edge_ != nullptr) {
         event->accept();
-        pending_edge_->setPath(
-            curveGeometryBetween(pending_connection_->from_output
-                                     ? pending_connection_->origin
-                                     : event->scenePos(),
-                                 pending_connection_->from_output
-                                     ? event->scenePos()
-                                     : pending_connection_->origin)
-                .path);
+        followCursor(event->scenePos());
         return;
     }
     QGraphicsScene::mouseMoveEvent(event);
@@ -4318,6 +4503,21 @@ struct GraphCanvasWidget::Impl {
         view.addAction(fit_view_action);
         QObject::connect(fit_view_action, &QAction::triggered, &view,
                          [this] { canvas->fitView(); });
+        // UX-1, decision 5: both stand in the row too, after Undo and Redo --
+        // the right-click menu was the only way to them. The buttons fire
+        // the same actions.
+        for (QAction *action : {auto_layout_action, fit_view_action}) {
+            auto *button = new QPushButton(action->text(), &view);
+            button->setObjectName(action->objectName() + QStringLiteral("Button"));
+            button->setToolTip(action == auto_layout_action
+                                   ? QObject::tr("Place this scope's nodes again")
+                                   : QObject::tr("Show the whole graph (F)"));
+            controls->insertWidget(controls->count() - 1, button);
+            QObject::connect(button, &QPushButton::clicked, action, &QAction::trigger);
+            QObject::connect(action, &QAction::changed, button,
+                             [button, action] { button->setEnabled(action->isEnabled()); });
+            button->setEnabled(action->isEnabled());
+        }
         tie_action = new QAction(QObject::tr("Tie together"), &view);
         tie_action->setObjectName(
             QStringLiteral("pelican.graphCanvas.tieTogether"));
@@ -4375,7 +4575,7 @@ struct GraphCanvasWidget::Impl {
             [this](std::optional<std::string> target) {
                 definition_menu_target = std::move(target);
             });
-        canvas->setDragMode(QGraphicsView::RubberBandDrag);
+        configureGraphCanvasView(*canvas);
         canvas->setRenderHint(QPainter::Antialiasing, true);
         // Delete has to reach the scene, and a right-click on the canvas has to
         // reach the scene's own handler rather than the view's context menu.
@@ -6190,6 +6390,12 @@ void GraphCanvasWidget::engineRestartDeclined(const QString &message) {
     if (!std::exchange(impl_->restart_asked, false)) return;
     impl_->model.engineRestartDeclined(message.toStdString());
     impl_->dispatch();
+}
+
+void configureGraphCanvasView(NodeCanvasView &view) {
+    view.setDragMode(QGraphicsView::RubberBandDrag);
+    view.setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    view.setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
 }
 
 bool openGraphNodeInTabs(QTabWidget &tabs, GraphCanvasWidget &graph,

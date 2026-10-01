@@ -3040,6 +3040,24 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     layout_options.vertical_gap = VerticalGap;
     for (const auto &[key, entity] : entities)
         layout_options.columns.emplace(key, entity.source_column);
+    // UX-1, decision 6: what writes to the screen stands in the last column,
+    // however short the path to it -- the Graph tab's rule, through the one
+    // layout's last_column.
+    const auto writesScreen = [&](const std::string &node_name) {
+        const auto node = nodes_by_name.find(node_name);
+        if (node == nodes_by_name.end()) return false;
+        return std::ranges::any_of(node->second->writes, [&](const std::string &written) {
+            if (written == "display" || written == "swapchain") return true;
+            const auto resource =
+                std::ranges::find(model.resources, written, &FramePlanResource::name);
+            return resource != model.resources.end() && resource->kind == "frame_target";
+        });
+    };
+    for (const auto &[key, entity] : entities) {
+        if (entity.boundary_stub) continue;
+        if (entity.group ? std::ranges::any_of(entity.members, writesScreen) : writesScreen(key))
+            layout_options.last_column.insert(key);
+    }
     // F-7: in the whole frame, each target no pass writes is a node of its
     // own, placed by the same layout one column before the first pass that
     // reads it -- or before the whole drawing, when nothing reads it yet.

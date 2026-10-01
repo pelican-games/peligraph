@@ -3,6 +3,7 @@
 #include "graphcomposition.hpp"
 #include "graphmodule.hpp"
 #include "graphpartition.hpp"
+#include "panelhelp.hpp"
 #include "studiotheme.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -33,6 +34,8 @@
 #include <QScrollBar>
 #include <QTabWidget>
 #include <QCheckBox>
+#include <QClipboard>
+#include <QGuiApplication>
 #include <QComboBox>
 #include <QSpinBox>
 #include <QStandardItemModel>
@@ -6665,4 +6668,624 @@ TEST_CASE("GL-1e the Graph tab sends a pass's input edit, its Undo reaches the r
     undo->trigger();
     QCoreApplication::processEvents();
     CHECK(undone == 1);
+}
+
+// --- UX-1: how the Graph feels in the hand.
+
+namespace {
+
+// A mouse gesture through a view, the way a person makes it: the press, a
+// few moves, the release, each one turned into scene coordinates by the view
+// as it stands at that moment (a scene rect that changes under the drag
+// moves what the next move lands on).
+void viewMouse(QGraphicsView &view, QEvent::Type type, const QPoint &at,
+               Qt::MouseButton button, Qt::MouseButtons buttons) {
+    QMouseEvent event{type, QPointF(at), view.viewport()->mapToGlobal(QPointF(at)), button,
+                      buttons, Qt::NoModifier};
+    QApplication::sendEvent(view.viewport(), &event);
+    QCoreApplication::processEvents();
+}
+
+void viewDrag(QGraphicsView &view, const QPoint &from, const QPoint &to, int steps = 6) {
+    viewMouse(view, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+    for (int step = 1; step <= steps; ++step)
+        viewMouse(view, QEvent::MouseMove, from + (to - from) * step / steps, Qt::NoButton,
+                  Qt::LeftButton);
+    viewMouse(view, QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton);
+}
+
+// Where on the view a scene point is drawn.
+QPoint onView(const QGraphicsView &view, const QPointF &scene_point) {
+    return view.mapFromScene(scene_point);
+}
+
+// A view over a harness's scene, set up as the Graph tab's is and fitted,
+// the way the tab first shows a scope.
+struct UxView {
+    PelicanStudio::NodeCanvasView view;
+    explicit UxView(QGraphicsScene &scene) : view{&scene} {
+        PelicanStudio::configureGraphCanvasView(view);
+        view.resize(1200, 720);
+        view.show();
+        QCoreApplication::processEvents();
+        view.fitView();
+        QCoreApplication::processEvents();
+    }
+};
+
+// An else-only draw_loop over a material pass's draws, as the palette's
+// material pass makes it: `<pass>_draws` running `<pass>_draw`, whose body is
+// one `step`.
+Json ux1DrawDocument() {
+    return Json{
+        {"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
+        {"definitions",
+         {{"forward_draw",
+           {{"nodes", Json::array({{{"id", "step"}, {"op", "draw.material"},
+                                    {"parameters", Json::object()},
+                                    {"outputs", Json::array({"draws"})}}})},
+            {"outputs", {{"draws", {{"node", "step"}, {"port", "draws"}}}}}}}}},
+        {"nodes",
+         Json::array({{{"id", "forward_draws"}, {"op", "graph.loop"},
+                       {"parameters", {{"over", {{"draw_items", {{"contract", "forward_opaque_v1"}}}}},
+                                       {"tier", "draw_loop"},
+                                       {"branches", Json::array({{{"body", "forward_draw"}}})}}},
+                       {"outputs", Json::array({"draws"})}},
+                      {{"id", "forward"}, {"op", "render.material_pass"},
+                       {"parameters", {{"material_contract", "forward_opaque_v1"},
+                                       {"pass_set", "main_render"}}},
+                       {"inputs", {{"draws", {{"node", "forward_draws"}, {"port", "draws"}}}}},
+                       {"outputs", Json::array()}}})}};
+}
+
+void addDrawOperations(ZoneHarness &h) {
+    for (const char *op : {"render.material_pass", "draw.material"})
+        h.catalog["modules"][1]["operations"].push_back(
+            {{"op", op}, {"domain", "rendering"}, {"evaluation", "direct"}, {"sink", false},
+             {"ports", "parameter_dependent"}});
+}
+
+} // namespace
+
+// Decision 2. The zone was pushed back: dragged by its heading, it did not
+// end where the hand let go. Through a view, as the person does it.
+TEST_CASE("UX-1 a zone dragged by its heading ends where the hand let go, and stays there",
+          "[devstudio][graph-canvas][scene][ux1]") {
+    (void)application();
+    ZoneHarness h;
+    h.open();
+    UxView shown{h.scene};
+    auto &view = shown.view;
+    QGraphicsItem *frame = scopedNode(h.scene, QString{}, QStringLiteral("steps"));
+    REQUIRE(frame != nullptr);
+    const QPointF spot = frame->data(PelicanStudio::NodeGraphHotspotRole).toPointF();
+    const QPoint grip = onView(view, frame->mapToScene(spot));
+    const QPoint delta{-260, 170};
+    viewDrag(view, grip, grip + delta);
+    // Under the hand when it lets go.
+    frame = scopedNode(h.scene, QString{}, QStringLiteral("steps"));
+    REQUIRE(frame != nullptr);
+    QPoint at = onView(view, frame->mapToScene(spot));
+    CHECK(std::abs(at.x() - (grip + delta).x()) <= 2);
+    CHECK(std::abs(at.y() - (grip + delta).y()) <= 2);
+
+    // Sent, committed, read again and drawn again: still there.
+    h.scene.flushLayout();
+    const auto ops = h.commit();
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].at("op") == "set_layout");
+    CHECK(ops[0].at("scope") == "root");
+    frame = scopedNode(h.scene, QString{}, QStringLiteral("steps"));
+    REQUIRE(frame != nullptr);
+    CHECK(ops[0].at("layout").at("nodes").at("steps") ==
+          Json{{"x", frame->pos().x()}, {"y", frame->pos().y()}});
+    at = onView(view, frame->mapToScene(spot));
+    CHECK(std::abs(at.x() - (grip + delta).x()) <= 2);
+    CHECK(std::abs(at.y() - (grip + delta).y()) <= 2);
+}
+
+// Decision 3. A body node moved without moving its zone: the node goes where
+// it is put, the frame only grows round it, and nothing is written to the
+// root -- in a loop's zone and in a material pass's draw_loop.
+TEST_CASE("UX-1 a body node is dragged inside its zone, and the zone stays where it is",
+          "[devstudio][graph-canvas][scene][ux1]") {
+    (void)application();
+    struct Case {
+        const char *name;
+        Json document;
+        bool draws;
+        QString loop;
+        QString body;
+        QString node;
+    };
+    const std::vector<Case> cases{
+        {"a loop's zone", zoneDocument(), false, QStringLiteral("steps"), QStringLiteral("first"),
+         QStringLiteral("sum")},
+        {"a material pass's draws", ux1DrawDocument(), true, QStringLiteral("forward_draws"),
+         QStringLiteral("forward_draw"), QStringLiteral("step")},
+    };
+    for (const auto &each : cases) {
+        INFO(each.name);
+        ZoneHarness h{each.document};
+        if (each.draws) addDrawOperations(h);
+        h.open();
+        REQUIRE(h.scene.zones().contains(each.loop.toStdString()));
+        UxView shown{h.scene};
+        auto &view = shown.view;
+        QGraphicsItem *frame = scopedNode(h.scene, QString{}, each.loop);
+        QGraphicsItem *node = scopedNode(h.scene, each.body, each.node);
+        REQUIRE(frame != nullptr);
+        REQUIRE(node != nullptr);
+        const QPointF frame_at = frame->pos();
+        const QPoint frame_on_view = onView(view, frame->scenePos());
+        const QPointF heading{node->boundingRect().width() / 2.0, 6.0};
+        const QPoint grip = onView(view, node->mapToScene(heading));
+        // Up and to the left, past the inside's origin: the frame has to
+        // grow that way.
+        const QPoint delta{-90, -70};
+        viewDrag(view, grip, grip + delta);
+        // The frame is drawn again round the body once the hand lets go.
+        frame = scopedNode(h.scene, QString{}, each.loop);
+        node = scopedNode(h.scene, each.body, each.node);
+        REQUIRE(frame != nullptr);
+        REQUIRE(node != nullptr);
+        CHECK(frame->pos() == frame_at);
+        QPoint at = onView(view, node->mapToScene(heading));
+        CHECK(std::abs(at.x() - (grip + delta).x()) <= 2);
+        CHECK(std::abs(at.y() - (grip + delta).y()) <= 2);
+
+        h.scene.flushLayout();
+        const auto ops = h.commit();
+        REQUIRE(ops.size() == 1);
+        CHECK(ops[0].at("op") == "set_layout");
+        CHECK(ops[0].at("scope") == each.body.toStdString());
+        // Nothing else goes out: the root's placement is not written.
+        h.scene.flushLayout();
+        CHECK(h.answerReads().empty());
+        frame = scopedNode(h.scene, QString{}, each.loop);
+        node = scopedNode(h.scene, each.body, each.node);
+        REQUIRE(frame != nullptr);
+        REQUIRE(node != nullptr);
+        CHECK(frame->pos() == frame_at);
+        const QPoint frame_now = onView(view, frame->scenePos());
+        CHECK(std::abs(frame_now.x() - frame_on_view.x()) <= 2);
+        CHECK(std::abs(frame_now.y() - frame_on_view.y()) <= 2);
+        at = onView(view, node->mapToScene(heading));
+        CHECK(std::abs(at.x() - (grip + delta).x()) <= 2);
+        CHECK(std::abs(at.y() - (grip + delta).y()) <= 2);
+        CHECK(frame->sceneBoundingRect().contains(node->sceneBoundingRect()));
+    }
+}
+
+namespace {
+
+QGraphicsPathItem *pendingLine(QGraphicsScene &scene) {
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+            QLatin1String{PelicanStudio::GraphCanvasPendingEdgeItem})
+            return dynamic_cast<QGraphicsPathItem *>(item);
+    return nullptr;
+}
+
+// Where the line being drawn ends (it is drawn from an output).
+QPointF lineEnd(QGraphicsScene &scene) {
+    QGraphicsPathItem *line = pendingLine(scene);
+    REQUIRE(line != nullptr);
+    return line->mapToScene(line->path().pointAtPercent(1.0));
+}
+
+void sceneMouse(QGraphicsScene &scene, QEvent::Type type, const QPointF &at) {
+    QGraphicsSceneMouseEvent event{type};
+    event.setScenePos(at);
+    event.setButton(type == QEvent::GraphicsSceneMouseMove ? Qt::NoButton : Qt::LeftButton);
+    event.setButtons(type == QEvent::GraphicsSceneMouseRelease ? Qt::NoButton : Qt::LeftButton);
+    QApplication::sendEvent(&scene, &event);
+    QCoreApplication::processEvents();
+}
+
+bool near(const QPointF &a, const QPointF &b) { return QLineF{a, b}.length() < 0.5; }
+
+// One zone tab's chip (the item that carries its label) and its text.
+QGraphicsPathItem *tabChip(QGraphicsScene &scene, std::size_t branch) {
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{PelicanStudio::GraphCanvasZoneTabItem} &&
+            !item->data(PelicanStudio::GraphCanvasLabelRole).toString().isEmpty() &&
+            item->data(PelicanStudio::GraphCanvasBranchRole).toULongLong() == branch)
+            return dynamic_cast<QGraphicsPathItem *>(item);
+    return nullptr;
+}
+
+QGraphicsSimpleTextItem *tabText(QGraphicsScene &scene, std::size_t branch) {
+    QGraphicsPathItem *chip = tabChip(scene, branch);
+    if (chip == nullptr) return nullptr;
+    for (QGraphicsItem *child : chip->childItems())
+        if (auto *text = dynamic_cast<QGraphicsSimpleTextItem *>(child)) return text;
+    return nullptr;
+}
+
+bool tabChosen(QGraphicsScene &scene, std::size_t branch) {
+    QGraphicsPathItem *chip = tabChip(scene, branch);
+    QGraphicsSimpleTextItem *text = tabText(scene, branch);
+    REQUIRE(chip != nullptr);
+    REQUIRE(text != nullptr);
+    const bool ground =
+        chip->brush().color() == PelicanStudio::currentStudioTheme().canvas.tab_selected;
+    // The ground and the face say the same thing, or neither does.
+    CHECK(ground == text->font().bold());
+    return ground;
+}
+
+} // namespace
+
+// Decision 1. Node Wrangler's lazy connect: while a line is drawn, what it
+// can land on is lit and the rest is faint, and near enough is enough.
+TEST_CASE("UX-1 a line being drawn lights the sockets it can land on and snaps to the nearest "
+          "one in reach",
+          "[devstudio][graph-canvas][scene][ux1]") {
+    (void)application();
+
+    SECTION("in reach, out of reach, and a socket it cannot land on") {
+        ZoneHarness h;
+        h.open();
+        auto &scene = h.scene;
+        QGraphicsItem *curve = socketOf(scene, QString{}, "curve", "value", "output");
+        QGraphicsItem *slot = zoneSlot(scene, "in:+");
+        // The slot itself, not the `+` drawn on it.
+        if (slot != nullptr && slot->parentItem() != nullptr &&
+            slot->parentItem()->data(PelicanStudio::NodeGraphItemKindRole) ==
+                slot->data(PelicanStudio::NodeGraphItemKindRole))
+            slot = slot->parentItem();
+        QGraphicsItem *target = socketOf(scene, QString{}, "steps", "target", "input");
+        QGraphicsItem *sum_b = socketOf(scene, QStringLiteral("first"), "sum", "b", "input");
+        QGraphicsItem *a_out = socketOf(scene, QString{}, "a", "value", "output");
+        QGraphicsItem *curve_time = socketOf(scene, QString{}, "curve", "time", "input");
+        REQUIRE(curve != nullptr);
+        REQUIRE(slot != nullptr);
+        REQUIRE(target != nullptr);
+        REQUIRE(sum_b != nullptr);
+        REQUIRE(a_out != nullptr);
+        REQUIRE(curve_time != nullptr);
+        const QPointF slot_at = centreOf(slot);
+
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(curve));
+        REQUIRE(pendingLine(scene) != nullptr);
+        // Lit: a loop's input, the zone's empty slot, a body node's input
+        // (each a drop the canvas takes today). Faint: another output, and
+        // the line's own node.
+        CHECK(slot->scale() > 1.0);
+        CHECK(target->scale() > 1.0);
+        CHECK(sum_b->scale() > 1.0);
+        CHECK(slot->opacity() == 1.0);
+        CHECK(a_out->opacity() < 0.5);
+        CHECK(curve_time->opacity() < 0.5);
+        CHECK(a_out->scale() == 1.0);
+
+        // Twenty pixels short of the slot, over nothing: drawn onto it...
+        const QPointF short_of = slot_at + QPointF{-20.0, 5.0};
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, short_of);
+        CHECK(near(lineEnd(scene), slot_at));
+        // ...and let go there, it lands there.
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, short_of);
+        CHECK(pendingLine(scene) == nullptr);
+        CHECK(a_out->opacity() == 1.0);
+        CHECK(slot->scale() == 1.0);
+        CHECK(h.commit() ==
+              Json::array({graphInput("first", "value"), graphInput("rest", "value"),
+                           {{"op", "set_input"}, {"scope", "root"}, {"node", "steps"},
+                            {"port", "value"},
+                            {"source", {{"node", "curve"}, {"port", "value"}}}}}));
+
+        // Out of reach of everything: the line follows the hand and lands
+        // nowhere.
+        curve = socketOf(scene, QString{}, "curve", "value", "output");
+        REQUIRE(curve != nullptr);
+        const QPointF far{-5000.0, -5000.0};
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(curve));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, far);
+        CHECK(near(lineEnd(scene), far));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, far);
+        CHECK(h.answerReads().empty());
+
+        // Right beside a socket it cannot land on (another output): not
+        // drawn onto it, and nothing is sent.
+        curve = socketOf(scene, QString{}, "curve", "value", "output");
+        a_out = socketOf(scene, QString{}, "a", "value", "output");
+        REQUIRE(curve != nullptr);
+        REQUIRE(a_out != nullptr);
+        const QPointF beside = centreOf(a_out) + QPointF{3.0, 0.0};
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(curve));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, beside);
+        CHECK_FALSE(near(lineEnd(scene), centreOf(a_out)));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, beside);
+        CHECK(h.answerReads().empty());
+    }
+
+    SECTION("a socket of another type is faint and is not snapped to") {
+        GraphCanvasModel typed;
+        GraphCanvasScene scene;
+        typed.setConnected(true);
+        answer(typed, connectedDocument(), visualCatalog());
+        scene.setModel(&typed);
+        REQUIRE(typed.enterInstance("left"));
+        scene.repopulate();
+        QGraphicsItem *buffer = socketItem(scene, QStringLiteral("buffer"),
+                                           QStringLiteral("resource"), QStringLiteral("output"));
+        QGraphicsItem *scalar =
+            socketItem(scene, QStringLiteral("sum"), QStringLiteral("a"), QStringLiteral("input"));
+        REQUIRE(buffer != nullptr);
+        REQUIRE(scalar != nullptr);
+        REQUIRE_FALSE(typed.canConnect("buffer", "resource", "sum", "a"));
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(buffer));
+        CHECK(scalar->opacity() < 0.5);
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, centreOf(scalar) + QPointF{4.0, 0.0});
+        CHECK_FALSE(near(lineEnd(scene), centreOf(scalar)));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, centreOf(scalar));
+        requireNoEdit(typed);
+    }
+}
+
+// Decision 4. Add branch: a body of the new branch's own, so its tab shows
+// and edits something; the chosen tab is plain to see, also between two
+// branches that run one body.
+TEST_CASE("UX-1 Add branch gives the branch a body of its own, and the chosen tab is plain",
+          "[devstudio][graph-canvas][scene][ux1]") {
+    (void)application();
+
+    SECTION("Add branch, the tabs, an edit in the new body, and one Undo") {
+        ZoneHarness h{zoneDocument(true)};
+        h.open();
+        auto &scene = h.scene;
+        const auto before = h.document.dump();
+        REQUIRE(zoneTabs(scene).empty());
+
+        REQUIRE(h.model.addLoopBranch("steps"));
+        const auto ops = h.commit();
+        REQUIRE(ops.size() == 2);
+        CHECK(ops[0] == Json{{"op", "add_definition"},
+                             {"name", "steps_body"},
+                             {"definition", zoneDocument().at("definitions").at("first")}});
+        CHECK(h.document.at("nodes")[2].at("parameters").at("branches") ==
+              Json::array({{{"when", {{"element", 0}}}, {"body", "steps_body"}},
+                           {{"body", "first"}}}));
+        REQUIRE(zoneTabs(scene).size() == 2);
+        // The new branch's body is shown, and its tab is the chosen one.
+        CHECK(scene.zones().at("steps") == "steps_body");
+        CHECK(tabChosen(scene, 0));
+        CHECK_FALSE(tabChosen(scene, 1));
+        CHECK(tabChip(scene, 0)->data(PelicanStudio::GraphCanvasValueTextRole).toString().isEmpty());
+
+        // The else's tab: its body, drawn and chosen.
+        click(scene, centreOf(tabChip(scene, 1)));
+        CHECK(scene.zones().at("steps") == "first");
+        CHECK(scopedNode(scene, QStringLiteral("first"), QStringLiteral("sum")) != nullptr);
+        CHECK(scopedNode(scene, QStringLiteral("steps_body"), QStringLiteral("sum")) == nullptr);
+        CHECK(tabChosen(scene, 1));
+        CHECK_FALSE(tabChosen(scene, 0));
+
+        // Back on the new branch, an edit there is its body's alone.
+        click(scene, centreOf(tabChip(scene, 0)));
+        CHECK(scene.zones().at("steps") == "steps_body");
+        REQUIRE(scene.beginLabelEdit("steps_body", "sum"));
+        scene.setInlineEditText(QStringLiteral("Mine"));
+        REQUIRE(scene.commitInlineEdit());
+        CHECK(h.commit() == Json::array({{{"op", "set_node_label"}, {"scope", "steps_body"},
+                                          {"node", "sum"}, {"label", "Mine"}}}));
+        CHECK(h.document.at("definitions").at("first") ==
+              zoneDocument().at("definitions").at("first"));
+
+        // Two Undos: the label, then the branch and its body together.
+        for (int step = 0; step < 2; ++step) {
+            REQUIRE(h.model.canUndo());
+            scene.undoEdit();
+            h.commit();
+        }
+        CHECK(h.document.dump() == before);
+    }
+
+    SECTION("two branches that run one body: the tabs say so, and the chosen one still moves") {
+        ZoneHarness h{sharedBodyDocument()};
+        h.open();
+        auto &scene = h.scene;
+        QGraphicsPathItem *first = tabChip(scene, 0);
+        QGraphicsPathItem *other = tabChip(scene, 1);
+        REQUIRE(first != nullptr);
+        REQUIRE(other != nullptr);
+        CHECK(first->data(PelicanStudio::GraphCanvasValueTextRole).toString() ==
+              QStringLiteral("else"));
+        CHECK(tabText(scene, 0)->text().contains(QStringLiteral("shared with else")));
+        CHECK(other->data(PelicanStudio::GraphCanvasValueTextRole).toString() ==
+              QStringLiteral("branch 0"));
+        CHECK(first->toolTip().contains(QStringLiteral("same body as else")));
+        CHECK(tabChosen(scene, 0));
+        click(scene, centreOf(tabChip(scene, 1)));
+        CHECK(tabChosen(scene, 1));
+        CHECK_FALSE(tabChosen(scene, 0));
+        CHECK(h.model.loopBranch("steps") == 1);
+    }
+}
+
+// Decision 5: the two entries the canvas menu had to itself.
+TEST_CASE("UX-1 Auto layout and Fit view stand in the Graph tab's row beside Undo and Redo",
+          "[devstudio][graph-canvas][scene][ux1]") {
+    (void)application();
+    RecordedCapability transport;
+    PelicanStudio::GraphCanvasWidget widget{transport.capability()};
+    widget.resize(1100, 700);
+    widget.show();
+    QCoreApplication::processEvents();
+    const auto answerRpc = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        REQUIRE(transport.deliver);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    answerRpc(QStringLiteral("get_graph_instances"), context(connectedDocument()));
+    answerRpc(QStringLiteral("get_graph_catalog"), visualCatalog());
+
+    auto *undo = widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvas.undoButton"));
+    auto *redo = widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvas.redoButton"));
+    auto *arrange =
+        widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvas.autoLayoutButton"));
+    auto *fit = widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvas.fitViewButton"));
+    REQUIRE(undo != nullptr);
+    REQUIRE(redo != nullptr);
+    REQUIRE(arrange != nullptr);
+    REQUIRE(fit != nullptr);
+    CHECK(arrange->text() == QStringLiteral("Auto layout"));
+    CHECK(fit->text() == QStringLiteral("Fit view"));
+    // In the row, after Redo.
+    CHECK(std::abs(arrange->geometry().center().y() - undo->geometry().center().y()) <= 2);
+    CHECK(arrange->x() > redo->x());
+    CHECK(fit->x() > arrange->x());
+
+    // The menu's own actions.
+    auto *arrange_action = widget.findChild<QAction *>(QStringLiteral("pelican.graphCanvas.autoLayout"));
+    REQUIRE(arrange_action != nullptr);
+    int arranged = 0;
+    QObject::connect(arrange_action, &QAction::triggered, [&] { ++arranged; });
+    arrange->click();
+    QCoreApplication::processEvents();
+    CHECK(arranged == 1);
+    auto *view = widget.findChild<QGraphicsView *>(QStringLiteral("pelican.graphCanvasView"));
+    REQUIRE(view != nullptr);
+    const auto fits = view->property("pelicanFitCount").toULongLong();
+    fit->click();
+    QCoreApplication::processEvents();
+    CHECK(view->property("pelicanFitCount").toULongLong() == fits + 1);
+}
+
+// Decision 6: the frame's ends are the last column.
+TEST_CASE("UX-1 what writes to the screen and a sink stand in the last column, however short "
+          "the path to them",
+          "[devstudio][graph-canvas][scene][ux1]") {
+    (void)application();
+    // shade__color -> shade -> post is the longest path; the probe (a sink)
+    // reads shade__color, and the Blank's present reads nothing yet.
+    Json document{
+        {"nodes",
+         Json::array({{{"id", "shade__color"}, {"op", "render.image"},
+                       {"parameters", {{"format", "R8G8B8A8_UNORM"}}},
+                       {"outputs", Json::array({"resource"})}},
+                      {{"id", "shade"}, {"op", "render.fullscreen"},
+                       {"parameters", Json::object()},
+                       {"inputs", {{"color", {{"node", "shade__color"}, {"port", "resource"}}}}},
+                       {"outputs", Json::array({"color"})}},
+                      {{"id", "post"}, {"op", "render.fullscreen"},
+                       {"parameters", Json::object()},
+                       {"inputs", {{"color", {{"node", "shade"}, {"port", "color"}}}}},
+                       {"outputs", Json::array({"color"})}},
+                      {{"id", "probe"}, {"op", "render.ux1_probe"},
+                       {"parameters", Json::object()},
+                       {"inputs", {{"source", {{"node", "shade__color"}, {"port", "resource"}}}}},
+                       {"outputs", Json::array()}}})},
+        {"definitions", Json::object()},
+        {"layout", Json::object()}};
+    auto read = context(document);
+    read["source_digest"]["hex"] = "gl1e-root";
+    read["root_schema"] = "pelican.graph";
+    read["source_reference"] = "fixture";
+    auto catalog = visualCatalog();
+    catalog["modules"][1]["operations"].push_back(declaredOperation(
+        "render.ux1_probe", "rendering",
+        Json::array({declaredInput("source", "pelican.render.storage_buffer@1")}), Json::array(),
+        true));
+
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    for (int round = 0; round < 4; ++round)
+        for (const auto &request : model.takeRpcRequests()) {
+            if (request.method == "get_graph_instances")
+                model.receiveRpcResult(request.request_id, read.dump());
+            else if (request.method == "get_graph_catalog")
+                model.receiveRpcResult(request.request_id, catalog.dump());
+            else if (request.method == "get_frame_plan")
+                model.receiveRpcResult(request.request_id, gl1ePlan({}).dump());
+            else if (request.method == "get_render_authoring_context")
+                model.receiveRpcResult(request.request_id, gl1eAuthoring({}).dump());
+        }
+    scene.setModel(&model);
+
+    const auto columnOf = [&](const QString &id) {
+        for (QGraphicsItem *item : scene.items())
+            if (item->parentItem() == nullptr &&
+                item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                    QLatin1String{PelicanStudio::GraphCanvasNodeItem} &&
+                item->data(PelicanStudio::NodeGraphNameRole).toString() == id)
+                return item->data(PelicanStudio::GraphCanvasColumnRole).toInt();
+        FAIL("no node " << id.toStdString());
+        return -1;
+    };
+    REQUIRE(scene.property("pelicanGraphFoldedCount").toULongLong() >= 1);
+    CHECK(columnOf(QStringLiteral("shade__color")) == 0);
+    CHECK(columnOf(QStringLiteral("shade")) == 1);
+    CHECK(columnOf(QStringLiteral("post")) == 2);
+    // The sink, one step from its source, and present, with nothing before
+    // it: both in the last column.
+    CHECK(columnOf(QStringLiteral("probe")) == 2);
+    CHECK(columnOf(QStringLiteral("present")) == 2);
+    // And drawn there: no node of the graph is right of them.
+    QGraphicsItem *present = nullptr;
+    QGraphicsItem *post = scopedNode(scene, QString{}, QStringLiteral("post"));
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::GraphCanvasDerivedRole).toBool() &&
+            item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{PelicanStudio::GraphCanvasNodeItem} &&
+            item->data(PelicanStudio::NodeGraphNameRole).toString() == QStringLiteral("present"))
+            present = item;
+    REQUIRE(present != nullptr);
+    REQUIRE(post != nullptr);
+    CHECK(present->scenePos().x() >= post->scenePos().x() - 1.0);
+}
+
+// Decision 7: an engine's refusal can be taken away whole.
+TEST_CASE("UX-1 a notice's Copy message puts the whole message on the clipboard",
+          "[devstudio][graph-canvas][scene][ux1]") {
+    (void)application();
+    RecordedCapability transport;
+    PelicanStudio::GraphCanvasWidget widget{transport.capability()};
+    widget.resize(900, 600);
+    widget.show();
+    QCoreApplication::processEvents();
+    auto *notice = widget.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasNotice"));
+    REQUIRE(notice != nullptr);
+    auto *copy = notice->findChild<QAction *>(QStringLiteral("pelican.panelNotice.copyMessage"));
+    REQUIRE(copy != nullptr);
+    CHECK(copy->text() == QStringLiteral("Copy message"));
+    // Offered on a right-click, and the words can be selected.
+    CHECK(notice->contextMenuPolicy() == Qt::ActionsContextMenu);
+    CHECK(notice->actions().contains(copy));
+    CHECK((notice->textInteractionFlags() & Qt::TextSelectableByMouse) != 0);
+
+    // What the tab shows for an engine refusal: the line cut to fit, the
+    // whole in the tooltip.
+    const QString whole = QString::fromUtf8(
+        "render_pipeline_preflight_failed: Pass input target is not produced as an earlier "
+        "output: present reads shade__color. The pass that writes it runs later. "
+        "\xE2\x80\x94 the graph pass that draws it runs after this pass");
+    notice->setToolTip(whole);
+    notice->setText(PelicanStudio::oneLine(whole));
+    REQUIRE(notice->text() != whole);
+    QGuiApplication::clipboard()->clear();
+    copy->trigger();
+    CHECK(QGuiApplication::clipboard()->text() == whole);
+
+    // A row with no tooltip copies itself; one whose tooltip is a detail
+    // the line does not say copies both.
+    QLabel plain;
+    PelicanStudio::applyPanelNoticeStyle(&plain);
+    plain.setText(QStringLiteral("Saved."));
+    auto *plain_copy = plain.findChild<QAction *>(QStringLiteral("pelican.panelNotice.copyMessage"));
+    REQUIRE(plain_copy != nullptr);
+    plain_copy->trigger();
+    CHECK(QGuiApplication::clipboard()->text() == QStringLiteral("Saved."));
+    plain.setToolTip(QStringLiteral("Written to project://graph.json"));
+    plain_copy->trigger();
+    CHECK(QGuiApplication::clipboard()->text() ==
+          QStringLiteral("Saved.\nWritten to project://graph.json"));
+    // Styled twice, still one entry.
+    PelicanStudio::applyPanelNoticeStyle(&plain);
+    CHECK(plain.actions().size() == 1);
 }

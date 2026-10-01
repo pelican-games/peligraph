@@ -8,8 +8,11 @@
 
 #include "studiotheme.hpp"
 
+#include <QAction>
+#include <QClipboard>
 #include <QCoreApplication>
 #include <QDesktopServices>
+#include <QGuiApplication>
 #include <QDir>
 #include <QFileInfo>
 #include <QLabel>
@@ -75,14 +78,47 @@ inline bool openManualSection(const QString &anchor) {
     return button;
 }
 
+// UX-1, decision 7: the whole of what a notice row says, as it is to be
+// pasted -- the full message its tooltip carries (an engine refusal's code
+// and message) rather than the line cut to fit, and the line followed by
+// its tooltip when the tooltip is a detail the line does not contain.
+[[nodiscard]] inline QString panelNoticeMessage(const QLabel &label) {
+    const QString tip = label.toolTip();
+    const QString line = label.text();
+    if (tip.isEmpty()) return line;
+    if (line.isEmpty()) return tip;
+    // The line is the tooltip's start, cut short: the tooltip is the whole.
+    QString head = line.left(24);
+    if (head.endsWith(QChar{0x2026})) head.chop(1);
+    if (tip.contains(head.trimmed())) return tip;
+    return line + QLatin1Char('\n') + tip;
+}
+
 // A one-line state row: the theme's small size and its dim colour, never a
 // paragraph. `setPanelNotice` is the whole of rule 2 -- an empty state hides
 // the row instead of leaving a blank line behind.
+//
+// UX-1, decision 7: and a row whose words can be taken away -- selected
+// with the mouse, or, from its right-click menu, Copy message, which puts
+// the whole message on the clipboard (panelNoticeMessage) however much of
+// it the row shows. Every panel's notice is styled here, so every one of
+// them can be copied.
 inline void applyPanelNoticeStyle(QLabel *label) {
     if (label == nullptr) return;
     label->setFont(studioSmallFont());
     label->setWordWrap(false);
     label->setTextFormat(Qt::PlainText);
+    label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    const QString name = QStringLiteral("pelican.panelNotice.copyMessage");
+    if (label->findChild<QAction *>(name, Qt::FindDirectChildrenOnly) != nullptr) return;
+    auto *copy = new QAction(QObject::tr("Copy message"), label);
+    copy->setObjectName(name);
+    label->addAction(copy);
+    label->setContextMenuPolicy(Qt::ActionsContextMenu);
+    QObject::connect(copy, &QAction::triggered, label, [label] {
+        if (QClipboard *clipboard = QGuiApplication::clipboard())
+            clipboard->setText(panelNoticeMessage(*label));
+    });
 }
 
 // Rule 2 again, for the messages a panel does not write itself: the first

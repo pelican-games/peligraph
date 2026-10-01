@@ -63,7 +63,9 @@
         "dim_text": "#cfdae4",
         "pill_bg": "#3a444f",
         "derived_border": "#7d8a97",
-        "derived_body": "#22282f"
+        "derived_body": "#22282f",
+        "tab_selected": "#f2c14e",
+        "tab_selected_text": "#1b2027"
       },
       "domain_tint": {
         "values": "#3d6b4d",
@@ -107,7 +109,9 @@
         "dim_text": "#3a4650",
         "pill_bg": "#d3dce5",
         "derived_border": "#7a8794",
-        "derived_body": "#eef2f6"
+        "derived_body": "#eef2f6",
+        "tab_selected": "#2f6fb5",
+        "tab_selected_text": "#ffffff"
       },
       "domain_tint": {
         "values": "#9fcbaf",

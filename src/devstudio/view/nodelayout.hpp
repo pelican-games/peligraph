@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -78,6 +79,12 @@ struct LayoutOptions {
     // stub one column outside the window -- and that rule is the Frame Plan's
     // to keep. A node missing from the map lands in column 0.
     LayoutColumns columns;
+    // UX-1, decision 6: the graph's ends -- what writes to the screen, a
+    // sink -- which stand in the last column however short the path to
+    // them is. Each named node, and everything that follows it, is moved
+    // right as far as it goes: to the last column less the longest path out
+    // of it, never left of the column it had, so no edge turns round.
+    std::set<std::string, std::less<>> last_column;
 };
 
 struct NodeGraphLayout {
