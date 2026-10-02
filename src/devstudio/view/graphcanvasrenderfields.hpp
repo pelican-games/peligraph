@@ -127,8 +127,30 @@ class GraphCanvasImageFields final : public QWidget {
     // made when that changes.
     [[nodiscard]] bool valuePending() const noexcept { return held_->pending(); }
     void setPendingChanged(std::function<void()> changed) { held_->setChanged(std::move(changed)); }
+    // IA-1s, decisions 1 and 4: the project whose images Initial contents
+    // lists, and where Import... copies to.
+    void setProjectRoot(const std::filesystem::path &project_root);
+    // IA-1s, decision 4: what Import... does with the files picked: each is
+    // copied into the project's assets/images (a .hdr is baked into a .ktx2
+    // by `pelican_cli image ktx2 --hdr`, run as a child process), and the
+    // first is the selected image's Initial contents. A failure is the
+    // Graph's notice.
+    void importImages(const std::vector<std::filesystem::path> &files);
 
   private:
+    // IA-1s, decision 1: the image's `initial`, and its size taken from it.
+    void loadInitial(const nlohmann::json &parameters);
+    void commitInitial(const std::string &asset);
+    void commitFromImage(bool from_image);
+    void chooseImages();
+    void bakeHdr(const GraphCanvasImageImport &imported);
+    void importNotice(InspectorNoticeKind kind, const std::string &line);
+    [[nodiscard]] std::optional<GraphCanvasImageExtent> assetExtent(const std::string &asset) const;
+    std::filesystem::path project_root_;
+    QComboBox *initial_ = nullptr;
+    QPushButton *import_ = nullptr;
+    QCheckBox *from_image_ = nullptr;
+    QWidget *initial_row_ = nullptr;
     // UX-9, decision 2: before the fields let go of the node, a size, a
     // layer or mip count, an expression, a format or usage typed and not yet
     // confirmed is sent for it (or held while the model is busy).

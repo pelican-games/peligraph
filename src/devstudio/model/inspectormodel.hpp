@@ -203,8 +203,10 @@ modelReferenceChoices(std::string_view current,
 // preparing a graph edit arrives as render_pipeline_preflight_failed with
 // "audio.format_unsupported@1 {...}" as the message. Answers the table's
 // "<sentence> (<code>)", or empty when neither names a code Studio knows.
+// IA-1s, decision 6: `name_document` as for graphLoopRefusalDescription.
 [[nodiscard]] std::string knownRefusalDescription(std::string_view code,
-                                                  std::string_view message);
+                                                  std::string_view message,
+                                                  bool name_document = true);
 // LP-4a: the four view_select refusals (LP-Va) are sentences made from the
 // refusal's own fields -- the pass, the view family, the axis, and for a
 // value past the axis its value and length:
@@ -233,7 +235,19 @@ modelReferenceChoices(std::string_view current,
 // the fields beside the code, in `error_fields`, or in the message after the
 // code ("<code> {...}" as the engine writes it, or "<code>: {...}"). Answers
 // "<sentence> (<code>).", or empty for any other refusal.
-[[nodiscard]] std::string graphLoopRefusalDescription(const nlohmann::json &error);
+// IA-1s, decision 6 (engine CT-2): a graph.* refusal names the document its
+// node was written in (`document`) and, for a node of a definition body, the
+// definition (`definition`); with `name_document` they read as
+// "<sentence> (in definition <d> of <document>, <code>).", or "(in
+// <document>, <code>)." for a root node, the document without project://. A sentence that names a definition
+// of its own (graph.definition_*) is not given the other.
+[[nodiscard]] std::string graphLoopRefusalDescription(const nlohmann::json &error,
+                                                      bool name_document = true);
+// A string field of a refusal's fields (`document`, `definition`); empty
+// when it has none. A `document` reads without its project:// (as the
+// project names it: "passes/main.json").
+[[nodiscard]] std::string graphRefusalSource(const nlohmann::json &fields,
+                                             std::string_view key);
 // UX-8, decision 13 (c) (engine CT-1): the engine could not read its
 // configuration at start and stopped. Its fatal line ("Pelican fatal error :
 // <message>") reads as "The engine stopped: <the code's sentence> in <file>.
@@ -245,6 +259,9 @@ modelReferenceChoices(std::string_view current,
 // ("Pelican fatal error : graph.port_field_missing@1 {...}"), so a file
 // the caller knows -- the render document the project names,
 // projectRenderDocument -- stands in for it before the fallback.
+// IA-1s, decision 6 (engine CT-2): a graph.* refusal's own `document` (and
+// `definition`, "in definition <d> of <document>") comes first; the .json
+// path in the message and then `render_document` only when it names none.
 [[nodiscard]] std::string engineStoppedSentence(std::string_view fatal_line,
                                                 std::string_view render_document = {});
 // The render document project.json names (basic_config.rendering_config_json,

@@ -204,6 +204,19 @@ struct FramePlanLoopOrigin {
     bool operator==(const FramePlanLoopOrigin &) const = default;
 };
 
+// IA-1s, decision 3 (engine IA-1): the asset a persistent image starts from,
+// as physical_target_plan.resources[].initial_asset names it, and its sha256
+// in the asset store's manifest (nullopt when the manifest does not list it).
+struct FramePlanInitialAsset {
+    std::string asset;
+    std::optional<std::string> sha256;
+
+    bool operator==(const FramePlanInitialAsset &) const = default;
+};
+// "initial: <asset> - sha256 <first 8>" or "initial: <asset> - not in the
+// manifest", as the Resources row says it.
+[[nodiscard]] std::string framePlanInitialAssetLine(const FramePlanInitialAsset &initial);
+
 // UX-5c: a loop's output a pass of the rendering section names as
 // `<loop>.<output>` (RS-13), and the resource it read this frame: the last
 // element's (`loop/3/...`).
@@ -417,6 +430,8 @@ struct FramePlanResource {
     // GL-2a: the frame plan nodes physical_target_plan.resources[] names
     // for it (its readers, writers and attachments), in the plan's order.
     std::vector<std::string> from_nodes;
+    // IA-1s, decision 3: the asset it starts from; nullopt for none.
+    std::optional<FramePlanInitialAsset> initial_asset;
 
     bool operator==(const FramePlanResource &) const = default;
 };

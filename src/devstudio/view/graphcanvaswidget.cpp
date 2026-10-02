@@ -4910,6 +4910,17 @@ struct GraphCanvasWidget::Impl {
     // passes read, and the set last handed to it.
     using ShaderSources = std::map<std::string, std::vector<std::filesystem::path>, std::less<>>;
     std::function<void(ShaderSources)> shader_sources_action;
+    // IA-1s, decision 5: the initial assets the document's images start
+    // from, to the window's reload watch.
+    std::function<void(std::vector<std::string>)> initial_assets_action;
+    std::optional<std::vector<std::string>> published_initial_assets;
+    void publishInitialAssets() {
+        if (!initial_assets_action) return;
+        auto assets = model.initialAssets();
+        if (published_initial_assets == assets) return;
+        published_initial_assets = assets;
+        initial_assets_action(std::move(assets));
+    }
     std::optional<ShaderSources> published_shader_sources;
     std::uint64_t told_plan_commit = 0;
     // --- GL-1e: a rendering-section pass's input edit, sent from here as
@@ -7773,6 +7784,7 @@ struct GraphCanvasWidget::Impl {
             rendered_placement = model.placementRevision();
             publishEngineShaders();
             publishShaderSources();
+            publishInitialAssets();
             // EL-5s: the compute nodes' shaders, read and watched.
             followComputeShaders();
             // Q-5: a read that only moved the placement -- the reply to the
@@ -8233,7 +8245,10 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
     impl_->project_root = project_root;
     impl_->pass_fields->setProjectRoot(project_root);
     impl_->value_fields->setProjectRoot(project_root);
+    impl_->image_fields->setProjectRoot(project_root);
     impl_->publishShaderSources();
+    impl_->published_initial_assets.reset();
+    impl_->publishInitialAssets();
     impl_->reloadUiNodes();
     impl_->reloadAudioAssets();
     impl_->audio_row_node.clear();
@@ -8260,6 +8275,13 @@ void GraphCanvasWidget::setShaderSourcesAction(
     impl_->shader_sources_action = std::move(action);
     impl_->published_shader_sources.reset();
     impl_->publishShaderSources();
+}
+
+void GraphCanvasWidget::setInitialAssetsAction(
+    std::function<void(std::vector<std::string>)> action) {
+    impl_->initial_assets_action = std::move(action);
+    impl_->published_initial_assets.reset();
+    impl_->publishInitialAssets();
 }
 
 void GraphCanvasWidget::shadersReloaded() {

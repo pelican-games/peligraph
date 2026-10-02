@@ -39,6 +39,14 @@ namespace PelicanStudio {
 //      refusals read it through knownRefusalDescription), and "Reload from
 //      disk" (reloadNow) asks whatever the digests say.
 //
+// IA-1s, decision 5: the assets the document's images start from
+// (`initial.asset`, setInitialAssets) are watched beside the documents. A
+// change to one asks reload_render_documents as a document's does; an
+// engine that compares them too (IA-2) says `changed_assets` and the notice
+// is "Picked up the change to <asset>.", one that does not answers
+// no_change and the notice says "<asset> changed -- the engine reads it on its
+// next start." (Information).
+//
 // Qt-free: the transport sends a request and answers its id, and every reply
 // comes back through receiveResult / receiveFailure.
 class RenderDocumentReload {
@@ -118,8 +126,16 @@ class RenderDocumentReload {
     [[nodiscard]] const std::map<std::string, Document> &documents() const noexcept {
         return documents_;
     }
-    // The files to watch, one per document.
+    // The files to watch, one per document and one per initial asset.
     [[nodiscard]] std::vector<std::filesystem::path> watchedFiles() const;
+    // IA-1s, decision 5: the initial assets to watch, as the document
+    // writes them (project-relative or project://). One already watched
+    // keeps the digest last seen for it; a new one starts from what is on
+    // disk now. A project open keeps the list for the new root.
+    void setInitialAssets(const std::vector<std::string> &references);
+    [[nodiscard]] const std::map<std::string, Document> &initialAssets() const noexcept {
+        return assets_;
+    }
     [[nodiscard]] bool reloadInFlight() const noexcept {
         return reload_request_ != 0 || poll_request_ != 0 || !ticket_.empty() || retrying_;
     }
@@ -139,6 +155,12 @@ class RenderDocumentReload {
     Transport transport_;
     std::filesystem::path project_root_;
     std::map<std::string, Document> documents_;
+    // IA-1s, decision 5: the initial assets, by reference as written, and
+    // those that differed when the reload in flight was asked for.
+    std::vector<std::string> asset_references_;
+    std::map<std::string, Document> assets_;
+    std::vector<std::string> differing_assets_;
+    void placeAssets();
     std::int64_t list_request_ = 0;
     std::int64_t reload_request_ = 0;
     std::int64_t poll_request_ = 0;

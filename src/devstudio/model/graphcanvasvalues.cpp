@@ -642,4 +642,145 @@ GraphCanvasAudioImport importProjectAudio(const std::filesystem::path &project_r
     return result;
 }
 
+// --- IA-1s, decisions 1 and 4: the images a render.image starts from.
+
+namespace {
+
+std::string lowerExtension(const std::filesystem::path &file) {
+    auto extension = file.extension().string();
+    std::ranges::transform(extension, extension.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return extension;
+}
+
+// The first free `<stem>[_N]<extension>` in `folder`.
+std::optional<std::string> freeName(const std::filesystem::path &folder, const std::string &stem,
+                                    const std::string &extension) {
+    auto name = stem + extension;
+    for (int suffix = 2; std::filesystem::exists(folder / name) && suffix < 10000; ++suffix)
+        name = stem + "_" + std::to_string(suffix) + extension;
+    if (std::filesystem::exists(folder / name)) return std::nullopt;
+    return name;
+}
+
+} // namespace
+
+GraphCanvasImageAssetsRead readProjectImageAssets(const std::filesystem::path &project_root) {
+    GraphCanvasImageAssetsRead read;
+    if (project_root.empty()) {
+        read.error = "no project is open";
+        return read;
+    }
+    std::error_code error;
+    std::filesystem::recursive_directory_iterator walk{
+        project_root, std::filesystem::directory_options::skip_permission_denied, error};
+    if (error) {
+        read.error = "the project folder could not be read: " + error.message();
+        return read;
+    }
+    try {
+        for (auto end = std::filesystem::recursive_directory_iterator{}; walk != end;
+             walk.increment(error)) {
+            if (error) break;
+            const auto &entry = *walk;
+            std::error_code kind;
+            if (entry.is_directory(kind)) {
+                const auto name = entry.path().filename().u8string();
+                if (!name.empty() && name.front() == u8'.') walk.disable_recursion_pending();
+                continue;
+            }
+            const auto extension = lowerExtension(entry.path());
+            if (extension != ".ktx2" && extension != ".png") continue;
+            const auto relative = entry.path().lexically_relative(project_root).generic_u8string();
+            if (relative.empty() || relative.starts_with(u8"..")) continue;
+            read.assets.emplace_back(relative.begin(), relative.end());
+        }
+    } catch (const std::exception &caught) {
+        read.error = std::string{"the project folder could not be read: "} + caught.what();
+    }
+    std::ranges::sort(read.assets);
+    if (read.assets.empty() && read.error.empty())
+        read.error = "no .ktx2 or .png file in the project";
+    return read;
+}
+
+std::optional<GraphCanvasImageExtent> readImageAssetExtent(const std::filesystem::path &file) {
+    std::ifstream input{file, std::ios::binary};
+    if (!input) return std::nullopt;
+    std::array<unsigned char, 32> header{};
+    input.read(reinterpret_cast<char *>(header.data()), static_cast<std::streamsize>(header.size()));
+    if (input.gcount() < 28) return std::nullopt;
+    const auto little = [&](std::size_t at) {
+        return std::uint32_t{header[at]} | std::uint32_t{header[at + 1]} << 8 |
+               std::uint32_t{header[at + 2]} << 16 | std::uint32_t{header[at + 3]} << 24;
+    };
+    const auto big = [&](std::size_t at) {
+        return std::uint32_t{header[at]} << 24 | std::uint32_t{header[at + 1]} << 16 |
+               std::uint32_t{header[at + 2]} << 8 | std::uint32_t{header[at + 3]};
+    };
+    // KTX2: the identifier, vkFormat, typeSize, then pixelWidth and pixelHeight.
+    constexpr std::array<unsigned char, 12> ktx2{0xAB, 'K', 'T', 'X', ' ', '2', '0',
+                                                 0xBB, '\r', '\n', 0x1A, '\n'};
+    if (std::equal(ktx2.begin(), ktx2.end(), header.begin())) {
+        GraphCanvasImageExtent extent{little(20), little(24)};
+        // A 2D image's height is never 0; a 1D one is one row.
+        if (extent.height == 0) extent.height = 1;
+        if (extent.width == 0) return std::nullopt;
+        return extent;
+    }
+    // PNG: the signature, then IHDR's width and height.
+    constexpr std::array<unsigned char, 8> png{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+    if (std::equal(png.begin(), png.end(), header.begin())) {
+        GraphCanvasImageExtent extent{big(16), big(20)};
+        if (extent.width == 0 || extent.height == 0) return std::nullopt;
+        return extent;
+    }
+    return std::nullopt;
+}
+
+GraphCanvasImageImport importProjectImage(const std::filesystem::path &project_root,
+                                          const std::filesystem::path &file) {
+    GraphCanvasImageImport result;
+    if (project_root.empty()) {
+        result.error = "No project is open.";
+        return result;
+    }
+    const auto extension = lowerExtension(file);
+    if (extension != ".ktx2" && extension != ".png" && extension != ".hdr") {
+        result.error = file.filename().string() + " is not a .ktx2, .png or .hdr file.";
+        return result;
+    }
+    const auto folder = project_root / "assets" / "images";
+    std::error_code error;
+    std::filesystem::create_directories(folder, error);
+    if (error) {
+        result.error = "Could not make " + folder.generic_string() + ": " + error.message();
+        return result;
+    }
+    const auto stem = file.stem().string();
+    const auto name = freeName(folder, stem, file.extension().string());
+    if (!name) {
+        result.error = "No free name for " + file.filename().string() + ".";
+        return result;
+    }
+    std::filesystem::copy_file(file, folder / *name, std::filesystem::copy_options::none, error);
+    if (error) {
+        result.error = "Could not copy " + file.filename().string() + ": " + error.message();
+        return result;
+    }
+    if (extension != ".hdr") {
+        result.reference = "assets/images/" + *name;
+        return result;
+    }
+    // The engine reads no .hdr: it is baked into an RGBA32F .ktx2 beside it.
+    const auto baked = freeName(folder, std::filesystem::path{*name}.stem().string(), ".ktx2");
+    if (!baked) {
+        result.error = "No free name for the .ktx2 of " + file.filename().string() + ".";
+        return result;
+    }
+    result.reference = "assets/images/" + *baked;
+    result.convert = GraphCanvasImageImport::Conversion{folder / *name, folder / *baked};
+    return result;
+}
+
 } // namespace PelicanStudio

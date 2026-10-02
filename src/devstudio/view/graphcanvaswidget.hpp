@@ -993,6 +993,10 @@ class GraphCanvasWidget final : public QWidget {
         std::function<void(std::map<std::string, std::vector<std::filesystem::path>, std::less<>>)>
             action);
     void shadersReloaded();
+    // IA-1s, decision 5: the assets the document's render.image nodes start
+    // from (`initial.asset`, GraphCanvasModel::initialAssets), handed to
+    // `action` each time the document changes them.
+    void setInitialAssetsAction(std::function<void(std::vector<std::string>)> action);
     // RL-1s. The render documents were read again from disk: the Graph's
     // own Undo history ends here (what it holds inverts a document that is
     // no longer the one on disk), and the document is read again.

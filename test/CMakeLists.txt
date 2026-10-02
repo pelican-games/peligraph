@@ -3509,6 +3509,12 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
                 set(pelican_studio_scenario_game_logic
                     "-DGAME_LOGIC=$<TARGET_FILE:pelican_studio_${pelican_studio_scenario_name}_game_logic>")
             endif()
+            # IA-1s: a scenario's <name>.prepare.py makes, with the CLI, what
+            # a person makes outside Studio before opening it.
+            set(pelican_studio_scenario_cli)
+            if(TARGET pelican_cli)
+                set(pelican_studio_scenario_cli "-DCLI=$<TARGET_FILE:pelican_cli>")
+            endif()
             add_test(
                 NAME studio_scenario_${pelican_studio_scenario_name}
                 COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
@@ -3521,6 +3527,7 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
                     -DPYTHON=${Python3_EXECUTABLE}
                     -DQT_BIN_DIR=$<TARGET_FILE_DIR:Qt6::Core>
                     ${pelican_studio_scenario_game_logic}
+                    ${pelican_studio_scenario_cli}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_studio_scenario.cmake
             )
             set_property(TEST studio_scenario_${pelican_studio_scenario_name}

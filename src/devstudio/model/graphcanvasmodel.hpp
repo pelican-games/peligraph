@@ -2426,6 +2426,13 @@ class GraphCanvasModel {
     // Decision 2: a render.image with `lifetime: "persistent"` (its band
     // says `persistent`).
     [[nodiscard]] bool persistentImage(std::string_view scope, std::string_view node) const;
+    // IA-1s, decision 1: the asset a render.image starts from
+    // (`initial: {asset}`), empty for none.
+    [[nodiscard]] std::string imageInitialAsset(std::string_view scope, std::string_view node) const;
+    // IA-1s, decision 5: every initial asset the document's images start
+    // from, in the root and in each definition body, as written; sorted, once
+    // each.
+    [[nodiscard]] std::vector<std::string> initialAssets() const;
     // Decision 4. rerun_once {node} (empty: every once node); a node of a
     // loop's body asks for its loop, whose copies the plan has. The plan is
     // read again until the scheduled passes say they ran.
@@ -2660,5 +2667,42 @@ struct GraphCanvasAudioImport {
 };
 GraphCanvasAudioImport importProjectAudio(const std::filesystem::path &project_root,
                                           const std::vector<std::filesystem::path> &files);
+
+// IA-1s, decision 1: the images a render.image can start from -- the
+// project's .ktx2 and .png files (any case), named as `initial.asset` names
+// them: relative to the project root ("assets/images/ltc.ktx2"). Dot
+// directories are skipped. Sorted; `error` says why there are none.
+struct GraphCanvasImageAssetsRead {
+    std::vector<std::string> assets;
+    std::string error;
+};
+GraphCanvasImageAssetsRead readProjectImageAssets(const std::filesystem::path &project_root);
+
+// The width and height a KTX2 or PNG file declares in its header; nullopt for
+// another file or one that cannot be read.
+struct GraphCanvasImageExtent {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    bool operator==(const GraphCanvasImageExtent &) const = default;
+};
+std::optional<GraphCanvasImageExtent> readImageAssetExtent(const std::filesystem::path &file);
+
+// IA-1s, decision 4: an image file copied into the project's assets/images,
+// under its own name or `_2`, `_3`... when that is taken (nothing is
+// overwritten). A .ktx2 or .png is `reference` itself; a .hdr is copied and
+// `convert` says what to run: `pelican_cli image ktx2 --hdr <hdr> --out
+// <ktx2>`, the .ktx2 being `reference` (a free name too). `error` says why
+// nothing was copied.
+struct GraphCanvasImageImport {
+    std::string reference;
+    struct Conversion {
+        std::filesystem::path hdr;
+        std::filesystem::path ktx2;
+    };
+    std::optional<Conversion> convert;
+    std::string error;
+};
+GraphCanvasImageImport importProjectImage(const std::filesystem::path &project_root,
+                                          const std::filesystem::path &file);
 
 } // namespace PelicanStudio

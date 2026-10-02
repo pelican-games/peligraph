@@ -7900,6 +7900,26 @@ bool GraphCanvasModel::persistentImage(std::string_view scope, std::string_view 
     return parameters.is_object() && text(parameters, "lifetime") == "persistent";
 }
 
+std::string GraphCanvasModel::imageInitialAsset(std::string_view scope, std::string_view node) const {
+    const auto *found = findNode(scope, node);
+    if (found == nullptr || text(*found, "op") != "render.image") return {};
+    const auto parameters = found->value("parameters", Json::object());
+    if (!parameters.is_object()) return {};
+    const auto initial = parameters.find("initial");
+    return initial != parameters.end() && initial->is_object() ? text(*initial, "asset")
+                                                               : std::string{};
+}
+
+std::vector<std::string> GraphCanvasModel::initialAssets() const {
+    std::set<std::string> assets;
+    for (const auto &scope : scopes())
+        for (const auto &node : nodes(scope.id))
+            if (node.op == "render.image")
+                if (auto asset = imageInitialAsset(scope.id, node.id); !asset.empty())
+                    assets.insert(std::move(asset));
+    return {assets.begin(), assets.end()};
+}
+
 bool GraphCanvasModel::rerunOnce(std::string_view scope, const std::string &node) {
     if (!connected_) return false;
     // A body node is no node of the plan; its loop is, and runs its copies.

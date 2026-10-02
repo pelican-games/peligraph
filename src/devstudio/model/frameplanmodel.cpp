@@ -1756,6 +1756,20 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
             resource.resolve_required =
                 optionalBoolField(value, "resolve_required", context);
             resource.from_nodes = stringArray(value, "from_nodes", context);
+            // IA-1s, decision 3: absent or null for an image that starts
+            // from nothing (and in a plan from before IA-1).
+            if (const auto initial = value.find("initial_asset");
+                initial != value.end() && !initial->is_null()) {
+                if (!initial->is_object())
+                    throw invalid(context + ".initial_asset must be an object or null");
+                FramePlanInitialAsset asset;
+                asset.asset = requireStringField(*initial, "asset",
+                                                 context + ".initial_asset");
+                if (const auto sha = initial->find("sha256");
+                    sha != initial->end() && sha->is_string())
+                    asset.sha256 = sha->get<std::string>();
+                resource.initial_asset = std::move(asset);
+            }
             if (const auto extent = value.find("extent");
                 extent != value.end() && !extent->is_null()) {
                 resource.extent = parseExtent(*extent, context + ".extent");
@@ -2038,6 +2052,12 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
 bool materialContractTakesDeferredRoute(std::string_view contract) {
     return contract.empty() || contract == "deferred_geometry_v1" ||
            contract == "legacy_gbuffer_v1";
+}
+
+std::string framePlanInitialAssetLine(const FramePlanInitialAsset &initial) {
+    return "initial: " + initial.asset + " \xC2\xB7 " +
+           (initial.sha256 ? "sha256 " + initial.sha256->substr(0, 8)
+                           : std::string{"not in the manifest"});
 }
 
 bool materialRouteOffersForwardDefault(std::string_view contract,

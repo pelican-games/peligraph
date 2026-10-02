@@ -414,5 +414,88 @@ TEST_CASE("RL-1s decision 5: while the file stays refused, external_modification
     CHECK(knownRefusalDescription("external_modification", engine).empty());
 }
 
+
+TEST_CASE("IA-1s decision 5: the images' initial assets are watched; changed_assets says it was "
+          "picked up, an engine without it that it is read on the next start",
+          "[devstudio][render_reload][ia1s]") {
+    Rig rig;
+    rig.opened();
+    const std::string Lut = "assets/images/ltc_1.ktx2";
+    const auto lut = (Project / Lut).lexically_normal();
+    const std::string LutA(64, 'd');
+    const std::string LutB(64, 'e');
+    rig.disk[lut] = LutA;
+    const auto watched_before = rig.watch_changes;
+    rig.reload.setInitialAssets({Lut});
+    CHECK(rig.watch_changes > watched_before);
+    auto files = rig.reload.watchedFiles();
+    CHECK(files.size() == 3);
+    CHECK(std::find(files.begin(), files.end(), lut) != files.end());
+    // Nothing changed yet: a check asks nothing.
+    const auto quiet = rig.sent.size();
+    rig.saved(lut, LutA);
+    CHECK(rig.sent.size() == quiet);
+    const Json documents{{Root, RootA}, {Fragment, FragmentA}};
+
+    SECTION("an engine before IA-2: no_change, and the notice says when it is read") {
+        rig.saved(lut, LutB);
+        auto commit = Rig::committed(documents, Json::array());
+        commit["no_change"] = true;
+        rig.ticket(commit);
+        CHECK(rig.reloads.empty());
+        REQUIRE_FALSE(rig.notices.empty());
+        CHECK(rig.notices.back().kind == Notice::Kind::Information);
+        CHECK(rig.notices.back().line ==
+              "assets/images/ltc_1.ktx2 changed \xE2\x80\x94 the engine reads it on its next start.");
+        // Seen: the same bytes again ask nothing.
+        const auto before = rig.sent.size();
+        rig.saved(lut, LutB);
+        CHECK(rig.sent.size() == before);
+    }
+    SECTION("IA-2: the engine read it again") {
+        rig.saved(lut, LutB);
+        // As IA-2 answers an asset-only change: changed empty, no no_change.
+        auto commit = Rig::committed(documents, Json::array());
+        commit["changed_assets"] = Json::array({Lut});
+        rig.ticket(commit);
+        CHECK(rig.reloads.size() == 1);
+        REQUIRE_FALSE(rig.notices.empty());
+        CHECK(rig.notices.back().kind == Notice::Kind::Success);
+        CHECK(rig.notices.back().line == "Picked up the change to assets/images/ltc_1.ktx2.");
+        // Nothing changed since: IA-2 says no_change and an empty list.
+        rig.reload.reloadNow();
+        auto unchanged = Rig::committed(documents, Json::array());
+        unchanged["no_change"] = true;
+        unchanged["changed_assets"] = Json::array();
+        rig.ticket(unchanged);
+        CHECK(rig.reloads.size() == 1);
+    }
+    SECTION("IA-2: an asset that no longer fits its image is refused by name") {
+        rig.saved(lut, LutB);
+        rig.ticket(Json{{"ticket", "render-config-reload-1"},
+                        {"status", "rejected"},
+                        {"error",
+                         {{"code", "graph.image_initial_mismatch@1"},
+                          {"message", "graph.image_initial_mismatch@1"},
+                          {"node", "render_image"},
+                          {"asset", Lut},
+                          {"what", "extent"},
+                          {"expected", {{"width", 64}, {"height", 64}, {"format", nullptr}}},
+                          {"actual", {{"width", 32}, {"height", 32}, {"format", "R32G32B32A32_SFLOAT"}}},
+                          {"document", "project://passes/main_rendering_config.json"}}}});
+        REQUIRE_FALSE(rig.notices.empty());
+        CHECK(rig.notices.back().kind == Notice::Kind::Error);
+        CHECK(rig.notices.back().line == "Could not load ltc_1.ktx2: fix the file and save again.");
+        CHECK(rig.notices.back().detail.starts_with(
+            "assets/images/ltc_1.ktx2 is 32\xC3\x97"
+            "32 but render_image is 64\xC3\x97"
+            "64"));
+        CHECK(rig.reloads.empty());
+    }
+    // An image that no longer starts from it: no longer watched.
+    rig.reload.setInitialAssets({});
+    files = rig.reload.watchedFiles();
+    CHECK(std::find(files.begin(), files.end(), lut) == files.end());
+}
 } // namespace
 } // namespace PelicanStudio

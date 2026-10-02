@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_build_ltc",
-  "description": "GB-3 target B (a rectangular area light with linearly transformed cosines), from File > New Project > Blank with Studio's GUI only. As gui_build_D: a deferred_geometry_v1 material pass from the palette, a Cube and a Floor, Add fullscreen pass, Uses scene lights, New... > Deferred lighting > Create (the G-buffer wired by the template), its colour onto present's + input. The LTC lighting is written into the project as shaders/ltc_lighting.frag (an editor of one's own) and picked from the pass's Fragment list. The fitted LTC tables are not used (no way to load an image file into a render target): the GGX lobe is a normalised clamped cosine about the mirror direction; the rectangle's corners are constants in the shader (a render.scalar, value.constant or value.input from the palette is refused for its missing target / value / name, which no field writes); its radiance is the KeyLight's colour times intensity. Pixels: the floor where the light is mirrored is not the template's colour, and the points left and right of the reflection are not its colour (the reflection keeps the light's shape); Intensity 2 typed in the Inspector changes the reflection. Typed: the project folder and name, material_pass in the palette's filter, and 2 in the light's intensity.",
+  "description": "GB-3 target B (a rectangular area light with linearly transformed cosines), from File > New Project > Blank with Studio's GUI only. As gui_build_D: a deferred_geometry_v1 material pass from the palette, a Cube and a Floor, Add fullscreen pass, Uses scene lights, New... > Deferred lighting > Create (the G-buffer wired by the template), its colour onto present's + input. The LTC lighting is written into the project as shaders/ltc_lighting.frag (an editor of one's own) and picked from the pass's Fragment list: first without the fitted tables (the GGX lobe a normalised clamped cosine about the mirror direction), then (IA-1s) with them: two 64x64 RGBA32F tables made outside Studio before it starts (gui_build_ltc.prepare.py writes raw floats from a closed form -- ltc_1 = (1, 0, min(tan theta, 4)(1 - a), a), ltc_2 = (1 - a/2, (1 - cos theta)^5 / 4, 0, 1), a = max(r^2, 0.02) -- and bakes them with pelican_cli image ktx2 --raw; no published table), two render.image nodes from the palette, R32G32B32A32_SFLOAT, no COLOR_ATTACHMENT, Persistent, Import... of each table into assets/images (its Initial contents, its size from the image), shaders/ltc_lut.frag picked and the tables dragged onto its declarations 5 and 6. The rectangle's corners are constants in the shader; its radiance is the KeyLight's colour times intensity. Pixels: the floor where the light is mirrored is not the template's colour, the points left and right of the reflection are not its colour (the reflection keeps the light's shape), with and without the tables; the tables change the reflection; Intensity 2 typed in the Inspector changes it. Last, table 2 baked again outside Studio (ltc_2_rebaked) is copied over the project's: the watch asks reload_render_documents, the engine copies it in again (IA-2, changed_assets) and the reflection changes (IA-1s decision 5). Typed: the project folder and name, material_pass and render.image in the palette's filter, the tables' paths in the import dialog, and 2 in the light's intensity.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -661,6 +661,734 @@
       "value_of": "reflection"
     },
     {
+      "label": "IA-1s decision 7: the LTC tables were made outside Studio (gui_build_ltc.prepare.py: raw floats from a closed form, baked by pelican_cli image ktx2 --raw)",
+      "file": "exists",
+      "path": "{artifacts}/incoming/ltc_1.ktx2",
+      "value": true
+    },
+    {
+      "label": "and the second table",
+      "file": "exists",
+      "path": "{artifacts}/incoming/ltc_2.ktx2",
+      "value": true
+    },
+    {
+      "label": "the Graph tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the canvas can edit",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "Add: the palette opens (an image for table 1)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "timeout_ms": 10000,
+      "visible": true
+    },
+    {
+      "label": "the filter: render.image",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "render.image"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the palette closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "timeout_ms": 10000,
+      "missing": true
+    },
+    {
+      "label": "the image is the document's node 10",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[10].id",
+      "value": "render_image",
+      "retry_ms": 60000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick render_image",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_image"
+    },
+    {
+      "label": "its format field can be used",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.format",
+      "timeout_ms": 60000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "decision 1: per frame, Initial contents is off",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.initial",
+      "timeout_ms": 30000,
+      "visible": true,
+      "enabled": false
+    },
+    {
+      "label": "32-bit float RGBA, picked: the table's format",
+      "cmd": "select",
+      "name": "pelican.graphCanvasImage.format",
+      "text": "R32G32B32A32_SFLOAT"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the field reads the document back",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.format",
+      "timeout_ms": 60000,
+      "enabled": true,
+      "text": "R32G32B32A32_SFLOAT"
+    },
+    {
+      "label": "its usage takes input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.usage.COLOR_ATTACHMENT",
+      "timeout_ms": 60000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "Usage: no COLOR_ATTACHMENT (nothing draws into a table)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasImage.usage.COLOR_ATTACHMENT"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "its Lifetime takes input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.lifetime",
+      "timeout_ms": 60000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "Lifetime: Persistent",
+      "cmd": "select",
+      "name": "pelican.graphCanvasImage.lifetime",
+      "text": "Persistent"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "decision 4: Import... beside Initial contents, on now",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.import",
+      "timeout_ms": 60000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "Import...",
+      "cmd": "click",
+      "name": "pelican.graphCanvasImage.import"
+    },
+    {
+      "label": "the import dialog",
+      "cmd": "wait",
+      "name": "pelican.imageImportDialog",
+      "timeout_ms": 20000,
+      "visible": true
+    },
+    {
+      "label": "table 1's path (made outside Studio)",
+      "cmd": "type",
+      "name": "pelican.imageImportDialog.fileName",
+      "text": "{artifacts}/incoming/ltc_1.ktx2"
+    },
+    {
+      "label": "Return opens it",
+      "cmd": "key",
+      "name": "pelican.imageImportDialog.fileName",
+      "sequence": "Return"
+    },
+    {
+      "label": "the dialog's loop ends",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "contains": "zz-never-shown",
+      "timeout_ms": 400,
+      "expect_error": "automation.wait_timeout@1"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.imageImportDialog",
+      "timeout_ms": 20000,
+      "missing": true
+    },
+    {
+      "label": "copied into assets/images, and the image starts from it (initial.asset)",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[10].parameters.initial.asset",
+      "value": "assets/images/ltc_1.ktx2",
+      "retry_ms": 60000
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the copy is in the project",
+      "file": "exists",
+      "path": "{artifacts}/gb_ltc/assets/images/ltc_1.ktx2",
+      "value": true
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick render_image",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_image"
+    },
+    {
+      "label": "decision 1: Initial contents reads it back",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.initial",
+      "timeout_ms": 30000,
+      "visible": true,
+      "text": "assets/images/ltc_1.ktx2"
+    },
+    {
+      "label": "and its size is the image's",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.fromImage",
+      "timeout_ms": 30000,
+      "visible": true,
+      "contains": "64 × 64"
+    },
+    {
+      "label": "Add: the palette opens (an image for table 2)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "timeout_ms": 10000,
+      "visible": true
+    },
+    {
+      "label": "the filter: render.image",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "render.image"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the palette closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "timeout_ms": 10000,
+      "missing": true
+    },
+    {
+      "label": "the image is the document's node 11",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[11].id",
+      "value": "render_image_2",
+      "retry_ms": 60000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick render_image_2",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_image_2"
+    },
+    {
+      "label": "its format field can be used",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.format",
+      "timeout_ms": 60000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "decision 1: per frame, Initial contents is off",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.initial",
+      "timeout_ms": 30000,
+      "visible": true,
+      "enabled": false
+    },
+    {
+      "label": "32-bit float RGBA, picked: the table's format",
+      "cmd": "select",
+      "name": "pelican.graphCanvasImage.format",
+      "text": "R32G32B32A32_SFLOAT"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the field reads the document back",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.format",
+      "timeout_ms": 60000,
+      "enabled": true,
+      "text": "R32G32B32A32_SFLOAT"
+    },
+    {
+      "label": "its usage takes input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.usage.COLOR_ATTACHMENT",
+      "timeout_ms": 60000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "Usage: no COLOR_ATTACHMENT (nothing draws into a table)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasImage.usage.COLOR_ATTACHMENT"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "its Lifetime takes input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.lifetime",
+      "timeout_ms": 60000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "Lifetime: Persistent",
+      "cmd": "select",
+      "name": "pelican.graphCanvasImage.lifetime",
+      "text": "Persistent"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "decision 4: Import... beside Initial contents, on now",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.import",
+      "timeout_ms": 60000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "Import...",
+      "cmd": "click",
+      "name": "pelican.graphCanvasImage.import"
+    },
+    {
+      "label": "the import dialog",
+      "cmd": "wait",
+      "name": "pelican.imageImportDialog",
+      "timeout_ms": 20000,
+      "visible": true
+    },
+    {
+      "label": "table 2's path (made outside Studio)",
+      "cmd": "type",
+      "name": "pelican.imageImportDialog.fileName",
+      "text": "{artifacts}/incoming/ltc_2.ktx2"
+    },
+    {
+      "label": "Return opens it",
+      "cmd": "key",
+      "name": "pelican.imageImportDialog.fileName",
+      "sequence": "Return"
+    },
+    {
+      "label": "the dialog's loop ends",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "contains": "zz-never-shown",
+      "timeout_ms": 400,
+      "expect_error": "automation.wait_timeout@1"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.imageImportDialog",
+      "timeout_ms": 20000,
+      "missing": true
+    },
+    {
+      "label": "copied into assets/images, and the image starts from it (initial.asset)",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[11].parameters.initial.asset",
+      "value": "assets/images/ltc_2.ktx2",
+      "retry_ms": 60000
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the copy is in the project",
+      "file": "exists",
+      "path": "{artifacts}/gb_ltc/assets/images/ltc_2.ktx2",
+      "value": true
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick render_image_2",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_image_2"
+    },
+    {
+      "label": "decision 1: Initial contents reads it back",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.initial",
+      "timeout_ms": 30000,
+      "visible": true,
+      "text": "assets/images/ltc_2.ktx2"
+    },
+    {
+      "label": "and its size is the image's",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.fromImage",
+      "timeout_ms": 30000,
+      "visible": true,
+      "contains": "64 × 64"
+    },
+    {
+      "label": "IA-1s decision 7: the LTC lighting that reads the tables, as a shader of its own",
+      "file": "write",
+      "path": "{artifacts}/gb_ltc/shaders/ltc_lut.frag",
+      "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_frame.glsl\"\n#undef PELICAN_FEATURE_CLUSTERED_LIGHTING\n#include \"pelican_lighting_v1.glsl\"\n\n// GB-3 B with the LTC tables (IA-1s): ltc_lighting.frag's rectangular area\n// light, its GGX lobe now the linearly transformed cosine two 64 x 64 tables\n// give (the layout of Heitz et al. 2016). The tables are persistent images\n// that start from assets/images/ltc_1.ktx2 and ltc_2.ktx2 (Initial contents),\n// made outside Studio by a script of the person's own (the scenario's\n// gui_build_ltc.prepare.py: a closed form, not the published fit).\n//   ltc_1 at (roughness, sqrt(1 - n.v)): M^-1 = mat3((x, 0, y), (0, 1, 0), (z, 0, w))\n//   ltc_2: x the lobe's magnitude, y the Fresnel term's share\n\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n\nPELICAN_DECLARE_INPUT_0(in_albedo);\nPELICAN_DECLARE_INPUT_1(in_normal);\nPELICAN_DECLARE_INPUT_2(in_material);\nPELICAN_DECLARE_INPUT_3(in_worldpos);\nPELICAN_DECLARE_INPUT_4(in_emissive);\nPELICAN_DECLARE_INPUT_5(in_ltc_1);\nPELICAN_DECLARE_INPUT_6(in_ltc_2);\n\n// The light: a 1.5 x 1.0 rectangle standing at z = 4, right of the box,\n// facing the camera (-z). Wound so that cross(q1 - q0, q3 - q0) is +z.\nconst vec3 LIGHT_Q0 = vec3(1.0, 0.2, 4.0);\nconst vec3 LIGHT_Q1 = vec3(2.5, 0.2, 4.0);\nconst vec3 LIGHT_Q2 = vec3(2.5, 1.2, 4.0);\nconst vec3 LIGHT_Q3 = vec3(1.0, 1.2, 4.0);\n// A polished floor, so the reflection keeps the light's shape.\nconst float MAX_ROUGHNESS = 0.1;\n\nfloat ltc_edge(vec3 v1, vec3 v2) {\n    float x = clamp(dot(v1, v2), -0.9999, 0.9999);\n    float theta = acos(x);\n    vec3 c = cross(v1, v2);\n    return theta * c.z / max(length(c), 1e-6);\n}\n\n// The four corners, already in the lobe's frame (any scale): the form factor\n// of the quad as a clamped cosine sees it. Wound so that cross(p1 - p0, p3 - p0)\n// points away from the lit side (the light shines the other way).\nfloat ltc_quad(vec3 p0, vec3 p1, vec3 p2, vec3 p3) {\n    vec3 v0 = normalize(p0), v1 = normalize(p1), v2 = normalize(p2), v3 = normalize(p3);\n    float sum = ltc_edge(v0, v1) + ltc_edge(v1, v2) + ltc_edge(v2, v3) + ltc_edge(v3, v0);\n    return max(sum / (2.0 * 3.14159265359), 0.0);\n}\n\nmat3 ltc_frame(vec3 z) {\n    vec3 up = abs(z.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);\n    vec3 x = normalize(cross(up, z));\n    vec3 y = cross(z, x);\n    return transpose(mat3(x, y, z));\n}\n\n// What a quad light (corners q0..q3, radiance L) gives a point with normal n\n// seen from v (toward the eye): the diffuse term as before, the specular one\n// through the tables, in the frame they are fitted in (z the normal, x toward\n// the eye).\nvec3 ltc_lut_area_light(vec3 position, vec3 n, vec3 v, vec3 diffuse_color, vec3 f0,\n                        float roughness, vec3 q0, vec3 q1, vec3 q2, vec3 q3, vec3 radiance) {\n    // one-sided: nothing behind the light\n    if (dot(cross(q1 - q0, q3 - q0), position - q0) >= 0.0) return vec3(0.0);\n    mat3 tn = ltc_frame(n);\n    float diffuse = ltc_quad(tn * (q0 - position), tn * (q1 - position), tn * (q2 - position),\n                             tn * (q3 - position));\n    float n_dot_v = clamp(dot(n, v), 0.0, 1.0);\n    vec3 toward = v - n * dot(v, n);\n    mat3 frame = tn;\n    if (length(toward) > 1e-4) {\n        vec3 x = normalize(toward);\n        frame = transpose(mat3(x, cross(n, x), n));\n    }\n    vec2 uv = vec2(roughness, sqrt(1.0 - n_dot_v)) * (63.0 / 64.0) + 0.5 / 64.0;\n    vec4 t1 = PELICAN_TEXTURE_2D_5(in_ltc_1, uv);\n    vec4 t2 = PELICAN_TEXTURE_2D_6(in_ltc_2, uv);\n    mat3 minv = mat3(vec3(t1.x, 0.0, t1.y), vec3(0.0, 1.0, 0.0), vec3(t1.z, 0.0, t1.w));\n    mat3 m = minv * frame;\n    float specular = ltc_quad(m * (q0 - position), m * (q1 - position), m * (q2 - position),\n                              m * (q3 - position));\n    return radiance * (diffuse_color * diffuse + (f0 * t2.x + (1.0 - f0) * t2.y) * specular);\n}\n\n// The light itself, seen from the camera: the rectangle where a view ray\n// meets it before the G-buffer's surface.\nfloat light_seen(vec3 origin, vec3 direction, float surface_distance) {\n    vec3 n = normalize(cross(LIGHT_Q1 - LIGHT_Q0, LIGHT_Q3 - LIGHT_Q0));\n    float denominator = dot(direction, n);\n    if (abs(denominator) < 1e-5) return 0.0;\n    float t = dot(LIGHT_Q0 - origin, n) / denominator;\n    if (t <= 0.0 || t > surface_distance) return 0.0;\n    vec3 p = origin + t * direction - LIGHT_Q0;\n    vec3 u = LIGHT_Q1 - LIGHT_Q0, v = LIGHT_Q3 - LIGHT_Q0;\n    float a = dot(p, u) / dot(u, u), b = dot(p, v) / dot(v, v);\n    return (a >= 0.0 && a <= 1.0 && b >= 0.0 && b <= 1.0) ? 1.0 : 0.0;\n}\n\nvoid main() {\n    vec3 albedo = PELICAN_TEXTURE_2D_0(in_albedo, inUV).rgb;\n    vec3 normal_encoded = PELICAN_TEXTURE_2D_1(in_normal, inUV).rgb;\n    vec4 material = PELICAN_TEXTURE_2D_2(in_material, inUV);\n    vec3 world_position = PELICAN_TEXTURE_2D_3(in_worldpos, inUV).rgb;\n    vec3 emissive = PELICAN_TEXTURE_2D_4(in_emissive, inUV).rgb;\n\n    vec3 radiance = vec3(0.0);\n    if (pelicanLights.directionalLightCount > 0u)\n        radiance = pelicanLights.directionalLights[0].color *\n                   pelicanLights.directionalLights[0].intensity * 0.5;\n\n    vec4 far = inverse(pelicanFrame.projection * pelicanFrame.view) *\n               vec4(inUV * 2.0 - 1.0, 1.0, 1.0);\n    vec3 eye = pelicanFrame.camera_position.xyz;\n    vec3 ray = normalize(far.xyz / far.w - eye);\n\n    // The geometry pass leaves the normal at zero where it drew nothing.\n    if (all(equal(normal_encoded, vec3(0.0)))) {\n        outColor = vec4(emissive + radiance * light_seen(eye, ray, 1e9), 1.0);\n        return;\n    }\n    vec3 normal = normalize(normal_encoded * 2.0 - 1.0);\n    float roughness = clamp(material.r, 0.04, MAX_ROUGHNESS);\n    float metallic = clamp(material.g, 0.0, 1.0);\n    vec3 to_camera = normalize(eye - world_position);\n    vec3 diffuse_color = albedo * (1.0 - metallic);\n    vec3 f0 = mix(vec3(0.04), albedo, metallic);\n\n    vec3 color = emissive + diffuse_color * material.b * pelican_env_ambient(normal);\n    color += ltc_lut_area_light(world_position, normal, to_camera, diffuse_color, f0, roughness,\n                                LIGHT_Q0, LIGHT_Q1, LIGHT_Q2, LIGHT_Q3, radiance);\n    color += radiance * light_seen(eye, ray, distance(eye, world_position));\n    outColor = vec4(color, 1.0);\n}\n"
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick render_fullscreen",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen"
+    },
+    {
+      "label": "its Pass fields",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.shader.fragment",
+      "timeout_ms": 30000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "fragment: ltc_lut, picked from the list",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPass.shader.fragment",
+      "text": "project://shaders/ltc_lut"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the pass draws with it",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[9].parameters.shader.fragment",
+      "value": "project://shaders/ltc_lut",
+      "retry_ms": 30000
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "the pass offers table 1's socket (its shader's declaration 5)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_socket#render_fullscreen/in@5",
+      "timeout_ms": 120000,
+      "visible": true
+    },
+    {
+      "label": "table 1 onto it",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#render_image/out:resource"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen/in@5"
+      },
+      "steps": 8
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "and table 2's (declaration 6)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_socket#render_fullscreen/in@6",
+      "timeout_ms": 120000,
+      "visible": true
+    },
+    {
+      "label": "table 2 onto it",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#render_image_2/out:resource"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen/in@6"
+      },
+      "steps": 8
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the tables reach the shader: the reflection is not what the approximation drew",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/ltc_lut.png",
+        "pixels": [
+          [
+            0.71,
+            0.71
+          ],
+          [
+            0.62,
+            0.71
+          ],
+          [
+            0.85,
+            0.71
+          ],
+          [
+            0.71,
+            0.62
+          ],
+          [
+            0.71,
+            0.8
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "reflection",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the reflection with the tables, read",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/ltc_lut.png",
+        "pixels": [
+          [
+            0.71,
+            0.71
+          ],
+          [
+            0.62,
+            0.71
+          ],
+          [
+            0.85,
+            0.71
+          ],
+          [
+            0.71,
+            0.62
+          ],
+          [
+            0.71,
+            0.8
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "lut_reflection"
+    },
+    {
+      "label": "left of it is another colour: the light keeps its shape",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/ltc_lut.png",
+        "pixels": [
+          [
+            0.71,
+            0.71
+          ],
+          [
+            0.62,
+            0.71
+          ],
+          [
+            0.85,
+            0.71
+          ],
+          [
+            0.71,
+            0.62
+          ],
+          [
+            0.71,
+            0.8
+          ]
+        ]
+      },
+      "path": "pixels[1]",
+      "op": "ne",
+      "value_of": "lut_reflection"
+    },
+    {
+      "label": "right of it too",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/ltc_lut.png",
+        "pixels": [
+          [
+            0.71,
+            0.71
+          ],
+          [
+            0.62,
+            0.71
+          ],
+          [
+            0.85,
+            0.71
+          ],
+          [
+            0.71,
+            0.62
+          ],
+          [
+            0.71,
+            0.8
+          ]
+        ]
+      },
+      "path": "pixels[2]",
+      "op": "ne",
+      "value_of": "lut_reflection"
+    },
+    {
       "label": "pick the key light",
       "cmd": "select",
       "name": "pelican.outliner",
@@ -747,7 +1475,7 @@
       "frames": 30
     },
     {
-      "label": "another intensity: the reflection's middle changes with it",
+      "label": "another intensity: the reflection with the tables changes with it",
       "expect": "result",
       "command": {
         "cmd": "screenshot",
@@ -779,7 +1507,7 @@
       },
       "path": "pixels[0]",
       "op": "ne",
-      "value_of": "reflection",
+      "value_of": "lut_reflection",
       "retry_ms": 60000
     },
     {
@@ -802,6 +1530,95 @@
       "expect": "screenshot",
       "name": "pelican.graphCanvas",
       "path": "gui_build_ltc_graph.png"
+    },
+    {
+      "label": "the reflection before the table is baked again, read",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/ltc_rebaked.png",
+        "pixels": [
+          [
+            0.71,
+            0.71
+          ],
+          [
+            0.62,
+            0.71
+          ],
+          [
+            0.85,
+            0.71
+          ],
+          [
+            0.71,
+            0.62
+          ],
+          [
+            0.71,
+            0.8
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "before_rebake"
+    },
+    {
+      "label": "IA-1s decision 5: table 2 baked again outside Studio and copied over the project's (an editor of one's own)",
+      "file": "copy",
+      "path": "{artifacts}/gb_ltc/assets/images/ltc_2.ktx2",
+      "from": "{artifacts}/incoming/ltc_2_rebaked.ktx2"
+    },
+    {
+      "label": "the watch saw it and the engine read it again (IA-2's changed_assets)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 60000,
+      "contains": "Picked up the change to assets/images/ltc_2.ktx2"
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the new table is copied in: the reflection changes",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/ltc_rebaked.png",
+        "pixels": [
+          [
+            0.71,
+            0.71
+          ],
+          [
+            0.62,
+            0.71
+          ],
+          [
+            0.85,
+            0.71
+          ],
+          [
+            0.71,
+            0.62
+          ],
+          [
+            0.71,
+            0.8
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "before_rebake",
+      "retry_ms": 60000
     }
   ]
 }

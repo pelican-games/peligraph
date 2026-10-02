@@ -11,6 +11,9 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDir>
+#include <QFileDialog>
+#include <QProcess>
 #include <QDialogButtonBox>
 #include <QEvent>
 #include <QDoubleSpinBox>
@@ -380,6 +383,14 @@ GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
     fixed_layout->addWidget(height_, 1);
     fixed_layout->addWidget(height_expression_, 1);
     form->addRow(QString{}, fixed_row);
+    // IA-1s, decision 1: an image that starts from an image file can take
+    // its size from it (no width, height or extent_scale).
+    from_image_ = new QCheckBox(tr("Size from the image"), fields_);
+    from_image_->setObjectName(imageFieldName(QStringLiteral("fromImage")));
+    from_image_->setToolTip(tr("The image is as large as its Initial contents (width, height "
+                               "and the screen scale left out)."));
+    form->addRow(QString{}, from_image_);
+    connect(from_image_, &QCheckBox::clicked, this, [this](bool checked) { commitFromImage(checked); });
     // The forms a body's image is usually given, one press each.
     size_expression_row_ = new QWidget(fields_);
     auto *forms_layout = new QHBoxLayout(size_expression_row_);
@@ -478,6 +489,25 @@ GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
         if (changed == parameters()) return;
         commit(changed);
     });
+    // IA-1s, decisions 1 and 4: the image file a persistent image starts
+    // from (initial.asset), picked from the project's, and Import....
+    initial_row_ = new QWidget(fields_);
+    auto *initial_layout = new QHBoxLayout(initial_row_);
+    initial_layout->setContentsMargins(0, 0, 0, 0);
+    initial_ = new QComboBox(initial_row_);
+    initial_->setObjectName(imageFieldName(QStringLiteral("initial")));
+    initial_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    initial_->setMinimumContentsLength(10);
+    import_ = new QPushButton(tr("Import…"), initial_row_);
+    import_->setObjectName(imageFieldName(QStringLiteral("import")));
+    initial_layout->addWidget(initial_, 1);
+    initial_layout->addWidget(import_);
+    form->addRow(caption(tr("Initial contents"), fields_), initial_row_);
+    connect(initial_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (index < 0) return;
+        commitInitial(initial_->itemData(index).toString().toStdString());
+    });
+    connect(import_, &QPushButton::clicked, this, [this] { chooseImages(); });
 
 
     connect(size_scale_, &QRadioButton::clicked, this, [this] { commitSize(); });
@@ -680,12 +710,270 @@ void GraphCanvasImageFields::load(const Json &parameters) {
                                     ? QString{}
                                     : qtext(stringOf(parameters, "lifetime")));
     }
+    loadInitial(parameters);
 
     note_->setVisible(!missing.isEmpty());
     if (!missing.isEmpty())
         note_->setText(tr("The engine did not list %1: those fields take what is typed, or "
                           "show the document's value.")
                            .arg(missing.join(QStringLiteral(", "))));
+}
+
+// --- IA-1s, decisions 1 and 4: Initial contents.
+
+namespace {
+
+std::string initialAssetOf(const Json &parameters) {
+    if (!parameters.is_object()) return {};
+    const auto initial = parameters.find("initial");
+    return initial != parameters.end() && initial->is_object() ? stringOf(*initial, "asset")
+                                                               : std::string{};
+}
+
+// Where the CLI is: PELICAN_STUDIO_CLI, or beside Studio (the build and an
+// install put them in one directory).
+QString cliPath() {
+    const QString configured = qEnvironmentVariable("PELICAN_STUDIO_CLI").trimmed();
+    if (!configured.isEmpty()) return configured;
+#ifdef Q_OS_WIN
+    const QString name = QStringLiteral("pelican_cli.exe");
+#else
+    const QString name = QStringLiteral("pelican_cli");
+#endif
+    return QDir{QCoreApplication::applicationDirPath()}.absoluteFilePath(name);
+}
+
+} // namespace
+
+void GraphCanvasImageFields::setProjectRoot(const std::filesystem::path &project_root) {
+    if (project_root_ == project_root) return;
+    project_root_ = project_root;
+    // The list is read again on the next show.
+    shown_.clear();
+}
+
+std::optional<GraphCanvasImageExtent>
+GraphCanvasImageFields::assetExtent(const std::string &asset) const {
+    if (asset.empty() || project_root_.empty()) return std::nullopt;
+    std::string_view relative{asset};
+    constexpr std::string_view scheme = "project://";
+    if (relative.starts_with(scheme)) relative.remove_prefix(scheme.size());
+    return readImageAssetExtent(project_root_ / std::filesystem::path{std::u8string{
+                                                    reinterpret_cast<const char8_t *>(relative.data()),
+                                                    relative.size()}});
+}
+
+void GraphCanvasImageFields::loadInitial(const Json &parameters) {
+    const auto asset = initialAssetOf(parameters);
+    const bool persistent = stringOf(parameters, "lifetime") == "persistent";
+    {
+        const QSignalBlocker block{initial_};
+        initial_->clear();
+        initial_->addItem(tr("None"), QString{});
+        if (!project_root_.empty())
+            for (const auto &choice : readProjectImageAssets(project_root_).assets)
+                initial_->addItem(qtext(choice), qtext(choice));
+        selectOrAdd(*initial_, qtext(asset));
+    }
+    // Decision 1: a per-frame image starts from nothing (the engine refuses
+    // it: graph.image_initial_requires_persistent@1).
+    initial_->setEnabled(persistent);
+    import_->setEnabled(persistent && !project_root_.empty());
+    initial_->setToolTip(persistent ? tr("The image file the image's contents start from: copied "
+                                         "in when the image is made and on the first frame of a "
+                                         "generation (a .ktx2 or .png of the project).")
+                                    : tr("Make it Persistent to start from an image"));
+    import_->setToolTip(persistent ? tr("Copy .ktx2, .png or .hdr files into the project's "
+                                        "assets/images and start from the first (a .hdr is baked "
+                                        "into a .ktx2 by pelican_cli image ktx2 --hdr; a name "
+                                        "already there gets _2).")
+                                   : tr("Make it Persistent to start from an image"));
+    // The size from the image: no width, height or screen scale.
+    const bool given = parameters.is_object() &&
+                       (parameters.contains("width") || parameters.contains("height") ||
+                        parameters.contains("extent_scale"));
+    const bool from_image = !asset.empty() && !given;
+    const auto extent = assetExtent(asset);
+    {
+        const QSignalBlocker block{from_image_};
+        from_image_->setChecked(from_image);
+        from_image_->setText(extent ? tr("Size from the image (%1 × %2)")
+                                          .arg(extent->width)
+                                          .arg(extent->height)
+                                    : tr("Size from the image"));
+    }
+    from_image_->setEnabled(!asset.empty());
+    if (from_image)
+        for (QWidget *size : std::initializer_list<QWidget *>{
+                 size_scale_, size_fixed_, extent_scale_, width_, height_, extent_expression_,
+                 width_expression_, height_expression_, size_expression_toggle_})
+            size->setEnabled(false);
+    else
+        for (QWidget *choice : std::initializer_list<QWidget *>{size_scale_, size_fixed_,
+                                                                 size_expression_toggle_})
+            choice->setEnabled(true);
+}
+
+void GraphCanvasImageFields::commitInitial(const std::string &asset) {
+    if (node_.empty()) return;
+    auto changed = parameters();
+    if (!changed.is_object()) return;
+    const auto current = initialAssetOf(changed);
+    if (asset == current) return;
+    const bool sized = changed.contains("width") || changed.contains("height");
+    if (asset.empty()) {
+        changed.erase("initial");
+        // The size came from the image: it keeps that size.
+        if (!sized && !changed.contains("extent_scale")) {
+            changed["extent_scale"] = 1.0;
+            if (const auto extent = assetExtent(current)) {
+                changed["width"] = extent->width;
+                changed["height"] = extent->height;
+            }
+        }
+    } else {
+        changed["initial"] = Json{{"asset", asset}};
+        // A screen-sized image cannot start from a file
+        // (graph.image_initial_extent_conflict@1): it takes the file's size.
+        if (!sized) changed.erase("extent_scale");
+    }
+    commit(changed);
+}
+
+void GraphCanvasImageFields::commitFromImage(bool from_image) {
+    if (node_.empty()) return;
+    auto changed = parameters();
+    if (!changed.is_object()) return;
+    if (from_image) {
+        changed.erase("width");
+        changed.erase("height");
+        changed.erase("extent_scale");
+    } else {
+        // A fixed size: the image's own, else what the spins hold.
+        const auto extent = assetExtent(initialAssetOf(changed));
+        changed["extent_scale"] = 1.0;
+        changed["width"] = extent ? static_cast<int>(extent->width) : width_->value();
+        changed["height"] = extent ? static_cast<int>(extent->height) : height_->value();
+    }
+    if (changed == parameters()) return;
+    commit(changed);
+}
+
+void GraphCanvasImageFields::importNotice(InspectorNoticeKind kind, const std::string &line) {
+    model_.setEditNotice({kind, line});
+    if (submitted_) submitted_();
+}
+
+void GraphCanvasImageFields::chooseImages() {
+    if (project_root_.empty()) {
+        importNotice(InspectorNoticeKind::Error, "Open a project to import images into.");
+        return;
+    }
+    // As the Sound list's Import...: Qt's own dialog, so a scenario can name
+    // its file field, opened window-modal and answered when it closes.
+    auto *dialog = new QFileDialog{this, tr("Import images")};
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName(QStringLiteral("pelican.imageImportDialog"));
+    dialog->setOption(QFileDialog::DontUseNativeDialog, true);
+    dialog->setFileMode(QFileDialog::ExistingFiles);
+    dialog->setNameFilter(tr("Images (*.ktx2 *.png *.hdr *.KTX2 *.PNG *.HDR)"));
+    if (auto *name = dialog->findChild<QLineEdit *>(QStringLiteral("fileNameEdit")))
+        name->setObjectName(QStringLiteral("pelican.imageImportDialog.fileName"));
+    connect(dialog, &QFileDialog::filesSelected, this, [this](const QStringList &picked) {
+        std::vector<std::filesystem::path> files;
+        for (const auto &file : picked) files.emplace_back(file.toStdWString());
+        importImages(files);
+    });
+    dialog->open();
+}
+
+void GraphCanvasImageFields::importImages(const std::vector<std::filesystem::path> &files) {
+    if (files.empty()) return;
+    if (project_root_.empty()) {
+        importNotice(InspectorNoticeKind::Error, "Open a project to import images into.");
+        return;
+    }
+    std::string first;
+    std::string error;
+    int imported = 0;
+    for (const auto &file : files) {
+        auto copied = importProjectImage(project_root_, file);
+        if (!copied.error.empty()) {
+            error = copied.error;
+            continue;
+        }
+        ++imported;
+        // A .hdr is baked first; it is picked when the bake is done.
+        if (copied.convert) {
+            bakeHdr(copied);
+            continue;
+        }
+        if (first.empty()) first = copied.reference;
+    }
+    // The list holds what was copied.
+    load(parameters());
+    if (!error.empty()) {
+        importNotice(InspectorNoticeKind::Error, error);
+        return;
+    }
+    if (first.empty()) return;
+    const bool persistent = stringOf(parameters(), "lifetime") == "persistent";
+    importNotice(InspectorNoticeKind::Information,
+                 "Imported " + first +
+                     (imported > 1 ? " and " + std::to_string(imported - 1) + " more" : std::string{}) +
+                     (persistent || node_.empty() ? "."
+                                                  : "; make the image Persistent to start from it."));
+    if (persistent && !node_.empty()) commitInitial(first);
+}
+
+void GraphCanvasImageFields::bakeHdr(const GraphCanvasImageImport &imported) {
+    auto *process = new QProcess(this);
+    const auto program = cliPath();
+    const auto reference = imported.reference;
+    const auto ktx2 = imported.convert->ktx2;
+    const auto hdr_name = imported.convert->hdr.filename().string();
+    // The image it was asked for: a bake that ends after another was picked
+    // only says it is there.
+    const auto scope = scope_;
+    const auto node = node_;
+    process->setProgram(program);
+    process->setArguments({QStringLiteral("image"), QStringLiteral("ktx2"), QStringLiteral("--out"),
+                           QString::fromStdWString(ktx2.wstring()), QStringLiteral("--hdr"),
+                           QString::fromStdWString(imported.convert->hdr.wstring())});
+    process->setProcessChannelMode(QProcess::MergedChannels);
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, program](QProcess::ProcessError failure) {
+                if (failure != QProcess::FailedToStart) return;
+                importNotice(InspectorNoticeKind::Error,
+                             "Could not start pelican_cli (" + program.toStdString() +
+                                 ") to bake the .hdr into a .ktx2.");
+                process->deleteLater();
+            });
+    connect(process, &QProcess::finished, this,
+            [this, process, reference, ktx2, hdr_name, scope, node](int exit_code,
+                                                                    QProcess::ExitStatus status) {
+                process->deleteLater();
+                std::error_code error;
+                if (status != QProcess::NormalExit || exit_code != 0 ||
+                    !std::filesystem::is_regular_file(ktx2, error)) {
+                    const auto said = QString::fromLocal8Bit(process->readAll()).trimmed();
+                    importNotice(InspectorNoticeKind::Error,
+                                 "Could not bake " + hdr_name + " into a .ktx2" +
+                                     (said.isEmpty() ? std::string{"."}
+                                                     : ": " + said.toStdString()));
+                    return;
+                }
+                load(parameters());
+                const bool here = node == node_ && scope == scope_;
+                const bool persistent = here && stringOf(parameters(), "lifetime") == "persistent";
+                importNotice(InspectorNoticeKind::Information,
+                             "Imported " + reference + " (baked from " + hdr_name + ")" +
+                                 (persistent || !here
+                                      ? "."
+                                      : "; make the image Persistent to start from it."));
+                if (persistent) commitInitial(reference);
+            });
+    process->start();
 }
 
 void GraphCanvasImageFields::loadArguments(const Json &parameters) {

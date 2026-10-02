@@ -1,5 +1,7 @@
 #include "renderdocumentreload.hpp"
 
+#include "inspectormodel.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <utility>
@@ -13,6 +15,9 @@ constexpr std::string_view ExternalModificationCode = "external_modification";
 // A file that cannot be read is often one an editor is replacing: it is
 // looked at again this many times before the reload is asked anyway.
 constexpr int UnreadableChecks = 3;
+// IA-1s, decision 5: what an engine before IA-2 does with a changed asset.
+constexpr std::string_view UnreadAssetWords =
+    " changed \xE2\x80\x94 the engine reads it on its next start.";
 
 std::atomic<bool> refused_on_disk{false};
 
@@ -91,6 +96,8 @@ void RenderDocumentReload::open(std::filesystem::path project_root) {
     project_root_ = std::move(project_root);
     documents_.clear();
     differing_.clear();
+    differing_assets_.clear();
+    placeAssets();
     busy_said_ = false;
     setRefused(false);
     if (watchChanged) watchChanged();
@@ -111,16 +118,49 @@ void RenderDocumentReload::engineGone() {
     forced_ = false;
     again_ = false;
     unreadable_ = 0;
+    // The engine that starts reads the assets as they are.
+    differing_assets_.clear();
 }
 
 std::vector<std::filesystem::path> RenderDocumentReload::watchedFiles() const {
     std::vector<std::filesystem::path> files;
-    for (const auto &[reference, document] : documents_) {
-        (void)reference;
-        if (std::find(files.begin(), files.end(), document.path) == files.end())
-            files.push_back(document.path);
-    }
+    for (const auto *watched : {&documents_, &assets_})
+        for (const auto &[reference, document] : *watched) {
+            (void)reference;
+            if (std::find(files.begin(), files.end(), document.path) == files.end())
+                files.push_back(document.path);
+        }
     return files;
+}
+
+void RenderDocumentReload::setInitialAssets(const std::vector<std::string> &references) {
+    if (references == asset_references_) return;
+    asset_references_ = references;
+    placeAssets();
+}
+
+void RenderDocumentReload::placeAssets() {
+    std::map<std::string, Document> assets;
+    for (const auto &reference : asset_references_) {
+        const auto path = documentPath(project_root_, reference);
+        if (!path) continue;
+        // One already watched keeps the digest it was last seen with.
+        if (const auto known = assets_.find(reference);
+            known != assets_.end() && known->second.path == *path) {
+            assets.insert_or_assign(reference, known->second);
+            continue;
+        }
+        const auto digest = transport_.file_digest ? transport_.file_digest(*path) : std::nullopt;
+        assets.insert_or_assign(reference, Document{*path, digest.value_or(std::string{})});
+    }
+    const bool moved = assets.size() != assets_.size() ||
+                       !std::equal(assets.begin(), assets.end(), assets_.begin(),
+                                   [](const auto &left, const auto &right) {
+                                       return left.first == right.first &&
+                                              left.second.path == right.second.path;
+                                   });
+    assets_ = std::move(assets);
+    if (moved && watchChanged) watchChanged();
 }
 
 void RenderDocumentReload::fileChanged() {
@@ -164,7 +204,20 @@ void RenderDocumentReload::check(bool forced) {
         fileChanged();
         return;
     }
-    if (differing_.empty() && !forced) {
+    // IA-1s, decision 5: an initial asset rewritten. What it holds now is
+    // what this reload is asked about, so it is seen from here on; it stays
+    // among the differing ones until an answer (a reload_busy retry asks
+    // about it again).
+    for (auto &[reference, asset] : assets_) {
+        const auto digest =
+            transport_.file_digest ? transport_.file_digest(asset.path) : std::nullopt;
+        if (!digest || *digest == asset.digest) continue;
+        asset.digest = *digest;
+        if (std::find(differing_assets_.begin(), differing_assets_.end(), reference) ==
+            differing_assets_.end())
+            differing_assets_.push_back(reference);
+    }
+    if (differing_.empty() && differing_assets_.empty() && !forced) {
         // Decision 2: Studio's own write, or the file is back to what the
         // engine holds -- a refusal said about it no longer applies.
         if (refused_ || busy_said_) {
@@ -319,9 +372,23 @@ void RenderDocumentReload::committed(const Json &commit) {
     setRefused(false);
     busy_said_ = false;
     forced_ = false;
+    // IA-1s, decision 5: an engine that compares the initial assets too
+    // (IA-2) says which it read again; one that does not says nothing of
+    // them, and reads a changed asset only when it starts.
+    const auto assets_listed = commit.find("changed_assets");
+    const bool knows_assets = assets_listed != commit.end() && assets_listed->is_array();
+    std::vector<std::string> changed_assets;
+    if (knows_assets)
+        for (const auto &reference : *assets_listed)
+            if (reference.is_string()) changed_assets.push_back(reference.get<std::string>());
+    const auto unread = knows_assets ? std::vector<std::string>{} : differing_assets_;
     const auto no_change = commit.find("no_change");
-    if (no_change != commit.end() && no_change->is_boolean() && no_change->get<bool>()) {
-        if (said) say(Notice::Kind::None, {});
+    if (no_change != commit.end() && no_change->is_boolean() && no_change->get<bool>() &&
+        changed_assets.empty()) {
+        if (!unread.empty())
+            say(Notice::Kind::Information, joined(unread) + std::string{UnreadAssetWords});
+        else if (said)
+            say(Notice::Kind::None, {});
     } else {
         std::vector<std::string> changed;
         if (const auto listed = commit.find("changed");
@@ -329,11 +396,16 @@ void RenderDocumentReload::committed(const Json &commit) {
             for (const auto &reference : *listed)
                 if (reference.is_string()) changed.push_back(reference.get<std::string>());
         if (reloaded) reloaded(commit);
-        const auto names = joined(fileNames(changed.empty() ? differing_ : changed));
-        say(Notice::Kind::Success,
-            names.empty() ? std::string{"Picked up the change on disk."}
-                          : "Picked up the change to " + names + ".");
+        auto names = joined(fileNames(changed.empty() && changed_assets.empty() ? differing_
+                                                                                 : changed));
+        if (!changed_assets.empty())
+            names += (names.empty() ? "" : ", ") + joined(changed_assets);
+        std::string line = names.empty() ? std::string{"Picked up the change on disk."}
+                                         : "Picked up the change to " + names + ".";
+        if (!unread.empty()) line += " " + joined(unread) + std::string{UnreadAssetWords};
+        say(Notice::Kind::Success, std::move(line));
     }
+    differing_assets_.clear();
     if (std::exchange(again_, false)) check(false);
 }
 
@@ -343,13 +415,20 @@ void RenderDocumentReload::refuse(const Json &error) {
     const auto message = textOf(error, "message");
     const auto participant = textOf(error, "participant");
     const auto reference = textOf(error, "reference");
-    auto file = reference.empty() ? joined(fileNames(differing_)) : fileName(reference);
+    auto differing = differing_;
+    differing.insert(differing.end(), differing_assets_.begin(), differing_assets_.end());
+    differing_assets_.clear();
+    auto file = reference.empty() ? joined(fileNames(differing)) : fileName(reference);
     if (file.empty()) file = "the render documents";
     std::string where;
     if (!participant.empty()) where = participant;
     if (!reference.empty()) where += (where.empty() ? "" : ", ") + reference;
     std::string detail = "The engine keeps the previous version of " + file +
                          "; fix the file and save again.";
+    // IA-1s, decision 5: a refusal Studio has a sentence for (an initial
+    // asset that does not fit its image, IA-2) says it first.
+    if (const auto sentence = graphLoopRefusalDescription(error); !sentence.empty())
+        detail = sentence + "\n" + detail;
     if (!code.empty() || !message.empty()) {
         detail += "\n" + (code.empty() ? std::string{"refused"} : code);
         if (!where.empty()) detail += " (" + where + ")";

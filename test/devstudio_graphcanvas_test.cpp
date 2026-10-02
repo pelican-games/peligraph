@@ -4117,3 +4117,149 @@ TEST_CASE("PS-1s a once pass's refusals read as sentences", "[studio][graph-canv
           "h0 runs once but reads input0, which changes every frame \xE2\x80\x94 it would freeze "
           "at the first value (graph.once_reads_per_frame@1).");
 }
+
+// --- IA-1s.
+
+namespace {
+
+// The start of a KTX2 file: its identifier, vkFormat (109,
+// R32G32B32A32_SFLOAT), typeSize, pixelWidth and pixelHeight -- what
+// readImageAssetExtent reads -- and zeros.
+void ia1sWriteKtx2Header(const std::filesystem::path &path, std::uint32_t width,
+                         std::uint32_t height) {
+    std::filesystem::create_directories(path.parent_path());
+    std::string bytes{"\xABKTX 20\xBB\r\n\x1A\n", 12};
+    const auto word = [&](std::uint32_t value) {
+        for (int shift = 0; shift < 32; shift += 8) bytes.push_back(static_cast<char>((value >> shift) & 0xFF));
+    };
+    word(109);
+    word(4);
+    word(width);
+    word(height);
+    bytes.resize(64, '\0');
+    std::ofstream{path, std::ios::binary} << bytes;
+}
+
+} // namespace
+
+TEST_CASE("IA-1s decision 2: an image's initial-contents refusals read as sentences, a mismatch "
+          "in the words of what differs",
+          "[studio][graph-canvas][ia1s][refusal]") {
+    using PelicanStudio::graphLoopRefusalDescription;
+    using PelicanStudio::knownRefusalDescription;
+    CHECK(graphLoopRefusalDescription({{"code", "graph.image_initial_requires_persistent@1"},
+                                       {"node", "ltc_1"}}) ==
+          "ltc_1 starts from an image but is not kept between frames \xE2\x80\x94 make it "
+          "Persistent (graph.image_initial_requires_persistent@1).");
+    CHECK(graphLoopRefusalDescription({{"code", "graph.image_initial_extent_conflict@1"},
+                                       {"node", "ltc_1"}}) ==
+          "ltc_1 takes its size from its image and from the screen at once \xE2\x80\x94 check From "
+          "the image, or give it a fixed size (graph.image_initial_extent_conflict@1).");
+    const auto mismatch = [](const char *what, const nlohmann::json &expected,
+                             const nlohmann::json &actual) {
+        return nlohmann::json{{"node", "ltc_1"},
+                              {"asset", "assets/images/ltc_1.ktx2"},
+                              {"what", what},
+                              {"expected", expected},
+                              {"actual", actual}};
+    };
+    const nlohmann::json lut{{"width", 64}, {"height", 64}, {"format", "R32G32B32A32_SFLOAT"}};
+    auto extent = mismatch("extent", {{"width", 256}, {"height", 256}, {"format", "R32G32B32A32_SFLOAT"}}, lut);
+    extent["code"] = "graph.image_initial_mismatch@1";
+    CHECK(graphLoopRefusalDescription(extent) ==
+          "assets/images/ltc_1.ktx2 is 64×64 but ltc_1 is 256×256 \xE2\x80\x94 bake the image to "
+          "match (pelican_cli image ktx2) or change the image's size "
+          "(graph.image_initial_mismatch@1).");
+    // As a broader refusal's message carries it.
+    const auto format = mismatch("format", {{"width", 64}, {"height", 64}, {"format", "R16G16B16A16_SFLOAT"}}, lut);
+    CHECK(knownRefusalDescription("render_pipeline_preflight_failed",
+                                  "graph.image_initial_mismatch@1 " + format.dump()) ==
+          "assets/images/ltc_1.ktx2 is R32G32B32A32_SFLOAT but ltc_1 is R16G16B16A16_SFLOAT "
+          "\xE2\x80\x94 bake the image to match (pelican_cli image ktx2) or change the image's "
+          "format (graph.image_initial_mismatch@1).");
+    auto space = mismatch("color_space", {{"width", 4}, {"height", 4}, {"format", "R8G8B8A8_UNORM"}},
+                          {{"width", 4}, {"height", 4}, {"format", "R8G8B8A8_SRGB"}});
+    space["code"] = "graph.image_initial_mismatch@1";
+    CHECK(graphLoopRefusalDescription(space) ==
+          "assets/images/ltc_1.ktx2 is sRGB (R8G8B8A8_SRGB) but ltc_1 is linear (R8G8B8A8_UNORM) "
+          "\xE2\x80\x94 bake the image to match (pelican_cli image ktx2) or change the image's "
+          "format to the other color space (graph.image_initial_mismatch@1).");
+}
+
+TEST_CASE("IA-1s decision 4: images are copied into assets/images, a .hdr to be baked into a "
+          ".ktx2 beside it, and the .ktx2 and .png are what Initial contents lists",
+          "[studio][graph-canvas][ia1s]") {
+    const auto root = std::filesystem::temp_directory_path() / "pelican_ia1s_import";
+    std::filesystem::remove_all(root);
+    ia1sWriteKtx2Header(root / "outside" / "ltc_1.ktx2", 64, 32);
+    for (const char *name : {"sky.hdr", "notes.txt"})
+        std::ofstream{root / "outside" / name, std::ios::binary} << "#?RADIANCE\n";
+    const auto project = root / "project";
+    const auto first = PelicanStudio::importProjectImage(project, root / "outside" / "ltc_1.ktx2");
+    CHECK(first.error.empty());
+    CHECK(first.reference == "assets/images/ltc_1.ktx2");
+    CHECK_FALSE(first.convert.has_value());
+    const auto again = PelicanStudio::importProjectImage(project, root / "outside" / "ltc_1.ktx2");
+    CHECK(again.reference == "assets/images/ltc_1_2.ktx2");
+    // A .hdr is copied, and its .ktx2 is the one to pick once it is baked.
+    const auto sky = PelicanStudio::importProjectImage(project, root / "outside" / "sky.hdr");
+    CHECK(sky.error.empty());
+    CHECK(sky.reference == "assets/images/sky.ktx2");
+    REQUIRE(sky.convert.has_value());
+    CHECK(sky.convert->hdr == project / "assets" / "images" / "sky.hdr");
+    CHECK(sky.convert->ktx2 == project / "assets" / "images" / "sky.ktx2");
+    CHECK(std::filesystem::exists(sky.convert->hdr));
+    const auto text = PelicanStudio::importProjectImage(project, root / "outside" / "notes.txt");
+    CHECK(text.error == "notes.txt is not a .ktx2, .png or .hdr file.");
+    CHECK(text.reference.empty());
+    const auto listed = PelicanStudio::readProjectImageAssets(project);
+    CHECK(listed.assets == std::vector<std::string>{"assets/images/ltc_1.ktx2",
+                                                    "assets/images/ltc_1_2.ktx2"});
+    CHECK(PelicanStudio::readImageAssetExtent(project / "assets" / "images" / "ltc_1.ktx2") ==
+          PelicanStudio::GraphCanvasImageExtent{64, 32});
+    CHECK_FALSE(PelicanStudio::readImageAssetExtent(sky.convert->hdr).has_value());
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("IA-1s decision 6: a graph refusal names the document and the definition the engine "
+          "says its node was written in (CT-2), Studio's guess only without them",
+          "[studio][graph-canvas][ia1s][refusal]") {
+    using PelicanStudio::engineStoppedSentence;
+    using PelicanStudio::graphLoopRefusalDescription;
+    const nlohmann::json root_node{{"code", "graph.port_field_missing@1"},
+                                   {"node", "shade"},
+                                   {"port", "level"},
+                                   {"field", "element"},
+                                   {"document", "project://passes/main.json"}};
+    CHECK(graphLoopRefusalDescription(root_node) ==
+          "Port level of shade needs element (in passes/main.json, "
+          "graph.port_field_missing@1).");
+    auto body_node = root_node;
+    body_node["definition"] = "blur_step";
+    CHECK(graphLoopRefusalDescription(body_node) ==
+          "Port level of shade needs element (in definition blur_step of "
+          "passes/main.json, graph.port_field_missing@1).");
+    // A sentence about a definition keeps its own.
+    CHECK(graphLoopRefusalDescription({{"code", "graph.definition_referenced@1"},
+                                       {"definition", "blur_step"},
+                                       {"referenced_by", nlohmann::json::array({"blur"})},
+                                       {"document", "project://passes/main.json"}}) ==
+          "Definition blur_step is still used by blur (in passes/main.json, "
+          "graph.definition_referenced@1).");
+    // The engine's fatal line: its document, not the project's guess.
+    CHECK(engineStoppedSentence(
+              "13:59:17.707507130 [76388] pelican_core.cpp:181 LOG_ERROR pelican Pelican fatal "
+              "error : graph.port_field_missing@1 {\"definition\":\"blur_step\",\"document\":"
+              "\"project://passes/graph.json\",\"field\":\"element\",\"node\":\"sim\",\"port\":"
+              "\"data\"}",
+              "passes/main.json") ==
+          "The engine stopped: Port data of sim needs element (graph.port_field_missing@1) in "
+          "definition blur_step of passes/graph.json. Fix the file (or Reload from "
+          "disk) to start it again.");
+    CHECK(engineStoppedSentence(
+              "Pelican fatal error : graph.port_field_missing@1 {\"field\":\"element\",\"node\":"
+              "\"sim\",\"port\":\"data\"}",
+              "passes/main.json") ==
+          "The engine stopped: Port data of sim needs element (graph.port_field_missing@1) in "
+          "passes/main.json. Fix the file (or Reload from disk) to start it again.");
+}

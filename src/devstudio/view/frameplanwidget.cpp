@@ -4204,6 +4204,14 @@ struct FramePlanWidget::Impl {
                         lifetimeLabel(resource.lifetime));
             }
             addFact(facts, owner.tr("Reason"), text(resource.reason));
+            // IA-1s, decision 3: the asset it starts from, and its manifest
+            // sha256 (the start of it), in the row's facts and its writers'
+            // column, where nothing else would be.
+            if (resource.initial_asset) {
+                const auto line = text(framePlanInitialAssetLine(*resource.initial_asset));
+                addFact(facts, owner.tr("Initial contents"), line);
+                if (resource.writers.empty()) item->setText(2, line);
+            }
             if (resource.loop_origin)
                 addFact(facts, owner.tr("Loop origin"),
                         text(framePlanLoopOriginLine(*resource.loop_origin)));

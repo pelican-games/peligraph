@@ -10319,3 +10319,77 @@ TEST_CASE("UX-9 decision 4: a voice's state reads as the band under its audio.pl
     scene.setVoiceBands(PelicanStudio::graphCanvasVoiceBands(status("edit", voice("idle", 0.0))));
     CHECK(band().isEmpty());
 }
+
+// --- IA-1s.
+
+TEST_CASE("IA-1s decision 1: Initial contents lists the project's images, is off on a per-frame "
+          "image, and writes initial.asset with the size from the image; the check gives a fixed "
+          "size back",
+          "[devstudio][graph-canvas][scene][ia1s]") {
+    (void)application();
+    const auto root = std::filesystem::temp_directory_path() / "pelican_ia1s_initial";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "assets" / "luts");
+    {
+        // A KTX2's identifier, vkFormat, typeSize, then its width and height.
+        std::string bytes{"\xABKTX 20\xBB\r\n\x1A\n", 12};
+        for (const std::uint32_t word : {109u, 4u, 64u, 32u})
+            for (int shift = 0; shift < 32; shift += 8)
+                bytes.push_back(static_cast<char>((word >> shift) & 0xFF));
+        bytes.resize(64, '\0');
+        std::ofstream{root / "assets" / "luts" / "ltc.ktx2", std::ios::binary} << bytes;
+        std::ofstream{root / "assets" / "luts" / "notes.txt", std::ios::binary} << "not an image";
+    }
+    Ux2Tab tab{false};
+    tab.widget->setProjectRoot(root);
+    auto image = ux2Image();
+    tab.read(ux2Document(image), "ia1s-0");
+    tab.answer("get_graph_catalog", ux2Catalog());
+    tab.widget->scene().selectNode("shade__color");
+    QCoreApplication::processEvents();
+    auto *initial = tab.field<QComboBox>("pelican.graphCanvasImage.initial");
+    REQUIRE(initial->isVisible());
+    CHECK(ux2Items(*initial) == QStringList{"None", "assets/luts/ltc.ktx2"});
+    // Per frame: off, and the tooltip says why.
+    CHECK_FALSE(initial->isEnabled());
+    CHECK(initial->toolTip() == QStringLiteral("Make it Persistent to start from an image"));
+    CHECK_FALSE(tab.field<QPushButton>("pelican.graphCanvasImage.import")->isEnabled());
+    CHECK_FALSE(tab.field<QCheckBox>("pelican.graphCanvasImage.fromImage")->isEnabled());
+
+    tab.pick(tab.field<QComboBox>("pelican.graphCanvasImage.lifetime"), QStringLiteral("persistent"));
+    image["lifetime"] = "persistent";
+    CHECK(tab.sent(1).at("parameters") == image);
+    tab.commit(ux2Document(image), "ia1s-1");
+    initial = tab.field<QComboBox>("pelican.graphCanvasImage.initial");
+    REQUIRE(initial->isEnabled());
+
+    // The pick: initial.asset, and the screen's scale goes -- the size is
+    // the image's (a screen-sized one would be refused).
+    tab.pick(initial, QStringLiteral("assets/luts/ltc.ktx2"));
+    image["initial"] = {{"asset", "assets/luts/ltc.ktx2"}};
+    image.erase("extent_scale");
+    CHECK(tab.sent(2).at("parameters") == image);
+    tab.commit(ux2Document(image), "ia1s-2");
+    auto *from_image = tab.field<QCheckBox>("pelican.graphCanvasImage.fromImage");
+    CHECK(from_image->isChecked());
+    CHECK(from_image->isEnabled());
+    CHECK(from_image->text() == QString::fromUtf8("Size from the image (64 \xC3\x97 32)"));
+    CHECK_FALSE(tab.field<QSpinBox>("pelican.graphCanvasImage.width")->isEnabled());
+    CHECK_FALSE(tab.field<QRadioButton>("pelican.graphCanvasImage.sizeScale")->isEnabled());
+
+    // Unchecked: a fixed size, the image's own.
+    ux7Click(from_image);
+    image["extent_scale"] = 1.0;
+    image["width"] = 64;
+    image["height"] = 32;
+    CHECK(tab.sent(3).at("parameters") == image);
+    tab.commit(ux2Document(image), "ia1s-3");
+    CHECK_FALSE(tab.field<QCheckBox>("pelican.graphCanvasImage.fromImage")->isChecked());
+    CHECK(tab.field<QSpinBox>("pelican.graphCanvasImage.width")->isEnabled());
+
+    // None: the asset goes, the size stays.
+    tab.pick(tab.field<QComboBox>("pelican.graphCanvasImage.initial"), QString{});
+    image.erase("initial");
+    CHECK(tab.sent(4).at("parameters") == image);
+    std::filesystem::remove_all(root);
+}

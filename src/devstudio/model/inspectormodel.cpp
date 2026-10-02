@@ -635,7 +635,8 @@ std::string componentUnavailableDescription(std::string_view code) {
     return sentence + " (" + std::string{code} + ")";
 }
 
-std::string knownRefusalDescription(std::string_view code, std::string_view message) {
+std::string knownRefusalDescription(std::string_view code, std::string_view message,
+                                    bool name_document) {
     // RL-1s, decision 5: the render document on disk was rewritten and its
     // reload refused, so every edit meets a file the engine did not load.
     // The engine's own words follow, for the tooltip and Copy message.
@@ -654,7 +655,7 @@ std::string knownRefusalDescription(std::string_view code, std::string_view mess
     // PM-3a: the play refusals (set_play_state, advance_frames, step_frame).
     if (auto play = playRefusalDescription(error); !play.empty()) return play;
     // LP-4c: and so does a loop's or a definition's.
-    return graphLoopRefusalDescription(error);
+    return graphLoopRefusalDescription(error, name_document);
 }
 
 namespace {
@@ -850,7 +851,7 @@ struct GraphLoopRefusalText {
     std::string_view code;
     std::string_view sentence;
 };
-constexpr std::array<GraphLoopRefusalText, 41> GraphLoopRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 44> GraphLoopRefusalTexts{{
     {"graph.loop_branch_else_missing@1",
      "Loop {node} has no else: its last branch must have no condition"},
     {"graph.loop_branch_interface@1",
@@ -943,6 +944,37 @@ constexpr std::array<GraphLoopRefusalText, 41> GraphLoopRefusalTexts{{
      "{node} runs once but reads {input}, which changes every frame \xE2\x80\x94 it would "
      "freeze at the first value"},
     {"node_unknown", "{node} is not in the frame plan: there is nothing of it to recompute"},
+    // IA-1s, decision 2 (engine IA-1): an image that starts from an asset.
+    {"graph.image_initial_requires_persistent@1",
+     "{node} starts from an image but is not kept between frames \xE2\x80\x94 make it "
+     "Persistent"},
+    {"graph.image_initial_extent_conflict@1",
+     "{node} takes its size from its image and from the screen at once \xE2\x80\x94 check From "
+     "the image, or give it a fixed size"},
+    // `what` picks the sentence (GraphImageInitialMismatchTexts); `actual`
+    // and `expected` read as that sentence's words.
+    {"graph.image_initial_mismatch@1",
+     "{asset} is {actual} but {node} is {expected} \xE2\x80\x94 bake the image to match "
+     "(pelican_cli image ktx2) or change the image's format"},
+}};
+
+// IA-1s, decision 2: graph.image_initial_mismatch@1, by `what`. extent reads
+// as "64×64", format as the format's name, color_space as "sRGB" or
+// "linear" with the format beside it.
+struct GraphImageInitialMismatchText {
+    std::string_view what;
+    std::string_view sentence;
+};
+constexpr std::array<GraphImageInitialMismatchText, 3> GraphImageInitialMismatchTexts{{
+    {"extent",
+     "{asset} is {actual} but {node} is {expected} \xE2\x80\x94 bake the image to match "
+     "(pelican_cli image ktx2) or change the image's size"},
+    {"format",
+     "{asset} is {actual} but {node} is {expected} \xE2\x80\x94 bake the image to match "
+     "(pelican_cli image ktx2) or change the image's format"},
+    {"color_space",
+     "{asset} is {actual} but {node} is {expected} \xE2\x80\x94 bake the image to match "
+     "(pelican_cli image ktx2) or change the image's format to the other color space"},
 }};
 
 // UX-5c: graph.loop_output_reference_unknown@1's reasons, each a sentence that
@@ -1041,9 +1073,18 @@ std::string graphRefusalFieldText(const nlohmann::json &fields, std::string_view
     return found->dump();
 }
 
+// IA-1s, decision 6: a sentence that names a definition of its own (the one
+// the refusal is about) is not told the definition the node was written in.
+bool graphRefusalSentenceNamesDefinition(std::string_view code) {
+    for (const auto &candidate : GraphLoopRefusalTexts)
+        if (candidate.code == code)
+            return candidate.sentence.find("{definition}") != std::string_view::npos;
+    return false;
+}
+
 } // namespace
 
-std::string graphLoopRefusalDescription(const nlohmann::json &error) {
+std::string graphLoopRefusalDescription(const nlohmann::json &error, bool name_document) {
     if (!error.is_object()) return {};
     const auto own_code = error.value("code", std::string{});
     const auto message = error.value("message", std::string{});
@@ -1120,6 +1161,40 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error) {
         for (const auto &candidate : GraphLoopOutputReferenceReasonTexts)
             if (candidate.reason == reason) pattern = candidate.sentence;
     }
+    // IA-1s, decision 2: what the asset is and what the image is, in the
+    // words of what differs.
+    if (entry->code == "graph.image_initial_mismatch@1") {
+        const auto what = graphRefusalFieldText(fields, "what");
+        for (const auto &candidate : GraphImageInitialMismatchTexts)
+            if (candidate.what == what) pattern = candidate.sentence;
+        const auto side = [&](const char *key) -> std::string {
+            const auto found = fields.find(key);
+            if (found == fields.end() || !found->is_object()) return "?";
+            const auto format = found->find("format");
+            const auto format_text = format != found->end() && format->is_string()
+                                         ? format->get<std::string>()
+                                         : std::string{"?"};
+            if (what == "extent") {
+                const auto number = [&](const char *axis) {
+                    const auto value = found->find(axis);
+                    return value != found->end() &&
+                                   (value->is_number_integer() || value->is_number_unsigned())
+                               ? value->dump()
+                               : std::string{"?"};
+                };
+                return number("width") + "×" + number("height");
+            }
+            if (what == "color_space")
+                return std::string{format_text.find("SRGB") != std::string::npos ? "sRGB"
+                                                                                  : "linear"} +
+                       " (" + format_text + ")";
+            return format_text;
+        };
+        const auto actual = side("actual");
+        const auto expected = side("expected");
+        fields["actual"] = actual;
+        fields["expected"] = expected;
+    }
     for (std::size_t index = 0; index < pattern.size();) {
         const auto open = pattern.find('{', index);
         if (open == std::string_view::npos) {
@@ -1131,7 +1206,33 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error) {
         sentence += graphRefusalFieldText(fields, pattern.substr(open + 1, close - open - 1));
         index = close + 1;
     }
-    return sentence + " (" + std::string{entry->code} + ").";
+    // IA-1s, decision 6 (engine CT-2): the document the node was written in,
+    // and the definition whose body holds it -- unless the sentence names a
+    // definition of its own already (the definition the refusal is about).
+    std::string where;
+    if (name_document) {
+        const auto document = graphRefusalSource(fields, "document");
+        if (!document.empty()) {
+            const auto definition = graphRefusalSentenceNamesDefinition(entry->code)
+                                        ? std::string{}
+                                        : graphRefusalSource(fields, "definition");
+            where = definition.empty() ? "in " + document
+                                       : "in definition " + definition + " of " + document;
+        }
+    }
+    return sentence + " (" + (where.empty() ? std::string{} : where + ", ") +
+           std::string{entry->code} + ").";
+}
+
+std::string graphRefusalSource(const nlohmann::json &fields, std::string_view key) {
+    if (!fields.is_object()) return {};
+    const auto found = fields.find(std::string{key});
+    if (found == fields.end() || !found->is_string()) return {};
+    // A document reads as the project names it: relative to its root.
+    std::string_view value = found->get_ref<const std::string &>();
+    constexpr std::string_view project = "project://";
+    if (key == "document" && value.starts_with(project)) value.remove_prefix(project.size());
+    return std::string{value};
 }
 
 std::string projectRenderDocument(const std::filesystem::path &project_root) {
@@ -1172,22 +1273,34 @@ std::string engineStoppedSentence(std::string_view fatal_line, std::string_view 
         index = version;
     }
     if (code.empty()) return {};
-    auto sentence = knownRefusalDescription(code, message);
+    // The document is said once, after the sentence, not inside it too.
+    auto sentence = knownRefusalDescription(code, message, false);
     if (sentence.empty()) return {};
     // "<sentence> (<code>)." -- the sentence, without its full stop.
     while (!sentence.empty() && (sentence.back() == '.' || sentence.back() == ' ')) sentence.pop_back();
-    // The file: the last path ending in .json the message names.
+    // IA-1s, decision 6 (engine CT-2): the refusal names the document its
+    // node was written in, and the definition whose body holds it.
     std::string file;
-    for (std::size_t end = message.find(".json"); end != std::string_view::npos;
-         end = message.find(".json", end + 1)) {
-        std::size_t begin = end;
-        while (begin > 0 && message[begin - 1] != ' ' && message[begin - 1] != '\'' &&
-               message[begin - 1] != '"' && message[begin - 1] != '(')
-            --begin;
-        file = std::string{message.substr(begin, end + 5 - begin)};
+    std::string definition;
+    if (const auto fields = graphFieldsAfterCode(message, code)) {
+        file = graphRefusalSource(*fields, "document");
+        if (!file.empty() && !graphRefusalSentenceNamesDefinition(code))
+            definition = graphRefusalSource(*fields, "definition");
     }
+    // Before CT-2: the last path ending in .json the message names.
+    if (file.empty())
+        for (std::size_t end = message.find(".json"); end != std::string_view::npos;
+             end = message.find(".json", end + 1)) {
+            std::size_t begin = end;
+            while (begin > 0 && message[begin - 1] != ' ' && message[begin - 1] != '\'' &&
+                   message[begin - 1] != '"' && message[begin - 1] != '(')
+                --begin;
+            file = std::string{message.substr(begin, end + 5 - begin)};
+        }
+    // Studio's guess, only when the engine named none.
     if (file.empty()) file = std::string{render_document};
     if (file.empty()) file = "the project's render documents";
+    if (!definition.empty()) file = "definition " + definition + " of " + file;
     return "The engine stopped: " + sentence + " in " + file +
            ". Fix the file (or Reload from disk) to start it again.";
 }

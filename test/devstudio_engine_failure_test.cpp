@@ -608,8 +608,8 @@ TEST_CASE("UX-9 decision 5: an engine stopped at start by a buffer port without 
     REQUIRE(engine_fatal.contains(QStringLiteral("graph.port_field_missing@1")));
     REQUIRE(broken.fatal_error_line == engine_fatal);
     // The sentence Studio has for the code, with the port, the node and the
-    // field the engine named. The line names no file: the document is the
-    // one project.json names for rendering.
+    // field the engine named. IA-1s, decision 6: the file is the document
+    // the line names (CT-2's "document"), as the project names it.
     CHECK(status_text ==
           QStringLiteral("The engine stopped: Port data of sim needs element "
                          "(graph.port_field_missing@1) in passes/main.json. Fix the file (or "

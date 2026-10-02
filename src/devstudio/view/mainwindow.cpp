@@ -1051,6 +1051,11 @@ void MainWindow::createRenderReload() {
     render_reload_->reloaded = [this](const nlohmann::json &commit) {
         renderDocumentsReloaded(commit);
     };
+    // IA-1s, decision 5: the images' initial assets are watched with the
+    // documents.
+    graph_canvas_->setInitialAssetsAction([this](std::vector<std::string> assets) {
+        if (render_reload_) render_reload_->setInitialAssets(assets);
+    });
     // Decision 5: by hand, whatever the digests say -- after a fix the
     // watcher missed, or to hear again why the file is refused.
     reload_from_disk_action_ = new QAction(tr("Reload from disk"), this);
