@@ -1190,8 +1190,9 @@ TEST_CASE("instance inputs change supply atomically and report what was drawn",
         CHECK(refused.at("error").at("code") == "graph.definition_referenced@1");
         CHECK(refused.at("error").at("definition") == "gain_shape");
         CHECK(Json(refused.at("error").at("referenced_by")) == Json::array({"left"}));
+        // CT-2: the document the definition was written in, in the message too.
         CHECK(refused.at("error").at("message") ==
-              R"(graph.definition_referenced@1 {"definition":"gain_shape","referenced_by":["left"]})");
+              R"(graph.definition_referenced@1 {"definition":"gain_shape","document":"project://passes/main.json","referenced_by":["left"]})");
         CHECK(readBytes(source.path) == before);
 
         // The inverse of a removal is the add with the body read beforehand.
@@ -1375,6 +1376,121 @@ TEST_CASE("CT-1 a render port or parameter field the document lacks is refused b
     // The document still reads and still draws as it did.
     REQUIRE(readBytes(source.path) == saved);
     REQUIRE_NOTHROW(expandGraphDocument(Json::parse(saved)));
+}
+
+// CT-2: a graph refusal says which document the refused node was written in
+// -- the rendering root, as the project names it -- and, for a node of a
+// definition's body, which definition. The ticket's error carries both as
+// fields and in its message; the fields CT-1 gave it are unchanged.
+TEST_CASE("CT-2 a graph refusal names the document and the definition its node was written in",
+          "[render-config-editor][graph-composition][ct2]") {
+    const auto fixture_path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "graph_instance_inputs" / "passes" / "main.json";
+    TemporaryConfig source{readBytes(fixture_path)};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    auto service = makeService(source, runtime);
+    const auto saved = readBytes(source.path);
+    const auto refused = [&](Json op) {
+        const auto result = Json(service->editGraphDocument(
+            {{"base_source_digest", service->getGraphInstances(Json::object()).at("source_digest").at("hex")},
+             {"ops", Json::array({std::move(op)})}}));
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(readBytes(source.path) == saved);
+        return result.at("error");
+    };
+    const Json sim{{"id", "sim"}, {"op", "render.compute"},
+                   {"parameters", {{"ports", {{"data", {{"kind", "buffer"}, {"access", "read_write"}}}}},
+                                   {"shader", "shaders/sim.comp"}}},
+                   {"outputs", Json::array()}};
+
+    // A root node: the root document, and no definition.
+    auto error = refused({{"op", "add_node"}, {"node", sim}});
+    CHECK(error.at("code") == "graph.port_field_missing@1");
+    CHECK(error.at("node") == "sim");
+    CHECK(error.at("port") == "data");
+    CHECK(error.at("field") == "element");
+    CHECK(error.at("document") == "project://passes/main.json");
+    CHECK_FALSE(error.contains("definition"));
+    CHECK_THAT(error.at("message").get<std::string>(),
+               Catch::Matchers::ContainsSubstring("\"document\":\"project://passes/main.json\""));
+
+    // A node of a definition's body: the document that wrote the definition,
+    // and the definition's name. The expansion names the instance's copy.
+    error = refused({{"op", "add_node"}, {"scope", "gain_curve"}, {"node", sim}});
+    CHECK(error.at("code") == "graph.port_field_missing@1");
+    CHECK(error.at("node") == "left/sim");
+    CHECK(error.at("field") == "element");
+    CHECK(error.at("document") == "project://passes/main.json");
+    CHECK(error.at("definition") == "gain_curve");
+    CHECK_THAT(error.at("message").get<std::string>(),
+               Catch::Matchers::ContainsSubstring("\"definition\":\"gain_curve\""));
+
+    // RS-9's parameters code takes the same fields.
+    error = refused({{"op", "add_node"}, {"scope", "gain_curve"},
+                     {"node", {{"id", "canvas"}, {"op", "render.image"},
+                               {"parameters", {{"type", {{"semantic", "pelican.render.color_signal@1"}}}}},
+                               {"outputs", Json::array({"resource"})}}}});
+    CHECK(error.at("code") == "graph.render_node_parameters_missing@1");
+    CHECK(error.at("document") == "project://passes/main.json");
+    CHECK(error.at("definition") == "gain_curve");
+    REQUIRE(readBytes(source.path) == saved);
+}
+
+// CT-2: how a refused node's id finds its definition, and what a refusal
+// keeps. Only the document's structure is read: an instance's copy, a loop
+// body's template and an element's copy, and a body's own id.
+TEST_CASE("CT-2 a refused node id is traced to the definition that holds it",
+          "[graph-composition][ct2]") {
+    const Json document{
+        {"schema", "pelican.graph"}, {"version", 1},
+        {"definitions",
+         {{"curve", {{"nodes", Json::array({Json{{"id", "sum"}, {"op", "value.add"}}})}}},
+          {"wide", {{"nodes", Json::array({Json{{"id", "blur"}, {"op", "render.compute"}}})}}},
+          {"narrow", {{"nodes", Json::array({Json{{"id", "copy"}, {"op", "render.compute"}}})}}}}},
+        {"nodes", Json::array({
+            Json{{"id", "clock"}, {"op", "value.input"}},
+            Json{{"id", "left"}, {"op", "graph.instance"}, {"definition", "curve"}},
+            Json{{"id", "mips"}, {"op", "graph.loop"},
+                 {"parameters", {{"branches", Json::array({Json{{"body", "wide"}},
+                                                           Json{{"body", "narrow"}}})}}}}})}};
+    CHECK_FALSE(graphNodeDefinition(document, "clock"));
+    CHECK(graphNodeDefinition(document, "left/sum") == "curve");
+    CHECK(graphNodeDefinition(document, "mips/$0/blur") == "wide");
+    CHECK(graphNodeDefinition(document, "mips/$1/copy") == "narrow");
+    CHECK(graphNodeDefinition(document, "mips/3/copy") == "narrow");
+    CHECK(graphNodeDefinition(document, "sum") == "curve");
+    CHECK_FALSE(graphNodeDefinition(document, "nowhere/sum"));
+    CHECK_FALSE(graphNodeDefinition(document, "mips/$7/blur"));
+
+    CHECK(graphDocumentReference("passes/main.json") == "project://passes/main.json");
+    CHECK(graphDocumentReference("project://passes/main.json") == "project://passes/main.json");
+    CHECK_FALSE(graphDocumentReference(""));
+    CHECK_FALSE(graphDocumentReference("test://root"));
+
+    // Added to a graph.* refusal and to its message; a field it has is kept,
+    // and another code is left as it was.
+    const auto named = graphRefusalInDocument(
+        GraphRegistryError("graph.loop_expression_invalid@1",
+                           {{"node", "mips/$0/blur"}, {"pointer", "/x"}, {"reason", "r"}}),
+        document, "passes/main.json");
+    CHECK(named.detail().at("document") == "project://passes/main.json");
+    CHECK(named.detail().at("definition") == "wide");
+    CHECK(named.detail().at("pointer") == "/x");
+    CHECK_THAT(std::string{named.what()}, Catch::Matchers::ContainsSubstring("project://passes/main.json"));
+    const auto kept = graphRefusalInDocument(
+        GraphRegistryError("graph.loop_nested@1", {{"node", "left/sum"}, {"definition", "other"}}),
+        document, "passes/main.json");
+    CHECK(kept.detail().at("definition") == "other");
+    const auto other = graphRefusalInDocument(
+        GraphRegistryError("pose.root_node_unknown@1", {{"node", "left/sum"}}), document, "passes/main.json");
+    CHECK_FALSE(other.detail().contains("document"));
+    // A document no project names leaves the field out, never null.
+    const auto unnamed = graphRefusalInDocument(
+        GraphRegistryError("graph.port_field_missing@1", {{"node", "clock"}}), document, "/abs/main.json");
+    CHECK_FALSE(unnamed.detail().contains("document"));
+    CHECK_FALSE(unnamed.detail().contains("definition"));
 }
 
 // N-6 acceptance 1. The canvas's own placement -- where the nodes were put, the

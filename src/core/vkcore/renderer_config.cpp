@@ -31,7 +31,9 @@
 #include "rendertiming.hpp"
 #include "../../project/renderfeatureoverlay.hpp"
 #include "../../project/featurecompose.hpp"
+#include "../../project/graphcomposition.hpp"
 #include "../../project/renderconfigsection.hpp"
+#include "../../project/renderpipeline.hpp"
 #include "../../project/vulkanviewplanning.hpp"
 #if PELICAN_WITH_OPENXR
 #include "../openxr/openxrmirrorsink.hpp"
@@ -42,6 +44,7 @@
 #include <optional>
 #include <stdexcept>
 #include <type_traits>
+#include <typeinfo>
 #include <utility>
 
 namespace Pelican {
@@ -586,7 +589,43 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
         }
 #endif
         return variants;
+    } catch (const GraphRegistryError &error) {
+        // CT-2: a graph refusal names the document its node was written in
+        // (the root this config was read from), so the startup fatal line,
+        // a ticket's rejected error and a reload's message all carry it.
+        const auto named = graphRefusalInDocument(
+            error,
+            nlohmann::json::parse(rendering_config_json, nullptr, false),
+            config.renderingConfigReference());
+        LOG_ERROR(
+            logger,
+            "Failed to load main rendering configuration: {}",
+            named.what());
+        throw named;
     } catch (const std::exception &error) {
+        // CT-2: the graph refusals that travel as "<code>: <JSON>" (the
+        // view_select and draw-loop codes) take the same fields. Only a plain
+        // runtime_error is rebuilt, so no derived type is lost.
+        if (typeid(error) == typeid(std::runtime_error)) {
+            if (auto refusal = splitCodedRefusalMessage(error.what());
+                refusal && refusal->code.starts_with("graph.")) {
+                const auto before = refusal->fields;
+                addGraphRefusalSource(
+                    refusal->fields, refusal->code,
+                    nlohmann::json::parse(rendering_config_json, nullptr,
+                                          false),
+                    config.renderingConfigReference());
+                if (refusal->fields != before) {
+                    const std::runtime_error named{
+                        refusal->code + ": " + refusal->fields.dump()};
+                    LOG_ERROR(
+                        logger,
+                        "Failed to load main rendering configuration: {}",
+                        named.what());
+                    throw named;
+                }
+            }
+        }
         LOG_ERROR(
             logger,
             "Failed to load main rendering configuration: {}",

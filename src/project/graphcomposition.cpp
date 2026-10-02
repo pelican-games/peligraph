@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -1199,6 +1200,139 @@ ExpandedGraphDocument expandGraphDocument(const Json &document) {
 GraphRegistryError::GraphRegistryError(std::string code, nlohmann::json detail)
     : std::runtime_error(code + " " + detail.dump()), code_(std::move(code)),
       detail_(std::move(detail)) {}
+
+// --- CT-2: the document (and definition) a graph refusal's node was written in.
+
+std::optional<std::string> graphDocumentReference(std::string_view reference) {
+    if (reference.empty()) return std::nullopt;
+    if (reference.starts_with("project://") || reference.starts_with("engine://")) return std::string{reference};
+    if (reference.find("://") != std::string_view::npos || reference.starts_with('/') ||
+        reference.find('\\') != std::string_view::npos)
+        return std::nullopt;
+    const std::filesystem::path path{std::string{reference}};
+    if (path.is_absolute() || path.has_root_name()) return std::nullopt;
+    const auto normalized = path.lexically_normal().generic_string();
+    if (normalized.empty() || normalized == "." || normalized.starts_with("..")) return std::nullopt;
+    return "project://" + normalized;
+}
+
+std::optional<std::string> graphNodeDefinition(const Json &document, std::string_view node) {
+    if (!document.is_object() || node.empty()) return std::nullopt;
+    const auto definitions = document.find("definitions");
+    const bool has_definitions = definitions != document.end() && definitions->is_object();
+    const auto body = [&](const std::string &name) -> const Json * {
+        if (!has_definitions) return nullptr;
+        const auto found = definitions->find(name);
+        return found != definitions->end() && found->is_object() ? &*found : nullptr;
+    };
+    const auto find = [](const Json *scope, std::string_view id) -> const Json * {
+        const auto nodes = scope->find("nodes");
+        if (nodes == scope->end() || !nodes->is_array()) return nullptr;
+        for (const auto &entry : *nodes)
+            if (entry.is_object() && entry.contains("id") && entry.at("id").is_string() &&
+                entry.at("id").get_ref<const std::string &>() == id)
+                return &entry;
+        return nullptr;
+    };
+    std::vector<std::string> segments;
+    for (std::size_t begin = 0;;) {
+        const auto end = node.find('/', begin);
+        segments.emplace_back(node.substr(begin, end == std::string_view::npos ? std::string_view::npos : end - begin));
+        if (end == std::string_view::npos) break;
+        begin = end + 1;
+    }
+    if (segments.size() == 1) {
+        // An authored id: the root's own, or the one body that holds it.
+        if (find(&document, node)) return std::nullopt;
+        std::optional<std::string> owner;
+        if (has_definitions)
+            for (const auto &[name, definition] : definitions->items()) {
+                if (!definition.is_object() || !find(&definition, node)) continue;
+                if (owner) return std::nullopt;
+                owner = name;
+            }
+        return owner;
+    }
+    // An expanded id: walk the instances and loops it names down to the body
+    // that holds its last segment.
+    const Json *scope = &document;
+    std::optional<std::string> definition;
+    std::size_t index = 0;
+    while (index + 1 < segments.size()) {
+        const auto *structural = find(scope, segments[index]);
+        if (structural == nullptr) return std::nullopt;
+        const auto op = structural->value("op", std::string{});
+        std::string next;
+        if (op == "graph.instance") {
+            const auto found = structural->find("definition");
+            if (found == structural->end() || !found->is_string()) return std::nullopt;
+            next = found->get<std::string>();
+            index += 1;
+        } else if (op == "graph.loop") {
+            if (index + 2 >= segments.size()) return std::nullopt;
+            const auto parameters = structural->find("parameters");
+            if (parameters == structural->end() || !parameters->is_object()) return std::nullopt;
+            const auto branches = parameters->find("branches");
+            if (branches == parameters->end() || !branches->is_array()) return std::nullopt;
+            const auto bodyName = [](const Json &branch) {
+                const auto found = branch.is_object() ? branch.find("body") : branch.end();
+                return found != branch.end() && found->is_string() ? found->get<std::string>() : std::string{};
+            };
+            const auto &marker = segments[index + 1];
+            if (marker.starts_with('$')) {
+                // The template of branch <n>.
+                std::size_t branch = 0;
+                try {
+                    std::size_t used = 0;
+                    branch = std::stoul(marker.substr(1), &used);
+                    if (used + 1 != marker.size()) return std::nullopt;
+                } catch (const std::exception &) {
+                    return std::nullopt;
+                }
+                if (branch >= branches->size()) return std::nullopt;
+                next = bodyName(branches->at(branch));
+            } else {
+                // One element's copy: the branch whose body holds the node.
+                for (const auto &branch : *branches) {
+                    const auto name = bodyName(branch);
+                    if (const auto *candidate = body(name); candidate && find(candidate, segments[index + 2])) {
+                        next = name;
+                        break;
+                    }
+                }
+            }
+            index += 2;
+        } else {
+            return std::nullopt;
+        }
+        scope = body(next);
+        if (scope == nullptr) return std::nullopt;
+        definition = std::move(next);
+    }
+    return definition;
+}
+
+GraphRefusalSource graphRefusalSource(std::string_view node, std::string_view scope, const Json &document,
+                                      std::string_view reference) {
+    GraphRefusalSource source;
+    source.document = graphDocumentReference(reference);
+    // An edit's scope names the definition it addressed ("root" is none).
+    if (!scope.empty() && scope != "root" && document.is_object()) {
+        const auto definitions = document.find("definitions");
+        if (definitions != document.end() && definitions->is_object() && definitions->contains(std::string{scope}))
+            source.definition = std::string{scope};
+    }
+    if (!source.definition) source.definition = graphNodeDefinition(document, node);
+    return source;
+}
+
+GraphRegistryError graphRefusalInDocument(const GraphRegistryError &refusal, const Json &document,
+                                          std::string_view reference) {
+    auto detail = refusal.detail();
+    addGraphRefusalSource(detail, refusal.code(), document, reference);
+    if (detail == refusal.detail()) return refusal;
+    return GraphRegistryError(refusal.code(), std::move(detail));
+}
 
 std::string_view graphExecutionDomainName(GraphExecutionDomain domain) {
     switch (domain) {

@@ -103,6 +103,19 @@ std::optional<std::pair<std::string, Json>> graphRefusalOf(
     return std::nullopt;
 }
 
+// CT-2: a graph.* refusal's details with the root's reference as `document`
+// and, judged against `root_bytes` (the root the refusal was raised on), the
+// definition its node belongs to. Fields the details already have are kept.
+OrderedJson withGraphRefusalDocument(OrderedJson details, std::string_view code,
+                                     std::string_view root_bytes,
+                                     std::string_view reference) {
+    if (!code.starts_with("graph.")) return details;
+    if (details.is_null()) details = OrderedJson::object();
+    addGraphRefusalSource(details, code,
+                          Json::parse(root_bytes, nullptr, false), reference);
+    return details;
+}
+
 // Q-14e: the fields a typed render_pipeline_preflight_failed refusal carries,
 // added beside the ones a call site already has. Every refusal with that code
 // that is built from an exception goes through here, whichever way the
@@ -993,6 +1006,12 @@ RenderConfigEditorService::gateSnapshot() {
 
 OrderedJson RenderConfigEditorService::rejection(
     std::string code, std::string message, OrderedJson details) const {
+    // CT-2: every graph.* refusal names the root document its node was
+    // written in. A caller that held the candidate root has added the fields
+    // already; otherwise the root as this editor holds it is read.
+    details = withGraphRefusalDocument(std::move(details), code,
+                                       document_.bytes(),
+                                       dependencies_.source_reference);
     details["code"] = std::move(code);
     details["message"] = std::move(message);
     return {{"status", "rejected"},
@@ -1027,6 +1046,11 @@ std::optional<OrderedJson> RenderConfigEditorService::preflightGraphVariants(
         if (auto refusal = graphRefusalOf(error.cause())) {
             for (const auto &[key, value] : refusal->second.items())
                 if (!details.contains(key)) details[key] = value;
+            // CT-2: judged against the candidate's root, not the live one.
+            details = withGraphRefusalDocument(
+                std::move(details), refusal->first,
+                candidate.rootDocument().bytes,
+                dependencies_.source_reference);
             return rejection(refusal->first, error.what(), std::move(details));
         }
         return preflightRejection(error, std::move(details));
@@ -2483,9 +2507,14 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
     // it on a pipeline that draws nothing deferred).
     return queueGraphRootEdit(params, digest, method,
         [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+            // CT-2: the root a refusal is judged against -- the edited one
+            // once the ops applied, so a node they added is found in it.
+            Json judged;
             try {
                 const auto source = Json::parse(candidate.bytes());
+                judged = source;
                 const auto edited = Pelican::editGraphDocument(source, ops);
+                judged = edited;
                 (void)partitionGraphDocument(edited);
                 candidate = candidate.withRootValue("nodes", edited.at("nodes").dump(2));
                 // An op may now address a definition body. The root `nodes`
@@ -2508,8 +2537,10 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
                         "layout", edited.value("layout", Json::object()).dump(2));
                 return std::nullopt;
             } catch (const GraphRegistryError &error) {
-                return rejection(error.code(), error.what(),
-                                 OrderedJson::parse(error.detail().dump()));
+                const auto named = graphRefusalInDocument(
+                    error, judged, dependencies_.source_reference);
+                return rejection(named.code(), named.what(),
+                                 OrderedJson::parse(named.detail().dump()));
             } catch (const std::exception &error) {
                 return rejection("invalid_graph_document", error.what());
             }
@@ -6116,6 +6147,11 @@ void RenderConfigEditorService::completeCommitTransaction(
                          refusal->second.items()) {
                         if (!details.contains(key)) details[key] = value;
                     }
+                    // CT-2: judged against the root this ticket carried.
+                    details = withGraphRefusalDocument(
+                        std::move(details), refusal->first,
+                        transaction->ticket.candidate.bytes(),
+                        dependencies_.source_reference);
                     finish(rejection(refusal->first, applied.error,
                                      std::move(details)));
                     return;
