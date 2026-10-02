@@ -552,6 +552,7 @@ FrameGraphRuntimeContainer::prepareGeneration(
         execution.deformed_attributes = std::move(program.deformed_attributes);
         execution.pose_attributes = std::move(program.pose_attributes);
         execution.attribute_source_files = std::move(program.attribute_source_files);
+        execution.image_initial_assets = std::move(program.image_initial_assets);
         candidate->programs.insert_or_assign(
             rendering_pass_id,
             CompiledRenderProgram{

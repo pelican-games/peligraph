@@ -798,6 +798,19 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         if (node.at("op") == "render.image") {
             forbid(parameters, {"name", "kind"});
             parameters.erase("type");
+            // IA-1: an image with initial contents is copied into, and its
+            // extent is the asset's when it gives none (the engine writes
+            // the asset's width and height in first:
+            // resolveGraphImageInitialAssets; a path that does not read
+            // assets keeps the output-relative placeholder).
+            if (parameters.contains("initial")) {
+                checkRenderImageInitial(id, parameters);
+                auto &usage = parameters["usage"];
+                if (!usage.is_array()) usage = Json::array();
+                if (std::find(usage.begin(), usage.end(), "TRANSFER_DST") == usage.end())
+                    usage.push_back("TRANSFER_DST");
+                if (!parameters.contains("extent_scale")) parameters["extent_scale"] = 1.0;
+            }
             parameters["name"] = id;
             (body != nullptr ? body->render_targets : config["render_targets"]).push_back(std::move(parameters));
             continue;

@@ -418,7 +418,7 @@ TEST_CASE("KTX2 parser rejects subset violations with the texture name", "[image
         }
     };
     expect_error(makeRgba8Ktx2(43, 2, 2), "supercompression");
-    expect_error(makeRgba8Ktx2(43, 1), "incomplete mip chain");
+    expect_error(makeRgba8Ktx2(43, 3), "incomplete mip chain");
     expect_error(makeRgba8Ktx2(147, 2), "outside the WP92");
 }
 

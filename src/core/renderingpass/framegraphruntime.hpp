@@ -38,6 +38,25 @@ class PreparedVulkanNativeScopeGraph;
 // Authored JSON references and the bytes used to compile one variant family.
 using RenderGraphDocumentSnapshot = std::map<std::string, std::string, std::less<>>;
 
+// IA-1: the asset a persistent render.image starts from (`initial: {asset}`),
+// read when the generation was compiled. The renderer copies `texels` (level
+// 0, rows packed) into the image each time the image is made and on the
+// first frame of a generation.
+struct RenderImageInitialAsset {
+    // The reference as written, and the file it resolved to.
+    std::string asset;
+    std::filesystem::path file;
+    // The file's sha256 in its asset store's assets.manifest, when listed.
+    std::optional<std::string> sha256;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    // The Vulkan name of the texels' format ("R32G32B32A32_SFLOAT").
+    std::string format;
+    std::vector<std::byte> texels;
+};
+using RenderImageInitialAssets =
+    std::map<std::string, std::shared_ptr<const RenderImageInitialAsset>, std::less<>>;
+
 struct CompiledFrameGraphBarrier {
     std::string resource;
     size_t from_node_index = 0;
@@ -95,6 +114,8 @@ struct CompiledFrameGraphExecution {
     // Resolved dependencies of the attribute snapshot owned by this program.
     // Runtime metadata only; never copied into the authored graph document.
     std::vector<std::filesystem::path> attribute_source_files;
+    // IA-1: by render target name, the persistent images' initial assets.
+    RenderImageInitialAssets image_initial_assets;
 };
 
 struct CompiledRenderProgram {
@@ -172,6 +193,7 @@ struct RenderPipelineProgramPreparation {
     std::vector<GraphDeformedAttribute> deformed_attributes;
     std::vector<GraphPoseAttribute> pose_attributes;
     std::vector<std::filesystem::path> attribute_source_files;
+    RenderImageInitialAssets image_initial_assets;
 };
 
 class PreparedRendererRuntimeGeneration {

@@ -3076,6 +3076,14 @@ target_compile_definitions(pelican_test_packagemanifest_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
+# IA-1: the KTX2 writer, the float formats the loader reads, and
+# `pelican_cli image ktx2` (its source is compiled in, as projectmigration_test
+# compiles `project migrate`).
+pelican_define_test(ia1_ktx2_cli_test pelican_core argparse stb)
+target_sources(pelican_test_ia1_ktx2_cli_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devcli/imagecommand.cpp
+)
+
 # MG-1: the document migration registry, the raw-envelope gate, plan/apply on
 # the project document transaction, and `project migrate` itself (its source is
 # compiled in so the test-only step reaches it). The step lives in

@@ -5,6 +5,9 @@
 #include <stdexcept>
 #include <algorithm>
 #include <limits>
+#include <optional>
+#include <set>
+#include <utility>
 
 namespace Pelican {
 namespace {
@@ -415,6 +418,117 @@ Json resolveGraphAttributeSources(const Json &document, const GraphAttributeSour
             }
     }
     (void)partitionGraphDocument(result); // Validate resolved count/stride overflow too.
+    return result;
+}
+
+void checkRenderImageInitial(const std::string &node, const Json &parameters) {
+    if (!parameters.is_object()) return;
+    const auto initial = parameters.find("initial");
+    if (initial == parameters.end()) return;
+    const auto asset = initial->is_object() ? initial->find("asset") : initial->end();
+    if (!initial->is_object() || initial->size() != 1 || asset == initial->end() || !asset->is_string() ||
+        asset->get_ref<const std::string &>().empty())
+        throw std::invalid_argument("render.image initial must be {\"asset\": \"<reference>\"}: " + node);
+    if (parameters.value("lifetime", Json{}) != "persistent")
+        throw GraphRegistryError("graph.image_initial_requires_persistent@1", {{"node", node}});
+    if (!parameters.contains("width") && !parameters.contains("height") && parameters.contains("extent_scale"))
+        throw GraphRegistryError("graph.image_initial_extent_conflict@1", {{"node", node}});
+    const auto dimension = parameters.find("dimension");
+    const auto layers = parameters.find("array_layers");
+    if ((dimension != parameters.end() && *dimension != "2d") ||
+        (layers != parameters.end() && *layers != 1))
+        throw std::invalid_argument("render.image initial requires one 2d layer: " + node);
+}
+
+namespace {
+// A format name's shape: its sRGB variant spelled as the UNORM one
+// ("R8G8B8A8_SRGB" -> "R8G8B8A8_UNORM", "BC7_SRGB_BLOCK" -> "BC7_UNORM_BLOCK").
+std::pair<std::string, bool> imageFormatShape(std::string name) {
+    const auto srgb = name.find("SRGB");
+    if (srgb == std::string::npos) return {std::move(name), false};
+    name.replace(srgb, 4, "UNORM");
+    return {std::move(name), true};
+}
+} // namespace
+
+Json resolveGraphImageInitialAssets(const Json &document, const GraphImageInitialAssetReader &read) {
+    // Most documents have none: skip the partition then.
+    const auto declares = [](const Json &scope) {
+        const auto nodes = scope.find("nodes");
+        if (nodes == scope.end() || !nodes->is_array()) return false;
+        return std::any_of(nodes->begin(), nodes->end(), [](const Json &node) {
+            if (!node.is_object() || node.value("op", Json{}) != "render.image") return false;
+            const auto parameters = node.find("parameters");
+            return parameters != node.end() && parameters->is_object() && parameters->contains("initial");
+        });
+    };
+    bool any = document.is_object() && declares(document);
+    if (const auto definitions = document.find("definitions");
+        !any && definitions != document.end() && definitions->is_object())
+        for (const auto &[name, definition] : definitions->items()) {
+            (void)name;
+            if (definition.is_object() && declares(definition)) any = true;
+        }
+    if (!any) return document;
+    const auto graph = partitionGraphDocument(document).rendering;
+    auto result = document;
+    // A definition used by several instances is one authored node; its
+    // extent is filled once.
+    std::set<std::pair<std::string, std::string>> filled;
+    for (const auto &node : graph.nodes) {
+        if (node.at("op") != "render.image") continue;
+        const auto found_parameters = node.find("parameters");
+        if (found_parameters == node.end() || !found_parameters->is_object() ||
+            !found_parameters->contains("initial"))
+            continue;
+        const auto &parameters = *found_parameters;
+        const auto id = node.at("id").get<std::string>();
+        checkRenderImageInitial(id, parameters);
+        const auto &origin = graph.origins.at(id);
+        if (!origin.loop.empty())
+            throw std::invalid_argument("render.image initial is not supported in a graph.loop body: " + id);
+        const auto asset = parameters.at("initial").at("asset").get<std::string>();
+        const auto actual = read(id, asset);
+        const auto declared = [&](const char *key) -> std::optional<std::uint32_t> {
+            const auto value = parameters.find(key);
+            // An expression (a loop's) or a bad value is the target parser's.
+            if (value == parameters.end() || !value->is_number_integer() || value->get<std::int64_t>() < 0)
+                return std::nullopt;
+            return value->get<std::uint32_t>();
+        };
+        const bool extent_given = parameters.contains("width") || parameters.contains("height");
+        const auto width = extent_given ? declared("width") : std::optional{actual.width};
+        const auto height = extent_given ? declared("height") : std::optional{actual.height};
+        const auto format = parameters.value("format", Json{});
+        const auto mismatch = [&](const char *what) {
+            const auto number = [](const std::optional<std::uint32_t> &value) {
+                return value ? Json(*value) : Json(nullptr);
+            };
+            throw GraphRegistryError(
+                "graph.image_initial_mismatch@1",
+                {{"node", id},
+                 {"asset", asset},
+                 {"what", what},
+                 {"expected", {{"width", number(width)}, {"height", number(height)},
+                               {"format", format.is_string() ? format : Json(nullptr)}}},
+                 {"actual", {{"width", actual.width}, {"height", actual.height}, {"format", actual.format}}}});
+        };
+        if ((width && *width != actual.width) || (height && *height != actual.height)) mismatch("extent");
+        if (format.is_string()) {
+            const auto [image_shape, image_srgb] = imageFormatShape(format.get<std::string>());
+            const auto [asset_shape, asset_srgb] = imageFormatShape(actual.format);
+            if (image_shape != asset_shape) mismatch("format");
+            if (actual.color_space_declared && image_srgb != asset_srgb) mismatch("color_space");
+        }
+        if (extent_given || !filled.emplace(origin.definition, origin.node).second) continue;
+        auto &scope = origin.definition.empty() ? result : result.at("definitions").at(origin.definition);
+        for (auto &authored : scope.at("nodes"))
+            if (authored.at("id") == origin.node) {
+                authored["parameters"]["width"] = actual.width;
+                authored["parameters"]["height"] = actual.height;
+                break;
+            }
+    }
     return result;
 }
 }

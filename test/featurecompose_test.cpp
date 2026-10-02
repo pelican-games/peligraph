@@ -15,6 +15,8 @@
 #include "../src/project/shaderresourceport.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/loader/imageloader.hpp"
+#include "../src/core/loader/ktx2.hpp"
 #include "../src/core/renderer/viewfamilyproviderregistry.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/frameexecutionadapter.hpp"
@@ -9708,6 +9710,162 @@ TEST_CASE("a snapshot copy of a pass's own image gives the images the usages the
     // An image nothing copies keeps what it declared.
     CHECK(usage("h0_image") == std::set<std::string>{"COLOR_ATTACHMENT", "SAMPLED"});
     CHECK(passByName(composed.config, "copy").at("source") == "show_image");
+}
+
+
+namespace {
+// IA-1: an image `lut` beside ps1Graph that nothing reads (so no once pass
+// is involved), starting from `initial`.
+nlohmann::json ia1ImageParameters(const std::string &format) {
+    return {{"type", lp0aSceneColorType()},
+            {"format", format},
+            {"lifetime", "persistent"},
+            {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}},
+            {"initial", {{"asset", "assets/lut.ktx2"}}}};
+}
+
+nlohmann::json ia1Graph(const nlohmann::json &parameters) {
+    auto document = ps1Graph();
+    document["nodes"].push_back(
+        {{"id", "lut"}, {"op", "render.image"}, {"parameters", parameters}, {"outputs", {"resource"}}});
+    return document;
+}
+
+// What the engine reads from a KTX2 the writer made: the asset facts the
+// resolution sees.
+GraphImageInitialAsset ia1Ktx2Facts(Ktx2Format format, std::uint32_t width, std::uint32_t height) {
+    const std::vector<std::byte> texels(std::size_t{width} * height * ktx2TexelBytes(format));
+    const auto loaded = loadImageMemory(writeKtx2(format, width, height, texels), "lut.ktx2");
+    return {loaded.width, loaded.height, std::string{imagePixelFormatName(loaded.format)},
+            loaded.color_space_declared};
+}
+
+// A PNG decodes to RGBA8 and does not say whether it is sRGB.
+GraphImageInitialAsset ia1PngFacts(std::uint32_t width, std::uint32_t height) {
+    return {width, height, "R8G8B8A8_UNORM", false};
+}
+
+nlohmann::json ia1Resolve(const nlohmann::json &document, const GraphImageInitialAsset &facts) {
+    return resolveGraphImageInitialAssets(document, [&](std::string_view node, const std::string &asset) {
+        CHECK(std::string{node} == "lut");
+        CHECK(asset == "assets/lut.ktx2");
+        return facts;
+    });
+}
+
+std::pair<std::string, nlohmann::json> ia1Refusal(const nlohmann::json &document,
+                                                  const GraphImageInitialAsset &facts) {
+    try {
+        (void)ia1Resolve(document, facts);
+    } catch (const GraphRegistryError &error) {
+        return {error.code(), error.detail()};
+    }
+    FAIL("the initial asset was not refused by name");
+    return {};
+}
+} // namespace
+
+TEST_CASE("IA-1 a persistent image takes its initial asset's extent and is copied into",
+          "[render-feature][graph-composition][ia1]") {
+    using Json = nlohmann::json;
+    // No width / height: the asset's are written into the compiler document.
+    auto resolved = ia1Resolve(ia1Graph(ia1ImageParameters("R32G32B32A32_SFLOAT")),
+                               ia1Ktx2Facts(Ktx2Format::R32G32B32A32Sfloat, 64, 32));
+    const auto &parameters = ps1Node(resolved, "lut").at("parameters");
+    CHECK(parameters.at("width") == 64);
+    CHECK(parameters.at("height") == 32);
+    CHECK_FALSE(parameters.contains("extent_scale"));
+
+    // The lowered target keeps `initial`, gets TRANSFER_DST and the extent
+    // scale the target parser asks for (a fixed extent wins over it).
+    const auto composed = lp0aCompose(resolved);
+    const auto &target = ps1Target(composed.config, "lut");
+    CHECK(target.at("initial") == Json{{"asset", "assets/lut.ktx2"}});
+    CHECK(target.at("width") == 64);
+    CHECK(target.at("height") == 32);
+    CHECK(target.at("extent_scale") == 1.0);
+    const auto usage = target.at("usage").get<std::set<std::string>>();
+    CHECK(usage == std::set<std::string>{"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_DST"});
+    REQUIRE_NOTHROW(compileComposition(composed));
+
+    // A PNG says nothing about its color space: it fits a UNORM and an SRGB
+    // image alike, and the declared extent is kept.
+    for (const auto *format : {"R8G8B8A8_UNORM", "R8G8B8A8_SRGB"}) {
+        INFO(format);
+        auto declared = ia1ImageParameters(format);
+        declared["width"] = 16;
+        declared["height"] = 8;
+        REQUIRE_NOTHROW(ia1Resolve(ia1Graph(declared), ia1PngFacts(16, 8)));
+    }
+}
+
+TEST_CASE("IA-1 an initial asset on a transient image, beside an extent scale, or that does not fit is refused by name",
+          "[render-feature][graph-composition][ia1]") {
+    using Json = nlohmann::json;
+    using Refusal = std::pair<std::string, Json>;
+    const auto rgba32f = ia1Ktx2Facts(Ktx2Format::R32G32B32A32Sfloat, 64, 64);
+    SECTION("transient") {
+        for (const auto &lifetime : {Json{}, Json("transient")}) {
+            auto parameters = ia1ImageParameters("R32G32B32A32_SFLOAT");
+            if (lifetime.is_null()) parameters.erase("lifetime");
+            else parameters["lifetime"] = lifetime;
+            const auto document = ia1Graph(parameters);
+            // Refused while the graph is lowered (every path) and while the
+            // engine reads the asset (the runtime path, first).
+            CHECK(lp0aRefusal(document) == Refusal{"graph.image_initial_requires_persistent@1", {{"node", "lut"}}});
+            CHECK(ia1Refusal(document, rgba32f) ==
+                  Refusal{"graph.image_initial_requires_persistent@1", {{"node", "lut"}}});
+        }
+    }
+    SECTION("the asset's extent and an extent_scale") {
+        auto parameters = ia1ImageParameters("R32G32B32A32_SFLOAT");
+        parameters["extent_scale"] = 0.5;
+        const auto document = ia1Graph(parameters);
+        CHECK(lp0aRefusal(document) == Refusal{"graph.image_initial_extent_conflict@1", {{"node", "lut"}}});
+        CHECK(ia1Refusal(document, rgba32f) == Refusal{"graph.image_initial_extent_conflict@1", {{"node", "lut"}}});
+    }
+    SECTION("extent") {
+        auto parameters = ia1ImageParameters("R32G32B32A32_SFLOAT");
+        parameters["width"] = 32;
+        parameters["height"] = 64;
+        const auto [code, fields] = ia1Refusal(ia1Graph(parameters), rgba32f);
+        CHECK(code == "graph.image_initial_mismatch@1");
+        CHECK(fields == Json{{"node", "lut"},
+                             {"asset", "assets/lut.ktx2"},
+                             {"what", "extent"},
+                             {"expected", {{"width", 32}, {"height", 64}, {"format", "R32G32B32A32_SFLOAT"}}},
+                             {"actual", {{"width", 64}, {"height", 64}, {"format", "R32G32B32A32_SFLOAT"}}}});
+    }
+    SECTION("format") {
+        const auto [code, fields] = ia1Refusal(ia1Graph(ia1ImageParameters("R16G16B16A16_SFLOAT")), rgba32f);
+        CHECK(code == "graph.image_initial_mismatch@1");
+        CHECK(fields == Json{{"node", "lut"},
+                             {"asset", "assets/lut.ktx2"},
+                             {"what", "format"},
+                             {"expected", {{"width", 64}, {"height", 64}, {"format", "R16G16B16A16_SFLOAT"}}},
+                             {"actual", {{"width", 64}, {"height", 64}, {"format", "R32G32B32A32_SFLOAT"}}}});
+        // A PNG into a float image is a format mismatch too.
+        CHECK(ia1Refusal(ia1Graph(ia1ImageParameters("R32G32B32A32_SFLOAT")), ia1PngFacts(64, 64))
+                  .second.at("what") == "format");
+    }
+    SECTION("color_space") {
+        const auto [code, fields] = ia1Refusal(ia1Graph(ia1ImageParameters("R8G8B8A8_UNORM")),
+                                               ia1Ktx2Facts(Ktx2Format::Rgba8Srgb, 4, 4));
+        CHECK(code == "graph.image_initial_mismatch@1");
+        CHECK(fields == Json{{"node", "lut"},
+                             {"asset", "assets/lut.ktx2"},
+                             {"what", "color_space"},
+                             {"expected", {{"width", 4}, {"height", 4}, {"format", "R8G8B8A8_UNORM"}}},
+                             {"actual", {{"width", 4}, {"height", 4}, {"format", "R8G8B8A8_SRGB"}}}});
+        CHECK(ia1Refusal(ia1Graph(ia1ImageParameters("R8G8B8A8_SRGB")), ia1Ktx2Facts(Ktx2Format::Rgba8Unorm, 4, 4))
+                  .second.at("what") == "color_space");
+    }
+    SECTION("an initial that is not {asset}") {
+        auto parameters = ia1ImageParameters("R32G32B32A32_SFLOAT");
+        parameters["initial"] = "assets/lut.ktx2";
+        CHECK_THROWS_WITH(lp0aCompose(ia1Graph(parameters)),
+                          Catch::Matchers::ContainsSubstring("render.image initial must be"));
+    }
 }
 
 } // namespace Pelican

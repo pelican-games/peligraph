@@ -30,6 +30,7 @@ namespace Pelican {
 
 struct RenderPipelineReloadState;
 struct RenderPipelinePublicationTransaction;
+struct RenderImageInitialAsset;
 struct RenderPipelineAuthoringApplyResult {
     bool committed = false;
     bool staged = false;
@@ -212,6 +213,17 @@ DECLARE_MODULE(Renderer) {
     std::map<int, std::map<std::string, OnceRunRecord, std::less<>>>
         once_runs;
     std::set<std::string, std::less<>> once_rerun_requests;
+    // IA-1: what each persistent image with an initial asset was last filled
+    // from, by program (RenderingPassId value) and target name: the VkImage,
+    // the runtime generation and the asset read for it. Another of any of
+    // the three fills it again before the frame records.
+    struct ImageInitialUpload {
+        std::uint64_t image = 0;
+        std::uint64_t generation = 0;
+        std::shared_ptr<const RenderImageInitialAsset> asset;
+    };
+    std::map<int, std::map<std::string, ImageInitialUpload, std::less<>>>
+        image_initial_uploads;
     std::uint64_t next_ray_scene_generation = 1;
 
     TemporalViewFamilyHistory &activeTemporalHistory();

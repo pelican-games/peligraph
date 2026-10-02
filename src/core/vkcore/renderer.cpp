@@ -311,6 +311,12 @@ std::set<watch::AssetKey> renderPipelineWatchSources(
     const auto &resolver = GET_MODULE(PathResolver);
     for (const auto &file : program->frame_graph.attribute_source_files)
         if (auto key = watch::assetKeyForFile(resolver, file)) result.insert(std::move(*key));
+    // IA-1: an initial asset rewritten on disk is read into a new generation,
+    // whose first frame copies it into the image again.
+    for (const auto &[name, asset] : program->frame_graph.image_initial_assets) {
+        (void)name;
+        if (auto key = watch::assetKeyForFile(resolver, asset->file)) result.insert(std::move(*key));
+    }
     if (pipeline.pipeline_preset) {
         append(pipeline.pipeline_preset->reference);
     }
@@ -4677,6 +4683,22 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     const auto *sprite_scene = FastModuleContainer::tryGet<SpriteScene>();
     result["sprite"] = sprite_scene != nullptr ? sprite_scene->statusJson()
                                                  : nlohmann::json{{"enabled", false}};
+    // IA-1: a persistent image that starts from an asset names it, with the
+    // file's sha256 in its store's assets.manifest (null when not listed).
+    // An object, so a later WP can add what the asset was baked from.
+    if (!frame_graph->image_initial_assets.empty()) {
+        if (const auto physical = result.find("physical_target_plan");
+            physical != result.end() && physical->is_object() && physical->contains("resources"))
+            for (auto &resource : physical->at("resources")) {
+                const auto found = frame_graph->image_initial_assets.find(
+                    resource.value("logical_resource", std::string{}));
+                if (found == frame_graph->image_initial_assets.end()) continue;
+                resource["initial_asset"] = {
+                    {"asset", found->second->asset},
+                    {"sha256", found->second->sha256 ? nlohmann::json(*found->second->sha256)
+                                                     : nlohmann::json(nullptr)}};
+            }
+    }
     return result;
 }
 
@@ -5144,6 +5166,7 @@ class Renderer::LogicalFrameRecorder {
     void publishFrameValueGraph();
     void stagePoseAttributesAndLights();
     void buildDrawSortViews();
+    void uploadImageInitialAssets();
     void planOnceNodes();
     void planLogicalFrameSchedule();
     void configureExternalDepthExport();
@@ -6456,6 +6479,61 @@ std::uint64_t onceHandleValue(Handle handle) {
 }
 } // namespace
 
+// IA-1: a persistent image with `initial: {asset}` holds the asset when it
+// is made anew and on the first frame of a runtime generation, before any
+// pass of the frame (a once pass that writes it overwrites it). The copy is
+// its own submission, waited for; the layout tracker resumes from
+// TRANSFER_DST. A target whose format or extent no longer fits the asset
+// (the composition changed it after the preflight) is left as it is.
+void Renderer::LogicalFrameRecorder::uploadImageInitialAssets() {
+    if (frame_graph.image_initial_assets.empty()) return;
+    auto &uploads = renderer.image_initial_uploads[renderer.current_rendering_pass_id.value];
+    auto &targets = modules.render_target_container;
+    for (const auto &[name, asset] : frame_graph.image_initial_assets) {
+        const auto binding = frame_graph.render_target_bindings.find(name);
+        if (binding == frame_graph.render_target_bindings.end() || !isConcreteRenderTarget(binding->second))
+            continue;
+        const auto &image = targets.getImage(binding->second);
+        const auto handle = onceHandleValue(static_cast<VkImage>(image.image.get()));
+        auto &record = uploads[name];
+        if (record.image == handle && record.generation == runtime_generation->generation && record.asset == asset)
+            continue;
+        record = Renderer::ImageInitialUpload{handle, runtime_generation->generation, asset};
+        const auto metadata = targets.getMetadata(binding->second);
+        std::string target_format;
+        try {
+            target_format = formatToString(metadata.format);
+        } catch (const std::exception &) {
+        }
+        const auto shape = [](std::string format) {
+            if (const auto srgb = format.find("SRGB"); srgb != std::string::npos) format.replace(srgb, 4, "UNORM");
+            return format;
+        };
+        if (metadata.extent.width != asset->width || metadata.extent.height != asset->height ||
+            metadata.samples != 1 || metadata.array_layers != 1 || shape(target_format) != shape(asset->format) ||
+            asset->texels.size() !=
+                std::size_t{asset->width} * asset->height * formatTexelBytes(metadata.format)) {
+            if (logger)
+                LOG_WARNING(logger, "render.image initial asset {} does not fit target {} ({}x{} {}); not copied",
+                            asset->asset, name, metadata.extent.width, metadata.extent.height, target_format);
+            continue;
+        }
+        // The image may be one frames in flight still read (a new
+        // generation that kept it).
+        GET_MODULE(VulkanManageCore).waitIdle();
+        modules.vk_utils.safeTransferMemoryToImage(
+            image, asset->texels.data(), asset->texels.size(),
+            VulkanUtils::ImageTransferInfo{
+                .old_layout = vk::ImageLayout::eUndefined,
+                .new_layout = vk::ImageLayout::eTransferDstOptimal,
+                .dst_stage = vk::PipelineStageFlagBits::eTransfer,
+                .dst_access = vk::AccessFlagBits::eTransferWrite,
+            });
+        renderer.render_target_layout_tracker.assumeLayout(targets, binding->second,
+                                                           vk::ImageLayout::eTransferDstOptimal);
+    }
+}
+
 // PS-1: which once nodes this frame records (oncescheduler.hpp). Planned
 // after the frame's host writes (value graph sinks, lights) are staged, so a
 // read buffer's digest is this frame's.
@@ -6641,6 +6719,7 @@ void Renderer::renderLogicalFrame(
     recorder.publishFrameValueGraph();
     recorder.stagePoseAttributesAndLights();
     recorder.buildDrawSortViews();
+    recorder.uploadImageInitialAssets();
     recorder.planOnceNodes();
     recorder.planLogicalFrameSchedule();
     recorder.configureExternalDepthExport();

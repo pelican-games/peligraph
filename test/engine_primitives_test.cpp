@@ -6,6 +6,7 @@
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/engineresources.hpp"
+#include "../src/core/loader/ktx2.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
@@ -18,6 +19,7 @@
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
+#include "../src/project/assetsmanifest.hpp"
 #include "../src/project/materialpassdecompose.hpp"
 #include "../src/project/projecttemplate.hpp"
 #include "../src/project/renderconfigsection.hpp"
@@ -44,6 +46,10 @@
 #include <set>
 #include <sstream>
 #include <stb_image.h>
+// IA-1: the test writes a PNG asset.
+#define STB_IMAGE_WRITE_STATIC
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
 #include <string>
 #include <thread>
 #include <vector>
@@ -2491,6 +2497,215 @@ TEST_CASE("PS-1 once passes run on the first frame and again only when asked, ed
     frame();
     CHECK_FALSE(recorded("h0"));
     CHECK(shown() == changed);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+
+namespace {
+// IA-1: lut_float (RGBA32F, 64x64, from a KTX2 the writer made, extent taken
+// from the asset), lut_unorm and lut_srgb (RGBA8, 4x4, both from one PNG)
+// are persistent images that start from their assets; a fullscreen pass per
+// image, run every frame, copies it texel for texel into an RGBA32F image
+// the test reads back.
+constexpr std::string_view ia1_show_frag =
+    "#version 460\n#extension GL_GOOGLE_include_directive : require\n"
+    "#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\n"
+    "layout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n"
+    "PELICAN_DECLARE_INPUT_0(field);\n\n"
+    "void main() {\n"
+    "    outColor = PELICAN_TEXTURE_2D_0(field, inUV);\n"
+    "}\n";
+
+Json ia1RenderingRoot(const Json &blank_root) {
+    const Json type{{"semantic", "pelican.render.color_signal@1"},
+                    {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    const Json color{{"kind", "image"}, {"type", type}, {"access", "write"}, {"attachment", "color"},
+                     {"location", 0}};
+    const Json input{{"kind", "image"}, {"type", type}, {"access", "read"}, {"binding", "input"},
+                     {"input_index", 0}};
+    const auto edge = [](const std::string &node, const char *port) { return Json{{"node", node}, {"port", port}}; };
+    const auto lut = [&](const char *id, const char *format, const char *asset, std::optional<int> extent) {
+        Json parameters{{"type", type},
+                        {"format", format},
+                        {"lifetime", "persistent"},
+                        {"usage", {"SAMPLED", "TRANSFER_SRC"}},
+                        {"initial", {{"asset", asset}}}};
+        if (extent) {
+            parameters["width"] = *extent;
+            parameters["height"] = *extent;
+        }
+        return Json{{"id", id}, {"op", "render.image"}, {"parameters", parameters}, {"outputs", {"resource"}}};
+    };
+    const auto shown = [&](const std::string &id, int extent) {
+        return Json{{"id", id}, {"op", "render.image"},
+                    {"parameters", {{"type", type}, {"format", "R32G32B32A32_SFLOAT"}, {"extent_scale", 1.0},
+                                    {"width", extent}, {"height", extent},
+                                    {"usage", {"COLOR_ATTACHMENT", "TRANSFER_SRC"}}}},
+                    {"outputs", {"resource"}}};
+    };
+    const auto show = [&](const std::string &id, const std::string &source, const std::string &target) {
+        return Json{{"id", id}, {"op", "render.fullscreen"},
+                    {"parameters", {{"pass_set", "main_render"},
+                                    {"shader", {{"vertex", "engine://fullscreen"},
+                                                {"fragment", "project://shaders/ia1_show"}}},
+                                    {"ports", {{"source", input}, {"color", color}}}}},
+                    {"inputs", {{"source", edge(source, "resource")}, {"color", edge(target, "resource")}}},
+                    {"outputs", {"color"}}};
+    };
+    auto root = blank_root;
+    root["nodes"] = Json::array({
+        lut("lut_float", "R32G32B32A32_SFLOAT", "assets/luts/ltc.ktx2", std::nullopt),
+        lut("lut_unorm", "R8G8B8A8_UNORM", "assets/luts/ramp.png", 4),
+        lut("lut_srgb", "R8G8B8A8_SRGB", "assets/luts/ramp.png", 4),
+        shown("shown_float", 64),
+        shown("shown_unorm", 4),
+        shown("shown_srgb", 4),
+        show("show_float", "lut_float", "shown_float"),
+        show("show_unorm", "lut_unorm", "shown_unorm"),
+        show("show_srgb", "lut_srgb", "shown_srgb"),
+    });
+    return root;
+}
+
+// 64x64 RGBA32F texels no 8- or 16-bit format holds: offset by `base`.
+std::vector<float> ia1LutValues(float base) {
+    std::vector<float> values(std::size_t{64} * 64 * 4);
+    for (std::size_t texel = 0; texel < 64 * 64; ++texel) {
+        const auto x = static_cast<float>(texel % 64);
+        const auto y = static_cast<float>(texel / 64);
+        values[texel * 4 + 0] = base + x * 0.0078125f + 1.0e-6f;
+        values[texel * 4 + 1] = -3.5f + y * 12.25f;
+        values[texel * 4 + 2] = 1234.5678f / (1.0f + x + y);
+        values[texel * 4 + 3] = 0.333333343f;
+    }
+    return values;
+}
+
+void ia1WriteLut(const std::filesystem::path &path, const std::vector<float> &values) {
+    std::vector<std::byte> texels(values.size() * sizeof(float));
+    std::memcpy(texels.data(), values.data(), texels.size());
+    const auto file = writeKtx2(Ktx2Format::R32G32B32A32Sfloat, 64, 64, texels);
+    writeFile(path, std::string_view{reinterpret_cast<const char *>(file.data()), file.size()});
+}
+
+std::vector<float> ia1ReadFloats(Renderer &renderer, std::string_view name) {
+    GET_MODULE(VulkanManageCore).waitIdle();
+    const auto read = test_support::RendererTestAccess::readRenderTarget(renderer, name, ImageSubresourceRange{});
+    REQUIRE(read.format == vk::Format::eR32G32B32A32Sfloat);
+    std::vector<float> values(read.bytes.size() / sizeof(float));
+    std::memcpy(values.data(), read.bytes.data(), values.size() * sizeof(float));
+    return values;
+}
+
+float ia1SrgbToLinear(float encoded) {
+    return encoded <= 0.04045f ? encoded / 12.92f : std::pow((encoded + 0.055f) / 1.055f, 2.4f);
+}
+} // namespace
+
+// IA-1 acceptance 1 and 2, through the running renderer: the float LUT's
+// values come out bit for bit, the PNG's bytes are data in the UNORM image
+// and sRGB in the SRGB one (the GPU decodes them), get_frame_plan names the
+// assets, and a rewritten LUT reloaded is copied in on the new generation.
+TEST_CASE("IA-1 persistent images start from their KTX2 and PNG assets and per-frame passes read them",
+          "[ia1][frame-plan][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("ia1_initial");
+    const auto root = dir.root / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    // An asset store with a manifest, so the frame plan has the sha256.
+    auto project = Json::parse(readFile(root / "project.json"));
+    project["asset_stores"] = {{"main", {{"mount", "assets/"}, {"manifest", "assets.manifest.json"}}}};
+    writeFile(root / "project.json", project.dump(2));
+    ia1WriteLut(root / "assets/luts/ltc.ktx2", ia1LutValues(0.5f));
+    // A 4x4 ramp whose bytes differ between the UNORM and the sRGB reading.
+    std::vector<unsigned char> ramp(std::size_t{4} * 4 * 4);
+    for (std::size_t texel = 0; texel < 16; ++texel) {
+        ramp[texel * 4 + 0] = static_cast<unsigned char>(texel * 17);
+        ramp[texel * 4 + 1] = static_cast<unsigned char>(255 - texel * 13);
+        ramp[texel * 4 + 2] = static_cast<unsigned char>(64 + texel * 5);
+        ramp[texel * 4 + 3] = static_cast<unsigned char>(200);
+    }
+    std::filesystem::create_directories(root / "assets/luts");
+    REQUIRE(stbi_write_png((root / "assets/luts/ramp.png").string().c_str(), 4, 4, 4, ramp.data(), 16) != 0);
+    (void)generateAssetsManifest(root / "assets", root / "assets.manifest.json", dir.root / "assets.cache.json",
+                                 "main", true);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    const auto blank_root = Json::parse(readFile(rendering_path));
+    writeFile(rendering_path, ia1RenderingRoot(blank_root).dump(2));
+    writeFile(root / "shaders/ia1_show.frag", ia1_show_frag);
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    // The headless setup has no envelope; give the resolver the asset store.
+    GET_MODULE(PathResolver).resetForTesting();
+    GET_MODULE(PathResolver).setup(root, false, readFile(root / "project.json"));
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    auto &renderer = GET_MODULE(Renderer);
+    const auto frame = [&] { (void)rpc.result("step_frame"); };
+
+    frame();
+    // 1. The float LUT, its 64x64 extent taken from the asset, reaches the
+    // screen bit for bit.
+    const auto expected = ia1LutValues(0.5f);
+    CHECK(ia1ReadFloats(renderer, "shown_float") == expected);
+    CHECK(ia1ReadFloats(renderer, "lut_float") == expected);
+    frame();
+    CHECK(ia1ReadFloats(renderer, "shown_float") == expected);
+
+    // 2. One PNG: the UNORM image reads its bytes / 255, the SRGB image the
+    // same bytes decoded from sRGB by the GPU.
+    const auto unorm = ia1ReadFloats(renderer, "shown_unorm");
+    const auto srgb = ia1ReadFloats(renderer, "shown_srgb");
+    REQUIRE(unorm.size() == ramp.size());
+    REQUIRE(srgb.size() == ramp.size());
+    std::size_t differing = 0;
+    for (std::size_t component = 0; component < ramp.size(); ++component) {
+        INFO(component);
+        const auto encoded = static_cast<float>(ramp[component]) / 255.0f;
+        const bool alpha = component % 4 == 3;
+        CHECK(std::abs(unorm[component] - encoded) < 1.0e-6f);
+        CHECK(std::abs(srgb[component] - (alpha ? encoded : ia1SrgbToLinear(encoded))) < 2.0e-3f);
+        if (std::abs(unorm[component] - srgb[component]) > 1.0e-2f) ++differing;
+    }
+    CHECK(differing > 20);
+
+    // The frame plan names each image's asset and its manifest sha256.
+    {
+        const auto plan = rpc.result("get_frame_plan");
+        std::map<std::string, Json> initial;
+        for (const auto &resource : plan.at("physical_target_plan").at("resources"))
+            if (resource.contains("initial_asset"))
+                initial.emplace(resource.at("logical_resource").get<std::string>(), resource.at("initial_asset"));
+        INFO(plan.at("physical_target_plan").dump(2));
+        CHECK(initial == std::map<std::string, Json>{
+                             {"lut_float", {{"asset", "assets/luts/ltc.ktx2"},
+                                            {"sha256", assetFileSha256(root / "assets/luts/ltc.ktx2")}}},
+                             {"lut_unorm", {{"asset", "assets/luts/ramp.png"},
+                                            {"sha256", assetFileSha256(root / "assets/luts/ramp.png")}}},
+                             {"lut_srgb", {{"asset", "assets/luts/ramp.png"},
+                                           {"sha256", assetFileSha256(root / "assets/luts/ramp.png")}}}});
+    }
+
+    // 3. The LUT rewritten on disk and the documents reloaded: the new
+    // generation reads the asset again and copies the new values in.
+    // reload_render_documents publishes nothing when no document changed
+    // (RL-1), so the root is rewritten too (same content, other layout).
+    ia1WriteLut(root / "assets/luts/ltc.ktx2", ia1LutValues(7.0f));
+    writeFile(rendering_path, ia1RenderingRoot(blank_root).dump(4));
+    const auto reloaded = rpc.result("reload_render_documents");
+    INFO(reloaded.dump(2));
+    REQUIRE(reloaded.at("status") == "accepted");
+    Json committed;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        frame();
+        committed = rpc.result("get_edit_result", {{"ticket", reloaded.at("ticket")}});
+        if (committed.value("status", std::string{}) != "pending") break;
+    }
+    INFO(committed.dump(2));
+    REQUIRE(committed.at("status") == "committed");
+    frame();
+    CHECK(ia1ReadFloats(renderer, "shown_float") == ia1LutValues(7.0f));
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 

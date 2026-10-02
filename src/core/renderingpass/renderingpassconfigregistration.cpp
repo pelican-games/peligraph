@@ -35,6 +35,8 @@
 #include "rendertargetmetadataresolver.hpp"
 #include "rendertargetnameresolver.hpp"
 #include "../loader/pathresolver.hpp"
+#include "../loader/imageloader.hpp"
+#include "../../project/assetsmanifest.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../renderer/gizmo.hpp"
 #include "../renderer/velocitypasscontainer.hpp"
@@ -48,7 +50,9 @@
 #include "../launchconfig.hpp"
 #endif
 #include <algorithm>
+#include <fstream>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -62,6 +66,39 @@
 namespace Pelican {
 
 namespace {
+
+// IA-1: a file's sha256 in the assets.manifest of the asset store it lives
+// in; nullopt when no store with a manifest holds it, or the manifest does
+// not list it (or cannot be read: verification reports that, not this).
+std::optional<std::string> assetManifestSha256(
+    const PathResolver &resolver, const std::filesystem::path &file,
+    std::map<std::filesystem::path, std::optional<AssetsManifest>> &manifests) {
+    for (const auto &store : resolver.stores()) {
+        if (!store.manifest) continue;
+        const auto relative = file.lexically_relative(store.root);
+        if (relative.empty() || *relative.begin() == "..") continue;
+        auto found = manifests.find(*store.manifest);
+        if (found == manifests.end()) {
+            std::optional<AssetsManifest> parsed;
+            try {
+                std::ifstream input{*store.manifest, std::ios::binary};
+                if (input) {
+                    const std::string text{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+                    parsed = parseAssetsManifestJson(text);
+                }
+            } catch (const std::exception &) {
+                parsed.reset();
+            }
+            found = manifests.emplace(*store.manifest, std::move(parsed)).first;
+        }
+        if (!found->second) return std::nullopt;
+        const auto name = relative.generic_string();
+        for (const auto &entry : found->second->files)
+            if (entry.file == name) return entry.sha256;
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
 
 // GP-3: a ui.* sink writes a node of the project's UI document. The render
 // config that carries it must reference the ui feature -- that reference is
@@ -858,6 +895,8 @@ class RegistrationStages {
     std::vector<GraphDeformedAttribute> deformed_attributes;
     std::vector<GraphPoseAttribute> pose_attributes;
     std::set<std::filesystem::path> attribute_source_files;
+    // IA-1: the persistent images' initial assets, by graph image node id.
+    RenderImageInitialAssets image_initial_assets;
     std::shared_ptr<const ValueGraph::Graph> value_graph;
 #if PELICAN_WITH_ANIMATION
     std::shared_ptr<const Animation::PoseGraph> pose_graph;
@@ -1057,6 +1096,37 @@ void RegistrationStages::prepare() {
     }
     validateGraphDeformedAttributes(deformed_attributes);
     validateGraphPoseAttributes(pose_attributes);
+    // IA-1: each persistent image's initial asset is read here, once per
+    // generation: the image takes the asset's extent when it gives none, and
+    // an asset that does not fit it is refused by name before anything is
+    // published (graph.image_initial_mismatch@1).
+    {
+        std::map<std::filesystem::path, std::optional<AssetsManifest>> manifests;
+        resolved_rendering_data = resolveGraphImageInitialAssets(resolved_rendering_data,
+            [&](std::string_view node, const std::string &asset) {
+                const auto &resolver = dependencies.front().runtime.path_resolver;
+                const auto file = resolver.resolveExistingFile(asset);
+                auto loaded = loadImageFile(file);
+                if (loaded.dimension != LoadedImageDimension::TwoD || loaded.array_layers != 1 ||
+                    loaded.depth != 1 || loaded.isBlockCompressed() || loaded.levels.empty())
+                    throw std::invalid_argument(
+                        "render.image initial asset must be one uncompressed 2d image: " + asset);
+                const auto &level = loaded.levels.front();
+                auto entry = std::make_shared<RenderImageInitialAsset>();
+                entry->asset = asset;
+                entry->file = file;
+                entry->sha256 = assetManifestSha256(resolver, file, manifests);
+                entry->width = loaded.width;
+                entry->height = loaded.height;
+                entry->format = std::string{imagePixelFormatName(loaded.format)};
+                const auto begin = loaded.pixels.begin() + static_cast<std::ptrdiff_t>(level.offset);
+                entry->texels.assign(begin, begin + static_cast<std::ptrdiff_t>(level.size));
+                const GraphImageInitialAsset facts{loaded.width, loaded.height, entry->format,
+                                                   loaded.color_space_declared};
+                image_initial_assets.insert_or_assign(std::string{node}, std::move(entry));
+                return facts;
+            });
+    }
 
     // Keep common authoring intact through preset/feature validation. Runtime
     // availability filters only its derived GPU declarations during composition.
@@ -1230,6 +1300,8 @@ void RegistrationStages::attachProgramGraphState(
         if (value_graph->nodeActive(attribute.resource, inactive_graph_scopes))
             program.deformed_attributes.push_back(attribute);
     program.attribute_source_files.assign(attribute_source_files.begin(), attribute_source_files.end());
+    for (const auto &[name, asset] : image_initial_assets)
+        if (value_graph->nodeActive(name, inactive_graph_scopes)) program.image_initial_assets.emplace(name, asset);
     if (value_graph) {
         if (program.target_plan) {
             const std::set<std::string> no_scopes;

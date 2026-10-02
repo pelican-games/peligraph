@@ -8,6 +8,7 @@ target_sources(pelican_cli PRIVATE
   distconfig.cpp
   gltfsceneextract.cpp
   graphcatalogcommand.cpp
+  imagecommand.cpp
   importcommand.cpp
   materialcommand.cpp
   packagecommand.cpp
@@ -18,6 +19,7 @@ target_sources(pelican_cli PRIVATE
   vrmcommand.cpp
   ../core/model/vatformat.cpp
   ../core/model/vrmsemantic.cpp
+  ../core/loader/ktx2.cpp
 )
 
-target_link_libraries(pelican_cli PRIVATE argparse nlohmann_json picosha2 glm pelican_project tinygltf)
+target_link_libraries(pelican_cli PRIVATE argparse nlohmann_json picosha2 glm pelican_project tinygltf stb)

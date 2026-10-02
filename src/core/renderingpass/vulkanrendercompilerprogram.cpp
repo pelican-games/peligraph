@@ -899,10 +899,20 @@ compileDefaultVulkanVariant(
     auto frame_plans =
         framePlansByName(graph_definitions);
     if (logical.composed_config.contains("rendering_passes")) {
+        // IA-1: an image with an initial asset holds it before any pass of
+        // the frame runs, so a pass may read it without an earlier writer,
+        // as it reads a buffer.
+        auto produced_before_passes = buffer_names;
+        if (const auto targets = logical.composed_config.find("render_targets");
+            targets != logical.composed_config.end() && targets->is_array())
+            for (const auto &target : *targets)
+                if (target.is_object() && target.contains("initial") && target.contains("name") &&
+                    target.at("name").is_string())
+                    produced_before_passes.insert(target.at("name").get<std::string>());
         for (const auto &pass_set : logical.composed_config.at("rendering_passes")) {
             validateFramePlanPassInputsProduced(
                 frame_plans.at(pass_set.at("name").get<std::string>()),
-                pass_set, buffer_names);
+                pass_set, produced_before_passes);
         }
     }
     auto execution_plans =
