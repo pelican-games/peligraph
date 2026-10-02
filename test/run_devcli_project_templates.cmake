@@ -54,6 +54,10 @@ endfunction()
 # camera convention removed basic_config.camera.up (one line), and MainCamera
 # stands at z = +3 instead of -3 so that, with no rotation, it looks along -Z
 # at the origin. Nothing else in either file changed.
+#
+# CC-1c (2026-10-03) re-took scenes/main.scene.json: KeyLight's direction
+# z flipped to -0.25 so the light reaches the faces the camera at z = +3
+# sees. Nothing else in the file changed.
 set(standard_digests
     ".gitattributes=53ca7dbd7bae3d4305c235b965e0af1b77aa1a6b0afa1ffcb8b8301e44c82955"
     ".gitignore=45658c9867458757f8857156830c81a4aabec1ac1b68dda97a9bed3c42c3f8a7"
@@ -69,7 +73,7 @@ set(standard_digests
     "input/profiles/keyboard.json=86d35286615bce33adfb6bf9a9c1b54e02d30e9b85b35cd1513f14538657d97c"
     "passes/main_rendering_config.json=81163814279c3171d67a654ec510ed0698daa1636ca22327b0894013976e000b"
     "project.json=1f89682d9c9d93f3eb3947905ef6308b468827a3cb9d02390ff15fd9fc58ea7f"
-    "scenes/main.scene.json=c4fedf3de2ec6ecb69e6a634d3e2c93c73497755e5630189cdb9c098e21739b4"
+    "scenes/main.scene.json=409a984dee207ba9f3af1dddf5b1750c17aab1cb8f7426d2a3896dbc5c890652"
     "ui/ui_overlay.json=f9cf52bb037434a9aa098e11a18fd12587bad51bf07928db10899b1da952a2ac"
 )
 
