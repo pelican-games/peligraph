@@ -78,3 +78,28 @@ add_test(
     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_intro_link_serve.cmake
 )
 set_tests_properties(devcli_intro_link_serve PROPERTIES LABELS "IL-1;cpu" TIMEOUT 120)
+
+# IL-2: the release form of the intro link example (tools/intro_link/example)
+# imports only KERNEL32 / USER32 / vulkan-1 and stays under a size fence. The
+# fence is 1.5x the measured size rounded up to whole KB; raise it on purpose
+# when the example grows. The exe is not run here (it opens a window and uses
+# the GPU).
+if(TARGET intro_link_example AND TARGET intro_link_example_dev)
+  get_filename_component(pelican_intro_link_linker_dir "${CMAKE_LINKER}" DIRECTORY)
+  find_program(PELICAN_DUMPBIN dumpbin HINTS "${pelican_intro_link_linker_dir}")
+  if(PELICAN_DUMPBIN)
+    set(PELICAN_INTRO_LINK_EXAMPLE_MAX_BYTES 16384)
+    add_test(
+      NAME intro_link_example_baked_is_small
+      COMMAND ${CMAKE_COMMAND}
+        -DEXE=$<TARGET_FILE:intro_link_example>
+        -DDEV_EXE=$<TARGET_FILE:intro_link_example_dev>
+        -DDUMPBIN=${PELICAN_DUMPBIN}
+        -DMAX_BYTES=${PELICAN_INTRO_LINK_EXAMPLE_MAX_BYTES}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_intro_link_example_size.cmake
+    )
+    set_tests_properties(intro_link_example_baked_is_small PROPERTIES LABELS "IL-2;cpu")
+  else()
+    message(STATUS "IL-2: dumpbin not found; intro_link_example_baked_is_small is not registered")
+  endif()
+endif()

@@ -4,6 +4,7 @@
 // Everything here is development tooling; PELICAN_WITH_INTRO_LINK=OFF drops
 // these sources from pelican_cli and nothing in the engine refers to them.
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -35,6 +36,9 @@ struct Key {
     bool operator==(const Key &) const = default;
 };
 
+// sizeof(pil_key) in the baked header: four floats and a uint32_t.
+constexpr std::size_t kBakedKeyBytes = 20;
+
 struct Track {
     std::string document; // project-relative, '/' separated
     std::vector<Key> keys;
@@ -47,6 +51,7 @@ struct ShaderSource {
 
 struct ShaderBinary {
     std::vector<std::uint32_t> words;
+    std::string variant; // "Os" or "no-inline" (reported by bake; not in the header)
 };
 
 // <project> is a directory holding project.json, or project.json itself.
@@ -72,10 +77,13 @@ std::filesystem::path findGlslc(const std::string &explicit_path);
 struct CompileResult {
     bool ok = false;
     std::vector<std::uint32_t> words;
-    std::string log; // glslc stderr (and stdout on failure)
+    std::string variant; // the build that was smaller: "Os" or "no-inline"
+    std::string log;     // glslc stderr (and stdout on failure)
 };
-// The same arguments for serve and bake:
-//   --target-env=vulkan1.2 -Os -I <shaders> -I <shaders>/include <file> -o -
+// The same rule for serve and bake: glslc --target-env=vulkan1.2 -Os
+// -I <shaders> -I <shaders>/include <file> -o -, and with spirv-opt next to
+// glslc also glslc -O0 + spirv-opt <spirv-opt's -Os list without inlining>;
+// the smaller module is used (a tie keeps -Os).
 CompileResult compileShader(const std::filesystem::path &glslc,
                             const std::filesystem::path &shaders_dir,
                             const ShaderSource &shader);
