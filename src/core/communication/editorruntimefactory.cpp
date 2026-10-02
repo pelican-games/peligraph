@@ -24,6 +24,7 @@
 #include "../loader/editorprojectionadapters.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../loader/renderconfigcandidate.hpp"
+#include "../loader/sampletable.hpp"
 #include "../loader/scene.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../os/inputsequence.hpp"
@@ -37,6 +38,7 @@
 #include "../shader/raygrouplayout.hpp"
 #include "../userpublic/components/predefined.hpp"
 #include "../userpublic/details/event/registerer.hpp"
+#include "../userpublic/valuegraph.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
@@ -2300,9 +2302,11 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         return result;
                     },
                     // IA-2: the initial assets the live generation read, as
-                    // its programs recorded them.
-                    .published_initial_assets = [] {
-                        std::vector<RenderConfigPublishedInitialAsset> result;
+                    // its programs recorded them. IA-3: and the tables its
+                    // value graphs' value.sample_table nodes read, each with
+                    // the manifest beside it, under the table's reference.
+                    .published_assets = [] {
+                        std::vector<RenderConfigPublishedAsset> result;
                         const auto generation =
                             GET_MODULE(FrameGraphRuntimeContainer).snapshot();
                         if (generation == nullptr) return result;
@@ -2314,6 +2318,16 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                 result.push_back({.asset = asset->asset,
                                                   .file = asset->file,
                                                   .sha256 = asset->content_sha256});
+                            }
+                            if (!program.frame_graph.value_graph) continue;
+                            for (const auto &read :
+                                 program.frame_graph.value_graph->sampleTables()) {
+                                result.push_back({.asset = read.asset,
+                                                  .file = read.table->file,
+                                                  .sha256 = read.table->file_sha256});
+                                result.push_back({.asset = read.asset,
+                                                  .file = read.table->manifest,
+                                                  .sha256 = read.table->manifest_sha256});
                             }
                         }
                         return result;

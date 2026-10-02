@@ -477,6 +477,7 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
             node.op = Op::sample_table;
             node.dependencies = {resolve(authored.at("time"))};
             const auto asset = name(authored.at("asset"));
+            node.table_asset = asset;
             try {
                 node.table = loadSampleTable(sampleTableFile(asset));
             } catch (const std::exception &error) {
@@ -806,6 +807,13 @@ std::vector<std::string> Graph::nodeIds() const {
     std::vector<std::string> result;
     result.reserve(nodes_.size());
     for (const auto &node : nodes_) result.push_back(node.id);
+    return result;
+}
+
+std::vector<Graph::SampleTableRead> Graph::sampleTables() const {
+    std::vector<SampleTableRead> result;
+    for (const auto &node : nodes_)
+        if (node.op == Op::sample_table && node.table) result.push_back({node.id, node.table_asset, node.table});
     return result;
 }
 

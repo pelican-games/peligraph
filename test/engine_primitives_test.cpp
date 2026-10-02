@@ -19,6 +19,7 @@
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
+#include "../src/project/audioanalysisformat.hpp"
 #include "../src/project/assetsmanifest.hpp"
 #include "../src/project/materialpassdecompose.hpp"
 #include "../src/project/projecttemplate.hpp"
@@ -2828,6 +2829,148 @@ TEST_CASE("IA-2 reload_render_documents takes in an initial asset rewritten on d
     frame();
     CHECK(ia1ReadFloats(renderer, "shown_float") == ia1LutValues(7.0f));
     CHECK(source_digest() == digest_before);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+// IA-3: a table only value.sample_table reads is read when the value graph is
+// built, so it is one of the assets reload_render_documents compares. The
+// table rewritten with its write time put back (same size): the reload names
+// it, publishes a new generation, and that generation's node reads the new
+// values (the table cache judged by the bytes, not the write time and size).
+// The manifest beside it is compared too. Nothing changed: no_change.
+TEST_CASE("IA-3 reload_render_documents takes in a value.sample_table table rewritten on disk with the documents "
+          "unchanged",
+          "[ia3][ia2][ab1][rl1][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("ia3_reload_table");
+    const auto root = dir.root / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    auto project = Json::parse(readFile(root / "project.json"));
+    project["asset_stores"] = {{"main", {{"mount", "assets/"}, {"manifest", "assets.manifest.json"}}}};
+    writeFile(root / "project.json", project.dump(2));
+    const std::string asset = "assets/tables/level.ktx2";
+    const auto table_path = root / asset;
+    const auto manifest_path = derivedAssetManifestPath(table_path);
+    // One feature, three samples, every one `value`: the node reads it at any
+    // scene time.
+    const auto writeTable = [&](float value, double hop_seconds) {
+        SampleTableLayout layout;
+        layout.sample_count = 3;
+        layout.hop_seconds = hop_seconds;
+        layout.features = {"level"};
+        std::vector<float> values(sampleTableWidth, 0.0f);
+        std::fill_n(values.begin(), 3, value);
+        const auto file = writeKtx2(Ktx2Format::R32Sfloat, sampleTableWidth, 1, std::as_bytes(std::span{values}));
+        writeFile(table_path, std::string_view{reinterpret_cast<const char *>(file.data()), file.size()});
+        writeFile(manifest_path, Json{{"source", {{"metadata", {{"layout", Json(sampleTableLayoutJson(layout))}}}}}}.dump());
+    };
+    writeTable(3.0f, 0.5);
+    (void)generateAssetsManifest(root / "assets", root / "assets.manifest.json", dir.root / "assets.cache.json",
+                                 "main", true);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    auto rendering = Json::parse(readFile(rendering_path));
+    rendering.at("nodes").push_back({{"id", "table_level"},
+                                     {"op", "value.sample_table"},
+                                     {"parameters", {{"asset", asset}, {"row", "level"}}},
+                                     {"outputs", Json::array({"value"})}});
+    const auto rendering_bytes = rendering.dump(2);
+    writeFile(rendering_path, rendering_bytes);
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    GET_MODULE(PathResolver).resetForTesting();
+    GET_MODULE(PathResolver).setup(root, false, readFile(root / "project.json"));
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    const auto frame = [&] { (void)rpc.result("step_frame"); };
+    const auto reload = [&] {
+        const auto accepted = rpc.result("reload_render_documents");
+        INFO(accepted.dump(2));
+        if (accepted.value("status", std::string{}) == "rejected") return accepted;
+        REQUIRE(accepted.at("status") == "accepted");
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            frame();
+            auto result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+            if (result.value("status", std::string{}) != "pending") return result;
+        }
+        FAIL("the ticket stayed pending");
+        return Json{};
+    };
+    // The node's value in the published generation, and that generation.
+    const auto level = [&] {
+        const auto values = rpc.result("get_graph_node_values");
+        INFO(values.dump(2));
+        for (const auto &node : values.at("nodes"))
+            if (node.at("node") == "table_level")
+                return std::pair{node.at("outputs").at("value").get<double>(),
+                                 values.at("generation").get<std::uint64_t>()};
+        FAIL("table_level is not listed");
+        return std::pair{0.0, std::uint64_t{0}};
+    };
+
+    frame();
+    REQUIRE(level().first == 3.0);
+
+    // Nothing changed: no_change, no asset named.
+    std::uint64_t generation = 0;
+    {
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK(result.at("no_change") == true);
+        CHECK(result.at("changed") == Json::array());
+        CHECK(result.at("changed_assets") == Json::array());
+        generation = result.at("published_generation").get<std::uint64_t>();
+    }
+
+    // The table baked again with other values, same size, the write times
+    // put back: a new generation that names the table and no document, and
+    // its node reads 9.
+    const auto written = std::filesystem::last_write_time(table_path);
+    const auto manifest_written = std::filesystem::last_write_time(manifest_path);
+    writeTable(9.0f, 0.5);
+    std::filesystem::last_write_time(table_path, written);
+    std::filesystem::last_write_time(manifest_path, manifest_written);
+    REQUIRE(readFile(rendering_path) == rendering_bytes);
+    {
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK_FALSE(result.contains("no_change"));
+        CHECK(result.at("changed") == Json::array());
+        CHECK(result.at("changed_assets") == Json::array({asset}));
+        CHECK(result.at("published_generation").get<std::uint64_t>() > generation);
+        generation = result.at("published_generation").get<std::uint64_t>();
+    }
+    frame();
+    {
+        const auto [value, published] = level();
+        CHECK(published == generation);
+        CHECK(value == 9.0);
+    }
+
+    // The new generation read what is on disk: the next reload is no_change.
+    {
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK(result.at("no_change") == true);
+        CHECK(result.at("changed_assets") == Json::array());
+        CHECK(result.at("published_generation").get<std::uint64_t>() == generation);
+    }
+
+    // Only the manifest beside it changed (another hop): the table is named.
+    {
+        const auto table_bytes = readFile(table_path);
+        writeTable(9.0f, 0.25);
+        REQUIRE(readFile(table_path) == table_bytes);
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK_FALSE(result.contains("no_change"));
+        CHECK(result.at("changed_assets") == Json::array({asset}));
+        CHECK(result.at("published_generation").get<std::uint64_t>() > generation);
+    }
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 

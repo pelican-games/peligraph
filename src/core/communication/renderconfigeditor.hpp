@@ -76,10 +76,12 @@ struct RenderAuthoringRegionProvider {
     bool operator==(const RenderAuthoringRegionProvider &) const = default;
 };
 
-// IA-2: an asset a persistent render.image of the published generation
-// starts from: the reference as written, the file it resolved to, and the
-// sha256 of the bytes that generation read.
-struct RenderConfigPublishedInitialAsset {
+// IA-2: a file the published generation read when it was composed and
+// does not see change by itself: the asset reference as written, the file it
+// resolved to, and the sha256 of the bytes that generation read. A persistent
+// render.image's initial asset (IA-2); a value.sample_table's table and the
+// `.import.json` beside it, both under the table's reference (IA-3).
+struct RenderConfigPublishedAsset {
     std::string asset;
     std::filesystem::path file;
     std::string sha256;
@@ -190,13 +192,14 @@ struct RenderConfigEditorDependencies {
     // with it to say whether the document changed. Unset: such a document is
     // reported as changed.
     std::function<std::map<std::string, std::string>()> published_documents;
-    // IA-2: the assets the published generation's persistent images start
-    // from (render.image `initial: {asset}`), each with the sha256 of the
-    // bytes that generation read. reload_render_documents hashes each file
-    // again; one that differs is published anew even when no document
-    // changed. Unset: no asset is compared.
-    std::function<std::vector<RenderConfigPublishedInitialAsset>()>
-        published_initial_assets;
+    // IA-2: the assets the published generation read (render.image
+    // `initial: {asset}`; IA-3: value.sample_table's table and its
+    // manifest), each with the sha256 of the bytes that generation read.
+    // reload_render_documents hashes each file again; one that differs is
+    // published anew even when no document changed. Unset: no asset is
+    // compared.
+    std::function<std::vector<RenderConfigPublishedAsset>()>
+        published_assets;
     // FG-2: draws a verify_fold job's three runs on a worker thread
     // (graphfoldverify.hpp; production: runFoldVerifyProcesses). Unset:
     // verify_fold is fold_verify_unavailable {reason: "no_runner"}.
@@ -760,8 +763,9 @@ class RenderConfigEditorService {
     // carries {operation: "reload_render_documents", source_digest,
     // documents: {reference: digest}, changed: [reference]} and no_change
     // when nothing differs. IA-2: it also carries changed_assets: [asset],
-    // the initial assets (published_initial_assets) whose bytes on disk
-    // differ from what the live generation read; one is enough to publish
+    // the assets (published_assets: images' initial assets, IA-3 the
+    // value.sample_table tables) whose bytes on disk differ from what the
+    // live generation read; one is enough to publish
     // a new generation with the same documents. A refusal leaves the live generation and the
     // editor's documents as they were. A pending or in-flight ticket, or
     // `preview_open`, is reload_busy.

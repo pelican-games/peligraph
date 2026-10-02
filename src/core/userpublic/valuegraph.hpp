@@ -257,6 +257,15 @@ class PELICAN_API Graph {
     const std::map<std::string, std::vector<std::size_t>, std::less<>> &outputNodes() const noexcept {
         return outputs_;
     }
+    // IA-3: each value.sample_table node and the table it read when this
+    // graph was built (its files and their sha256 are in the table), in node
+    // order. A generation whose tables differ on disk is out of date.
+    struct SampleTableRead {
+        std::string node;
+        std::string asset;
+        std::shared_ptr<const SampleTable> table;
+    };
+    std::vector<SampleTableRead> sampleTables() const;
 
   private:
     Outputs evaluateInternal(const Inputs &inputs, const ParameterValues &parameters,
@@ -287,6 +296,7 @@ class PELICAN_API Graph {
         // sample_table (AB-1): the table, read when the graph was built, and
         // the feature row.
         std::shared_ptr<const SampleTable> table;
+        std::string table_asset;
         std::uint32_t table_row{};
         Animation::CurvePlaybackSettings playback;
         std::vector<double Animation::CurvePlaybackSettings::*> playback_inputs;

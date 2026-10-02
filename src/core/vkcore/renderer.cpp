@@ -26,6 +26,7 @@
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../loader/renderconfigcandidate.hpp"
+#include "../loader/sampletable.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../fullscreenpass/passinputlayout.hpp"
 #include "../fullscreenpass/shaderinputmismatchjson.hpp"
@@ -318,6 +319,12 @@ std::set<watch::AssetKey> renderPipelineWatchSources(
         (void)name;
         if (auto key = watch::assetKeyForFile(resolver, asset->file)) result.insert(std::move(*key));
     }
+    // IA-3: a value.sample_table's table and the manifest beside it are read
+    // when the value graph is built, so a new generation reads them again.
+    if (program->frame_graph.value_graph)
+        for (const auto &read : program->frame_graph.value_graph->sampleTables())
+            for (const auto *file : {&read.table->file, &read.table->manifest})
+                if (auto key = watch::assetKeyForFile(resolver, *file)) result.insert(std::move(*key));
     if (pipeline.pipeline_preset) {
         append(pipeline.pipeline_preset->reference);
     }

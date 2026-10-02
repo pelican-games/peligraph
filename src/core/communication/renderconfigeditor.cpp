@@ -6316,13 +6316,15 @@ OrderedJson RenderConfigEditorService::reloadRenderDocuments(
     }
     // IA-2: an initial asset rewritten on disk is a change though every
     // document is the same: the new generation reads it again and its first
-    // frame copies it in. One that cannot be read now counts as changed, and
-    // the composition refuses it as it would with a document edit.
+    // frame copies it in (IA-3: a value.sample_table's table or its manifest,
+    // which the new generation's value graph reads again). One that cannot be
+    // read now counts as changed, and the composition refuses it as it would
+    // with a document edit.
     auto changed_assets = OrderedJson::array();
-    if (dependencies_.published_initial_assets) {
-        std::vector<RenderConfigPublishedInitialAsset> assets;
+    if (dependencies_.published_assets) {
+        std::vector<RenderConfigPublishedAsset> assets;
         try {
-            assets = dependencies_.published_initial_assets();
+            assets = dependencies_.published_assets();
         } catch (const std::exception &) {
         }
         std::map<std::string, bool> asset_changed;
