@@ -314,6 +314,19 @@ item {
 | 事前 compile した `.spv` | port を持つ pass では断られる → EN-spv |
 | frame time | 1080p、図形 9 個で shapes の pass の GPU 約 0.016 ms(warm-up 前の目安) |
 
+### 8.1 パージの検査(L6。2026-10-02、`b1c9e591`、手で 1 回)
+
+`PELICAN_WITH_CANVAS=OFF` で `pelican_player` と `pelican_cli` を build して確かめた(script は `<作業ディレクトリ>/v2d_work/off_check.sh`。test にはまだなっていない)。
+
+| 検査 | 結果 |
+|---|---|
+| (b) ON の `canvas-lower` が下げた project を、OFF の player で描く | frame 1 と frame 61 が ON の player の PNG と byte 一致 |
+| (c) 下げていない project(`requires: [canvas]`)を OFF の player で開く | `canvas.module_unavailable@1` で終了(exit 1) |
+| (c) OFF の cli の `canvas-lower` | `build_feature_disabled@1` |
+| OFF の `graph-catalog` | `pelican.canvas` が無い |
+
+残り: `requires` を書いていない文書での `graph.operation_unregistered@1`、Studio(`src/devstudio` の Layers パネルは `#if` を持たない)の OFF、(a) `edit` と `ship` の一致(`ship` 方針が未実装)。
+
 ## 9. 段(WP の順)
 
 | WP | 中身 | 状態 |
@@ -324,10 +337,11 @@ item {
 | **CV-1b** | engine が文書を読む点で登録済みの lowering を通す汎用の hook(`src/project/authoringlowering`。登録点と editor の compose の道で呼ぶ。core は canvas の名前を知らない)。生成 shader は `.pelican/generated/canvas/<stem>/`。rendering 節の pass の入力に `canvas.output` の id を書ける。`get_authoring_lowering` | ✅ `b5f399fc` |
 | **CV-P** | PSD の取り込み(`pelican-import-tools` の `psd-canvas`。psd-tools)→ 画像 + mask + canvas の definition + `reference.png`(§10) | ✅ import tool の `feature/canvas-psd`(`13310e1`、`d1577a8`) |
 | CV-2a | `canvas.image` / `canvas.from_image` / `canvas.color`、`canvas.transform`(定数)、mask(画像だけ)・clip(土台 + clip 群を 1 枚にして ATOP)、pass through でない group、`blend_space`、definition の展開。blend は normal まで | ✅ `c8185793`。PSD の往復は全画素が `reference.png` と 1/255 以内 |
-| CV-2b | blend mode と調整 layer(backdrop の写し) | |
+| CV-2b | blend mode と調整 layer(backdrop の写し)、色の filter | 実装中(`<作業ディレクトリ>/en2`) |
+| CV-6a | 3D に置く: `canvas.place` と layer の `depth`(厚みと object への装着は次) | 指示書 `<作業ディレクトリ>/cv6a_spec.md` |
 | CV-3 | filter: 色(融合)、座標(融合)、近傍(blur・影) | |
 | DF-1 の結果 | 画像 → SDF: 縁の位置を 2D の点で持ち 3×3 で測り直す版が平均誤差 0.028 画素(素朴な種 0.137、2 値化 0.217)。MTSDF: Arial 32² の被覆率の MSE 4.80e-5(1 channel は 8.30e-4)。日本語は 48²、画数の多い字は 64² | ✅(`<作業ディレクトリ>/v2d_work/df1/run_full.log`) |
-| CV-4 | 文字: project の ttf を lowering が直接読む(中間の font 形式は作らない)、MSDF の atlas、`shape.text`(DF-1 を `src/project/canvas/` に入れる)、lowering の context(file を読む口) | 実装中(`<作業ディレクトリ>/en2`) |
+| CV-4 | 文字: project の ttf を lowering が直接読む(中間の font 形式は作らない)、MSDF の atlas、`shape.text`(kerning・改行・揃え・折り返し)、lowering の context(file を読む口)、生成物に binary(atlas の PNG) | ✅ `b1c9e591`。GPU と参照描画の一致 99.987 %(8/255 以内)。「鬱」は `atlas_cell` 64 が要る |
 | SG-1 | Studio: 領域 `canvas`、palette の Canvas、stack のソケット、Canvas layers パネル(行・+ Rect / + Ellipse / + Group / + Stroke・目・不透明度・並べ替え・欄)。scenario `canvas_layers_from_blank` | ✅ `cbd95519` |
 | SG-2 | Studio: Layers を独立の dock に、+ Image、clip / mask / pass through の欄、変換、PSD の取り込み結果の読み込み | 実装中(`<作業ディレクトリ>/cv1`) |
 | CV-5 | `ship` 方針: 定数の畳み込み、動かない layer を畳む、`dist-bake` の段 1、OFF の build の player で同じ絵 | |
