@@ -164,6 +164,7 @@ DeclaredInputs declareInputs(
     std::span<const RoleRead> reads, bool lighting = false) {
     DeclaredInputs result;
     std::set<std::string> taken;
+    bool ports_included = false;
     for (std::size_t index = 0; index < inputs.size(); ++index) {
         const auto &input = inputs[index];
         const std::string number = std::to_string(index);
@@ -171,10 +172,16 @@ DeclaredInputs declareInputs(
         result.shadow.push_back(false);
         result.mask.push_back(false);
         if (!input.image) {
-            result.text += "// input " + number + " (" + input.resource +
-                           ") is a buffer: declare it yourself at set "
-                           "PELICAN_SET_PASS_INPUT, binding " +
-                           number + ".\n";
+            // UX-13a, decision 2: no binding written by hand. A buffer is
+            // read through the include the pass's ports generate, which
+            // declares pelican_resource_<port> where the engine binds it
+            // (after the images, in the order of the buffers' names). One
+            // line per input; the first buffer's carries the include.
+            result.text += std::string{ports_included ? "" : "#include \"pelican_resource_ports.glsl\"  "} +
+                           "// input " + number + " (" + input.resource +
+                           ") is a buffer: map it to a buffer port of the pass and read it as "
+                           "pelican_resource_<port> (pelican_load_<port>(i)).\n";
+            ports_included = true;
             continue;
         }
         if (index >= FullscreenShaderTemplateMacroInputs) {
@@ -408,7 +415,11 @@ std::string fullscreenShaderInputSnippet(
         "// The macros need these after #version, if the shader lacks them:\n"
         "//   #extension GL_GOOGLE_include_directive : require\n"
         "//   #include \"pelican_sets.glsl\"\n"
-        "//   #include \"pelican_view.glsl\"\n"
+        "//   #include \"pelican_view.glsl\"\n" +
+        std::string{std::ranges::any_of(inputs.subspan(std::min(first, inputs.size())),
+                                        [](const auto &input) { return !input.image; })
+                        ? "//   #include \"pelican_resource_ports.glsl\"\n"
+                        : ""} +
         "// Add after them:\n" +
         declarations;
     if (!reads.empty()) text += "// and in main():\n" + reads;

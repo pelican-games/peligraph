@@ -4915,10 +4915,11 @@ struct GraphCanvasWidget::Impl {
     // AB-1s: Bake analysis..., what a bake offers, and the stale tables.
     std::unique_ptr<GraphCanvasAudioAnalysis> analysis;
     QPushButton *audio_bake = nullptr;
-    // Decision 4: the table a Re-bake rewrote, whose readers are written
-    // again once the model takes edits; and the document the last
-    // list_derived_assets was asked for.
-    std::string pending_rebuild;
+    // Decision 4: the document the last list_derived_assets was asked for.
+    // (UX-13a, decision 3: a Re-bake sends no edit of its own. The table it
+    // rewrote is a file the reload watches -- an image's initial asset, a
+    // value.sample_table's table -- and the engine reads it again in a new
+    // generation, IA-3: "Picked up the change to <table>".)
     std::string derived_digest;
     // UX-3, decision 2: where a render node lands.
     GraphCanvasPlaceFields *place_fields = nullptr;
@@ -5775,11 +5776,6 @@ struct GraphCanvasWidget::Impl {
                 .staleChanged = [this] { syncStale(); },
                 .useInGraph = [this](const GraphCanvasAnalysisTable &table) { useTableInGraph(table); },
                 .useInShader = [this](const GraphCanvasAnalysisTable &table) { useTableInShader(table); },
-                .rebaked =
-                    [this](const std::string &asset) {
-                        pending_rebuild = asset;
-                        followRebuild();
-                    },
             });
         layout->insertWidget(layout->indexOf(notice) + 1, analysis->bakeRow());
         side_layout->insertWidget(side_layout->indexOf(audio_row) + 1, analysis->staleRow());
@@ -6201,10 +6197,8 @@ struct GraphCanvasWidget::Impl {
         // GL-1e: an edit refused for a moved document, once the context
         // read after it has arrived.
         resumePassRetry();
-        // AB-1s, decision 4: the stale tables of the document read now, and
-        // the readers of a re-baked one written again once edits go out.
+        // AB-1s, decision 4: the stale tables of the document read now.
         readDerivedIfMoved(false);
-        followRebuild();
         syncStale();
         restartEngineIfAsked();
     }
@@ -7203,10 +7197,24 @@ struct GraphCanvasWidget::Impl {
                 (found->op == "render.fullscreen" || found->op == "render.raster"))
                 pass = found->id;
         }
+        // UX-13a: the names the pass's shader reads through
+        // pelican_resource_ports.glsl, which its reflection does not show
+        // before the port is there.
+        std::vector<std::string> shader_ports;
+        if (!pass.empty())
+            if (const auto parameters = model.nodeParameters(scope, pass);
+                parameters.is_object() && parameters.contains("shader") && parameters.at("shader").is_object())
+                for (const auto &[stage, reference] : parameters.at("shader").items()) {
+                    (void)stage;
+                    if (!reference.is_string()) continue;
+                    for (auto &name : shaderResourcePortNames(project_root, reference.get<std::string>()))
+                        if (std::ranges::find(shader_ports, name) == shader_ports.end())
+                            shader_ports.push_back(std::move(name));
+                }
         GraphCanvasModel::SampleTableShaderPlacement placed;
         if (!model.addSampleTableShader(scope, table.asset, table.layout.rows_per_feature,
                                         table.layout.sample_count, table.layout.hop_seconds, pass,
-                                        &placed)) {
+                                        &placed, shader_ports)) {
             showNotice();
             return;
         }
@@ -7219,18 +7227,11 @@ struct GraphCanvasWidget::Impl {
         const auto image = placed.image_port.empty() ? placed.image : placed.image_port;
         const auto layout_port = placed.buffer_port.empty() ? placed.buffer : placed.buffer_port;
         std::string line = "Read the table in the shader: #include \"pelican_sample_table.glsl\" and "
-                           "call pelican_sample_table (the line below).";
+                           "\"pelican_resource_ports.glsl\", and call pelican_sample_table (the line "
+                           "below).";
         if (!placed.note.empty()) line = placed.note + " " + line;
         analysis->showShaderLine(sampleTableShaderLine(image, layout_port, feature), line);
         showNotice();
-    }
-
-    // Decision 4: after a Re-bake, the readers read the new table once the
-    // graph is built again -- one edit, sent when the model takes it.
-    void followRebuild() {
-        if (pending_rebuild.empty() || !model.canEdit()) return;
-        const auto asset = std::exchange(pending_rebuild, {});
-        if (model.rebuildSampleTableReaders(asset)) dispatch();
     }
 
     // Decision 4: list_derived_assets, when the document the tab holds is

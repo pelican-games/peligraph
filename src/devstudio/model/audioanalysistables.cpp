@@ -202,8 +202,12 @@ Json rebakeParams(const std::filesystem::path &project_root, std::string_view as
 
 std::string sampleTableShaderLine(const std::string &image, const std::string &layout, std::size_t feature) {
     const auto variable = "pelican_resource_" + layout + ".values[0]";
-    return "#include \"pelican_sample_table.glsl\"  // then: vec4 l = " + variable +
-           "; float v = pelican_sample_table(" + image + ", " + std::to_string(feature) +
+    // UX-13a, decision 2: the layout is read through the resource-port
+    // include the pass's ports generate (pelican_resource_<port>, at the
+    // binding the engine gives it), never at a binding written by hand.
+    return "#include \"pelican_sample_table.glsl\"  // and #include \"pelican_resource_ports.glsl\"; "
+           "then: vec4 l = " +
+           variable + "; float v = pelican_sample_table(" + image + ", " + std::to_string(feature) +
            "u, uint(l.x), uint(l.y), l.z, l.w);";
 }
 

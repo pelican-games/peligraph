@@ -271,13 +271,13 @@ void GraphCanvasAudioAnalysis::chooseBake(const std::string &sound) {
         const auto out = dialog->out().toStdString();
         const auto settings = audioBakeSettings(dialog->choice());
         QMetaObject::invokeMethod(
-            &owner_, [this, sound, out, settings] { bake(Json{{"asset", sound}, {"out", out}, {"settings", settings}}, false); },
+            &owner_, [this, sound, out, settings] { bake(Json{{"asset", sound}, {"out", out}, {"settings", settings}}); },
             Qt::QueuedConnection);
     });
     dialog->open();
 }
 
-bool GraphCanvasAudioAnalysis::bake(const Json &params, bool rebake) {
+bool GraphCanvasAudioAnalysis::bake(const Json &params) {
     if (!available()) {
         say(true, "This engine connection cannot bake a sound's analysis.");
         return false;
@@ -295,7 +295,6 @@ bool GraphCanvasAudioAnalysis::bake(const Json &params, bool rebake) {
     }
     sound_ = params.value("asset", std::string{});
     out_ = projectRelativeReference(params.value("out", std::string{}));
-    rebaking_ = rebake;
     started_ = std::chrono::steady_clock::now();
     use_in_graph_->hide();
     use_in_shader_->hide();
@@ -314,7 +313,7 @@ bool GraphCanvasAudioAnalysis::rebake(const std::string &asset) {
                       " cannot be read, so it cannot be baked again; bake it from its sound.");
         return false;
     }
-    return bake(params, true);
+    return bake(params);
 }
 
 void GraphCanvasAudioAnalysis::tick() {
@@ -384,7 +383,6 @@ void GraphCanvasAudioAnalysis::finished(const Json &response) {
     use_in_graph_->setVisible(baked_.has_value());
     use_in_shader_->setVisible(baked_.has_value());
     readDerived();
-    if (rebaking_ && hooks_.rebaked) hooks_.rebaked(out_);
 }
 
 void GraphCanvasAudioAnalysis::showShaderLine(const std::string &line, const std::string &notice) {

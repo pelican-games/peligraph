@@ -4398,7 +4398,7 @@ TEST_CASE("AB-1s decision 3: Use in a shader places the table's image, its layou
 }
 
 TEST_CASE("AB-1s decision 4: list_derived_assets reads as the stale band; Re-bake asks for the "
-          "manifest's own sound and settings; the readers are written again as they are",
+          "manifest's own sound and settings (UX-13a: and edits nothing after it)",
           "[studio][graph-canvas][ab1s]") {
     const auto root = ab1sProject();
     // The tables Studio finds: the bake's, not another tool's.
@@ -4440,15 +4440,116 @@ TEST_CASE("AB-1s decision 4: list_derived_assets reads as the stale band; Re-bak
     CHECK(model.sampleTableAssetOf({}, "loudness") == "assets/analysis/tone.ktx2");
     CHECK(model.sampleTableAssetOf({}, "shade").empty());
     CHECK(model.sampleTableReaders("assets/analysis/tone.ktx2") == std::vector<std::string>{"loudness"});
-    const auto before = h.document;
-    REQUIRE(model.rebuildSampleTableReaders("project://assets/analysis/tone.ktx2"));
-    h.commit();
-    CHECK(h.last_ops == Json::array({{{"op", "set_node_parameters"},
-                                      {"scope", "root"},
-                                      {"node", "loudness"},
-                                      {"parameters", {{"asset", "project://assets/analysis/tone.ktx2"},
-                                                      {"row", "rms"}}}}}));
-    CHECK(h.document == before);
-    CHECK_FALSE(model.rebuildSampleTableReaders("assets/analysis/none.ktx2"));
     std::filesystem::remove_all(root);
+}
+
+// --- UX-13a: buffer bindings by the engine's rule, the include form, and no
+// edit after a Re-bake (engine IA-3).
+
+namespace {
+
+// `shade`'s shader: `declarations` at set 1, its buffers from `base` on.
+Json ux13aPlan(const Json &declarations, std::size_t base) {
+    return {{"schema", "pelican.frame_plan"},
+            {"version", 1},
+            {"nodes", Json::array({{{"name", "shade"},
+                                    {"kind", "fullscreen"},
+                                    {"pass_inputs",
+                                     {{"state", "declared"},
+                                      {"fragment", "project://shaders/level"},
+                                      {"declarations", declarations},
+                                      {"variadic_range", nullptr},
+                                      {"buffer_binding_base", base}}}}})}};
+}
+
+Json ux13aBuffer(std::size_t binding, const char *name) {
+    return {{"binding", binding}, {"type", "storage_buffer"}, {"name", name}, {"variadic", false}};
+}
+
+} // namespace
+
+TEST_CASE("UX-13a decision 1: a buffer binding is the read the engine binds there -- after the "
+          "images, in the order of the buffers the ports read, not of the ports' names; a "
+          "pelican_resource_<port> block is its port's wherever it sits",
+          "[studio][graph-canvas][ux13a]") {
+    Ux8Harness h;
+    auto &nodes = h.document.at("nodes");
+    // a_buf sorts before level; the ports read them the other way round by
+    // their own names (a_second reads level, z_first reads a_buf).
+    nodes.push_back({{"id", "a_buf"}, {"op", "render.buffer"},
+                     {"parameters", {{"element", "float"}, {"size", 4}}},
+                     {"outputs", Json::array({"resource"})}});
+    auto &shade = h.node("shade");
+    shade["parameters"]["ports"]["z_first"] = {{"kind", "buffer"}, {"access", "read"}, {"element", "float"}};
+    shade["parameters"]["ports"]["a_second"] = {{"kind", "buffer"}, {"access", "read"}, {"element", "float"}};
+    shade["inputs"]["z_first"] = {{"node", "a_buf"}, {"port", "resource"}};
+    shade["inputs"]["a_second"] = {{"node", "level"}, {"port", "resource"}};
+    h.open();
+    CHECK(h.client.model.bufferPorts({}, "shade") == std::vector<std::string>{"z_first", "a_second"});
+    const auto reads = h.client.model.bufferPortReads({}, "shade");
+    REQUIRE(reads.size() == 2);
+    CHECK(reads[0].resource == "a_buf");
+    CHECK(reads[1].resource == "level");
+
+    // One image at 0, so the buffers from 1: binding 1 reads a_buf, 2 level.
+    h.report(ux13aPlan(Json::array({{{"binding", 0}, {"type", "sampled_image"}, {"name", "tint"},
+                                     {"variadic", false}},
+                                    ux13aBuffer(1, "First"), ux13aBuffer(2, "Second")}),
+                       1));
+    auto sockets = h.client.node("shade").input_sockets;
+    REQUIRE(sockets.size() == 3);
+    CHECK(sockets[1].key() == "in@1");
+    CHECK(sockets[1].port == "z_first");
+    CHECK(sockets[1].source_node == "a_buf");
+    CHECK(sockets[2].port == "a_second");
+    CHECK(sockets[2].source_node == "level");
+
+    // Named blocks bind by name, wherever they sit; one no port is named
+    // for reads nothing yet.
+    h.client.model.refresh();
+    h.refresh();
+    h.report(ux13aPlan(Json::array({ux13aBuffer(0, "pelican_resource_a_second"),
+                                    ux13aBuffer(1, "pelican_resource_nobody")}),
+                       0));
+    sockets = h.client.node("shade").input_sockets;
+    REQUIRE(sockets.size() == 2);
+    CHECK(sockets[0].port == "a_second");
+    CHECK_FALSE(sockets[1].connected());
+}
+
+TEST_CASE("UX-13a decision 2: Use in a shader connects the layout by the name the shader reads "
+          "through pelican_resource_ports.glsl, which no reflection shows before the port is "
+          "there; the line to copy reads it through the include",
+          "[studio][graph-canvas][ux13a]") {
+    Ux8Harness h;
+    h.open();
+    // The image is declared; the buffers are read through the include only.
+    h.report(ux13aPlan(Json::array({{{"binding", 0}, {"type", "sampled_image"}, {"name", "tone_table"},
+                                     {"variadic", false}}}),
+                       1));
+    GraphCanvasModel::SampleTableShaderPlacement placed;
+    REQUIRE(h.client.model.addSampleTableShader({}, "project://assets/analysis/tone.ktx2", 1, 101, 0.01,
+                                                "shade", &placed, {"value_level", "tone_layout"}));
+    h.commit();
+    CHECK(placed.image_port == "tone_table");
+    // Named as the layout's buffer, before the first name the text reads.
+    CHECK(placed.buffer_port == "tone_layout");
+    CHECK(placed.note.empty());
+    const auto ports = h.node("shade").at("parameters").at("ports");
+    CHECK(ports.at("tone_layout") == Json{{"kind", "buffer"}, {"access", "read"}, {"element", "vec4"}});
+    CHECK_FALSE(ports.contains("value_level"));
+    CHECK(h.node("shade").at("inputs").at("tone_layout") == Json{{"node", "tone_layout"}, {"port", "resource"}});
+    h.partitions();
+
+    // Nothing named so: the first name no port takes.
+    h.report(ux13aPlan(Json::array(), 0));
+    REQUIRE(h.client.model.addSampleTableShader({}, "assets/analysis/tone.ktx2", 1, 101, 0.01, "shade",
+                                                &placed, {"tone_layout", "gain"}));
+    h.commit();
+    CHECK(placed.buffer_port == "gain");
+
+    const auto line = PelicanStudio::sampleTableShaderLine("tone_table", "tone_layout", 1);
+    CHECK(line.find("#include \"pelican_resource_ports.glsl\"") != std::string::npos);
+    CHECK(line.find("pelican_resource_tone_layout.values[0]") != std::string::npos);
+    CHECK(line.find("binding") == std::string::npos);
 }

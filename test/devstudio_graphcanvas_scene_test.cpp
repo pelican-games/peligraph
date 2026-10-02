@@ -11592,6 +11592,104 @@ TEST_CASE("AB-1s decision 1: Bake analysis... asks for the features, bands, hop,
     CHECK(PelicanStudio::audioAnalysisRefusalDescription({{"code", "graph.loop_nested@1"}}).empty());
 }
 
+TEST_CASE("UX-13a decision 3: a Re-bake sends no edit of its own; the table it rewrites is "
+          "watched beside the images' initial assets, for the reload to pick up (IA-3)",
+          "[devstudio][graph-canvas][scene][ux13a]") {
+    const auto catalog = engineCatalog();
+    if (!catalogHas(catalog, "audio.playback")) SKIP("this build registers no pelican.audio module");
+    (void)application();
+    const AudioProject project;
+    std::filesystem::create_directories(project.root / "assets" / "analysis");
+    std::ofstream{project.root / "assets" / "analysis" / "hit.ktx2.import.json"}
+        << Json{{"schema", "pelican.import"},
+                {"version", 1},
+                {"tool", {{"name", "pelican.audio_analysis"}, {"version", "1"}}},
+                {"source",
+                 {{"file", "../../sounds/hit.wav"},
+                  {"metadata",
+                   {{"settings", {{"features", {"rms"}}, {"hop_ms", 10.0}, {"channels", "mix"}}},
+                    {"layout", {{"width", 4096}, {"rows_per_feature", 1}, {"sample_count", 101},
+                                {"hop_seconds", 0.01}, {"features", {"rms"}}}}}}}},
+                {"outputs", Json::array({{{"file", "hit.ktx2"}}})}}
+               .dump();
+    RecordedCapability transport;
+    auto capability = transport.capability();
+    capability.requestBakeAudioAnalysis = [&transport](const QJsonObject &params, QString *) {
+        transport.calls.push_back({QStringLiteral("bake_audio_analysis"), {}, 0,
+                                   QJsonDocument{params}.toJson(QJsonDocument::Compact)});
+        return transport.next++;
+    };
+    capability.requestDerivedAssets = [&transport](QString *) {
+        transport.calls.push_back({QStringLiteral("list_derived_assets")});
+        return transport.next++;
+    };
+    PelicanStudio::GraphCanvasWidget widget{capability};
+    widget.setProjectRoot(project.root);
+    widget.resize(1100, 800);
+    widget.show();
+    QCoreApplication::processEvents();
+    const auto deliver = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    auto document = audioDocument();
+    document["nodes"].push_back({{"id", "loudness"}, {"op", "value.sample_table"},
+                                 {"parameters", {{"asset", "project://assets/analysis/hit.ktx2"}, {"row", "rms"}}},
+                                 {"inputs", Json::object()},
+                                 {"outputs", Json::array({"value"})}});
+    deliver(QStringLiteral("get_graph_instances"), context(document));
+    deliver(QStringLiteral("get_graph_catalog"), catalog);
+    REQUIRE(widget.model().canEdit());
+    // The table is watched as an image's initial asset is: a rewrite asks
+    // reload_render_documents, and the engine reads it again (IA-3).
+    CHECK(widget.model().initialAssets() == std::vector<std::string>{"assets/analysis/hit.ktx2"});
+    deliver(QStringLiteral("list_derived_assets"),
+            Json::array({{{"asset", "assets/analysis/hit.ktx2"},
+                          {"manifest", "assets/analysis/hit.ktx2.import.json"},
+                          {"tool", {{"name", "pelican.audio_analysis"}, {"version", "1"}}},
+                          {"source", "sounds/hit.wav"},
+                          {"stale", true},
+                          {"stale_reasons", {"source_changed"}}}}));
+    widget.scene().selectNode("loudness");
+    QCoreApplication::processEvents();
+    auto *rebake = widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasStale.rebake"));
+    REQUIRE(rebake != nullptr);
+    REQUIRE(rebake->isVisible());
+    REQUIRE(rebake->isEnabled());
+    const auto edits = transport.countOf(QStringLiteral("edit_graph_document"));
+    rebake->click();
+    QCoreApplication::processEvents();
+    REQUIRE(transport.countOf(QStringLiteral("bake_audio_analysis")) == 1);
+    const auto sent = Json::parse(
+        transport.calls[static_cast<std::size_t>(transport.idOf(QStringLiteral("bake_audio_analysis")) - 1)]
+            .body.toStdString());
+    CHECK(sent.at("asset") == "project://sounds/hit.wav");
+    CHECK(sent.at("out") == "assets/analysis/hit.ktx2");
+    deliver(QStringLiteral("bake_audio_analysis"),
+            Json{{"ticket", "render-config-edit-9"}, {"status", "accepted"}});
+    deliver(QStringLiteral("get_edit_result"),
+            Json{{"ticket", "render-config-edit-9"},
+                 {"status", "committed"},
+                 {"committed", true},
+                 {"operation", "bake_audio_analysis"},
+                 {"asset", "project://sounds/hit.wav"},
+                 {"out", "assets/analysis/hit.ktx2"},
+                 {"manifest", "assets/analysis/hit.ktx2.import.json"},
+                 {"layout", {{"width", 4096}, {"rows_per_feature", 1}, {"sample_count", 101},
+                             {"hop_seconds", 0.01}, {"features", {"rms"}}}}});
+    auto *line = widget.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasBake.line"));
+    REQUIRE(line != nullptr);
+    CHECK(line->text().startsWith(QStringLiteral("Baked assets/analysis/hit.ktx2")));
+    // Asked again which tables are stale, and nothing else: no edit of the
+    // readers, so no Undo step either.
+    deliver(QStringLiteral("list_derived_assets"), Json::array());
+    for (int tick = 0; tick < 20; ++tick) QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+    CHECK(transport.countOf(QStringLiteral("edit_graph_document")) == edits);
+    CHECK_FALSE(widget.model().canUndo());
+}
+
 TEST_CASE("AB-1s decision 2: value.sample_table's dialog offers the project's baked tables and the "
           "rows of the one picked, rms first, and is placed with them",
           "[devstudio][graph-canvas][scene][ab1s]") {

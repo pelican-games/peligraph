@@ -18,7 +18,9 @@ namespace PelicanStudio {
 
 // One entry of the pass's `input` list, as the form holds it. `image` is false
 // for a resource the frame plan publishes as a buffer: that one has no
-// PELICAN_DECLARE_INPUT form and is left to the author, by name.
+// PELICAN_DECLARE_INPUT form and is left to the author, by name -- read through
+// #include "pelican_resource_ports.glsl" as pelican_resource_<port>, which the
+// template includes for it, never at a binding written by hand (UX-13a).
 struct FullscreenShaderTemplateInput {
     std::string resource;
     bool image = true;

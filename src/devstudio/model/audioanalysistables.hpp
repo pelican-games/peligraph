@@ -85,10 +85,11 @@ struct GraphCanvasDerivedAsset {
 [[nodiscard]] nlohmann::json rebakeParams(const std::filesystem::path &project_root,
                                           std::string_view asset);
 
-// Decision 3: the shader's side, one line to copy: the include and the call
+// Decision 3: the shader's side, one line to copy: the includes and the call
 // that reads row `feature` of the image `image` with the layout `layout`
 // (a vec4 buffer port: rows_per_feature, sample_count, hop_seconds,
-// scene_time).
+// scene_time), read as pelican_resource_<layout> through
+// pelican_resource_ports.glsl (UX-13a, decision 2).
 [[nodiscard]] std::string sampleTableShaderLine(const std::string &image, const std::string &layout,
                                                 std::size_t feature);
 

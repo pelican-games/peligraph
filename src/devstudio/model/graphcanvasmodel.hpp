@@ -2194,25 +2194,30 @@ class GraphCanvasModel {
     };
     // The one edit: the nodes, and the pass's two ports and lines. Empty
     // when the table's asset is empty or the scope cannot take nodes.
+    // UX-13a, decision 1: the layout's port is chosen by the name the shader
+    // reads it as (pelican_resource_<port>), never by a binding number: the
+    // reflected pelican_resource_ buffers, then `shader_ports`, the names the
+    // shader's text reads through pelican_resource_ports.glsl
+    // (shaderResourcePortNames), which no reflection shows before the port
+    // is there. The one named <stem>_layout first, else the first no port
+    // takes yet.
     [[nodiscard]] nlohmann::json sampleTableShaderOps(std::string_view scope, const std::string &asset,
                                                       std::uint32_t rows_per_feature,
                                                       std::uint32_t sample_count, double hop_seconds,
                                                       const std::string &pass,
-                                                      SampleTableShaderPlacement *placed) const;
+                                                      SampleTableShaderPlacement *placed,
+                                                      const std::vector<std::string> &shader_ports = {}) const;
     bool addSampleTableShader(std::string_view scope, const std::string &asset,
                               std::uint32_t rows_per_feature, std::uint32_t sample_count,
                               double hop_seconds, const std::string &pass,
-                              SampleTableShaderPlacement *placed);
+                              SampleTableShaderPlacement *placed,
+                              const std::vector<std::string> &shader_ports = {});
     // Decision 4: the table a node reads -- a value.sample_table's asset or
     // a render.image's initial.asset -- without its project://; empty for
     // any other node.
     [[nodiscard]] std::string sampleTableAssetOf(std::string_view scope, std::string_view node) const;
     // The root's value.sample_table nodes reading `asset`.
     [[nodiscard]] std::vector<std::string> sampleTableReaders(std::string_view asset) const;
-    // Decision 4: after a Re-bake, the readers' parameters written again as
-    // they are (one set_node_parameters each, one edit): the engine builds
-    // the graph again and reads the new table. False when none reads it.
-    bool rebuildSampleTableReaders(std::string_view asset);
     // get_render_authoring_context's render_target_vocabulary: the image
     // formats and usage flags the engine's parser accepts. Known once a
     // context carrying it arrived; an engine without it leaves both empty.
@@ -2527,7 +2532,9 @@ class GraphCanvasModel {
     [[nodiscard]] std::string imageInitialAsset(std::string_view scope, std::string_view node) const;
     // IA-1s, decision 5: every initial asset the document's images start
     // from, in the root and in each definition body, as written; sorted, once
-    // each.
+    // each. UX-13a, decision 3: and every table a value.sample_table reads
+    // (without its project://), which the engine reads again on a reload
+    // when it changed (IA-3).
     [[nodiscard]] std::vector<std::string> initialAssets() const;
     // Decision 4. rerun_once {node} (empty: every once node); a node of a
     // loop's body asks for its loop, whose copies the plan has. The plan is
@@ -2681,8 +2688,21 @@ class GraphCanvasModel {
     bool setPlaybackField(std::string_view scope, const std::string &node, const std::string &key,
                           const nlohmann::json &value);
 
-    // Decision 2: a pass's named buffer ports (kind buffer), in name order,
-    // which is the order the engine binds them after the images.
+    // Decision 2 (UX-13a, decision 1): a pass's named buffer ports (kind
+    // buffer) in the order the engine binds a graph pass's buffer reads: by
+    // the name of the buffer each reads (the render.buffer's id; the graph's
+    // lowering keeps a pass's reads in a set), after the images -- read i at
+    // the pass's buffer_binding_base + i. Two ports reading one buffer are one
+    // read. A port with no line (`resource` empty) is none the engine binds;
+    // those follow, by name.
+    struct BufferPortRead {
+        std::string port;
+        std::string resource;
+        bool operator==(const BufferPortRead &) const = default;
+    };
+    [[nodiscard]] std::vector<BufferPortRead> bufferPortReads(std::string_view scope,
+                                                              std::string_view node) const;
+    // Their ports alone, in that order.
     [[nodiscard]] std::vector<std::string> bufferPorts(std::string_view scope,
                                                        std::string_view node) const;
     // The element of the buffer a node hands on (a render.buffer's or

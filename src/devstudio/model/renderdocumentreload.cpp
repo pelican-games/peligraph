@@ -379,8 +379,17 @@ void RenderDocumentReload::committed(const Json &commit) {
     const bool knows_assets = assets_listed != commit.end() && assets_listed->is_array();
     std::vector<std::string> changed_assets;
     if (knows_assets)
-        for (const auto &reference : *assets_listed)
-            if (reference.is_string()) changed_assets.push_back(reference.get<std::string>());
+        for (const auto &reference : *assets_listed) {
+            if (!reference.is_string()) continue;
+            // UX-13a: one file is one name -- an image's initial asset
+            // (assets/...) and a value.sample_table's table
+            // (project://assets/...) reading the same table are listed by
+            // the reference each wrote.
+            auto name = reference.get<std::string>();
+            if (name.starts_with("project://")) name.erase(0, std::string_view{"project://"}.size());
+            if (std::find(changed_assets.begin(), changed_assets.end(), name) == changed_assets.end())
+                changed_assets.push_back(std::move(name));
+        }
     const auto unread = knows_assets ? std::vector<std::string>{} : differing_assets_;
     const auto no_change = commit.find("no_change");
     if (no_change != commit.end() && no_change->is_boolean() && no_change->get<bool>() &&

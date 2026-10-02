@@ -338,49 +338,44 @@ Json sceneColorType() {
                                    {"range", "extended"}}}};
 }
 
-// UX-8, decision 2. A pass's named buffer ports, in name order -- the order
-// the engine binds a graph pass's buffer reads, after its images.
-std::vector<std::string> namedBufferPorts(const Json &node) {
-    std::vector<std::string> ports;
-    const auto parameters = node.value("parameters", Json::object());
-    const auto declared = parameters.is_object() ? parameters.value("ports", Json::object())
-                                                 : Json::object();
-    if (!declared.is_object()) return ports;
-    for (const auto &[name, port] : declared.items())
-        if (port.is_object() && text(port, "kind") == "buffer" && !port.contains("binding"))
-            ports.push_back(name);
-    std::ranges::sort(ports);
-    return ports;
-}
-
-// The named buffer port a buffer declaration of the shader reads: the one
-// called what the declaration is called, else the one at its place among
-// the buffers (the k-th buffer declaration is the k-th buffer port).
-std::string bufferSocketPort(const FramePlanPassInputs &declared, const Json &node,
+// UX-8, decision 2 (UX-13a, decision 1): the named buffer port a buffer
+// declaration of the shader reads. A declaration named pelican_resource_<port>
+// is that port's, wherever it sits: the engine binds a port to the variable
+// of its name (RS-5), and to nothing else. Any other declaration is the one
+// at the binding the engine gives a buffer read: the pass's buffer reads in
+// the order of the buffers they read (by resource name -- the graph's
+// lowering keeps a pass's reads in a set), after the images, so read i sits
+// at buffer_binding_base + i (passBufferInputBinding). `reads` are the
+// pass's buffer ports in that order (GraphCanvasModel::bufferPortReads).
+std::string bufferSocketPort(const FramePlanPassInputs &declared,
+                             const std::vector<GraphCanvasModel::BufferPortRead> &reads,
                              const FramePlanPassInputDeclaration &declaration) {
-    const auto ports = namedBufferPorts(node);
-    if (ports.empty()) return {};
-    const auto named = GraphCanvasModel::bufferPortName(declaration.name);
-    if (std::ranges::find(ports, named) != ports.end()) return named;
-    std::vector<std::string> unnamed = ports;
-    std::size_t place = 0;
-    bool counted = false;
-    for (const auto &other : declared.declarations) {
-        if (!other.buffer() || other.variadic) continue;
-        const auto other_name = GraphCanvasModel::bufferPortName(other.name);
-        std::erase(unnamed, other_name);
-        if (&other == &declaration) counted = true;
-        else if (!counted && std::ranges::find(ports, other_name) == ports.end()) ++place;
+    if (reads.empty()) return {};
+    if (declaration.name.starts_with(GraphCanvasModel::kResourcePortVariablePrefix)) {
+        const auto named = GraphCanvasModel::bufferPortName(declaration.name);
+        return std::ranges::any_of(reads, [&](const auto &read) { return read.port == named; })
+                   ? named
+                   : std::string{};
     }
-    return place < unnamed.size() ? unnamed[place] : std::string{};
+    if (declaration.binding < declared.buffer_binding_base) return {};
+    // One binding per buffer read, however many ports read it.
+    std::vector<std::string> resources;
+    for (const auto &read : reads)
+        if (!read.resource.empty() && std::ranges::find(resources, read.resource) == resources.end())
+            resources.push_back(read.resource);
+    const auto place = declaration.binding - declared.buffer_binding_base;
+    if (place >= resources.size()) return {};
+    const auto found = std::ranges::find(reads, resources[place], &GraphCanvasModel::BufferPortRead::resource);
+    return found != reads.end() ? found->port : std::string{};
 }
 
 // Q-19, decision 1: a render node's sockets, from its pass's declarations and
 // its numbered ports -- VI-3a's framePlanInputSockets, with a numbered port
 // where the Frame Plan has a pass's input. Binding n is input n: the numbered
 // inputs come first in the pass's `input` (LP-1d).
-std::vector<GraphCanvasInputSocket> graphInputSockets(const FramePlanPassInputs &declared,
-                                                      const Json &node) {
+std::vector<GraphCanvasInputSocket> graphInputSockets(
+    const FramePlanPassInputs &declared, const Json &node,
+    const std::vector<GraphCanvasModel::BufferPortRead> &buffer_reads) {
     using Kind = GraphCanvasInputSocket::Kind;
     std::vector<GraphCanvasInputSocket> sockets;
     const auto parameters = node.value("parameters", Json::object());
@@ -435,7 +430,7 @@ std::vector<GraphCanvasInputSocket> graphInputSockets(const FramePlanPassInputs 
             const auto index = static_cast<std::int64_t>(declaration.binding);
             taken.insert(index);
             connect(socket, index);
-        } else if (const auto port = bufferSocketPort(declared, node, declaration); !port.empty()) {
+        } else if (const auto port = bufferSocketPort(declared, buffer_reads, declaration); !port.empty()) {
             // UX-8, decision 2: the named buffer port that binding reads.
             socket.port = port;
             if (inputs.is_object())
@@ -2128,7 +2123,7 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
             if (const auto *declared = passInputs(scope, drawn.id);
                 declared != nullptr && declaresPassInputs(*declared)) {
                 drawn.declared_sockets = true;
-                drawn.input_sockets = graphInputSockets(*declared, node);
+                drawn.input_sockets = graphInputSockets(*declared, node, bufferPortReads(scope, drawn.id));
                 const auto numbered = numberedPorts(drawn.parameters);
                 std::erase_if(drawn.inputs, [&](const GraphCanvasPort &port) {
                     return std::ranges::any_of(numbered, [&](const auto &entry) {
@@ -5310,7 +5305,7 @@ Json GraphCanvasModel::socketOps(std::string_view scope, const std::string &node
                     ": the engine reads a buffer port through a variable named "
                     "pelican_resource_<port>. Name the block's variable so, or read it "
                     "through pelican_resource_ports.glsl and + Buffer port.");
-            auto port = bufferSocketPort(*declared, *target, *declaration);
+            auto port = bufferSocketPort(*declared, bufferPortReads(scope, node), *declaration);
             if (port.empty()) {
                 port = bufferPortName(declaration->name);
                 const auto ports = parameters.value("ports", Json::object());
@@ -8016,10 +8011,18 @@ std::string GraphCanvasModel::imageInitialAsset(std::string_view scope, std::str
 std::vector<std::string> GraphCanvasModel::initialAssets() const {
     std::set<std::string> assets;
     for (const auto &scope : scopes())
-        for (const auto &node : nodes(scope.id))
+        for (const auto &node : nodes(scope.id)) {
             if (node.op == "render.image")
                 if (auto asset = imageInitialAsset(scope.id, node.id); !asset.empty())
                     assets.insert(std::move(asset));
+            // UX-13a, decision 3: a value.sample_table's table too, which the
+            // engine reads again in a new generation when it changed (IA-3)
+            // -- a Re-bake is picked up as any rewrite on disk is. Named as an
+            // image's initial asset is, so one file is watched once.
+            if (node.op == "value.sample_table")
+                if (auto asset = sampleTableAssetOf(scope.id, node.id); !asset.empty())
+                    assets.insert(std::move(asset));
+        }
     return {assets.begin(), assets.end()};
 }
 

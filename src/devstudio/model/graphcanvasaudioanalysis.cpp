@@ -1,6 +1,7 @@
 // AB-1s: the Graph tab's side of a baked analysis table (engine AB-1) --
-// the nodes Use in a shader places in one edit, the nodes that read a table,
-// and the edit that has them read it again after a Re-bake.
+// the nodes Use in a shader places in one edit and the nodes that read a
+// table. (UX-13a: a Re-bake sends no edit; the reload picks the table up,
+// IA-3.)
 
 #include "audioanalysistables.hpp"
 #include "graphcanvasmodel.hpp"
@@ -42,7 +43,8 @@ std::string tableStem(std::string_view asset) {
 Json GraphCanvasModel::sampleTableShaderOps(std::string_view scope, const std::string &asset,
                                             std::uint32_t rows_per_feature, std::uint32_t sample_count,
                                             double hop_seconds, const std::string &pass,
-                                            SampleTableShaderPlacement *placed) const {
+                                            SampleTableShaderPlacement *placed,
+                                            const std::vector<std::string> &shader_ports) const {
     Json ops = Json::array();
     const auto relative = projectRelativeReference(asset);
     if (relative.empty()) return ops;
@@ -107,8 +109,9 @@ Json GraphCanvasModel::sampleTableShaderOps(std::string_view scope, const std::s
              {"outputs", Json::array()}});
 
     // The pass, when one was picked: the table onto its next image binding
-    // its shader declares, the layout onto a buffer binding it reads through
-    // pelican_resource_<port>.
+    // its shader declares, the layout onto a buffer port it reads as
+    // pelican_resource_<port> (UX-13a: chosen by that name, not by a binding
+    // number -- the engine binds the port to the variable of its name).
     const auto *target = pass.empty() ? nullptr : findNode(scope, pass);
     const auto pass_op = target != nullptr ? textOf(*target, "op") : std::string{};
     if (target != nullptr && (pass_op == "render.fullscreen" || pass_op == "render.raster")) {
@@ -144,15 +147,32 @@ Json GraphCanvasModel::sampleTableShaderOps(std::string_view scope, const std::s
         } else {
             missing.push_back("image binding " + std::to_string(next));
         }
-        const auto buffer_declaration =
-            readable ? std::ranges::find_if(declared->declarations,
-                                            [](const FramePlanPassInputDeclaration &entry) {
-                                                return !entry.variadic && entry.buffer() &&
-                                                       entry.name.starts_with(kResourcePortVariablePrefix);
-                                            })
-                     : std::vector<FramePlanPassInputDeclaration>::const_iterator{};
-        if (readable && buffer_declaration != declared->declarations.end()) {
-            const auto port = bufferPortName(buffer_declaration->name);
+        // UX-13a, decision 1: the names the shader reads a buffer port by --
+        // the pelican_resource_<port> buffers its reflection shows, then the
+        // ones its text reads through pelican_resource_ports.glsl, which the
+        // generated include declares only once the port is there. The one
+        // named as the layout's buffer (<stem>_layout) first, else the first
+        // no port takes yet, else the first (its line moves to the layout).
+        std::vector<std::string> names;
+        const auto offer = [&](std::string name) {
+            if (name.empty() || std::ranges::find(names, name) != names.end()) return;
+            if (const auto held = ports.find(name);
+                held != ports.end() && (!held->is_object() || textOf(*held, "kind") != "buffer"))
+                return;
+            names.push_back(std::move(name));
+        };
+        if (readable)
+            for (const auto &entry : declared->declarations)
+                if (!entry.variadic && entry.buffer() && entry.name.starts_with(kResourcePortVariablePrefix))
+                    offer(bufferPortName(entry.name));
+        for (const auto &name : shader_ports)
+            if (name != placement.image_port) offer(name);
+        auto chosen = std::ranges::find(names, placement.buffer);
+        if (chosen == names.end())
+            chosen = std::ranges::find_if(names, [&](const std::string &name) { return !ports.contains(name); });
+        if (chosen == names.end()) chosen = names.begin();
+        if (chosen != names.end()) {
+            const auto port = *chosen;
             ports[port] = Json{{"kind", "buffer"}, {"access", "read"}, {"element", "vec4"}};
             placement.buffer_port = port;
             lines.push_back(Json{{"op", "set_input"}, {"scope", token}, {"node", pass}, {"port", port},
@@ -180,9 +200,11 @@ Json GraphCanvasModel::sampleTableShaderOps(std::string_view scope, const std::s
 bool GraphCanvasModel::addSampleTableShader(std::string_view scope, const std::string &asset,
                                             std::uint32_t rows_per_feature, std::uint32_t sample_count,
                                             double hop_seconds, const std::string &pass,
-                                            SampleTableShaderPlacement *placed) {
+                                            SampleTableShaderPlacement *placed,
+                                            const std::vector<std::string> &shader_ports) {
     if (!canEdit()) return false;
-    auto ops = sampleTableShaderOps(scope, asset, rows_per_feature, sample_count, hop_seconds, pass, placed);
+    auto ops = sampleTableShaderOps(scope, asset, rows_per_feature, sample_count, hop_seconds, pass,
+                                    placed, shader_ports);
     if (ops.empty()) return false;
     return submitOps(std::move(ops));
 }
@@ -213,16 +235,6 @@ std::vector<std::string> GraphCanvasModel::sampleTableReaders(std::string_view a
         if (sampleTableAssetOf({}, id) == relative) readers.push_back(id);
     }
     return readers;
-}
-
-bool GraphCanvasModel::rebuildSampleTableReaders(std::string_view asset) {
-    if (!canEdit()) return false;
-    Json ops = Json::array();
-    for (const auto &id : sampleTableReaders(asset))
-        ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", "root"}, {"node", id},
-                           {"parameters", nodeParameters({}, id)}});
-    if (ops.empty()) return false;
-    return submitOps(std::move(ops));
 }
 
 } // namespace PelicanStudio

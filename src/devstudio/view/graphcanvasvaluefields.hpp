@@ -150,7 +150,9 @@ class GraphCanvasValueFields final : public QWidget {
 
 // UX-8, decision 2: the names a pass's shader reads through the resource
 // port header (`PELICAN_RESOURCE_PORT_<name>`, `pelican_load_<name>(`,
-// `pelican_sample_<name>(`), from the project's file a `project://shaders/`
+// `pelican_sample_<name>(`, `pelican_resource_<name>`; not the include's own
+// name, nor the engine's pelican_sample_table), in the order the text names
+// them, from the project's file a `project://shaders/`
 // reference names; nothing for an engine shader or a file that is not there.
 std::vector<std::string> shaderResourcePortNames(const std::filesystem::path &project_root,
                                                  const std::string &reference);

@@ -241,17 +241,38 @@ bool GraphCanvasModel::setPlaybackField(std::string_view scope, const std::strin
 
 // --- Decision 2: a pass's named buffer ports.
 
+std::vector<GraphCanvasModel::BufferPortRead>
+GraphCanvasModel::bufferPortReads(std::string_view scope, std::string_view node) const {
+    std::vector<BufferPortRead> reads;
+    const auto *found = findNode(scope, node);
+    if (found == nullptr) return reads;
+    const auto parameters = found->value("parameters", Json::object());
+    const auto declared = parameters.is_object() ? parameters.value("ports", Json::object())
+                                                 : Json::object();
+    if (!declared.is_object()) return reads;
+    const auto inputs = found->value("inputs", Json::object());
+    for (const auto &[name, port] : declared.items()) {
+        if (!port.is_object() || textOf(port, "kind") != "buffer" || port.contains("binding")) continue;
+        BufferPortRead read{name, {}};
+        // The buffer the line comes from, followed through the passes that
+        // hand it on, as the lowering's resourceName names it.
+        if (inputs.is_object())
+            if (const auto edge = inputs.find(name); edge != inputs.end() && edge->is_object())
+                read.resource = scopeOutputResource(scope, textOf(*edge, "node"), textOf(*edge, "port"));
+        reads.push_back(std::move(read));
+    }
+    std::ranges::sort(reads, [](const BufferPortRead &left, const BufferPortRead &right) {
+        if (left.resource.empty() != right.resource.empty()) return right.resource.empty();
+        if (left.resource != right.resource) return left.resource < right.resource;
+        return left.port < right.port;
+    });
+    return reads;
+}
+
 std::vector<std::string> GraphCanvasModel::bufferPorts(std::string_view scope,
                                                        std::string_view node) const {
     std::vector<std::string> ports;
-    const auto parameters = nodeParameters(scope, node);
-    const auto declared = parameters.is_object() ? parameters.value("ports", Json::object())
-                                                 : Json::object();
-    if (!declared.is_object()) return ports;
-    for (const auto &[name, port] : declared.items())
-        if (port.is_object() && textOf(port, "kind") == "buffer" && !port.contains("binding"))
-            ports.push_back(name);
-    std::ranges::sort(ports);
+    for (auto &read : bufferPortReads(scope, node)) ports.push_back(std::move(read.port));
     return ports;
 }
 
@@ -310,7 +331,8 @@ Json GraphCanvasModel::bufferPortOps(std::string_view scope, const std::string &
     Json declaration{{"kind", "buffer"}, {"access", "read"}, {"element", element}};
     if (ports.value(port, Json{}) != declaration) {
         // Whatever else the port said (a hand-written binding) goes: a
-        // pass's buffer input is read by its position after the images.
+        // pass's buffer port is bound after the images, in the order of the
+        // buffers the reads name, and read as pelican_resource_<port>.
         ports[port] = std::move(declaration);
         ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", token}, {"node", node},
                            {"parameters", std::move(parameters)}});

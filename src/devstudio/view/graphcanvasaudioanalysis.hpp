@@ -64,7 +64,9 @@ class GraphCanvasBakeDialog final : public QDialog {
 //   - decision 4: list_derived_assets, read when asked (the project opened,
 //     the Graph read again), says which tables are stale; the stale row of
 //     a node reading one says why and offers Re-bake (the manifest's own
-//     settings), after which `rebaked` is called with the table.
+//     settings). UX-13a, decision 3: nothing is edited after it -- the
+//     rewritten table is a file the reload watches, and the engine reads it
+//     again in a new generation (IA-3, "Picked up the change to <table>").
 // The bake row is `pelican.graphCanvasBake` (`.line`, `.useInGraph`,
 // `.useInShader`, `.shaderLine`, `.copy`), the stale row
 // `pelican.graphCanvasStale` (`.line`, `.rebake`).
@@ -75,7 +77,6 @@ class GraphCanvasAudioAnalysis {
         std::function<void()> staleChanged;
         std::function<void(const GraphCanvasAnalysisTable &table)> useInGraph;
         std::function<void(const GraphCanvasAnalysisTable &table)> useInShader;
-        std::function<void(const std::string &asset)> rebaked;
     };
     GraphCanvasAudioAnalysis(GraphCanvasReadCapability &graph, GraphCanvasModel &model, QWidget &owner,
                              Hooks hooks);
@@ -91,7 +92,7 @@ class GraphCanvasAudioAnalysis {
     // as it closes.
     void chooseBake(const std::string &sound);
     // bake_audio_analysis with these params ({asset, out, settings}).
-    bool bake(const nlohmann::json &params, bool rebake);
+    bool bake(const nlohmann::json &params);
     // Decision 4: Re-bake of the table `asset`, from its manifest.
     bool rebake(const std::string &asset);
     // Decision 4: list_derived_assets, once the engine answers.
@@ -136,7 +137,6 @@ class GraphCanvasAudioAnalysis {
     QString ticket_;
     std::string sound_;
     std::string out_;
-    bool rebaking_ = false;
     std::optional<std::chrono::steady_clock::time_point> started_;
     // The last committed bake's table (decisions 2 and 3).
     std::optional<GraphCanvasAnalysisTable> baked_;

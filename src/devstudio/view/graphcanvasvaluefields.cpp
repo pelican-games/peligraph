@@ -707,16 +707,33 @@ void GraphCanvasValueFields::loadBuffers() {
                                 .arg(socket.binding)
                                 .arg(qtext(socket.declaration)));
         }
+    // UX-13a, decision 1: a port the reflection does not show yet is bound
+    // where the engine binds a buffer read -- after the images, in the order
+    // of the buffers the reads name (one binding per buffer).
+    const auto reads = model_.bufferPortReads(scope_, node_);
+    std::vector<std::string> resources;
+    for (const auto &read : reads)
+        if (!read.resource.empty() && std::ranges::find(resources, read.resource) == resources.end())
+            resources.push_back(read.resource);
     const auto ports = model_.bufferPorts(scope_, node_);
-    for (const auto &port : ports) {
+    for (const auto &read : reads) {
+        const auto &port = read.port;
         if (shown.contains(port)) continue;
         std::string source;
         if (found != drawn.end())
             for (const auto &input : found->inputs)
                 if (input.port == port && input.connected)
                     source = input.source_node + "." + input.source_port;
-        lines << (source.empty() ? tr("%1 (no line)").arg(qtext(port))
-                                 : tr("%1 ← %2").arg(qtext(port), qtext(source)));
+        const auto place = std::ranges::find(resources, read.resource);
+        if (source.empty())
+            lines << tr("%1 (no line)").arg(qtext(port));
+        else if (declared != nullptr && declared->declared() && place != resources.end())
+            lines << tr("binding %1 pelican_resource_%2 ← %3")
+                         .arg(static_cast<qulonglong>(declared->buffer_binding_base +
+                                                      static_cast<std::size_t>(place - resources.begin())))
+                         .arg(qtext(port), qtext(source));
+        else
+            lines << tr("%1 ← %2").arg(qtext(port), qtext(source));
     }
     if (lines.isEmpty())
         lines << (declared == nullptr
@@ -778,8 +795,11 @@ std::vector<std::string> shaderResourcePortNames(const std::filesystem::path &pr
         std::stringstream text;
         text << stream.rdbuf();
         const auto source = QString::fromStdString(text.str());
+        // UX-13a: the variable itself too (pelican_resource_<port>), but not
+        // the include's own name nor pelican_sample_table, an engine function.
         static const QRegularExpression pattern{QStringLiteral(
-            "(?:PELICAN_RESOURCE_PORT_|pelican_load_|pelican_sample_)([A-Za-z_][A-Za-z0-9_]*)")};
+            "(?:PELICAN_RESOURCE_PORT_|pelican_load_|pelican_sample_(?!table\\b)|"
+            "pelican_resource_(?!ports\\b))([A-Za-z_][A-Za-z0-9_]*)")};
         for (auto match = pattern.globalMatch(source); match.hasNext();) {
             const auto name = match.next().captured(1).toStdString();
             if (std::ranges::find(names, name) == names.end()) names.push_back(name);
