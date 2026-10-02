@@ -22,6 +22,9 @@ enum class EditorPreviewErrorCode : std::uint8_t {
     capture_schema_violation,
     capture_too_large,
     state_changed,
+    // PV-1: the published rendering configuration has no preview program;
+    // the payload's reason is PreviewGraphProgram::unavailable_reason.
+    preview_unavailable,
 };
 
 std::string_view editorPreviewErrorCodeName(EditorPreviewErrorCode code) noexcept;

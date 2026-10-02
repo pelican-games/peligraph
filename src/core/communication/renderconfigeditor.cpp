@@ -1074,6 +1074,15 @@ OrderedJson RenderConfigEditorService::rejection(
             {"error", std::move(details)}};
 }
 
+namespace {
+// PV-1: a committed result names the published generation's preview state
+// (an edit only preview cannot take is published, with preview unavailable).
+OrderedJson withPublishedPreview(OrderedJson result, const nlohmann::json &preview) {
+    if (!preview.is_null()) result["preview"] = preview;
+    return result;
+}
+} // namespace
+
 OrderedJson RenderConfigEditorService::preflightRejection(
     const std::exception &error, OrderedJson details) const {
     return rejection("render_pipeline_preflight_failed", error.what(),
@@ -6715,6 +6724,15 @@ void RenderConfigEditorService::completeCommitTransaction(
             completed["post_commit_error"] =
                 applied.post_commit_error;
         }
+        // PV-1: whether the generation this edit published has a preview,
+        // and why not (an edit preview cannot take is not refused).
+        try {
+            if (dependencies_.runtime_snapshot) {
+                auto preview = dependencies_.runtime_snapshot().preview;
+                if (!preview.is_null()) completed["preview"] = std::move(preview);
+            }
+        } catch (const std::exception &) {
+        }
         for (const auto &[key, value] :
              transaction->ticket.result_extras.items()) {
             if (!completed.contains(key)) completed[key] = value;
@@ -6819,7 +6837,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                     if (normalized != source_normalized_reference_)
                         known_document_digests_.insert_or_assign(normalized,
                                                                  digest);
-                finish(OrderedJson{
+                finish(withPublishedPreview(OrderedJson{
                     {"ticket", ticket.id},
                     {"status", "committed"},
                     {"committed", true},
@@ -6831,7 +6849,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                     {"documents", ticket.reload_documents},
                     {"changed", OrderedJson::array()},
                     {"changed_assets", OrderedJson::array()},
-                });
+                }, runtime.preview));
                 continue;
             }
 
@@ -6841,7 +6859,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                 document_.sourceDigest()) {
                 const auto runtime =
                     dependencies_.runtime_snapshot();
-                finish(OrderedJson{
+                finish(withPublishedPreview(OrderedJson{
                     {"ticket", ticket.id},
                     {"status", "committed"},
                     {"committed", true},
@@ -6853,7 +6871,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                     {"source_commit_called", false},
                     // RD-1: nothing was written.
                     {"documents", OrderedJson::object()},
-                });
+                }, runtime.preview));
                 continue;
             }
 
@@ -6873,7 +6891,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                 rememberWrittenDocuments(*ticket.candidate_documents);
                 document_ = std::move(ticket.candidate);
                 const auto runtime = dependencies_.runtime_snapshot();
-                finish(OrderedJson{
+                finish(withPublishedPreview(OrderedJson{
                     {"ticket", ticket.id},
                     {"status", "committed"},
                     {"committed", true},
@@ -6884,7 +6902,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                     {"source_digest", digestJson(document_.sourceDigest())},
                     {"source_commit_called", true},
                     {"documents", std::move(written_documents)},
-                });
+                }, runtime.preview));
                 continue;
             }
 

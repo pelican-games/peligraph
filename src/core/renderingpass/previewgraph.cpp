@@ -3,9 +3,11 @@
 #include "passfieldownershipcapabilities.hpp"
 #include "renderingpassconfigloader.hpp"
 #include "renderstrategyregistry.hpp"
+#include "../../project/graphcomposition.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../renderer/viewfamilyproviderregistry.hpp"
 
+#include <exception>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -76,6 +78,52 @@ std::uint64_t generationOf(const nlohmann::json &config) {
 }
 
 } // namespace
+
+nlohmann::json previewUnsupportedAuthoringReason(
+    const std::exception_ptr &refusal) {
+    nlohmann::json reason{
+        {"code", "preview.unsupported_authoring@1"},
+        {"feature", "composition"},
+    };
+    std::string message = "preview graph could not be composed";
+    try {
+        if (refusal) std::rethrow_exception(refusal);
+    } catch (const PreviewUnsupportedAuthoringError &error) {
+        reason["feature"] = error.feature();
+        if (!error.target().empty()) reason["target"] = error.target();
+        if (!error.graph().empty()) reason["graph"] = error.graph();
+        if (!error.pass().empty()) reason["pass"] = error.pass();
+        message = error.what();
+    } catch (const GraphRegistryError &error) {
+        auto cause = error.detail().is_object() ? error.detail()
+                                                : nlohmann::json::object();
+        cause["code"] = error.code();
+        reason["cause"] = std::move(cause);
+        message = error.what();
+    } catch (const std::exception &error) {
+        message = error.what();
+        if (auto coded = splitCodedRefusalMessage(message)) {
+            auto cause = coded->fields;
+            cause["code"] = coded->code;
+            reason["cause"] = std::move(cause);
+        }
+    } catch (...) {
+    }
+    reason["message"] = std::move(message);
+    return reason;
+}
+
+PreviewGraphProgram unavailablePreviewGraphProgram(nlohmann::json reason) {
+    PreviewGraphProgram result;
+    result.available = false;
+    result.unavailable_reason = std::move(reason);
+    return result;
+}
+
+nlohmann::json previewGraphStatusJson(const PreviewGraphProgram &program) {
+    if (program.available) return {{"available", true}};
+    return {{"available", false}, {"reason", program.unavailable_reason}};
+}
 
 PreviewGraphProgram makePreviewGraphProgram(
     std::shared_ptr<const CompiledRenderPipeline>
@@ -172,15 +220,8 @@ void preflightRenderGraphVariants(
     } catch (const std::exception &) {
         return;
     }
-    try {
-        (void)precompilePreviewGraph(rendering_config_json,
-                                     load_feature_json,
-                                     runtime_shader_compiler_enabled);
-    } catch (const std::exception &error) {
-        throw GraphVariantCompositionError{
-            RenderPipelineGraphVariant::preview, error.what(),
-            std::current_exception()};
-    }
+    // PV-1: preview is not composed: what it cannot take is published with
+    // preview unavailable, not refused.
 #if PELICAN_WITH_OPENXR
     if (xr_active) {
         try {

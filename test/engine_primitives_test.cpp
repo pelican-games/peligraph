@@ -3218,4 +3218,162 @@ TEST_CASE("FR-3 edit_batch takes cascade_count 3 with the 2D array shadow map ty
     CHECK(outside.at("error").at("code") == -32602);
 }
 
+
+namespace {
+
+// PV-1: test/fixtures/pv1_history_accum copied out -- a direct root whose
+// authored target `accum` keeps history, added to every frame.
+std::filesystem::path pv1HistoryProject(const std::filesystem::path &dir) {
+    const auto fixtures = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" / "pv1_history_accum";
+    const auto root = dir / "project";
+    std::filesystem::create_directories(root);
+    std::filesystem::copy(fixtures, root, std::filesystem::copy_options::recursive);
+    return root;
+}
+
+// render_preview of a small PNG from an explicit camera, the response as the
+// wire carries it (a result or an error).
+Json pv1RenderPreview(Rpc &rpc, std::uint64_t graph_generation) {
+    return rpc.call("render_preview",
+                    {{"capture",
+                      {{"width", 16},
+                       {"height", 16},
+                       {"pixel_encoding", "png"},
+                       {"camera",
+                        {{"position", {0.0, 0.0, -3.0}},
+                         {"target", {0.0, 0.0, 0.0}},
+                         {"up", {0.0, 1.0, 0.0}},
+                         {"projection",
+                          {{"kind", "perspective"}, {"yfov", 0.8}, {"znear", 0.1}, {"zfar", 100.0}}}}},
+                       {"graph_generation", graph_generation},
+                       {"max_bytes", 1 << 20}}}});
+}
+
+} // namespace
+
+// PV-1: a project authoring a history target starts and plays; only the
+// one-shot preview is unavailable, said in get_status / get_frame_plan, and
+// render_preview refuses by name. An edit that removes the history (an RL-1
+// reload of the rewritten root) makes preview available and render_preview
+// renders; edits that add a history target and read it (edit_batch, then
+// edit_preset_pass) are committed, not refused, and preview is unavailable
+// again with the new reason.
+TEST_CASE("PV-1 an authored history target plays with the one-shot preview unavailable, and edits move preview "
+          "both ways without refusing",
+          "[pv1][preview][render-preview][rl1][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("pv1_history");
+    const auto root = pv1HistoryProject(dir.root);
+    const auto rendering_path = root / "passes/main.json";
+    const auto capture = dir.root / "capture.png";
+    Fr3Engine engine{root};
+    auto &rpc = engine.rpc;
+
+    // History works: each frame adds to the last.
+    const auto first = rpc.frame(capture);
+    (void)rpc.result("step_frame");
+    const auto second = rpc.frame(capture);
+    CHECK(differingPixels(first, second) > 0);
+
+    const auto history_unavailable = [](const Json &preview) {
+        INFO(preview.dump(2));
+        REQUIRE(preview.at("available") == false);
+        const auto &reason = preview.at("reason");
+        CHECK(reason.at("code") == "preview.unsupported_authoring@1");
+        CHECK(reason.at("feature") == "history");
+        CHECK(reason.at("target") == "accum");
+        CHECK(reason.at("message") == "preview graph '<config>' rejects authored history target 'accum'");
+    };
+    history_unavailable(rpc.result("get_status").at("preview"));
+    history_unavailable(rpc.result("get_frame_plan").at("preview"));
+    {
+        const auto refused = pv1RenderPreview(rpc, 0);
+        INFO(refused.dump(2));
+        REQUIRE(refused.contains("error"));
+        const auto &data = refused.at("error").at("data");
+        CHECK(data.at("code") == "preview.unavailable@1");
+        CHECK(data.at("method") == "render_preview");
+        CHECK(data.at("reason").at("feature") == "history");
+        CHECK(data.at("reason").at("target") == "accum");
+    }
+
+    // The root rewritten without history and reloaded (RL-1): committed with
+    // preview available, and render_preview renders.
+    {
+        auto rendering = Json::parse(readFile(rendering_path));
+        auto &section = rendering.at("rendering");
+        section.at("render_targets").at(0).erase("history");
+        section.at("rendering_passes").at(0).at("passes").at(0).at("input") = Json::array();
+        writeFile(rendering_path, rendering.dump(2));
+    }
+    const Json available{{"available", true}};
+    {
+        const auto reloaded = engine.settle(rpc.result("reload_render_documents"));
+        INFO(reloaded.dump(2));
+        REQUIRE(reloaded.at("status") == "committed");
+        CHECK(reloaded.at("preview") == available);
+    }
+    CHECK(rpc.result("get_status").at("preview") == available);
+    CHECK(rpc.result("get_frame_plan").at("preview") == available);
+    {
+        const auto generation = rpc.result("eval_preview").at("graph_generation").get<std::uint64_t>();
+        CHECK(generation != 0);
+        const auto rendered = pv1RenderPreview(rpc, generation);
+        if (rendered.contains("error")) FAIL(rendered.at("error").dump(2));
+        CHECK(rendered.at("result").at("status") == "rendered");
+    }
+
+    // A history target added through edit_batch: it is declared in the
+    // editor's render target fragment, which preview leaves out, so preview
+    // stays available.
+    {
+        const auto added = engine.batch(Json::array({
+            {{"method", "edit_render_targets"},
+             {"params",
+              {{"ops", Json::array({{{"op", "add"},
+                                     {"target",
+                                      {{"name", "trail"},
+                                       {"extent_scale", 1.0},
+                                       {"format", "R16G16B16A16_SFLOAT"},
+                                       {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+                                       {"role", "color"},
+                                       {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+                                       {"history", true},
+                                       {"clear_color", {0.0, 0.0, 0.0, 0.0}}}}}})}}}},
+        }));
+        INFO(added.dump(2));
+        REQUIRE(added.at("status") == "committed");
+        CHECK(added.at("preview") == available);
+    }
+    // present reading last frame's trail is what preview cannot take: the
+    // edit is committed (it was refused before PV-1) and preview is
+    // unavailable, named by that pass.
+    {
+        const auto read = engine.send("edit_preset_pass",
+                                      {{"graph", "main_render"},
+                                       {"pass_name", "present"},
+                                       {"input", Json::array({"accum", "trail@history"})},
+                                       {"output", q14e_present_output},
+                                       {"shader",
+                                        {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}});
+        INFO(read.dump(2));
+        REQUIRE(read.at("status") == "committed");
+        const auto &preview = read.at("preview");
+        REQUIRE(preview.at("available") == false);
+        CHECK(preview.at("reason").at("code") == "preview.unsupported_authoring@1");
+        CHECK(preview.at("reason").at("feature") == "history_read");
+        CHECK(preview.at("reason").at("graph") == "main_render");
+        CHECK(preview.at("reason").at("pass") == "present");
+        CHECK(rpc.result("get_status").at("preview") == preview);
+    }
+    CHECK(rpc.result("get_frame_plan").at("preview").at("available") == false);
+    {
+        const auto refused = pv1RenderPreview(rpc, 0);
+        REQUIRE(refused.contains("error"));
+        CHECK(refused.at("error").at("data").at("code") == "preview.unavailable@1");
+        CHECK(refused.at("error").at("data").at("reason").at("feature") == "history_read");
+    }
+    (void)rpc.frame(capture);
+}
+
 } // namespace Pelican

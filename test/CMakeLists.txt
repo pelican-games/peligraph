@@ -2881,6 +2881,19 @@ if(PELICAN_WITH_RPC)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_headless.cmake
     )
     pelican_gpu_test_properties(rpc_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+    # PV-1: a project authoring a history target starts and plays in the
+    # headless player with the one-shot preview unavailable (get_status,
+    # get_frame_plan, render_preview's preview.unavailable@1, one log warning).
+    add_test(
+        NAME pv1_preview_unavailable_player
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DFIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/pv1_history_accum
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/pv1_preview_unavailable_player
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_pv1_preview_unavailable_player.cmake
+    )
+    pelican_gpu_test_properties(pv1_preview_unavailable_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
     # AU-3: the audio backend named at launch -- --audio-backend over
     # PELICAN_AUDIO_BACKEND over the window's default -- is what get_status
     # reports, and a name none of the three stops the launch by name. The
@@ -3765,6 +3778,7 @@ set(PELICAN_RUNTIME_SHADER_PROCESS_TESTS
     free_camera_runtime_overlay_player
     vrm_xr_demo_rpc_player
     rpc_headless_player
+    pv1_preview_unavailable_player
     audio_backend_selection_player
     rpc_set_camera_headless_player
     rpc_scene_flow_headless_player

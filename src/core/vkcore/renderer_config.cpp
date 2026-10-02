@@ -575,6 +575,21 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
                 rendering_config_json,
                 base_extent,
                 std::move(variant_dependencies));
+        // PV-1: normal play goes on without the one-shot preview; one line
+        // says why render_preview will refuse.
+        if (!family.preview.available) {
+            const auto &reason = family.preview.unavailable_reason;
+            LOG_WARNING(
+                logger,
+                "render preview unavailable ({} feature={}{}); normal play "
+                "continues, render_preview refuses: {}",
+                reason.value("code", std::string{}),
+                reason.value("feature", std::string{}),
+                reason.contains("target")
+                    ? " target=" + reason.value("target", std::string{})
+                    : std::string{},
+                reason.value("message", std::string{}));
+        }
         RenderGraphVariantConfig variants{
             .flat = prepared_flat_rendering_pass_id,
             .preview =

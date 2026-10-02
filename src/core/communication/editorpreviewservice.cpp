@@ -128,6 +128,19 @@ void checkXr(std::string_view method, const std::function<bool()> &xr_active) {
     }
 }
 
+// PV-1: render_preview has nothing to run when the preview variant could not
+// compose the published configuration; it refuses by name with the reason.
+void checkPreviewAvailable(std::string_view method, const PreviewGraphProgram &program) {
+    if (program.available) return;
+    auto payload = OrderedJson::object();
+    payload["method"] = std::string{method};
+    payload["reason"] = program.unavailable_reason;
+    throw EditorPreviewError{EditorPreviewErrorCode::preview_unavailable,
+                             std::string{method} + " is unavailable for this rendering configuration: " +
+                                 program.unavailable_reason.value("message", std::string{}),
+                             std::move(payload)};
+}
+
 void requireStateUnchanged(const OrderedJson &before, const OrderedJson &after,
                            std::string_view method) {
     if (before != after) {
@@ -350,6 +363,7 @@ std::string_view editorPreviewErrorCodeName(EditorPreviewErrorCode code) noexcep
     case EditorPreviewErrorCode::capture_schema_violation: return "capture_schema_violation";
     case EditorPreviewErrorCode::capture_too_large: return "capture_too_large";
     case EditorPreviewErrorCode::state_changed: return "state_changed";
+    case EditorPreviewErrorCode::preview_unavailable: return "preview.unavailable@1";
     }
     return "method_unavailable";
 }
@@ -425,6 +439,7 @@ OrderedJson EditorPreviewService::renderPreview(
     const auto accepted_gate = gate_provider();
     checkGate(method, accepted_gate);
     checkXr(method, dependencies_.xr_active);
+    checkPreviewAvailable(method, dependencies_.preview_graph());
     return isolated(method, dependencies_.shared_state_snapshot, [&]() -> OrderedJson {
         requireObject(params, method, EditorPreviewErrorCode::capture_schema_violation);
         requireOnly(params, {"overrides", "capture"}, method,

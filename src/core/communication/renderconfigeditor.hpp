@@ -98,6 +98,10 @@ struct RenderConfigEditorGateObservation {
 struct RenderConfigRuntimeSnapshot {
     std::uint64_t published_generation = 0;
     std::vector<std::string> enabled_feature_names;
+    // PV-1: the published one-shot preview's state, previewGraphStatusJson
+    // ({available} and the reason when not). A committed edit that published
+    // reports it as `preview`. Null (a runtime without a renderer): left out.
+    nlohmann::json preview = nullptr;
 };
 
 struct RenderConfigRuntimeApplyResult {

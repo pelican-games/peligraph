@@ -8350,56 +8350,34 @@ struct G6Harness {
 
 } // namespace
 
-TEST_CASE("G-6 an edit preview cannot compose is refused before it takes a ticket, "
-          "naming preview, and nothing is written",
-          "[render-config-editor][g6][preflight][preview]") {
+// PV-1 (was G-6 "an edit preview cannot compose is refused"): the one-shot
+// preview no longer decides whether an edit is taken. The edit that makes
+// present read last frame's trail -- which preview cannot compose -- is
+// committed like any other through the engine's own preflight; the published
+// generation reports preview as unavailable (engine_primitives_test PV-1).
+TEST_CASE("PV-1 an edit only the preview cannot compose is committed through the engine's preflight",
+          "[render-config-editor][g6][preflight][preview][pv1]") {
     auto history_target = sceneTarget("trail");
     history_target["history"] = true;
-
-    // The same edits against an engine-side service without the variant
-    // preflight: flat composes every one of them, the last included.
-    {
-        G6Harness flat_only{false};
-        flat_only.service = makeProjectService(flat_only.project,
-                                               flat_only.resolver,
-                                               flat_only.runtime);
-        REQUIRE(flat_only.settle(flat_only.targets(
-                    addOp(sceneTarget("lit_color"))))
-                    .at("committed") == true);
-        REQUIRE(flat_only.settle(flat_only.targets(addOp(history_target)))
-                    .at("committed") == true);
-        const auto read = flat_only.settle(flat_only.present(
-            Json::array({"lit_color", "trail@history"})));
-        INFO(read.dump());
-        REQUIRE(read.at("committed") == true);
-    }
 
     G6Harness harness{false};
     REQUIRE(harness.settle(harness.targets(addOp(sceneTarget("lit_color"))))
                 .at("committed") == true);
     REQUIRE(harness.settle(harness.present(Json::array({"lit_color"})))
                 .at("committed") == true);
-    // A history target is taken: preview leaves the fragment that declares
-    // it out, and nothing preview keeps reads it.
     REQUIRE(harness.settle(harness.targets(addOp(history_target)))
                 .at("committed") == true);
 
     // present reading last frame's trail is what preview cannot take.
-    const auto root_before = readBytes(harness.project.render_config);
     const auto applies_before = harness.runtime.apply_calls;
-    const auto refused =
-        harness.present(Json::array({"lit_color", "trail@history"}));
-    INFO(refused.dump());
-    REQUIRE(refused.at("status") == "rejected");
-    const auto &error = refused.at("error");
-    CHECK(error.at("code") == "render_pipeline_preflight_failed");
-    CHECK(error.at("variant") == "preview");
-    CHECK(error.at("message").get<std::string>().find("history read") !=
+    const auto read = harness.settle(
+        harness.present(Json::array({"lit_color", "trail@history"})));
+    INFO(read.dump());
+    REQUIRE(read.at("status") == "committed");
+    CHECK(read.at("committed") == true);
+    CHECK(harness.runtime.apply_calls == applies_before + 1);
+    CHECK(readBytes(harness.project.render_config).find("trail@history") !=
           std::string::npos);
-    CHECK_FALSE(refused.contains("ticket"));
-    harness.service->commitPending();
-    CHECK(harness.runtime.apply_calls == applies_before);
-    CHECK(readBytes(harness.project.render_config) == root_before);
 }
 
 TEST_CASE("G-6 xr composes an edit only in an engine that started it",
@@ -8501,21 +8479,24 @@ std::function<void(const RenderConfigCandidateDocumentSet &)> lp0dPreviewRefuses
 
 TEST_CASE("LP-0d a graph variant's named refusal keeps its code, with the variant beside its fields",
           "[render-config-editor][g6][preflight][preview][lp0d]") {
-    SECTION("the engine's preflight hands the composer's refusal on") {
+    SECTION("the engine's preflight leaves a graph only preview refuses to the published state") {
+        // PV-1: the engine's preflight composes the runtime variants only.
+        // The refusal preview raises is the reason a published generation
+        // gives for preview being unavailable, its code kept as the cause.
         const std::string document{lp0dPreviewRefusedGraph};
+        CHECK_NOTHROW(preflightRenderGraphVariants(document, lp0dHistoryBloom, true, false));
         try {
-            preflightRenderGraphVariants(document, lp0dHistoryBloom, true, false);
+            (void)precompilePreviewGraph(document, lp0dHistoryBloom, true);
             FAIL("preview composed the graph");
-        } catch (const GraphVariantCompositionError &error) {
-            CHECK(error.variant() == RenderPipelineGraphVariant::preview);
-            REQUIRE(error.cause());
-            try {
-                std::rethrow_exception(error.cause());
-            } catch (const GraphRegistryError &refusal) {
-                CHECK(refusal.code() == "graph.loop_expression_invalid@1");
-                CHECK(refusal.detail().at("node") == "steps");
-                CHECK(refusal.detail().at("reason") == "not_static");
-            }
+        } catch (const GraphRegistryError &refusal) {
+            CHECK(refusal.code() == "graph.loop_expression_invalid@1");
+            const auto reason = previewUnsupportedAuthoringReason(std::current_exception());
+            INFO(reason.dump());
+            CHECK(reason.at("code") == "preview.unsupported_authoring@1");
+            CHECK(reason.at("feature") == "composition");
+            CHECK(reason.at("cause").at("code") == "graph.loop_expression_invalid@1");
+            CHECK(reason.at("cause").at("node") == "steps");
+            CHECK(reason.at("cause").at("reason") == "not_static");
         }
     }
 

@@ -1197,14 +1197,31 @@ void RegistrationStages::prepare() {
         auto preview_variant =
             std::move(prepared_variants.back());
         prepared_variants.pop_back();
-        prepared_preview =
-            makePreviewGraphProgram(
-                std::move(
-                    preview_variant
-                        .compiled_pipeline),
-                std::move(
-                    preview_variant
-                        .normalized_config));
+        // PV-1: a preview the program could not compose is recorded as
+        // unavailable, with why; the runtime variants register and publish
+        // as they would without it.
+        std::exception_ptr unavailable =
+            preview_variant.unavailable;
+        if (!unavailable) {
+            try {
+                prepared_preview =
+                    makePreviewGraphProgram(
+                        std::move(
+                            preview_variant
+                                .compiled_pipeline),
+                        std::move(
+                            preview_variant
+                                .normalized_config));
+            } catch (...) {
+                unavailable = std::current_exception();
+            }
+        }
+        if (unavailable) {
+            prepared_preview =
+                unavailablePreviewGraphProgram(
+                    previewUnsupportedAuthoringReason(
+                        unavailable));
+        }
     }
     if (preview_request != variant_requests.end() &&
         !prepared_preview) {

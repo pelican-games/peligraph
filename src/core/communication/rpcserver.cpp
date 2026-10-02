@@ -1644,6 +1644,10 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             // {"available": false} and nothing else.
             {"animation", internal::animationStatusJson()},
             {"audio", internal::audioStatusJson()},
+            // PV-1: {available} of the one-shot preview (render_preview) for
+            // the published rendering configuration, with the reason when not.
+            {"preview", previewGraphStatusJson(
+                            modules.renderer.previewGraphProgram())},
             {"seed", GameContext{}.seed()},
             {"xr", openXrStatusJson(modules.launch_config)},
             {"renderdoc", renderdoc.status},

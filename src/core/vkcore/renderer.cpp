@@ -4168,6 +4168,9 @@ nlohmann::json Renderer::currentFramePlanJson() const {
         frameExecutionPlanToJson(
             frame_graph->execution_plan);
     result["runtime_generation"] = generation->generation;
+    // PV-1: whether the one-shot preview could be composed with this
+    // generation, and why not.
+    result["preview"] = previewGraphStatusJson(preview_graph_program);
     // LP-Va2: a node whose view_select matched no view in the last published
     // frame of this program. Absent on a node that ran, and before the
     // program has published a frame.

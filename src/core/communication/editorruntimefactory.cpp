@@ -2068,7 +2068,6 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         };
                     },
                     .runtime_snapshot = [runtime] {
-                        (void)runtime;
                         const auto generation =
                             GET_MODULE(FrameGraphRuntimeContainer)
                                 .snapshot();
@@ -2082,6 +2081,9 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                             .enabled_feature_names =
                                 generation
                                     ->enabled_feature_names,
+                            .preview = previewGraphStatusJson(
+                                runtime->modules.renderer
+                                    .previewGraphProgram()),
                         };
                     },
                     .apply_candidate =
