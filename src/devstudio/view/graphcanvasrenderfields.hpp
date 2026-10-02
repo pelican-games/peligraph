@@ -177,6 +177,10 @@ class GraphCanvasPassFields final : public QWidget {
     // The pass New... was last shown for (scope, node).
     std::string template_for_;
     QLabel *ports_ = nullptr;
+    // LC-1s, decision 2: one line when the frame plan says the pass's shader
+    // reads the loop element (`pelican.graphCanvasPass.loopElement`).
+    QLabel *loop_element_ = nullptr;
+    void showLoopElementRead();
     // Named `pelican.graphCanvasPass.input.<port>.filter` / `.address` /
     // `.mip`; a setting the socket cannot take is there, off, saying why.
     QWidget *inputs_ = nullptr;
@@ -223,6 +227,21 @@ class GraphCanvasPassFields final : public QWidget {
     QTimer *retry_timer_ = nullptr;
     bool deferWhileBusy(std::function<void()> again);
     void retryWhenEditable();
+    // A count typed into a draw spin and not yet confirmed (no Return, no
+    // focus out) is confirmed before the fields let go of the pass: a redraw
+    // that shows no node for a moment hides them, and the hidden spin's
+    // focus out found no pass to send it to.
+    void flushDraw();
+    std::function<void()> pending_changed_;
+
+  public:
+    // Whether a value given while the model was busy waits to be sent; the
+    // owner's notice says "Saving" meanwhile, not the last save's words.
+    [[nodiscard]] bool valuePending() const noexcept { return static_cast<bool>(retry_); }
+    // Called when that changes.
+    void setPendingChanged(std::function<void()> changed) {
+        pending_changed_ = std::move(changed);
+    }
 };
 
 // UX-3, decision 2: where the selected render node (fullscreen, raster,

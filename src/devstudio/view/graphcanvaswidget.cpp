@@ -1303,6 +1303,29 @@ QString zoneCondition(const GraphCanvasLoopBranch &branch) {
     return QObject::tr("expression");
 }
 
+// LC-1s, decision 2: under each pass node of the body `scope` whose shader
+// reads the loop element (the frame plan's reads_loop_index on its copies),
+// the band GL-2b draws under a root node, saying `reads element`. `zone`: the
+// body is drawn in its loop's zone on the root canvas, not descended into.
+void addLoopElementBands(QGraphicsScene &scene, const GraphCanvasModel &model,
+                         GraphCanvasDrawing::Builder &drawing, const QString &scope,
+                         bool zone) {
+    if (scope.isEmpty() || !model.isLoopBodyScope(scope.toStdString())) return;
+    std::vector<QGraphicsItem *> passes;
+    for (QGraphicsItem *item : scene.items()) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem}) continue;
+        if (item->data(GraphCanvasScopeRole).toString() != scope) continue;
+        if (item->data(GraphCanvasZoneScopeRole).toString().isEmpty() == zone) continue;
+        const auto id = item->data(NodeGraphNameRole).toString();
+        if (model.loopElementRead(scope.toStdString(), id.toStdString()) ==
+            GraphCanvasLoopElementRead::in_loop)
+            passes.push_back(item);
+    }
+    for (QGraphicsItem *item : passes)
+        drawing.addLayerBand(*item, item->data(NodeGraphNameRole).toString(),
+                             QObject::tr("reads element"));
+}
+
 } // namespace
 
 QString GraphCanvasScene::layerBandText(const std::string &id) const {
@@ -1338,6 +1361,8 @@ void GraphCanvasScene::setPlanNodeTimes(std::map<std::string, double, std::less<
     for (QGraphicsItem *item : items()) {
         const auto kind = nodeGraphItemKind(*item);
         if (kind == QLatin1String{GraphCanvasLayerBandItem}) {
+            // LC-1s: a band in a loop's zone is a body node's, not a root's.
+            if (!item->data(GraphCanvasZoneScopeRole).toString().isEmpty()) continue;
             if (auto *band = dynamic_cast<QGraphicsSimpleTextItem *>(item))
                 bands[item->data(NodeGraphNameRole).toString()] = band;
         } else if (item->parentItem() == nullptr && kind == QLatin1String{GraphCanvasNodeItem} &&
@@ -2130,6 +2155,9 @@ void GraphCanvasScene::repopulate() {
                 drawing.addLayerBand(*item, qtext(id), band);
         }
     }
+    // LC-1s, decision 2: inside a loop's body (descended into), a pass whose
+    // shader reads its element says so where GL-2b's band goes.
+    if (!scope.empty()) addLoopElementBands(*this, *model_, drawing, scope_text, false);
 
     // The control points of one scope, drawn by one builder. They go over
     // everything they may come to lie on. A bundle's place is the middle of
@@ -2216,6 +2244,7 @@ void GraphCanvasScene::repopulate() {
                                             qtext(output.port));
             routeZoneLink(*this, *link);
         }
+        addLoopElementBands(*this, *model_, inside, qtext(body), true);
         drawControls(inside, body, plan.edges, ends);
     }
 
@@ -5097,7 +5126,17 @@ struct GraphCanvasWidget::Impl {
         side_layout->addWidget(view_fields);
         image_fields = new GraphCanvasImageFields(model, [this] { dispatch(); }, side);
         side_layout->addWidget(image_fields);
-        pass_fields = new GraphCanvasPassFields(model, [this] { dispatch(); }, side);
+        // UX-5d's "Saving" the moment a value is confirmed in the Pass
+        // fields too (a draw count, a define), and while one waits for the
+        // model to be free: the line must not still say the last save.
+        pass_fields = new GraphCanvasPassFields(
+            model,
+            [this] {
+                dispatch();
+                showNotice();
+            },
+            side);
+        pass_fields->setPendingChanged([this] { showNotice(); });
         // UX-5b: New... wrote a shader; the lists hold it from now on.
         pass_fields->setShadersChanged([this] { refreshShaderChoices(); });
         side_layout->addWidget(pass_fields);
@@ -6968,7 +7007,8 @@ struct GraphCanvasWidget::Impl {
         // Q-5: a placement change nobody has sent yet is not saved, whatever
         // the last save said. Only an error outranks it: that is the one thing
         // the user must still read.
-        if (scene->placementUnsent() && message.kind != InspectorNoticeKind::Error)
+        if ((scene->placementUnsent() || (pass_fields != nullptr && pass_fields->valuePending())) &&
+            message.kind != InspectorNoticeKind::Error)
             message = {InspectorNoticeKind::Information,
                        "Saving the graph change..."};
         if (message.kind == InspectorNoticeKind::None) {

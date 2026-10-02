@@ -9318,6 +9318,58 @@ TEST_CASE("UX-7 decisions 3 and 4: a raster pass's Depth is picked (a new D32_SF
     CHECK_NOTHROW(Pelican::editGraphDocument(deep, back));
 }
 
+// UX-7 follow-up (GB-3's ocean, step "two instances"): a count typed into a
+// draw spin and not yet confirmed is sent when a redraw shows no node for a
+// moment and the Pass fields let go of the pass -- the hidden spin's focus out
+// used to find no pass -- and the notice says "Saving" from the moment a
+// count is confirmed, so a wait for "saved" cannot pass on the last save.
+TEST_CASE("UX-7 a draw count typed but not confirmed survives the Pass fields letting go, and "
+          "the notice says Saving at once",
+          "[devstudio][graph-canvas][scene][ux7]") {
+    (void)application();
+    Ux2Tab tab{true};
+    auto pass = ux7RasterPass();
+    auto document = ux7RasterDocument(pass);
+    tab.read(document, "ux7-f-0");
+    tab.answer("get_graph_catalog", ux7Catalog());
+    tab.widget->scene().selectNode("sea");
+    QCoreApplication::processEvents();
+    REQUIRE(tab.field<QWidget>("pelican.graphCanvasPass")->isVisible());
+    auto *notice = tab.field<QLabel>("pelican.graphCanvasNotice");
+
+    // Grid: sent, and the line says Saving before any answer.
+    ux7Click(tab.field<QPushButton>("pelican.graphCanvasPass.grid"));
+    auto op = tab.sent(1);
+    pass["draw"]["vertex_count"] = 6 * 256 * 256;
+    CHECK(op.at("parameters") == pass);
+    CHECK(notice->text().contains(QStringLiteral("Saving")));
+    document = ux7RasterDocument(pass);
+    tab.commit(document, "ux7-f-1");
+    QCoreApplication::processEvents();
+    CHECK_FALSE(notice->text().contains(QStringLiteral("Saving")));
+
+    // 2 typed into Instances, no Return.
+    auto *instances = tab.field<QSpinBox>("pelican.graphCanvasPass.instanceCount");
+    tab.widget->activateWindow();
+    instances->setFocus(Qt::OtherFocusReason);
+    QCoreApplication::processEvents();
+    REQUIRE(instances->hasFocus());
+    instances->selectAll();
+    QKeyEvent press{QEvent::KeyPress, Qt::Key_2, Qt::NoModifier, QStringLiteral("2")};
+    QCoreApplication::sendEvent(instances, &press);
+    QKeyEvent release{QEvent::KeyRelease, Qt::Key_2, Qt::NoModifier, QStringLiteral("2")};
+    QCoreApplication::sendEvent(instances, &release);
+    CHECK(instances->cleanText() == QStringLiteral("2"));
+    CHECK(tab.reads("edit_graph_document") == 1);
+    // A redraw that picks nothing for a moment.
+    tab.widget->scene().selectNode("not_drawn");
+    QCoreApplication::processEvents();
+    op = tab.sent(2);
+    pass["draw"]["instance_count"] = 2;
+    CHECK(op.at("parameters") == pass);
+    CHECK(notice->text().contains(QStringLiteral("Saving")));
+}
+
 TEST_CASE("UX-7 decision 5: render.scalar, value.constant and value.input ask for what they "
           "cannot be placed without, and are placed with it",
           "[devstudio][graph-canvas][scene][ux7]") {

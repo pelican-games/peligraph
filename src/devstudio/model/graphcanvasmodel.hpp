@@ -617,9 +617,17 @@ struct GraphCanvasPlanPass {
     std::string contract;
     // material_filter.resolved_draw_count, when the engine resolved it.
     std::optional<std::size_t> draw_count;
+    // LC-1: its shader reads pelican_loop_element() / _count()
+    // (get_frame_plan's reads_loop_index).
+    bool reads_loop_index = false;
 
     bool operator==(const GraphCanvasPlanPass &) const = default;
 };
+
+// LC-1s, decision 2: whether a pass node's shader reads the loop element, as
+// the frame plan says of the passes the node made. `outside_loop`: it reads
+// it, but no loop copied the node, so it reads element 0.
+enum class GraphCanvasLoopElementRead { none, in_loop, outside_loop };
 
 // GL-1, decision 1. A read-only node on the Graph canvas standing for passes
 // no graph node made: every pass of one feature folded into one node, or one
@@ -1683,6 +1691,14 @@ class GraphCanvasModel {
     // LP-4f2. The family a loop over a view axis runs the body `scope` in
     // (its over.view_axis.family); empty for any other scope.
     [[nodiscard]] std::string viewAxisFamilyOf(std::string_view scope) const;
+    // LC-1s, decision 1: `scope` is the body of a loop of the root document
+    // (a branch's body included), so a pass made there is copied per element.
+    [[nodiscard]] bool isLoopBodyScope(std::string_view scope) const;
+    // LC-1s, decision 2: whether the pass `node` of `scope` reads the loop
+    // element, from the frame plan's reads_loop_index on the passes it made
+    // (a body node: the copies whose origin is it; a root node: its passes).
+    [[nodiscard]] GraphCanvasLoopElementRead loopElementRead(std::string_view scope,
+                                                             std::string_view node) const;
     // The size a new image drawn in `family` is made at, as render.image
     // parameters, from the frame plan's family_extent / family_layers on the
     // family's nodes (LP-4f3, VF-2): {width, height[, layers]} for a fixed

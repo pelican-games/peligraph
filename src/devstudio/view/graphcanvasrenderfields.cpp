@@ -760,6 +760,12 @@ GraphCanvasPassFields::GraphCanvasPassFields(GraphCanvasModel &model,
     ports_->setWordWrap(true);
     ports_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     form_->addRow(caption(tr("Ports"), fields_), ports_);
+    loop_element_ = new QLabel(fields_);
+    loop_element_->setObjectName(passFieldName(QStringLiteral("loopElement")));
+    loop_element_->setFont(studioSmallFont());
+    loop_element_->setWordWrap(true);
+    form_->addRow(QString{}, loop_element_);
+    form_->setRowVisible(loop_element_, false);
 
     // UX-6a, decision 5: the sampling of each image the pass reads, beside
     // the canvas -- the right-click entries were the only place, and a
@@ -900,6 +906,7 @@ void GraphCanvasPassFields::setShadersChanged(std::function<void()> changed) {
 
 void GraphCanvasPassFields::showNode(const GraphCanvasNode *node, const std::string &scope) {
     if (node == nullptr || (node->op != "render.fullscreen" && node->op != "render.raster")) {
+        flushDraw();
         node_.clear();
         scope_.clear();
         op_.clear();
@@ -913,9 +920,10 @@ void GraphCanvasPassFields::showNode(const GraphCanvasNode *node, const std::str
     const bool other = template_key != template_for_;
     template_for_ = template_key;
     // A value waiting to be sent belongs to the pass it was given for.
-    if (other) {
+    if (other && retry_) {
         retry_ = {};
         retry_timer_->stop();
+        if (pending_changed_) pending_changed_();
     }
     // EL-4b: the shader combos are on screen: the engine's list is asked for
     // now (once), and replaces the fixed one when it arrives.
@@ -936,6 +944,8 @@ void GraphCanvasPassFields::showNode(const GraphCanvasNode *node, const std::str
                                                       : tr("Fullscreen pass %1").arg(qtext(node_)));
         load(current);
     }
+    // The plan may say it later than the document: asked on every show.
+    showLoopElementRead();
     if (other) {
         // Another pass: New... starts closed, its name proposed afresh.
         const QSignalBlocker block{new_shader_};
@@ -957,6 +967,23 @@ void GraphCanvasPassFields::showNode(const GraphCanvasNode *node, const std::str
     }
 }
 
+void GraphCanvasPassFields::showLoopElementRead() {
+    QString line;
+    switch (model_.loopElementRead(scope_, node_)) {
+    case GraphCanvasLoopElementRead::in_loop:
+        line = tr("This shader reads the loop element (pelican_loop_element)");
+        break;
+    case GraphCanvasLoopElementRead::outside_loop:
+        line = tr("This shader reads the loop element (pelican_loop_element); outside a loop "
+                  "it reads element 0");
+        break;
+    case GraphCanvasLoopElementRead::none:
+        break;
+    }
+    loop_element_->setText(line);
+    form_->setRowVisible(loop_element_, !line.isEmpty());
+}
+
 void GraphCanvasPassFields::followEditable() {
     fields_->setEnabled(model_.canEdit());
     retryWhenEditable();
@@ -967,6 +994,7 @@ bool GraphCanvasPassFields::deferWhileBusy(std::function<void()> again) {
     retry_ = std::move(again);
     // The model says nothing when it becomes editable; it is asked.
     retry_timer_->start();
+    if (pending_changed_) pending_changed_();
     return true;
 }
 
@@ -979,6 +1007,18 @@ void GraphCanvasPassFields::retryWhenEditable() {
     retry_timer_->stop();
     auto again = std::exchange(retry_, {});
     again();
+    if (pending_changed_) pending_changed_();
+}
+
+void GraphCanvasPassFields::flushDraw() {
+    if (node_.empty() || op_ != "render.raster") return;
+    bool typed = false;
+    for (QSpinBox *spin : {vertex_count_, instance_count_})
+        if (spin->hasFocus()) {
+            spin->interpretText();
+            typed = true;
+        }
+    if (typed) commitDraw();
 }
 
 void GraphCanvasPassFields::load(const Json &parameters) {
@@ -1116,6 +1156,11 @@ void GraphCanvasPassFields::loadDraw(const Json &parameters) {
     };
     for (auto [spin, key, fallback] : {std::tuple{vertex_count_, "vertex_count", 3},
                                        std::tuple{instance_count_, "instance_count", 1}}) {
+        // A count being typed (not yet confirmed) is the hand's, not the
+        // document's: a reload under it would put the old one back.
+        bool parsed = false;
+        const int typed = spin->cleanText().toInt(&parsed);
+        if (spin->hasFocus() && parsed && typed != spin->value()) continue;
         const QSignalBlocker block{spin};
         spin->setValue(count(key, fallback));
     }
@@ -1486,8 +1531,10 @@ void GraphCanvasPassFields::createTemplate() {
     }
     ShaderTemplateWrite written;
     try {
-        written = writeShaderTemplate(project_root_, name,
-                                      fullscreenFragmentShaderTemplate(node_, inputs, kind));
+        auto source = fullscreenFragmentShaderTemplate(node_, inputs, kind);
+        // LC-1s, decision 1: a pass in a loop's body reads which copy it is.
+        if (model_.isLoopBodyScope(scope_)) source = withLoopElementInclude(source);
+        written = writeShaderTemplate(project_root_, name, source);
     } catch (const std::exception &error) {
         templateNotice(tr("Could not write the shader: %1").arg(QString::fromUtf8(error.what())),
                        true);

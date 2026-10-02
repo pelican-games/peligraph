@@ -533,4 +533,43 @@ TEST_CASE("VI-3b fixed sockets are raw layout lines plus the variadic "
               "The shader has no sockets Studio fixed.");
     }
 }
+
+// LC-1s, decision 1. "New..." on a pass in a loop's body: each template gets
+// the engine's pelican_loop.glsl and one line on how to read it, compiles as
+// it is, and a read of the element in main is the push range the engine
+// fills (reads_loop_index). Outside a loop nothing is added.
+TEST_CASE("LC-1s a template made in a loop's body includes pelican_loop.glsl and compiles",
+          "[devstudio][fullscreen-pass][lc1s][shader-template]") {
+    for (const auto kind : FullscreenShaderTemplateKinds) {
+        INFO(fullscreenShaderTemplateKindName(kind));
+        const auto inputs = kind == FullscreenShaderTemplateKind::deferred_lighting
+                                ? gbufferInputs(false)
+                                : std::vector<FullscreenShaderTemplateInput>{{.resource = "fft"}};
+        const auto outside = fullscreenFragmentShaderTemplate("stage", inputs, kind);
+        CHECK(outside.find("pelican_loop") == std::string::npos);
+        const auto text = withLoopElementInclude(outside);
+        CHECK(occurrences(text, std::string{LoopElementInclude}) == 1);
+        CHECK(occurrences(text, std::string{LoopElementUsage}) == 1);
+        // After the sets include, so the offsets it reads are there.
+        CHECK(text.find(std::string{LoopElementInclude}) >
+              text.find("#include \"pelican_sets.glsl\""));
+        CHECK(text.find('\r') == std::string::npos);
+        CHECK(withLoopElementInclude(text) == text);
+        const auto compiled = compileFragment(text, "lc1s_template.frag");
+        INFO(compiled.log);
+        REQUIRE(compiled.ok);
+        // The author's first read of the element.
+        auto reading = text;
+        const auto main_at = reading.find("void main() {\n");
+        REQUIRE(main_at != std::string::npos);
+        reading.insert(main_at + 14, "    uint stage = pelican_loop_element();\n"
+                                     "    if (stage > pelican_loop_count()) discard;\n");
+        const auto read = compileFragment(reading, "lc1s_template_read.frag");
+        INFO(read.log);
+        REQUIRE(read.ok);
+        CHECK(Pelican::readsLoopIndex(Pelican::reflect(read.spirv)));
+        CHECK_FALSE(Pelican::readsLoopIndex(
+            Pelican::reflect(compileFragment(outside, "lc1s_outside.frag").spirv)));
+    }
+}
 } // namespace PelicanStudio

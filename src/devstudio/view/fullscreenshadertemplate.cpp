@@ -355,6 +355,30 @@ std::string fullscreenFragmentShaderTemplate(
     return text;
 }
 
+std::string withLoopElementInclude(std::string_view source) {
+    std::string text{source};
+    if (text.find(LoopElementInclude) != std::string::npos) return text;
+    // After the sets include (pelican_loop.glsl needs its offsets), else
+    // after the #extension or #version line, else at the top.
+    std::size_t at = std::string::npos;
+    for (const std::string_view anchor :
+         {std::string_view{"#include \"pelican_sets.glsl\""},
+          std::string_view{"#extension GL_GOOGLE_include_directive"},
+          std::string_view{"#version"}}) {
+        const auto found = text.find(anchor);
+        if (found == std::string::npos) continue;
+        const auto end = text.find('\n', found);
+        at = end == std::string::npos ? text.size() : end + 1;
+        break;
+    }
+    if (at == std::string::npos) at = 0;
+    std::string lines;
+    if (at == text.size() && !text.empty() && text.back() != '\n') lines += '\n';
+    lines += std::string{LoopElementInclude} + "\n" + std::string{LoopElementUsage} + "\n";
+    text.insert(at, lines);
+    return text;
+}
+
 std::string fullscreenShaderInputSnippet(
     std::span<const FullscreenShaderTemplateInput> inputs, std::size_t first) {
     // Declared over the whole list, so each input keeps the identifier the

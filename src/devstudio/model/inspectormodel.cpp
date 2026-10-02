@@ -848,7 +848,7 @@ struct GraphLoopRefusalText {
     std::string_view code;
     std::string_view sentence;
 };
-constexpr std::array<GraphLoopRefusalText, 34> GraphLoopRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 35> GraphLoopRefusalTexts{{
     {"graph.loop_branch_else_missing@1",
      "Loop {node} has no else: its last branch must have no condition"},
     {"graph.loop_branch_interface@1",
@@ -916,6 +916,12 @@ constexpr std::array<GraphLoopRefusalText, 34> GraphLoopRefusalTexts{{
      "{group} could not be verified: its open form could not be drawn ({run} run)"},
     {"fold_verify_unavailable", "This engine cannot verify a fold group now ({reason})"},
     {"fold_verify_busy", "{group} is being verified already; wait for it to finish"},
+    // LC-1s, decision 3 (engine LC-1): a stage's push-constant range covers
+    // part of the loop element and count ([112, 120)). `range` is
+    // {offset, size}, read as "offset..offset+size".
+    {"shader.loop_push_overlap@1",
+     "{shader} declares a push constant that overlaps the loop element at {range} in the "
+     "{stage} stage \xE2\x80\x94 use PELICAN_LOOP_CUSTOM_PUSH and PELICAN_LOOP_PUSH_FIELDS"},
 }};
 
 // UX-5c: graph.loop_output_reference_unknown@1's reasons, each a sentence that
@@ -1049,6 +1055,18 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error) {
             line += "." + port->get<std::string>();
         fields["subject"] = line;
     }
+    // LC-1s: a push-constant range reads as the bytes it covers.
+    if (entry->code == "shader.loop_push_overlap@1")
+        if (const auto range = fields.find("range"); range != fields.end() && range->is_object()) {
+            const auto offset = range->find("offset");
+            const auto size = range->find("size");
+            if (offset != range->end() && offset->is_number_integer() && size != range->end() &&
+                size->is_number_integer()) {
+                const auto from = offset->get<std::int64_t>();
+                const auto to = from + size->get<std::int64_t>();
+                fields["range"] = std::to_string(from) + ".." + std::to_string(to);
+            }
+        }
     std::string sentence;
     std::string_view pattern = entry->sentence;
     if (entry->code == "graph.loop_tier_unsupported@1") {

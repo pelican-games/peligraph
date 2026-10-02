@@ -3675,6 +3675,42 @@ std::string GraphCanvasModel::viewAxisFamilyOf(std::string_view scope) const {
     return {};
 }
 
+bool GraphCanvasModel::isLoopBodyScope(std::string_view scope) const {
+    if (scope.empty()) return false;
+    return std::ranges::any_of(nodes_, [&](const Json &candidate) {
+        if (!isLoop(candidate)) return false;
+        const auto bodies = loopBranchBodies(candidate);
+        return std::ranges::find(bodies, scope) != bodies.end();
+    });
+}
+
+GraphCanvasLoopElementRead GraphCanvasModel::loopElementRead(std::string_view scope,
+                                                             std::string_view node) const {
+    if (node.empty()) return GraphCanvasLoopElementRead::none;
+    bool reads = false;
+    bool copied = false;
+    const auto note = [&](const GraphCanvasPlanPass &pass) {
+        if (!pass.reads_loop_index) return;
+        reads = true;
+        if (!(pass.origin ? pass.origin->loop : pass.loop).empty()) copied = true;
+    };
+    if (scope.empty()) {
+        for (const auto &name : planNodesOf(node))
+            if (const auto *pass = planPass(name)) note(*pass);
+    } else {
+        // A body node: the passes whose origin is it, in that definition
+        // (an engine that predates origin: loop_origin's body node).
+        for (const auto &pass : plan_passes_) {
+            const bool made = pass.origin
+                                  ? pass.origin->definition == scope && pass.origin->node == node
+                                  : !pass.loop.empty() && pass.loop_node == node;
+            if (made) note(pass);
+        }
+    }
+    if (!reads) return GraphCanvasLoopElementRead::none;
+    return copied ? GraphCanvasLoopElementRead::in_loop : GraphCanvasLoopElementRead::outside_loop;
+}
+
 std::optional<Json> GraphCanvasModel::viewFamilyImageExtent(std::string_view family) const {
     const auto found = family_extents_.find(family);
     if (found == family_extents_.end()) return std::nullopt;
@@ -5264,6 +5300,10 @@ void GraphCanvasModel::readPlanPasses(const Json &plan) {
                     pass.draw_count = count->get<std::size_t>();
             if (const auto contract = contracts.find(pass.name); contract != contracts.end())
                 pass.contract = contract->second;
+            // LC-1: present (and true) only for a shader that reads it.
+            if (const auto reads = node.find("reads_loop_index");
+                reads != node.end() && reads->is_boolean())
+                pass.reads_loop_index = reads->get<bool>();
             passes.push_back(std::move(pass));
         }
     std::ranges::stable_sort(passes, {}, &GraphCanvasPlanPass::order);

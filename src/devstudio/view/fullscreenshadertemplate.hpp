@@ -81,6 +81,18 @@ std::string fullscreenFragmentShaderTemplate(
     FullscreenShaderTemplateKind kind =
         FullscreenShaderTemplateKind::pass_through);
 
+// LC-1s, decision 1. A template made for a pass inside a loop's body reads
+// which copy it is: the engine's pelican_loop.glsl is included right after
+// pelican_sets.glsl, with one line that says how to use it. Outside a loop
+// the template stays as it is (the include would read element 0, count 1).
+// None of the templates declares a push-constant block of its own, so the
+// include's own block is the shader's only one (no PELICAN_LOOP_CUSTOM_PUSH).
+// A source that already includes it is returned unchanged.
+inline constexpr std::string_view LoopElementInclude = "#include \"pelican_loop.glsl\"";
+inline constexpr std::string_view LoopElementUsage =
+    "// pelican_loop_element(): this element, 0-based; pelican_loop_count(): how many";
+std::string withLoopElementInclude(std::string_view source);
+
 // Q-14. The lines "Open the shader" puts on the clipboard: for each image
 // input from `first` on, its declaration (for the top of the file) and its read
 // (for main), named exactly as the template above names them.

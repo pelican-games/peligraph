@@ -3350,3 +3350,54 @@ TEST_CASE("UX-5c a loop output reference and a render node's missing parameters 
           "The render.material_pass node mp needs material_contract "
           "(graph.render_node_parameters_missing@1).");
 }
+
+// LC-1s, decision 2 (engine LC-1): get_frame_plan's reads_loop_index on the
+// passes a node made says whether its shader reads the loop element -- on a
+// body node, from its copies; on a root pass, outside any loop (element 0).
+TEST_CASE("LC-1s a pass whose shader reads the loop element is known by its body node",
+          "[studio][graph-canvas][lc1s]") {
+    using PelicanStudio::GraphCanvasLoopElementRead;
+    Harness h;
+    h.open(gl2bDocument());
+    auto plan = gl2bPlan();
+    for (auto &node : plan["nodes"])
+        if (node.at("name") == "cascades/1/depth" || node.at("name") == "cascades/2/depth" ||
+            node.at("name") == "tint")
+            node["reads_loop_index"] = true;
+    h.reply(h.take("get_frame_plan"), plan);
+    auto &model = h.model;
+    // Decision 1: a loop's bodies (a branch's too), not an instance's.
+    CHECK(model.isLoopBodyScope("cascade"));
+    CHECK(model.isLoopBodyScope("near"));
+    CHECK_FALSE(model.isLoopBodyScope("paint"));
+    CHECK_FALSE(model.isLoopBodyScope(""));
+    // The body that runs elements 1 and 2 reads it; branch 0's does not.
+    CHECK(model.loopElementRead("cascade", "depth") == GraphCanvasLoopElementRead::in_loop);
+    CHECK(model.loopElementRead("near", "depth") == GraphCanvasLoopElementRead::none);
+    CHECK(model.loopElementRead("paint", "fill") == GraphCanvasLoopElementRead::none);
+    // A root pass that reads it is outside every loop: element 0.
+    CHECK(model.loopElementRead("", "tint") == GraphCanvasLoopElementRead::outside_loop);
+    CHECK(model.loopElementRead("", "sky") == GraphCanvasLoopElementRead::none);
+}
+
+// LC-1s, decision 3: a stage's push-constant range over part of the loop
+// element reads as one sentence that says what to write instead.
+TEST_CASE("LC-1s shader.loop_push_overlap@1 reads as a sentence",
+          "[studio][graph-canvas][lc1s][refusal]") {
+    using PelicanStudio::graphLoopRefusalDescription;
+    using PelicanStudio::knownRefusalDescription;
+    const std::string sentence =
+        "project://shaders/fft declares a push constant that overlaps the loop element at "
+        "96..116 in the fragment stage \xE2\x80\x94 use PELICAN_LOOP_CUSTOM_PUSH and "
+        "PELICAN_LOOP_PUSH_FIELDS (shader.loop_push_overlap@1).";
+    // As the render config editor relays it: the fields beside the code.
+    CHECK(graphLoopRefusalDescription({{"code", "shader.loop_push_overlap@1"},
+                                       {"shader", "project://shaders/fft"},
+                                       {"stage", "fragment"},
+                                       {"range", {{"offset", 96}, {"size", 20}}}}) == sentence);
+    // As the pipeline build throws it, quoted in a broader refusal.
+    CHECK(knownRefusalDescription(
+              "render_pipeline_preflight_failed",
+              "shader.loop_push_overlap@1: {\"shader\":\"project://shaders/fft\",\"stage\":"
+              "\"fragment\",\"range\":{\"offset\":96,\"size\":20}}") == sentence);
+}
