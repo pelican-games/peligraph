@@ -1714,6 +1714,8 @@ struct InspectorModel::Impl {
         std::uint64_t own_commit_generation = 0;
         // PM-3b: an edit to mark Keep when it commits (Take from game).
         bool keep = false;
+        // UX-13c: a SceneTree request that went out as scene_outline.
+        bool scene_outline = false;
     };
 
     struct PreviewState {
@@ -1768,6 +1770,10 @@ struct InspectorModel::Impl {
     // preview commits, saves). A watch answer to a request sent before the latest of
     // them says nothing about anyone else.
     std::uint64_t own_commit_generation = 0;
+    // UX-13c: the selected object's id is confirmed with scene_outline; an
+    // engine that does not know it (-32601) is asked with scene_tree for the
+    // rest of its session.
+    bool scene_outline_unknown = false;
     bool refresh_in_flight = false;
     bool refresh_pending = false;
     bool refresh_pending_sync = false;
@@ -2024,10 +2030,12 @@ struct InspectorModel::Impl {
         const bool sync = std::exchange(refresh_pending_sync, false) ||
                           synchronize_watch;
         refresh_pending = false;
-        queue("scene_tree", Json{{"scene_id", selection->scene_id}},
+        queue(scene_outline_unknown ? "scene_tree" : "scene_outline",
+              Json{{"scene_id", selection->scene_id}},
               {.purpose = RequestPurpose::SceneTree,
                .selection_generation = selection_generation,
-               .synchronize_watch = sync});
+               .synchronize_watch = sync,
+               .scene_outline = !scene_outline_unknown});
     }
 
     void flushDeferredRefresh() {
@@ -2652,14 +2660,17 @@ struct InspectorModel::Impl {
                 refresh_pending_sync || state.synchronize_watch;
             return;
         }
+        // UX-13c: scene_outline, or scene_tree from an engine without it;
+        // both list the ids and declaration indices read here.
+        const std::string method = state.scene_outline ? "scene_outline" : "scene_tree";
         const std::string scene_id =
-            requiredString(result, "scene_id", "scene_tree result");
+            requiredString(result, "scene_id", method + " result");
         if (scene_id != selection->scene_id) {
-            throw std::runtime_error("scene_tree returned a different scene_id");
+            throw std::runtime_error(method + " returned a different scene_id");
         }
-        const Json &objects = requiredField(result, "objects", "scene_tree result");
+        const Json &objects = requiredField(result, "objects", method + " result");
         if (!objects.is_array()) {
-            throw std::runtime_error("scene_tree objects must be an array");
+            throw std::runtime_error(method + " objects must be an array");
         }
 
         // OL-1: a selection that knows its object's authoring id is that
@@ -2668,8 +2679,8 @@ struct InspectorModel::Impl {
         std::optional<std::uint64_t> authoring_object_id;
         for (const Json &object : objects) {
             const auto id = unsignedInteger(
-                requiredField(object, "authoring_object_id", "scene_tree object"),
-                "scene_tree authoring_object_id", false);
+                requiredField(object, "authoring_object_id", method + " object"),
+                method + " authoring_object_id", false);
             if (selection->authoring_object_id != 0) {
                 if (id == selection->authoring_object_id) {
                     authoring_object_id = id;
@@ -2678,8 +2689,8 @@ struct InspectorModel::Impl {
                 continue;
             }
             const auto index = sizeValue(
-                requiredField(object, "declaration_index", "scene_tree object"),
-                "scene_tree declaration_index");
+                requiredField(object, "declaration_index", method + " object"),
+                method + " declaration_index");
             if (index == selection->declaration_index) {
                 authoring_object_id = id;
                 break;
@@ -2687,9 +2698,9 @@ struct InspectorModel::Impl {
         }
         if (!authoring_object_id) {
             throw std::runtime_error(
-                selection->authoring_object_id != 0
-                    ? "scene_tree does not contain the selected object"
-                    : "scene_tree does not contain the selected declaration_index");
+                method + (selection->authoring_object_id != 0
+                              ? " does not contain the selected object"
+                              : " does not contain the selected declaration_index"));
         }
         queue("get_components",
               Json{{"scene_id", selection->scene_id},
@@ -3007,7 +3018,18 @@ struct InspectorModel::Impl {
         setNotice(InspectorNoticeKind::Information, "Taking the Transform from the game...");
     }
 
-    void handleFailure(const RequestState &state, std::string message) {
+    void handleFailure(const RequestState &state, std::string message,
+                       bool unknown_method = false) {
+        if (state.purpose == RequestPurpose::SceneTree && unknown_method &&
+            state.scene_outline) {
+            // UX-13c, decision 5: an engine from before scene_outline. Ask it
+            // with scene_tree from now on, and ask again now.
+            scene_outline_unknown = true;
+            refresh_in_flight = false;
+            if (state.selection_generation == selection_generation)
+                requestRefresh(state.synchronize_watch);
+            return;
+        }
         if (state.purpose != RequestPurpose::OpenSession &&
             state.purpose != RequestPurpose::Save &&
             state.purpose != RequestPurpose::EditSubmit &&
@@ -3094,6 +3116,7 @@ void InspectorModel::startSession() {
     impl_->abandonSessionOperations();
     impl_->first_session_revision = true;
     impl_->connected = true;
+    impl_->scene_outline_unknown = false;
     impl_->actor_id.reset();
     impl_->requests.clear();
     impl_->outgoing.clear();
@@ -3198,7 +3221,8 @@ void InspectorModel::receiveRpcResult(std::uint64_t request_id,
 }
 
 void InspectorModel::receiveRpcFailure(std::uint64_t request_id,
-                                       std::string message) {
+                                       std::string message,
+                                       bool unknown_method) {
     const auto request = impl_->requests.find(request_id);
     if (request == impl_->requests.end()) {
         return;
@@ -3208,7 +3232,7 @@ void InspectorModel::receiveRpcFailure(std::uint64_t request_id,
     if (message.empty()) {
         message = "Inspector RPC failed without an error message.";
     }
-    impl_->handleFailure(state, std::move(message));
+    impl_->handleFailure(state, std::move(message), unknown_method);
 }
 
 bool InspectorModel::pendingPollWanted() const noexcept {

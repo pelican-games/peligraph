@@ -416,7 +416,10 @@ class InspectorModel {
     std::vector<InspectorRpcRequest> takeRpcRequests();
     void receiveRpcResult(std::uint64_t request_id,
                           std::string_view result_json);
-    void receiveRpcFailure(std::uint64_t request_id, std::string message);
+    // `unknown_method`: the engine refused the method itself (JSON-RPC
+    // -32601), as one from before scene_outline does (UX-13c).
+    void receiveRpcFailure(std::uint64_t request_id, std::string message,
+                           bool unknown_method = false);
     void pollPendingOperations();
     void pollExternalChanges();
     // Whether either poll has anything to ask. A panel with no edit in flight

@@ -689,3 +689,105 @@ TEST_CASE("MG-1 the offline open does not read a document that needs migrating",
                 .projectName()
                 .has_value());
 }
+
+namespace {
+
+// UX-13c: what the engine's scene_outline answers -- ids, declaration order,
+// names (left out for an unnamed object) and parents by authoring id.
+nlohmann::json sceneOutline(std::uint64_t revision, const nlohmann::json &objects) {
+    nlohmann::json result{{"scene_id", "main"},
+                          {"scene_revision", revision},
+                          {"not_modified", false},
+                          {"objects", nlohmann::json::array()}};
+    for (std::size_t index = 0; index < objects.size(); ++index) {
+        const auto &source = objects.at(index);
+        nlohmann::json object{{"authoring_object_id", source.at("id")},
+                              {"declaration_index", index},
+                              {"parent_authoring_object_id", source.value("parent", nlohmann::json{})}};
+        if (source.contains("name")) object["name"] = source.at("name");
+        result["objects"].push_back(std::move(object));
+    }
+    return result;
+}
+
+nlohmann::json notModified(std::uint64_t revision) {
+    return {{"scene_id", "main"}, {"scene_revision", revision}, {"not_modified", true}};
+}
+
+} // namespace
+
+TEST_CASE("UX-13c the Outliner hangs an object under its parent's authoring id",
+          "[devstudio][outliner][ux13c]") {
+    OutlinerEditFixture fixture;
+    // Leg is declared before its parent Floor, an unnamed object hangs under
+    // Cube, and Toe under Leg. The reply names no parent: only ids.
+    REQUIRE(fixture.model.updateSceneOutline(sceneOutline(2, nlohmann::json::parse(R"([
+        {"id": 4, "name": "Leg", "parent": 3},
+        {"id": 2, "name": "Cube"},
+        {"id": 9, "parent": 2},
+        {"id": 5, "name": "Toe", "parent": 4},
+        {"id": 3, "name": "Floor"}
+    ])"))));
+    const auto &scene = requireScene(fixture.model, "main");
+    CHECK(scene.root_declaration_indices == std::vector<std::size_t>{1, 4});
+    CHECK(scene.objects[0].parent_declaration_index == std::optional<std::size_t>{4});
+    CHECK(scene.objects[2].parent_declaration_index == std::optional<std::size_t>{1});
+    CHECK(scene.objects[3].parent_declaration_index == std::optional<std::size_t>{0});
+    CHECK(scene.objects[4].child_declaration_indices == std::vector<std::size_t>{0});
+    CHECK(scene.objects[1].child_declaration_indices == std::vector<std::size_t>{2});
+    // The unnamed object keeps the name made for it and has no authored name.
+    CHECK(scene.objects[2].name.empty());
+    CHECK_FALSE(scene.objects[2].display_name.empty());
+
+    // A parent id the list does not hold, an id of 0 and a missing parent
+    // field are refused, and the scene held is kept.
+    CHECK_THROWS(fixture.model.updateSceneOutline(sceneOutline(3, nlohmann::json::parse(R"([
+        {"id": 2, "name": "Cube", "parent": 77}
+    ])"))));
+    CHECK_THROWS(fixture.model.updateSceneOutline(sceneOutline(3, nlohmann::json::parse(R"([
+        {"id": 0, "name": "Cube"}
+    ])"))));
+    auto missing_parent = sceneOutline(3, nlohmann::json::parse(R"([{"id": 2}])"));
+    missing_parent["objects"][0].erase("parent_authoring_object_id");
+    CHECK_THROWS(fixture.model.updateSceneOutline(missing_parent));
+    CHECK(fixture.model.sceneRevision() == std::optional<std::uint64_t>{2});
+    CHECK(requireScene(fixture.model, "main").objects.size() == 5);
+}
+
+TEST_CASE("UX-13c a not_modified poll rebuilds nothing and a new revision rebuilds",
+          "[devstudio][outliner][ux13c]") {
+    OutlinerEditFixture fixture;
+    // A thousand objects: a root every tenth, the nine after it its children.
+    nlohmann::json objects = nlohmann::json::array();
+    for (std::uint64_t index = 0; index < 1000; ++index) {
+        nlohmann::json object{{"id", 100 + index}, {"name", "Object" + std::to_string(index)}};
+        if (index % 10 != 0) object["parent"] = 100 + index - index % 10;
+        objects.push_back(std::move(object));
+    }
+    const auto full = sceneOutline(7, objects);
+    const auto started = std::chrono::steady_clock::now();
+    REQUIRE(fixture.model.updateSceneOutline(full));
+    const auto projected = std::chrono::steady_clock::now() - started;
+    const auto *held = requireScene(fixture.model, "main").objects.data();
+    REQUIRE(requireScene(fixture.model, "main").root_declaration_indices.size() == 100);
+
+    // The poll's answer for the revision held: nothing is read or rebuilt.
+    const auto unchanged = notModified(7);
+    CHECK_FALSE(fixture.model.updateSceneOutline(unchanged));
+    CHECK(requireScene(fixture.model, "main").objects.data() == held);
+    // A not_modified answer for a revision Studio does not hold is refused.
+    CHECK_THROWS(fixture.model.updateSceneOutline(notModified(6)));
+
+    // A new revision is the whole list again, and it is rebuilt.
+    auto moved = objects;
+    moved[1].erase("parent");
+    REQUIRE(fixture.model.updateSceneOutline(sceneOutline(8, moved)));
+    CHECK(requireScene(fixture.model, "main").root_declaration_indices.size() == 101);
+
+    // Decision 6: the numbers for the report, not a pass condition.
+    std::cout << "UX-13c 1000 objects: scene_outline " << full.dump().size()
+              << " bytes, not_modified " << unchanged.dump().size()
+              << " bytes, projected in "
+              << std::chrono::duration<double, std::milli>(projected).count() << " ms\n";
+    CHECK(unchanged.dump().size() < 100);
+}

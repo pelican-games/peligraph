@@ -149,6 +149,14 @@ class FakeEngine {
                                                   {"declaration_index", 0},
                                                   {"name", "Cube"},
                                                   {"components", Json::array()}}})}};
+        if (method == "scene_outline")
+            return Json{{"scene_id", "main"},
+                        {"scene_revision", revision},
+                        {"not_modified", false},
+                        {"objects", Json::array({{{"authoring_object_id", 2},
+                                                  {"declaration_index", 0},
+                                                  {"name", "Cube"},
+                                                  {"parent_authoring_object_id", nullptr}}})}};
         if (method == "get_scene_revision")
             return Json{{"scene_revision", revision}, {"preview_epoch", 0}};
         if (method == "list_assets") return Json{{"assets", Json::array()}};

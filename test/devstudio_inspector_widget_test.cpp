@@ -172,6 +172,13 @@ class FakeEngine {
             return {{"scene_revision", revision},
                     {"scene_id", "main"},
                     {"objects", Json::array({{{"authoring_object_id", 41}, {"declaration_index", 2}}})}};
+        if (method == "scene_outline")
+            return {{"scene_id", "main"},
+                    {"scene_revision", revision},
+                    {"not_modified", false},
+                    {"objects", Json::array({{{"authoring_object_id", 41},
+                                              {"declaration_index", 2},
+                                              {"parent_authoring_object_id", nullptr}}})}};
         if (method == "get_components") return components();
         if (method == "get_scene_revision")
             return {{"scene_revision", revision}, {"preview_epoch", 0}};

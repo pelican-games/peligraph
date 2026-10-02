@@ -147,6 +147,14 @@ class MainWindow : public QMainWindow {
     QTimer *outliner_refresh_timer_ = nullptr;
     int outliner_refresh_interval_ms_ = 0;
     qint64 pending_outliner_request_ = 0;
+    // UX-13c: the Outliner reads scene_outline, conditioned on the revision
+    // it holds. An engine that does not know the method (-32601) is read
+    // with scene_tree for as long as it runs; a refused conditional poll is
+    // followed by an unconditional one.
+    bool pending_outliner_is_tree_ = false;
+    bool pending_outliner_unknown_method_ = false;
+    bool outliner_uses_scene_tree_ = false;
+    bool outliner_ask_unconditionally_ = false;
     QHash<qint64, ViewportPickToken> pending_pick_tokens_;
     QHash<qint64, quint64> pending_gizmo_requests_;
     std::uint64_t presented_gizmo_notice_revision_ = 0;

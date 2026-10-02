@@ -279,6 +279,13 @@ class FakeEngine {
             result(id, {{"scene_revision", 1}, {"scene_id", "main"}, {"objects", Json::array()}});
             return;
         }
+        if (method == "scene_outline") {
+            result(id, {{"scene_id", "main"},
+                        {"scene_revision", 1},
+                        {"not_modified", false},
+                        {"objects", Json::array()}});
+            return;
+        }
         if (method == "get_scene_revision") {
             result(id, {{"scene_revision", 1}, {"preview_epoch", 0}});
             return;

@@ -175,6 +175,9 @@ struct InspectorWidget::Impl {
     QTimer *pending_timer = nullptr;
     QTimer *watch_timer = nullptr;
     QHash<qint64, quint64> transport_requests;
+    // UX-13c: the request the engine has just refused as an unknown method
+    // (-32601); its failure, which follows at once, says so to the model.
+    qint64 unknown_method_transport = 0;
     std::uint64_t rendered_content_revision =
         std::numeric_limits<std::uint64_t>::max();
     bool rebuilding = false;
@@ -478,10 +481,20 @@ struct InspectorWidget::Impl {
                 }
                 const std::uint64_t model_request_id = pending.value();
                 transport_requests.erase(pending);
-                model.receiveRpcFailure(model_request_id,
-                                        message.toStdString());
+                model.receiveRpcFailure(
+                    model_request_id, message.toStdString(),
+                    std::exchange(unknown_method_transport, 0) == transport_request_id);
                 synchronize();
                 dispatchRequests();
+            });
+        QObject::connect(
+            &viewport, &EmbeddedViewport::engineRpcRefused, &owner,
+            [this](qint64 transport_request_id, int code, const QString &,
+                   const QJsonValue &) {
+                unknown_method_transport =
+                    code == -32601 && transport_requests.contains(transport_request_id)
+                        ? transport_request_id
+                        : 0;
             });
 
         // Q-2 looked at stopping these two while there is nothing to poll for,
