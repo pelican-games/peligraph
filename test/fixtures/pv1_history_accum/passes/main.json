@@ -1,0 +1,48 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "render_targets": [
+      {
+        "name": "accum",
+        "extent_scale": 1.0,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "explicit(R16G16B16A16_SFLOAT)",
+        "role": "color",
+        "usage": ["COLOR_ATTACHMENT", "SAMPLED"],
+        "history": true,
+        "clear_color": [0.0, 0.0, 0.0, 0.0]
+      }
+    ],
+    "rendering_passes": [
+      {
+        "name": "main_render",
+        "passes": [
+          {
+            "name": "accumulate",
+            "type": "fullscreen",
+            "input": ["accum@history"],
+            "output": {"color": ["accum"], "depth": null},
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "project://shaders/accumulate"
+            }
+          },
+          {
+            "name": "present",
+            "type": "fullscreen",
+            "input": ["accum"],
+            "output": {"color": ["display"], "depth": null},
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://passthrough"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

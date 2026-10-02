@@ -1145,3 +1145,71 @@ TEST_CASE("Model collision replacements prepare additions removals and stable id
 }
 
 } // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("PhysWorld snapshot follows same-frame writes and binding cutovers", "[physworld][performance]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &world = GET_MODULE(PhysWorld);
+    const auto entity = createColliderEntity({3, 0, 0});
+    ColliderComponent collider;
+    collider.shape = "sphere";
+    collider.radius = 1;
+    world.bindCollider("moving", collider, entity);
+    const phys::Ray ray{{0, 0, 0}, {1, 0, 0}, 20};
+    auto hit = world.raycastClosest(ray, phys::every_collider_filter);
+    REQUIRE(hit);
+    REQUIRE(hit->distance == Catch::Approx(2));
+    const auto builds = world.colliderSnapshotBuildCountForTesting();
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(world.raycastClosest(ray, phys::every_collider_filter)->distance == Catch::Approx(2));
+        REQUIRE(world.collectColliders().size() == 1);
+    }
+    REQUIRE(world.colliderSnapshotBuildCountForTesting() == builds);
+    auto &transform = GET_MODULE(ECSCore).getTemplatePublicModule().component<TransformComponent>(entity);
+    SECTION("direct transform writes between queries") {
+        transform.pos.y = 10;
+        REQUIRE_FALSE(world.raycastClosest(ray, phys::every_collider_filter));
+        transform.pos.y = 0;
+        transform.scale = glm::vec3{2};
+        REQUIRE(world.raycastClosest(ray, phys::every_collider_filter)->distance == Catch::Approx(1));
+        REQUIRE(world.colliderSnapshotBuildCountForTesting() == builds + 2);
+    }
+    SECTION("invalid transform cannot reuse or poison the last valid snapshot") {
+        transform.pos.x = std::numeric_limits<float>::quiet_NaN();
+        REQUIRE_THROWS(world.collectColliders());
+        REQUIRE_THROWS(world.raycastClosest(ray, phys::every_collider_filter));
+        transform.pos.x = 3;
+        REQUIRE(world.raycastClosest(ray, phys::every_collider_filter)->distance == Catch::Approx(2));
+    }
+    SECTION("entity generations are observed without a frame tick") {
+        REQUIRE(GameObjects::remove(entity));
+        REQUIRE(world.collectColliders().empty());
+        const auto replacement = createColliderEntity({6, 0, 0});
+        REQUIRE(world.collectColliders().empty());
+        world.bindCollider("moving", collider, replacement);
+        REQUIRE(world.raycastClosest(ray, phys::every_collider_filter)->distance == Catch::Approx(5));
+    }
+    SECTION("binding publication and rollback invalidate shape and metadata") {
+        auto old = world.snapshotPrepared();
+        auto next = old;
+        next.bindings.front().collider.radius = 2;
+        next.bindings.front().metadata.layer = 8;
+        world.publishPrepared(world.prepareBindings(std::move(next.bindings)));
+        REQUIRE(world.raycastClosest(ray, phys::every_collider_filter)->distance == Catch::Approx(1));
+        REQUIRE(world.collectColliders().front().metadata.layer == 8);
+        world.publishPrepared(std::move(old));
+        REQUIRE(world.raycastClosest(ray, phys::every_collider_filter)->distance == Catch::Approx(2));
+    }
+    SECTION("callers own the public collector result") {
+        auto owned = world.collectColliders();
+        owned.front().id = "modified";
+        REQUIRE(world.collectColliders().front().id == "moving");
+        world.clear();
+        REQUIRE(world.collectColliders().empty());
+        world.bindCollider("static", collider, PhysWorldTransform{.pos = {8, 0, 0}});
+        REQUIRE(world.raycastClosest(ray, phys::every_collider_filter)->distance == Catch::Approx(7));
+    }
+}
+} // namespace Pelican

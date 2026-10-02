@@ -16,7 +16,14 @@ using Json = nlohmann::json;
 std::string diagnostic(const Json &response) {
     const auto &error = response.at("error");
     if (error.is_string()) return error.get<std::string>();
+    // UX-13b, decision 6 (engine CT-5): edit_graph_instances keeps a named
+    // graph refusal's code and document; it reads as the Graph's sentence.
+    if (auto named = graphLoopRefusalDescription(error); !named.empty()) return named;
     auto message = error.value("message", std::string{"Graph edit rejected."});
+    const auto code_text = error.contains("code") && error.at("code").is_string()
+                               ? error.at("code").get<std::string>()
+                               : std::string{};
+    if (auto known = knownRefusalDescription(code_text, message); !known.empty()) return known;
     if (error.contains("code")) {
         const auto &code = error.at("code");
         message += " (" + (code.is_string() ? code.get<std::string>() : code.dump()) + ")";

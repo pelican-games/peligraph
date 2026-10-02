@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace Pelican {
 
@@ -217,6 +218,50 @@ void transformGraphVariantConfig(
 void validateGraphVariantConfig(
     const CompiledGraphVariantPolicy &policy,
     const nlohmann::json &config);
+
+// PV-1: the preview variant's refusal of an authored surface it does not
+// support (validateGraphVariantConfig for preview). The message is the one the
+// refusal always had; `feature` says which kind of surface it is:
+//   "history"            an authored render target with history (`target`)
+//   "projection_jitter"  authored projection_jitter
+//   "unsafe_target_name" a render target named like an excluded surface
+//                        (`target`)
+//   "unsafe_pass"        a pass whose name or type is an excluded surface
+//                        (`graph`, `pass`)
+//   "history_read"       a pass reading `<target>@history` (`graph`, `pass`)
+//   "history_write"      a pass with writes_history (`graph`, `pass`)
+// Fields that do not apply are empty. Normal play composes the same
+// authoring; only the one-shot preview is unavailable for it.
+class PreviewUnsupportedAuthoringError : public std::runtime_error {
+  public:
+    PreviewUnsupportedAuthoringError(const std::string &message,
+                                     std::string feature,
+                                     std::string target = {},
+                                     std::string graph = {},
+                                     std::string pass = {})
+        : std::runtime_error{message}, feature_{std::move(feature)},
+          target_{std::move(target)}, graph_{std::move(graph)},
+          pass_{std::move(pass)} {}
+
+    [[nodiscard]] const std::string &feature() const noexcept {
+        return feature_;
+    }
+    [[nodiscard]] const std::string &target() const noexcept {
+        return target_;
+    }
+    [[nodiscard]] const std::string &graph() const noexcept {
+        return graph_;
+    }
+    [[nodiscard]] const std::string &pass() const noexcept {
+        return pass_;
+    }
+
+  private:
+    std::string feature_;
+    std::string target_;
+    std::string graph_;
+    std::string pass_;
+};
 
 // G-6: a candidate that one graph variant could not compose, raised by an
 // edit preflight that composes every variant the engine registered. The

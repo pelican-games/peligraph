@@ -1,4 +1,8 @@
 #include "../src/project/rasterpass.hpp"
+#include "../src/project/graphcomposition.hpp"
+#include "../src/project/graphmodule.hpp"
+#include "../src/project/passfieldownership.hpp"
+#include "../src/project/rendergraphcomposition.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -300,4 +304,109 @@ TEST_CASE(
             "Fullscreen pass 'picking_overlay'") &&
             Catch::Matchers::ContainsSubstring(
                 "integer color output 0"));
+}
+
+// CC-2: clip_y is a raster pass's own field (down unless written), round
+// trips through the canonical JSON, changes the pipeline's identity and an
+// unknown value is refused as raster_state's are. A fullscreen pass does not
+// own it. The graph's render.raster lists it in the catalog, refuses an
+// unknown value by name, and lowers a node without it to a pass without it.
+TEST_CASE("CC-2 a raster pass's clip_y is down unless written, and only render.raster takes it",
+          "[raster][cc2]") {
+    const nlohmann::json pass{{"draw", {{"vertex_count", 3}}}};
+    const auto down = parseRasterPassContract(pass, 1, false);
+    CHECK(down.clip_y == RasterClipY::down);
+    auto written = pass;
+    written["clip_y"] = "up";
+    const auto up = parseRasterPassContract(written, 1, false);
+    CHECK(up.clip_y == RasterClipY::up);
+    CHECK(up.state == down.state);
+    CHECK(rasterPassContractToJson(up).at("clip_y") == "up");
+    CHECK(rasterPassContractToJson(down).at("clip_y") == "down");
+    CHECK(parseRasterPassContract(rasterPassContractToJson(up), 1, false) == up);
+    CHECK(rasterPassContractFingerprint(up) != rasterPassContractFingerprint(down));
+    written["clip_y"] = "sideways";
+    CHECK_THROWS_WITH(parseRasterPassContract(written, 1, false, "raster pass 'flip'"),
+                      "raster pass 'flip' field 'clip_y' has unknown value 'sideways'");
+    written["clip_y"] = true;
+    CHECK_THROWS_WITH(parseRasterPassContract(written, 1, false, "raster pass 'flip'"),
+                      "raster pass 'flip' field 'clip_y' must be a string");
+    // Inside raster_state it is an unknown field, as before.
+    CHECK_THROWS_WITH(parseRasterPassContract(nlohmann::json{{"draw", nlohmann::json::object()},
+                                                             {"raster_state", {{"clip_y", "up"}}}},
+                                              1, false, "raster pass 'flip'"),
+                      Catch::Matchers::ContainsSubstring("unknown field 'clip_y'"));
+    CHECK_THROWS_WITH(validatePassFieldOwnership(nlohmann::json{{"name", "present"}, {"type", "fullscreen"},
+                                                                {"clip_y", "up"}},
+                                                 PassFieldOwnershipCapabilities{}),
+                      "Pass 'present' type 'fullscreen' does not own field 'clip_y'");
+    CHECK(validatePassFieldOwnership(nlohmann::json{{"name", "flip"}, {"type", "raster"}, {"clip_y", "up"}},
+                                     PassFieldOwnershipCapabilities{}) == RenderPassType::raster);
+
+    using Json = nlohmann::json;
+    // The catalog: an enum, down by default; render.fullscreen has none.
+    const auto catalog = Json(builtinGraphModuleRegistry().catalog());
+    const auto parameters = [&](std::string_view op) {
+        for (const auto &module : catalog.at("modules"))
+            for (const auto &entry : module.at("operations"))
+                if (entry.at("op").get<std::string>() == std::string{op}) return entry.at("parameters");
+        FAIL("the catalog lists no " << op);
+        return Json{};
+    };
+    const auto find = [](const Json &listed, std::string_view name) {
+        for (const auto &entry : listed)
+            if (entry.at("name").get<std::string>() == std::string{name}) return entry;
+        return Json{};
+    };
+    const auto clip_y = find(parameters("render.raster"), "clip_y");
+    CHECK(clip_y.at("kind") == "enum");
+    CHECK(clip_y.at("enum") == Json::array({"down", "up"}));
+    CHECK(clip_y.at("default") == "down");
+    CHECK(find(parameters("render.fullscreen"), "clip_y").is_null());
+
+    const Json type{{"semantic", "pelican.render.color_signal@1"},
+                    {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    Json document{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", Json::object()},
+        {"nodes", Json::array({
+            {{"id", "canvas"}, {"op", "render.image"},
+             {"parameters", {{"type", type}, {"format", "R8G8B8A8_UNORM"}, {"extent_scale", 1.0},
+                             {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}}},
+             {"outputs", {"resource"}}},
+            {{"id", "flip"}, {"op", "render.raster"},
+             {"parameters", {{"shader", {{"vertex", "project://shaders/flip"}, {"fragment", "project://shaders/flip"}}},
+                             {"draw", {{"vertex_count", 3}}},
+                             {"ports", {{"color", {{"kind", "image"}, {"type", type}, {"access", "write"},
+                                                   {"attachment", "color"}, {"location", 0}}}}}}},
+             {"inputs", {{"color", {{"node", "canvas"}, {"port", "resource"}}}}},
+             {"outputs", {"color"}}}})},
+        {"outputs", Json::object()}};
+    const auto lowered = [&](const Json &graph) {
+        const auto config = lowerRenderGraphDocument(graph);
+        for (const auto &family : config.at("rendering_passes"))
+            for (const auto &lowered_pass : family.at("passes"))
+                if (lowered_pass.at("name") == "flip") return lowered_pass;
+        FAIL("no pass flip");
+        return Json{};
+    };
+    // Not written: the pass is what it was, with no clip_y.
+    const auto plain = lowered(document);
+    CHECK_FALSE(plain.contains("clip_y"));
+    CHECK(parseRasterPassContract(plain, 1, false).clip_y == RasterClipY::down);
+    document["nodes"][1]["parameters"]["clip_y"] = "up";
+    const auto flipped = lowered(document);
+    CHECK(flipped.at("clip_y") == "up");
+    auto without = flipped;
+    without.erase("clip_y");
+    CHECK(without == plain);
+    CHECK(parseRasterPassContract(flipped, 1, false).clip_y == RasterClipY::up);
+    document["nodes"][1]["parameters"]["clip_y"] = "sideways";
+    try {
+        (void)builtinGraphModuleRegistry().resolveOperation(document["nodes"][1]);
+        FAIL("clip_y sideways was taken");
+    } catch (const GraphRegistryError &error) {
+        CHECK(error.code() == "graph.render_node_parameter_invalid@1");
+        CHECK(error.detail() == Json{{"node", "flip"}, {"op", "render.raster"}, {"parameter", "clip_y"},
+                                     {"expected", "enum"}, {"reason", "enum"},
+                                     {"allowed", Json::array({"down", "up"})}});
+    }
 }

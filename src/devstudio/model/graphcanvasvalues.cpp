@@ -64,6 +64,61 @@ std::int64_t scalarOffset(const Json &parameters) {
         return 0;
     return offset->get<std::int64_t>();
 }
+
+// UX-13b, decision 2 (engine CT-5): a buffer node's parameters once it can
+// take `bytes` from render.scalar sinks -- host_source runtime_f32 and that
+// size (checkRenderScalarTargets, graphpartition.cpp) -- and what changed
+// ("runtime_f32", "<n> bytes" or nothing); nullopt when no edit of its own
+// parameters makes it so: elements that are not floats, a value line on it
+// (its one float is the engine's own sink), a size taken from an extent or
+// from a model's data.
+std::optional<std::pair<Json, std::string>> writableScalarBuffer(const Json &node, std::uint64_t bytes) {
+    const auto op = textOf(node, "op");
+    if (!isBufferOp(op)) return std::nullopt;
+    auto parameters = node.value("parameters", Json::object());
+    if (!parameters.is_object()) parameters = Json::object();
+    static const std::set<std::string, std::less<>> floats{"float", "vec2", "vec3", "vec4", "mat4"};
+    const auto element = textOf(parameters, "element");
+    if (!element.empty() && !floats.contains(element)) return std::nullopt;
+    if (const auto inputs = node.find("inputs");
+        inputs != node.end() && inputs->is_object() && inputs->contains("value"))
+        return std::nullopt;
+    const auto source = parameters.find("source");
+    const bool sourced = source != parameters.end() && source->is_object();
+    // A pose's attribute is written from the host already, at the size of
+    // its model's data.
+    const bool pose = sourced && source->contains("pose_node");
+    if (sourced && !pose) return std::nullopt;
+    std::string fix;
+    if (!pose && textOf(parameters, "host_source") != "runtime_f32") {
+        parameters["host_source"] = "runtime_f32";
+        fix = "runtime_f32";
+    }
+    if (bytes > 0 && !pose) {
+        if (op == "render.buffer") {
+            if (parameters.contains("size_from_extent")) return std::nullopt;
+            const auto size = parameters.find("size");
+            if (size == parameters.end() || !size->is_number_integer() ||
+                size->get<std::int64_t>() != static_cast<std::int64_t>(bytes)) {
+                parameters["size"] = bytes;
+                if (fix.empty()) fix = std::to_string(bytes) + " bytes";
+            }
+        } else {
+            // An attribute's size is its count of elements.
+            const auto stride = GraphCanvasModel::bufferElementSize(element.empty() ? "float" : element);
+            const auto count = parameters.find("count");
+            const bool same = count != parameters.end() && count->is_number_integer() &&
+                              count->get<std::int64_t>() * static_cast<std::int64_t>(stride) ==
+                                  static_cast<std::int64_t>(bytes);
+            if (!same) {
+                if (bytes % stride != 0) return std::nullopt;
+                parameters["count"] = bytes / stride;
+                if (fix.empty()) fix = std::to_string(bytes) + " bytes";
+            }
+        }
+    }
+    return std::pair{std::move(parameters), std::move(fix)};
+}
 } // namespace
 
 // --- Decision 4: a value.curve's keys.
@@ -241,17 +296,38 @@ bool GraphCanvasModel::setPlaybackField(std::string_view scope, const std::strin
 
 // --- Decision 2: a pass's named buffer ports.
 
+std::vector<GraphCanvasModel::BufferPortRead>
+GraphCanvasModel::bufferPortReads(std::string_view scope, std::string_view node) const {
+    std::vector<BufferPortRead> reads;
+    const auto *found = findNode(scope, node);
+    if (found == nullptr) return reads;
+    const auto parameters = found->value("parameters", Json::object());
+    const auto declared = parameters.is_object() ? parameters.value("ports", Json::object())
+                                                 : Json::object();
+    if (!declared.is_object()) return reads;
+    const auto inputs = found->value("inputs", Json::object());
+    for (const auto &[name, port] : declared.items()) {
+        if (!port.is_object() || textOf(port, "kind") != "buffer" || port.contains("binding")) continue;
+        BufferPortRead read{name, {}};
+        // The buffer the line comes from, followed through the passes that
+        // hand it on, as the lowering's resourceName names it.
+        if (inputs.is_object())
+            if (const auto edge = inputs.find(name); edge != inputs.end() && edge->is_object())
+                read.resource = scopeOutputResource(scope, textOf(*edge, "node"), textOf(*edge, "port"));
+        reads.push_back(std::move(read));
+    }
+    std::ranges::sort(reads, [](const BufferPortRead &left, const BufferPortRead &right) {
+        if (left.resource.empty() != right.resource.empty()) return right.resource.empty();
+        if (left.resource != right.resource) return left.resource < right.resource;
+        return left.port < right.port;
+    });
+    return reads;
+}
+
 std::vector<std::string> GraphCanvasModel::bufferPorts(std::string_view scope,
                                                        std::string_view node) const {
     std::vector<std::string> ports;
-    const auto parameters = nodeParameters(scope, node);
-    const auto declared = parameters.is_object() ? parameters.value("ports", Json::object())
-                                                 : Json::object();
-    if (!declared.is_object()) return ports;
-    for (const auto &[name, port] : declared.items())
-        if (port.is_object() && textOf(port, "kind") == "buffer" && !port.contains("binding"))
-            ports.push_back(name);
-    std::ranges::sort(ports);
+    for (auto &read : bufferPortReads(scope, node)) ports.push_back(std::move(read.port));
     return ports;
 }
 
@@ -310,7 +386,8 @@ Json GraphCanvasModel::bufferPortOps(std::string_view scope, const std::string &
     Json declaration{{"kind", "buffer"}, {"access", "read"}, {"element", element}};
     if (ports.value(port, Json{}) != declaration) {
         // Whatever else the port said (a hand-written binding) goes: a
-        // pass's buffer input is read by its position after the images.
+        // pass's buffer port is bound after the images, in the order of the
+        // buffers the reads name, and read as pelican_resource_<port>.
         ports[port] = std::move(declaration);
         ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", token}, {"node", node},
                            {"parameters", std::move(parameters)}});
@@ -482,6 +559,10 @@ bool GraphCanvasModel::setScalarValue(std::string_view scope, const std::string 
             ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", token}, {"node", node},
                                {"parameters", after}});
     }
+    // UX-13b, decision 2: the buffer grows or shrinks with what its sinks
+    // write, in the same edit.
+    for (auto &op : scalarTargetFixOps(scope, target, scalarTargetBytes(scope, target, {}, {{node, value.size()}})))
+        ops.push_back(std::move(op));
     // Numbers written on the node take the place of the edge: the engine
     // reads no `value` edge beside them.
     if (value.size() > 1) {
@@ -527,6 +608,15 @@ bool GraphCanvasModel::setScalarTarget(std::string_view scope, const std::string
     ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", token}, {"node", node},
                        {"parameters", moved}});
     if (!old_target.empty()) repack(old_target, nullptr);
+    // UX-13b, decision 2: the buffer picked made one the sinks can write
+    // (runtime_f32, as large as they all are), and the one left as large as
+    // the sinks still on it -- in the same edit.
+    const auto own = static_cast<std::uint64_t>(scalarComponents(parameters) * sizeof(float));
+    for (auto &op : scalarTargetFixOps(scope, target, static_cast<std::uint64_t>(end) + own))
+        ops.push_back(std::move(op));
+    if (!old_target.empty())
+        if (const auto left = scalarTargetBytes(scope, old_target, node); left > 0)
+            for (auto &op : scalarTargetFixOps(scope, old_target, left)) ops.push_back(std::move(op));
     return submitOps(std::move(ops));
 }
 
@@ -542,42 +632,210 @@ std::vector<std::string> GraphCanvasModel::scalarTargets(std::string_view scope)
     return result;
 }
 
-// --- Decision 13 (a): the catalog's required parameters.
+// --- UX-13b, decisions 2 and 3 (engine CT-5): a render.scalar's buffer made
+// writable in the edit that picks it.
+
+std::uint64_t GraphCanvasModel::scalarTargetBytes(std::string_view scope, const std::string &target,
+                                                  std::string_view except,
+                                                  const std::map<std::string, std::size_t> &components) const {
+    std::uint64_t bytes = 0;
+    const auto *nodes = scopeNodes(scope);
+    if (nodes == nullptr || target.empty()) return 0;
+    for (const auto &node : *nodes) {
+        if (!node.is_object() || textOf(node, "op") != "render.scalar") continue;
+        const auto id = textOf(node, "id");
+        if (id == except) continue;
+        const auto parameters = node.value("parameters", Json::object());
+        if (!parameters.is_object() || textOf(parameters, "target") != target) continue;
+        const auto given = components.find(id);
+        bytes += (given != components.end() ? given->second : scalarComponents(parameters)) * sizeof(float);
+    }
+    return bytes;
+}
+
+std::vector<GraphCanvasScalarTarget> GraphCanvasModel::scalarTargetChoices(std::string_view scope,
+                                                                           std::string_view node,
+                                                                           std::size_t components) const {
+    std::vector<GraphCanvasScalarTarget> result;
+    const auto own = static_cast<std::uint64_t>(std::max<std::size_t>(components, 1) * sizeof(float));
+    // The graph's buffers: the scope's, then the root's.
+    for (const std::string_view each : {scope, std::string_view{}}) {
+        const auto *nodes = scopeNodes(each);
+        if (nodes == nullptr) continue;
+        for (const auto &buffer : *nodes) {
+            if (!buffer.is_object() || !isBufferOp(textOf(buffer, "op"))) continue;
+            const auto id = textOf(buffer, "id");
+            if (id.empty() || std::ranges::find(result, id, &GraphCanvasScalarTarget::buffer) != result.end())
+                continue;
+            const auto judged = writableScalarBuffer(buffer, scalarTargetBytes(scope, id, node) + own);
+            if (judged) result.push_back({id, judged->second});
+        }
+        if (scope.empty()) break;
+    }
+    // A feature's runtime buffer (bloom.intensity) is no node of the graph:
+    // the frame plan lists it, and the engine says what it must be.
+    std::vector<std::string> planned{plan_buffers_.begin(), plan_buffers_.end()};
+    std::ranges::sort(planned);
+    for (const auto &buffer : planned)
+        if (std::ranges::find(result, buffer, &GraphCanvasScalarTarget::buffer) == result.end() &&
+            buffer.find('@') == std::string::npos && findNode(scope, buffer) == nullptr &&
+            findNode({}, buffer) == nullptr)
+            result.push_back({buffer, {}});
+    return result;
+}
+
+std::string GraphCanvasModel::scalarTargetLabel(const GraphCanvasScalarTarget &target) {
+    if (target.fix.empty()) return target.buffer;
+    return target.buffer + " (will be set to " + target.fix + ")";
+}
+
+Json GraphCanvasModel::scalarTargetFixOps(std::string_view scope, const std::string &target,
+                                          std::uint64_t bytes) const {
+    Json ops = Json::array();
+    std::string_view where = scope;
+    const auto *buffer = findNode(scope, target);
+    if ((buffer == nullptr || !isBufferOp(textOf(*buffer, "op"))) && !scope.empty()) {
+        where = {};
+        buffer = findNode({}, target);
+    }
+    if (buffer == nullptr || !isBufferOp(textOf(*buffer, "op"))) return ops;
+    const auto judged = writableScalarBuffer(*buffer, bytes);
+    if (!judged || judged->second.empty()) return ops;
+    ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", tokenOf(where)}, {"node", target},
+                       {"parameters", judged->first}});
+    return ops;
+}
+
+std::string GraphCanvasModel::scalarTargetFixLabel(const GraphCanvasScalarTargetFix &fix) {
+    std::string line = "Fix: make " + fix.target + " runtime_f32";
+    if (fix.size) line += ", " + std::to_string(*fix.size) + " bytes";
+    return line;
+}
+
+bool GraphCanvasModel::fixScalarTarget() {
+    if (!canEdit() || !scalar_target_fix_ || !scalar_target_fix_->in_graph) return false;
+    const auto fix = *scalar_target_fix_;
+    const auto *buffer = findNode(fix.scope, fix.target);
+    if (buffer == nullptr || !isBufferOp(textOf(*buffer, "op"))) return false;
+    // What the engine asked for, as it said it.
+    const auto judged = writableScalarBuffer(*buffer, fix.size.value_or(0));
+    if (!judged) return false;
+    const auto before = buffer->value("parameters", Json::object());
+    if (judged->first == before) return false;
+    return submitOps(Json::array({Json{{"op", "set_node_parameters"}, {"scope", tokenOf(fix.scope)},
+                                       {"node", fix.target}, {"parameters", judged->first}}}));
+}
+
+bool GraphCanvasModel::definitionOwnedInstancesOnly(std::string_view definition) const {
+    if (!definition_instances_.is_object()) return true;
+    const auto found = definition_instances_.find(std::string{definition});
+    if (found == definition_instances_.end() || !found->is_object()) return true;
+    return found->value("owned_instances_only", true);
+}
+
+Json GraphCanvasModel::catalogChoices() const {
+    auto types = Json::array();
+    for (const auto &[id, schema] : types_.items()) {
+        (void)id;
+        types.push_back(schema);
+    }
+    auto operations = Json::array();
+    for (const auto &[op, entry] : operations_.items()) {
+        (void)op;
+        operations.push_back(entry);
+    }
+    return Json{{"modules", Json::array({Json{{"types", std::move(types)},
+                                               {"operations", std::move(operations)}}})}};
+}
+
+// --- Decision 13 (a) / UX-12a: the catalog's required parameters and its table.
 
 std::vector<GraphCanvasModel::RequiredParameter>
 GraphCanvasModel::requiredParametersFor(std::string_view op) const {
-    const auto *contract = operation(op);
-    // UX-8 decision 7: a sound sink drives a voice the scope already plays.
-    const auto voice = RequiredParameter{"voice", "voice"};
-    const auto listed = contract != nullptr ? contract->find("required_parameters") : Json::const_iterator{};
-    if (contract == nullptr || listed == contract->end() || !listed->is_array()) {
-        if (op == "audio.volume" || op == "audio.pitch") return {voice};
-        return requiredParameters(op);
-    }
     std::vector<RequiredParameter> result;
-    for (const auto &entry : *listed) {
-        if (!entry.is_object()) continue;
-        std::vector<std::string> names;
-        if (const auto name = textOf(entry, "name"); !name.empty()) names.push_back(name);
-        if (const auto one_of = entry.find("one_of"); one_of != entry.end() && one_of->is_array())
-            for (const auto &name : *one_of)
-                if (name.is_string()) names.push_back(name.get<std::string>());
-        if (names.empty()) continue;
-        const auto has = [&](const char *name) { return std::ranges::find(names, name) != names.end(); };
-        // What the palette seeds on its own is not asked for: a curve's keys,
-        // a voice's sound, a UI sink's node, a render node's parameters
-        // (UX-3's row beside the op).
-        if (op == "value.curve" || op == "audio.playback" || op.starts_with("ui.") ||
-            (op.starts_with("render.") && op != "render.scalar") || op.starts_with("draw."))
-            continue;
-        if (has("voice")) result.push_back(voice);
-        else if (op == "render.scalar" && has("target")) result.push_back({"target", "buffer"});
-        else if (op == "value.input" && has("name")) result.push_back({"name", "input"});
-        else if (has("value") || has("default")) result.push_back({names.front(), "number"});
-        else if (op == "value.parameter" && has("name")) result.push_back({"name", "text"});
-        else result.push_back({names.front(), "number"});
+    // What the palette seeds on its own is not asked for: a curve's keys,
+    // a voice's sound, a UI sink's node, a render node's parameters (UX-3's
+    // row beside the op), a draw step's.
+    if (op == "value.curve" || op == "audio.playback" || op.starts_with("ui.") ||
+        (op.starts_with("render.") && op != "render.scalar") || op.starts_with("draw."))
+        return result;
+    const auto inputs = operationInputPorts(op);
+    for (const auto &entry : operationParameters(op)) {
+        if (!entry.is_object() || !entry.value("required", false)) continue;
+        RequiredParameter required;
+        required.name = textOf(entry, "name");
+        if (required.name.empty()) continue;
+        required.kind = textOf(entry, "kind");
+        required.schema = entry;
+        if (const auto alternatives = entry.find("alternatives");
+            alternatives != entry.end() && alternatives->is_array())
+            for (const auto &name : *alternatives) {
+                if (!name.is_string()) continue;
+                required.alternatives.push_back(name.get<std::string>());
+                if (std::ranges::find(inputs, name.get<std::string>()) != inputs.end())
+                    required.edge_alternatives.push_back(name.get<std::string>());
+            }
+        // What Studio knows the string names.
+        if (op == "render.scalar" && required.name == "target") required.kind = "buffer";
+        else if (op == "value.input" && required.name == "name") required.kind = "input";
+        result.push_back(std::move(required));
     }
     return result;
+}
+
+Json GraphCanvasModel::operationParameters(std::string_view op) const {
+    const auto *contract = operation(op);
+    if (contract == nullptr) return Json::array();
+    const auto found = contract->find("parameters");
+    if (found == contract->end() || !found->is_array()) return Json::array();
+    return *found;
+}
+
+bool GraphCanvasModel::operationParametersComplete(std::string_view op) const {
+    const auto *contract = operation(op);
+    if (contract == nullptr) return false;
+    const auto found = contract->find("parameters_complete");
+    return found != contract->end() && found->is_boolean() && found->get<bool>();
+}
+
+std::string GraphCanvasModel::operationPlacement(std::string_view op) const {
+    const auto *contract = operation(op);
+    if (contract == nullptr) return "anywhere";
+    const auto placement = textOf(*contract, "placement");
+    return placement.empty() ? std::string{"anywhere"} : placement;
+}
+
+void GraphCanvasModel::askRenderAuthoringForChoices() {
+    if (!connected_ || digest().empty() || authoring_choices_digest_ == digest()) return;
+    authoring_choices_digest_ = digest();
+    // The plan's own request (or the vocabulary's) on its way serves it.
+    if (std::ranges::any_of(reads_, [](const PendingRequest &pending) {
+            return pending.kind == RequestKind::Authoring;
+        }))
+        return;
+    read(RequestKind::Authoring, "get_render_authoring_context", Json::object());
+}
+
+std::optional<Json> GraphCanvasModel::parameterSchema(std::string_view op,
+                                                      std::string_view name) const {
+    const auto *contract = operation(op);
+    if (contract == nullptr) return std::nullopt;
+    const auto found = contract->find("parameters");
+    if (found == contract->end() || !found->is_array()) return std::nullopt;
+    for (const auto &entry : *found)
+        if (entry.is_object() && textOf(entry, "name") == name) return entry;
+    return std::nullopt;
+}
+
+std::vector<std::string> GraphCanvasModel::operationInputPorts(std::string_view op) const {
+    std::vector<std::string> ports;
+    const auto *contract = operation(op);
+    if (contract == nullptr) return ports;
+    const auto found = contract->find("inputs");
+    if (found == contract->end() || !found->is_array()) return ports;
+    for (const auto &input : *found)
+        if (input.is_object() && !textOf(input, "port").empty()) ports.push_back(textOf(input, "port"));
+    return ports;
 }
 
 std::vector<std::string> GraphCanvasModel::valueInputNamesFor() const {
@@ -639,6 +897,147 @@ GraphCanvasAudioImport importProjectAudio(const std::filesystem::path &project_r
         }
         result.references.push_back("project://assets/audio/" + name);
     }
+    return result;
+}
+
+// --- IA-1s, decisions 1 and 4: the images a render.image starts from.
+
+namespace {
+
+std::string lowerExtension(const std::filesystem::path &file) {
+    auto extension = file.extension().string();
+    std::ranges::transform(extension, extension.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return extension;
+}
+
+// The first free `<stem>[_N]<extension>` in `folder`.
+std::optional<std::string> freeName(const std::filesystem::path &folder, const std::string &stem,
+                                    const std::string &extension) {
+    auto name = stem + extension;
+    for (int suffix = 2; std::filesystem::exists(folder / name) && suffix < 10000; ++suffix)
+        name = stem + "_" + std::to_string(suffix) + extension;
+    if (std::filesystem::exists(folder / name)) return std::nullopt;
+    return name;
+}
+
+} // namespace
+
+GraphCanvasImageAssetsRead readProjectImageAssets(const std::filesystem::path &project_root) {
+    GraphCanvasImageAssetsRead read;
+    if (project_root.empty()) {
+        read.error = "no project is open";
+        return read;
+    }
+    std::error_code error;
+    std::filesystem::recursive_directory_iterator walk{
+        project_root, std::filesystem::directory_options::skip_permission_denied, error};
+    if (error) {
+        read.error = "the project folder could not be read: " + error.message();
+        return read;
+    }
+    try {
+        for (auto end = std::filesystem::recursive_directory_iterator{}; walk != end;
+             walk.increment(error)) {
+            if (error) break;
+            const auto &entry = *walk;
+            std::error_code kind;
+            if (entry.is_directory(kind)) {
+                const auto name = entry.path().filename().u8string();
+                if (!name.empty() && name.front() == u8'.') walk.disable_recursion_pending();
+                continue;
+            }
+            const auto extension = lowerExtension(entry.path());
+            if (extension != ".ktx2" && extension != ".png") continue;
+            const auto relative = entry.path().lexically_relative(project_root).generic_u8string();
+            if (relative.empty() || relative.starts_with(u8"..")) continue;
+            read.assets.emplace_back(relative.begin(), relative.end());
+        }
+    } catch (const std::exception &caught) {
+        read.error = std::string{"the project folder could not be read: "} + caught.what();
+    }
+    std::ranges::sort(read.assets);
+    if (read.assets.empty() && read.error.empty())
+        read.error = "no .ktx2 or .png file in the project";
+    return read;
+}
+
+std::optional<GraphCanvasImageExtent> readImageAssetExtent(const std::filesystem::path &file) {
+    std::ifstream input{file, std::ios::binary};
+    if (!input) return std::nullopt;
+    std::array<unsigned char, 32> header{};
+    input.read(reinterpret_cast<char *>(header.data()), static_cast<std::streamsize>(header.size()));
+    if (input.gcount() < 28) return std::nullopt;
+    const auto little = [&](std::size_t at) {
+        return std::uint32_t{header[at]} | std::uint32_t{header[at + 1]} << 8 |
+               std::uint32_t{header[at + 2]} << 16 | std::uint32_t{header[at + 3]} << 24;
+    };
+    const auto big = [&](std::size_t at) {
+        return std::uint32_t{header[at]} << 24 | std::uint32_t{header[at + 1]} << 16 |
+               std::uint32_t{header[at + 2]} << 8 | std::uint32_t{header[at + 3]};
+    };
+    // KTX2: the identifier, vkFormat, typeSize, then pixelWidth and pixelHeight.
+    constexpr std::array<unsigned char, 12> ktx2{0xAB, 'K', 'T', 'X', ' ', '2', '0',
+                                                 0xBB, '\r', '\n', 0x1A, '\n'};
+    if (std::equal(ktx2.begin(), ktx2.end(), header.begin())) {
+        GraphCanvasImageExtent extent{little(20), little(24)};
+        // A 2D image's height is never 0; a 1D one is one row.
+        if (extent.height == 0) extent.height = 1;
+        if (extent.width == 0) return std::nullopt;
+        return extent;
+    }
+    // PNG: the signature, then IHDR's width and height.
+    constexpr std::array<unsigned char, 8> png{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+    if (std::equal(png.begin(), png.end(), header.begin())) {
+        GraphCanvasImageExtent extent{big(16), big(20)};
+        if (extent.width == 0 || extent.height == 0) return std::nullopt;
+        return extent;
+    }
+    return std::nullopt;
+}
+
+GraphCanvasImageImport importProjectImage(const std::filesystem::path &project_root,
+                                          const std::filesystem::path &file) {
+    GraphCanvasImageImport result;
+    if (project_root.empty()) {
+        result.error = "No project is open.";
+        return result;
+    }
+    const auto extension = lowerExtension(file);
+    if (extension != ".ktx2" && extension != ".png" && extension != ".hdr") {
+        result.error = file.filename().string() + " is not a .ktx2, .png or .hdr file.";
+        return result;
+    }
+    const auto folder = project_root / "assets" / "images";
+    std::error_code error;
+    std::filesystem::create_directories(folder, error);
+    if (error) {
+        result.error = "Could not make " + folder.generic_string() + ": " + error.message();
+        return result;
+    }
+    const auto stem = file.stem().string();
+    const auto name = freeName(folder, stem, file.extension().string());
+    if (!name) {
+        result.error = "No free name for " + file.filename().string() + ".";
+        return result;
+    }
+    std::filesystem::copy_file(file, folder / *name, std::filesystem::copy_options::none, error);
+    if (error) {
+        result.error = "Could not copy " + file.filename().string() + ": " + error.message();
+        return result;
+    }
+    if (extension != ".hdr") {
+        result.reference = "assets/images/" + *name;
+        return result;
+    }
+    // The engine reads no .hdr: it is baked into an RGBA32F .ktx2 beside it.
+    const auto baked = freeName(folder, std::filesystem::path{*name}.stem().string(), ".ktx2");
+    if (!baked) {
+        result.error = "No free name for the .ktx2 of " + file.filename().string() + ".";
+        return result;
+    }
+    result.reference = "assets/images/" + *baked;
+    result.convert = GraphCanvasImageImport::Conversion{folder / *name, folder / *baked};
     return result;
 }
 

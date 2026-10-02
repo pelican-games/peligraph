@@ -49,6 +49,11 @@ endfunction()
 # MG-1 (2026-09-25) re-took the project.json row: `project init` records the
 # engine that wrote the project as `"saved_by_engine": "0.1.0"`, one line after
 # engine_min_version; nothing else in the file changed.
+#
+# CC-1b (2026-10-02) re-took project.json and scenes/main.scene.json: the
+# camera convention removed basic_config.camera.up (one line), and MainCamera
+# stands at z = +3 instead of -3 so that, with no rotation, it looks along -Z
+# at the origin. Nothing else in either file changed.
 set(standard_digests
     ".gitattributes=53ca7dbd7bae3d4305c235b965e0af1b77aa1a6b0afa1ffcb8b8301e44c82955"
     ".gitignore=45658c9867458757f8857156830c81a4aabec1ac1b68dda97a9bed3c42c3f8a7"
@@ -63,8 +68,8 @@ set(standard_digests
     "input/actions.json=0f02c5b9badd6adce192b8a65e197f09c4ed1f137f3852477365f4a8c1c41d74"
     "input/profiles/keyboard.json=86d35286615bce33adfb6bf9a9c1b54e02d30e9b85b35cd1513f14538657d97c"
     "passes/main_rendering_config.json=81163814279c3171d67a654ec510ed0698daa1636ca22327b0894013976e000b"
-    "project.json=3dcd6a1c8a649988bdb70894d375b8478472f094da44fe20f90b598382fff2b7"
-    "scenes/main.scene.json=c6ec9bab9c5fab7f326b9c556330dd7fb94db85d97780eddfe39c795c3808fcb"
+    "project.json=1f89682d9c9d93f3eb3947905ef6308b468827a3cb9d02390ff15fd9fc58ea7f"
+    "scenes/main.scene.json=c4fedf3de2ec6ecb69e6a634d3e2c93c73497755e5630189cdb9c098e21739b4"
     "ui/ui_overlay.json=f9cf52bb037434a9aa098e11a18fd12587bad51bf07928db10899b1da952a2ac"
 )
 

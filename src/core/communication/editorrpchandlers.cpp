@@ -74,6 +74,9 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("scene_tree", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.sceneTree(params); });
     });
+    server.setHandler("scene_outline", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.sceneOutline(params); });
+    });
     server.setHandler("get_scene_revision", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getSceneRevision(params); });
     });
@@ -257,6 +260,14 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("verify_fold", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.verifyFold(params); });
     });
+    // AB-1: bake a sound's analysis into a table (a ticket), and list the
+    // assets an .import.json says were derived, stale or not.
+    server.setHandler("bake_audio_analysis", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.bakeAudioAnalysis(params); });
+    });
+    server.setHandler("list_derived_assets", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.listDerivedAssets(params); });
+    });
     server.setHandler("get_graph_instances", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getGraphInstances(params); });
     });
@@ -289,6 +300,11 @@ void configureEditorRpcHandlers(RpcServer &server,
     });
     server.setHandler("get_shader_interface", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getShaderInterface(params); });
+    });
+    // EL-6: the provider names Studio's draw_sort / render_strategy /
+    // graph_transforms combos offer, the game DLL's included.
+    server.setHandler("get_registered_providers", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getRegisteredProviders(params); });
     });
     server.setHandler("edit_compute_task", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editComputeTask(params); });
@@ -325,6 +341,11 @@ void configureEditorRpcHandlers(RpcServer &server,
     });
     server.setHandler("edit_render_targets", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editRenderTargets(params); });
+    });
+    // FR-3: several document edits applied in order to one candidate,
+    // composed once, one ticket.
+    server.setHandler("edit_batch", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.editBatch(params); });
     });
     // RD-1: read the render documents whole, and write them back under CAS
     // (Studio's undo of render edits).

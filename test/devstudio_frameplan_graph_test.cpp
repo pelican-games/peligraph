@@ -11455,6 +11455,64 @@ TEST_CASE("LP-4d2 Show in Frame Plan opens a loop's group with its copies picked
     CHECK(scene.selectedNodes().size() == 2);
 }
 
+TEST_CASE("UX-12b decision 6: the line Show in Frame Plan puts up outlasts the reads every "
+          "plan read asks for, while the copies stay picked",
+          "[devstudio][frame-plan][lp4d2][ux12b]") {
+    application();
+    Json wire = regionGroupingBaselineFramePlan();
+    const StringSet members{"HorizontalBlur_0", "VerticalBlur_0"};
+    std::int64_t element = 0;
+    for (auto &node : wire.at("nodes"))
+        if (members.contains(node.at("name").get<std::string>()))
+            node["loop_origin"] = {{"loop", "bloom_loop"}, {"element", element++},
+                                   {"node", "blur"}};
+    wire["loops"] = Json::array({{{"node", "bloom_loop"}, {"tier", "expand"}, {"count", 2},
+                                  {"elements", Json::array({
+                                      {{"element", 0}, {"index", 0}, {"branch", 0}},
+                                      {{"element", 1}, {"index", 1}, {"branch", 0}}})},
+                                  {"unmatched_branches", Json::array()}}});
+    EmbeddedViewport viewport;
+    FramePlanEditRecorder recorder;
+    FramePlanWidget widget{&viewport};
+    std::vector<qint64> reads;
+    qint64 next = 9100;
+    widget.setPlanRequest([&](QString *) {
+        reads.push_back(next);
+        return next++;
+    });
+    widget.resize(1200, 800);
+    widget.show();
+    widget.setEditCapability(recorder.capability());
+    QApplication::processEvents();
+
+    // Show in Frame Plan: the plan is read, and the copies picked.
+    widget.showLoopGroup(QStringLiteral("bloom_loop"));
+    REQUIRE(reads.size() == 1);
+    Q_EMIT viewport.inspectorRpcSucceeded(reads[0], QByteArray::fromStdString(wire.dump()));
+    QApplication::processEvents();
+    const QString picked = QStringLiteral("Loop bloom_loop: its copies are picked.");
+    CHECK(statusText(widget) == picked);
+    // The plan read asked for the authoring context and the task catalog;
+    // each lands after it and draws the plan again. The line stays.
+    REQUIRE(recorder.result);
+    REQUIRE(recorder.context_id != 0);
+    REQUIRE(recorder.task_id != 0);
+    recorder.result(recorder.context_id, QByteArrayLiteral("{}"));
+    QApplication::processEvents();
+    CHECK(statusText(widget) == picked);
+    recorder.result(recorder.task_id, QByteArrayLiteral("{}"));
+    QApplication::processEvents();
+    CHECK(statusText(widget) == picked);
+    // A plan read again (a commit elsewhere) keeps the copies picked, and so
+    // the line.
+    widget.planChangedByCommit();
+    QApplication::processEvents();
+    REQUIRE(reads.size() == 2);
+    Q_EMIT viewport.inspectorRpcSucceeded(reads[1], QByteArray::fromStdString(wire.dump()));
+    QApplication::processEvents();
+    CHECK(statusText(widget) == picked);
+}
+
 TEST_CASE("LP-4c a loop's or a definition's refusal reads as its sentence, "
           "and a graph variant is named whatever the code",
           "[devstudio][frame-plan][lp4c][refusal]") {
@@ -12235,5 +12293,76 @@ TEST_CASE("UX-6a decisions 2 and 4: the Frame Plan tells the Graph after a reloa
     CHECK(reloaded == 0);
     widget.receiveShaderReloadOutcome(ShaderReloadOutcome{.kind = ShaderReloadOutcome::Kind::committed});
     CHECK(reloaded == 1);
+}
+
+TEST_CASE("UX-12c decision 2: a material pass's row says how many materials it drew and their "
+          "draws, and the Materials tab lists each, drawn by the pass",
+          "[devstudio][frame-plan][ux12c]") {
+    application();
+    EditingFixture fixture;
+    fixture.wire["material_routing"] = {
+        {"policy", "hybrid_auto_v1"},
+        {"routes", {{"deferred_geometry",
+                     {{"pass", "wp343_mixed_a"}, {"contract", "deferred_geometry_v1"},
+                      {"phase", "opaque"}}}}}};
+    bool marked = false;
+    for (auto &node : fixture.wire["nodes"])
+        if (node.value("name", std::string{}) == "wp343_mixed_a") {
+            node["drawn_materials"] = Json::array(
+                {{{"material", "pelican.primitive.default"}, {"id", 1}, {"draws", 1}},
+                 {{"material", "pelican.primitive.default"}, {"id", 2}, {"draws", 3}},
+                 {{"id", "asset://floor.glb#material[0]"}, {"draws", 1}}});
+            node["drawn_materials_frame"] = 7;
+            marked = true;
+        }
+    REQUIRE(marked);
+    const FramePlanModel model = buildFramePlanModel(fixture.wire.dump());
+    const auto drawn = std::ranges::find(model.nodes, std::string{"wp343_mixed_a"}, &FramePlanNode::name);
+    REQUIRE(drawn != model.nodes.end());
+    REQUIRE(drawn->drawn_materials);
+    CHECK(drawn->drawn_materials->frame == 7);
+    CHECK(drawn->drawn_materials->draws() == 5);
+    // The engine's runtime id is a number.
+    CHECK(drawn->drawn_materials->materials[0].id == "1");
+    CHECK(drawn->drawn_materials->materials[2].name.empty());
+    fixture.open();
+
+    // The Passes row: the count and the draws, then each material.
+    auto *passes = fixture.widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanPasses"));
+    REQUIRE(passes != nullptr);
+    QStringList facts;
+    for (QTreeWidgetItemIterator it{passes}; *it; ++it)
+        if ((*it)->parent() != nullptr && (*it)->parent()->text(1) == QStringLiteral("Materials drawn"))
+            facts << (*it)->text(1) + QStringLiteral(" | ") + (*it)->text(2);
+        else if ((*it)->text(1) == QStringLiteral("Materials drawn"))
+            facts << QStringLiteral("group | ") + (*it)->text(2);
+    // Two materials of one name are told apart by their ids.
+    CHECK(facts == QStringList({QStringLiteral("group | 3 material(s), 5 draw(s) (frame 7)"),
+                                QStringLiteral("pelican.primitive.default (material 1) | 1 draw(s)"),
+                                QStringLiteral("pelican.primitive.default (material 2) | 3 draw(s)"),
+                                QStringLiteral("asset://floor.glb#material[0] | 1 draw(s)")}));
+
+    // The Materials tab: the route says what its pass drew, and each material
+    // is a row of the pass.
+    auto *materials = fixture.widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanMaterials"));
+    REQUIRE(materials != nullptr);
+    REQUIRE(materials->columnCount() == 6);
+    QStringList rows;
+    for (int index = 0; index < materials->topLevelItemCount(); ++index) {
+        const auto *item = materials->topLevelItem(index);
+        rows << item->text(0) + QStringLiteral(" | ") + item->text(1) + QStringLiteral(" | ") +
+                    item->text(5);
+    }
+    CHECK(rows == QStringList({QStringLiteral("deferred_geometry | wp343_mixed_a | 3 material(s), "
+                                              "5 draw(s) (frame 7)"),
+                               QStringLiteral("pelican.primitive.default (material 1) | wp343_mixed_a | "
+                                              "drawn by wp343_mixed_a, 1 draw(s)"),
+                               QStringLiteral("pelican.primitive.default (material 2) | wp343_mixed_a | "
+                                              "drawn by wp343_mixed_a, 3 draw(s)"),
+                               QStringLiteral("asset://floor.glb#material[0] | wp343_mixed_a | drawn "
+                                              "by wp343_mixed_a, 1 draw(s)")}));
+    // The Graph's Materials drawn picks the route and the materials.
+    fixture.widget.showMaterialRoutes(QStringLiteral("wp343_mixed_a"));
+    CHECK(materials->selectedItems().size() == 4);
 }
 } // namespace PelicanStudio

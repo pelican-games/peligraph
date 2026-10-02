@@ -755,6 +755,8 @@ TEST_CASE("renderer-owned WP354 append covers every family and stripWp354 change
 
     std::vector<std::string> permitted_projection_pointers{
         "/profile",
+        // PV-1: the renderer's one-shot preview state, beside the plan.
+        "/preview",
         "/ray_query_acceleration_structures/descriptor_bundle_generation",
         "/ray_query_acceleration_structures/descriptor_top_level_handle",
         "/ray_query_acceleration_structures/descriptor_row_digest"};

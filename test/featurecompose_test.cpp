@@ -15,6 +15,8 @@
 #include "../src/project/shaderresourceport.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/loader/imageloader.hpp"
+#include "../src/core/loader/ktx2.hpp"
 #include "../src/core/renderer/viewfamilyproviderregistry.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/frameexecutionadapter.hpp"
@@ -184,7 +186,7 @@ void requireErrorKind(std::string_view message, std::string_view error_kind) {
     } else if (error_kind == "pass_collision") {
         REQUIRE(contains(message, "pass name collides"));
     } else if (error_kind == "missing_anchor") {
-        REQUIRE(contains(message, "anchor was not found"));
+        REQUIRE(contains(message, "feature.insertion_anchor_missing@1"));
     } else if (error_kind == "bad_override") {
         REQUIRE(contains(message, "only supports format"));
     } else {
@@ -4984,7 +4986,10 @@ TEST_CASE("LP-0a render.target_ref reads and writes targets declared outside the
         auto [code, fields] = lp0aRefusal(mismatched);
         CHECK(code == "graph.target_ref_type_mismatch@1");
         CHECK(fields == Json{{"node", "lit"}, {"name", "lit_color"}, {"field", "kind"},
-                             {"declared", "depth"}, {"actual", "color"}});
+                             {"declared", "depth"}, {"actual", "color"},
+                             // FR-1: a color target states no type to write.
+                             {"expected", {{"type", {{"semantic", "pelican.render.legacy_opaque_image@1"},
+                                                     {"arguments", Json::object()}}}}}});
         auto cube = lp0aSceneColorType();
         cube["arguments"]["topology"] = "cube";
         mismatched = document;
@@ -4993,7 +4998,9 @@ TEST_CASE("LP-0a render.target_ref reads and writes targets declared outside the
         std::tie(code, fields) = lp0aRefusal(mismatched);
         CHECK(code == "graph.target_ref_type_mismatch@1");
         CHECK(fields == Json{{"node", "lit"}, {"name", "lit_color"}, {"field", "topology"},
-                             {"declared", "cube"}, {"actual", "two_d"}});
+                             {"declared", "cube"}, {"actual", "two_d"},
+                             // FR-1: the declared type at the target's topology.
+                             {"expected", {{"type", lp0aSceneColorType()}}}});
         // A depth reference to a depth target passes.
         auto depth_ref = document;
         depth_ref["nodes"][0]["parameters"] = {{"name", "scene_depth"}, {"type", depth}};
@@ -5315,7 +5322,17 @@ TEST_CASE("LP-0b placement refusals are named", "[render-feature][graph-composit
                                       Json{{"insert", {{"after", "deferred_lighting"}, {"before", "forward_opaque"}}}},
                                       Json{{"canonical_anchor", 1}}}) {
             INFO(placement.dump());
-            CHECK_THROWS_AS(partitionGraphDocument(lp0bGraph({"blit"}, placement)), std::invalid_argument);
+            // CT-3: a value of the wrong kind (insert a string, a side a
+            // number, the anchor a number) is named from the parameter
+            // table; the rest of the shape is the placement check's.
+            try {
+                (void)partitionGraphDocument(lp0bGraph({"blit"}, placement));
+                FAIL("the placement was accepted");
+            } catch (const GraphRegistryError &error) {
+                CHECK(error.code() == "graph.render_node_parameter_invalid@1");
+                CHECK(error.detail().at("reason") == "type");
+            } catch (const std::invalid_argument &) {
+            }
         }
     }
 }
@@ -9480,6 +9497,631 @@ TEST_CASE("RS-13 the rendering section reads a loop's output as <loop>.<output>"
         dotted.at("rendering").at("rendering_passes").at(0).at("passes").at(0)["input"] = Json::array({"lit.color"});
         CHECK(passByName(lp0aCompose(dotted).config, "present").at("input") == Json::array({"lit.color"}));
     }
+}
+
+namespace {
+// PS-1: over the hybrid preset, `h0` (once) writes h0_image from the buffer
+// `level`, `twiddle` (once) reads h0's output into twiddle_image, and `show`
+// (every frame) reads twiddle's into show_image.
+nlohmann::json ps1Edge(const char *node, const char *port) {
+    return nlohmann::json{{"node", node}, {"port", port}};
+}
+
+nlohmann::json ps1Image(const std::string &id, bool persistent) {
+    nlohmann::json parameters{{"type", lp0aSceneColorType()}, {"format", "R8G8B8A8_UNORM"},
+                              {"extent_scale", 1.0}, {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}};
+    if (persistent) parameters["lifetime"] = "persistent";
+    return {{"id", id}, {"op", "render.image"}, {"parameters", std::move(parameters)}, {"outputs", {"resource"}}};
+}
+
+nlohmann::json ps1Pass(const std::string &id, const nlohmann::json &ports, const nlohmann::json &inputs, bool once) {
+    nlohmann::json parameters{{"pass_set", "main_render"},
+                              {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
+                              {"ports", ports}};
+    if (once) parameters["schedule"] = "once";
+    return {{"id", id}, {"op", "render.fullscreen"}, {"parameters", std::move(parameters)},
+            {"inputs", inputs}, {"outputs", {"color"}}};
+}
+
+nlohmann::json ps1ColorPort() {
+    return {{"kind", "image"}, {"type", lp0aSceneColorType()}, {"access", "write"},
+            {"attachment", "color"}, {"location", 0}};
+}
+
+nlohmann::json ps1Graph() {
+    using Json = nlohmann::json;
+    const Json read{{"kind", "image"}, {"type", lp0aSceneColorType()}, {"access", "read"}};
+    const Json level{{"kind", "buffer"}, {"element", "float"}, {"access", "read"}};
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", Json::object()},
+        {"nodes", Json::array({
+            {{"id", "level_value"}, {"op", "value.constant"}, {"parameters", {{"value", 0.25}}}, {"outputs", {"value"}}},
+            {{"id", "level"}, {"op", "render.buffer"}, {"parameters", {{"element", "float"}}},
+             {"inputs", {{"value", ps1Edge("level_value", "value")}}}, {"outputs", {"resource"}}},
+            ps1Image("h0_image", true),
+            ps1Pass("h0", {{"level", level}, {"color", ps1ColorPort()}},
+                    {{"level", ps1Edge("level", "resource")}, {"color", ps1Edge("h0_image", "resource")}}, true),
+            ps1Image("twiddle_image", true),
+            ps1Pass("twiddle", {{"source", read}, {"color", ps1ColorPort()}},
+                    {{"source", ps1Edge("h0", "color")}, {"color", ps1Edge("twiddle_image", "resource")}}, true),
+            ps1Image("show_image", false),
+            ps1Pass("show", {{"source", read}, {"color", ps1ColorPort()}},
+                    {{"source", ps1Edge("twiddle", "color")}, {"color", ps1Edge("show_image", "resource")}}, false)})},
+        {"outputs", Json::object()},
+        {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}}}};
+}
+
+nlohmann::json &ps1Node(nlohmann::json &document, std::string_view id) {
+    for (auto &node : document.at("nodes"))
+        if (node.at("id") == std::string{id}) return node;
+    FAIL("no node " << id);
+    return document;
+}
+
+const nlohmann::json &ps1Target(const nlohmann::json &config, std::string_view name) {
+    for (const auto &target : config.at("render_targets"))
+        if (target.at("name") == std::string{name}) return target;
+    FAIL("no render target " << name);
+    return config;
+}
+} // namespace
+
+TEST_CASE("PS-1 schedule and lifetime reach the passes, the targets and the frame plan",
+          "[render-feature][graph-composition][ps1]") {
+    using Json = nlohmann::json;
+    const auto composed = lp0aCompose(ps1Graph());
+    CHECK(passByName(composed.config, "h0").at("schedule") == "once");
+    CHECK(passByName(composed.config, "twiddle").at("schedule") == "once");
+    CHECK_FALSE(passByName(composed.config, "show").contains("schedule"));
+    CHECK(ps1Target(composed.config, "h0_image").at("lifetime") == "persistent");
+    CHECK(ps1Target(composed.config, "twiddle_image").at("lifetime") == "persistent");
+    CHECK_FALSE(ps1Target(composed.config, "show_image").contains("lifetime"));
+    REQUIRE_NOTHROW(compileComposition(composed));
+
+    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    const auto graph = std::find_if(graphs.begin(), graphs.end(),
+        [](const auto &candidate) { return candidate.name == "main_render"; });
+    REQUIRE(graph != graphs.end());
+    std::set<std::string> once;
+    for (const auto &node : graph->nodes)
+        if (node.once) once.insert(node.name);
+    CHECK(once == std::set<std::string>{"h0", "twiddle"});
+    const auto plan = framePlanToJson(planFrameGraph(*graph));
+    for (const auto &node : plan.at("nodes")) {
+        INFO(node.at("name"));
+        if (once.contains(node.at("name").get<std::string>())) CHECK(node.at("schedule") == "once");
+        else CHECK_FALSE(node.contains("schedule"));
+    }
+
+    SECTION("a compute task takes once beside per_frame and per_view") {
+        auto document = ps1Graph();
+        auto &h0 = ps1Node(document, "h0");
+        h0["op"] = "render.compute";
+        h0["parameters"] = {{"shader", "engine://ray_deform"}, {"schedule", "once"},
+                            {"ports", {{"level", {{"kind", "buffer"}, {"element", "float"}, {"access", "read"}}},
+                                       {"color", {{"kind", "image"}, {"type", lp0aSceneColorType()},
+                                                  {"access", "write"}}}}}};
+        const auto with_task = lp0aCompose(document);
+        const auto &tasks = with_task.config.at("compute_tasks");
+        const auto task = std::find_if(tasks.begin(), tasks.end(),
+            [](const Json &entry) { return entry.at("name") == "h0"; });
+        REQUIRE(task != tasks.end());
+        CHECK(task->at("schedule") == "once");
+    }
+    SECTION("a loop body's once pass is once in every copy") {
+        Json document{{"schema", "pelican.graph"}, {"version", 1},
+            {"definitions", {{"ps1_body", {{"nodes", Json::array({
+                ps1Image("seed_image", true),
+                ps1Pass("seed", {{"color", ps1ColorPort()}}, {{"color", ps1Edge("seed_image", "resource")}}, true)})},
+                {"outputs", {{"seed", ps1Edge("seed", "color")}}}}}}},
+            {"nodes", Json::array({{{"id", "steps"}, {"op", "graph.loop"},
+                {"parameters", {{"over", {{"range", {{"count", 2}}}}},
+                                {"branches", Json::array({{{"body", "ps1_body"}}})}}},
+                {"outputs", Json::array()}}})},
+            {"outputs", Json::object()},
+            {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}}}};
+        const auto looped = lp0aCompose(document);
+        for (const auto *name : {"steps/0/seed", "steps/1/seed"}) {
+            INFO(name);
+            CHECK(passByName(looped.config, name).at("schedule") == "once");
+        }
+        CHECK(ps1Target(looped.config, "steps/0/seed_image").at("lifetime") == "persistent");
+    }
+}
+
+TEST_CASE("PS-1 a once node that writes a transient resource or reads one that changes every frame is refused by name",
+          "[render-feature][graph-composition][ps1]") {
+    using Json = nlohmann::json;
+    SECTION("a once pass writes a transient image") {
+        auto document = ps1Graph();
+        ps1Node(document, "h0_image")["parameters"].erase("lifetime");
+        const auto [code, fields] = lp0aRefusal(document);
+        CHECK(code == "graph.once_writes_transient@1");
+        CHECK(fields == Json{{"node", "h0"}, {"resource", "h0_image"}});
+        // So does an explicitly transient one.
+        ps1Node(document, "h0_image")["parameters"]["lifetime"] = "transient";
+        CHECK(lp0aRefusal(document).first == "graph.once_writes_transient@1");
+    }
+    SECTION("a once pass writes a target declared outside the graph that is not persistent") {
+        auto document = ps1Graph();
+        document["nodes"].push_back({{"id", "lit"}, {"op", "render.target_ref"},
+                                     {"parameters", {{"name", "lit_color"}, {"type", lp0aSceneColorType()}}},
+                                     {"outputs", {"resource"}}});
+        ps1Node(document, "h0")["inputs"]["color"] = ps1Edge("lit", "resource");
+        const auto [code, fields] = lp0aRefusal(document);
+        CHECK(code == "graph.once_writes_transient@1");
+        CHECK(fields == Json{{"node", "h0"}, {"resource", "lit_color"}});
+    }
+    SECTION("a once pass reads the output of a pass that runs every frame") {
+        auto document = ps1Graph();
+        document["nodes"].push_back(ps1Image("pre_image", false));
+        document["nodes"].push_back(
+            ps1Pass("pre", {{"color", ps1ColorPort()}}, {{"color", ps1Edge("pre_image", "resource")}}, false));
+        ps1Node(document, "twiddle")["inputs"]["source"] = ps1Edge("pre", "color");
+        auto [code, fields] = lp0aRefusal(document);
+        CHECK(code == "graph.once_reads_per_frame@1");
+        CHECK(fields == Json{{"node", "twiddle"}, {"input", "source"}});
+        // Read from the image node: transient, it changes every frame.
+        ps1Node(document, "twiddle")["inputs"]["source"] = ps1Edge("pre_image", "resource");
+        std::tie(code, fields) = lp0aRefusal(document);
+        CHECK(code == "graph.once_reads_per_frame@1");
+        CHECK(fields == Json{{"node", "twiddle"}, {"input", "source"}});
+        // Persistent, but a pass that runs every frame writes it.
+        ps1Node(document, "pre_image")["parameters"]["lifetime"] = "persistent";
+        std::tie(code, fields) = lp0aRefusal(document);
+        CHECK(code == "graph.once_reads_per_frame@1");
+        CHECK(fields == Json{{"node", "twiddle"}, {"input", "source"}});
+        // Control: written by a once pass, it may be read.
+        ps1Node(document, "pre")["parameters"]["schedule"] = "once";
+        CHECK_NOTHROW(lp0aCompose(document));
+    }
+    SECTION("a once pass reads a buffer the value graph derives from time") {
+        auto document = ps1Graph();
+        auto &value = ps1Node(document, "level_value");
+        value["op"] = "value.input";
+        value["parameters"] = {{"name", "time"}};
+        const auto [code, fields] = lp0aRefusal(document);
+        CHECK(code == "graph.once_reads_per_frame@1");
+        CHECK(fields == Json{{"node", "h0"}, {"input", "level"}});
+    }
+    SECTION("a schedule or lifetime the engine does not know is refused when edited") {
+        auto document = ps1Graph();
+        ps1Node(document, "h0")["parameters"]["schedule"] = "sometimes";
+        // CT-3: outside the schedule's enum, named from the parameter table.
+        CHECK_THROWS_WITH(partitionGraphDocument(document),
+                          Catch::Matchers::ContainsSubstring("graph.render_node_parameter_invalid@1") &&
+                              Catch::Matchers::ContainsSubstring("\"parameter\":\"schedule\""));
+        document = ps1Graph();
+        ps1Node(document, "h0")["parameters"]["schedule"] = "per_view";
+        CHECK_THROWS(partitionGraphDocument(document));
+        document = ps1Graph();
+        ps1Node(document, "h0_image")["parameters"]["lifetime"] = "forever";
+        CHECK_THROWS_WITH(partitionGraphDocument(document),
+                          Catch::Matchers::ContainsSubstring("graph.render_node_parameter_invalid@1") &&
+                              Catch::Matchers::ContainsSubstring("\"parameter\":\"lifetime\""));
+    }
+}
+
+// A render.snapshot_copy gives the render.image nodes it copies between the
+// usages a copy needs: the palette's raster / fullscreen image declares no
+// TRANSFER_SRC (UX-6a: so that it may alias), and copying it after its pass
+// was refused at registration (Snapshot copy usage mismatch).
+TEST_CASE("a snapshot copy of a pass's own image gives the images the usages the copy needs",
+          "[render-feature][graph-composition][ps1]") {
+    using Json = nlohmann::json;
+    auto document = ps1Graph();
+    auto copy_image = ps1Image("copy_image", false);
+    copy_image["parameters"]["usage"] = Json::array({"TRANSFER_DST"});
+    document["nodes"].push_back(copy_image);
+    document["nodes"].push_back({{"id", "copy"}, {"op", "render.snapshot_copy"},
+                                 {"parameters", {{"snapshot_after", "show"}}},
+                                 {"inputs", {{"source", ps1Edge("show", "color")},
+                                             {"destination", ps1Edge("copy_image", "resource")}}},
+                                 {"outputs", {"destination"}}});
+    const auto composed = lp0aCompose(document);
+    const auto usage = [&](std::string_view name) {
+        std::set<std::string> result;
+        for (const auto &entry : ps1Target(composed.config, name).at("usage")) result.insert(entry.get<std::string>());
+        return result;
+    };
+    CHECK(usage("show_image") == std::set<std::string>{"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"});
+    CHECK(usage("copy_image") == std::set<std::string>{"TRANSFER_DST", "SAMPLED"});
+    // An image nothing copies keeps what it declared.
+    CHECK(usage("h0_image") == std::set<std::string>{"COLOR_ATTACHMENT", "SAMPLED"});
+    CHECK(passByName(composed.config, "copy").at("source") == "show_image");
+}
+
+
+namespace {
+// IA-1: an image `lut` beside ps1Graph that nothing reads (so no once pass
+// is involved), starting from `initial`.
+nlohmann::json ia1ImageParameters(const std::string &format) {
+    return {{"type", lp0aSceneColorType()},
+            {"format", format},
+            {"lifetime", "persistent"},
+            {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}},
+            {"initial", {{"asset", "assets/lut.ktx2"}}}};
+}
+
+nlohmann::json ia1Graph(const nlohmann::json &parameters) {
+    auto document = ps1Graph();
+    document["nodes"].push_back(
+        {{"id", "lut"}, {"op", "render.image"}, {"parameters", parameters}, {"outputs", {"resource"}}});
+    return document;
+}
+
+// What the engine reads from a KTX2 the writer made: the asset facts the
+// resolution sees.
+GraphImageInitialAsset ia1Ktx2Facts(Ktx2Format format, std::uint32_t width, std::uint32_t height) {
+    const std::vector<std::byte> texels(std::size_t{width} * height * ktx2TexelBytes(format));
+    const auto loaded = loadImageMemory(writeKtx2(format, width, height, texels), "lut.ktx2");
+    return {loaded.width, loaded.height, std::string{imagePixelFormatName(loaded.format)},
+            loaded.color_space_declared};
+}
+
+// A PNG decodes to RGBA8 and does not say whether it is sRGB.
+GraphImageInitialAsset ia1PngFacts(std::uint32_t width, std::uint32_t height) {
+    return {width, height, "R8G8B8A8_UNORM", false};
+}
+
+nlohmann::json ia1Resolve(const nlohmann::json &document, const GraphImageInitialAsset &facts) {
+    return resolveGraphImageInitialAssets(document, [&](std::string_view node, const std::string &asset) {
+        CHECK(std::string{node} == "lut");
+        CHECK(asset == "assets/lut.ktx2");
+        return facts;
+    });
+}
+
+std::pair<std::string, nlohmann::json> ia1Refusal(const nlohmann::json &document,
+                                                  const GraphImageInitialAsset &facts) {
+    try {
+        (void)ia1Resolve(document, facts);
+    } catch (const GraphRegistryError &error) {
+        return {error.code(), error.detail()};
+    }
+    FAIL("the initial asset was not refused by name");
+    return {};
+}
+} // namespace
+
+TEST_CASE("IA-1 a persistent image takes its initial asset's extent and is copied into",
+          "[render-feature][graph-composition][ia1]") {
+    using Json = nlohmann::json;
+    // No width / height: the asset's are written into the compiler document.
+    auto resolved = ia1Resolve(ia1Graph(ia1ImageParameters("R32G32B32A32_SFLOAT")),
+                               ia1Ktx2Facts(Ktx2Format::R32G32B32A32Sfloat, 64, 32));
+    const auto &parameters = ps1Node(resolved, "lut").at("parameters");
+    CHECK(parameters.at("width") == 64);
+    CHECK(parameters.at("height") == 32);
+    CHECK_FALSE(parameters.contains("extent_scale"));
+
+    // The lowered target keeps `initial`, gets TRANSFER_DST and the extent
+    // scale the target parser asks for (a fixed extent wins over it).
+    const auto composed = lp0aCompose(resolved);
+    const auto &target = ps1Target(composed.config, "lut");
+    CHECK(target.at("initial") == Json{{"asset", "assets/lut.ktx2"}});
+    CHECK(target.at("width") == 64);
+    CHECK(target.at("height") == 32);
+    CHECK(target.at("extent_scale") == 1.0);
+    const auto usage = target.at("usage").get<std::set<std::string>>();
+    CHECK(usage == std::set<std::string>{"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_DST"});
+    REQUIRE_NOTHROW(compileComposition(composed));
+
+    // A PNG says nothing about its color space: it fits a UNORM and an SRGB
+    // image alike, and the declared extent is kept.
+    for (const auto *format : {"R8G8B8A8_UNORM", "R8G8B8A8_SRGB"}) {
+        INFO(format);
+        auto declared = ia1ImageParameters(format);
+        declared["width"] = 16;
+        declared["height"] = 8;
+        REQUIRE_NOTHROW(ia1Resolve(ia1Graph(declared), ia1PngFacts(16, 8)));
+    }
+}
+
+TEST_CASE("IA-1 an initial asset on a transient image, beside an extent scale, or that does not fit is refused by name",
+          "[render-feature][graph-composition][ia1]") {
+    using Json = nlohmann::json;
+    using Refusal = std::pair<std::string, Json>;
+    const auto rgba32f = ia1Ktx2Facts(Ktx2Format::R32G32B32A32Sfloat, 64, 64);
+    SECTION("transient") {
+        for (const auto &lifetime : {Json{}, Json("transient")}) {
+            auto parameters = ia1ImageParameters("R32G32B32A32_SFLOAT");
+            if (lifetime.is_null()) parameters.erase("lifetime");
+            else parameters["lifetime"] = lifetime;
+            const auto document = ia1Graph(parameters);
+            // Refused while the graph is lowered (every path) and while the
+            // engine reads the asset (the runtime path, first).
+            CHECK(lp0aRefusal(document) == Refusal{"graph.image_initial_requires_persistent@1", {{"node", "lut"}}});
+            CHECK(ia1Refusal(document, rgba32f) ==
+                  Refusal{"graph.image_initial_requires_persistent@1", {{"node", "lut"}}});
+        }
+    }
+    SECTION("the asset's extent and an extent_scale") {
+        auto parameters = ia1ImageParameters("R32G32B32A32_SFLOAT");
+        parameters["extent_scale"] = 0.5;
+        const auto document = ia1Graph(parameters);
+        CHECK(lp0aRefusal(document) == Refusal{"graph.image_initial_extent_conflict@1", {{"node", "lut"}}});
+        CHECK(ia1Refusal(document, rgba32f) == Refusal{"graph.image_initial_extent_conflict@1", {{"node", "lut"}}});
+    }
+    SECTION("extent") {
+        auto parameters = ia1ImageParameters("R32G32B32A32_SFLOAT");
+        parameters["width"] = 32;
+        parameters["height"] = 64;
+        const auto [code, fields] = ia1Refusal(ia1Graph(parameters), rgba32f);
+        CHECK(code == "graph.image_initial_mismatch@1");
+        CHECK(fields == Json{{"node", "lut"},
+                             {"asset", "assets/lut.ktx2"},
+                             {"what", "extent"},
+                             {"expected", {{"width", 32}, {"height", 64}, {"format", "R32G32B32A32_SFLOAT"}}},
+                             {"actual", {{"width", 64}, {"height", 64}, {"format", "R32G32B32A32_SFLOAT"}}}});
+    }
+    SECTION("format") {
+        const auto [code, fields] = ia1Refusal(ia1Graph(ia1ImageParameters("R16G16B16A16_SFLOAT")), rgba32f);
+        CHECK(code == "graph.image_initial_mismatch@1");
+        CHECK(fields == Json{{"node", "lut"},
+                             {"asset", "assets/lut.ktx2"},
+                             {"what", "format"},
+                             {"expected", {{"width", 64}, {"height", 64}, {"format", "R16G16B16A16_SFLOAT"}}},
+                             {"actual", {{"width", 64}, {"height", 64}, {"format", "R32G32B32A32_SFLOAT"}}}});
+        // A PNG into a float image is a format mismatch too.
+        CHECK(ia1Refusal(ia1Graph(ia1ImageParameters("R32G32B32A32_SFLOAT")), ia1PngFacts(64, 64))
+                  .second.at("what") == "format");
+    }
+    SECTION("color_space") {
+        const auto [code, fields] = ia1Refusal(ia1Graph(ia1ImageParameters("R8G8B8A8_UNORM")),
+                                               ia1Ktx2Facts(Ktx2Format::Rgba8Srgb, 4, 4));
+        CHECK(code == "graph.image_initial_mismatch@1");
+        CHECK(fields == Json{{"node", "lut"},
+                             {"asset", "assets/lut.ktx2"},
+                             {"what", "color_space"},
+                             {"expected", {{"width", 4}, {"height", 4}, {"format", "R8G8B8A8_UNORM"}}},
+                             {"actual", {{"width", 4}, {"height", 4}, {"format", "R8G8B8A8_SRGB"}}}});
+        CHECK(ia1Refusal(ia1Graph(ia1ImageParameters("R8G8B8A8_SRGB")), ia1Ktx2Facts(Ktx2Format::Rgba8Unorm, 4, 4))
+                  .second.at("what") == "color_space");
+    }
+    SECTION("an initial that is not {asset}") {
+        auto parameters = ia1ImageParameters("R32G32B32A32_SFLOAT");
+        parameters["initial"] = "assets/lut.ktx2";
+        // CT-3: initial is an object; named from the parameter table.
+        CHECK_THROWS_WITH(lp0aCompose(ia1Graph(parameters)),
+                          Catch::Matchers::ContainsSubstring("graph.render_node_parameter_invalid@1") &&
+                              Catch::Matchers::ContainsSubstring("\"parameter\":\"initial\""));
+    }
+}
+
+namespace {
+// FR-1: a pipeline built up from Blank in the Graph: a direct pelican.graph
+// root whose rendering section lights lit_color and presents it. It declares
+// no scene depth, and no pass writes the swapchain.
+nlohmann::json fr1BlankGraph() {
+    return nlohmann::json::parse(R"json({
+  "schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {},
+  "rendering": {
+    "render_targets": [
+      {"name": "lit_color", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT",
+       "usage": ["COLOR_ATTACHMENT", "SAMPLED"]}
+    ],
+    "rendering_passes": [{"name": "main_render", "passes": [
+      {"name": "deferred_lighting", "type": "fullscreen", "input": [],
+       "output": {"color": ["lit_color"], "depth": null},
+       "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"}},
+      {"name": "present", "type": "fullscreen", "input": ["lit_color"],
+       "output": {"color": ["display"], "depth": null},
+       "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"}}
+    ]}]
+  }
+})json");
+}
+
+nlohmann::json fr1DeviceDepth() {
+    return {{"semantic", "pelican.render.depth@1"},
+            {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+}
+} // namespace
+
+TEST_CASE("FR-1 a feature names the targets it leaves to the pipeline and is refused by name without one",
+          "[render-feature][graph-composition][fr1]") {
+    using Json = nlohmann::json;
+    const auto engineFeature = [](std::string_view name) {
+        return Json::parse(loadEngineFeature("engine://features/" + std::string{name} + ".json"));
+    };
+    // FR-4: sky_ambient declares lit_color's type, the scene color a Graph
+    // color port carries (an undeclared color target would be
+    // pelican.render.legacy_opaque_image@1).
+    const Json scene_color{{"semantic", "pelican.render.color_signal@1"},
+                           {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    // What the feature writes, reads and overrides, its own targets left out;
+    // the declared required_targets gives lit_color and scene_depth their types.
+    CHECK(renderFeatureRequiredTargets(engineFeature("sky_ambient")) ==
+          Json::array({Json{{"name", "lit_color"}, {"type", scene_color}, {"usage", Json::array({"COLOR_ATTACHMENT"})}},
+                       Json{{"name", "scene_depth"}, {"type", fr1DeviceDepth()}, {"usage", Json::array({"SAMPLED"})}}}));
+    CHECK(renderFeatureRequiredTargets(engineFeature("shadow_directional")) == Json::array());
+    CHECK(renderFeatureRequiredTargets(engineFeature("ui")) == Json::array());
+    // A parameter's target by its default, with the parameter's usage; a
+    // history read names its target, the feature's own.
+    const auto taa = renderFeatureRequiredTargets(engineFeature("taa"));
+    const auto depth = std::find_if(taa.begin(), taa.end(), [](const Json &entry) {
+        return entry.at("name") == "offscreen_depth";
+    });
+    REQUIRE(depth != taa.end());
+    CHECK(depth->at("type") == fr1DeviceDepth());
+    CHECK(depth->at("usage") == Json::array({"SAMPLED", "DEPTH_STENCIL_ATTACHMENT"}));
+    for (const auto &entry : taa) CHECK(entry.at("name") != "taa_accum");
+    // FR-4: the inference is unchanged -- a color target taa does not declare
+    // is still the untyped image.
+    const auto velocity = std::find_if(taa.begin(), taa.end(), [](const Json &entry) {
+        return entry.at("name") == "velocity";
+    });
+    REQUIRE(velocity != taa.end());
+    CHECK(velocity->at("type") ==
+          Json{{"semantic", "pelican.render.legacy_opaque_image@1"}, {"arguments", Json::object()}});
+
+    auto document = fr1BlankGraph();
+    document["rendering"]["features"] = Json::array({"engine://features/sky_ambient.json"});
+    const auto [code, fields] = lp0aRefusal(document);
+    CHECK(code == "feature.required_target_missing@1");
+    CHECK(fields == Json{{"feature", "sky_ambient"}, {"target", "scene_depth"}, {"type", fr1DeviceDepth()},
+                         {"document", "engine://features/sky_ambient.json"}});
+
+    // One edit: the target, and a render.target_ref of the type the refusal gave.
+    auto fixed = document;
+    fixed["rendering"]["render_targets"].push_back(
+        {{"name", "scene_depth"}, {"extent_scale", 1.0}, {"format", "D32_SFLOAT"},
+         {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT"})}});
+    fixed["nodes"].push_back({{"id", "scene_depth_ref"}, {"op", "render.target_ref"},
+                              {"parameters", {{"name", "scene_depth"}, {"type", fields.at("type")}}},
+                              {"outputs", Json::array({"resource"})}});
+    // FR-3: declared is not drawn. Nothing in this pipeline writes a depth
+    // sky_background could read, so nothing is offered to write it.
+    const auto [unwritten_code, unwritten] = lp0aRefusal(fixed);
+    CHECK(unwritten_code == "feature.required_target_unwritten@1");
+    CHECK(unwritten == Json{{"feature", "sky_ambient"}, {"target", "scene_depth"}, {"type", fr1DeviceDepth()},
+                            {"writer_candidates", Json::array()},
+                            {"document", "engine://features/sky_ambient.json"}});
+    // A pass that draws it before sky_background.
+    fixed["rendering"]["rendering_passes"][0]["passes"][0]["output"]["depth"] = "scene_depth";
+    const auto composed = lp0aCompose(fixed);
+    CHECK(passByName(composed.config, "sky_background").at("input") == Json::array({"scene_depth"}));
+    std::size_t depth_targets = 0;
+    for (const auto &target : composed.config.at("render_targets"))
+        if (target.at("name") == "scene_depth") ++depth_targets;
+    CHECK(depth_targets == 1);
+
+    // A malformed declaration is the feature's error, not a missing target.
+    auto declared = engineFeature("sky_ambient");
+    declared["required_targets"][0].erase("type");
+    REQUIRE_THROWS_WITH(composeRenderFeatureConfig(fixed, RenderFeatureComposeDependencies{
+                            [&](std::string_view) { return declared.dump(); }, true}),
+                        Catch::Matchers::ContainsSubstring("required_targets"));
+}
+
+TEST_CASE("FR-1 a snapshot after a name the pipeline lacks is refused with the names it takes",
+          "[render-feature][snapshot][fr1]") {
+    using Json = nlohmann::json;
+    auto document = fr1BlankGraph();
+    document["rendering"]["snapshots"] = Json::array({{{"name", "opaque_snapshot"}, {"after", "opaque"}}});
+    const auto [code, fields] = lp0aRefusal(document);
+    CHECK(code == "snapshot.after_unknown@1");
+    CHECK(fields == Json{{"snapshot", "opaque_snapshot"}, {"after", "opaque"},
+                         {"candidates", Json::array({"post_ldr"})}});
+    // The authoring context reads the same names off the composed pipeline.
+    CHECK(Json(renderSnapshotAfterCandidates(lp0aCompose(fr1BlankGraph()).config)) == fields.at("candidates"));
+    // A pass in the region (one that writes the swapchain) is one too.
+    auto swapchain = baseConfigWithFeature("valid/dummy_feature.json");
+    swapchain["features"] = Json::array();
+    CHECK(renderSnapshotAfterCandidates(composeRenderFeatureConfig(swapchain).config) ==
+          std::vector<std::string>{"post_ldr", "present"});
+
+    // Each candidate composes, and the copy follows a frame node that the
+    // execution plan knows (the anchor's, not its bare name).
+    for (const auto &candidate : fields.at("candidates")) {
+        INFO(candidate.dump());
+        auto fixed = document;
+        fixed["rendering"]["snapshots"][0]["after"] = candidate;
+        auto composed = lp0aCompose(fixed);
+        const auto &copy = passByName(composed.config, "__snapshot_opaque_snapshot");
+        CHECK(copy.at("snapshot_after") == "__anchor_post_ldr");
+        for (auto &target : composed.config.at("render_targets")) {
+            if (target.value("format_class", std::string{}) != "display") continue;
+            target["width"] = 1280;
+            target["height"] = 720;
+        }
+        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+        REQUIRE(graphs.size() == 1);
+        const auto plan = planFrameGraph(graphs.front());
+        const auto execution = compileFrameExecutionPlan(
+            graphs.front(), plan,
+            ExecutionEndpoint{.id = "device:0", .endpoint_class = ExecutionEndpointClass::device, .backend = "vulkan"});
+        CHECK(std::any_of(execution.dependencies.begin(), execution.dependencies.end(), [](const auto &edge) {
+            return edge.from == "__anchor_post_ldr" && edge.to == "__snapshot_opaque_snapshot" &&
+                   edge.reason == "pelican.dependency.snapshot_after@1";
+        }));
+    }
+}
+
+TEST_CASE("FR-1 a target_ref whose type contradicts its target is told the type to write",
+          "[render-feature][graph-composition][fr1]") {
+    using Json = nlohmann::json;
+    // shadow_directional with cascade_count 3 makes shadow_map a 3-layer array.
+    const auto document = lp0dGraph(Json::array({Json{{"id", "shadow"}, {"op", "render.target_ref"},
+                                                      {"parameters", {{"name", "shadow_map"}, {"type", fr1DeviceDepth()}}},
+                                                      {"outputs", Json::array({"resource"})}}}),
+                                     Json{});
+    const auto [code, fields] = lp0aRefusal(document);
+    CHECK(code == "graph.target_ref_type_mismatch@1");
+    auto array_depth = fr1DeviceDepth();
+    array_depth["arguments"]["topology"] = "two_d_array";
+    CHECK(fields == Json{{"node", "shadow"}, {"name", "shadow_map"}, {"field", "topology"},
+                         {"declared", "two_d"}, {"actual", "two_d_array"},
+                         {"expected", {{"type", array_depth}, {"layers", 3}}}});
+    // The same edit with the type the refusal gave composes.
+    auto fixed = document;
+    fixed["nodes"][0]["parameters"]["type"] = fields.at("expected").at("type");
+    REQUIRE_NOTHROW(lp0aCompose(fixed));
+}
+
+namespace {
+// FR-2: fr1BlankGraph with the scene depth sky_ambient reads, and its lighting
+// pass named `lighting_pass` -- so sky_ambient's after:deferred_lighting
+// finds nothing.
+nlohmann::json fr2GraphWithoutDeferredLighting() {
+    auto document = fr1BlankGraph();
+    document["rendering"]["render_targets"].push_back(
+        {{"name", "scene_depth"}, {"extent_scale", 1.0}, {"format", "D32_SFLOAT"},
+         {"usage", nlohmann::json::array({"DEPTH_STENCIL_ATTACHMENT"})}});
+    document["nodes"].push_back({{"id", "scene_depth_ref"}, {"op", "render.target_ref"},
+                                 {"parameters", {{"name", "scene_depth"}, {"type", fr1DeviceDepth()}}},
+                                 {"outputs", nlohmann::json::array({"resource"})}});
+    document["rendering"]["rendering_passes"][0]["passes"][0]["name"] = "lighting_pass";
+    // FR-3: and drawn, by the lighting pass, so what composes here is what the
+    // frame planner takes too.
+    document["rendering"]["rendering_passes"][0]["passes"][0]["output"]["depth"] = "scene_depth";
+    document["rendering"]["features"] = nlohmann::json::array({"engine://features/sky_ambient.json"});
+    return document;
+}
+} // namespace
+
+TEST_CASE("FR-2 a feature inserted after a pass the pipeline lacks is refused with the names it takes",
+          "[render-feature][graph-composition][fr2]") {
+    using Json = nlohmann::json;
+    // Where each feature pass goes; begin / end and malformed entries are not
+    // insertion points.
+    CHECK(renderFeatureInsertions(Json::parse(loadEngineFeature("engine://features/sky_ambient.json"))) ==
+          Json::array({Json{{"pass", "sky_background"}, {"anchor", "deferred_lighting"}, {"position", "after"}}}));
+    CHECK(renderFeatureInsertions(Json{{"passes", Json::array({
+              Json{{"insert", "begin"}, {"pass", {{"name", "a"}}}},
+              Json{{"insert", "before:post_main"}, {"pass", {{"name", "b"}}}},
+              Json{{"insert", "end"}, {"pass", {{"name", "c"}}}},
+              Json{{"insert", "after:"}, {"pass", {{"name", "d"}}}},
+              Json{{"insert", 3}, {"pass", {{"name", "e"}}}},
+              Json{{"insert", "after:post_ldr"}, {"pass", {{"name", "f"}}}},
+          })}}) == Json::array({Json{{"pass", "b"}, {"anchor", "post_main"}, {"position", "before"}},
+                                Json{{"pass", "f"}, {"anchor", "post_ldr"}, {"position", "after"}}}));
+    CHECK(renderFeatureInsertions(Json::array()) == Json::array());
+
+    const auto document = fr2GraphWithoutDeferredLighting();
+    const auto [code, fields] = lp0aRefusal(document);
+    INFO(fields.dump());
+    CHECK(code == "feature.insertion_anchor_missing@1");
+    CHECK(fields.at("feature") == "sky_ambient");
+    CHECK(fields.at("anchor") == "deferred_lighting");
+    CHECK(fields.at("document") == "engine://features/sky_ambient.json");
+    CHECK(fields.at("candidates") == Json::array({"lighting_pass", "present", "sprite", "post_main", "tonemap", "post_ldr",
+                                                   "pelican_ui", "debug_draw", "debug_text", "imgui", "output_transform"}));
+
+    // Each candidate takes the pass: the feature's insert pointed there composes.
+    for (const auto &candidate : fields.at("candidates")) {
+        INFO(candidate.dump());
+        auto feature = Json::parse(loadEngineFeature("engine://features/sky_ambient.json"));
+        feature["passes"][0]["insert"] = "after:" + candidate.get<std::string>();
+        CHECK_NOTHROW(composeRenderFeatureConfig(
+            document, RenderFeatureComposeDependencies{[&](std::string_view) { return feature.dump(); }, true}));
+    }
+
+    // One edit: the pipeline's pass named as the feature names it.
+    auto fixed = document;
+    fixed["rendering"]["rendering_passes"][0]["passes"][0]["name"] = "deferred_lighting";
+    const auto composed = lp0aCompose(fixed);
+    CHECK(passByName(composed.config, "sky_background").at("input") == Json::array({"scene_depth"}));
 }
 
 } // namespace Pelican

@@ -396,6 +396,25 @@ const ComponentCodec *findComponentCodec(std::string_view name) noexcept;
 const ComponentCodec &requireComponentCodec(std::string_view name);
 ComponentCodecQueryMetadata componentCodecQueryMetadata(std::string_view name) noexcept;
 
+// A declared schema field the codec reads only under some values of another
+// field of the same component: camera's controller.distance is read for an
+// orbit controller and nowhere else. StructFieldSchema has no condition, so
+// the editor wire carries this beside the field (SC-1). `required_for` lists
+// the values under which the codec refuses the field's absence; under the
+// other values of `applies_to` an absent field reads as `default_value` (from
+// the declared schema; absent when every applicable value requires it).
+struct ComponentCodecFieldCondition {
+    std::string_view field;
+    std::string_view discriminant;
+    std::vector<std::string_view> applies_to;
+    std::vector<std::string_view> required_for;
+    std::optional<nlohmann::ordered_json> default_value;
+};
+
+// Empty for a codec whose every field applies unconditionally.
+std::span<const ComponentCodecFieldCondition> componentCodecFieldConditions(
+    std::string_view codec_name);
+
 namespace testing {
 
 const ComponentCodec *findComponentCodecIncludingDisabled(

@@ -152,9 +152,11 @@ void validateOutputSchema(const std::string &schema, const std::optional<int> &v
         }
         return;
     }
+    // AB-1: pelican.audio_analysis_table is the analysis table a bake writes
+    // (audioanalysisformat.hpp).
     if (schema == "pelican.transform_seq" ||
         schema == "pelican.layout" || schema == "pelican.atlas" ||
-        schema == "pelican.material") {
+        schema == "pelican.material" || schema == "pelican.audio_analysis_table") {
         requireOutputVersion(schema, version, 1);
         return;
     }

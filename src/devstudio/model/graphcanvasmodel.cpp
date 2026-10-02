@@ -339,49 +339,44 @@ Json sceneColorType() {
                                    {"range", "extended"}}}};
 }
 
-// UX-8, decision 2. A pass's named buffer ports, in name order -- the order
-// the engine binds a graph pass's buffer reads, after its images.
-std::vector<std::string> namedBufferPorts(const Json &node) {
-    std::vector<std::string> ports;
-    const auto parameters = node.value("parameters", Json::object());
-    const auto declared = parameters.is_object() ? parameters.value("ports", Json::object())
-                                                 : Json::object();
-    if (!declared.is_object()) return ports;
-    for (const auto &[name, port] : declared.items())
-        if (port.is_object() && text(port, "kind") == "buffer" && !port.contains("binding"))
-            ports.push_back(name);
-    std::ranges::sort(ports);
-    return ports;
-}
-
-// The named buffer port a buffer declaration of the shader reads: the one
-// called what the declaration is called, else the one at its place among
-// the buffers (the k-th buffer declaration is the k-th buffer port).
-std::string bufferSocketPort(const FramePlanPassInputs &declared, const Json &node,
+// UX-8, decision 2 (UX-13a, decision 1): the named buffer port a buffer
+// declaration of the shader reads. A declaration named pelican_resource_<port>
+// is that port's, wherever it sits: the engine binds a port to the variable
+// of its name (RS-5), and to nothing else. Any other declaration is the one
+// at the binding the engine gives a buffer read: the pass's buffer reads in
+// the order of the buffers they read (by resource name -- the graph's
+// lowering keeps a pass's reads in a set), after the images, so read i sits
+// at buffer_binding_base + i (passBufferInputBinding). `reads` are the
+// pass's buffer ports in that order (GraphCanvasModel::bufferPortReads).
+std::string bufferSocketPort(const FramePlanPassInputs &declared,
+                             const std::vector<GraphCanvasModel::BufferPortRead> &reads,
                              const FramePlanPassInputDeclaration &declaration) {
-    const auto ports = namedBufferPorts(node);
-    if (ports.empty()) return {};
-    const auto named = GraphCanvasModel::bufferPortName(declaration.name);
-    if (std::ranges::find(ports, named) != ports.end()) return named;
-    std::vector<std::string> unnamed = ports;
-    std::size_t place = 0;
-    bool counted = false;
-    for (const auto &other : declared.declarations) {
-        if (!other.buffer() || other.variadic) continue;
-        const auto other_name = GraphCanvasModel::bufferPortName(other.name);
-        std::erase(unnamed, other_name);
-        if (&other == &declaration) counted = true;
-        else if (!counted && std::ranges::find(ports, other_name) == ports.end()) ++place;
+    if (reads.empty()) return {};
+    if (declaration.name.starts_with(GraphCanvasModel::kResourcePortVariablePrefix)) {
+        const auto named = GraphCanvasModel::bufferPortName(declaration.name);
+        return std::ranges::any_of(reads, [&](const auto &read) { return read.port == named; })
+                   ? named
+                   : std::string{};
     }
-    return place < unnamed.size() ? unnamed[place] : std::string{};
+    if (declaration.binding < declared.buffer_binding_base) return {};
+    // One binding per buffer read, however many ports read it.
+    std::vector<std::string> resources;
+    for (const auto &read : reads)
+        if (!read.resource.empty() && std::ranges::find(resources, read.resource) == resources.end())
+            resources.push_back(read.resource);
+    const auto place = declaration.binding - declared.buffer_binding_base;
+    if (place >= resources.size()) return {};
+    const auto found = std::ranges::find(reads, resources[place], &GraphCanvasModel::BufferPortRead::resource);
+    return found != reads.end() ? found->port : std::string{};
 }
 
 // Q-19, decision 1: a render node's sockets, from its pass's declarations and
 // its numbered ports -- VI-3a's framePlanInputSockets, with a numbered port
 // where the Frame Plan has a pass's input. Binding n is input n: the numbered
 // inputs come first in the pass's `input` (LP-1d).
-std::vector<GraphCanvasInputSocket> graphInputSockets(const FramePlanPassInputs &declared,
-                                                      const Json &node) {
+std::vector<GraphCanvasInputSocket> graphInputSockets(
+    const FramePlanPassInputs &declared, const Json &node,
+    const std::vector<GraphCanvasModel::BufferPortRead> &buffer_reads) {
     using Kind = GraphCanvasInputSocket::Kind;
     std::vector<GraphCanvasInputSocket> sockets;
     const auto parameters = node.value("parameters", Json::object());
@@ -436,7 +431,7 @@ std::vector<GraphCanvasInputSocket> graphInputSockets(const FramePlanPassInputs 
             const auto index = static_cast<std::int64_t>(declaration.binding);
             taken.insert(index);
             connect(socket, index);
-        } else if (const auto port = bufferSocketPort(declared, node, declaration); !port.empty()) {
+        } else if (const auto port = bufferSocketPort(declared, buffer_reads, declaration); !port.empty()) {
             // UX-8, decision 2: the named buffer port that binding reads.
             socket.port = port;
             if (inputs.is_object())
@@ -700,6 +695,7 @@ void GraphCanvasModel::clearContext() {
     plan_retry_wanted_ = false;
     committed_renames_.clear();
     refusal_marks_.clear();
+    parameter_refusal_.reset();
     values_received_ = false;
     values_published_ = false;
     values_ = Json::array();
@@ -998,6 +994,19 @@ void GraphCanvasModel::poll() {
     if (std::exchange(plan_retry_wanted_, false) && plan_retry_budget_ > 0) {
         --plan_retry_budget_;
         read(RequestKind::Loops, "get_frame_plan", Json::object());
+    } else if (once_follow_reads_ > 0) {
+        // PS-1s, decision 4: the frame after a Recompute runs the passes; the
+        // plan says when they last ran.
+        if (--once_follow_reads_ == 0) once_follow_from_.clear();
+        read(RequestKind::Loops, "get_frame_plan", Json::object());
+    } else if (drawn_follow_reads_ > 0 &&
+               std::ranges::none_of(reads_, [](const PendingRequest &pending) {
+                   return pending.kind == RequestKind::Loops;
+               })) {
+        // UX-12c, decision 1: one read at a time, so an answer that takes
+        // longer than a poll is not dropped for the next.
+        --drawn_follow_reads_;
+        read(RequestKind::Loops, "get_frame_plan", Json::object());
     }
     // An accepted edit owns the request slot until the engine says what became
     // of it. Nothing else may take that slot in the meantime.
@@ -1039,6 +1048,10 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
             requestNextLoopPage();
             return;
         }
+        if (kind == RequestKind::RerunOnce) {
+            receiveRerunOnceRefusal(message);
+            return;
+        }
         if (kind == RequestKind::Catalog) catalog_requested_ = false;
         // The canvas keeps standing: a report that did not arrive removes an
         // overlay, never the graph the document already described.
@@ -1064,6 +1077,7 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
         clearHistory();
         edit_notice_ = {InspectorNoticeKind::Error, std::move(message)};
         ticket_.clear();
+        saved_note_.clear();
         // The gesture is gone; the document the canvas shows may not be.
         refresh();
         return;
@@ -1095,6 +1109,10 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         const auto pending = *slot;
         try {
             const auto response = Json::parse(json);
+            if (pending.kind == RequestKind::RerunOnce) {
+                receiveRerunOnce(response);
+                return;
+            }
             // EL-4c: a list the engine failed to build carries its `error`
             // beside status "failed"; that is the list's answer, read below.
             const bool shaders_failed = pending.kind == RequestKind::EngineShaders &&
@@ -1287,6 +1305,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 // gesture is discarded, the reason is shown, and the canvas
                 // reads the document again rather than keeping a stale one.
                 ticket_.clear();
+                saved_note_.clear();
                 // GL-1d, decision 3: the same refusal of the route default,
                 // should an engine answer it as a rejection.
                 if (kind == RequestKind::Submit &&
@@ -1307,6 +1326,15 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                                                    "set_layout";
                                         }))
                     layout_retry_ = pending_history_->entry.forward;
+                // UX-12a, decision 4: the scope the refused edit was made in.
+                std::string edit_scope;
+                if (pending_history_)
+                    for (const auto &op : pending_history_->entry.forward)
+                        if (op.is_object() && op.contains("scope")) {
+                            edit_scope = text(op, "scope");
+                            if (edit_scope == "root") edit_scope.clear();
+                            break;
+                        }
                 pending_history_.reset();
                 edit_notice_ = {InspectorNoticeKind::Error, diagnostic(response)};
                 // GL-1b, decision 3: an engine that cannot yet answer a graph
@@ -1319,7 +1347,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                     std::string::npos)
                     edit_notice_.message += restartNotOfferedHint;
                 // LP-4c, decision 9: and where the refusal points.
-                markRefusal(error, edit_notice_.message);
+                markRefusal(error, edit_notice_.message, edit_scope);
                 ++content_revision_;
                 refresh();
                 return;
@@ -1344,6 +1372,8 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             commitHistory(response);
             layout_retrying_ = false;
             refusal_marks_.clear();
+            parameter_refusal_.reset();
+            scalar_target_fix_.reset();
             // GL-1b, decision 2: written, but the engine can only run it
             // after a restart (RS-1). The owner restarts it; the document and
             // the plan are read from the engine that comes back. RSX: read
@@ -1355,7 +1385,12 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 engine_restart_ = std::move(completion.restart_line);
                 return;
             }
-            edit_notice_ = {InspectorNoticeKind::Success, "Graph change saved."};
+            // PS-1s, decision 2: and what the edit changed besides.
+            {
+                auto note = std::exchange(saved_note_, {});
+                edit_notice_ = {InspectorNoticeKind::Success,
+                                note.empty() ? std::string{"Graph change saved."} : std::move(note)};
+            }
             // Q-18: the engine published the edit before it said committed,
             // so the plan it holds now is the edit's. The read of the
             // document below brings the plan with it (see receiveRpcResult),
@@ -1368,6 +1403,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         } catch (const std::exception &error) {
             ticket_.clear();
             layout_retrying_ = false;
+            saved_note_.clear();
             pending_history_.reset();
             edit_notice_ = {InspectorNoticeKind::Error, error.what()};
             refresh();
@@ -1416,6 +1452,9 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             withoutPlacement(incoming_definitions) == withoutPlacement(definitions_);
         definitions_reported_ = reported;
         definitions_ = std::move(incoming_definitions);
+        // UX-13b, decision 4 (engine CT-5): who runs each definition.
+        definition_instances_ = response.value("definition_instances", Json::object());
+        if (!definition_instances_.is_object()) definition_instances_ = Json::object();
         layout_ = std::move(layout);
         nodes_ = std::move(nodes);
         root_schema_ = std::move(root_schema);
@@ -2093,7 +2132,7 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
             if (const auto *declared = passInputs(scope, drawn.id);
                 declared != nullptr && declaresPassInputs(*declared)) {
                 drawn.declared_sockets = true;
-                drawn.input_sockets = graphInputSockets(*declared, node);
+                drawn.input_sockets = graphInputSockets(*declared, node, bufferPortReads(scope, drawn.id));
                 const auto numbered = numberedPorts(drawn.parameters);
                 std::erase_if(drawn.inputs, [&](const GraphCanvasPort &port) {
                     return std::ranges::any_of(numbered, [&](const auto &entry) {
@@ -3284,6 +3323,14 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
         // smallest pass that is a whole document -- and the image is added
         // in the same list, as a required input's constant is.
         if (operation(op) == nullptr) return Json::array();
+        // UX-12b, decision 2: a pass a feature is inserted after is named as
+        // the feature names it (the seed's id), when that id is free.
+        if (seed.is_object())
+            if (const auto wanted = text(seed, "id");
+                !wanted.empty() && findNode(in_scope, wanted) == nullptr) {
+                id = wanted;
+                node["id"] = id;
+            }
         const Json type{{"semantic", "pelican.render.color_signal@1"},
                         {"arguments", Json{{"reference", "scene"}, {"transfer", "linear"},
                                            {"range", "extended"}}}};
@@ -3540,7 +3587,25 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
     if (seed.is_object())
         if (const auto given = seed.find("parameters"); given != seed.end() && given->is_object())
             for (const auto &[key, value] : given->items()) node["parameters"][key] = value;
+    // UX-13b, decision 2 (engine CT-5): a render.scalar joins its buffer
+    // after the sinks already on it, and the buffer is made one they can all
+    // write (runtime_f32, as large as they are) in the same edit.
+    Json fix = Json::array();
+    if (op == "render.scalar" && node.contains("parameters") && node.at("parameters").is_object()) {
+        auto &parameters = node.at("parameters");
+        const auto target = text(parameters, "target");
+        if (!target.empty()) {
+            const auto before = scalarTargetBytes(in_scope, target);
+            if (before > 0 && !parameters.contains("offset"))
+                parameters["offset"] = static_cast<std::int64_t>(before);
+            const auto value = parameters.find("value");
+            const std::uint64_t own =
+                (value != parameters.end() && value->is_array() ? value->size() : 1) * sizeof(float);
+            fix = scalarTargetFixOps(in_scope, target, before + own);
+        }
+    }
     ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", std::move(node)}});
+    for (auto &each : fix) ops.push_back(std::move(each));
     return ops;
 }
 
@@ -4679,8 +4744,11 @@ std::string GraphCanvasModel::showLoopOrigin(std::string_view loop, std::int64_t
     return body;
 }
 
-void GraphCanvasModel::markRefusal(const Json &error, const std::string &reason) {
+void GraphCanvasModel::markRefusal(const Json &error, const std::string &reason,
+                                   const std::string &scope) {
     refusal_marks_.clear();
+    parameter_refusal_.reset();
+    scalar_target_fix_.reset();
     if (!error.is_object()) return;
     // The engine puts a named refusal's fields beside its code; a relayed
     // one may carry them as error_fields.
@@ -4709,6 +4777,45 @@ void GraphCanvasModel::markRefusal(const Json &error, const std::string &reason)
             if (branch && *branch < bodies.size() && !bodies[*branch].empty())
                 mark(bodies[*branch], text(*origin, "node"));
         }
+        return;
+    }
+    // UX-12a, decision 4: a node refused by its parameter's value (CT-3), or
+    // for one it lacks (RS-9), in the scope the edit was made in.
+    // The fields may be quoted in the message of a broader refusal.
+    if (const auto invalid = graphRefusalFields(error, "graph.render_node_parameter_invalid@1")) {
+        const auto node = text(*invalid, "node");
+        mark(scope, node);
+        if (!node.empty())
+            parameter_refusal_ =
+                GraphCanvasParameterRefusal{scope, node, text(*invalid, "parameter"), reason};
+        return;
+    }
+    if (const auto missing = graphRefusalFields(error, "graph.render_node_parameters_missing@1")) {
+        mark(scope, text(*missing, "node"));
+        return;
+    }
+    // UX-13b, decision 3 (engine CT-5): a buffer a render.scalar cannot
+    // write. Named with its sink, it is the graph's: one edit makes it what
+    // the engine expects. Without one it was declared outside the graph.
+    if (const auto incompatible = graphRefusalFields(error, "graph.render_scalar_target_incompatible@1")) {
+        GraphCanvasScalarTargetFix fix;
+        fix.target = text(*incompatible, "target");
+        if (const auto expected = incompatible->find("expected");
+            expected != incompatible->end() && expected->is_object())
+            if (const auto size = expected->find("size");
+                size != expected->end() && size->is_number_integer() && size->get<std::int64_t>() >= 0)
+                fix.size = size->get<std::uint64_t>();
+        const auto node = text(*incompatible, "node");
+        if (!node.empty() && !fix.target.empty()) {
+            mark(scope, node);
+            if (findNode(scope, fix.target) != nullptr) {
+                fix.scope = scope;
+                fix.in_graph = true;
+            } else if (findNode({}, fix.target) != nullptr) {
+                fix.in_graph = true;
+            }
+        }
+        if (!fix.target.empty()) scalar_target_fix_ = std::move(fix);
         return;
     }
     // A loop refused by name.
@@ -5271,7 +5378,7 @@ Json GraphCanvasModel::socketOps(std::string_view scope, const std::string &node
                     ": the engine reads a buffer port through a variable named "
                     "pelican_resource_<port>. Name the block's variable so, or read it "
                     "through pelican_resource_ports.glsl and + Buffer port.");
-            auto port = bufferSocketPort(*declared, *target, *declaration);
+            auto port = bufferSocketPort(*declared, bufferPortReads(scope, node), *declaration);
             if (port.empty()) {
                 port = bufferPortName(declaration->name);
                 const auto ports = parameters.value("ports", Json::object());
@@ -5480,16 +5587,18 @@ void GraphCanvasModel::readPlanPasses(const Json &plan) {
     plan_graph_ = text(plan, "graph");
     // The contract each material pass draws with, as material_routing says.
     std::map<std::string, std::string, std::less<>> contracts;
+    // UX-11, decision 4: and the routes that name each.
+    std::map<std::string, std::vector<std::string>, std::less<>> pass_routes;
     if (const auto routing = plan.find("material_routing");
         routing != plan.end() && routing->is_object())
         if (const auto routes = routing->find("routes");
             routes != routing->end() && routes->is_object())
             for (const auto &[route, value] : routes->items()) {
-                (void)route;
                 if (!value.is_object()) continue;
                 const auto pass = text(value, "pass");
                 if (!pass.empty() && !contracts.contains(pass))
                     contracts[pass] = text(value, "contract");
+                if (!pass.empty()) pass_routes[pass].push_back(route);
             }
     std::vector<GraphCanvasPlanPass> passes;
     const auto nodes = plan.find("nodes");
@@ -5558,16 +5667,53 @@ void GraphCanvasModel::readPlanPasses(const Json &plan) {
                 if (const auto count = filter->find("resolved_draw_count");
                     count != filter->end() && count->is_number_unsigned())
                     pass.draw_count = count->get<std::size_t>();
+            if (filtered) {
+                pass.material_include = planStrings(*filter, "include");
+                pass.material_exclude = planStrings(*filter, "exclude");
+            }
+            if (const auto routes = pass_routes.find(pass.name); routes != pass_routes.end())
+                pass.routes = routes->second;
             if (const auto contract = contracts.find(pass.name); contract != contracts.end())
                 pass.contract = contract->second;
             // LC-1: present (and true) only for a shader that reads it.
             if (const auto reads = node.find("reads_loop_index");
                 reads != node.end() && reads->is_boolean())
                 pass.reads_loop_index = reads->get<bool>();
+            // PS-1s (engine PS-1): a once node, and when it last ran (null
+            // before it has).
+            pass.once = text(node, "schedule") == "once";
+            for (auto [key, field] :
+                 {std::pair{"last_run_generation", &pass.last_run_generation},
+                  std::pair{"last_run_frame", &pass.last_run_frame}})
+                if (const auto value = node.find(key);
+                    value != node.end() && value->is_number_unsigned())
+                    *field = value->get<std::uint64_t>();
+            // UX-12c (engine MP-1): what it drew; a list Studio cannot read
+            // is the Frame Plan tab's to name, and here it is not there.
+            try {
+                pass.drawn_materials = framePlanDrawnMaterials(node, "get_frame_plan node");
+            } catch (const std::exception &) {
+            }
             passes.push_back(std::move(pass));
         }
     std::ranges::stable_sort(passes, {}, &GraphCanvasPlanPass::order);
     plan_passes_ = std::move(passes);
+    // PS-1s, decision 4: a Recompute is followed until a pass it scheduled
+    // says it ran after the press.
+    if (once_follow_reads_ > 0 &&
+        std::ranges::any_of(once_follow_from_, [&](const auto &entry) {
+            const auto *pass = planPass(entry.first);
+            return pass != nullptr && pass->last_run_frame &&
+                   *pass->last_run_frame > entry.second;
+        })) {
+        once_follow_reads_ = 0;
+        once_follow_from_.clear();
+    }
+    // UX-12c, decision 1: followed until a pass says what it drew.
+    if (std::ranges::any_of(plan_passes_, [](const GraphCanvasPlanPass &pass) {
+            return pass.drawn_materials.has_value();
+        }))
+        drawn_follow_reads_ = 0;
     // GL-1e: a pass's `input` counts images and buffers apart.
     plan_buffers_.clear();
     if (const auto resources = plan.find("resources");
@@ -6960,6 +7106,54 @@ std::vector<GraphCanvasDeclaredTarget> GraphCanvasModel::declaredRenderTargets()
     return targets;
 }
 
+std::vector<std::pair<std::string, std::string>>
+GraphCanvasModel::materialPassInputs(std::string_view kind) const {
+    std::vector<std::pair<std::string, std::string>> inputs;
+    for (const auto &contract : material_pass_contracts_) {
+        if (!contract.is_object()) continue;
+        const auto found = contract.find(std::string{kind});
+        if (found == contract.end() || !found->is_array()) continue;
+        for (const auto &entry : *found) {
+            const auto name = text(entry, "name");
+            if (name.empty() || std::ranges::find(inputs, name, &std::pair<std::string, std::string>::first) !=
+                                    inputs.end())
+                continue;
+            inputs.emplace_back(name, text(entry, "source_type"));
+        }
+    }
+    return inputs;
+}
+
+void GraphCanvasModel::followDrawnMaterials() {
+    if (std::ranges::any_of(plan_passes_, [](const GraphCanvasPlanPass &pass) {
+            return pass.drawn_materials.has_value();
+        }))
+        return;
+    drawn_follow_reads_ = drawnFollowLimit;
+}
+
+std::string GraphCanvasModel::targetSemantic(std::string_view target) const {
+    if (target.empty()) return {};
+    for (const auto &node : nodes_) {
+        if (!node.is_object()) continue;
+        const auto op = text(node, "op");
+        if (op != "render.image" && op != "render.target_ref") continue;
+        const auto parameters = node.value("parameters", Json::object());
+        if (!parameters.is_object()) continue;
+        const bool named = text(parameters, "name") == target ||
+                           (op == "render.image" && text(node, "id") == target);
+        if (!named) continue;
+        if (const auto type = parameters.find("type"); type != parameters.end() && type->is_object())
+            if (auto semantic = text(*type, "semantic"); !semantic.empty()) return semantic;
+    }
+    if (const auto found = render_authoring_.find("render_targets");
+        found != render_authoring_.end() && found->is_array())
+        for (const auto &entry : *found)
+            if (entry.is_object() && text(entry, "name") == target)
+                return text(targetRefType(entry.value("declaration", Json::object())), "semantic");
+    return {};
+}
+
 void GraphCanvasModel::setComputeShaderChoices(std::vector<std::string> choices) {
     compute_shader_choices_ = std::move(choices);
 }
@@ -7394,14 +7588,6 @@ bool GraphCanvasModel::setRasterDepth(std::string_view scope, const std::string 
     return submitOps(std::move(ops));
 }
 
-std::vector<GraphCanvasModel::RequiredParameter>
-GraphCanvasModel::requiredParameters(std::string_view op) {
-    if (op == "render.scalar") return {{"target", "buffer"}};
-    if (op == "value.constant") return {{"value", "number"}};
-    if (op == "value.input") return {{"name", "input"}};
-    return {};
-}
-
 std::vector<std::string> GraphCanvasModel::valueInputNames() {
     return {"scene_time", "time", "delta_time"};
 }
@@ -7681,6 +7867,319 @@ bool GraphCanvasModel::setImageFormat(std::string_view scope, const std::string 
     }
     if (ops.empty()) return false;
     return submitOps(std::move(ops));
+}
+
+// --- PS-1s (engine PS-1): passes that run once, images that are kept.
+
+namespace {
+
+bool schedulableOp(std::string_view op) {
+    return op == "render.fullscreen" || op == "render.raster" || op == "render.compute";
+}
+
+// A port the pass writes through, as the engine judges it
+// (rendergraphcomposition's once check).
+bool writesThrough(const Json &declaration) {
+    if (!declaration.is_object()) return false;
+    const auto access = text(declaration, "access");
+    return access == "write" || access == "read_write" || declaration.contains("attachment");
+}
+
+std::string keptNote(const std::vector<std::string> &kept) {
+    if (kept.empty()) return {};
+    std::string names;
+    for (const auto &name : kept) names += (names.empty() ? "" : ", ") + name;
+    // One sentence: the notice line is the first one (oneLine).
+    return "Saved; " + names + " made Persistent: what a once pass writes is kept.";
+}
+
+} // namespace
+
+std::string GraphCanvasModel::nodeSchedule(std::string_view scope, std::string_view node) const {
+    const auto *found = findNode(scope, node);
+    if (found == nullptr || !schedulableOp(text(*found, "op"))) return {};
+    const auto parameters = found->value("parameters", Json::object());
+    const auto schedule = parameters.is_object() ? text(parameters, "schedule") : std::string{};
+    return schedule.empty() ? std::string{"per_frame"} : schedule;
+}
+
+std::vector<std::string> GraphCanvasModel::transientImagesWrittenBy(std::string_view scope,
+                                                                    std::string_view node) const {
+    std::vector<std::string> images;
+    const auto *pass = findNode(scope, node);
+    if (pass == nullptr || !schedulableOp(text(*pass, "op"))) return images;
+    const auto parameters = pass->value("parameters", Json::object());
+    const auto ports = parameters.is_object() ? parameters.value("ports", Json::object())
+                                              : Json::object();
+    const auto inputs = pass->value("inputs", Json::object());
+    if (!ports.is_object() || !inputs.is_object()) return images;
+    for (const auto &[port, declaration] : ports.items()) {
+        if (!writesThrough(declaration) || !inputs.contains(port)) continue;
+        // The image at the end of the chain of passes that hand it down.
+        auto endpoint = inputs.at(port);
+        std::set<std::string> seen;
+        while (endpoint.is_object() && !text(endpoint, "node").empty()) {
+            const auto id = text(endpoint, "node");
+            const auto *source = findNode(scope, id);
+            if (source == nullptr || !seen.insert(id).second) break;
+            if (text(*source, "op") == "render.image") {
+                const auto image = source->value("parameters", Json::object());
+                const bool kept = image.is_object() && text(image, "lifetime") == "persistent";
+                if (!kept && std::ranges::find(images, id) == images.end()) images.push_back(id);
+                break;
+            }
+            const auto upstream = source->value("inputs", Json::object());
+            const auto through = text(endpoint, "port");
+            if (!upstream.is_object() || !upstream.contains(through)) break;
+            endpoint = upstream.at(through);
+        }
+    }
+    return images;
+}
+
+bool GraphCanvasModel::setNodeSchedule(std::string_view scope, const std::string &node,
+                                       const std::string &schedule) {
+    if (!canEdit()) return false;
+    const auto current = nodeSchedule(scope, node);
+    if (current.empty() || current == schedule) return false;
+    const bool compute = text(*findNode(scope, node), "op") == "render.compute";
+    if (schedule != "per_frame" && schedule != "once" && !(compute && schedule == "per_view"))
+        return false;
+    const auto token = scopeToken(scope);
+    Json ops = Json::array();
+    auto parameters = nodeParameters(scope, node);
+    if (!parameters.is_object()) return false;
+    if (schedule == "per_frame") parameters.erase("schedule");
+    else parameters["schedule"] = schedule;
+    ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", token}, {"node", node},
+                       {"parameters", std::move(parameters)}});
+    // Decision 2: what a once pass writes has to keep its contents.
+    std::vector<std::string> kept;
+    if (schedule == "once")
+        for (const auto &image : transientImagesWrittenBy(scope, node)) {
+            auto image_parameters = nodeParameters(scope, image);
+            if (!image_parameters.is_object()) continue;
+            image_parameters["lifetime"] = "persistent";
+            ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", token}, {"node", image},
+                               {"parameters", std::move(image_parameters)}});
+            kept.push_back(image);
+        }
+    if (!submitOps(std::move(ops))) return false;
+    saved_note_ = keptNote(kept);
+    return true;
+}
+
+std::optional<bool> GraphCanvasModel::loopBodyOnce(std::string_view loop) const {
+    const auto *node = findNode({}, loop);
+    if (node == nullptr || !isLoop(*node)) return std::nullopt;
+    std::size_t passes = 0;
+    std::size_t once = 0;
+    std::set<std::string> seen;
+    for (const auto &body : loopBranchBodies(*node)) {
+        if (body.empty() || !seen.insert(body).second) continue;
+        const auto *nodes = scopeNodes(body);
+        if (nodes == nullptr) continue;
+        for (const auto &candidate : *nodes) {
+            if (!candidate.is_object() || !schedulableOp(text(candidate, "op"))) continue;
+            ++passes;
+            if (nodeSchedule(body, text(candidate, "id")) == "once") ++once;
+        }
+    }
+    if (passes == 0) return std::nullopt;
+    return once == passes;
+}
+
+bool GraphCanvasModel::setLoopBodyOnce(const std::string &loop, bool once) {
+    if (!canEdit()) return false;
+    const auto *node = findNode({}, loop);
+    if (node == nullptr || !isLoop(*node)) return false;
+    Json ops = Json::array();
+    std::vector<std::string> kept;
+    std::set<std::string> seen;
+    for (const auto &body : loopBranchBodies(*node)) {
+        if (body.empty() || !seen.insert(body).second) continue;
+        const auto *nodes = scopeNodes(body);
+        if (nodes == nullptr) continue;
+        const auto token = scopeToken(body);
+        for (const auto &candidate : *nodes) {
+            if (!candidate.is_object() || !schedulableOp(text(candidate, "op"))) continue;
+            const auto id = text(candidate, "id");
+            const auto current = nodeSchedule(body, id);
+            // Off: a once pass back to every frame; a task that ran per view
+            // keeps that.
+            if (once ? current == "once" : current != "once") continue;
+            auto parameters = nodeParameters(body, id);
+            if (!parameters.is_object()) continue;
+            if (once) parameters["schedule"] = "once";
+            else parameters.erase("schedule");
+            ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", token}, {"node", id},
+                               {"parameters", std::move(parameters)}});
+            if (!once) continue;
+            for (const auto &image : transientImagesWrittenBy(body, id)) {
+                if (std::ranges::find(kept, image) != kept.end()) continue;
+                auto image_parameters = nodeParameters(body, image);
+                if (!image_parameters.is_object()) continue;
+                image_parameters["lifetime"] = "persistent";
+                ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", token},
+                                   {"node", image}, {"parameters", std::move(image_parameters)}});
+                kept.push_back(image);
+            }
+        }
+    }
+    if (ops.empty() || !submitOps(std::move(ops))) return false;
+    saved_note_ = keptNote(kept);
+    return true;
+}
+
+std::vector<const GraphCanvasPlanPass *>
+GraphCanvasModel::planPassesMadeBy(std::string_view scope, std::string_view node) const {
+    std::vector<const GraphCanvasPlanPass *> passes;
+    if (node.empty()) return passes;
+    if (scope.empty()) {
+        for (const auto &name : planNodesOf(node))
+            if (const auto *pass = planPass(name)) passes.push_back(pass);
+        return passes;
+    }
+    for (const auto &pass : plan_passes_) {
+        const bool made = pass.origin
+                              ? pass.origin->definition == scope && pass.origin->node == node
+                              : !pass.loop.empty() && pass.loop_node == node;
+        if (made) passes.push_back(&pass);
+    }
+    return passes;
+}
+
+std::optional<GraphCanvasOnceRun> GraphCanvasModel::onceRun(std::string_view scope,
+                                                            std::string_view node) const {
+    if (nodeSchedule(scope, node) != "once") return std::nullopt;
+    GraphCanvasOnceRun run;
+    for (const auto *pass : planPassesMadeBy(scope, node)) {
+        if (!pass->once) continue;
+        ++run.passes;
+        if (pass->last_run_generation)
+            run.generation = std::max(run.generation.value_or(0), *pass->last_run_generation);
+        if (pass->last_run_frame)
+            run.frame = std::max(run.frame.value_or(0), *pass->last_run_frame);
+    }
+    return run;
+}
+
+std::string GraphCanvasModel::onceBand(std::string_view scope, std::string_view node) const {
+    const auto run = onceRun(scope, node);
+    if (!run) return {};
+    return "once" + std::string{kDot} +
+           (run->generation ? "ran gen " + std::to_string(*run->generation)
+                            : std::string{"not run yet"});
+}
+
+bool GraphCanvasModel::persistentImage(std::string_view scope, std::string_view node) const {
+    const auto *found = findNode(scope, node);
+    if (found == nullptr || text(*found, "op") != "render.image") return false;
+    const auto parameters = found->value("parameters", Json::object());
+    return parameters.is_object() && text(parameters, "lifetime") == "persistent";
+}
+
+std::string GraphCanvasModel::imageInitialAsset(std::string_view scope, std::string_view node) const {
+    const auto *found = findNode(scope, node);
+    if (found == nullptr || text(*found, "op") != "render.image") return {};
+    const auto parameters = found->value("parameters", Json::object());
+    if (!parameters.is_object()) return {};
+    const auto initial = parameters.find("initial");
+    return initial != parameters.end() && initial->is_object() ? text(*initial, "asset")
+                                                               : std::string{};
+}
+
+std::vector<std::string> GraphCanvasModel::initialAssets() const {
+    std::set<std::string> assets;
+    for (const auto &scope : scopes())
+        for (const auto &node : nodes(scope.id)) {
+            if (node.op == "render.image")
+                if (auto asset = imageInitialAsset(scope.id, node.id); !asset.empty())
+                    assets.insert(std::move(asset));
+            // UX-13a, decision 3: a value.sample_table's table too, which the
+            // engine reads again in a new generation when it changed (IA-3)
+            // -- a Re-bake is picked up as any rewrite on disk is. Named as an
+            // image's initial asset is, so one file is watched once.
+            if (node.op == "value.sample_table")
+                if (auto asset = sampleTableAssetOf(scope.id, node.id); !asset.empty())
+                    assets.insert(std::move(asset));
+        }
+    return {assets.begin(), assets.end()};
+}
+
+bool GraphCanvasModel::rerunOnce(std::string_view scope, const std::string &node) {
+    if (!connected_) return false;
+    // A body node is no node of the plan; its loop is, and runs its copies.
+    auto target = node;
+    if (!scope.empty() && !node.empty()) {
+        target.clear();
+        for (const auto &candidate : nodes_)
+            if (isLoop(candidate) && runsBody(candidate, scope)) {
+                target = text(candidate, "id");
+                break;
+            }
+        if (target.empty()) return false;
+    }
+    once_rerun_node_ = target;
+    read(RequestKind::RerunOnce, "rerun_once",
+         target.empty() ? Json::object() : Json{{"node", target}});
+    return true;
+}
+
+bool GraphCanvasModel::planHasOncePasses() const {
+    return std::ranges::any_of(plan_passes_, &GraphCanvasPlanPass::once);
+}
+
+void GraphCanvasModel::receiveRerunOnce(const Json &response) {
+    if (!response.is_object()) {
+        receiveRerunOnceRefusal("the engine's answer could not be read");
+        return;
+    }
+    if (const auto error = response.find("error"); error != response.end()) {
+        auto message = error->is_string()   ? error->get<std::string>()
+                       : error->is_object() ? text(*error, "message")
+                                            : std::string{};
+        if (error->is_object())
+            if (const auto data = error->find("data");
+                data != error->end() && data->is_object() && text(*data, "code") == "node_unknown")
+                message = "node_unknown";
+        receiveRerunOnceRefusal(message);
+        return;
+    }
+    std::vector<std::string> scheduled;
+    for (const auto &name : response.value("scheduled", Json::array()))
+        if (name.is_string()) scheduled.push_back(name.get<std::string>());
+    const auto node = std::exchange(once_rerun_node_, {});
+    if (scheduled.empty()) {
+        edit_notice_ = {InspectorNoticeKind::Information,
+                        node.empty() ? std::string{"No pass runs once: there is nothing to recompute."}
+                                     : node + " runs every frame: there is nothing to recompute."};
+    } else {
+        edit_notice_ = {InspectorNoticeKind::Information,
+                        "Recompute: " + std::to_string(scheduled.size()) +
+                            (scheduled.size() == 1 ? " once pass runs" : " once passes run") +
+                            " again on the next frame."};
+        // The plan is read again until one of them says it ran after now.
+        once_follow_from_.clear();
+        for (const auto &name : scheduled) {
+            const auto *pass = planPass(name);
+            once_follow_from_[name] = pass != nullptr ? pass->last_run_frame.value_or(0) : 0;
+        }
+        once_follow_reads_ = onceFollowLimit;
+    }
+    ++report_revision_;
+}
+
+void GraphCanvasModel::receiveRerunOnceRefusal(const std::string &message) {
+    const auto node = std::exchange(once_rerun_node_, {});
+    // rerun_once's invalid params carry {code: "node_unknown", node} beside
+    // the engine's sentence, which is all of it that reaches Studio.
+    std::string line;
+    if (message == "node_unknown" || message.find("names no node") != std::string::npos)
+        line = graphLoopRefusalDescription(Json{{"code", "node_unknown"}, {"node", node}});
+    if (line.empty()) line = "Recompute was refused: " + message;
+    edit_notice_ = {InspectorNoticeKind::Error, std::move(line)};
+    ++report_revision_;
 }
 
 std::vector<GraphCanvasTemplateSource>

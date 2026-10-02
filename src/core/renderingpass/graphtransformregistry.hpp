@@ -1,6 +1,7 @@
 #pragma once
 
 #include "frameplanner.hpp"
+#include "providerlisting.hpp"
 #include "../../project/logicalrendergraph.hpp"
 #include "../userpublic/details/reload/registrationowner.hpp"
 #include "../userpublic/render/graph_transform_abi_v1.hpp"
@@ -117,6 +118,10 @@ class GraphTransformRegistry {
         internal::RegistrationOwner owner) noexcept;
 
     GraphTransformRegistrySnapshot snapshot() const;
+
+    // EL-6: every provider a graph_transforms[] entry's provider may name
+    // now, by name.
+    std::vector<RenderProviderListing> providerListing() const;
 
     void activateOwner(
         internal::RegistrationOwner owner) noexcept;

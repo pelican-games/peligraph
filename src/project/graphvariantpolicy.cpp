@@ -283,11 +283,12 @@ bool outputsRequestLocalTerminal(const nlohmann::json &pass) {
 
 [[noreturn]] void rejectPreviewPass(
     std::string_view graph, std::string_view pass,
-    std::string_view reason) {
-    throw std::runtime_error(
+    std::string_view reason, std::string feature) {
+    throw PreviewUnsupportedAuthoringError(
         "preview graph '" + std::string{graph} +
-        "' rejects authored pass '" + std::string{pass} +
-        "': " + std::string{reason});
+            "' rejects authored pass '" + std::string{pass} +
+            "': " + std::string{reason},
+        std::move(feature), {}, std::string{graph}, std::string{pass});
 }
 
 #if PELICAN_WITH_OPENXR
@@ -315,8 +316,9 @@ void redirectSwapchainToRequestLocalCapture(
 
 void validatePreviewConfig(const nlohmann::json &config) {
     if (config.contains("projection_jitter")) {
-        throw std::runtime_error(
-            "preview graph '<config>' rejects authored projection_jitter");
+        throw PreviewUnsupportedAuthoringError(
+            "preview graph '<config>' rejects authored projection_jitter",
+            "projection_jitter");
     }
     if (config.contains("render_targets") &&
         config.at("render_targets").is_array()) {
@@ -325,14 +327,16 @@ void validatePreviewConfig(const nlohmann::json &config) {
             const auto name =
                 target.value("name", std::string{"unnamed"});
             if (target.value("history", false)) {
-                throw std::runtime_error(
+                throw PreviewUnsupportedAuthoringError(
                     "preview graph '<config>' rejects authored history target '" +
-                    name + "'");
+                        name + "'",
+                    "history", name);
             }
             if (unsafePreviewName(name)) {
-                throw std::runtime_error(
+                throw PreviewUnsupportedAuthoringError(
                     "preview graph '<config>' rejects authored unsafe target '" +
-                    name + "'");
+                        name + "'",
+                    "unsafe_target_name", name);
             }
         }
     }
@@ -369,15 +373,17 @@ void validatePreviewConfig(const nlohmann::json &config) {
                 unsafePreviewDirectPassSurface(type)) {
                 rejectPreviewPass(
                     graph_name, pass_name,
-                    "unsafe pass type/name " + type);
+                    "unsafe pass type/name " + type, "unsafe_pass");
             }
             if (hasHistoryInput(pass)) {
                 rejectPreviewPass(
-                    graph_name, pass_name, "history read");
+                    graph_name, pass_name, "history read",
+                    "history_read");
             }
             if (pass.value("writes_history", false)) {
                 rejectPreviewPass(
-                    graph_name, pass_name, "history write");
+                    graph_name, pass_name, "history write",
+                    "history_write");
             }
         }
     }

@@ -343,6 +343,11 @@ DrawSortProviderLease RenderPolicyRegistry::resolveDrawSortProvider(
     return DrawSortProviderLease{std::move(lease), std::move(info)};
 }
 
+std::vector<RenderProviderListing>
+RenderPolicyRegistry::drawSortProviderListing() const {
+    return impl_->listing();
+}
+
 void RenderPolicyRegistry::activateOwner(
     internal::RegistrationOwner owner) noexcept {
     impl_->activateOwner(owner);

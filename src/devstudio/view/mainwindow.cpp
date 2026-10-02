@@ -560,6 +560,13 @@ void MainWindow::createWorkspace() {
             render_features_->replaceWithLoopVersion(feature);
         });
     render_features_->setGraphNodeOpenAction(open_graph_node);
+    // UX-12b, decision 2: a feature refused for a pass the pipeline lacks
+    // ("Place Deferred lighting first") places that pass on the Graph tab,
+    // its New... open on the template of that name (UX-5b's path).
+    render_features_->setPlaceInsertionAnchorAction([this, render_tabs](const QString &anchor) {
+        render_tabs->setCurrentWidget(graph_canvas_);
+        return graph_canvas_->placeNamedFullscreenPass(anchor);
+    });
     // GL-1, decision 6: the Frame Plan's Open in Graph on any other pass
     // selects the node it is drawn under on the Graph canvas.
     frame_plan_->setGraphPassOpenAction([this, render_tabs](const QString &pass) {
@@ -576,6 +583,14 @@ void MainWindow::createWorkspace() {
         docks_[FramePlanDock]->show();
         docks_[FramePlanDock]->raise();
         frame_plan_->showPlanNode(node);
+    });
+    // UX-11, decision 4: a material pass's Materials drawn row picks the
+    // Frame Plan's Materials rows of that pass.
+    graph_canvas_->setFramePlanMaterialsAction([this, render_tabs](const QString &pass) {
+        render_tabs->setCurrentWidget(frame_plan_);
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        frame_plan_->showMaterialRoutes(pass);
     });
     // Decision 4: "Expand to edit…" inside a folded view runs the flow that
     // already exists for it, with its confirmation.
@@ -755,6 +770,10 @@ void MainWindow::createWorkspace() {
             [this] {
                 migration_panel_->engineOpenedWithoutMigrating();
                 pending_outliner_request_ = 0;
+                // UX-13c: whether this engine knows scene_outline is found
+                // out once, by asking it.
+                outliner_uses_scene_tree_ = false;
+                outliner_ask_unconditionally_ = false;
                 setOutlinerRefreshInterval(OutlinerRefreshMinimumIntervalMs);
                 outliner_refresh_timer_->start();
                 requestOutlinerRefresh();
@@ -1061,6 +1080,11 @@ void MainWindow::createRenderReload() {
     render_reload_->reloaded = [this](const nlohmann::json &commit) {
         renderDocumentsReloaded(commit);
     };
+    // IA-1s, decision 5: the images' initial assets are watched with the
+    // documents.
+    graph_canvas_->setInitialAssetsAction([this](std::vector<std::string> assets) {
+        if (render_reload_) render_reload_->setInitialAssets(assets);
+    });
     // Decision 5: by hand, whatever the digests say -- after a fix the
     // watcher missed, or to hear again why the file is refused.
     reload_from_disk_action_ = new QAction(tr("Reload from disk"), this);
@@ -1382,11 +1406,17 @@ void MainWindow::createPlayControls(QToolBar *band) {
     connect(viewport_, &EmbeddedViewport::engineStatusParsed, this,
             [this](qint64 request_id, const nlohmann::json &status) {
                 play_controls_->observeStatus(request_id, status);
+                // UX-9, decision 4: the voices on the Graph's bands.
+                if (graph_canvas_ != nullptr) graph_canvas_->observeStatus(status);
             });
     connect(viewport_, &EmbeddedViewport::engineRpcRefused, this,
             [this](qint64 request_id, int code, const QString &message,
                    const QJsonValue &data) {
                 play_controls_->receiveRefusal(request_id, code, message, data);
+                // UX-13c: an engine without scene_outline (-32601).
+                if (request_id != 0 && request_id == pending_outliner_request_ &&
+                    code == -32601)
+                    pending_outliner_unknown_method_ = true;
             });
     connect(viewport_, &EmbeddedViewport::engineRpcBecameAvailable, this,
             [this] { play_controls_->engineAvailable(); });
@@ -2341,9 +2371,24 @@ void MainWindow::requestOutlinerRefresh() {
         !viewport_->rpcReady()) {
         return;
     }
+    // UX-13c: scene_outline, not scene_tree: ids, order, names and parents
+    // only. Once a scene is held, the poll names its revision and an
+    // unchanged scene is answered with not_modified and no objects.
+    QJsonObject params;
+    if (!outliner_uses_scene_tree_ && !outliner_ask_unconditionally_ &&
+        project_model_->sceneRevision() && project_model_->scenes().size() == 1) {
+        params.insert(QStringLiteral("scene_id"),
+                      QString::fromStdString(project_model_->scenes().front().scene_id));
+        params.insert(QStringLiteral("if_scene_revision"),
+                      static_cast<qint64>(*project_model_->sceneRevision()));
+    }
     QString error;
+    pending_outliner_is_tree_ = outliner_uses_scene_tree_;
+    pending_outliner_unknown_method_ = false;
     pending_outliner_request_ = viewport_->requestRpc(
-        QStringLiteral("scene_tree"), QJsonObject{}, &error);
+        outliner_uses_scene_tree_ ? QStringLiteral("scene_tree")
+                                  : QStringLiteral("scene_outline"),
+        params, &error);
     if (pending_outliner_request_ == 0 && !error.isEmpty()) {
         statusBar()->showMessage(
             tr("Outliner refresh is unavailable: %1").arg(error), 5000);
@@ -2362,10 +2407,15 @@ void MainWindow::completeOutlinerRpc(
             revision != result.end() && revision->is_number_unsigned()) {
             inspector_->observeSceneRevision(revision->get<std::uint64_t>());
         }
-        if (!project_model_->updateSceneTree(result)) {
-            // The engine answered with the revision Studio already has. Ask
-            // again, but less often: a scene that is not moving does not need
-            // to be asked about four times a second.
+        const bool changed = pending_outliner_is_tree_
+                                 ? project_model_->updateSceneTree(result)
+                                 : project_model_->updateSceneOutline(result);
+        outliner_ask_unconditionally_ = false;
+        if (!changed) {
+            // The engine answered with the revision Studio already has
+            // (scene_outline: not_modified, nothing rebuilt). Ask again, but
+            // less often: a scene that is not moving does not need to be
+            // asked about four times a second.
             setOutlinerRefreshInterval(
                 std::min(outliner_refresh_interval_ms_ * 2,
                          OutlinerRefreshMaximumIntervalMs));
@@ -2379,9 +2429,12 @@ void MainWindow::completeOutlinerRpc(
         refreshSelectionViews();
         selectCreatedObject();
     } catch (const std::exception &error) {
+        outliner_ask_unconditionally_ = true;
         const auto message =
-            tr("Invalid scene_tree response: %1")
-                .arg(QString::fromUtf8(error.what()));
+            tr("Invalid %1 response: %2")
+                .arg(pending_outliner_is_tree_ ? QStringLiteral("scene_tree")
+                                               : QStringLiteral("scene_outline"),
+                     QString::fromUtf8(error.what()));
         statusBar()->showMessage(message, 8000);
         appendEngineOutput(tr("[Studio outliner] %1\n").arg(message));
     }
@@ -2391,8 +2444,20 @@ void MainWindow::failOutlinerRpc(qint64 request_id,
                                  const QString &message) {
     if (request_id != pending_outliner_request_) return;
     pending_outliner_request_ = 0;
+    if (!pending_outliner_is_tree_ && pending_outliner_unknown_method_) {
+        // UX-13c, decision 5: an engine from before scene_outline. Read it
+        // with scene_tree from now on, and at once.
+        outliner_uses_scene_tree_ = true;
+        requestOutlinerRefresh();
+        return;
+    }
+    outliner_ask_unconditionally_ = true;
     statusBar()->showMessage(
-        tr("Outliner scene_tree failed: %1").arg(message), 5000);
+        tr("Outliner %1 failed: %2")
+            .arg(pending_outliner_is_tree_ ? QStringLiteral("scene_tree")
+                                           : QStringLiteral("scene_outline"),
+                 message),
+        5000);
 }
 
 void MainWindow::selectOutlinerItem(QTreeWidgetItem *item) {

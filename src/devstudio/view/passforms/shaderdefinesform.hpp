@@ -35,6 +35,9 @@ class ShaderDefinesForm final : public PassForm {
     // rendering.shader_defines. A name that is not a C identifier, or a name
     // given twice, is still refused.
     void setRenderingSection(bool rendering_section);
+    // UX-9, decision 2: a cell being typed in takes what it holds now (its
+    // change is announced as any edit of a row is), without closing it.
+    void finishEditing();
 
     // shader.defines, or null when there is none.
     [[nodiscard]] nlohmann::json defines() const;

@@ -71,6 +71,18 @@ TEST_CASE("pelican.project envelope validation is engine independent",
         parseProjectEnvelopeJson(invalid),
         Catch::Matchers::ContainsSubstring("exactly 1"));
 
+    // CC-1b: basic_config.camera.up was removed with the camera convention;
+    // a project that still writes it (every project written before did) is
+    // refused by name and pointed at the conversion script.
+    invalid = valid;
+    invalid["basic_config"]["camera"] = {{"yfov", 0.8}, {"up", {0.0, -1.0, 0.0}}};
+    REQUIRE_THROWS_WITH(
+        parseProjectEnvelopeJson(invalid),
+        Catch::Matchers::StartsWith("project.camera_up_removed@1: ") &&
+            Catch::Matchers::ContainsSubstring("tools/convert_camera_convention.py"));
+    invalid["basic_config"]["camera"].erase("up");
+    REQUIRE_NOTHROW(parseProjectEnvelopeJson(invalid));
+
     invalid = valid;
     invalid["engine_min_version"] = "999.0.0";
     // MG-1: the refusal has a name.
@@ -108,6 +120,50 @@ TEST_CASE("pelican.project saved_by_engine is a record, not a contract",
     REQUIRE(parseProjectEnvelopeJson(project).warnings.empty());
     project["saved_by_engine"] = 7;
     REQUIRE_FALSE(parseProjectEnvelopeJson(project).envelope.saved_by_engine);
+}
+
+// HW-1: `hot_reload` names the folders and files the file watch covers.
+// Absent is "not declared"; each refusal carries the one name.
+TEST_CASE("HW-1 project.json hot_reload is read as normalized logical paths and refused by name",
+          "[project-format][hw1]") {
+    auto project = nlohmann::json{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"basic_config", {{"scene_data_json", "scene.json"}}},
+    };
+    REQUIRE_FALSE(parseProjectEnvelopeJson(project).envelope.hot_reload);
+
+    project["hot_reload"] = nlohmann::json::array(
+        {"assets/textures/", "assets/models/hero.glb", "./shaders", "not/yet/created"});
+    const auto declared = parseProjectEnvelopeJson(project).envelope.hot_reload;
+    REQUIRE(declared);
+    CHECK(*declared == std::vector<std::string>{"assets/textures", "assets/models/hero.glb",
+                                                "shaders", "not/yet/created"});
+
+    project["hot_reload"] = nlohmann::json::array();
+    const auto empty = parseProjectEnvelopeJson(project).envelope.hot_reload;
+    REQUIRE(empty);
+    CHECK(empty->empty());
+
+    const auto refused = [&](nlohmann::json value, std::string_view detail) {
+        auto invalid = project;
+        invalid["hot_reload"] = std::move(value);
+        INFO(invalid.dump());
+        REQUIRE_THROWS_WITH(
+            parseProjectEnvelopeJson(invalid),
+            Catch::Matchers::StartsWith("project.hot_reload_invalid@1: project.json ") &&
+                Catch::Matchers::ContainsSubstring(std::string{detail}));
+    };
+    refused("assets/textures", "hot_reload must be an array");
+    refused(nlohmann::json::array({"assets", 3}), "hot_reload[1] must be a string");
+    refused(nlohmann::json::array({""}), "hot_reload[0] is empty");
+    refused(nlohmann::json::array({"./"}), "hot_reload[0] is empty");
+    refused(nlohmann::json::array({"/assets"}), "relative to the project root");
+    refused(nlohmann::json::array({"C:/assets"}), "relative to the project root");
+    refused(nlohmann::json::array({"project://assets"}), "relative to the project root");
+    refused(nlohmann::json::array({"assets/../outside"}), "must not contain '..'");
+    refused(nlohmann::json::array({"assets/textures", "assets/textures/"}),
+            "hot_reload[1] 'assets/textures/' repeats hot_reload[0] 'assets/textures'");
 }
 
 // P-2b: a project says up front which build features it cannot run without.

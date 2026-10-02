@@ -37,6 +37,8 @@ DECLARE_MODULE(FrameGraphResourceContainer) {
         bool runtime_values_dirty = false;
         std::optional<HostBufferPopulation>
             host_population;
+        // PS-1: digest of the bytes the last writeHostBuffer wrote.
+        std::optional<std::uint64_t> host_write_digest;
     };
 
     ResourceContainer<FrameGraphBufferId, BufferRecord> buffers;
@@ -91,6 +93,12 @@ DECLARE_MODULE(FrameGraphResourceContainer) {
             population = std::nullopt);
     std::optional<HostBufferPopulation>
     hostBufferPopulation(
+        FrameGraphBufferId id) const;
+    // PS-1: a digest of the bytes the host last wrote into a host-sourced
+    // buffer (render.scalar sinks, runtime_f32, lights, ...). Empty for a
+    // buffer the host never wrote. A once node that reads the buffer runs
+    // again when it differs from the one it ran with.
+    std::optional<std::uint64_t> hostWriteDigest(
         FrameGraphBufferId id) const;
 
     RegistrationCheckpoint checkpointRegistrations() const;

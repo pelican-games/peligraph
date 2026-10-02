@@ -6,6 +6,7 @@
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/engineresources.hpp"
+#include "../src/core/loader/ktx2.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
@@ -18,17 +19,21 @@
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
+#include "../src/project/audioanalysisformat.hpp"
+#include "../src/project/assetsmanifest.hpp"
 #include "../src/project/materialpassdecompose.hpp"
 #include "../src/project/projecttemplate.hpp"
 #include "../src/project/renderconfigsection.hpp"
 #include "lp3a_decompose_support.hpp"
 #include "render_graph_root_test_support.hpp"
+#include "renderer_testaccess.hpp"
 #include "vulkan_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -36,10 +41,16 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stb_image.h>
+// IA-1: the test writes a PNG asset.
+#define STB_IMAGE_WRITE_STATIC
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
 #include <string>
 #include <thread>
 #include <vector>
@@ -2241,6 +2252,1336 @@ TEST_CASE("RL-1 reload_render_documents takes in a root rewritten on disk, and r
         CHECK(aliased(physical()));
     }
     GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+namespace {
+// PS-1: h0 (once) writes (level, 0.25, 0.5) into the persistent h0_image,
+// twiddle (once) doubles its green into the persistent twiddle_image, and
+// show (every frame) copies that into show_image, which the test reads back.
+constexpr std::string_view ps1_h0_frag =
+    "#version 460\n#extension GL_GOOGLE_include_directive : require\n"
+    "#include \"pelican_sets.glsl\"\n#include \"pelican_frame.glsl\"\n"
+    "#include \"pelican_resource_ports.glsl\"\n\n"
+    "layout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n\n"
+    "void main() {\n"
+    "    outColor = vec4(pelican_load_level(0u), 0.25, 0.5, 1.0);\n"
+    "}\n";
+
+constexpr std::string_view ps1_twiddle_frag =
+    "#version 460\n#extension GL_GOOGLE_include_directive : require\n"
+    "#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\n"
+    "layout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n"
+    "PELICAN_DECLARE_INPUT_0(h0);\n\n"
+    "void main() {\n"
+    "    vec4 value = PELICAN_TEXTURE_2D_0(h0, inUV);\n"
+    "    outColor = vec4(value.r, value.g * 2.0, value.b, 1.0);\n"
+    "}\n";
+
+constexpr std::string_view ps1_show_frag =
+    "#version 460\n#extension GL_GOOGLE_include_directive : require\n"
+    "#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\n"
+    "layout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n"
+    "PELICAN_DECLARE_INPUT_0(field);\n\n"
+    "void main() {\n"
+    "    outColor = vec4(PELICAN_TEXTURE_2D_0(field, inUV).rgb, 1.0);\n"
+    "}\n";
+
+Json ps1RenderingRoot(const Json &blank_root, double level) {
+    const Json type{{"semantic", "pelican.render.color_signal@1"},
+                    {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    const Json color{{"kind", "image"}, {"type", type}, {"access", "write"}, {"attachment", "color"},
+                     {"location", 0}};
+    const Json input{{"kind", "image"}, {"type", type}, {"access", "read"}, {"binding", "input"},
+                     {"input_index", 0}};
+    const auto edge = [](const char *node, const char *port) { return Json{{"node", node}, {"port", port}}; };
+    const auto image = [&](const char *id, bool persistent, bool read_back) {
+        Json usage = Json::array({"COLOR_ATTACHMENT", "SAMPLED"});
+        if (read_back) usage.push_back("TRANSFER_SRC");
+        Json parameters{{"type", type}, {"format", "R8G8B8A8_UNORM"}, {"extent_scale", 1.0}, {"usage", usage}};
+        if (persistent) parameters["lifetime"] = "persistent";
+        return Json{{"id", id}, {"op", "render.image"}, {"parameters", parameters}, {"outputs", {"resource"}}};
+    };
+    const auto pass = [&](const char *id, const char *fragment, Json ports, Json inputs, bool once) {
+        Json parameters{{"pass_set", "main_render"},
+                        {"shader", {{"vertex", "engine://fullscreen"},
+                                    {"fragment", std::string{"project://shaders/"} + fragment}}},
+                        {"ports", std::move(ports)}};
+        if (once) parameters["schedule"] = "once";
+        return Json{{"id", id}, {"op", "render.fullscreen"}, {"parameters", parameters},
+                    {"inputs", std::move(inputs)}, {"outputs", {"color"}}};
+    };
+    auto root = blank_root;
+    root["nodes"] = Json::array({
+        {{"id", "level_value"}, {"op", "value.constant"}, {"parameters", {{"value", level}}},
+         {"outputs", {"value"}}},
+        {{"id", "level"}, {"op", "render.buffer"}, {"parameters", {{"element", "float"}}},
+         {"inputs", {{"value", edge("level_value", "value")}}}, {"outputs", {"resource"}}},
+        image("h0_image", true, false),
+        pass("h0", "ps1_h0", {{"level", {{"kind", "buffer"}, {"element", "float"}, {"access", "read"}}},
+                              {"color", color}},
+             {{"level", edge("level", "resource")}, {"color", edge("h0_image", "resource")}}, true),
+        image("twiddle_image", true, false),
+        pass("twiddle", "ps1_twiddle", {{"source", input}, {"color", color}},
+             {{"source", edge("h0", "color")}, {"color", edge("twiddle_image", "resource")}}, true),
+        image("show_image", false, true),
+        pass("show", "ps1_show", {{"source", input}, {"color", color}},
+             {{"source", edge("twiddle", "color")}, {"color", edge("show_image", "resource")}}, false),
+    });
+    return root;
+}
+} // namespace
+
+// PS-1 acceptance 1-3 and Play / Stop, through the running renderer.
+TEST_CASE("PS-1 once passes run on the first frame and again only when asked, edited or upstream ran",
+          "[ps1][frame-plan][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("ps1_once");
+    const auto root = dir.root / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    const auto blank_root = Json::parse(readFile(rendering_path));
+    writeFile(rendering_path, ps1RenderingRoot(blank_root, 0.25).dump(2));
+    writeFile(root / "shaders/ps1_h0.frag", ps1_h0_frag);
+    writeFile(root / "shaders/ps1_twiddle.frag", ps1_twiddle_frag);
+    writeFile(root / "shaders/ps1_show.frag", ps1_show_frag);
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    auto &renderer = GET_MODULE(Renderer);
+    test_support::RendererTestAccess::setExecutionTracing(renderer, true);
+
+    // The one value every texel of show_image holds.
+    const auto shown = [&] {
+        GET_MODULE(VulkanManageCore).waitIdle();
+        const auto read =
+            test_support::RendererTestAccess::readRenderTarget(renderer, "show_image", ImageSubresourceRange{});
+        REQUIRE(read.format == vk::Format::eR8G8B8A8Unorm);
+        std::set<std::array<std::uint8_t, 4>> values;
+        for (std::size_t offset = 0; offset + 4 <= read.bytes.size(); offset += 4)
+            values.insert({read.bytes.at(offset), read.bytes.at(offset + 1), read.bytes.at(offset + 2),
+                           read.bytes.at(offset + 3)});
+        REQUIRE(values.size() == 1);
+        return *values.begin();
+    };
+    // The frame plan's once nodes: name -> {last_run_generation, last_run_frame}.
+    const auto runs = [&] {
+        const auto plan = rpc.result("get_frame_plan");
+        std::map<std::string, std::pair<Json, Json>> result;
+        for (const auto &node : plan.at("nodes")) {
+            if (node.value("schedule", std::string{}) != "once") continue;
+            result.emplace(node.at("name").get<std::string>(),
+                           std::pair{node.at("last_run_generation"), node.at("last_run_frame")});
+        }
+        return std::pair{result, plan.at("runtime_generation")};
+    };
+    // Whether the last frame recorded each node (the execution trace).
+    const auto recorded = [&](const std::string &name) {
+        const auto &trace = test_support::RendererTestAccess::lastExecutionTrace(renderer);
+        for (const auto &node : trace.at("nodes"))
+            if (node.at("name") == name) return node.value("recorded", true);
+        FAIL("no trace entry for " << name);
+        return false;
+    };
+    const auto frame = [&] { (void)rpc.result("step_frame"); };
+
+    // 1. Frame 1 runs both once passes; frames 2-5 record neither, and the
+    // pattern stays.
+    frame();
+    CHECK(recorded("h0"));
+    CHECK(recorded("twiddle"));
+    CHECK(recorded("show"));
+    const auto [first, generation] = runs();
+    REQUIRE(first.size() == 2);
+    CHECK(first.at("h0").first == generation);
+    CHECK(first.at("twiddle").first == generation);
+    REQUIRE(first.at("h0").second.is_number_unsigned());
+    {
+        // Acceptance 5 in the running frame plan: the persistent images are
+        // stored and never alias candidates, and the reason says why.
+        const auto plan = rpc.result("get_frame_plan");
+        REQUIRE(plan.contains("physical_target_plan"));
+        std::set<std::string> seen;
+        for (const auto &resource : plan.at("physical_target_plan").at("resources")) {
+            const auto name = resource.at("logical_resource").get<std::string>();
+            if (name != "h0_image" && name != "twiddle_image") continue;
+            INFO(resource.dump(2));
+            seen.insert(name);
+            CHECK(resource.at("aliasable") == false);
+            CHECK(resource.at("stored") == true);
+            CHECK_THAT(resource.at("reason").get<std::string>(),
+                       Catch::Matchers::ContainsSubstring("persistent lifetime"));
+        }
+        CHECK(seen == std::set<std::string>{"h0_image", "twiddle_image"});
+    }
+    const auto pattern = shown();
+    // level 0.25 -> 64; green 0.25 doubled -> 128; blue 0.5 -> 127 or 128.
+    CHECK(int{pattern[0]} == 64);
+    CHECK(int{pattern[1]} == 128);
+    CHECK(std::abs(int{pattern[2]} - 128) <= 1);
+    for (int repeat = 0; repeat < 4; ++repeat) {
+        frame();
+        CHECK_FALSE(recorded("h0"));
+        CHECK_FALSE(recorded("twiddle"));
+        CHECK(recorded("show"));
+        CHECK(shown() == pattern);
+        CHECK(runs().first == first);
+    }
+
+    // 2. rerun_once: h0 runs on the next frame, and twiddle with it (it reads
+    // what h0 wrote); then neither again.
+    CHECK(rpc.result("rerun_once", {{"node", "h0"}}) == Json{{"scheduled", Json::array({"h0"})}});
+    frame();
+    CHECK(recorded("h0"));
+    CHECK(recorded("twiddle"));
+    const auto rerun = runs().first;
+    CHECK(rerun.at("h0").second != first.at("h0").second);
+    CHECK(rerun.at("twiddle").second == rerun.at("h0").second);
+    CHECK(shown() == pattern);
+    frame();
+    CHECK_FALSE(recorded("h0"));
+    CHECK_FALSE(recorded("twiddle"));
+    // Without a node: every once node, in plan order. A node that runs every
+    // frame schedules nothing; an unknown node is invalid params.
+    CHECK(rpc.result("rerun_once") == Json{{"scheduled", Json::array({"h0", "twiddle"})}});
+    CHECK(rpc.result("rerun_once", {{"node", "show"}}) == Json{{"scheduled", Json::array()}});
+    {
+        const auto unknown = rpc.call("rerun_once", {{"node", "nowhere"}});
+        INFO(unknown.dump(2));
+        REQUIRE(unknown.contains("error"));
+        CHECK(unknown.at("error").at("code") == -32602);
+    }
+    frame();
+    CHECK(recorded("h0"));
+    CHECK(recorded("twiddle"));
+    frame();
+    CHECK_FALSE(recorded("h0"));
+
+    // 5. Play and Stop neither change the generation nor run them again.
+    {
+        const auto before = runs();
+        CHECK(rpc.result("set_play_state", {{"state", "playing"}}).at("state") == "playing");
+        (void)rpc.result("render_frame");
+        CHECK(rpc.result("set_play_state", {{"state", "edit"}}).at("state") == "edit");
+        frame();
+        const auto after = runs();
+        INFO(after.second.dump());
+        CHECK(after.second == before.second);
+        CHECK_FALSE(recorded("h0"));
+        CHECK(after.first == before.first);
+        CHECK(shown() == pattern);
+    }
+
+    // 2. The constant edited (the document rewritten and reloaded): the new
+    // generation runs both once passes, and the pattern follows the value.
+    writeFile(rendering_path, ps1RenderingRoot(blank_root, 0.75).dump(2));
+    const auto reloaded = rpc.result("reload_render_documents");
+    INFO(reloaded.dump(2));
+    REQUIRE(reloaded.at("status") == "accepted");
+    Json committed;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        frame();
+        committed = rpc.result("get_edit_result", {{"ticket", reloaded.at("ticket")}});
+        if (committed.value("status", std::string{}) != "pending") break;
+    }
+    INFO(committed.dump(2));
+    REQUIRE(committed.at("status") == "committed");
+    frame();
+    const auto [edited, edited_generation] = runs();
+    CHECK(edited_generation != generation);
+    CHECK(edited.at("h0").first == edited_generation);
+    CHECK(edited.at("twiddle").first == edited_generation);
+    const auto changed = shown();
+    CHECK(int{changed[0]} == 191);
+    CHECK(int{changed[1]} == 128);
+    frame();
+    CHECK_FALSE(recorded("h0"));
+    CHECK(shown() == changed);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+// FP-1: get_frame_plan builds what the published generation decides once,
+// reads what a frame changed on every call, and answers the bytes a call
+// that builds everything answers.
+TEST_CASE("FP-1 get_frame_plan builds its generation's part once and reads a frame's part on every call",
+          "[fp1][frame-plan][rpc][gpu]") {
+    using Access = test_support::RendererTestAccess;
+    setupLogger(true);
+    const auto dir = makeTempDir("fp1_frame_plan");
+    const auto root = dir.root / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    const auto blank_root = Json::parse(readFile(rendering_path));
+    writeFile(rendering_path, ps1RenderingRoot(blank_root, 0.25).dump(2));
+    writeFile(root / "shaders/ps1_h0.frag", ps1_h0_frag);
+    writeFile(root / "shaders/ps1_twiddle.frag", ps1_twiddle_frag);
+    writeFile(root / "shaders/ps1_show.frag", ps1_show_frag);
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    const auto &renderer = GET_MODULE(Renderer);
+    // The whole response line, the same request every time.
+    const auto answer = [&] {
+        const auto line = rpc.endpoint.processLine(
+            Json{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "get_frame_plan"}, {"params", Json::object()}}
+                .dump());
+        INFO(line.substr(0, 400));
+        REQUIRE(Json::parse(line).contains("result"));
+        return line;
+    };
+    // The answer of a call that builds the generation's part again.
+    const auto built_afresh = [&] {
+        Access::dropFramePlanGenerationPart(renderer);
+        return answer();
+    };
+    const auto result_of = [](const std::string &line) { return Json::parse(line).at("result"); };
+    const auto last_run_frame = [&](const std::string &line, std::string_view name) {
+        const auto plan = result_of(line);
+        for (const auto &node : plan.at("nodes"))
+            if (node.at("name") == std::string{name}) return node.at("last_run_frame");
+        FAIL("the frame plan has no node " << name);
+        return Json{};
+    };
+    const auto step = [&] { (void)rpc.result("step_frame"); };
+
+    // 1. Twice in one generation: built once, the same bytes both times,
+    // and the bytes of a call that builds everything.
+    step();
+    const auto first = built_afresh();
+    const auto builds = Access::framePlanGenerationPartBuilds(renderer);
+    const auto second = answer();
+    CHECK(Access::framePlanGenerationPartBuilds(renderer) == builds);
+    CHECK(second == first);
+    REQUIRE(last_run_frame(first, "h0").is_number_unsigned());
+
+    // 2. A frame's part is read on every call: h0 runs again in the same
+    // generation, and the next answer says so without building anything.
+    CHECK(rpc.result("rerun_once", {{"node", "h0"}}) == Json{{"scheduled", Json::array({"h0"})}});
+    step();
+    const auto rerun = answer();
+    CHECK(Access::framePlanGenerationPartBuilds(renderer) == builds);
+    CHECK(result_of(rerun).at("runtime_generation") == result_of(first).at("runtime_generation"));
+    CHECK(last_run_frame(rerun, "h0") != last_run_frame(first, "h0"));
+    CHECK(last_run_frame(rerun, "twiddle") == last_run_frame(rerun, "h0"));
+    CHECK(rerun == built_afresh());
+    const auto before_reload = Access::framePlanGenerationPartBuilds(renderer);
+
+    // 3. Another generation: the document rewritten and reloaded. The next
+    // answer is built for it once, and is again what building it all gives.
+    writeFile(rendering_path, ps1RenderingRoot(blank_root, 0.75).dump(2));
+    const auto reloaded = rpc.result("reload_render_documents");
+    INFO(reloaded.dump(2));
+    REQUIRE(reloaded.at("status") == "accepted");
+    Json committed;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        step();
+        committed = rpc.result("get_edit_result", {{"ticket", reloaded.at("ticket")}});
+        if (committed.value("status", std::string{}) != "pending") break;
+    }
+    INFO(committed.dump(2));
+    REQUIRE(committed.at("status") == "committed");
+    step();
+    const auto edited = answer();
+    const auto built_for_edit = Access::framePlanGenerationPartBuilds(renderer);
+    CHECK(built_for_edit > before_reload);
+    CHECK(result_of(edited).at("runtime_generation") != result_of(first).at("runtime_generation"));
+    CHECK(last_run_frame(edited, "h0") != last_run_frame(rerun, "h0"));
+    CHECK(answer() == edited);
+    CHECK(Access::framePlanGenerationPartBuilds(renderer) == built_for_edit);
+    CHECK(edited == built_afresh());
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+
+namespace {
+// IA-1: lut_float (RGBA32F, 64x64, from a KTX2 the writer made, extent taken
+// from the asset), lut_unorm and lut_srgb (RGBA8, 4x4, both from one PNG)
+// are persistent images that start from their assets; a fullscreen pass per
+// image, run every frame, copies it texel for texel into an RGBA32F image
+// the test reads back.
+constexpr std::string_view ia1_show_frag =
+    "#version 460\n#extension GL_GOOGLE_include_directive : require\n"
+    "#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\n"
+    "layout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n"
+    "PELICAN_DECLARE_INPUT_0(field);\n\n"
+    "void main() {\n"
+    "    outColor = PELICAN_TEXTURE_2D_0(field, inUV);\n"
+    "}\n";
+
+Json ia1RenderingRoot(const Json &blank_root) {
+    const Json type{{"semantic", "pelican.render.color_signal@1"},
+                    {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    const Json color{{"kind", "image"}, {"type", type}, {"access", "write"}, {"attachment", "color"},
+                     {"location", 0}};
+    const Json input{{"kind", "image"}, {"type", type}, {"access", "read"}, {"binding", "input"},
+                     {"input_index", 0}};
+    const auto edge = [](const std::string &node, const char *port) { return Json{{"node", node}, {"port", port}}; };
+    const auto lut = [&](const char *id, const char *format, const char *asset, std::optional<int> extent) {
+        Json parameters{{"type", type},
+                        {"format", format},
+                        {"lifetime", "persistent"},
+                        {"usage", {"SAMPLED", "TRANSFER_SRC"}},
+                        {"initial", {{"asset", asset}}}};
+        if (extent) {
+            parameters["width"] = *extent;
+            parameters["height"] = *extent;
+        }
+        return Json{{"id", id}, {"op", "render.image"}, {"parameters", parameters}, {"outputs", {"resource"}}};
+    };
+    const auto shown = [&](const std::string &id, int extent) {
+        return Json{{"id", id}, {"op", "render.image"},
+                    {"parameters", {{"type", type}, {"format", "R32G32B32A32_SFLOAT"}, {"extent_scale", 1.0},
+                                    {"width", extent}, {"height", extent},
+                                    {"usage", {"COLOR_ATTACHMENT", "TRANSFER_SRC"}}}},
+                    {"outputs", {"resource"}}};
+    };
+    const auto show = [&](const std::string &id, const std::string &source, const std::string &target) {
+        return Json{{"id", id}, {"op", "render.fullscreen"},
+                    {"parameters", {{"pass_set", "main_render"},
+                                    {"shader", {{"vertex", "engine://fullscreen"},
+                                                {"fragment", "project://shaders/ia1_show"}}},
+                                    {"ports", {{"source", input}, {"color", color}}}}},
+                    {"inputs", {{"source", edge(source, "resource")}, {"color", edge(target, "resource")}}},
+                    {"outputs", {"color"}}};
+    };
+    auto root = blank_root;
+    root["nodes"] = Json::array({
+        lut("lut_float", "R32G32B32A32_SFLOAT", "assets/luts/ltc.ktx2", std::nullopt),
+        lut("lut_unorm", "R8G8B8A8_UNORM", "assets/luts/ramp.png", 4),
+        lut("lut_srgb", "R8G8B8A8_SRGB", "assets/luts/ramp.png", 4),
+        shown("shown_float", 64),
+        shown("shown_unorm", 4),
+        shown("shown_srgb", 4),
+        show("show_float", "lut_float", "shown_float"),
+        show("show_unorm", "lut_unorm", "shown_unorm"),
+        show("show_srgb", "lut_srgb", "shown_srgb"),
+    });
+    return root;
+}
+
+// 64x64 RGBA32F texels no 8- or 16-bit format holds: offset by `base`.
+std::vector<float> ia1LutValues(float base) {
+    std::vector<float> values(std::size_t{64} * 64 * 4);
+    for (std::size_t texel = 0; texel < 64 * 64; ++texel) {
+        const auto x = static_cast<float>(texel % 64);
+        const auto y = static_cast<float>(texel / 64);
+        values[texel * 4 + 0] = base + x * 0.0078125f + 1.0e-6f;
+        values[texel * 4 + 1] = -3.5f + y * 12.25f;
+        values[texel * 4 + 2] = 1234.5678f / (1.0f + x + y);
+        values[texel * 4 + 3] = 0.333333343f;
+    }
+    return values;
+}
+
+void ia1WriteLut(const std::filesystem::path &path, const std::vector<float> &values) {
+    std::vector<std::byte> texels(values.size() * sizeof(float));
+    std::memcpy(texels.data(), values.data(), texels.size());
+    const auto file = writeKtx2(Ktx2Format::R32G32B32A32Sfloat, 64, 64, texels);
+    writeFile(path, std::string_view{reinterpret_cast<const char *>(file.data()), file.size()});
+}
+
+std::vector<float> ia1ReadFloats(Renderer &renderer, std::string_view name) {
+    GET_MODULE(VulkanManageCore).waitIdle();
+    const auto read = test_support::RendererTestAccess::readRenderTarget(renderer, name, ImageSubresourceRange{});
+    REQUIRE(read.format == vk::Format::eR32G32B32A32Sfloat);
+    std::vector<float> values(read.bytes.size() / sizeof(float));
+    std::memcpy(values.data(), read.bytes.data(), values.size() * sizeof(float));
+    return values;
+}
+
+float ia1SrgbToLinear(float encoded) {
+    return encoded <= 0.04045f ? encoded / 12.92f : std::pow((encoded + 0.055f) / 1.055f, 2.4f);
+}
+} // namespace
+
+// IA-1 acceptance 1 and 2, through the running renderer: the float LUT's
+// values come out bit for bit, the PNG's bytes are data in the UNORM image
+// and sRGB in the SRGB one (the GPU decodes them), get_frame_plan names the
+// assets, and a rewritten LUT reloaded is copied in on the new generation.
+TEST_CASE("IA-1 persistent images start from their KTX2 and PNG assets and per-frame passes read them",
+          "[ia1][frame-plan][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("ia1_initial");
+    const auto root = dir.root / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    // An asset store with a manifest, so the frame plan has the sha256.
+    auto project = Json::parse(readFile(root / "project.json"));
+    project["asset_stores"] = {{"main", {{"mount", "assets/"}, {"manifest", "assets.manifest.json"}}}};
+    writeFile(root / "project.json", project.dump(2));
+    ia1WriteLut(root / "assets/luts/ltc.ktx2", ia1LutValues(0.5f));
+    // A 4x4 ramp whose bytes differ between the UNORM and the sRGB reading.
+    std::vector<unsigned char> ramp(std::size_t{4} * 4 * 4);
+    for (std::size_t texel = 0; texel < 16; ++texel) {
+        ramp[texel * 4 + 0] = static_cast<unsigned char>(texel * 17);
+        ramp[texel * 4 + 1] = static_cast<unsigned char>(255 - texel * 13);
+        ramp[texel * 4 + 2] = static_cast<unsigned char>(64 + texel * 5);
+        ramp[texel * 4 + 3] = static_cast<unsigned char>(200);
+    }
+    std::filesystem::create_directories(root / "assets/luts");
+    REQUIRE(stbi_write_png((root / "assets/luts/ramp.png").string().c_str(), 4, 4, 4, ramp.data(), 16) != 0);
+    (void)generateAssetsManifest(root / "assets", root / "assets.manifest.json", dir.root / "assets.cache.json",
+                                 "main", true);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    const auto blank_root = Json::parse(readFile(rendering_path));
+    writeFile(rendering_path, ia1RenderingRoot(blank_root).dump(2));
+    writeFile(root / "shaders/ia1_show.frag", ia1_show_frag);
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    // The headless setup has no envelope; give the resolver the asset store.
+    GET_MODULE(PathResolver).resetForTesting();
+    GET_MODULE(PathResolver).setup(root, false, readFile(root / "project.json"));
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    auto &renderer = GET_MODULE(Renderer);
+    const auto frame = [&] { (void)rpc.result("step_frame"); };
+
+    frame();
+    // 1. The float LUT, its 64x64 extent taken from the asset, reaches the
+    // screen bit for bit.
+    const auto expected = ia1LutValues(0.5f);
+    CHECK(ia1ReadFloats(renderer, "shown_float") == expected);
+    CHECK(ia1ReadFloats(renderer, "lut_float") == expected);
+    frame();
+    CHECK(ia1ReadFloats(renderer, "shown_float") == expected);
+
+    // 2. One PNG: the UNORM image reads its bytes / 255, the SRGB image the
+    // same bytes decoded from sRGB by the GPU.
+    const auto unorm = ia1ReadFloats(renderer, "shown_unorm");
+    const auto srgb = ia1ReadFloats(renderer, "shown_srgb");
+    REQUIRE(unorm.size() == ramp.size());
+    REQUIRE(srgb.size() == ramp.size());
+    std::size_t differing = 0;
+    for (std::size_t component = 0; component < ramp.size(); ++component) {
+        INFO(component);
+        const auto encoded = static_cast<float>(ramp[component]) / 255.0f;
+        const bool alpha = component % 4 == 3;
+        CHECK(std::abs(unorm[component] - encoded) < 1.0e-6f);
+        CHECK(std::abs(srgb[component] - (alpha ? encoded : ia1SrgbToLinear(encoded))) < 2.0e-3f);
+        if (std::abs(unorm[component] - srgb[component]) > 1.0e-2f) ++differing;
+    }
+    CHECK(differing > 20);
+
+    // The frame plan names each image's asset and its manifest sha256.
+    {
+        const auto plan = rpc.result("get_frame_plan");
+        std::map<std::string, Json> initial;
+        for (const auto &resource : plan.at("physical_target_plan").at("resources"))
+            if (resource.contains("initial_asset"))
+                initial.emplace(resource.at("logical_resource").get<std::string>(), resource.at("initial_asset"));
+        INFO(plan.at("physical_target_plan").dump(2));
+        CHECK(initial == std::map<std::string, Json>{
+                             {"lut_float", {{"asset", "assets/luts/ltc.ktx2"},
+                                            {"sha256", assetFileSha256(root / "assets/luts/ltc.ktx2")}}},
+                             {"lut_unorm", {{"asset", "assets/luts/ramp.png"},
+                                            {"sha256", assetFileSha256(root / "assets/luts/ramp.png")}}},
+                             {"lut_srgb", {{"asset", "assets/luts/ramp.png"},
+                                           {"sha256", assetFileSha256(root / "assets/luts/ramp.png")}}}});
+    }
+
+    // 3. The LUT rewritten on disk and the documents reloaded: the new
+    // generation reads the asset again and copies the new values in. The
+    // root is rewritten too (same content, other layout); IA-2's test
+    // reloads the asset alone.
+    ia1WriteLut(root / "assets/luts/ltc.ktx2", ia1LutValues(7.0f));
+    writeFile(rendering_path, ia1RenderingRoot(blank_root).dump(4));
+    const auto reloaded = rpc.result("reload_render_documents");
+    INFO(reloaded.dump(2));
+    REQUIRE(reloaded.at("status") == "accepted");
+    Json committed;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        frame();
+        committed = rpc.result("get_edit_result", {{"ticket", reloaded.at("ticket")}});
+        if (committed.value("status", std::string{}) != "pending") break;
+    }
+    INFO(committed.dump(2));
+    REQUIRE(committed.at("status") == "committed");
+    frame();
+    CHECK(ia1ReadFloats(renderer, "shown_float") == ia1LutValues(7.0f));
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+// IA-2: Studio's engine runs without the file watcher, so a LUT rewritten on
+// disk reaches the frame through reload_render_documents. The documents stay
+// byte for byte; the asset's bytes differing from what the live generation
+// read is enough to publish a new one, and the result names the asset.
+TEST_CASE("IA-2 reload_render_documents takes in an initial asset rewritten on disk with the documents unchanged",
+          "[ia2][rl1][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("ia2_reload_asset");
+    const auto root = dir.root / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    auto project = Json::parse(readFile(root / "project.json"));
+    project["asset_stores"] = {{"main", {{"mount", "assets/"}, {"manifest", "assets.manifest.json"}}}};
+    writeFile(root / "project.json", project.dump(2));
+    const auto lut_path = root / "assets/luts/ltc.ktx2";
+    ia1WriteLut(lut_path, ia1LutValues(0.5f));
+    (void)generateAssetsManifest(root / "assets", root / "assets.manifest.json", dir.root / "assets.cache.json",
+                                 "main", true);
+    // IA-1's frame with the float LUT only.
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    auto rendering = ia1RenderingRoot(Json::parse(readFile(rendering_path)));
+    auto &nodes = rendering.at("nodes");
+    nodes.erase(std::remove_if(nodes.begin(), nodes.end(),
+                               [](const Json &node) {
+                                   const auto id = node.at("id").get<std::string>();
+                                   return id != "lut_float" && id != "shown_float" && id != "show_float";
+                               }),
+                nodes.end());
+    REQUIRE(nodes.size() == 3);
+    const auto rendering_bytes = rendering.dump(2);
+    writeFile(rendering_path, rendering_bytes);
+    writeFile(root / "shaders/ia1_show.frag", ia1_show_frag);
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    GET_MODULE(PathResolver).resetForTesting();
+    GET_MODULE(PathResolver).setup(root, false, readFile(root / "project.json"));
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    auto &renderer = GET_MODULE(Renderer);
+    const auto frame = [&] { (void)rpc.result("step_frame"); };
+    const auto reload = [&] {
+        const auto accepted = rpc.result("reload_render_documents");
+        INFO(accepted.dump(2));
+        if (accepted.value("status", std::string{}) == "rejected") return accepted;
+        REQUIRE(accepted.at("status") == "accepted");
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            frame();
+            auto result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+            if (result.value("status", std::string{}) != "pending") return result;
+        }
+        FAIL("the ticket stayed pending");
+        return Json{};
+    };
+    const auto source_digest = [&] {
+        return rpc.result("get_render_authoring_context").at("source_digest").at("hex").get<std::string>();
+    };
+
+    frame();
+    REQUIRE(ia1ReadFloats(renderer, "shown_float") == ia1LutValues(0.5f));
+    const auto digest_before = source_digest();
+
+    // 2. Nothing changed: no_change, no asset named.
+    std::uint64_t generation = 0;
+    {
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK(result.at("no_change") == true);
+        CHECK(result.at("changed") == Json::array());
+        CHECK(result.at("changed_assets") == Json::array());
+        generation = result.at("published_generation").get<std::uint64_t>();
+    }
+
+    // 1. Only the LUT's bytes rewritten: committed as a new generation that
+    // names the asset and no document, and the frame shows the new values.
+    ia1WriteLut(lut_path, ia1LutValues(7.0f));
+    REQUIRE(readFile(rendering_path) == rendering_bytes);
+    {
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK_FALSE(result.contains("no_change"));
+        CHECK(result.at("changed") == Json::array());
+        CHECK(result.at("changed_assets") == Json::array({"assets/luts/ltc.ktx2"}));
+        CHECK(result.at("published_generation").get<std::uint64_t>() > generation);
+        CHECK(result.at("source_digest").at("hex") == digest_before);
+        generation = result.at("published_generation").get<std::uint64_t>();
+    }
+    frame();
+    CHECK(ia1ReadFloats(renderer, "shown_float") == ia1LutValues(7.0f));
+    CHECK(source_digest() == digest_before);
+
+    // The new generation read what is on disk: the next reload is no_change.
+    {
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK(result.at("no_change") == true);
+        CHECK(result.at("changed_assets") == Json::array());
+        CHECK(result.at("published_generation").get<std::uint64_t>() == generation);
+    }
+
+    // An asset that no longer fits the image (one channel for an RGBA32F
+    // image) is refused by name, and the live frame keeps the last LUT.
+    {
+        std::vector<std::byte> texels(std::size_t{64} * 64 * sizeof(float));
+        const auto file = writeKtx2(Ktx2Format::R32Sfloat, 64, 64, texels);
+        writeFile(lut_path, std::string_view{reinterpret_cast<const char *>(file.data()), file.size()});
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(result.at("error").at("code") == "graph.image_initial_mismatch@1");
+        CHECK(result.at("error").at("node") == "lut_float");
+        CHECK(result.at("error").at("asset") == "assets/luts/ltc.ktx2");
+        CHECK(result.at("error").at("what") == "format");
+    }
+    frame();
+    CHECK(ia1ReadFloats(renderer, "shown_float") == ia1LutValues(7.0f));
+    CHECK(source_digest() == digest_before);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+// IA-3: a table only value.sample_table reads is read when the value graph is
+// built, so it is one of the assets reload_render_documents compares. The
+// table rewritten with its write time put back (same size): the reload names
+// it, publishes a new generation, and that generation's node reads the new
+// values (the table cache judged by the bytes, not the write time and size).
+// The manifest beside it is compared too. Nothing changed: no_change.
+TEST_CASE("IA-3 reload_render_documents takes in a value.sample_table table rewritten on disk with the documents "
+          "unchanged",
+          "[ia3][ia2][ab1][rl1][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("ia3_reload_table");
+    const auto root = dir.root / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    auto project = Json::parse(readFile(root / "project.json"));
+    project["asset_stores"] = {{"main", {{"mount", "assets/"}, {"manifest", "assets.manifest.json"}}}};
+    writeFile(root / "project.json", project.dump(2));
+    const std::string asset = "assets/tables/level.ktx2";
+    const auto table_path = root / asset;
+    const auto manifest_path = derivedAssetManifestPath(table_path);
+    // One feature, three samples, every one `value`: the node reads it at any
+    // scene time.
+    const auto writeTable = [&](float value, double hop_seconds) {
+        SampleTableLayout layout;
+        layout.sample_count = 3;
+        layout.hop_seconds = hop_seconds;
+        layout.features = {"level"};
+        std::vector<float> values(sampleTableWidth, 0.0f);
+        std::fill_n(values.begin(), 3, value);
+        const auto file = writeKtx2(Ktx2Format::R32Sfloat, sampleTableWidth, 1, std::as_bytes(std::span{values}));
+        writeFile(table_path, std::string_view{reinterpret_cast<const char *>(file.data()), file.size()});
+        writeFile(manifest_path, Json{{"source", {{"metadata", {{"layout", Json(sampleTableLayoutJson(layout))}}}}}}.dump());
+    };
+    writeTable(3.0f, 0.5);
+    (void)generateAssetsManifest(root / "assets", root / "assets.manifest.json", dir.root / "assets.cache.json",
+                                 "main", true);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    auto rendering = Json::parse(readFile(rendering_path));
+    rendering.at("nodes").push_back({{"id", "table_level"},
+                                     {"op", "value.sample_table"},
+                                     {"parameters", {{"asset", asset}, {"row", "level"}}},
+                                     {"outputs", Json::array({"value"})}});
+    const auto rendering_bytes = rendering.dump(2);
+    writeFile(rendering_path, rendering_bytes);
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    GET_MODULE(PathResolver).resetForTesting();
+    GET_MODULE(PathResolver).setup(root, false, readFile(root / "project.json"));
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    const auto frame = [&] { (void)rpc.result("step_frame"); };
+    const auto reload = [&] {
+        const auto accepted = rpc.result("reload_render_documents");
+        INFO(accepted.dump(2));
+        if (accepted.value("status", std::string{}) == "rejected") return accepted;
+        REQUIRE(accepted.at("status") == "accepted");
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            frame();
+            auto result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+            if (result.value("status", std::string{}) != "pending") return result;
+        }
+        FAIL("the ticket stayed pending");
+        return Json{};
+    };
+    // The node's value in the published generation, and that generation.
+    const auto level = [&] {
+        const auto values = rpc.result("get_graph_node_values");
+        INFO(values.dump(2));
+        for (const auto &node : values.at("nodes"))
+            if (node.at("node") == "table_level")
+                return std::pair{node.at("outputs").at("value").get<double>(),
+                                 values.at("generation").get<std::uint64_t>()};
+        FAIL("table_level is not listed");
+        return std::pair{0.0, std::uint64_t{0}};
+    };
+
+    frame();
+    REQUIRE(level().first == 3.0);
+
+    // Nothing changed: no_change, no asset named.
+    std::uint64_t generation = 0;
+    {
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK(result.at("no_change") == true);
+        CHECK(result.at("changed") == Json::array());
+        CHECK(result.at("changed_assets") == Json::array());
+        generation = result.at("published_generation").get<std::uint64_t>();
+    }
+
+    // The table baked again with other values, same size, the write times
+    // put back: a new generation that names the table and no document, and
+    // its node reads 9.
+    const auto written = std::filesystem::last_write_time(table_path);
+    const auto manifest_written = std::filesystem::last_write_time(manifest_path);
+    writeTable(9.0f, 0.5);
+    std::filesystem::last_write_time(table_path, written);
+    std::filesystem::last_write_time(manifest_path, manifest_written);
+    REQUIRE(readFile(rendering_path) == rendering_bytes);
+    {
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK_FALSE(result.contains("no_change"));
+        CHECK(result.at("changed") == Json::array());
+        CHECK(result.at("changed_assets") == Json::array({asset}));
+        CHECK(result.at("published_generation").get<std::uint64_t>() > generation);
+        generation = result.at("published_generation").get<std::uint64_t>();
+    }
+    frame();
+    {
+        const auto [value, published] = level();
+        CHECK(published == generation);
+        CHECK(value == 9.0);
+    }
+
+    // The new generation read what is on disk: the next reload is no_change.
+    {
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK(result.at("no_change") == true);
+        CHECK(result.at("changed_assets") == Json::array());
+        CHECK(result.at("published_generation").get<std::uint64_t>() == generation);
+    }
+
+    // Only the manifest beside it changed (another hop): the table is named.
+    {
+        const auto table_bytes = readFile(table_path);
+        writeTable(9.0f, 0.25);
+        REQUIRE(readFile(table_path) == table_bytes);
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK_FALSE(result.contains("no_change"));
+        CHECK(result.at("changed_assets") == Json::array({asset}));
+        CHECK(result.at("published_generation").get<std::uint64_t>() > generation);
+    }
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+namespace {
+
+// FR-3: the deferred pipeline the GUI session built from File > New Project >
+// Blank on the Graph tab (gui_settings_choose's project, its second lighting
+// pass left out): a deferred_geometry_v1 render.material_pass drawing its
+// G-buffer and depth into render.image nodes of its own, the Deferred
+// lighting template's fullscreen pass reading them and shadow_directional's
+// shadow_map through shadow_map_ref, and present.
+std::filesystem::path fr3BlankDeferredProject(const std::filesystem::path &dir) {
+    const auto root = dir / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    const auto fixtures = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" / "fr3_blank_graph";
+    writeFile(root / "passes/main_rendering_config.json", readFile(fixtures / "main_rendering_config.graph"));
+    writeFile(root / "shaders/deferred_lighting.frag", readFile(fixtures / "deferred_lighting.frag"));
+    return root;
+}
+
+// The engine with that project open, answering RPC, a frame drawn.
+struct Fr3Engine {
+    FastModuleContainer modules;
+    // The endpoint reads the configured project: configured first.
+    bool configured;
+    Rpc rpc;
+
+    explicit Fr3Engine(const std::filesystem::path &root) : configured{(configureHeadless(root), true)} {
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        GET_MODULE(Renderer).prepareRuntimeModules();
+        (void)rpc.result("step_frame");
+        (void)rpc.result("render_frame");
+    }
+    ~Fr3Engine() { GET_MODULE(VulkanManageCore).waitIdle(); }
+
+    std::string digest() {
+        return rpc.result("get_render_authoring_context").at("source_digest").at("hex").get<std::string>();
+    }
+    // The final answer: a refusal when it is asked for, or the ticket's
+    // result once the running renderer judged it.
+    Json settle(const Json &accepted) {
+        INFO(accepted.dump(2));
+        if (accepted.value("status", std::string{}) != "accepted") return accepted;
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            (void)rpc.result("step_frame");
+            auto result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+            if (result.value("status", std::string{}) != "pending") return result;
+        }
+        FAIL("the ticket stayed pending");
+        return Json{};
+    }
+    Json send(std::string_view method, Json params) {
+        params["base_source_digest"] = digest();
+        return settle(rpc.result(method, std::move(params)));
+    }
+    Json batch(Json edits) { return send("edit_batch", {{"edits", std::move(edits)}}); }
+};
+
+const Json fr3Depth{{"semantic", "pelican.render.depth@1"},
+                    {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+const Json fr3ArrayDepth{{"semantic", "pelican.render.depth@1"},
+                         {"arguments", {{"representation", "device"}, {"space", "projection"},
+                                        {"topology", "two_d_array"}}}};
+
+Json fr3SkyParams() {
+    return {{"operations", Json::array({{{"op", "add"}, {"feature", "engine://features/sky_ambient.json"}}})}};
+}
+
+Json fr3CascadeParams() {
+    return {{"operations", Json::array({{{"op", "set_parameters"}, {"index", 0},
+                                         {"parameters", {{"pcf_radius", 2}, {"strength", 1}, {"cascade_count", 3}}}}})}};
+}
+
+const Json *fr3PlanNode(const Json &plan, std::string_view name) {
+    for (const auto &node : plan.at("nodes"))
+        if (node.at("name").get<std::string>() == name) return &node;
+    return nullptr;
+}
+
+bool fr3Lists(const Json &list, std::string_view name) {
+    return std::find(list.begin(), list.end(), Json(name)) != list.end();
+}
+
+} // namespace
+
+// FR-3 (UX-12b): sky_ambient on that pipeline, with the targets and
+// target_refs Studio adds for it, was refused only by the frame planner's text
+// ("Pass input target is not produced as an earlier output: scene_depth in
+// pass: sky_background"). Over RPC, through the running renderer: the catalog
+// says scene_depth needs a writer, the edit is refused by name with the
+// material pass's depth port as the writer, and the one edit Studio makes of
+// it -- that port connected to scene_depth_ref -- lets sky_ambient publish.
+TEST_CASE("FR-3 sky_ambient on the Blank-built deferred pipeline names the material pass's depth as its writer, "
+          "and connecting it publishes, through the running renderer",
+          "[fr3][primitives][render-feature][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("fr3_unwritten");
+    const auto root = fr3BlankDeferredProject(dir.root);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    Fr3Engine engine{root};
+
+    const auto catalog = engine.rpc.result("list_render_features").at("features");
+    const auto sky = std::find_if(catalog.begin(), catalog.end(),
+                                  [](const Json &feature) { return feature.at("name") == "sky_ambient"; });
+    REQUIRE(sky != catalog.end());
+    INFO(sky->dump(2));
+    REQUIRE(sky->at("required_targets").size() == 2);
+    CHECK(sky->at("required_targets").at(0).at("needs_writer") == false);
+    CHECK(sky->at("required_targets").at(1).at("name") == "scene_depth");
+    CHECK(sky->at("required_targets").at(1).at("needs_writer") == true);
+
+    // What Studio's "Add with targets" adds (UX-12b), in one edit_batch.
+    const auto declared = engine.batch(Json::array({
+        {{"method", "edit_render_targets"},
+         {"params", {{"ops", Json::array({
+             {{"op", "add"}, {"target", {{"name", "lit_color"}, {"extent_scale", 1.0},
+                                         {"format", "R16G16B16A16_SFLOAT"}, {"format_class", "scene"},
+                                         {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}}}},
+             {{"op", "add"}, {"target", {{"name", "scene_depth"}, {"extent_scale", 1.0},
+                                         {"format", "D32_SFLOAT"}, {"format_class", "data"},
+                                         {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"})}}}}})}}}},
+        {{"method", "edit_graph_document"},
+         {"params", {{"ops", Json::array({
+             {{"op", "add_node"}, {"node", {{"id", "scene_depth_ref"}, {"op", "render.target_ref"},
+                                            {"outputs", Json::array({"resource"})},
+                                            {"parameters", {{"name", "scene_depth"}, {"type", fr3Depth}}}}}},
+             {{"op", "add_node"}, {"node", {{"id", "lit_color_ref"}, {"op", "render.target_ref"},
+                                            {"outputs", Json::array({"resource"})},
+                                            {"parameters", {{"name", "lit_color"},
+                                                            {"type", {{"semantic", "pelican.render.legacy_opaque_image@1"},
+                                                                      {"arguments", Json::object()}}}}}}}}})}}}}}));
+    INFO(declared.dump(2));
+    REQUIRE(declared.at("status") == "committed");
+    CHECK(declared.at("operation") == "edit_batch");
+
+    const auto before = readFile(rendering_path);
+    const auto refused = engine.send("edit_render_features", fr3SkyParams());
+    INFO(refused.dump(2));
+    REQUIRE(refused.at("status") == "rejected");
+    const auto &error = refused.at("error");
+    CHECK(error.at("code") == "feature.required_target_unwritten@1");
+    CHECK(error.at("feature") == "sky_ambient");
+    CHECK(error.at("target") == "scene_depth");
+    CHECK(error.at("type") == fr3Depth);
+    CHECK(error.at("document") == "engine://features/sky_ambient.json");
+    CHECK(error.at("writer_candidates") == Json::parse(R"([{"node": "render_material_pass",
+        "pass": "render_material_pass", "port": "depth", "resource": "render_material_pass__depth"}])"));
+    CHECK(readFile(rendering_path) == before);
+
+    const auto &candidate = error.at("writer_candidates").at(0);
+    const auto connected = engine.send(
+        "edit_graph_document",
+        {{"ops", Json::array({{{"op", "set_input"}, {"node", candidate.at("node")}, {"port", candidate.at("port")},
+                               {"source", {{"node", "scene_depth_ref"}, {"port", "resource"}}}}})}});
+    INFO(connected.dump(2));
+    REQUIRE(connected.at("status") == "committed");
+    const auto added = engine.send("edit_render_features", fr3SkyParams());
+    INFO(added.dump(2));
+    REQUIRE(added.at("status") == "committed");
+
+    (void)engine.rpc.result("render_frame");
+    const auto plan = engine.rpc.result("get_frame_plan");
+    const auto *material = fr3PlanNode(plan, "render_material_pass");
+    const auto *background = fr3PlanNode(plan, "sky_background");
+    INFO(plan.dump());
+    REQUIRE(material != nullptr);
+    REQUIRE(background != nullptr);
+    CHECK(fr3Lists(material->at("writes"), "scene_depth"));
+    CHECK(fr3Lists(background->at("reads"), "scene_depth"));
+}
+
+// FR-3 (UX-12b): cascade_count 3 and the 2D-array shadow_map_ref were each
+// refused alone, in either order. Over RPC, through the running renderer:
+// with the two in one edit_batch, what is left is the lighting pass's 2D
+// depth port, named with its edit's index; with the port in the same graph
+// edit the batch publishes as one ticket, and RD-1 takes it back whole.
+TEST_CASE("FR-3 edit_batch takes cascade_count 3 with the 2D array shadow map types in one ticket, through the "
+          "running renderer",
+          "[fr3][primitives][edit-batch][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("fr3_batch");
+    const auto root = fr3BlankDeferredProject(dir.root);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    Fr3Engine engine{root};
+    const auto before = readFile(rendering_path);
+
+    const Json cascade{{"method", "edit_render_features"}, {"params", fr3CascadeParams()}};
+    const Json ref_op{{"op", "set_node_parameters"}, {"node", "shadow_map_ref"},
+                      {"parameters", {{"name", "shadow_map"}, {"type", fr3ArrayDepth}}}};
+    Json lighting;
+    const auto authored = Json::parse(before);
+    for (const auto &node : authored.at("nodes"))
+        if (node.at("id") == "deferred_lighting") lighting = node.at("parameters");
+    REQUIRE(lighting.is_object());
+    lighting["ports"]["shadow_map"]["type"] = fr3ArrayDepth;
+    const Json port_op{{"op", "set_node_parameters"}, {"node", "deferred_lighting"}, {"parameters", lighting}};
+
+    const auto alone = engine.send("edit_render_features", fr3CascadeParams());
+    INFO(alone.dump(2));
+    REQUIRE(alone.at("status") == "rejected");
+    CHECK(alone.at("error").at("code") == "graph.target_ref_type_mismatch@1");
+
+    const auto left = engine.batch(Json::array(
+        {cascade, {{"method", "edit_graph_document"}, {"params", {{"ops", Json::array({ref_op})}}}}}));
+    INFO(left.dump(2));
+    REQUIRE(left.at("status") == "rejected");
+    CHECK(left.at("error").at("batch_index") == 1);
+    CHECK_THAT(left.at("error").at("message").get<std::string>(),
+               Catch::Matchers::ContainsSubstring("deferred_lighting.shadow_map from shadow_map_ref.resource"));
+    CHECK(readFile(rendering_path) == before);
+
+    const auto documents = engine.rpc.result("get_render_documents").at("documents");
+    REQUIRE(documents.size() == 1);
+    const auto committed = engine.batch(Json::array(
+        {cascade, {{"method", "edit_graph_document"}, {"params", {{"ops", Json::array({ref_op, port_op})}}}}}));
+    INFO(committed.dump(2));
+    REQUIRE(committed.at("status") == "committed");
+    CHECK(committed.at("operation") == "edit_batch");
+    CHECK(committed.at("methods") == Json::array({"edit_render_features", "edit_graph_document"}));
+    REQUIRE(committed.at("documents").size() == 1);
+    (void)engine.rpc.result("render_frame");
+    const auto plan = engine.rpc.result("get_frame_plan");
+    INFO(plan.dump());
+    const auto *shadow = fr3PlanNode(plan, "shadow_depth");
+    const auto *lighting_node = fr3PlanNode(plan, "deferred_lighting");
+    REQUIRE(shadow != nullptr);
+    REQUIRE(lighting_node != nullptr);
+    CHECK(fr3Lists(lighting_node->at("reads"), "shadow_map"));
+
+    const auto restored = engine.settle(engine.rpc.result(
+        "restore_render_documents",
+        {{"documents", Json::array({{{"reference", documents.at(0).at("reference")},
+                                     {"base_digest", committed.at("documents").begin().value()},
+                                     {"content", documents.at(0).at("content")}}})}}));
+    INFO(restored.dump(2));
+    REQUIRE(restored.at("status") == "committed");
+    CHECK(readFile(rendering_path) == before);
+
+    // A method edit_batch does not take is the caller's error.
+    const auto outside = engine.rpc.call(
+        "edit_batch", {{"base_source_digest", engine.digest()},
+                       {"edits", Json::array({{{"method", "verify_fold"}, {"params", Json::object()}}})}});
+    INFO(outside.dump(2));
+    REQUIRE(outside.contains("error"));
+    CHECK(outside.at("error").at("code") == -32602);
+}
+
+// FR-4 (UX-12d): on that pipeline with sky_ambient, the sky reached present
+// only with two tickets and two undos -- the lighting pass's color into
+// lit_color (edit_graph_document) and present reading lit_color
+// (edit_preset_pass). Over RPC, through the running renderer: the catalog
+// gives sky_ambient's lit_color the lighting pass's color port's type, so
+// lit_color_ref connects to that port as the catalog declares it; the two
+// edits in one edit_batch publish as one ticket, and one RD-1 restore takes
+// both back.
+TEST_CASE("FR-4 edit_batch puts the sky on present with edit_graph_document and edit_preset_pass in one ticket, "
+          "through the running renderer",
+          "[fr4][primitives][render-feature][edit-batch][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("fr4_sky_present");
+    const auto root = fr3BlankDeferredProject(dir.root);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    Fr3Engine engine{root};
+
+    const auto catalog = engine.rpc.result("list_render_features").at("features");
+    const auto sky = std::find_if(catalog.begin(), catalog.end(),
+                                  [](const Json &feature) { return feature.at("name") == "sky_ambient"; });
+    REQUIRE(sky != catalog.end());
+    INFO(sky->dump(2));
+    const auto &lit = sky->at("required_targets").at(0);
+    REQUIRE(lit.at("name") == "lit_color");
+    const auto lit_type = lit.at("type");
+    CHECK(lit_type.at("semantic") == "pelican.render.color_signal@1");
+    const auto authored = Json::parse(readFile(rendering_path));
+    for (const auto &node : authored.at("nodes"))
+        if (node.at("id") == "deferred_lighting")
+            CHECK(node.at("parameters").at("ports").at("color").at("type") == lit_type);
+
+    // sky_ambient as Studio adds it (FR-3), lit_color_ref of the catalog's type.
+    const auto declared = engine.batch(Json::array({
+        {{"method", "edit_render_targets"},
+         {"params", {{"ops", Json::array({
+             {{"op", "add"}, {"target", {{"name", "lit_color"}, {"extent_scale", 1.0},
+                                         {"format", "R16G16B16A16_SFLOAT"}, {"format_class", "scene"},
+                                         {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}}}},
+             {{"op", "add"}, {"target", {{"name", "scene_depth"}, {"extent_scale", 1.0},
+                                         {"format", "D32_SFLOAT"}, {"format_class", "data"},
+                                         {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"})}}}}})}}}},
+        {{"method", "edit_graph_document"},
+         {"params", {{"ops", Json::array({
+             {{"op", "add_node"}, {"node", {{"id", "scene_depth_ref"}, {"op", "render.target_ref"},
+                                            {"outputs", Json::array({"resource"})},
+                                            {"parameters", {{"name", "scene_depth"}, {"type", fr3Depth}}}}}},
+             {{"op", "add_node"}, {"node", {{"id", "lit_color_ref"}, {"op", "render.target_ref"},
+                                            {"outputs", Json::array({"resource"})},
+                                            {"parameters", {{"name", "lit_color"}, {"type", lit_type}}}}}}})}}}}}));
+    INFO(declared.dump(2));
+    REQUIRE(declared.at("status") == "committed");
+    const auto connected = engine.send(
+        "edit_graph_document",
+        {{"ops", Json::array({{{"op", "set_input"}, {"node", "render_material_pass"}, {"port", "depth"},
+                               {"source", {{"node", "scene_depth_ref"}, {"port", "resource"}}}}})}});
+    INFO(connected.dump(2));
+    REQUIRE(connected.at("status") == "committed");
+    const auto added = engine.send("edit_render_features", fr3SkyParams());
+    INFO(added.dump(2));
+    REQUIRE(added.at("status") == "committed");
+
+    const auto before = readFile(rendering_path);
+    // The root and the render-target fragment edit_render_targets wrote.
+    const auto documents = engine.rpc.result("get_render_documents").at("documents");
+    const auto committed = engine.batch(Json::array({
+        {{"method", "edit_graph_document"},
+         {"params", {{"ops", Json::array({{{"op", "set_input"}, {"node", "deferred_lighting"}, {"port", "color"},
+                                           {"source", {{"node", "lit_color_ref"}, {"port", "resource"}}}}})}}}},
+        {{"method", "edit_preset_pass"},
+         {"params", {{"graph", "main_render"}, {"pass_name", "present"}, {"input", Json::array({"lit_color"})},
+                     {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+                     {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}}}}}));
+    INFO(committed.dump(2));
+    REQUIRE(committed.at("status") == "committed");
+    CHECK(committed.at("operation") == "edit_batch");
+    CHECK(committed.at("methods") == Json::array({"edit_graph_document", "edit_preset_pass"}));
+    REQUIRE(committed.at("documents").size() == 1);
+    (void)engine.rpc.result("render_frame");
+    {
+        const auto plan = engine.rpc.result("get_frame_plan");
+        INFO(plan.dump());
+        const auto *lighting = fr3PlanNode(plan, "deferred_lighting");
+        const auto *background = fr3PlanNode(plan, "sky_background");
+        const auto *present = fr3PlanNode(plan, "present");
+        REQUIRE(lighting != nullptr);
+        REQUIRE(background != nullptr);
+        REQUIRE(present != nullptr);
+        CHECK(fr3Lists(lighting->at("writes"), "lit_color"));
+        CHECK(fr3Lists(background->at("writes"), "lit_color"));
+        CHECK(present->at("reads") == Json::array({"lit_color"}));
+    }
+
+    // RD-1: the two edits are one undo -- every document the batch wrote (the
+    // root alone), back as it was read before it.
+    auto restore = Json::array();
+    for (const auto &written : committed.at("documents").items()) {
+        const auto reference = written.key();
+        const auto read = std::find_if(documents.begin(), documents.end(),
+                                       [&](const Json &document) { return document.at("reference") == reference; });
+        REQUIRE(read != documents.end());
+        restore.push_back(
+            {{"reference", reference}, {"base_digest", written.value()}, {"content", read->at("content")}});
+    }
+    const auto restored = engine.settle(engine.rpc.result("restore_render_documents", {{"documents", restore}}));
+    INFO(restored.dump(2));
+    REQUIRE(restored.at("status") == "committed");
+    CHECK(readFile(rendering_path) == before);
+    (void)engine.rpc.result("render_frame");
+    const auto plan = engine.rpc.result("get_frame_plan");
+    const auto *present = fr3PlanNode(plan, "present");
+    REQUIRE(present != nullptr);
+    CHECK(present->at("reads") == Json::array({"deferred_lighting__color"}));
+}
+
+
+namespace {
+
+// PV-1: test/fixtures/pv1_history_accum copied out -- a direct root whose
+// authored target `accum` keeps history, added to every frame.
+std::filesystem::path pv1HistoryProject(const std::filesystem::path &dir) {
+    const auto fixtures = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" / "pv1_history_accum";
+    const auto root = dir / "project";
+    std::filesystem::create_directories(root);
+    std::filesystem::copy(fixtures, root, std::filesystem::copy_options::recursive);
+    return root;
+}
+
+// render_preview of a small PNG from an explicit camera, the response as the
+// wire carries it (a result or an error).
+Json pv1RenderPreview(Rpc &rpc, std::uint64_t graph_generation) {
+    return rpc.call("render_preview",
+                    {{"capture",
+                      {{"width", 16},
+                       {"height", 16},
+                       {"pixel_encoding", "png"},
+                       {"camera",
+                        {{"position", {0.0, 0.0, -3.0}},
+                         {"target", {0.0, 0.0, 0.0}},
+                         {"up", {0.0, 1.0, 0.0}},
+                         {"projection",
+                          {{"kind", "perspective"}, {"yfov", 0.8}, {"znear", 0.1}, {"zfar", 100.0}}}}},
+                       {"graph_generation", graph_generation},
+                       {"max_bytes", 1 << 20}}}});
+}
+
+} // namespace
+
+// PV-1: a project authoring a history target starts and plays; only the
+// one-shot preview is unavailable, said in get_status / get_frame_plan, and
+// render_preview refuses by name. An edit that removes the history (an RL-1
+// reload of the rewritten root) makes preview available and render_preview
+// renders; edits that add a history target and read it (edit_batch, then
+// edit_preset_pass) are committed, not refused, and preview is unavailable
+// again with the new reason.
+TEST_CASE("PV-1 an authored history target plays with the one-shot preview unavailable, and edits move preview "
+          "both ways without refusing",
+          "[pv1][preview][render-preview][rl1][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("pv1_history");
+    const auto root = pv1HistoryProject(dir.root);
+    const auto rendering_path = root / "passes/main.json";
+    const auto capture = dir.root / "capture.png";
+    Fr3Engine engine{root};
+    auto &rpc = engine.rpc;
+
+    // History works: each frame adds to the last.
+    const auto first = rpc.frame(capture);
+    (void)rpc.result("step_frame");
+    const auto second = rpc.frame(capture);
+    CHECK(differingPixels(first, second) > 0);
+
+    const auto history_unavailable = [](const Json &preview) {
+        INFO(preview.dump(2));
+        REQUIRE(preview.at("available") == false);
+        const auto &reason = preview.at("reason");
+        CHECK(reason.at("code") == "preview.unsupported_authoring@1");
+        CHECK(reason.at("feature") == "history");
+        CHECK(reason.at("target") == "accum");
+        CHECK(reason.at("message") == "preview graph '<config>' rejects authored history target 'accum'");
+    };
+    history_unavailable(rpc.result("get_status").at("preview"));
+    history_unavailable(rpc.result("get_frame_plan").at("preview"));
+    {
+        const auto refused = pv1RenderPreview(rpc, 0);
+        INFO(refused.dump(2));
+        REQUIRE(refused.contains("error"));
+        const auto &data = refused.at("error").at("data");
+        CHECK(data.at("code") == "preview.unavailable@1");
+        CHECK(data.at("method") == "render_preview");
+        CHECK(data.at("reason").at("feature") == "history");
+        CHECK(data.at("reason").at("target") == "accum");
+    }
+
+    // The root rewritten without history and reloaded (RL-1): committed with
+    // preview available, and render_preview renders.
+    {
+        auto rendering = Json::parse(readFile(rendering_path));
+        auto &section = rendering.at("rendering");
+        section.at("render_targets").at(0).erase("history");
+        section.at("rendering_passes").at(0).at("passes").at(0).at("input") = Json::array();
+        writeFile(rendering_path, rendering.dump(2));
+    }
+    const Json available{{"available", true}};
+    {
+        const auto reloaded = engine.settle(rpc.result("reload_render_documents"));
+        INFO(reloaded.dump(2));
+        REQUIRE(reloaded.at("status") == "committed");
+        CHECK(reloaded.at("preview") == available);
+    }
+    CHECK(rpc.result("get_status").at("preview") == available);
+    CHECK(rpc.result("get_frame_plan").at("preview") == available);
+    {
+        const auto generation = rpc.result("eval_preview").at("graph_generation").get<std::uint64_t>();
+        CHECK(generation != 0);
+        const auto rendered = pv1RenderPreview(rpc, generation);
+        if (rendered.contains("error")) FAIL(rendered.at("error").dump(2));
+        CHECK(rendered.at("result").at("status") == "rendered");
+    }
+
+    // A history target added through edit_batch: it is declared in the
+    // editor's render target fragment, which preview leaves out, so preview
+    // stays available.
+    {
+        const auto added = engine.batch(Json::array({
+            {{"method", "edit_render_targets"},
+             {"params",
+              {{"ops", Json::array({{{"op", "add"},
+                                     {"target",
+                                      {{"name", "trail"},
+                                       {"extent_scale", 1.0},
+                                       {"format", "R16G16B16A16_SFLOAT"},
+                                       {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+                                       {"role", "color"},
+                                       {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+                                       {"history", true},
+                                       {"clear_color", {0.0, 0.0, 0.0, 0.0}}}}}})}}}},
+        }));
+        INFO(added.dump(2));
+        REQUIRE(added.at("status") == "committed");
+        CHECK(added.at("preview") == available);
+    }
+    // present reading last frame's trail is what preview cannot take: the
+    // edit is committed (it was refused before PV-1) and preview is
+    // unavailable, named by that pass.
+    {
+        const auto read = engine.send("edit_preset_pass",
+                                      {{"graph", "main_render"},
+                                       {"pass_name", "present"},
+                                       {"input", Json::array({"accum", "trail@history"})},
+                                       {"output", q14e_present_output},
+                                       {"shader",
+                                        {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}});
+        INFO(read.dump(2));
+        REQUIRE(read.at("status") == "committed");
+        const auto &preview = read.at("preview");
+        REQUIRE(preview.at("available") == false);
+        CHECK(preview.at("reason").at("code") == "preview.unsupported_authoring@1");
+        CHECK(preview.at("reason").at("feature") == "history_read");
+        CHECK(preview.at("reason").at("graph") == "main_render");
+        CHECK(preview.at("reason").at("pass") == "present");
+        CHECK(rpc.result("get_status").at("preview") == preview);
+    }
+    CHECK(rpc.result("get_frame_plan").at("preview").at("available") == false);
+    {
+        const auto refused = pv1RenderPreview(rpc, 0);
+        REQUIRE(refused.contains("error"));
+        CHECK(refused.at("error").at("data").at("code") == "preview.unavailable@1");
+        CHECK(refused.at("error").at("data").at("reason").at("feature") == "history_read");
+    }
+    (void)rpc.frame(capture);
 }
 
 } // namespace Pelican

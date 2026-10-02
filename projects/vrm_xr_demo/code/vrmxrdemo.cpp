@@ -105,7 +105,10 @@ class VrmXrDemoSystem {
             const float dy = head.position[1] - gaze_height;
             const float dz = head.position[2];
             const float horizontal = std::max(0.0001f, std::sqrt(dx * dx + dz * dz));
-            return {radiansToDegrees(std::atan2(dx, -dz)),
+            // CC-1b: the hero is no longer turned 180 degrees about Z, so its
+            // own +X is the world's +X (it was -X); the yaw measured from the
+            // world turns the other way.
+            return {radiansToDegrees(std::atan2(-dx, -dz)),
                     radiansToDegrees(std::atan2(-dy, horizontal))};
         }
 

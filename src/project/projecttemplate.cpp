@@ -104,8 +104,7 @@ constexpr std::string_view project_json = R"json({
     "camera": {
       "yfov": 0.7853981633974483,
       "znear": 0.1,
-      "zfar": 1000,
-      "up": [0.0, -1.0, 0.0]
+      "zfar": 1000
     },
     "default_scene_id": "default_scene",
     "scene_data_json": "scenes/main.scene.json",
@@ -131,7 +130,7 @@ constexpr std::string_view scene_json = R"json({
           "components": [
             {
               "name": "transform",
-              "pos": [0.0, 0.0, -3.0],
+              "pos": [0.0, 0.0, 3.0],
               "rotation": [0.0, 0.0, 0.0, 1.0],
               "scale": [1.0, 1.0, 1.0]
             },

@@ -1,6 +1,7 @@
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/logicalframegraphadapter.hpp"
+#include "../src/core/renderingpass/oncescheduler.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/project/featurecompose.hpp"
@@ -2577,6 +2578,69 @@ TEST_CASE("LP-Va view_select requires a physical target plan",
     REQUIRE_NOTHROW(runtime.registerExecutionPlan(
         RenderingPassId{41}, rendering_pass,
         planFrameGraph(definition), pipeline));
+}
+
+// PS-1: the frame's once nodes run when something they depend on changed,
+// and on no other frame. The decision is pure: the facts stand in for the
+// render targets' images and the host buffers' bytes.
+TEST_CASE("PS-1 a once node runs on a new generation, a request, a recreated output, other host bytes or an upstream run",
+          "[frame-plan][ps1]") {
+    const std::vector<OnceScheduleNode> nodes{
+        {"h0", {"level"}, {"h0_image"}},
+        {"twiddle", {"h0_image"}, {"twiddle_image"}},
+        {"apart", {}, {"apart_image"}},
+    };
+    std::map<std::string, std::uint64_t> images{{"h0_image", 1}, {"twiddle_image", 2}, {"apart_image", 3}};
+    std::map<std::string, std::uint64_t> digests{{"level", 10}};
+    const OnceResourceFacts facts{
+        [&](std::string_view resource) -> std::optional<std::uint64_t> {
+            const auto found = images.find(std::string{resource});
+            return found != images.end() ? std::optional{found->second} : std::nullopt;
+        },
+        [&](std::string_view resource) -> std::optional<std::uint64_t> {
+            const auto found = digests.find(std::string{resource});
+            return found != digests.end() ? std::optional{found->second} : std::nullopt;
+        },
+    };
+    std::map<std::string, OnceRunRecord, std::less<>> last;
+    std::uint64_t frame = 0;
+    // One frame: what runs, and its records kept.
+    const auto step = [&](std::uint64_t generation, const std::set<std::string, std::less<>> &requested = {}) {
+        ++frame;
+        const auto plan = planOnceRuns(nodes, last, generation, facts, requested);
+        std::map<std::string, std::string> ran;
+        for (std::size_t index = 0; index < nodes.size(); ++index) {
+            if (!plan.runs(index)) continue;
+            ran.emplace(nodes[index].name, *plan.reasons[index]);
+            last[nodes[index].name] = onceRunRecord(nodes[index], generation, frame, facts);
+        }
+        return ran;
+    };
+    using Ran = std::map<std::string, std::string>;
+    CHECK(step(1) == Ran{{"h0", "generation"}, {"twiddle", "generation"}, {"apart", "generation"}});
+    for (int repeat = 0; repeat < 4; ++repeat) CHECK(step(1).empty());
+    CHECK(last.at("h0").frame == 1);
+    CHECK(last.at("h0").generation == 1);
+    // rerun_once on h0: twiddle reads what h0 writes, so it runs too.
+    CHECK(step(1, {"h0"}) == Ran{{"h0", "requested"}, {"twiddle", "upstream"}});
+    CHECK(step(1, {"twiddle"}) == Ran{{"twiddle", "requested"}});
+    CHECK(step(1).empty());
+    // Other bytes in the buffer h0 reads (a render.scalar edited without a
+    // rebuild): h0 and, through it, twiddle.
+    digests["level"] = 11;
+    CHECK(step(1) == Ran{{"h0", "input_changed"}, {"twiddle", "upstream"}});
+    CHECK(step(1).empty());
+    // The same bytes again do not count.
+    digests["level"] = 11;
+    CHECK(step(1).empty());
+    // twiddle's output made anew (a resize): only twiddle.
+    images["twiddle_image"] = 20;
+    CHECK(step(1) == Ran{{"twiddle", "output_recreated"}});
+    CHECK(step(1).empty());
+    // A new generation: everything once more, then nothing.
+    CHECK(step(2) == Ran{{"h0", "generation"}, {"twiddle", "generation"}, {"apart", "generation"}});
+    CHECK(step(2).empty());
+    CHECK(last.at("apart").generation == 2);
 }
 
 } // namespace Pelican

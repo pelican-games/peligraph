@@ -40,7 +40,7 @@ file(WRITE "${OUT_DIR}/project/project.json" [=[
     "window_size": {"width": 160, "height": 90},
     "fullscreen": false,
     "framerate": 30,
-    "camera": {"yfov": 0.7853981633974483, "znear": 0.1, "zfar": 1000.0, "up": [0.0, 1.0, 0.0]},
+    "camera": {"yfov": 0.7853981633974483, "znear": 0.1, "zfar": 1000.0},
     "default_scene_id": "default_scene",
     "scene_data_json": "scenes/main.scene.json",
     "asset_data_json": "assets/asset_data.json",
@@ -74,7 +74,7 @@ file(WRITE "${OUT_DIR}/project/scenes/main.scene.json" [=[
         {
           "name": "Camera",
           "components": [
-            {"name": "transform", "pos": [0.0, 0.0, -3.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]},
+            {"name": "transform", "pos": [0.0, 0.0, -3.0], "rotation": [0.0, 1.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
             {"name": "camera"}
           ]
         },

@@ -1,8 +1,10 @@
 #include "assetscommand.hpp"
+#include "audiocommand.hpp"
 #include "bakecameracommand.hpp"
 #include "canvaslowercommand.hpp"
 #include "distconfig.hpp"
 #include "graphcatalogcommand.hpp"
+#include "imagecommand.hpp"
 #include "importcommand.hpp"
 #include "introlinkcommand.hpp"
 #include "materialcommand.hpp"
@@ -17,8 +19,14 @@ int main(int argc, char *argv[]) {
     if (argc > 1 && std::string_view{argv[1]} == "assets") {
         return Pelican::DevCli::runAssetsCommand(argc - 1, argv + 1);
     }
+    if (argc > 1 && std::string_view{argv[1]} == "audio") {
+        return Pelican::DevCli::runAudioCommand(argc - 1, argv + 1);
+    }
     if (argc > 1 && std::string_view{argv[1]} == "bake-camera") {
         return Pelican::DevCli::runBakeCameraCommand(argc - 1, argv + 1);
+    }
+    if (argc > 1 && std::string_view{argv[1]} == "image") {
+        return Pelican::DevCli::runImageCommand(argc - 1, argv + 1);
     }
     if (argc > 1 && std::string_view{argv[1]} == "import") {
         return Pelican::DevCli::runImportCommand(argc - 1, argv + 1);
@@ -48,7 +56,7 @@ int main(int argc, char *argv[]) {
         return Pelican::DevCli::runIntroLinkCommand(argc - 1, argv + 1);
     }
 
-    std::cerr << "usage: pelican_cli <assets|bake-camera|import|dist-config|package|project|dump-lowered-material|vrm|graph-catalog|canvas-lower|intro-link> ..."
+    std::cerr << "usage: pelican_cli <assets|audio|bake-camera|image|import|dist-config|package|project|dump-lowered-material|vrm|graph-catalog|canvas-lower|intro-link> ..."
               << std::endl;
     return -1;
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "providerlisting.hpp"
 #include "renderingpass.hpp"
 #include "../../project/logicalrendergraph.hpp"
 #include "../userpublic/details/reload/registrationowner.hpp"
@@ -103,6 +104,10 @@ class PassImplementationRegistry {
         internal::RegistrationOwner owner) noexcept;
 
     PassImplementationRegistrySnapshot snapshot() const;
+
+    // EL-6: every provider a pass's implementation.provider may name now,
+    // by name.
+    std::vector<RenderProviderListing> providerListing() const;
 
     void activateOwner(
         internal::RegistrationOwner owner) noexcept;

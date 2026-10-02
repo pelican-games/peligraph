@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -325,6 +326,9 @@ OriginTransitionMap originTransitionMapFromJson(const nlohmann::json &value);
 class SceneProjectionState {
     AuthoringSceneDocument authoring_;
     ResolvedScene resolved_;
+    // Copies describe the same immutable pair; every newly resolved pair gets
+    // a distinct identity, even if a caller reuses revision/generation numbers.
+    std::shared_ptr<const void> snapshot_identity_ = std::make_shared<const char>(0);
 
     SceneProjectionState(AuthoringSceneDocument authoring,
                          ResolvedScene resolved);
@@ -341,6 +345,9 @@ class SceneProjectionState {
     SceneRevision revision() const noexcept { return authoring_.revision(); }
     SceneResolverGeneration resolverGeneration() const noexcept {
         return resolved_.resolverGeneration();
+    }
+    std::shared_ptr<const void> snapshotIdentity() const noexcept {
+        return snapshot_identity_;
     }
     void swap(SceneProjectionState &other) noexcept;
 };

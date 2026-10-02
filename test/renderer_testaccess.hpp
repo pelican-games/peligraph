@@ -78,6 +78,18 @@ struct RendererTestAccess {
         return renderer.graph_variant_transition_trace;
     }
 
+    // FP-1: how many times get_frame_plan's generation part has been built,
+    // and forgetting it so the next call builds it the way a first call
+    // does.
+    static std::uint64_t
+    framePlanGenerationPartBuilds(const Target &renderer) noexcept {
+        return renderer.frame_plan_generation_part.builds;
+    }
+
+    static void dropFramePlanGenerationPart(const Target &renderer) noexcept {
+        renderer.frame_plan_generation_part.plan = nullptr;
+    }
+
     // Execution trace. Recording is off unless a test turns it on.
 
     static void setExecutionTracing(Target &renderer, bool enabled) {

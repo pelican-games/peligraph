@@ -1,10 +1,11 @@
 #include "contentdigest.hpp"
 
+#include "../../project/sha256stream.hpp"
+
 #include <algorithm>
-#include <array>
 #include <fstream>
 #include <mutex>
-#include <picosha2.h>
+#include <stdexcept>
 #include <system_error>
 #include <vector>
 
@@ -44,7 +45,9 @@ std::optional<FileIdentity> identityFromHandle(HANDLE handle, std::string &error
 
 } // namespace
 
-ContentDigestResult readStableContentDigest(const std::filesystem::path &path, const CancelCheck &cancel) {
+namespace {
+
+ContentDigestResult readStableContentDigestImpl(const std::filesystem::path &path, const CancelCheck &cancel) {
     if (cancel && cancel()) return {.status = DigestReadStatus::cancelled};
 #ifdef _WIN32
     const HANDLE file = CreateFileW(extendedPath(path).c_str(), GENERIC_READ,
@@ -67,9 +70,8 @@ ContentDigestResult readStableContentDigest(const std::filesystem::path &path, c
     const auto before = identityFromHandle(file, identity_error);
     if (!before) return {.status = DigestReadStatus::retry, .error = std::move(identity_error)};
 
-    picosha2::hash256_one_by_one hasher;
-    hasher.init();
-    std::array<unsigned char, 64 * 1024> buffer{};
+    Sha256Stream hasher;
+    std::vector<unsigned char> buffer(Sha256Stream::read_chunk_bytes);
     std::uint64_t bytes = 0;
     for (;;) {
         if (cancel && cancel()) return {.status = DigestReadStatus::cancelled};
@@ -81,7 +83,7 @@ ContentDigestResult readStableContentDigest(const std::filesystem::path &path, c
                     .error = "ReadFile failed: " + std::to_string(code)};
         }
         if (read == 0) break;
-        hasher.process(buffer.begin(), buffer.begin() + read);
+        hasher.update(buffer.data(), read);
         bytes += read;
     }
     const auto after = identityFromHandle(file, identity_error);
@@ -89,11 +91,8 @@ ContentDigestResult readStableContentDigest(const std::filesystem::path &path, c
         return {.status = DigestReadStatus::retry, .byte_count = bytes,
                 .error = "file changed while hashing"};
     }
-    hasher.finish();
-    std::vector<unsigned char> digest(picosha2::k_digest_size);
-    hasher.get_hash_bytes(digest.begin(), digest.end());
     return {.status = DigestReadStatus::stable,
-            .sha256 = picosha2::bytes_to_hex_string(digest.begin(), digest.end()),
+            .sha256 = hasher.finishHex(),
             .byte_count = bytes, .identity = after};
 #else
     std::error_code ec;
@@ -104,30 +103,46 @@ ContentDigestResult readStableContentDigest(const std::filesystem::path &path, c
     if (ec) return {.status = DigestReadStatus::retry, .error = ec.message()};
     std::ifstream stream(path, std::ios::binary);
     if (!stream) return {.status = DigestReadStatus::retry, .error = "open failed"};
-    picosha2::hash256_one_by_one hasher;
-    hasher.init();
-    std::array<unsigned char, 64 * 1024> buffer{};
+    Sha256Stream hasher;
+    std::vector<unsigned char> buffer(Sha256Stream::read_chunk_bytes);
     std::uint64_t bytes = 0;
     while (stream) {
         if (cancel && cancel()) return {.status = DigestReadStatus::cancelled};
         stream.read(reinterpret_cast<char *>(buffer.data()), buffer.size());
         const auto count = static_cast<std::size_t>(stream.gcount());
-        hasher.process(buffer.begin(), buffer.begin() + count);
+        hasher.update(buffer.data(), count);
         bytes += count;
     }
     const auto after_size = std::filesystem::file_size(path, ec);
     const auto after_time = std::filesystem::last_write_time(path, ec);
     if (ec || before_size != after_size || before_time != after_time || bytes != after_size)
         return {.status = DigestReadStatus::retry, .byte_count = bytes, .error = "file changed while hashing"};
-    hasher.finish();
-    std::vector<unsigned char> digest(picosha2::k_digest_size);
-    hasher.get_hash_bytes(digest.begin(), digest.end());
     return {.status = DigestReadStatus::stable,
-            .sha256 = picosha2::bytes_to_hex_string(digest.begin(), digest.end()),
+            .sha256 = hasher.finishHex(),
             .byte_count = bytes,
             .identity = FileIdentity{0, 0, bytes, after_time}};
 #endif
 }
+
+} // namespace
+
+ContentDigestResult readStableContentDigest(const std::filesystem::path &path, const CancelCheck &cancel) {
+    try {
+        return readStableContentDigestImpl(path, cancel);
+    } catch (const std::runtime_error &error) {
+        // Sha256Stream throws only when the platform hasher fails.
+        return {.status = DigestReadStatus::error, .error = error.what()};
+    }
+}
+
+namespace {
+
+// An unknown live state (seeded without hashing) equals no digest.
+bool liveEquals(const SourceDigestState &state, const std::string &digest) {
+    return !state.live_unknown && state.live_digest == digest;
+}
+
+} // namespace
 
 SourceDigestState ContentDigestState::snapshot(const AssetKey &key) const {
     std::scoped_lock lock{mutex_};
@@ -140,6 +155,16 @@ void ContentDigestState::seedLive(const AssetKey &key, const std::string &digest
     auto &state = states_[key];
     state.observed_digest = digest;
     state.live_digest = digest;
+    state.live_unknown = false;
+    state.pending_digest.reset();
+}
+
+void ContentDigestState::seedLiveUnknown(const AssetKey &key) {
+    std::scoped_lock lock{mutex_};
+    auto &state = states_[key];
+    state.observed_digest.reset();
+    state.live_digest.reset();
+    state.live_unknown = true;
     state.pending_digest.reset();
 }
 
@@ -147,7 +172,10 @@ void ContentDigestState::registerSelfWrite(const AssetKey &key, std::string expe
                                            std::uint64_t epoch, bool runtime_apply_succeeded) {
     std::scoped_lock lock{mutex_};
     auto &state = states_[key];
-    if (runtime_apply_succeeded) state.live_digest = expected_digest;
+    if (runtime_apply_succeeded) {
+        state.live_digest = expected_digest;
+        state.live_unknown = false;
+    }
     state.self_write = SelfWriteToken{std::move(expected_digest), epoch, runtime_apply_succeeded};
 }
 
@@ -159,7 +187,7 @@ ObserveDisposition ContentDigestState::observe(const AssetKey &key, const std::s
     state.pending_digest = digest;
     if (state.self_write) {
         const bool match = state.self_write->expected_digest == digest && state.self_write->epoch == epoch;
-        const bool may_consume = match && state.self_write->runtime_applied && state.live_digest == digest;
+        const bool may_consume = match && state.self_write->runtime_applied && liveEquals(state, digest);
         state.self_write.reset(); // one observation consumes or invalidates the token
         if (may_consume) {
             state.pending_digest.reset();
@@ -170,7 +198,7 @@ ObserveDisposition ContentDigestState::observe(const AssetKey &key, const std::s
         // cannot suppress work in the new gate epoch.
         if (!match) return ObserveDisposition::queue_reload;
     }
-    if (state.live_digest == digest) {
+    if (liveEquals(state, digest)) {
         state.pending_digest.reset();
         return ObserveDisposition::unchanged;
     }
@@ -183,13 +211,14 @@ bool ContentDigestState::observeMissing(const AssetKey &key) {
     state.observed_digest.reset();
     state.pending_digest.reset();
     state.self_write.reset();
-    return state.live_digest.has_value();
+    return state.live_digest.has_value() || state.live_unknown;
 }
 
 void ContentDigestState::commitSucceeded(const AssetKey &key, const std::optional<std::string> &digest) {
     std::scoped_lock lock{mutex_};
     auto &state = states_[key];
     state.live_digest = digest;
+    state.live_unknown = false;
     state.pending_digest.reset();
 }
 

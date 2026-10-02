@@ -94,6 +94,29 @@ OrderedJson schemaFieldJson(
     return result;
 }
 
+// A codec field read only under some values of another field carries that
+// condition beside it (SC-1): which values read it, which of them refuse its
+// absence, and what an absent field reads as otherwise.
+OrderedJson codecSchemaFieldJson(
+    const StructFieldSchema &field, std::string_view codec_name,
+    const EditorCommandRpcAdapter::SchemaTypeNameResolver &resolver) {
+    auto result = schemaFieldJson(field, resolver);
+    const auto names = [](std::span<const std::string_view> values) {
+        auto array = OrderedJson::array();
+        for (const auto value : values) array.push_back(value);
+        return array;
+    };
+    for (const auto &condition : componentCodecFieldConditions(codec_name)) {
+        if (condition.field != field.name) continue;
+        if (condition.default_value) result["default"] = *condition.default_value;
+        result["discriminant"] = condition.discriminant;
+        result["applies_to"] = names(condition.applies_to);
+        if (!condition.required_for.empty())
+            result["required_for"] = names(condition.required_for);
+    }
+    return result;
+}
+
 OrderedJson schemaNodeJson(
     const Schema::Node &node,
     const EditorCommandRpcAdapter::SchemaTypeNameResolver &resolver) {
@@ -163,6 +186,19 @@ EditorSceneTreeRequest parseSceneTreeRequest(const Json &params) {
     requireObjectParams(params, method);
     requireOnlyFields(params, {"scene_id"}, method);
     return {.scene_id = optionalString(params, "scene_id", method)};
+}
+
+EditorSceneOutlineRequest parseSceneOutlineRequest(const Json &params) {
+    constexpr auto method = "scene_outline";
+    requireObjectParams(params, method);
+    requireOnlyFields(params, {"scene_id", "if_scene_revision"}, method);
+    EditorSceneOutlineRequest request{
+        .scene_id = optionalString(params, "scene_id", method)};
+    if (const auto found = params.find("if_scene_revision"); found != params.end()) {
+        request.if_scene_revision = SceneRevision{
+            exactUnsignedInteger(*found, "scene_outline if_scene_revision")};
+    }
+    return request;
 }
 
 EditorGetComponentsRequest parseGetComponentsRequest(
@@ -755,6 +791,57 @@ EditorSceneTreeResult EditorCommandService::sceneTree(const EditorSceneTreeReque
     return result;
 }
 
+EditorSceneOutlineResult EditorCommandService::sceneOutline(
+    const EditorSceneOutlineRequest &request) const {
+    if (request.if_scene_revision && !request.scene_id) {
+        invalidParams("scene_outline if_scene_revision requires scene_id");
+    }
+    if (request.if_scene_revision &&
+        request.if_scene_revision->value > maxExactEditorJsonInteger) {
+        invalidParams("scene_outline if_scene_revision exceeds 2^53-1");
+    }
+    const auto &source = resolved();
+    const auto &scene = selectScene(source.scenes(), request.scene_id);
+    if (source.revision().value > maxExactEditorJsonInteger) {
+        throw std::overflow_error("SceneRevision exceeds 2^53-1");
+    }
+    EditorSceneOutlineResult result{
+        .scene_revision = source.revision(), .scene_id = scene.scene_id};
+    if (request.if_scene_revision == source.revision()) {
+        result.not_modified = true;
+        return result;
+    }
+
+    // Resolved objects retain authored declaration order. Do not call
+    // queryObject here: it expands component JSON, schema and live ECS state.
+    std::unordered_map<std::string_view, AuthoringObjectId> ids_by_name;
+    ids_by_name.reserve(scene.objects.size());
+    for (const auto &object : scene.objects) {
+        if (object.authoring_object_id.value == 0 ||
+            object.authoring_object_id.value > maxExactEditorJsonInteger) {
+            throw std::logic_error("scene_outline requires an exact non-zero authoring ID");
+        }
+        if (object.name) ids_by_name.emplace(*object.name, object.authoring_object_id);
+    }
+    result.objects.reserve(scene.objects.size());
+    for (const auto &object : scene.objects) {
+        std::optional<AuthoringObjectId> parent_id;
+        if (object.parent) {
+            const auto parent = ids_by_name.find(*object.parent);
+            if (parent == ids_by_name.end()) {
+                throw std::logic_error("scene_outline resolved parent is missing");
+            }
+            parent_id = parent->second;
+        }
+        result.objects.push_back({
+            .authoring_object_id = object.authoring_object_id,
+            .declaration_index = object.authoring_object_index,
+            .name = object.name,
+            .parent_authoring_object_id = parent_id});
+    }
+    return result;
+}
+
 EditorSceneRevisionResult EditorCommandService::getSceneRevision() const {
     if (edit_) synchronizePreviewWatch();
     const auto revision = resolved().revision();
@@ -842,7 +929,8 @@ OrderedJson EditorCommandService::getComponentAddCandidates(
         candidate["component_template"] = std::move(component_template);
         candidate["schema_fields"] = OrderedJson::array();
         for (const auto &field : codec.fieldSchema())
-            candidate["schema_fields"].push_back(schemaFieldJson(field, schema_type_name));
+            candidate["schema_fields"].push_back(
+                codecSchemaFieldJson(field, codec.name, schema_type_name));
         std::string_view asset_kind, asset_field;
         if (codec.name == "simplemodelview") { asset_kind = "model"; asset_field = "model"; }
         else if (codec.name == "sprite_view") { asset_kind = "texture"; asset_field = "texture"; }
@@ -1398,6 +1486,17 @@ OrderedJson EditorCommandService::verifyFold(const Json &params) {
     return render_config_editor_->verifyFold(params);
 }
 
+// AB-1.
+OrderedJson EditorCommandService::bakeAudioAnalysis(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->bakeAudioAnalysis(params);
+}
+
+OrderedJson EditorCommandService::listDerivedAssets(const Json &params) const {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->listDerivedAssets(params);
+}
+
 OrderedJson EditorCommandService::getGraphInstances(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->getGraphInstances(params);
@@ -1446,6 +1545,11 @@ OrderedJson EditorCommandService::getGraphCatalog(const Json &params) const {
 OrderedJson EditorCommandService::getEngineShaders(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->getEngineShaders(params);
+}
+
+OrderedJson EditorCommandService::getRegisteredProviders(const Json &params) const {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->getRegisteredProviders(params);
 }
 
 OrderedJson EditorCommandService::getShaderInterface(const Json &params) const {
@@ -1512,6 +1616,12 @@ OrderedJson EditorCommandService::editRenderTargets(const Json &params) {
             "render config editor service is unavailable");
     }
     return render_config_editor_->editRenderTargets(params);
+}
+
+// FR-3.
+OrderedJson EditorCommandService::editBatch(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->editBatch(params);
 }
 
 // RD-1.
@@ -1715,7 +1825,7 @@ OrderedJson editorComponentQueryJson(
         result["schema"]["fields"] = OrderedJson::array();
         for (const auto &field : component.schema_fields) {
             result["schema"]["fields"].push_back(
-                schemaFieldJson(field, resolver));
+                codecSchemaFieldJson(field, component.codec_name, resolver));
         }
         if (component.schema_node)
             result["schema"]["node"] =
@@ -1847,6 +1957,25 @@ OrderedJson editorQueryJson(const EditorSceneTreeResult &scene) {
     return editorSceneQueryJson(scene, resolver);
 }
 
+OrderedJson editorQueryJson(const EditorSceneOutlineResult &scene) {
+    OrderedJson result{{"scene_revision", scene.scene_revision.value},
+                       {"scene_id", scene.scene_id},
+                       {"not_modified", scene.not_modified}};
+    if (scene.not_modified) return result;
+    result["objects"] = OrderedJson::array();
+    for (const auto &object : scene.objects) {
+        OrderedJson row{{"authoring_object_id", object.authoring_object_id.value},
+                        {"declaration_index", object.declaration_index},
+                        {"parent_authoring_object_id", nullptr}};
+        if (object.parent_authoring_object_id) {
+            row["parent_authoring_object_id"] = object.parent_authoring_object_id->value;
+        }
+        if (object.name) row["name"] = *object.name;
+        result["objects"].push_back(std::move(row));
+    }
+    return result;
+}
+
 OrderedJson editorQueryJson(const EditorListAssetsResult &assets) {
     OrderedJson result;
     result["assets"] = OrderedJson::array();
@@ -1944,6 +2073,10 @@ EditorCommandRpcAdapter::EditorCommandRpcAdapter(
 OrderedJson EditorCommandRpcAdapter::sceneTree(const Json &params) const {
     return editorSceneQueryJson(service_.sceneTree(parseSceneTreeRequest(params)),
                                 schema_type_name_resolver_);
+}
+
+OrderedJson EditorCommandRpcAdapter::sceneOutline(const Json &params) const {
+    return editorQueryJson(service_.sceneOutline(parseSceneOutlineRequest(params)));
 }
 
 OrderedJson EditorCommandRpcAdapter::getSceneRevision(const Json &params) const {
@@ -2446,6 +2579,15 @@ OrderedJson EditorCommandRpcAdapter::verifyFold(const Json &params) const {
     return mutable_service_->verifyFold(params);
 }
 
+OrderedJson EditorCommandRpcAdapter::bakeAudioAnalysis(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
+    return mutable_service_->bakeAudioAnalysis(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::listDerivedAssets(const Json &params) const {
+    return service_.listDerivedAssets(params);
+}
+
 OrderedJson EditorCommandRpcAdapter::getGraphInstances(const Json &params) const {
     return service_.getGraphInstances(params);
 }
@@ -2488,6 +2630,10 @@ OrderedJson EditorCommandRpcAdapter::getGraphCatalog(const Json &params) const {
 
 OrderedJson EditorCommandRpcAdapter::getEngineShaders(const Json &params) const {
     return service_.getEngineShaders(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getRegisteredProviders(const Json &params) const {
+    return service_.getRegisteredProviders(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getShaderInterface(const Json &params) const {
@@ -2557,6 +2703,11 @@ OrderedJson EditorCommandRpcAdapter::editRenderTargets(
             "edit_render_targets requires a mutable editor service");
     }
     return mutable_service_->editRenderTargets(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::editBatch(const Json &params) const {
+    if (mutable_service_ == nullptr) throw std::logic_error("edit_batch requires a mutable editor service");
+    return mutable_service_->editBatch(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getRenderDocuments(const Json &params) const {

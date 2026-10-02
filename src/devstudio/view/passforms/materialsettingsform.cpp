@@ -1,6 +1,8 @@
 #include "materialsettingsform.hpp"
 
 #include "materialoutput.hpp"
+// UX-11, decision 2: the Tags are the Graph's tag picker.
+#include "../graphcanvastagpicker.hpp"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -62,10 +64,11 @@ std::vector<std::string> writeMaskNames() {
     return result;
 }
 
-// The names a binding of each kind can have: the engine's screen input
-// contracts (materialscreeninput.cpp) and its feature-owned surface ones. A
-// material resource is the shader's own port name.
-std::vector<std::string> resourceNamesOf(std::string_view kind) {
+// The names a binding of each kind can have, for an engine that does not list
+// them (before MP-1): its screen input contracts (materialscreeninput.cpp)
+// and its feature-owned surface ones. A material resource is the shader's own
+// port name.
+std::vector<std::string> fixedResourceNamesOf(std::string_view kind) {
     if (kind == "screen_inputs")
         return {"opaque_color", "opaque_depth", "scene_depth", "linear_view_depth"};
     if (kind == "surface_resources")
@@ -78,6 +81,15 @@ void putOptional(Json &object, const char *key, std::optional<Json> value) {
         object[key] = std::move(*value);
     else
         object.erase(key);
+}
+
+// A tag list's names; what is not a string is no tag.
+std::vector<std::string> namesOf(const Json &names) {
+    std::vector<std::string> result;
+    if (names.is_array())
+        for (const auto &name : names)
+            if (name.is_string()) result.push_back(name.get<std::string>());
+    return result;
 }
 
 Json objectOr(const Json &object, const char *key) {
@@ -143,6 +155,7 @@ MaterialSettingsForm::MaterialSettingsForm(const QString &object_prefix,
     : PassForm(object_prefix, parent) {
     setObjectName(childName("materialSettings"));
     auto *form = new QFormLayout(this);
+    form_ = form;
     form->setContentsMargins(0, 0, 0, 0);
     const auto changed = [this] { notifyChanged(); };
 
@@ -159,20 +172,22 @@ MaterialSettingsForm::MaterialSettingsForm(const QString &object_prefix,
     auto *filter_row = new QWidget(this);
     auto *filter_layout = new QHBoxLayout(filter_row);
     filter_layout->setContentsMargins(0, 0, 0, 0);
-    filter_include_ = new QLineEdit(filter_row);
-    filter_include_->setObjectName(childName("materialFilter.include"));
-    filter_include_->setPlaceholderText(tr("any of these tags"));
+    // UX-11, decision 2: picked among the engine's tags (the Loop's picker),
+    // a new one typed in the menu's "+ new tag" line.
+    filter_include_ = new GraphCanvasTagPicker(childName("materialFilter.include"),
+                                               tr("any tag (every material)"), filter_row);
     filter_include_->setToolTip(tr("material_filter.include: materials with any "
-                                   "of these tags (commas between); empty: every material"));
-    filter_exclude_ = new QLineEdit(filter_row);
-    filter_exclude_->setObjectName(childName("materialFilter.exclude"));
-    filter_exclude_->setPlaceholderText(tr("none of these tags"));
+                                   "of these tags; none picked: every material"));
+    filter_exclude_ = new GraphCanvasTagPicker(childName("materialFilter.exclude"),
+                                               tr("leave none out"), filter_row);
     filter_exclude_->setToolTip(tr("material_filter.exclude: leave out materials "
                                    "with any of these tags"));
     filter_layout->addWidget(filter_include_, 1);
     filter_layout->addWidget(filter_exclude_, 1);
-    for (auto *field : {filter_include_, filter_exclude_})
-        QObject::connect(field, &QLineEdit::textChanged, this, changed);
+    for (auto *field : {filter_include_, filter_exclude_}) {
+        field->allowNewTags(true);
+        field->changed = changed;
+    }
     form->addRow(tr("Tags"), filter_row);
 
     variant_ = new QComboBox(this);
@@ -258,7 +273,10 @@ MaterialSettingsForm::MaterialSettingsForm(const QString &object_prefix,
     add_resource_ = new QPushButton(tr("Add binding"), resources_box_);
     add_resource_->setObjectName(childName("materialResources.add"));
     QObject::connect(add_resource_, &QPushButton::clicked, this, [this] {
-        addResourceRow("screen_inputs", "opaque_color", Json(nullptr));
+        // UX-12c: the engine's first screen input, opaque_color before MP-1.
+        const auto names = resourceNamesOf("screen_inputs");
+        addResourceRow("screen_inputs", names.empty() ? std::string{"opaque_color"} : names.front(),
+                       Json(nullptr));
         notifyChanged();
     });
     resources_layout->addWidget(add_resource_, 0, Qt::AlignLeft);
@@ -282,13 +300,34 @@ void MaterialSettingsForm::reset() { load(Json::object()); }
 
 void MaterialSettingsForm::setResourceCandidates(const std::vector<std::string> &resources) {
     resource_candidates_ = resources;
+    for (auto &row : resource_rows_) fillResourceReads(*row);
+}
+
+void MaterialSettingsForm::setResourceNameCandidates(
+    const std::string &kind, std::vector<std::pair<std::string, std::string>> names) {
+    auto &held = name_candidates_[kind];
+    if (held == names) return;
+    held = std::move(names);
     for (auto &row : resource_rows_) {
-        const QSignalBlocker blocker{row->resource};
-        const QString current = row->resource->currentText();
-        row->resource->clear();
-        for (const auto &resource : resources) row->resource->addItem(text(resource));
-        row->resource->setEditText(current);
+        fillResourceNames(*row);
+        fillResourceReads(*row);
     }
+}
+
+void MaterialSettingsForm::setResourceCandidateTypes(std::map<std::string, std::string> types) {
+    if (types == candidate_types_) return;
+    candidate_types_ = std::move(types);
+    for (auto &row : resource_rows_) fillResourceReads(*row);
+}
+
+std::vector<std::string> MaterialSettingsForm::resourceNamesOf(const std::string &kind) const {
+    if (const auto found = name_candidates_.find(kind);
+        found != name_candidates_.end() && !found->second.empty()) {
+        std::vector<std::string> names;
+        for (const auto &[name, type] : found->second) names.push_back(name);
+        return names;
+    }
+    return fixedResourceNamesOf(kind);
 }
 
 void MaterialSettingsForm::setVariantCandidates(const std::vector<std::string> &variants) {
@@ -297,6 +336,18 @@ void MaterialSettingsForm::setVariantCandidates(const std::vector<std::string> &
     variant_->clear();
     for (const auto &variant : variants) variant_->addItem(text(variant));
     variant_->setEditText(current);
+}
+
+void MaterialSettingsForm::setTagCandidates(const std::vector<std::string> &tags) {
+    if (tags == tag_candidates_) return;
+    tag_candidates_ = tags;
+    const Loading loading{*this};
+    for (auto *picker : {filter_include_, filter_exclude_}) picker->setTags(tags, picker->selected());
+}
+
+void MaterialSettingsForm::setContractAndVariantShown(bool shown) {
+    form_->setRowVisible(contract_, shown);
+    form_->setRowVisible(variant_, shown);
 }
 
 void MaterialSettingsForm::load(const Json &declaration) {
@@ -310,8 +361,8 @@ void MaterialSettingsForm::load(const Json &declaration) {
     passform::showOptionalValue(*contract_,
                                 contract == original_.end() ? nullptr : &*contract);
     const Json filter = objectOr(original_, "material_filter");
-    filter_include_->setText(passform::joinNames(filter.value("include", Json::array())));
-    filter_exclude_->setText(passform::joinNames(filter.value("exclude", Json::array())));
+    filter_include_->setTags(tag_candidates_, namesOf(filter.value("include", Json::array())));
+    filter_exclude_->setTags(tag_candidates_, namesOf(filter.value("exclude", Json::array())));
     variant_->setEditText(original_.contains("material_variant") &&
                                   original_.at("material_variant").is_string()
                               ? text(original_.at("material_variant").get<std::string>())
@@ -402,9 +453,41 @@ void MaterialSettingsForm::fillResourceNames(ResourceRow &row) {
     const QSignalBlocker blocker{row.name};
     const QString current = row.name->currentText();
     row.name->clear();
-    for (const auto &name : resourceNamesOf(row.kind->currentData().toString().toStdString()))
+    const auto kind = row.kind->currentData().toString().toStdString();
+    const auto listed = name_candidates_.find(kind);
+    for (const auto &name : resourceNamesOf(kind)) {
         row.name->addItem(text(name));
+        // UX-12c: what the engine says the name reads.
+        if (listed != name_candidates_.end())
+            for (const auto &[each, type] : listed->second)
+                if (each == name && !type.empty())
+                    row.name->setItemData(row.name->count() - 1,
+                                          tr("reads a %1").arg(text(type)), Qt::ToolTipRole);
+    }
     row.name->setEditText(current);
+}
+
+// UX-12c, decision 3: the resources a row offers to read are those whose type
+// is the one its name wants (or not known); what the row reads stays.
+void MaterialSettingsForm::fillResourceReads(ResourceRow &row) {
+    std::string wanted;
+    if (const auto listed = name_candidates_.find(row.kind->currentData().toString().toStdString());
+        listed != name_candidates_.end()) {
+        const auto name = row.name->currentText().trimmed().toStdString();
+        for (const auto &[each, type] : listed->second)
+            if (each == name) wanted = type;
+    }
+    const QSignalBlocker blocker{row.resource};
+    const QString current = row.resource->currentText();
+    row.resource->clear();
+    for (const auto &resource : resource_candidates_) {
+        if (!wanted.empty())
+            if (const auto type = candidate_types_.find(resource);
+                type != candidate_types_.end() && !type->second.empty() && type->second != wanted)
+                continue;
+        row.resource->addItem(text(resource));
+    }
+    row.resource->setEditText(current);
 }
 
 void MaterialSettingsForm::addResourceRow(const std::string &kind, const std::string &name,
@@ -427,7 +510,7 @@ void MaterialSettingsForm::addResourceRow(const std::string &kind, const std::st
     row->resource = new QComboBox(parent);
     row->resource->setEditable(true);
     row->resource->setInsertPolicy(QComboBox::NoInsert);
-    for (const auto &resource : resource_candidates_) row->resource->addItem(text(resource));
+    fillResourceReads(*row);
     const std::string reads = value.is_string() ? value.get<std::string>()
                               : value.is_object() ? value.value("resource", std::string{})
                                                   : std::string{};
@@ -446,9 +529,13 @@ void MaterialSettingsForm::addResourceRow(const std::string &kind, const std::st
     QObject::connect(row->kind, qOverload<int>(&QComboBox::currentIndexChanged), this,
                      [this, raw = row.get()] {
                          fillResourceNames(*raw);
+                         fillResourceReads(*raw);
                          notifyChanged();
                      });
-    QObject::connect(row->name, &QComboBox::currentTextChanged, this, changed);
+    QObject::connect(row->name, &QComboBox::currentTextChanged, this, [this, raw = row.get()] {
+        fillResourceReads(*raw);
+        notifyChanged();
+    });
     QObject::connect(row->resource, &QComboBox::currentTextChanged, this, changed);
     QObject::connect(row->remove, &QToolButton::clicked, this,
                      [this, button = row->remove] {
@@ -493,7 +580,7 @@ Json MaterialSettingsForm::settings() const {
     Json filter = objectOr(original_, "material_filter");
     for (const auto &[key, field] :
          {std::pair{"include", filter_include_}, std::pair{"exclude", filter_exclude_}}) {
-        const auto names = passform::splitNames(field->text());
+        const auto names = field->selected();
         if (names.empty())
             filter.erase(key);
         else

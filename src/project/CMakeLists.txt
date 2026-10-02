@@ -1,17 +1,20 @@
 add_library(pelican_project
     assetdataformat.cpp
+    audioanalysisformat.cpp
     assetsmanifest.cpp
     authoringlowering.cpp
     executionplan.cpp
     executionplanwire.cpp
     featurecompose.cpp
     featurejitter.cpp
+    filereplace.cpp
     frameresolutionwire.cpp
     graphvariantpolicy.cpp
     graphcomposition.cpp
     graphfold.cpp
     graphloopexpression.cpp
     graphmodule.cpp
+    graphparameterschema.cpp
     graphpartition.cpp
     graphtemplate.cpp
     rendergraphcomposition.cpp
@@ -50,6 +53,7 @@ add_library(pelican_project
     schemawire.cpp
     schemawire.hpp
     sceneformat.cpp
+    sha256stream.cpp
     shadersourceresolver.cpp
     shaderresourceport.cpp
     surfaceformat.cpp
@@ -99,6 +103,6 @@ endif()
 target_include_directories(pelican_project PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(pelican_project PUBLIC nlohmann_json pelican_schema_leaf PRIVATE picosha2)
 if(WIN32)
-    # assetFileSha256 hashes with CNG (BCrypt) on Windows.
+    # Sha256Stream (assetFileSha256, the file watcher) hashes with CNG (BCrypt) on Windows.
     target_link_libraries(pelican_project PRIVATE bcrypt)
 endif()

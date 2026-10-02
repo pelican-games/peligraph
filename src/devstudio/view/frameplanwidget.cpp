@@ -421,6 +421,7 @@ struct FramePlanWidget::Impl {
         const auto loop = std::exchange(requested_loop_group, QString{});
         if (loop.isEmpty()) return;
         if (!logical_scene->selectLoopGroup(loop.toStdString())) {
+            picked_loop_line.clear();
             showStatus(owner.tr("The frame plan has no copies of loop %1.").arg(loop));
             return;
         }
@@ -430,7 +431,26 @@ struct FramePlanWidget::Impl {
             picked = picked.isValid() ? picked.united(item->sceneBoundingRect())
                                       : item->sceneBoundingRect();
         if (picked.isValid()) logical->centerOn(picked.center());
-        showStatus(owner.tr("Loop %1: its copies are picked.").arg(loop));
+        picked_loop_line = owner.tr("Loop %1: its copies are picked.").arg(loop);
+        picked_loop_copies = logical_scene->selectedNodes();
+        showStatus(picked_loop_line);
+    }
+    // UX-12b, decision 6: the line a picked loop put up, and the copies it
+    // picked. Every plan read also asks for the authoring context and the
+    // task catalog, and each runs populate() again when it lands; the
+    // summary line populate() writes went over this one milliseconds after
+    // it was shown. It stays while the copies are what is picked, until the
+    // next edit is sent.
+    QString picked_loop_line;
+    std::set<FramePlanNodeKey> picked_loop_copies;
+    void showPickedLoopLine() {
+        if (picked_loop_line.isEmpty()) return;
+        if (logical_scene->selectedNodes() != picked_loop_copies) {
+            picked_loop_line.clear();
+            picked_loop_copies.clear();
+            return;
+        }
+        showStatus(picked_loop_line);
     }
     std::optional<Pelican::ProjectPathResolver> project_resolver;
     FramePlanWidget::ShaderSourceOpenAction shader_source_open_action;
@@ -1212,7 +1232,9 @@ struct FramePlanWidget::Impl {
             tabs);
         materials = makeTree(
             {owner.tr("Route"), owner.tr("Target pass"), owner.tr("Phase"),
-             owner.tr("Contract"), owner.tr("Shader contract")},
+             owner.tr("Contract"), owner.tr("Shader contract"),
+             // UX-12c, decision 2.
+             owner.tr("Drawn")},
             tabs);
         // GL-2b: named, so a scenario can pick one of their rows.
         passes->setObjectName(QStringLiteral("pelican.framePlanPasses"));
@@ -1512,7 +1534,11 @@ struct FramePlanWidget::Impl {
         status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
         // UX-8, decision 13 (c): a code the engine stopped on reads as its
         // sentence and the file to fix; the line itself stays the detail.
-        if (const auto stopped = engineStoppedSentence(fatal_error_line.toStdString());
+        // UX-9, decision 5: the running engine's line names the code and its
+        // fields but no file; the project's render document is the one.
+        if (const auto stopped = engineStoppedSentence(
+                fatal_error_line.toStdString(),
+                projectRenderDocument(std::filesystem::path{viewport.projectRoot().toStdWString()}));
             !stopped.empty()) {
             showStatus(QString::fromStdString(stopped), fatal_error_line);
             return;
@@ -1883,6 +1909,7 @@ struct FramePlanWidget::Impl {
         shown_refusal_line.clear();
         submitted_notice = text(request.notice);
         commit_notice.clear();
+        picked_loop_line.clear();
         submitted_request = request;
         submitted_method = request.method;
         submitted_target = submittedTargetName(request);
@@ -3151,6 +3178,26 @@ struct FramePlanWidget::Impl {
     }
 
     // GL-2b, decision 3: the Graph tab's Layers row picks a plan node here.
+    // UX-11, decision 4.
+    void showMaterialRoutes(const QString &pass) {
+        tabs->setCurrentWidget(materials);
+        materials->clearSelection();
+        QTreeWidgetItem *first = nullptr;
+        for (int index = 0; index < materials->topLevelItemCount(); ++index) {
+            auto *item = materials->topLevelItem(index);
+            if (item->text(1) != pass) continue;
+            item->setSelected(true);
+            if (first == nullptr) first = item;
+        }
+        if (first == nullptr) {
+            showStatus(owner.tr("The frame plan routes no material to %1.").arg(pass));
+            return;
+        }
+        materials->setCurrentItem(first, 0, QItemSelectionModel::NoUpdate);
+        materials->scrollToItem(first);
+        showStatus(owner.tr("The material routes to %1 are picked.").arg(pass));
+    }
+
     void showPlanNode(const std::string &name) {
         tabs->setCurrentWidget(logical_splitter);
         if (!model || !logical_scene->selectPlanNode(FramePlanNodeKey{model->graph, name})) {
@@ -3651,6 +3698,7 @@ struct FramePlanWidget::Impl {
         // VI-3a: what the last canvas edit moved, then a refused reload,
         // which outranks it.
         if (!commit_notice.isEmpty()) showStatus(commit_notice);
+        showPickedLoopLine();
         updateReloadRefusal();
     }
 
@@ -3872,6 +3920,10 @@ struct FramePlanWidget::Impl {
                 addFact(facts, owner.tr("This frame"), text(idle));
             addFact(facts, owner.tr("Material variant"),
                     text(node.material_variant));
+            // UX-12c, decision 2 (engine MP-1): what a material pass drew in
+            // the last frame -- how many materials, their draws, each one.
+            if (node.drawn_materials)
+                addDrawnMaterials(item, *node.drawn_materials);
             if (!node.snapshot_after.empty()) {
                 addFact(facts, owner.tr("Snapshot after"),
                         text(node.snapshot_after));
@@ -4200,6 +4252,14 @@ struct FramePlanWidget::Impl {
                         lifetimeLabel(resource.lifetime));
             }
             addFact(facts, owner.tr("Reason"), text(resource.reason));
+            // IA-1s, decision 3: the asset it starts from, and its manifest
+            // sha256 (the start of it), in the row's facts and its writers'
+            // column, where nothing else would be.
+            if (resource.initial_asset) {
+                const auto line = text(framePlanInitialAssetLine(*resource.initial_asset));
+                addFact(facts, owner.tr("Initial contents"), line);
+                if (resource.writers.empty()) item->setText(2, line);
+            }
             if (resource.loop_origin)
                 addFact(facts, owner.tr("Loop origin"),
                         text(framePlanLoopOriginLine(*resource.loop_origin)));
@@ -4491,13 +4551,36 @@ struct FramePlanWidget::Impl {
         }
     }
 
+    // UX-12c, decision 2: "3 materials, 12 draws (frame 340)".
+    QString drawnSummary(const FramePlanDrawnMaterials &drawn) const {
+        return owner.tr("%1, %2 (frame %3)%4")
+            .arg(owner.tr("%n material(s)", nullptr, static_cast<int>(drawn.materials.size())),
+                 owner.tr("%n draw(s)", nullptr, static_cast<int>(drawn.draws())))
+            .arg(static_cast<qulonglong>(drawn.frame))
+            .arg(drawn.truncated ? owner.tr(", the first %1 listed").arg(drawn.materials.size())
+                                 : QString{});
+    }
+
+    void addDrawnMaterials(QTreeWidgetItem *item, const FramePlanDrawnMaterials &drawn) {
+        auto *group = groupItem(item, owner.tr("Materials drawn"));
+        group->setText(2, drawnSummary(drawn));
+        for (std::size_t index = 0; index < drawn.materials.size(); ++index)
+            addFact(group, text(framePlanDrawnMaterialLabel(drawn, index)),
+                    owner.tr("%n draw(s)", nullptr,
+                             static_cast<int>(drawn.materials[index].draws)));
+    }
+
     void populateMaterials() {
         if (model->material_routes.empty()) {
             auto *empty = new QTreeWidgetItem(materials);
             empty->setText(0, owner.tr("No material routes were published."));
             empty->setDisabled(true);
-            return;
         }
+        const auto drawnOf = [&](const std::string &pass) -> const FramePlanDrawnMaterials * {
+            for (const auto &node : model->nodes)
+                if (node.name == pass && node.drawn_materials) return &*node.drawn_materials;
+            return nullptr;
+        };
         for (const auto &route : model->material_routes) {
             auto *item = new QTreeWidgetItem(materials);
             item->setText(0, text(route.route));
@@ -4505,6 +4588,26 @@ struct FramePlanWidget::Impl {
             item->setText(2, text(route.phase));
             item->setText(3, text(route.contract));
             item->setText(4, text(route.shader_contract));
+            // UX-12c, decision 2: what the route's pass drew.
+            if (const auto *drawn = drawnOf(route.pass))
+                item->setText(5, drawnSummary(*drawn));
+        }
+        // UX-12c, decision 2: each material a pass drew in the last frame, a
+        // row of its own, named by the pass that drew it (the Graph's
+        // Materials drawn picks these with the routes).
+        for (const auto &node : model->nodes) {
+            if (!node.drawn_materials) continue;
+            const auto &drawn = *node.drawn_materials;
+            for (std::size_t index = 0; index < drawn.materials.size(); ++index) {
+                const auto &material = drawn.materials[index];
+                auto *item = new QTreeWidgetItem(materials);
+                item->setText(0, text(framePlanDrawnMaterialLabel(drawn, index)));
+                item->setToolTip(0, text(material.id));
+                item->setText(1, text(node.name));
+                item->setText(5, owner.tr("drawn by %1, %n draw(s)", nullptr,
+                                          static_cast<int>(material.draws))
+                                     .arg(text(node.name)));
+            }
         }
     }
 };
@@ -4724,6 +4827,10 @@ void FramePlanWidget::showLoopGroup(const QString &loop) {
 
 void FramePlanWidget::showPlanNode(const QString &node) {
     impl_->showPlanNode(node.toStdString());
+}
+
+void FramePlanWidget::showMaterialRoutes(const QString &pass) {
+    impl_->showMaterialRoutes(pass);
 }
 
 void FramePlanWidget::setGraphPassOpenAction(GraphPassOpenAction action) {

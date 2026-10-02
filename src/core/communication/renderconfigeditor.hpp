@@ -76,6 +76,17 @@ struct RenderAuthoringRegionProvider {
     bool operator==(const RenderAuthoringRegionProvider &) const = default;
 };
 
+// IA-2: a file the published generation read when it was composed and
+// does not see change by itself: the asset reference as written, the file it
+// resolved to, and the sha256 of the bytes that generation read. A persistent
+// render.image's initial asset (IA-2); a value.sample_table's table and the
+// `.import.json` beside it, both under the table's reference (IA-3).
+struct RenderConfigPublishedAsset {
+    std::string asset;
+    std::filesystem::path file;
+    std::string sha256;
+};
+
 struct RenderConfigEditorGateObservation {
     bool can_edit = true;
     std::uint64_t transition_epoch = 0;
@@ -87,6 +98,10 @@ struct RenderConfigEditorGateObservation {
 struct RenderConfigRuntimeSnapshot {
     std::uint64_t published_generation = 0;
     std::vector<std::string> enabled_feature_names;
+    // PV-1: the published one-shot preview's state, previewGraphStatusJson
+    // ({available} and the reason when not). A committed edit that published
+    // reports it as `preview`. Null (a runtime without a renderer): left out.
+    nlohmann::json preview = nullptr;
 };
 
 struct RenderConfigRuntimeApplyResult {
@@ -185,6 +200,14 @@ struct RenderConfigEditorDependencies {
     // with it to say whether the document changed. Unset: such a document is
     // reported as changed.
     std::function<std::map<std::string, std::string>()> published_documents;
+    // IA-2: the assets the published generation read (render.image
+    // `initial: {asset}`; IA-3: value.sample_table's table and its
+    // manifest), each with the sha256 of the bytes that generation read.
+    // reload_render_documents hashes each file again; one that differs is
+    // published anew even when no document changed. Unset: no asset is
+    // compared.
+    std::function<std::vector<RenderConfigPublishedAsset>()>
+        published_assets;
     // FG-2: draws a verify_fold job's three runs on a worker thread
     // (graphfoldverify.hpp; production: runFoldVerifyProcesses). Unset:
     // verify_fold is fold_verify_unavailable {reason: "no_runner"}.
@@ -192,6 +215,18 @@ struct RenderConfigEditorDependencies {
     // FG-2: why this launch may not start the children now (headless,
     // replay, golden ...), asked on every verify_fold; nullopt: it may.
     std::function<std::optional<std::string>()> verify_fold_unavailable;
+    // AB-1: the project's asset stores, which list_derived_assets walks for
+    // `*.import.json`. Unset: the project root.
+    std::function<std::vector<AssetStoreStatus>()> asset_stores;
+};
+
+// AB-1: what a bake_audio_analysis worker hands back to the engine's thread:
+// the committed fields, or a refusal's code, message and fields.
+struct AudioAnalysisBakeOutcome {
+    bool committed = false;
+    nlohmann::ordered_json fields = nlohmann::ordered_json::object();
+    std::string code;
+    std::string message;
 };
 
 // Engine-owned render-authoring document/ticket service. Feature toggles edit
@@ -236,6 +271,10 @@ class RenderConfigEditorService {
             nlohmann::ordered_json::array();
         // {normalized reference: sha256 hex} of what was read.
         std::map<std::string, std::string> reload_digests;
+        // IA-2: the initial assets whose bytes differ from what the
+        // published generation read, as written in the documents.
+        nlohmann::ordered_json reload_changed_assets =
+            nlohmann::ordered_json::array();
         // FG-2: fields the committed result carries besides the usual ones
         // (verify_fold's {group, verified}).
         nlohmann::ordered_json result_extras = nlohmann::ordered_json::object();
@@ -252,6 +291,14 @@ class RenderConfigEditorService {
         std::uint32_t frames = 3;
         std::uint64_t tolerance = 0;
         std::future<FoldVerifyRuns> runs;
+    };
+
+    // AB-1: one bake_audio_analysis between its acceptance and the frame
+    // boundary that reads its outcome (harvestAudioBakes).
+    struct AudioBakeTask {
+        std::string ticket;
+        std::filesystem::path out;
+        std::future<AudioAnalysisBakeOutcome> outcome;
     };
 
     // RD-1: one render document the current composition can write -- the
@@ -310,6 +357,9 @@ class RenderConfigEditorService {
     std::vector<FoldVerifyTask> fold_verifies_;
     std::shared_ptr<std::atomic<bool>> fold_verify_cancelled_ =
         std::make_shared<std::atomic<bool>>(false);
+    // AB-1: the running bake_audio_analysis workers.
+    std::vector<AudioBakeTask> audio_bakes_;
+    void harvestAudioBakes() noexcept;
 
     struct GateSnapshot {
         bool can_edit = true;
@@ -319,6 +369,15 @@ class RenderConfigEditorService {
 
     GateSnapshot gateSnapshot();
     nlohmann::ordered_json changeComputeTask(const nlohmann::json &params, bool remove);
+    // FR-4: a document an edit rewrites (a project preset or feature), as the
+    // editor holds it: inside edit_batch, what the batch's earlier edits made
+    // of it, with `base_digest` the digest it had before the batch (the one
+    // the caller read); otherwise the disk, `base_digest` its digest.
+    struct HeldDocument {
+        std::string bytes;
+        std::string base_digest;
+    };
+    HeldDocument heldDocument(const std::string &reference) const;
     nlohmann::ordered_json materializeRenderFeature(const std::string &base_digest, const nlohmann::json &operation);
     // F-6: edit_preset_pass's third destination, a pass the direct root
     // declares itself. One root document, the ordinary root-edit ticket.
@@ -354,6 +413,21 @@ class RenderConfigEditorService {
     // refused as render_pipeline_preflight_failed like a composition error.
     using AuthoredCandidateCheck =
         std::function<void(const ResolvedRenderConfigAuthoringContext &)>;
+    // FR-3: while edit_batch applies its edits, each to what the ones before
+    // it made. document_ and managed_documents_ hold the batch's candidate
+    // (restored when the batch returns); `documents` are the other documents
+    // its edits wrote (a forked preset, a materialized feature), which
+    // currentDocumentSet() carries too. No edit is preflighted on its own:
+    // `checks` are the G-1 checks add_authored_pass asked for, and `composes`
+    // says an edit's own preflight would have composed its candidate; the
+    // batch runs both once on the last candidate. The disk is compared with
+    // what the editor holds once, before the first edit.
+    struct BatchOverlay {
+        std::vector<RenderConfigCandidateDocument> documents;
+        std::vector<AuthoredCandidateCheck> checks;
+        bool composes = false;
+    };
+    std::optional<BatchOverlay> batch_;
     nlohmann::ordered_json enqueueAuthoredPassTicket(
         std::string operation, const GateSnapshot &gate,
         const std::string &base_digest, AuthoredRenderConfigDocument root,
@@ -529,6 +603,24 @@ class RenderConfigEditorService {
     // meanwhile). Refused at once: fold_verify_unavailable {reason},
     // fold_verify_busy {group, ticket}, gate_closed, external_modification.
     nlohmann::ordered_json verifyFold(const nlohmann::json &params);
+    // AB-1: bake_audio_analysis {asset, out, settings?} -> {ticket, status:
+    // "accepted", asset, out}. A worker decodes `asset` (AU-2's decoders),
+    // analyzes it and writes `out` (a .ktx2) and `<out>.import.json`
+    // (audioanalysis.hpp); the ticket is "running" until a frame boundary
+    // after that, then committed {operation: "bake_audio_analysis", asset,
+    // out, manifest, layout} or rejected (audio.format_unsupported@1,
+    // audio.analysis_failed@1). Refused at once:
+    // audio.analysis_settings_invalid@1 {field, reason, value?},
+    // audio.analysis_busy@1 {out, ticket} while a bake writes the same out,
+    // audio.analysis_unavailable@1 {reason: "built_without_audio"}.
+    // Nothing runs on import: only this (or `pelican_cli audio analyze`)
+    // bakes.
+    nlohmann::ordered_json bakeAudioAnalysis(const nlohmann::json &params);
+    // AB-1: list_derived_assets {} -> [{asset, manifest, tool: {name,
+    // version}, source, derived_from: {source, tool}, stale, stale_reasons}]:
+    // every readable `*.import.json` in the asset stores, in path order
+    // (audioanalysisformat.hpp's DerivedAssetStatus). Reads only.
+    nlohmann::ordered_json listDerivedAssets(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params);
     nlohmann::ordered_json editGraphDocument(const nlohmann::json &params);
     // LP-3b: a one-piece material pass of the rendering section or of a
@@ -565,6 +657,11 @@ class RenderConfigEditorService {
     // rebuilt when their files' bytes change or on refresh
     // (engineauthoringlists.hpp). Reads the disk only.
     nlohmann::ordered_json getShaderInterface(const nlohmann::json &params) const;
+    // EL-6. {} -> {draw_sort, pass_implementation, region_replacements,
+    // graph_transforms, render_strategy: [{name, source: engine | game,
+    // provider_version}...]}: the provider names each render provider
+    // registry resolves now, read at each call (engineauthoringlists.hpp).
+    nlohmann::ordered_json getRegisteredProviders(const nlohmann::json &params) const;
     nlohmann::ordered_json getRayCallableRecords(const nlohmann::json &params) const;
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params);
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params);
@@ -661,6 +758,25 @@ class RenderConfigEditorService {
     // current composition writes, the documents the restored root (and its
     // preset) name may be created or deleted; a deletion is limited to what
     // the current or the restored composition names.
+    // FR-3: edit_batch {base_source_digest, edits: [{method, params}...]}:
+    // the document-writing edits of editBatchMethods(), applied in order to
+    // one candidate, each to what the ones before it made, then composed and
+    // preflighted once (with the graph variants) and published as one ticket
+    // -- one RD-1 `documents` set, one restore. An edit's params carry no
+    // base_source_digest (the batch's is the only one); a method outside the
+    // list, a malformed entry or an edit's own invalid params are invalid
+    // params. An edit that cannot be applied refuses the batch with its own
+    // refusal and `batch_index`; a refusal of the composed candidate has no
+    // batch_index. Accepted: {ticket, status: "accepted",
+    // base_source_digest, methods}; the committed result carries
+    // operation "edit_batch" and `methods`.
+    nlohmann::ordered_json editBatch(const nlohmann::json &params);
+    // FR-3: the methods edit_batch takes, in the order it lists them. Left
+    // out: those that write nothing through a ticket of their own, the
+    // asynchronous ones, and restore / reload. FR-4: edit_preset_pass,
+    // edit_compute_task and remove_compute_task are taken; they read the
+    // document they rewrite as the editor holds it (heldDocument).
+    static std::vector<std::string> editBatchMethods();
     nlohmann::ordered_json restoreRenderDocuments(
         const nlohmann::json &params);
     // RL-1: reload_render_documents {}: the render documents (the root and
@@ -669,7 +785,11 @@ class RenderConfigEditorService {
     // ticket, as an edit is, without writing anything. The committed result
     // carries {operation: "reload_render_documents", source_digest,
     // documents: {reference: digest}, changed: [reference]} and no_change
-    // when nothing differs. A refusal leaves the live generation and the
+    // when nothing differs. IA-2: it also carries changed_assets: [asset],
+    // the assets (published_assets: images' initial assets, IA-3 the
+    // value.sample_table tables) whose bytes on disk differ from what the
+    // live generation read; one is enough to publish
+    // a new generation with the same documents. A refusal leaves the live generation and the
     // editor's documents as they were. A pending or in-flight ticket, or
     // `preview_open`, is reload_busy.
     nlohmann::ordered_json reloadRenderDocuments(

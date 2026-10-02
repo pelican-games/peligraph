@@ -6,6 +6,7 @@ target_sources(pelican_core PRIVATE
     debugtextpassinfojsonparser.cpp
     frameexecutionadapter.cpp
     frameplanner.cpp
+    oncescheduler.cpp
     framegraphruntime.cpp
     gizmopassinfojsonparser.cpp
     graphtransformregistry.cpp

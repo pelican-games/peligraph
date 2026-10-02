@@ -122,7 +122,7 @@ struct InspectorHarness {
         reply(session, {{"actor_id", 9},
                         {"display_name", "Pelican Studio Inspector"}});
 
-        const auto tree = take("scene_tree");
+        const auto tree = take("scene_outline");
         REQUIRE(tree.params == Json{{"scene_id", "main"}});
         reply(tree, sceneTreeResult());
 
@@ -156,7 +156,7 @@ struct InspectorHarness {
     }
 
     void completeRefresh(double position_x, std::uint64_t scene_revision) {
-        const auto tree = take("scene_tree");
+        const auto tree = take("scene_outline");
         reply(tree, sceneTreeResult(scene_revision));
         const auto components = take("get_components");
         reply(components, componentResult(position_x, scene_revision));
@@ -429,7 +429,7 @@ TEST_CASE("WP361 Studio ingests the real generated union without mutation widget
     const auto session = harness.take("open_editor_session");
     harness.reply(session, {{"actor_id", 9},
                             {"display_name", "Pelican Studio Inspector"}});
-    const auto tree = harness.take("scene_tree");
+    const auto tree = harness.take("scene_outline");
     harness.reply(tree, sceneTreeResult());
     const auto components = harness.take("get_components");
     const Json result{
@@ -537,7 +537,7 @@ TEST_CASE("WP358 Studio response ingestion reports unknown leaf type by name and
     harness.reply(session,
                   {{"actor_id", 9},
                    {"display_name", "Pelican Studio Inspector"}});
-    const auto tree = harness.take("scene_tree");
+    const auto tree = harness.take("scene_outline");
     harness.reply(tree, sceneTreeResult());
     const auto components = harness.take("get_components");
     auto response = componentResult();
@@ -577,7 +577,7 @@ TEST_CASE("Devstudio inspector does not apply an in-flight refresh while a widge
     const std::string field_key = harness.field("transform", "pos").field_key;
 
     harness.model.requestRefresh();
-    const auto tree = harness.take("scene_tree");
+    const auto tree = harness.take("scene_outline");
     harness.reply(tree, sceneTreeResult());
     const auto old_components = harness.take("get_components");
 
@@ -612,7 +612,7 @@ TEST_CASE("Devstudio inspector does not apply an in-flight refresh while a widge
     harness.reply(abort_result, {{"status", "succeeded"}});
 
     REQUIRE_FALSE(harness.model.refreshBlocked());
-    REQUIRE(harness.take("scene_tree").method == "scene_tree");
+    REQUIRE(harness.take("scene_outline").method == "scene_outline");
 }
 
 TEST_CASE("Devstudio inspector still reflects an external watch change when idle",
@@ -624,7 +624,7 @@ TEST_CASE("Devstudio inspector still reflects an external watch change when idle
     const auto watch = harness.take("get_scene_revision");
     harness.reply(watch, {{"scene_revision", 2}, {"preview_epoch", 0}});
 
-    const auto tree = harness.take("scene_tree");
+    const auto tree = harness.take("scene_outline");
     harness.reply(tree, sceneTreeResult(2));
     const auto components = harness.take("get_components");
     harness.reply(components, componentResult(7.0, 2));
@@ -642,7 +642,7 @@ TEST_CASE("Devstudio direct edit keeps an in-flight refresh from restoring the o
         harness.field("fixture_flags", "enabled").field_key;
 
     harness.model.requestRefresh();
-    const auto tree = harness.take("scene_tree");
+    const auto tree = harness.take("scene_outline");
     harness.reply(tree, sceneTreeResult());
     const auto old_components = harness.take("get_components");
 
@@ -661,7 +661,7 @@ TEST_CASE("Devstudio direct edit keeps an in-flight refresh from restoring the o
                   {{"status", "committed"}, {"committed_revision", 2}});
 
     REQUIRE_FALSE(harness.model.busy());
-    REQUIRE(harness.take("scene_tree").method == "scene_tree");
+    REQUIRE(harness.take("scene_outline").method == "scene_outline");
 }
 
 TEST_CASE("Devstudio watch sync retries when an external revision lands during refresh",
@@ -670,7 +670,7 @@ TEST_CASE("Devstudio watch sync retries when an external revision lands during r
     harness.open();
 
     harness.model.requestRefresh();
-    const auto tree = harness.take("scene_tree");
+    const auto tree = harness.take("scene_outline");
     harness.reply(tree, sceneTreeResult(2));
     const auto components = harness.take("get_components");
     harness.reply(components, componentResult(2.0, 2));
@@ -678,7 +678,7 @@ TEST_CASE("Devstudio watch sync retries when an external revision lands during r
     const auto watch = harness.take("get_scene_revision");
     harness.reply(watch, {{"scene_revision", 3}, {"preview_epoch", 0}});
 
-    REQUIRE(harness.take("scene_tree").method == "scene_tree");
+    REQUIRE(harness.take("scene_outline").method == "scene_outline");
 }
 
 TEST_CASE("Devstudio inspector reports a terminal edit failure instead of accepted as success",
@@ -745,7 +745,7 @@ TEST_CASE("Devstudio numeric editing drives preview update then commit",
 
     REQUIRE(harness.model.notice().kind == InspectorNoticeKind::Success);
     REQUIRE_FALSE(harness.model.refreshBlocked());
-    REQUIRE(harness.take("scene_tree").method == "scene_tree");
+    REQUIRE(harness.take("scene_outline").method == "scene_outline");
 }
 
 TEST_CASE("Devstudio aborts the live lease after a terminal preview failure",
@@ -790,7 +790,7 @@ TEST_CASE("Devstudio aborts the live lease after a terminal preview failure",
     REQUIRE(harness.model.notice().kind == InspectorNoticeKind::Error);
     REQUIRE(harness.model.notice().message.find("runtime_binding_missing") !=
             std::string::npos);
-    REQUIRE(harness.take("scene_tree").method == "scene_tree");
+    REQUIRE(harness.take("scene_outline").method == "scene_outline");
 }
 
 TEST_CASE("Devstudio undo uses the editor session revision after a modal gizmo preview",
@@ -810,7 +810,7 @@ TEST_CASE("Devstudio undo uses the editor session revision after a modal gizmo p
                   {{"status", "committed"}, {"committed_revision", 3}});
 
     REQUIRE(harness.model.notice().kind == InspectorNoticeKind::Success);
-    REQUIRE(harness.take("scene_tree").method == "scene_tree");
+    REQUIRE(harness.take("scene_outline").method == "scene_outline");
 
     InspectorHarness no_modal_commit;
     no_modal_commit.open();
@@ -1260,7 +1260,7 @@ TEST_CASE("Studio removes authored components through the editor journal",
     auto &component = response["components"][1];
     const auto exercise = [&](bool removable) {
         harness.model.requestRefresh();
-        harness.reply(harness.take("scene_tree"), sceneTreeResult());
+        harness.reply(harness.take("scene_outline"), sceneTreeResult());
         harness.reply(harness.take("get_components"), response);
         harness.reply(harness.take("get_scene_revision"),
                       {{"scene_revision", 1}, {"preview_epoch", 0}});
@@ -1280,7 +1280,7 @@ TEST_CASE("Studio removes authored components through the editor journal",
             harness.model.pollPendingOperations();
             harness.reply(harness.take("get_edit_result"),
                           {{"status", "committed"}, {"committed_revision", 2}});
-            harness.reply(harness.take("scene_tree"), sceneTreeResult(2));
+            harness.reply(harness.take("scene_outline"), sceneTreeResult(2));
             response["scene_revision"] = 2;
             response["components"].erase(1);
             harness.reply(harness.take("get_components"), response);
@@ -1395,7 +1395,7 @@ TEST_CASE("Studio adds behavior attachments by catalog key without replacing exi
         components["components"][1]["name"] = "behavior";
         components["components"][1]["authored_json"] = {{"name", "behavior"}, {"type", "existing_behavior"}, {"params", Json::object()}};
         harness.model.requestRefresh();
-        harness.reply(harness.take("scene_tree"), sceneTreeResult());
+        harness.reply(harness.take("scene_outline"), sceneTreeResult());
         harness.reply(harness.take("get_components"), components);
         harness.reply(harness.take("get_scene_revision"), {{"scene_revision", 1}, {"preview_epoch", 0}});
         const std::string key = "behavior:" + type;
@@ -1454,7 +1454,7 @@ TEST_CASE("Inspector materializes only the selected omitted default",
         allowed = false;
     }
     harness.model.requestRefresh();
-    harness.reply(harness.take("scene_tree"), sceneTreeResult());
+    harness.reply(harness.take("scene_outline"), sceneTreeResult());
     harness.reply(harness.take("get_components"), components);
     harness.reply(harness.take("get_scene_revision"), {{"scene_revision", 1}, {"preview_epoch", 0}});
     REQUIRE(harness.model.snapshot());
@@ -1505,7 +1505,7 @@ TEST_CASE("Studio Inspector edits schema lists with stable addressed identities"
         })}}}};
     const auto refresh = [&] {
         harness.model.requestRefresh();
-        harness.reply(harness.take("scene_tree"), sceneTreeResult());
+        harness.reply(harness.take("scene_outline"), sceneTreeResult());
         harness.reply(harness.take("get_components"), components);
         harness.reply(harness.take("get_scene_revision"), {{"scene_revision", 1}, {"preview_epoch", 0}});
     };
@@ -1618,7 +1618,7 @@ TEST_CASE("Studio Inspector ray occurrence catalog is tied to the current object
             })}}
         })}}}};
     harness.model.requestRefresh();
-    harness.reply(harness.take("scene_tree"), sceneTreeResult());
+    harness.reply(harness.take("scene_outline"), sceneTreeResult());
     harness.reply(harness.take("get_components"), components);
     harness.reply(harness.take("get_scene_revision"), {{"scene_revision", 1}, {"preview_epoch", 0}});
     REQUIRE(harness.model.snapshot()->components[1].lists.size() == 1);
@@ -1765,7 +1765,7 @@ TEST_CASE("G-2 Add object spawns once, named by kind with Blender's numbering",
                                     addObjectDeclaration(AddObjectKind::Cube, "Cube")) ==
           SpawnOutcome::Refused);
     CHECK(harness.model.takeRpcRequests().empty());
-    // The Outliner feeds the revision it read with scene_tree.
+    // The Outliner feeds the revision it read with scene_outline.
     harness.model.observeSceneRevision(3);
 
     // What MainWindow::addObject does: the names the Outliner shows, the
@@ -1896,6 +1896,159 @@ TEST_CASE("T-1 rotation angles and the stored quaternion round trip",
     CHECK(near(negated[3], 0.92387953251128674));
 }
 
+TEST_CASE("UX-10 a light's direction reads as azimuth and elevation, its colour as a swatch, "
+          "and a sprite's texture is picked from the textures list_assets reports",
+          "[devstudio][inspector][ux10]") {
+    using PelicanStudio::directionAnglesDegrees;
+    using PelicanStudio::directionFromAnglesDegrees;
+    const auto near = [](double a, double b, double tolerance = 1.0e-9) {
+        return std::abs(a - b) <= tolerance;
+    };
+    // Which fields: by name and by type, not by component.
+    InspectorWidgetDescriptor field;
+    field.component_slot = "light";
+    field.field_name = "direction";
+    field.json_pointer = "/direction";
+    field.kind = InspectorWidgetKind::VectorDrag;
+    field.columns = 3;
+    CHECK(PelicanStudio::isDirectionField(field));
+    CHECK_FALSE(PelicanStudio::isColorField(field));
+    field.field_name = "color";
+    CHECK(PelicanStudio::isColorField(field));
+    CHECK_FALSE(PelicanStudio::isDirectionField(field));
+    field.columns = 4;
+    CHECK(PelicanStudio::isColorField(field));
+    field.field_name = "position";
+    field.columns = 3;
+    CHECK_FALSE(PelicanStudio::isColorField(field));
+    CHECK_FALSE(PelicanStudio::isDirectionField(field));
+    field.field_name = "direction";
+    field.kind = InspectorWidgetKind::StringInput;
+    CHECK_FALSE(PelicanStudio::isDirectionField(field));
+
+    // The light's default (0, -1, 0) is straight down: elevation -90, and the
+    // angles give it back exactly.
+    const auto down = directionAnglesDegrees({0.0, -1.0, 0.0});
+    CHECK(down[0] == 0.0);
+    CHECK(near(down[1], -90.0));
+    CHECK(directionFromAnglesDegrees({0.0, -90.0}) == std::array<double, 3>{0.0, -1.0, 0.0});
+    // +Z is azimuth 0, +X azimuth 90, on the horizon.
+    CHECK(directionFromAnglesDegrees({0.0, 0.0}) == std::array<double, 3>{0.0, 0.0, 1.0});
+    CHECK(directionFromAnglesDegrees({90.0, 0.0}) == std::array<double, 3>{1.0, 0.0, 0.0});
+    // A vector that is not unit reads as its direction; zero as (0, 0).
+    const auto slanted = directionAnglesDegrees({2.0, -2.0, 0.0});
+    CHECK(near(slanted[0], 90.0));
+    CHECK(near(slanted[1], -45.0));
+    CHECK(directionAnglesDegrees({0.0, 0.0, 0.0}) == std::array<double, 2>{0.0, 0.0});
+    // Angles -> vector -> angles round trip over what the fields show.
+    for (const double azimuth : {-179.0, -90.0, -30.5, 0.0, 45.0, 135.0, 180.0})
+        for (const double elevation : {-89.0, -45.0, 0.0, 10.25, 89.0}) {
+            const auto vector = directionFromAnglesDegrees({azimuth, elevation});
+            CHECK(near(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2], 1.0));
+            const auto back = directionAnglesDegrees(vector);
+            INFO(azimuth << ", " << elevation << " -> " << back[0] << ", " << back[1]);
+            CHECK(near(back[0], azimuth, 1.0e-7));
+            CHECK(near(back[1], elevation, 1.0e-7));
+        }
+
+    // UX-10 decision 5: sprite_view.texture is a choice, from list_assets'
+    // textures, the authored frame kept.
+    InspectorWidgetDescriptor texture;
+    texture.component_slot = "sprite_view";
+    texture.field_name = "texture";
+    texture.json_pointer = "/texture";
+    texture.kind = InspectorWidgetKind::StringInput;
+    CHECK(PelicanStudio::isTextureReferenceField(texture));
+    texture.component_slot = "simplemodelview";
+    CHECK_FALSE(PelicanStudio::isTextureReferenceField(texture));
+    const Json listed{{"assets",
+                       Json::array({{{"id", "engine://primitives/cube"}, {"kind", "model"}},
+                                    {{"id", "demo_atlas"}, {"kind", "texture"}},
+                                    {{"id", "grass"}, {"kind", "texture"}}})}};
+    const auto textures = PelicanStudio::assetIdsOfKind(listed, "texture");
+    CHECK(textures == std::vector<std::string>{"demo_atlas", "grass"});
+    CHECK(PelicanStudio::modelAssetIds(listed) == std::vector<std::string>{"engine://primitives/cube"});
+    CHECK(PelicanStudio::textureReferenceChoices("demo_atlas#sprite/full", textures) ==
+          std::vector<std::string>{"demo_atlas", "grass", "demo_atlas#sprite/full"});
+    CHECK(PelicanStudio::textureReferenceChoices("grass", textures) ==
+          std::vector<std::string>{"demo_atlas", "grass"});
+}
+
+TEST_CASE("UX-10 decision 6: camera.controller's values are shown for the controller.type that "
+          "reads them, a value it requires and lacks is marked, and yaw and pitch read in degrees",
+          "[devstudio][inspector][ux10]") {
+    // SC-1's wire, written by hand (the engine this worktree builds has not
+    // got it yet).
+    const auto value = [](const char *name, const char *type, Json applies, Json required) {
+        return Json{{"name", name},
+                    {"type", type},
+                    {"discriminant", "controller.type"},
+                    {"applies_to", std::move(applies)},
+                    {"required_for", std::move(required)}};
+    };
+    Json component{
+        {"name", "camera"},
+        {"component_index", 0},
+        {"authored_json", {{"controller", {{"type", "follow"}}}}},
+        {"schema",
+         {{"state", "available"},
+          {"fields",
+           Json::array({{{"name", "controller.type"},
+                         {"type", "enum"},
+                         {"enum", Json::array({"orbit", "follow", "fly"})},
+                         {"default", "orbit"}},
+                        value("controller.target", "string", {"orbit", "follow"}, {"follow"}),
+                        value("controller.distance", "f32", {"orbit", "follow"}, Json::array()),
+                        value("controller.yaw", "f32", {"orbit", "fly"}, Json::array()),
+                        value("controller.speed", "f32", {"fly"}, Json::array()),
+                        {{"name", "znear"}, {"type", "f32"}}})}}},
+    };
+    const auto shown = [](const std::vector<InspectorWidgetDescriptor> &plan) {
+        std::vector<std::string> names;
+        for (const auto &field : plan)
+            if (PelicanStudio::inspectorFieldShown(field, plan)) names.push_back(field.field_name);
+        return names;
+    };
+    const auto find = [](const std::vector<InspectorWidgetDescriptor> &plan, std::string_view name)
+        -> const InspectorWidgetDescriptor & {
+        const auto found = std::ranges::find(plan, name, &InspectorWidgetDescriptor::field_name);
+        REQUIRE(found != plan.end());
+        return *found;
+    };
+
+    auto plan = PelicanStudio::makeInspectorWidgetPlan(component, 7);
+    REQUIRE(plan.size() == 6);
+    CHECK(find(plan, "controller.target").discriminant == "controller.type");
+    CHECK(find(plan, "controller.target").required_for == std::vector<std::string>{"follow"});
+    // follow: its target (required, not given: marked) and its distance.
+    CHECK(shown(plan) == std::vector<std::string>{"controller.type", "controller.target",
+                                                  "controller.distance", "znear"});
+    CHECK(PelicanStudio::inspectorFieldRequiredMissing(find(plan, "controller.target"), plan));
+    CHECK_FALSE(PelicanStudio::inspectorFieldRequiredMissing(find(plan, "controller.distance"), plan));
+    component["authored_json"]["controller"]["target"] = "Player";
+    plan = PelicanStudio::makeInspectorWidgetPlan(component, 7);
+    CHECK_FALSE(PelicanStudio::inspectorFieldRequiredMissing(find(plan, "controller.target"), plan));
+    component["authored_json"]["controller"]["target"] = "";
+    plan = PelicanStudio::makeInspectorWidgetPlan(component, 7);
+    CHECK(PelicanStudio::inspectorFieldRequiredMissing(find(plan, "controller.target"), plan));
+
+    // fly: its yaw and speed; nothing of follow's.
+    component["authored_json"]["controller"] = {{"type", "fly"}};
+    plan = PelicanStudio::makeInspectorWidgetPlan(component, 7);
+    CHECK(shown(plan) == std::vector<std::string>{"controller.type", "controller.yaw",
+                                                  "controller.speed", "znear"});
+    // No type written: the schema's default (orbit) decides.
+    component["authored_json"] = Json::object();
+    plan = PelicanStudio::makeInspectorWidgetPlan(component, 7);
+    CHECK(shown(plan) == std::vector<std::string>{"controller.type", "controller.target",
+                                                  "controller.distance", "controller.yaw", "znear"});
+    // The yaw is stored in radians and read in degrees; another number is not.
+    CHECK(std::abs(PelicanStudio::inspectorDisplayScale(find(plan, "controller.yaw")) -
+                   57.295779513082320876798154814105) < 1e-12);
+    CHECK(PelicanStudio::inspectorDisplayScale(find(plan, "controller.speed")) == 1.0);
+    CHECK(PelicanStudio::inspectorDisplayScale(find(plan, "znear")) == 1.0);
+}
+
 TEST_CASE("Q-7 Add object during an edit waits for it and spawns once",
           "[devstudio][inspector][add-object][q7][negative-contrast]") {
     using PelicanStudio::AddObjectKind;
@@ -1952,7 +2105,7 @@ TEST_CASE("Q-7 Add object during an edit waits for it and spawns once",
     CHECK(spawns == 1);
     CHECK_FALSE(harness.model.queuedSpawnName());
     for (const auto &request : requests)
-        if (request.method == "scene_tree") harness.reply(request, sceneTreeResult(2));
+        if (request.method == "scene_outline") harness.reply(request, sceneTreeResult(2));
 
     // Once: nothing else is sent for it, however often the panel asks.
     harness.model.pollPendingOperations();
@@ -2071,7 +2224,7 @@ TEST_CASE("G-2 the simplemodelview model field offers the three primitives",
     harness.model.startSession();
     harness.reply(harness.take("open_editor_session"),
                   {{"actor_id", 9}, {"display_name", "Pelican Studio Inspector"}});
-    harness.reply(harness.take("scene_tree"), sceneTreeResult());
+    harness.reply(harness.take("scene_outline"), sceneTreeResult());
     auto result = componentResult();
     auto model_view = component;
     model_view["component_index"] = 2;
@@ -2377,7 +2530,7 @@ TEST_CASE("Q-16 the Inspector's own commit does not read as an external change",
         InspectorHarness harness;
         harness.open();
         commitEdit(harness, 2);
-        const auto tree = harness.take("scene_tree");
+        const auto tree = harness.take("scene_outline");
         // The 500 ms watch goes out while the read after the commit runs.
         harness.model.pollExternalChanges();
         const auto watch = harness.take("get_scene_revision");
@@ -2401,7 +2554,7 @@ TEST_CASE("Q-16 the Inspector's own commit does not read as an external change",
         harness.reply(harness.take("get_scene_revision"),
                       {{"scene_revision", 3}, {"preview_epoch", 0}});
         CHECK_FALSE(harness.model.canUndoRedo());
-        REQUIRE(harness.take("scene_tree").method == "scene_tree");
+        REQUIRE(harness.take("scene_outline").method == "scene_outline");
     }
 
     SECTION("a watch sent before the commit and answered after it") {
@@ -2413,7 +2566,7 @@ TEST_CASE("Q-16 the Inspector's own commit does not read as an external change",
         harness.model.pollExternalChanges();
         const auto watch = harness.take("get_scene_revision");
         commitEdit(harness, 2);
-        harness.reply(harness.take("scene_tree"), sceneTreeResult(2));
+        harness.reply(harness.take("scene_outline"), sceneTreeResult(2));
         harness.reply(harness.take("get_components"), componentResult(1.0, 2));
         REQUIRE(harness.model.takeRpcRequests().empty());
         REQUIRE(harness.model.canUndoRedo());
@@ -2430,7 +2583,7 @@ TEST_CASE("Q-16 the Inspector's own commit does not read as an external change",
         harness.reply(harness.take("get_scene_revision"),
                       {{"scene_revision", 3}, {"preview_epoch", 0}});
         CHECK_FALSE(harness.model.canUndoRedo());
-        REQUIRE(harness.take("scene_tree").method == "scene_tree");
+        REQUIRE(harness.take("scene_outline").method == "scene_outline");
     }
 
     SECTION("undo is the Inspector's own commit too") {
@@ -2441,7 +2594,7 @@ TEST_CASE("Q-16 the Inspector's own commit does not read as an external change",
         harness.model.undo();
         harness.reply(harness.take("undo"),
                       {{"status", "committed"}, {"committed_revision", 3}});
-        const auto tree = harness.take("scene_tree");
+        const auto tree = harness.take("scene_outline");
         harness.model.pollExternalChanges();
         const auto watch = harness.take("get_scene_revision");
         harness.reply(tree, sceneTreeResult(3));
@@ -2475,7 +2628,7 @@ TEST_CASE("Q-16 the Inspector's own commit does not read as an external change",
         harness.reply(harness.take("get_scene_revision"),
                       {{"scene_revision", 4}, {"preview_epoch", 0}});
         CHECK_FALSE(harness.model.canUndoRedo());
-        REQUIRE(harness.take("scene_tree").method == "scene_tree");
+        REQUIRE(harness.take("scene_outline").method == "scene_outline");
     }
 }
 

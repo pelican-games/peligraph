@@ -2,7 +2,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
+
+#include <cmath>
+#include <cstdint>
+#include <limits>
 #include <string>
+#include <vector>
 
 namespace Pelican {
 
@@ -162,6 +167,123 @@ TEST_CASE("inject_event params parser reports named invalid params", "[jsonrpc]"
     message = invalidEventParamsMessage(nlohmann::json{{"type", "Wp56InjectedEvent"}});
     REQUIRE(message.find("inject_event") != std::string::npos);
     REQUIRE(message.find("payload") != std::string::npos);
+}
+
+namespace {
+
+// The envelopes as they were written before FP-2: the response copied into an
+// ordered_json and dumped. FP-2 writes the same bytes without the copy.
+std::string orderedEnvelopeResult(const nlohmann::json &id, const nlohmann::json &result) {
+    nlohmann::ordered_json response;
+    response["jsonrpc"] = "2.0";
+    response["id"] = id;
+    response["result"] = result;
+    return response.dump();
+}
+
+std::string orderedEnvelopeError(const JsonRpcError &error) {
+    nlohmann::ordered_json error_object;
+    error_object["code"] = error.code;
+    error_object["message"] = error.message;
+    if (error.data) {
+        error_object["data"] = *error.data;
+    }
+    nlohmann::ordered_json response;
+    response["jsonrpc"] = "2.0";
+    response["id"] = error.id;
+    response["error"] = std::move(error_object);
+    return response.dump();
+}
+
+// A frame-plan-like payload whose keys are written out of order, with the
+// number, string and container shapes the real responses carry.
+nlohmann::ordered_json orderedPlanLikePayload() {
+    nlohmann::ordered_json nodes = nlohmann::ordered_json::array();
+    for (int i = 0; i < 300; ++i) {
+        nodes.push_back({
+            {"name", "pass_" + std::to_string(i)},
+            {"kind", i % 2 == 0 ? "render" : "compute"},
+            {"level", i},
+            {"extent", {{"width", 1920u}, {"height", 1080u}}},
+            {"scale", 1.0 / static_cast<double>(i + 3)},
+            {"after", nlohmann::ordered_json::array({i - 1})},
+            {"diagnostics", nlohmann::ordered_json::array()},
+            {"bindings", nlohmann::ordered_json::object()},
+        });
+    }
+    return {
+        {"version", 1},
+        {"nodes", std::move(nodes)},
+        {"zeta", nullptr},
+        {"alpha", true},
+        {"numbers",
+         {0.1, 1.0, -0.0, 1e300, 5e-324, 1.5f, std::nan(""),
+          std::numeric_limits<std::int64_t>::min(), -1,
+          std::numeric_limits<std::uint64_t>::max()}},
+        {"strings", {"", "\u3042\u00e9", "\"\\n\t\x01/", "\xF0\x9F\x99\x82"}},
+        {"Upper", "sorts before lower"},
+        {"_under", {{"b", 2}, {"a", 1}}},
+    };
+}
+
+} // namespace
+
+TEST_CASE("JSON-RPC FP-2 responses are the same bytes as the ordered_json envelope they replace",
+          "[jsonrpc]") {
+    const auto ordered = orderedPlanLikePayload();
+    // Both ways a result reaches serializeJsonRpcResult: built as json, and an
+    // ordered handler's result converted to json (its keys then sort).
+    const std::vector<nlohmann::json> results{
+        nlohmann::json(ordered),
+        nlohmann::json::parse(ordered.dump()),
+        nlohmann::json{{"ok", true}},
+        nlohmann::json::object(),
+        nlohmann::json::array(),
+        nlohmann::json(nullptr),
+        nlohmann::json("text \u3042"),
+        nlohmann::json(2.5),
+    };
+    const std::vector<nlohmann::json> ids{
+        nlohmann::json(0),
+        nlohmann::json(-7),
+        nlohmann::json(std::numeric_limits<std::uint64_t>::max()),
+        nlohmann::json("s-\u00e9 \u3042\"\n"),
+        nlohmann::json(""),
+        nlohmann::json(nullptr),
+    };
+    REQUIRE(nlohmann::json(ordered).dump() != ordered.dump());
+    for (const auto &id : ids) {
+        for (const auto &result : results) {
+            REQUIRE(serializeJsonRpcResult(id, result) == orderedEnvelopeResult(id, result));
+        }
+    }
+    REQUIRE(serializeJsonRpcResult(3, nlohmann::json{{"ok", true}}) ==
+            R"({"jsonrpc":"2.0","id":3,"result":{"ok":true}})");
+
+    const std::vector<JsonRpcError> errors{
+        makeJsonRpcError(nullptr, JsonRpcErrorCodes::parseError, "parse error"),
+        makeJsonRpcError("abc", JsonRpcErrorCodes::methodNotFound, "method not found: x\n\"\u3042"),
+        makeJsonRpcError(4, JsonRpcErrorCodes::invalidParams, ""),
+        makeJsonRpcError(std::numeric_limits<std::uint64_t>::max(), 1, "positive code"),
+        makeJsonRpcError(5, JsonRpcErrorCodes::applicationError, "with data",
+                         nlohmann::json{{"error_fields", {{"z", 1}, {"a", {1.25, "x"}}}},
+                                        {"error_code", "busy@1"}}),
+        makeJsonRpcError(6, JsonRpcErrorCodes::applicationError, "array data", nlohmann::json::array({3, 1})),
+        makeJsonRpcError(7, JsonRpcErrorCodes::applicationError, "null data", nlohmann::json(nullptr)),
+        makeJsonRpcError("big", JsonRpcErrorCodes::applicationError, "plan data", nlohmann::json(ordered)),
+    };
+    for (const auto &error : errors) {
+        REQUIRE(serializeJsonRpcError(error) == orderedEnvelopeError(error));
+    }
+    REQUIRE(serializeJsonRpcError(makeJsonRpcError(nullptr, JsonRpcErrorCodes::parseError, "parse error")) ==
+            R"({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}})");
+
+    // A string that is not UTF-8 is refused by both, as before.
+    const nlohmann::json bad{{"s", std::string{"\xFF"}}};
+    REQUIRE_THROWS_AS(orderedEnvelopeResult(1, bad), nlohmann::json::type_error);
+    REQUIRE_THROWS_AS(serializeJsonRpcResult(1, bad), nlohmann::json::type_error);
+    REQUIRE_THROWS_AS(serializeJsonRpcError(makeJsonRpcError(1, 1, std::string{"\xFF"})),
+                      nlohmann::json::type_error);
 }
 
 } // namespace Pelican

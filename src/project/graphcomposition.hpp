@@ -35,6 +35,50 @@ class GraphRegistryError : public std::runtime_error {
 GraphRegistryError graphLoopExpressionInvalid(const std::string &node, const std::string &pointer,
                                               std::string_view reason);
 
+// CT-2: the authored document a graph.* refusal's node was written in. Every
+// node, definition and loop body the engine composes lives in the rendering
+// root `pelican.graph` document (a preset and an authored pass are render
+// features without nodes; a graph template is copied into the root), so a
+// refusal raised while reading that root adds
+//   "document":   the root's reference, spelled `project://<path>`;
+//   "definition": the definition whose body holds the refused node -- an
+//                 instance's copy `<instance>/<node>`, a loop body's
+//                 `<loop>/$<branch>/<node>` or `<loop>/<element>/<node>`, a
+//                 body's own id, or an edit's `scope` naming a definition.
+// A field the detail already has is kept as it is, and a field that cannot be
+// told is left out (never null). Codes outside `graph.` are not touched.
+struct GraphRefusalSource {
+    std::optional<std::string> document;
+    std::optional<std::string> definition;
+};
+// `reference` spelled as a project names a document: a `project://` or
+// `engine://` reference as it is, a project-relative path with `project://`
+// in front; nullopt for an empty, absolute or otherwise-schemed one.
+std::optional<std::string> graphDocumentReference(std::string_view reference);
+// The definition whose body holds `node` (an expanded or an authored id) in
+// the pelican.graph `document`; nullopt for a root node or one not found.
+std::optional<std::string> graphNodeDefinition(const nlohmann::json &document, std::string_view node);
+// `node` and `scope` are the detail's fields of those names ("" when absent).
+GraphRefusalSource graphRefusalSource(std::string_view node, std::string_view scope,
+                                      const nlohmann::json &document, std::string_view reference);
+// Adds to an object detail of a graph.* code the source fields it lacks.
+// Templated so the editor's ordered details take the same rule.
+template <class JsonT>
+void addGraphRefusalSource(JsonT &detail, std::string_view code, const nlohmann::json &document,
+                           std::string_view reference) {
+    if (!detail.is_object() || !code.starts_with("graph.")) return;
+    const auto text = [&](const char *key) {
+        const auto found = detail.find(key);
+        return found != detail.end() && found->is_string() ? found->template get<std::string>() : std::string{};
+    };
+    const auto source = graphRefusalSource(text("node"), text("scope"), document, reference);
+    if (source.document && !detail.contains("document")) detail["document"] = *source.document;
+    if (source.definition && !detail.contains("definition")) detail["definition"] = *source.definition;
+}
+// The refusal again with the source fields in its detail, and so in what().
+GraphRegistryError graphRefusalInDocument(const GraphRegistryError &refusal, const nlohmann::json &document,
+                                          std::string_view reference);
+
 struct GraphNodeOrigin {
     std::string instance_path;
     std::string definition;

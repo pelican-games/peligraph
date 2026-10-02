@@ -126,7 +126,7 @@ void configureProject(const Sandbox &sandbox, std::string_view default_scene) {
              {"basic_config",
               {{"window_size", {{"width", 100}, {"height", 100}}},
                {"camera",
-                {{"yfov", 0.5}, {"znear", 0.1}, {"zfar", 1000.0}, {"up", {0.0, 1.0, 0.0}}}},
+                {{"yfov", 0.5}, {"znear", 0.1}, {"zfar", 1000.0}}},
                {"default_scene_id", std::string{default_scene}},
                {"scene_data_json", "scene.json"}}}}
             .dump());

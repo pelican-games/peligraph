@@ -42,7 +42,7 @@ engine が開く文書の `(schema, version)` は、**その engine に移行の
 
 | schema | version | parser | 備考 |
 |---|---|---|---|
-| `pelican.project` | 1 | `src/project/projectformat.cpp` | `project.json`。`engine_min_version` と `requires` を持つ。MG-1 で記録だけの `saved_by_engine` を足した(version は 1 のまま。MG-1 より前の player もこの key 入りで開けることを実物で確認) |
+| `pelican.project` | 1 | `src/project/projectformat.cpp` | `project.json`。`engine_min_version` と `requires` を持つ。MG-1 で記録だけの `saved_by_engine` を足した(version は 1 のまま。MG-1 より前の player もこの key 入りで開けることを実物で確認)。CC-1(`c8367b87`)で `basic_config.camera.up` を撤去し、書いてあれば `project.camera_up_removed@1` で断る(version は 1 のまま、移行の手順は登録していない。変換は `tools/convert_camera_convention.py`。[design_coordinate_convention.md](design_coordinate_convention.md) §4) |
 | `pelican.scene` | 2 | `src/project/sceneformat.cpp` | MG-2b で 1 の読み手を撤去し、2 以外は `pelican.scene.version_unsupported@1`(v1 は prefab キーを受けないことだけが違う版)。出荷 7 本と雛形・devcli の glTF / rules importer・import manifest の `pelican.scene` 出力は 2。SnapshotV1(scene v1 を運ぶ export / import)も撤去 |
 | `pelican.graph` | 1 | `src/project/graphcomposition.cpp` | 共通グラフ。`definitions` / `nodes` / `outputs` と構造の node `graph.instance` / `graph.input` / `graph.loop`(LP-1a。catalog には載らない)。rendering config の root もこれだけ(§1.6) |
 | `pelican.value_graph` | 1 | `src/core/userpublic/valuegraph.cpp` | **内部 IR + test 面**。外部契約ではない(§2 行 1) |
@@ -118,13 +118,13 @@ parameter ごとに既定と違う扱い(catalog の `change.parameters`)があ�
 `?` の付いた入力は任意。
 
 **`PELICAN_WITH_ANIMATION=OFF` build では `pelican.pose` module が無い**。
-catalog は 4 module / 30 op になり、下表の `pose.*` 6 本(`pose.blend` / `pose.clip_sample` /
+catalog は 4 module / 31 op になり、下表の `pose.*` 6 本(`pose.blend` / `pose.clip_sample` /
 `pose.retarget` / `pose.skeletal` / `pose.state_machine` / `pose.transform`)だけが消える。
 この関係は `test/run_devcli_graph_catalog.cmake` が「この表の op 集合 == ON の catalog、⊇ OFF の catalog」として検査する
 (表の範囲は下の 2 つのコメント行で区切る。行を足すときは ON の catalog に載る op だけ)。
 
 **`PELICAN_WITH_AUDIO=OFF` build では `pelican.audio` module が無い**。下表の `audio.*` 3 本(`audio.pitch` / `audio.playback` / `audio.volume`)が消え、
-catalog は 4 module / 33 op(animation も OFF なら 3 module / 27 op)になる。`audio.*` を書いた文書は `graph.operation_unregistered@1`。
+catalog は 4 module / 34 op(animation も OFF なら 3 module / 28 op)になる。`audio.*` を書いた文書は `graph.operation_unregistered@1`。
 `event.playback` とその出力型 `pelican.event.playback_control@1` は `pelican.value` に属するので残る(PG-1 で型を `pelican.value` へ移した)。
 同じ test は `WITH_AUDIO` と `WITH_ANIMATION` の両方を受け取り、module 数(3 + audio + animation。GP-3 までは 2 が基数で、`pelican.ui` が常に加わって 3 になった)と、この表のうち
 build から外した unit の op(`audio.*` / `pose.*`)だけが欠けてよいことを確かめる(`de84fddb`。AUDIO=OFF は catalog から
@@ -168,6 +168,7 @@ build から外した unit の op(`audio.*` / `pose.*`)だけが欠けてよい�
 | `value.multiply` | pelican.value | values | direct | value | — | declared | `a`, `b` | `value`: pelican.value.scalar@1 |
 | `value.parameter` | pelican.value | values | direct | value | — | declared | — | `value`: pelican.value.scalar@1 |
 | `value.playback` | pelican.value | values | direct | value | — | declared | `delay`?, `duration`?, `elapsed`, `sample_interval`?, `source_begin`?, `source_end`?, `speed`? | `value`: pelican.value.scalar@1 |
+| `value.sample_table` | pelican.value | values | baked | value(`asset` / `row` は rebuild) | — | declared | `time`? | `value`: pelican.value.scalar@1 |
 | `value.trigger_clock` | pelican.value | values | replay | value | — | declared | `paused`?, `reset`?, `time`, `trigger` | `value`: pelican.value.scalar@1 |
 <!-- graph-op-table:end -->
 
@@ -452,6 +453,8 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | draw-loop の表の登録簿の静的破棄の順序 | `cf40ec93` |
 | TI-1 test の CRT assert を stderr と終了へ | `3483aba1` |
 | RD-1b `restore_render_documents` の作成と削除 | `6c77d4f8` |
+| CC-1 座標の規約(画面を world の鏡像でなくす、camera は −Z・up は回転から、面の表は反時計回り、`basic_config.camera.up` の撤去と変換の script) | `c8367b87` |
+| CC-2 raster pass の `clip_y` と `pelican_ndc_to_uv` / `pelican_uv_to_ndc` | `1501685a` |
 
 ## 6. v0.1.0 tag の手順
 

@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -582,6 +583,105 @@ TEST_CASE("procedural geometry codec normalizes a single asset or a unique asset
         auto authored = fields;
         authored["name"] = "pelican_procedural_geometry";
         CHECK_THROWS(decodeOrThrow(*codec, authored));
+    }
+}
+
+// SC-1: the camera's controller is described by its schema the way the codec
+// reads it. Each conditioned field is checked against decodeController itself:
+// a type in required_for refuses the field's absence, a type that only applies
+// it reads an absent field as the declared default, and no other type keeps it.
+TEST_CASE("SC-1 camera controller schema states each type and the fields it reads",
+          "[component-codec][camera][controller][schema][sc1]") {
+    const auto &codec = requireComponentCodec("camera");
+    const auto fields = codec.fieldSchema();
+    const auto field = [&](std::string_view name) {
+        const auto found = std::find_if(fields.begin(), fields.end(), [&](const auto &entry) {
+            return entry.name == name;
+        });
+        REQUIRE(found != fields.end());
+        return *found;
+    };
+    const auto type = field("controller.type");
+    REQUIRE(type.type == StructFieldType::Enum);
+    REQUIRE(std::vector<std::string>(type.enum_values, type.enum_values + type.enum_value_count) ==
+            std::vector<std::string>{"orbit", "follow", "fly"});
+
+    const auto conditions = componentCodecFieldConditions("camera");
+    REQUIRE(conditions.size() == 8);
+    REQUIRE(componentCodecFieldConditions("light").empty());
+    std::set<std::string> conditioned;
+    for (const auto &condition : conditions) {
+        (void)field(condition.field);
+        REQUIRE(std::string{condition.discriminant} == "controller.type");
+        conditioned.insert(std::string{condition.field});
+    }
+    // Every controller field except the discriminant carries a condition.
+    for (const auto &entry : fields) {
+        if (!entry.name.starts_with("controller.") || entry.name == "controller.type") continue;
+        REQUIRE(conditioned.contains(std::string{entry.name}));
+    }
+    REQUIRE(field("controller.distance").type == StructFieldType::F32);
+    REQUIRE(field("controller.offset").type == StructFieldType::Vec3);
+    REQUIRE(field("controller.target").type == StructFieldType::String);
+    REQUIRE(std::string{field("controller.yaw").unit} == "rad");
+
+    // The smallest controller each type accepts, and a value for every field.
+    const std::map<std::string, nlohmann::json> minimal{
+        {"orbit", {{"type", "orbit"}, {"distance", 4.0}}},
+        {"follow", {{"type", "follow"}, {"target", "Target"}, {"offset", {0.0, 1.0, 2.0}}}},
+        {"fly", {{"type", "fly"}, {"speed", 3.0}, {"sensitivity", 0.5}}},
+    };
+    const std::map<std::string, nlohmann::json> sample{
+        {"target", "Other"}, {"distance", 7.0}, {"yaw", 0.25}, {"pitch", -0.5},
+        {"sensitivity", 2.5}, {"offset", {3.0, 4.0, 5.0}}, {"speed", 9.0}, {"damping", 0.75},
+    };
+    const auto canonical = [&](const nlohmann::json &controller) {
+        return nlohmann::json::parse(canonicalThroughRuntime(
+            codec, nlohmann::json{{"name", "camera"}, {"controller", controller}}).at("controller").dump());
+    };
+    const auto accepted = [&](const nlohmann::json &controller) {
+        try {
+            return codec.decodeAuthored(nlohmann::json{{"name", "camera"}, {"controller", controller}})
+                .hasValue();
+        } catch (const std::exception &) {
+            return false;
+        }
+    };
+    for (const auto &[type_name, base] : minimal) {
+        REQUIRE(accepted(base));
+        const auto base_canonical = canonical(base);
+        for (const auto &condition : conditions) {
+            const auto key = std::string{condition.field.substr(std::string_view{"controller."}.size())};
+            const bool applies = std::find(condition.applies_to.begin(), condition.applies_to.end(),
+                                           type_name) != condition.applies_to.end();
+            const bool required = std::find(condition.required_for.begin(), condition.required_for.end(),
+                                            type_name) != condition.required_for.end();
+            DYNAMIC_SECTION(type_name << "." << key) {
+                REQUIRE((!required || applies));
+                if (required) {
+                    REQUIRE(base.contains(key));
+                    auto without = base;
+                    without.erase(key);
+                    CHECK_FALSE(accepted(without));
+                    continue;
+                }
+                REQUIRE_FALSE(base.contains(key));
+                auto with = base;
+                with[key] = sample.at(key);
+                if (applies) {
+                    // An absent field reads as the declared default ...
+                    REQUIRE(condition.default_value.has_value());
+                    const auto absent = base_canonical.contains(key) ? base_canonical.at(key) : nlohmann::json("");
+                    CHECK(absent == nlohmann::json::parse(condition.default_value->dump()));
+                    // ... and an authored one is read.
+                    CHECK(canonical(with).at(key) == sample.at(key));
+                } else if (key != "damping") {
+                    // Decoded for every type, but only orbit and follow move
+                    // the camera with it (cameracontrollersystem.cpp).
+                    CHECK_FALSE(canonical(with).contains(key));
+                }
+            }
+        }
     }
 }
 

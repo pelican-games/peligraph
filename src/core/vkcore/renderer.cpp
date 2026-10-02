@@ -3,6 +3,7 @@
 #include "../renderingpass/graphinputs.hpp"
 #include "../userpublic/gamecontext.hpp"
 #include "../renderer/camera.hpp"
+#include "../renderer/clipspace.hpp"
 #include "accelerationstructure.hpp"
 #include "../renderer/fullscreenpassrenderer.hpp"
 #include "../renderer/frameresources.hpp"
@@ -26,6 +27,7 @@
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../loader/renderconfigcandidate.hpp"
+#include "../loader/sampletable.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../fullscreenpass/passinputlayout.hpp"
 #include "../fullscreenpass/shaderinputmismatchjson.hpp"
@@ -56,6 +58,7 @@
 #include "../shader/raygrouplayout.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../appflow/enginetime.hpp"
+#include "../../project/audioanalysisformat.hpp"
 #include "../../project/frameresolutionwire.hpp"
 #include "../../project/vulkanviewplanning.hpp"
 #include "deletionqueue.hpp"
@@ -311,6 +314,18 @@ std::set<watch::AssetKey> renderPipelineWatchSources(
     const auto &resolver = GET_MODULE(PathResolver);
     for (const auto &file : program->frame_graph.attribute_source_files)
         if (auto key = watch::assetKeyForFile(resolver, file)) result.insert(std::move(*key));
+    // IA-1: an initial asset rewritten on disk is read into a new generation,
+    // whose first frame copies it into the image again.
+    for (const auto &[name, asset] : program->frame_graph.image_initial_assets) {
+        (void)name;
+        if (auto key = watch::assetKeyForFile(resolver, asset->file)) result.insert(std::move(*key));
+    }
+    // IA-3: a value.sample_table's table and the manifest beside it are read
+    // when the value graph is built, so a new generation reads them again.
+    if (program->frame_graph.value_graph)
+        for (const auto &read : program->frame_graph.value_graph->sampleTables())
+            for (const auto *file : {&read.table->file, &read.table->manifest})
+                if (auto key = watch::assetKeyForFile(resolver, *file)) result.insert(std::move(*key));
     if (pipeline.pipeline_preset) {
         append(pipeline.pipeline_preset->reference);
     }
@@ -1581,6 +1596,12 @@ struct FrameGraphExecutionRequest {
     nlohmann::json *trace_out = nullptr;
     // LP-2: the draw-step table of the generation this frame records.
     const MaterialDrawLoopTable *material_draw_loops = nullptr;
+    // PS-1: by frame graph node index, 1 for a once node this frame skips.
+    // Empty: every node runs.
+    std::span<const std::uint8_t> once_skipped{};
+    // MP-1: the frame's tally of what its material passes drew; null keeps
+    // none.
+    MaterialPassDrawTally *drawn_materials = nullptr;
 };
 
 void executePlannedFrameGraph(
@@ -1732,6 +1753,32 @@ void executePlannedFrameGraph(
             throw std::runtime_error(
                 "logical-frame schedule view family does not match node '" +
                 execution_node.name + "'");
+        }
+        if (node_index < request.once_skipped.size() &&
+            request.once_skipped[node_index] != 0) {
+            // PS-1: a once node with nothing new to do this frame. What it
+            // wrote is in its persistent outputs; it records nothing, no
+            // scope begins (target planning isolates it), and it counts as
+            // completed without recording, as a view_select that matched
+            // no view does.
+            if (request.modules.render_timing != nullptr) {
+                for (const auto range : {GpuTimingSubrange::barriers, GpuTimingSubrange::body}) {
+                    if (begins_recorded_node)
+                        request.modules.render_timing->writeNodeSubrangeStart(request.render_ctx.cmd_buf,
+                            static_cast<std::uint32_t>(timing_query_index), range);
+                    if (ends_recorded_node)
+                        request.modules.render_timing->writeNodeSubrangeEnd(request.render_ctx.cmd_buf,
+                            static_cast<std::uint32_t>(timing_query_index), range);
+                }
+            }
+            if (request.trace_out != nullptr)
+                request.trace_out->push_back({{"name", execution_node.name},
+                    {"kind", framePlanNodeKindName(execution_node.kind)}, {"order", node_index},
+                    {"recorded", false}, {"once_skipped", true},
+                    {"view_index", scheduled.view_index},
+                    {"logical_view_count", scheduled.logical_view_count}});
+            completed_nodes[node_index] = completedWithoutRecording;
+            continue;
         }
         if (scheduled.no_selected_view) {
             // LP-Va: a view_select that matches none of this frame's views
@@ -2595,6 +2642,11 @@ void executeRenderingPasses(
         per_view_sort ? request.view_index : 0u};
     material_renderer_dependencies.draw_loops =
         request.material_draw_loops;
+    material_renderer_dependencies.drawn_materials =
+        request.drawn_materials;
+    material_renderer_dependencies.mirrored_view = viewIsMirrored(
+        views[request.view_index].projection,
+        views[request.view_index].view);
     const FullscreenPassRendererDependencies fullscreen_pass_renderer_dependencies{request.modules.fullscreen_pass_container,
                                                                                   request.modules.frame_resources};
     std::optional<UiRendererDependencies> ui_renderer_dependencies;
@@ -2679,6 +2731,11 @@ void executeRenderingPasses(
                     .first_person_view =
                     family_view
                         .first_person_view;
+                material_renderer_dependencies
+                    .mirrored_view =
+                    viewIsMirrored(
+                        family_view.projection,
+                        family_view.view);
                 material_renderer_dependencies
                     .draw_sort_view_index =
                     per_view_sort &&
@@ -4043,6 +4100,231 @@ void appendUnusedBindingDiagnostics(
 
 } // namespace
 
+std::vector<std::string> Renderer::requestOnceRerun(
+    const std::optional<std::string> &node) {
+    const auto *frame_graph_runtime = FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
+    const auto generation =
+        frame_graph_runtime != nullptr ? frame_graph_runtime->snapshot() : nullptr;
+    const auto *program =
+        generation != nullptr ? generation->find(current_rendering_pass_id) : nullptr;
+    if (program == nullptr) {
+        throw std::runtime_error("Current frame plan is not registered");
+    }
+    const auto &frame_graph = program->frame_graph;
+    std::map<std::string, const RenderPassProvenance *, std::less<>> provenance;
+    if (frame_graph.render_pipeline != nullptr)
+        for (const auto &entry : frame_graph.render_pipeline->pass_provenance)
+            provenance.emplace(entry.name, &entry);
+    // A plan node is the node's when it is named so (a root or instance
+    // node's expanded id) or a copy of a graph.loop of that id.
+    const auto made_by = [&](const FramePlanNode &planned) {
+        if (planned.name == *node) return true;
+        const auto found = provenance.find(planned.name);
+        return found != provenance.end() && found->second->loop_origin &&
+               found->second->loop_origin->loop == *node;
+    };
+    bool known = !node.has_value();
+    std::vector<std::string> scheduled;
+    for (const auto &planned : frame_graph.plan.nodes) {
+        if (node && !made_by(planned)) continue;
+        known = true;
+        if (planned.once) scheduled.push_back(planned.name);
+    }
+    if (!known && frame_graph.render_pipeline != nullptr) {
+        // A loop that expanded nothing is still a node of the graph.
+        const auto &loops = frame_graph.render_pipeline->graph_loops;
+        known = std::any_of(loops.begin(), loops.end(),
+                            [&](const auto &loop) { return loop.node == *node; });
+    }
+    if (!known) {
+        throw std::invalid_argument("rerun_once node names no node of the frame plan: " + *node);
+    }
+    once_rerun_requests.insert(scheduled.begin(), scheduled.end());
+    return scheduled;
+}
+
+namespace {
+
+// FP-1: what get_frame_plan answers that the published generation and its
+// program decide, and nothing that reads a frame, the scene, a file or a
+// runtime setting: the plan with its loops, diagnostics and fold
+// decisions, the execution plan, the program's owner scope, the window
+// output, the GPU resource arena, the physical target plan with the nodes
+// each entry concerns, the native scope executors and the sample count
+// plan. Renderer::currentFramePlanJson builds it once per generation and
+// adds the rest to a copy on every call.
+nlohmann::json framePlanGenerationPartJson(
+    const RendererRuntimeGeneration &runtime_generation,
+    const CompiledRenderProgram &compiled_program,
+    const std::string &graph_reference) {
+    const auto *generation = &runtime_generation;
+    const auto *program = &compiled_program;
+    const auto *frame_graph = &program->frame_graph;
+    auto result = framePlanToJson(frame_graph->plan,
+                                  frame_graph->render_pipeline.get(),
+                                  graph_reference);
+    result["execution_plan"] =
+        frameExecutionPlanToJson(
+            frame_graph->execution_plan);
+    result["runtime_generation"] = generation->generation;
+    result["gpu_owner_scope"] = program->owner_scope;
+    result["retained_resource_lease_count"] =
+        program->resource_leases.size();
+    if (generation->window_output != nullptr) {
+        const auto &output =
+            *generation->window_output;
+        const auto &facts =
+            output.compile_facts;
+        result["window_output"] = {
+            {"generation", output.generation},
+            {"compile_fingerprint",
+             output.compile_fingerprint},
+            {"target_kind",
+             outputTargetKindName(
+                 facts.target_kind)},
+            {"extent",
+             {{"width", facts.extent.width},
+              {"height", facts.extent.height}}},
+            {"color_format",
+             vk::to_string(facts.color_format)},
+            {"color_space",
+             vk::to_string(facts.color_space)},
+            {"encoding_path",
+             outputEncodingPathName(
+                 facts.encoding_path)},
+            {"selected_usage",
+             static_cast<std::uint32_t>(
+                 static_cast<VkImageUsageFlags>(
+                     facts.selected_usage))},
+            {"capture_available",
+             facts.capture_available},
+            {"surface_transform",
+             vk::to_string(
+                 facts.surface_transform)},
+            {"graphics_queue_family",
+             facts.graphics_queue_family},
+            {"presentation_queue_family",
+             facts.presentation_queue_family},
+        };
+    }
+    if (generation->gpu_arena != nullptr) {
+        nlohmann::json scopes = nlohmann::json::array();
+        for (const auto &scope :
+             generation->gpu_arena->scopes) {
+            nlohmann::json resources =
+                nlohmann::json::array();
+            for (const auto &resource : scope.resources) {
+                resources.push_back(
+                    {{"kind",
+                      renderPipelineGpuResourceKindName(
+                          resource.kind)},
+                     {"handle", resource.handle},
+                     {"name", resource.name},
+                     {"declared_bytes",
+                      resource.declared_bytes}});
+            }
+            scopes.push_back(
+                {{"owner_scope", scope.owner_scope},
+                 {"resource_lease_count",
+                  scope.resource_leases.size()},
+                 {"resources", std::move(resources)}});
+        }
+        result["gpu_resource_arena"] = {
+            {"runtime_generation",
+             generation->gpu_arena
+                 ->runtime_generation},
+            {"resource_count",
+             generation->gpu_arena->resourceCount()},
+            {"scopes", std::move(scopes)},
+        };
+    }
+    if (frame_graph->target_plan != nullptr) {
+        result["physical_target_plan"] =
+            vulkanTargetPlanToJson(*frame_graph->target_plan);
+        // GL-2a: resources, alias groups, decisions and backend candidates
+        // name the frame plan nodes they concern (from_nodes).
+        appendFramePlanPhysicalNodeReferences(result);
+    }
+    if (frame_graph->native_scopes != nullptr) {
+        nlohmann::json scopes =
+            nlohmann::json::array();
+        for (const auto &scope :
+             frame_graph->native_scopes->scopes()) {
+            nlohmann::json resources =
+                nlohmann::json::array();
+            for (const auto &resource :
+                 scope.resources()) {
+                resources.push_back(
+                    {
+                        {"logical_resource",
+                         resource.boundary
+                             .logical_resource},
+                        {"semantic_type",
+                         resource.boundary
+                             .semantic_type},
+                        {"access",
+                         logicalAccessModeName(
+                             resource.boundary
+                                 .access)},
+                        {"ownership",
+                         vulkanNativeScopeResourceOwnershipName(
+                             resource.boundary
+                                 .ownership)},
+                        {"runtime_kind",
+                         vulkanNativeScopePreparedResourceKindName(
+                             resource.kind)},
+                    });
+            }
+            const auto &selection =
+                scope.selection();
+            scopes.push_back(
+                {
+                    {"scope", scope.scopeId()},
+                    {"implementation",
+                     selection.implementation},
+                    {"provider",
+                     selection.provider},
+                    {"provider_owner",
+                     selection.owner},
+                    {"registration_generation",
+                     selection
+                         .registration_generation},
+                    {"provider_api_version",
+                     selection
+                         .provider_api_version},
+                    {"capabilities",
+                     selection.capabilities},
+                    {"synchronization",
+                     vulkanNativeScopeSynchronizationModeName(
+                         scope.declaration()
+                             .synchronization)},
+                    {"queue_capability",
+                     scope.declaration()
+                         .queue_capability},
+                    {"resources",
+                     std::move(resources)},
+                });
+        }
+        result["native_scope_executors"] = {
+            {"graph",
+             frame_graph->native_scopes
+                 ->graph()},
+            {"package_fingerprint",
+             frame_graph->native_scopes
+                 ->packageFingerprint()},
+            {"scopes", std::move(scopes)},
+        };
+    }
+    if (frame_graph->sample_count_plan != nullptr &&
+        frame_graph->render_pipeline->sample_count_policy.authored) {
+        result["sample_count_plan"] =
+            resolvedSampleCountPlanToJson(*frame_graph->sample_count_plan);
+    }
+    return result;
+}
+
+} // namespace
+
 nlohmann::json Renderer::currentFramePlanJson() const {
     const auto *frame_graph_runtime = FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
     const auto generation =
@@ -4067,16 +4349,32 @@ nlohmann::json Renderer::currentFramePlanJson() const {
         project_config != nullptr
             ? project_config->renderingConfigReference()
             : std::string{};
-    auto result = framePlanToJson(frame_graph->plan,
-                                  frame_graph->render_pipeline.get(),
-                                  graph_reference);
+    // FP-1: the generation's part, built once per generation and program;
+    // everything below is what a call reads now.
+    auto &cached = frame_plan_generation_part;
+    if (cached.plan.is_null() ||
+        cached.generation.lock() != generation ||
+        cached.runtime_generation != generation->generation ||
+        cached.rendering_pass_id != current_rendering_pass_id ||
+        cached.graph_reference != graph_reference) {
+        cached.plan = nullptr;
+        auto built = framePlanGenerationPartJson(*generation, *program,
+                                                 graph_reference);
+        cached.generation = generation;
+        cached.runtime_generation = generation->generation;
+        cached.rendering_pass_id = current_rendering_pass_id;
+        cached.graph_reference = graph_reference;
+        cached.plan = std::move(built);
+        ++cached.builds;
+    }
+    auto result = cached.plan;
+    // Whether a stage's source file exists is the file system's now.
     appendShaderResolution(
         result, program->rendering_pass,
         GET_MODULE(PathResolver));
-    result["execution_plan"] =
-        frameExecutionPlanToJson(
-            frame_graph->execution_plan);
-    result["runtime_generation"] = generation->generation;
+    // PV-1: whether the one-shot preview could be composed with this
+    // generation, and why not.
+    result["preview"] = previewGraphStatusJson(preview_graph_program);
     // LP-Va2: a node whose view_select matched no view in the last published
     // frame of this program. Absent on a node that ran, and before the
     // program has published a frame.
@@ -4093,6 +4391,23 @@ nlohmann::json Renderer::currentFramePlanJson() const {
                 last_no_selected_view_nodes.end()) {
                 node["no_selected_view"] = true;
             }
+        }
+    }
+    // PS-1: when each once node last ran (the runtime generation and the
+    // logical frame of the published frame that ran it), null before it has.
+    {
+        const auto runs = once_runs.find(current_rendering_pass_id.value);
+        for (auto &node : result["nodes"]) {
+            if (node.value("schedule", std::string{}) != "once") continue;
+            const OnceRunRecord *record = nullptr;
+            if (runs != once_runs.end()) {
+                const auto found = runs->second.find(node.value("name", std::string{}));
+                if (found != runs->second.end()) record = &found->second;
+            }
+            node["last_run_generation"] =
+                record != nullptr ? nlohmann::json(record->generation) : nlohmann::json(nullptr);
+            node["last_run_frame"] =
+                record != nullptr ? nlohmann::json(record->frame) : nlohmann::json(nullptr);
         }
     }
     // CPU-side runtime settings at query time, not a completed GPU submission.
@@ -4170,46 +4485,6 @@ nlohmann::json Renderer::currentFramePlanJson() const {
             }
         }
     }
-    result["gpu_owner_scope"] = program->owner_scope;
-    result["retained_resource_lease_count"] =
-        program->resource_leases.size();
-    if (generation->window_output != nullptr) {
-        const auto &output =
-            *generation->window_output;
-        const auto &facts =
-            output.compile_facts;
-        result["window_output"] = {
-            {"generation", output.generation},
-            {"compile_fingerprint",
-             output.compile_fingerprint},
-            {"target_kind",
-             outputTargetKindName(
-                 facts.target_kind)},
-            {"extent",
-             {{"width", facts.extent.width},
-              {"height", facts.extent.height}}},
-            {"color_format",
-             vk::to_string(facts.color_format)},
-            {"color_space",
-             vk::to_string(facts.color_space)},
-            {"encoding_path",
-             outputEncodingPathName(
-                 facts.encoding_path)},
-            {"selected_usage",
-             static_cast<std::uint32_t>(
-                 static_cast<VkImageUsageFlags>(
-                     facts.selected_usage))},
-            {"capture_available",
-             facts.capture_available},
-            {"surface_transform",
-             vk::to_string(
-                 facts.surface_transform)},
-            {"graphics_queue_family",
-             facts.graphics_queue_family},
-            {"presentation_queue_family",
-             facts.presentation_queue_family},
-        };
-    }
     if (const auto *instances =
             FastModuleContainer::tryGet<
                 PolygonInstanceContainer>();
@@ -4263,6 +4538,46 @@ nlohmann::json Renderer::currentFramePlanJson() const {
                     ->unmatched_exclude);
         }
     }
+    // MP-1: what each material pass drew in the last published frame of this
+    // program and generation: the effective materials of its draws (route,
+    // tags, variant and draw-loop steps resolved), in the order first drawn.
+    // A pass that drew nothing that frame lists none. Absent before such a
+    // frame is published.
+    if (last_drawn_materials.recorded &&
+        last_drawn_materials.runtime_generation ==
+            generation->generation &&
+        last_drawn_materials.rendering_pass_id ==
+            current_rendering_pass_id &&
+        result.contains("nodes") &&
+        result.at("nodes").is_array()) {
+        std::map<std::string, nlohmann::json *, std::less<>> nodes_by_name;
+        for (auto &node : result["nodes"]) {
+            if (node.is_object())
+                nodes_by_name.emplace(node.value("name", std::string{}), &node);
+        }
+        for (const auto &compiled_pass : program->rendering_pass.passes) {
+            if (!compiled_pass.definition.isMaterial()) continue;
+            const auto node = nodes_by_name.find(compiled_pass.definition.name);
+            if (node == nodes_by_name.end()) continue;
+            auto materials = nlohmann::json::array();
+            bool truncated = false;
+            if (const auto drawn = last_drawn_materials.passes.find(compiled_pass.definition.name);
+                drawn != last_drawn_materials.passes.end()) {
+                truncated = drawn->second.truncated;
+                for (const auto &material : drawn->second.materials) {
+                    nlohmann::json entry;
+                    if (!material.name.empty()) entry["material"] = material.name;
+                    entry["id"] = material.material;
+                    entry["draws"] = material.draws;
+                    materials.push_back(std::move(entry));
+                }
+            }
+            auto &target = *node->second;
+            target["drawn_materials"] = std::move(materials);
+            target["drawn_materials_frame"] = last_drawn_materials.frame;
+            if (truncated) target["drawn_materials_truncated"] = true;
+        }
+    }
     // LP-3a: a draw_loop's elements are the materials this generation
     // judges, known only here.
     if (generation->material_draw_loops != nullptr &&
@@ -4276,160 +4591,50 @@ nlohmann::json Renderer::currentFramePlanJson() const {
         applyMaterialDrawLoopElementsToFramePlanJson(
             result, *generation->material_draw_loops->rules(), subjects);
     }
-    if (generation->gpu_arena != nullptr) {
-        nlohmann::json scopes = nlohmann::json::array();
-        for (const auto &scope :
-             generation->gpu_arena->scopes) {
-            nlohmann::json resources =
-                nlohmann::json::array();
-            for (const auto &resource : scope.resources) {
-                resources.push_back(
-                    {{"kind",
-                      renderPipelineGpuResourceKindName(
-                          resource.kind)},
-                     {"handle", resource.handle},
-                     {"name", resource.name},
-                     {"declared_bytes",
-                      resource.declared_bytes}});
-            }
-            scopes.push_back(
-                {{"owner_scope", scope.owner_scope},
-                 {"resource_lease_count",
-                  scope.resource_leases.size()},
-                 {"resources", std::move(resources)}});
-        }
-        result["gpu_resource_arena"] = {
-            {"runtime_generation",
-             generation->gpu_arena
-                 ->runtime_generation},
-            {"resource_count",
-             generation->gpu_arena->resourceCount()},
-            {"scopes", std::move(scopes)},
-        };
-    }
     result["ray_query_acceleration_structures"] =
         rayQueryAccelerationStructureDiagnosticsToJson(
             rayQueryAccelerationStructureDiagnosticsForTesting());
-    if (frame_graph->target_plan != nullptr) {
-        result["physical_target_plan"] =
-            vulkanTargetPlanToJson(*frame_graph->target_plan);
-        // GL-2a: resources, alias groups, decisions and backend candidates
-        // name the frame plan nodes they concern (from_nodes).
-        appendFramePlanPhysicalNodeReferences(result);
-        if (frame_graph->target_plan->resolution_plan) {
-            const auto *render_targets =
-                FastModuleContainer::tryGet<
-                    RenderTargetContainer>();
-            if (render_targets == nullptr) {
-                throw std::runtime_error(
-                    "Current frame runtime resolution has no render target container");
-            }
-
-            std::optional<vk::Extent2D> runtime_output_extent;
-            if (generation->window_output != nullptr) {
-                runtime_output_extent =
-                    generation->window_output
-                        ->compile_facts.extent;
-            } else {
-                runtime_output_extent =
-                    internal_render_extent;
-            }
-            if (!runtime_output_extent) {
-                throw std::runtime_error(
-                    "Current frame runtime resolution has no output extent");
-            }
-
-            result["runtime_resolution"] =
-                frameRuntimeResolutionWireToJson(
-                    makeFrameRuntimeResolutionWire(
-                        *frame_graph->target_plan,
-                        [&](std::string_view resource) {
-                            const auto extent =
-                                resolveResolutionSourceExtent(
-                                    resource, *frame_graph,
-                                    *render_targets,
-                                    *runtime_output_extent);
-                            return ResolvedResourceExtent{
-                                .width = extent.width,
-                                .height = extent.height,
-                            };
-                        }));
+    // The physical target plan is the generation's; how large its
+    // resolution sources are now is not.
+    if (frame_graph->target_plan != nullptr &&
+        frame_graph->target_plan->resolution_plan) {
+        const auto *render_targets =
+            FastModuleContainer::tryGet<
+                RenderTargetContainer>();
+        if (render_targets == nullptr) {
+            throw std::runtime_error(
+                "Current frame runtime resolution has no render target container");
         }
-    }
-    if (frame_graph->native_scopes != nullptr) {
-        nlohmann::json scopes =
-            nlohmann::json::array();
-        for (const auto &scope :
-             frame_graph->native_scopes->scopes()) {
-            nlohmann::json resources =
-                nlohmann::json::array();
-            for (const auto &resource :
-                 scope.resources()) {
-                resources.push_back(
-                    {
-                        {"logical_resource",
-                         resource.boundary
-                             .logical_resource},
-                        {"semantic_type",
-                         resource.boundary
-                             .semantic_type},
-                        {"access",
-                         logicalAccessModeName(
-                             resource.boundary
-                                 .access)},
-                        {"ownership",
-                         vulkanNativeScopeResourceOwnershipName(
-                             resource.boundary
-                                 .ownership)},
-                        {"runtime_kind",
-                         vulkanNativeScopePreparedResourceKindName(
-                             resource.kind)},
-                    });
-            }
-            const auto &selection =
-                scope.selection();
-            scopes.push_back(
-                {
-                    {"scope", scope.scopeId()},
-                    {"implementation",
-                     selection.implementation},
-                    {"provider",
-                     selection.provider},
-                    {"provider_owner",
-                     selection.owner},
-                    {"registration_generation",
-                     selection
-                         .registration_generation},
-                    {"provider_api_version",
-                     selection
-                         .provider_api_version},
-                    {"capabilities",
-                     selection.capabilities},
-                    {"synchronization",
-                     vulkanNativeScopeSynchronizationModeName(
-                         scope.declaration()
-                             .synchronization)},
-                    {"queue_capability",
-                     scope.declaration()
-                         .queue_capability},
-                    {"resources",
-                     std::move(resources)},
-                });
+
+        std::optional<vk::Extent2D> runtime_output_extent;
+        if (generation->window_output != nullptr) {
+            runtime_output_extent =
+                generation->window_output
+                    ->compile_facts.extent;
+        } else {
+            runtime_output_extent =
+                internal_render_extent;
         }
-        result["native_scope_executors"] = {
-            {"graph",
-             frame_graph->native_scopes
-                 ->graph()},
-            {"package_fingerprint",
-             frame_graph->native_scopes
-                 ->packageFingerprint()},
-            {"scopes", std::move(scopes)},
-        };
-    }
-    if (frame_graph->sample_count_plan != nullptr &&
-        frame_graph->render_pipeline->sample_count_policy.authored) {
-        result["sample_count_plan"] =
-            resolvedSampleCountPlanToJson(*frame_graph->sample_count_plan);
+        if (!runtime_output_extent) {
+            throw std::runtime_error(
+                "Current frame runtime resolution has no output extent");
+        }
+
+        result["runtime_resolution"] =
+            frameRuntimeResolutionWireToJson(
+                makeFrameRuntimeResolutionWire(
+                    *frame_graph->target_plan,
+                    [&](std::string_view resource) {
+                        const auto extent =
+                            resolveResolutionSourceExtent(
+                                resource, *frame_graph,
+                                *render_targets,
+                                *runtime_output_extent);
+                        return ResolvedResourceExtent{
+                            .width = extent.width,
+                            .height = extent.height,
+                        };
+                    }));
     }
     if (frame_graph->render_pipeline != nullptr &&
         frame_graph->render_pipeline
@@ -4588,6 +4793,35 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     const auto *sprite_scene = FastModuleContainer::tryGet<SpriteScene>();
     result["sprite"] = sprite_scene != nullptr ? sprite_scene->statusJson()
                                                  : nlohmann::json{{"enabled", false}};
+    // IA-1: a persistent image that starts from an asset names it, with the
+    // file's sha256 in its store's assets.manifest (null when not listed).
+    // An object, so a later WP can add what the asset was baked from.
+    if (!frame_graph->image_initial_assets.empty()) {
+        if (const auto physical = result.find("physical_target_plan");
+            physical != result.end() && physical->is_object() && physical->contains("resources"))
+            for (auto &resource : physical->at("resources")) {
+                const auto found = frame_graph->image_initial_assets.find(
+                    resource.value("logical_resource", std::string{}));
+                if (found == frame_graph->image_initial_assets.end()) continue;
+                resource["initial_asset"] = {
+                    {"asset", found->second->asset},
+                    {"sha256", found->second->sha256 ? nlohmann::json(*found->second->sha256)
+                                                     : nlohmann::json(nullptr)}};
+                // AB-1: an asset some tool derived (its .import.json beside
+                // it) says from what, and whether that source or the
+                // settings moved on since.
+                if (const auto derived = derivedAssetStatusOf(found->second->file)) {
+                    const auto *resolver = FastModuleContainer::tryGet<PathResolver>();
+                    const auto listed = derivedAssetJson(
+                        *derived, resolver != nullptr && resolver->isSetup() ? resolver->projectRoot()
+                                                                             : std::filesystem::path{});
+                    auto &initial = resource["initial_asset"];
+                    initial["derived_from"] = listed.at("derived_from");
+                    initial["stale"] = derived->stale;
+                    initial["stale_reasons"] = derived->stale_reasons;
+                }
+            }
+    }
     return result;
 }
 
@@ -5055,13 +5289,17 @@ class Renderer::LogicalFrameRecorder {
     void publishFrameValueGraph();
     void stagePoseAttributesAndLights();
     void buildDrawSortViews();
+    void uploadImageInitialAssets();
+    void planOnceNodes();
     void planLogicalFrameSchedule();
     void configureExternalDepthExport();
     void beginLogicalFrameTarget();
     void recordExecutions();
     void submitFrame();
     void publishFrame();
+    void retainOnceRuns();
     void retainNoSelectedViewNodes();
+    void retainDrawnMaterials();
     void retainPickingSnapshot();
     void publishExecutionTrace();
     void advanceFrameHistories();
@@ -5164,6 +5402,18 @@ class Renderer::LogicalFrameRecorder {
     // Valid from buildDrawSortViews.
     bool per_view_sort = false;
     std::vector<DrawQueueSortView> sort_views;
+
+    // Valid from planOnceNodes. By frame graph node index, 1 for a once node
+    // this frame skips; and the once nodes it runs, which retainOnceRuns
+    // records once the frame is published.
+    std::vector<std::uint8_t> once_skipped;
+    std::vector<OnceScheduleNode> once_ran;
+    OnceResourceFacts once_facts;
+
+    // MP-1: what each material pass drew, filled while recordExecutions
+    // records them; retainDrawnMaterials keeps it once the frame is
+    // published.
+    MaterialPassDrawTally drawn_materials;
 
     // Valid from prepareViewFamilyStates, which recordOneExecution runs on the
     // first view only.
@@ -6269,6 +6519,8 @@ void Renderer::LogicalFrameRecorder::recordOneExecution(
                 runtime_generation != nullptr
                     ? runtime_generation->material_draw_loops.get()
                     : nullptr,
+            .once_skipped = once_skipped,
+            .drawn_materials = &drawn_materials,
         },
         view_family_states, per_view_sort);
     if (external_depth_submission_active) {
@@ -6346,6 +6598,135 @@ void Renderer::LogicalFrameRecorder::publishFrame() {
     ++renderer.published_logical_frames;
 }
 
+namespace {
+// PS-1: a Vulkan handle as the number a once node's run record keeps.
+template <typename Handle>
+std::uint64_t onceHandleValue(Handle handle) {
+    static_assert(sizeof(Handle) <= sizeof(std::uint64_t));
+    std::uint64_t value = 0;
+    std::memcpy(&value, &handle, sizeof(handle));
+    return value;
+}
+} // namespace
+
+// IA-1: a persistent image with `initial: {asset}` holds the asset when it
+// is made anew and on the first frame of a runtime generation, before any
+// pass of the frame (a once pass that writes it overwrites it). The copy is
+// its own submission, waited for; the layout tracker resumes from
+// TRANSFER_DST. A target whose format or extent no longer fits the asset
+// (the composition changed it after the preflight) is left as it is.
+void Renderer::LogicalFrameRecorder::uploadImageInitialAssets() {
+    if (frame_graph.image_initial_assets.empty()) return;
+    auto &uploads = renderer.image_initial_uploads[renderer.current_rendering_pass_id.value];
+    auto &targets = modules.render_target_container;
+    for (const auto &[name, asset] : frame_graph.image_initial_assets) {
+        const auto binding = frame_graph.render_target_bindings.find(name);
+        if (binding == frame_graph.render_target_bindings.end() || !isConcreteRenderTarget(binding->second))
+            continue;
+        const auto &image = targets.getImage(binding->second);
+        const auto handle = onceHandleValue(static_cast<VkImage>(image.image.get()));
+        auto &record = uploads[name];
+        if (record.image == handle && record.generation == runtime_generation->generation && record.asset == asset)
+            continue;
+        record = Renderer::ImageInitialUpload{handle, runtime_generation->generation, asset};
+        const auto metadata = targets.getMetadata(binding->second);
+        std::string target_format;
+        try {
+            target_format = formatToString(metadata.format);
+        } catch (const std::exception &) {
+        }
+        const auto shape = [](std::string format) {
+            if (const auto srgb = format.find("SRGB"); srgb != std::string::npos) format.replace(srgb, 4, "UNORM");
+            return format;
+        };
+        if (metadata.extent.width != asset->width || metadata.extent.height != asset->height ||
+            metadata.samples != 1 || metadata.array_layers != 1 || shape(target_format) != shape(asset->format) ||
+            asset->texels.size() !=
+                std::size_t{asset->width} * asset->height * formatTexelBytes(metadata.format)) {
+            if (logger)
+                LOG_WARNING(logger, "render.image initial asset {} does not fit target {} ({}x{} {}); not copied",
+                            asset->asset, name, metadata.extent.width, metadata.extent.height, target_format);
+            continue;
+        }
+        // The image may be one frames in flight still read (a new
+        // generation that kept it).
+        GET_MODULE(VulkanManageCore).waitIdle();
+        modules.vk_utils.safeTransferMemoryToImage(
+            image, asset->texels.data(), asset->texels.size(),
+            VulkanUtils::ImageTransferInfo{
+                .old_layout = vk::ImageLayout::eUndefined,
+                .new_layout = vk::ImageLayout::eTransferDstOptimal,
+                .dst_stage = vk::PipelineStageFlagBits::eTransfer,
+                .dst_access = vk::AccessFlagBits::eTransferWrite,
+            });
+        renderer.render_target_layout_tracker.assumeLayout(targets, binding->second,
+                                                           vk::ImageLayout::eTransferDstOptimal);
+    }
+}
+
+// PS-1: which once nodes this frame records (oncescheduler.hpp). Planned
+// after the frame's host writes (value graph sinks, lights) are staged, so a
+// read buffer's digest is this frame's.
+void Renderer::LogicalFrameRecorder::planOnceNodes() {
+    once_skipped.assign(frame_graph.nodes.size(), 0);
+    once_ran.clear();
+    once_facts.identity = [this](std::string_view resource) -> std::optional<std::uint64_t> {
+        const auto name = std::string{resource};
+        if (const auto target = frame_graph.render_target_bindings.find(name);
+            target != frame_graph.render_target_bindings.end() && isConcreteRenderTarget(target->second)) {
+            return onceHandleValue(static_cast<VkImage>(
+                modules.render_target_container.getImage(target->second).image.get()));
+        }
+        if (const auto buffer = frame_graph.buffer_bindings.find(name);
+            buffer != frame_graph.buffer_bindings.end() &&
+            modules.frame_graph_resources.hasBuffer(buffer->second)) {
+            return onceHandleValue(static_cast<VkBuffer>(
+                modules.frame_graph_resources.buffer(buffer->second).buffer.get()));
+        }
+        return std::nullopt;
+    };
+    once_facts.host_digest = [this](std::string_view resource) -> std::optional<std::uint64_t> {
+        const auto buffer = frame_graph.buffer_bindings.find(std::string{resource});
+        if (buffer == frame_graph.buffer_bindings.end()) return std::nullopt;
+        return modules.frame_graph_resources.hostWriteDigest(buffer->second);
+    };
+    std::vector<OnceScheduleNode> nodes;
+    std::vector<std::size_t> indices;
+    for (std::size_t index = 0; index < frame_graph.nodes.size(); ++index) {
+        if (!frame_graph.nodes[index].once) continue;
+        const auto &planned = frame_graph.plan.nodes.at(index);
+        // An inactive owner's node records nothing this frame; it has not run.
+        if (frame_graph.value_graph &&
+            !frame_graph.value_graph->nodeActive(planned.name, inactive_graph_scopes))
+            continue;
+        nodes.push_back(OnceScheduleNode{planned.name, planned.reads, planned.writes});
+        indices.push_back(index);
+    }
+    if (nodes.empty()) return;
+    static const std::map<std::string, OnceRunRecord, std::less<>> no_runs;
+    const auto runs = renderer.once_runs.find(renderer.current_rendering_pass_id.value);
+    const auto plan = planOnceRuns(nodes, runs != renderer.once_runs.end() ? runs->second : no_runs,
+                                   runtime_generation->generation, once_facts, renderer.once_rerun_requests);
+    for (std::size_t position = 0; position < nodes.size(); ++position) {
+        if (plan.runs(position)) {
+            once_ran.push_back(std::move(nodes[position]));
+        } else {
+            once_skipped[indices[position]] = 1;
+        }
+    }
+}
+
+// PS-1: the once nodes this published frame ran, and what they ran with.
+void Renderer::LogicalFrameRecorder::retainOnceRuns() {
+    if (once_ran.empty()) return;
+    auto &runs = renderer.once_runs[renderer.current_rendering_pass_id.value];
+    for (const auto &node : once_ran) {
+        runs[node.name] = onceRunRecord(node, runtime_generation->generation,
+                                        engine_time.evaluationIndex(), once_facts);
+        renderer.once_rerun_requests.erase(node.name);
+    }
+}
+
 // LP-Va2: which nodes this published frame skipped because their view_select
 // matched no view. The scheduler marks every invocation of such a node, in
 // both the view-family and the per-view schedules (the latter are selected
@@ -6366,6 +6747,31 @@ void Renderer::LogicalFrameRecorder::retainNoSelectedViewNodes() {
         renderer.current_rendering_pass_id;
     renderer.last_no_selected_view_runtime_generation =
         runtime_generation->generation;
+}
+
+// MP-1: what this published frame's material passes drew, with the
+// materials' names read while they are registered; get_frame_plan copies it
+// onto the material nodes of the same program and generation.
+void Renderer::LogicalFrameRecorder::retainDrawnMaterials() {
+    auto &kept = renderer.last_drawn_materials;
+    kept.passes.clear();
+    for (const auto &[pass, drawn] : drawn_materials) {
+        auto &entry = kept.passes[pass];
+        const auto count = std::min(drawn.materials.size(), drawnMaterialsListLimit);
+        entry.truncated = drawn.materials.size() > count;
+        entry.materials.reserve(count);
+        for (std::size_t index = 0; index < count; ++index) {
+            const auto &material = drawn.materials[index];
+            entry.materials.push_back(
+                {material.material,
+                 modules.material_container.materialName(GlobalMaterialId{material.material}),
+                 material.draws});
+        }
+    }
+    kept.rendering_pass_id = renderer.current_rendering_pass_id;
+    kept.runtime_generation = runtime_generation->generation;
+    kept.frame = engine_time.evaluationIndex();
+    kept.recorded = true;
 }
 
 void Renderer::LogicalFrameRecorder::retainPickingSnapshot() {
@@ -6468,13 +6874,17 @@ void Renderer::renderLogicalFrame(
     recorder.publishFrameValueGraph();
     recorder.stagePoseAttributesAndLights();
     recorder.buildDrawSortViews();
+    recorder.uploadImageInitialAssets();
+    recorder.planOnceNodes();
     recorder.planLogicalFrameSchedule();
     recorder.configureExternalDepthExport();
     recorder.beginLogicalFrameTarget();
     recorder.recordExecutions();
     recorder.submitFrame();
     recorder.publishFrame();
+    recorder.retainOnceRuns();
     recorder.retainNoSelectedViewNodes();
+    recorder.retainDrawnMaterials();
     recorder.retainPickingSnapshot();
     recorder.publishExecutionTrace();
     recorder.advanceFrameHistories();

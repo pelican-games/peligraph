@@ -2,12 +2,18 @@
 
 #include "../../project/graphmodule.hpp"
 #include "../../project/materialoutput.hpp"
+#include "../../project/materialscreeninput.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/shaderresourceport.hpp"
 #include "../fullscreenpass/passinputlayout.hpp"
 #include "../fullscreenpass/shaderinputmismatchjson.hpp"
 #include "../loader/engineresources.hpp"
+#include "../renderer/renderpolicyregistry.hpp"
+#include "../renderingpass/graphtransformregistry.hpp"
 #include "../renderingpass/materialpassattachments.hpp"
+#include "../renderingpass/passimplementationregistry.hpp"
+#include "../renderingpass/renderstrategyregistry.hpp"
+#include "../renderingpass/subgraphreplacementregistry.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../shader/shadercompiler.hpp"
@@ -41,6 +47,22 @@ namespace Pelican {
 using OrderedJson = nlohmann::ordered_json;
 
 OrderedJson materialPassContractsJson() {
+    // MP-1: the input names a material pass binds, from the engine's lists:
+    // {name, source_type}, the source_type the bound render target must have
+    // (its semantic type). The parser takes the same names for every
+    // contract, so each contract lists them all.
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto input_entries = [&](const auto &names) {
+        auto entries = OrderedJson::array();
+        for (const auto input : names) {
+            const auto declared = makeBuiltinMaterialPassInputContract(types, input);
+            entries.push_back({{"name", declared.name},
+                               {"source_type", semanticTypeIdName(declared.source_type.semantic)}});
+        }
+        return entries;
+    };
+    const auto screen_inputs = input_entries(builtinMaterialScreenInputContractNames);
+    const auto surface_resources = input_entries(featureOwnedMaterialPassInputContractNames);
     auto result = OrderedJson::array();
     for (const auto contract : materialPassContracts) {
         const auto name = std::string{materialPassContractName(contract)};
@@ -84,7 +106,9 @@ OrderedJson materialPassContractsJson() {
         result.push_back({{"contract", name},
                           {"material_outputs", materialPassContractAcceptsMaterialOutputs(contract)},
                           {"sockets", std::move(socket_entries)},
-                          {"combinations", std::move(combination_entries)}});
+                          {"combinations", std::move(combination_entries)},
+                          {"screen_inputs", screen_inputs},
+                          {"surface_resources", surface_resources}});
     }
     return result;
 }
@@ -640,5 +664,21 @@ void stopShaderInterfaceReflection() { shaderInterfaceReflection().stop(); }
 void resetShaderInterfaceReflectionForTesting() { shaderInterfaceReflection().reset(); }
 
 void holdShaderInterfaceReflectionForTesting(bool held) { shaderInterfaceReflection().hold(held); }
+
+OrderedJson registeredProvidersJson() {
+    const auto entries = [](const std::vector<RenderProviderListing> &providers) {
+        auto result = OrderedJson::array();
+        for (const auto &provider : providers)
+            result.push_back({{"name", provider.name},
+                              {"source", provider.engine_owned ? "engine" : "game"},
+                              {"provider_version", provider.provider_version}});
+        return result;
+    };
+    return {{"draw_sort", entries(renderPolicyRegistry().drawSortProviderListing())},
+            {"pass_implementation", entries(passImplementationRegistry().providerListing())},
+            {"region_replacements", entries(subgraphReplacementRegistry().providerListing())},
+            {"graph_transforms", entries(graphTransformRegistry().providerListing())},
+            {"render_strategy", entries(renderStrategyRegistry().providerListing())}};
+}
 
 } // namespace Pelican

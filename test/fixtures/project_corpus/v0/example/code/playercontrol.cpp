@@ -167,7 +167,9 @@ class ExamplePlayerControl {
 #else
         constexpr float speed = 5.0f;
 #endif
-        transform.pos.x += move.x * speed * dt;
+        // CC-1b: the scene camera looks along +X+Z with +Y up, so screen right
+        // is -X: D (move.x > 0) moves the player to the right of the screen.
+        transform.pos.x -= move.x * speed * dt;
         transform.pos.z += move.y * speed * dt;
         if (jump) {
             transform.pos.y += speed * dt;

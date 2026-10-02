@@ -2,6 +2,7 @@
 #include "renderconfigeditor.hpp"
 #include "../../project/viewselect.hpp"
 #include "../../project/authoringlowering.hpp"
+#include "../../project/assetsmanifest.hpp"
 #include "../../project/packagemanifest.hpp"
 #include "../../project/rendercomponent.hpp"
 #include "../../project/rasterrayquery.hpp"
@@ -102,6 +103,64 @@ std::optional<std::pair<std::string, Json>> graphRefusalOf(
     } catch (...) {
     }
     return std::nullopt;
+}
+
+// CT-2: a graph.* refusal's details with the root's reference as `document`
+// and, judged against `root_bytes` (the root the refusal was raised on), the
+// definition its node belongs to. Fields the details already have are kept.
+OrderedJson withGraphRefusalDocument(OrderedJson details, std::string_view code,
+                                     std::string_view root_bytes,
+                                     std::string_view reference) {
+    if (!code.starts_with("graph.")) return details;
+    if (details.is_null()) details = OrderedJson::object();
+    addGraphRefusalSource(details, code,
+                          Json::parse(root_bytes, nullptr, false), reference);
+    return details;
+}
+
+// CT-5: for each definition of the root, the root nodes that use it -- a
+// graph.instance (owned when it has an `owner`) or a graph.loop whose branch
+// runs it as a body (never owned: its copies stand in the root) -- and
+// whether every use is owned, so an op whose placement is owned_instance
+// (pose.*, value.morph_weight) may stand in it. A definition nothing uses
+// lists none and is owned_instances_only.
+OrderedJson graphDefinitionInstances(const Json &root) {
+    auto result = OrderedJson::object();
+    const auto definitions = root.find("definitions");
+    if (definitions == root.end() || !definitions->is_object()) return result;
+    for (const auto &[name, body] : definitions->items()) {
+        (void)body;
+        result[name] = {{"owned_instances_only", true}, {"instances", OrderedJson::array()}};
+    }
+    const auto use = [&](const std::string &definition, const Json &id, const char *op, bool owned) {
+        const auto found = result.find(definition);
+        if (found == result.end()) return;
+        (*found)["instances"].push_back({{"id", id}, {"op", op}, {"owned", owned}});
+        if (!owned) (*found)["owned_instances_only"] = false;
+    };
+    const auto nodes = root.find("nodes");
+    if (nodes == root.end() || !nodes->is_array()) return result;
+    for (const auto &node : *nodes) {
+        if (!node.is_object() || !node.contains("id")) continue;
+        const auto op = node.value("op", std::string{});
+        if (op == "graph.instance") {
+            const auto definition = node.find("definition");
+            if (definition != node.end() && definition->is_string())
+                use(definition->get<std::string>(), node.at("id"), "graph.instance", node.contains("owner"));
+        } else if (op == "graph.loop") {
+            const auto parameters = node.find("parameters");
+            if (parameters == node.end() || !parameters->is_object()) continue;
+            const auto branches = parameters->find("branches");
+            if (branches == parameters->end() || !branches->is_array()) continue;
+            std::set<std::string> bodies;
+            for (const auto &branch : *branches) {
+                const auto body = branch.is_object() ? branch.find("body") : branch.end();
+                if (body != branch.end() && body->is_string() && bodies.insert(body->get<std::string>()).second)
+                    use(body->get<std::string>(), node.at("id"), "graph.loop", false);
+            }
+        }
+    }
+    return result;
 }
 
 // Q-14e: the fields a typed render_pipeline_preflight_failed refusal carries,
@@ -927,6 +986,10 @@ RenderConfigEditorService::~RenderConfigEditorService() {
     for (auto &task : fold_verifies_)
         if (task.runs.valid()) task.runs.wait();
     fold_verifies_.clear();
+    // AB-1: a bake finishes what it writes.
+    for (auto &task : audio_bakes_)
+        if (task.outcome.valid()) task.outcome.wait();
+    audio_bakes_.clear();
     lifetime_.reset();
 }
 
@@ -995,8 +1058,28 @@ RenderConfigEditorService::currentDocumentSet() const {
             .bytes = managed.bytes,
         });
     }
+    // FR-3: inside edit_batch, the other documents its edits wrote.
+    if (batch_)
+        for (const auto &document : batch_->documents)
+            if (document.operation != RenderConfigDocumentOperation::erase)
+                documents.push_back(document);
     return RenderConfigCandidateDocumentSet{
         source_normalized_reference_, std::move(documents)};
+}
+
+// FR-4: renderconfigeditor.hpp.
+RenderConfigEditorService::HeldDocument
+RenderConfigEditorService::heldDocument(const std::string &reference) const {
+    if (batch_ && dependencies_.normalize_reference) {
+        const auto normalized = dependencies_.normalize_reference(reference);
+        for (const auto &document : batch_->documents)
+            if (document.normalized_reference == normalized &&
+                document.operation != RenderConfigDocumentOperation::erase)
+                return {.bytes = document.bytes, .base_digest = document.expected.digest};
+    }
+    auto bytes = readFileBytes(dependencies_.resolve_document_path(reference));
+    auto digest = renderConfigSourceDigest(bytes);
+    return {.bytes = std::move(bytes), .base_digest = std::move(digest)};
 }
 
 RenderConfigEditorService::GateSnapshot
@@ -1010,12 +1093,27 @@ RenderConfigEditorService::gateSnapshot() {
 
 OrderedJson RenderConfigEditorService::rejection(
     std::string code, std::string message, OrderedJson details) const {
+    // CT-2: every graph.* refusal names the root document its node was
+    // written in. A caller that held the candidate root has added the fields
+    // already; otherwise the root as this editor holds it is read.
+    details = withGraphRefusalDocument(std::move(details), code,
+                                       document_.bytes(),
+                                       dependencies_.source_reference);
     details["code"] = std::move(code);
     details["message"] = std::move(message);
     return {{"status", "rejected"},
             {"committed", false},
             {"error", std::move(details)}};
 }
+
+namespace {
+// PV-1: a committed result names the published generation's preview state
+// (an edit only preview cannot take is published, with preview unavailable).
+OrderedJson withPublishedPreview(OrderedJson result, const nlohmann::json &preview) {
+    if (!preview.is_null()) result["preview"] = preview;
+    return result;
+}
+} // namespace
 
 OrderedJson RenderConfigEditorService::preflightRejection(
     const std::exception &error, OrderedJson details) const {
@@ -1044,6 +1142,11 @@ std::optional<OrderedJson> RenderConfigEditorService::preflightGraphVariants(
         if (auto refusal = graphRefusalOf(error.cause())) {
             for (const auto &[key, value] : refusal->second.items())
                 if (!details.contains(key)) details[key] = value;
+            // CT-2: judged against the candidate's root, not the live one.
+            details = withGraphRefusalDocument(
+                std::move(details), refusal->first,
+                candidate.rootDocument().bytes,
+                dependencies_.source_reference);
             return rejection(refusal->first, error.what(), std::move(details));
         }
         return preflightRejection(error, std::move(details));
@@ -1093,7 +1196,9 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
             // values it was cut with.  Those values are this derivative's
             // defaults, so the schema reports them as such and readers that
             // only know the schema (the Studio dialog) show the current value
-            // instead of the engine default.
+            // instead of the engine default.  The declaration's own default
+            // (the engine's) stays readable as `engine_default`, on every
+            // declaration of a materialized feature that has one.
             if (const auto bound = feature.find("bound_parameters");
                 bound != feature.end() && bound->is_object()) {
                 instance["bound_parameters"] = *bound;
@@ -1104,6 +1209,10 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
                         if (declarations == schema.end() || !declarations->is_array()) continue;
                         for (auto &declaration : *declarations) {
                             if (!declaration.is_object() || !declaration.contains("name")) continue;
+                            if (const auto original = declaration.find("default"); original != declaration.end()) {
+                                auto engine_default = *original;
+                                declaration["engine_default"] = std::move(engine_default);
+                            }
                             const auto value = bound->find(declaration.at("name").get<std::string>());
                             if (value != bound->end()) declaration["default"] = *value;
                         }
@@ -1158,6 +1267,31 @@ OrderedJson RenderConfigEditorService::listRenderFeatures(
         if (!entry.available) {
             encoded["unavailable_reason"] =
                 entry.unavailable_reason;
+        }
+        // FR-1: the targets the pipeline has to declare for the feature to
+        // compose (feature.required_target_missing@1 otherwise). A document
+        // that cannot be read lists none; adding it says why.
+        encoded["required_targets"] = OrderedJson::array();
+        // FR-2: where its passes go, [{pass, anchor, position}], for
+        // feature.insertion_anchor_missing@1 to be avoided before the edit.
+        encoded["insertion"] = OrderedJson::array();
+        try {
+            std::string bytes;
+            if (entry.reference.starts_with("engine://"))
+                bytes = engineResourceOrThrow(entry.reference.substr(9));
+            else if (dependencies_.resolve_document_path)
+                bytes = readFileBytes(dependencies_.resolve_document_path(entry.reference));
+            if (!bytes.empty()) {
+                const auto feature = Json::parse(bytes);
+                // FR-3: each entry says needs_writer (the feature reads it and
+                // someone in the pipeline has to draw it first).
+                encoded["required_targets"] = OrderedJson::parse(renderFeatureRequiredTargets(feature, /*with_needs_writer=*/true).dump());
+                for (const auto &insertion : renderFeatureInsertions(feature))
+                    encoded["insertion"].push_back(OrderedJson{{"pass", insertion.at("pass").get<std::string>()},
+                                                               {"anchor", insertion.at("anchor").get<std::string>()},
+                                                               {"position", insertion.at("position").get<std::string>()}});
+            }
+        } catch (const std::exception &) {
         }
         features.push_back(std::move(encoded));
     }
@@ -1733,7 +1867,9 @@ RenderConfigEditorService::checkAuthoringPreconditions(
             {{"expected_source_digest", document_.sourceDigest()},
              {"provided_source_digest", base_digest}});
     }
-    try {
+    // FR-3: inside edit_batch the editor holds the batch's candidate, and the
+    // batch compared the disk with what it held before its first edit.
+    if (!batch_) try {
         const auto disk_digest =
             renderConfigSourceDigest(readFileBytes(dependencies_.source_path));
         if (disk_digest != document_.sourceDigest()) {
@@ -1805,7 +1941,8 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
     // G-6: an edit the engine will compile is composed by every variant it
     // registered first. An edit that only moves bytes the engine never reads
     // (source_only) has nothing to compose.
-    if (!source_only) {
+    // FR-3: inside edit_batch the batch preflights its last candidate once.
+    if (!source_only && !batch_) {
         if (auto refused = preflightGraphVariants(
                 candidate_set, {{"participant", "pelican.render_pipeline"},
                                 {"method", operation}})) {
@@ -1830,6 +1967,286 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
     };
     results_[ticket_id] = {{"ticket", ticket_id}, {"status", "pending"}};
     return accepted;
+}
+
+// --- FR-3: several document edits as one ticket (renderconfigeditor.hpp).
+
+namespace {
+
+using BatchEdit = OrderedJson (RenderConfigEditorService::*)(const Json &);
+
+// The methods edit_batch takes. Each answers with one ticket of
+// queueRootEdit or enqueueAuthoredPassTicket and reads the documents it
+// rewrites from the editor's own (document_, the managed fragments, the
+// authoring context of currentDocumentSet(), FR-4 heldDocument() for a
+// project preset or feature), so it builds on what the edits before it in the
+// batch made.
+const std::vector<std::pair<std::string_view, BatchEdit>> &batchEdits() {
+    static const std::vector<std::pair<std::string_view, BatchEdit>> edits{
+        {"edit_render_features", &RenderConfigEditorService::editRenderFeatures},
+        {"edit_render_targets", &RenderConfigEditorService::editRenderTargets},
+        {"add_authored_pass", &RenderConfigEditorService::addAuthoredPass},
+        {"remove_authored_pass", &RenderConfigEditorService::removeAuthoredPass},
+        {"edit_graph_document", &RenderConfigEditorService::editGraphDocument},
+        {"edit_graph_instances", &RenderConfigEditorService::editGraphInstances},
+        {"decompose_material_pass", &RenderConfigEditorService::decomposeMaterialPass},
+        {"apply_graph_template", &RenderConfigEditorService::applyGraphTemplate},
+        {"fold_nodes", &RenderConfigEditorService::foldNodes},
+        {"set_material_route_default", &RenderConfigEditorService::setMaterialRouteDefault},
+        {"edit_rendering_keys", &RenderConfigEditorService::editRenderingKeys},
+        {"edit_frame_node_order", &RenderConfigEditorService::editFrameNodeOrder},
+        {"edit_target_planning", &RenderConfigEditorService::editTargetPlanning},
+        {"edit_vulkan_plan_pins", &RenderConfigEditorService::editVulkanPlanPins},
+        {"put_vulkan_physical_fragment", &RenderConfigEditorService::putVulkanPhysicalFragment},
+        {"fork_render_pipeline", &RenderConfigEditorService::forkRenderPipeline},
+        {"edit_region_replacement", &RenderConfigEditorService::editRegionReplacement},
+        {"add_compute_task", &RenderConfigEditorService::addComputeTask},
+        {"edit_ray_callable_records", &RenderConfigEditorService::editRayCallableRecords},
+        {"edit_scene_acceleration_structures", &RenderConfigEditorService::editSceneAccelerationStructures},
+        // FR-4.
+        {"edit_preset_pass", &RenderConfigEditorService::editPresetPass},
+        {"edit_compute_task", &RenderConfigEditorService::editComputeTask},
+        {"remove_compute_task", &RenderConfigEditorService::removeComputeTask},
+    };
+    return edits;
+}
+
+} // namespace
+
+std::vector<std::string> RenderConfigEditorService::editBatchMethods() {
+    std::vector<std::string> methods;
+    for (const auto &[method, edit] : batchEdits()) {
+        (void)edit;
+        methods.emplace_back(method);
+    }
+    return methods;
+}
+
+OrderedJson RenderConfigEditorService::editBatch(const Json &params) {
+    constexpr std::string_view method = "edit_batch";
+    requireOnly(params, {"base_source_digest", "edits"}, method);
+    const auto base_digest = requireString(params, "base_source_digest", method);
+    if (!isLowerHexDigest(base_digest))
+        throw std::invalid_argument("edit_batch base_source_digest must be 64 lowercase hex characters");
+    if (batch_) throw std::invalid_argument("edit_batch cannot be nested");
+    const auto edits = params.find("edits");
+    if (edits == params.end() || !edits->is_array() || edits->empty())
+        throw std::invalid_argument("edit_batch requires a non-empty edits array");
+    std::vector<BatchEdit> calls;
+    std::vector<std::string> methods;
+    for (std::size_t index = 0; index < edits->size(); ++index) {
+        const auto &entry = edits->at(index);
+        const auto where = "edit_batch edits[" + std::to_string(index) + "]";
+        if (!entry.is_object()) throw std::invalid_argument(where + " must be an object {method, params}");
+        for (const auto &[key, value] : entry.items()) {
+            (void)value;
+            if (key != "method" && key != "params")
+                throw std::invalid_argument(where + " accepts only method and params: " + key);
+        }
+        if (!entry.contains("method") || !entry.at("method").is_string())
+            throw std::invalid_argument(where + " requires a string method");
+        if (!entry.contains("params") || !entry.at("params").is_object())
+            throw std::invalid_argument(where + " requires a params object");
+        const auto name = entry.at("method").get<std::string>();
+        const auto found = std::find_if(batchEdits().begin(), batchEdits().end(),
+                                        [&](const auto &candidate) { return candidate.first == name; });
+        if (found == batchEdits().end()) {
+            std::string listed;
+            for (const auto &allowed : editBatchMethods()) listed += (listed.empty() ? "" : ", ") + allowed;
+            throw std::invalid_argument(where + " method is not one edit_batch takes: " + name + " (it takes " +
+                                        listed + ")");
+        }
+        if (entry.at("params").contains("base_source_digest"))
+            throw std::invalid_argument(where + " params must not carry base_source_digest; the batch's is the only one");
+        calls.push_back(found->second);
+        methods.push_back(name);
+    }
+
+    const auto gate = gateSnapshot();
+    if (auto rejected = checkAuthoringPreconditions(
+            gate, base_digest, method, "render config editing is currently disabled"))
+        return *rejected;
+    // Every managed fragment as the editor holds it, compared with the disk
+    // once here: inside the batch the editor holds the batch's candidate.
+    for (const auto &[normalized, managed] : managed_documents_) {
+        (void)normalized;
+        try {
+            if (renderConfigSourceDigest(readFileBytes(managed.path)) != managed.digest)
+                return rejection("external_modification", "managed render fragment changed outside the editor",
+                                 {{"fragment_reference", managed.reference}});
+        } catch (const std::exception &error) {
+            return rejection("external_modification", error.what(), {{"fragment_reference", managed.reference}});
+        }
+    }
+
+    // What the batch changes while it runs, put back whichever way it ends.
+    struct Restore {
+        RenderConfigEditorService &service;
+        AuthoredRenderConfigDocument document;
+        std::unordered_map<std::string, ManagedDocumentBaseline> managed;
+        std::size_t pending;
+        ~Restore() {
+            service.document_ = std::move(document);
+            service.managed_documents_ = std::move(managed);
+            service.batch_.reset();
+            while (service.pending_.size() > pending) {
+                service.results_.erase(service.pending_.back().id);
+                service.pending_.pop_back();
+            }
+        }
+    } restore{*this, document_, managed_documents_, pending_.size()};
+    batch_.emplace();
+
+    std::vector<Ticket> tickets;
+    for (std::size_t index = 0; index < calls.size(); ++index) {
+        auto edit_params = edits->at(index).at("params");
+        edit_params["base_source_digest"] = document_.sourceDigest();
+        OrderedJson answer;
+        try {
+            answer = (this->*calls[index])(edit_params);
+        } catch (const std::invalid_argument &error) {
+            throw std::invalid_argument("edit_batch edits[" + std::to_string(index) + "] (" + methods[index] +
+                                        "): " + error.what());
+        }
+        if (answer.value("status", std::string{}) != "accepted") {
+            if (answer.contains("error") && answer.at("error").is_object())
+                answer["error"]["batch_index"] = index;
+            return answer;
+        }
+        if (pending_.size() <= restore.pending || pending_.back().id != answer.value("ticket", std::string{}))
+            throw std::logic_error("edit_batch: " + methods[index] + " was accepted without its ticket");
+        auto ticket = std::move(pending_.back());
+        pending_.pop_back();
+        results_.erase(ticket.id);
+        if (!ticket.candidate_documents)
+            throw std::logic_error("edit_batch: " + methods[index] + " has no candidate document set");
+        // The next edit reads what this one made.
+        document_ = ticket.candidate;
+        for (const auto &document : ticket.candidate_documents->documents()) {
+            if (document.normalized_reference == source_normalized_reference_) continue;
+            const auto managed = managed_documents_.find(document.normalized_reference);
+            const bool erase = document.operation == RenderConfigDocumentOperation::erase;
+            if (managed != managed_documents_.end() ||
+                (!erase && hasManagedFragmentMarker(document.bytes) &&
+                 isManagedFragmentPath(dependencies_.project_root, document.path))) {
+                if (erase) {
+                    managed_documents_.erase(document.normalized_reference);
+                } else {
+                    auto digest = managed != managed_documents_.end() ? managed->second.digest
+                                                                      : renderConfigSourceDigest(document.bytes);
+                    managed_documents_.insert_or_assign(
+                        document.normalized_reference,
+                        ManagedDocumentBaseline{.reference = document.reference,
+                                                .normalized_reference = document.normalized_reference,
+                                                .path = document.path,
+                                                .bytes = document.bytes,
+                                                .digest = std::move(digest)});
+                }
+                continue;
+            }
+            auto &others = batch_->documents;
+            const auto existing = std::find_if(others.begin(), others.end(), [&](const auto &entry) {
+                return entry.normalized_reference == document.normalized_reference;
+            });
+            if (existing != others.end()) *existing = document;
+            else others.push_back(document);
+        }
+        tickets.push_back(std::move(ticket));
+    }
+
+    // One candidate: every document at what the last edit that carried it
+    // made, expected as it was before the first edit that carried it.
+    std::map<std::string, RenderConfigDocumentExpectedState> first_expected;
+    std::map<std::string, RenderConfigCandidateDocument> latest;
+    for (const auto &ticket : tickets)
+        for (const auto &document : ticket.candidate_documents->documents()) {
+            first_expected.try_emplace(document.normalized_reference, document.expected);
+            latest.insert_or_assign(document.normalized_reference, document);
+        }
+    std::vector<RenderConfigCandidateDocument> documents;
+    const auto take = [&](const std::string &normalized) {
+        auto found = latest.find(normalized);
+        if (found == latest.end()) return;
+        auto document = std::move(found->second);
+        latest.erase(found);
+        document.expected = first_expected.at(normalized);
+        if (document.expected.existence == RenderConfigDocumentExistence::missing) {
+            // Created by the batch: an erase leaves nothing to write.
+            if (document.operation == RenderConfigDocumentOperation::erase) return;
+            document.operation = RenderConfigDocumentOperation::create;
+        }
+        documents.push_back(std::move(document));
+    };
+    // A document only an earlier edit carried goes first, as a dependency
+    // goes before the root that names it; then the last edit's, in its order.
+    std::vector<std::string> last_order;
+    for (const auto &document : tickets.back().candidate_documents->documents())
+        last_order.push_back(document.normalized_reference);
+    for (const auto &ticket : tickets)
+        for (const auto &document : ticket.candidate_documents->documents())
+            if (std::find(last_order.begin(), last_order.end(), document.normalized_reference) == last_order.end())
+                take(document.normalized_reference);
+    for (const auto &normalized : last_order) take(normalized);
+    RenderConfigCandidateDocumentSet candidate_set{source_normalized_reference_, std::move(documents)};
+
+    Ticket merged{
+        .id = "render-config-edit-" + std::to_string(next_ticket_++),
+        .accepted_gate_epoch = gate.epoch,
+        .base_source_digest = base_digest,
+        .candidate = tickets.back().candidate,
+        .candidate_documents = std::nullopt,
+        .operation = std::string{method},
+    };
+    merged.source_only = true;
+    for (auto &ticket : tickets) {
+        if (!merged.base_preset_digest) merged.base_preset_digest = ticket.base_preset_digest;
+        merged.edits_additional_documents = merged.edits_additional_documents || ticket.edits_additional_documents;
+        merged.source_only = merged.source_only && ticket.source_only;
+        merged.restart_required = merged.restart_required || ticket.restart_required;
+        merged.reload_managed_baselines = merged.reload_managed_baselines || ticket.reload_managed_baselines;
+        for (const auto &[key, value] : ticket.result_extras.items())
+            if (!merged.result_extras.contains(key)) merged.result_extras[key] = value;
+    }
+    merged.result_extras["methods"] = methods;
+    auto checks = std::move(batch_->checks);
+    const bool composes = batch_->composes;
+
+    // Composed and preflighted once, as the editor holds the documents.
+    document_ = restore.document;
+    managed_documents_ = restore.managed;
+    batch_.reset();
+    const OrderedJson details{{"participant", "pelican.render_pipeline"}, {"method", std::string{method}}};
+    if (!merged.source_only) {
+        if (composes && dependencies_.resolve_authoring_context) {
+            try {
+                const auto composed = dependencies_.resolve_authoring_context(candidate_set);
+                for (const auto &check : checks)
+                    if (check) check(composed);
+            } catch (const GraphRegistryError &error) {
+                OrderedJson fields = details;
+                const auto named = OrderedJson::parse(error.detail().dump());
+                for (const auto &[key, value] : named.items())
+                    if (!fields.contains(key)) fields[key] = value;
+                return rejection(error.code(), error.what(),
+                                 withGraphRefusalDocument(std::move(fields), error.code(),
+                                                          candidate_set.rootDocument().bytes,
+                                                          dependencies_.source_reference));
+            } catch (const std::exception &error) {
+                return preflightRejection(error, details);
+            }
+        }
+        if (auto refused = preflightGraphVariants(candidate_set, details)) return *refused;
+    }
+    merged.candidate_documents = std::move(candidate_set);
+    const auto ticket_id = merged.id;
+    pending_.push_back(std::move(merged));
+    // The batch's ticket stays when the guard trims what the edits queued.
+    restore.pending = pending_.size();
+    results_[ticket_id] = {{"ticket", ticket_id}, {"status", "pending"}};
+    return {{"ticket", ticket_id},
+            {"status", "accepted"},
+            {"base_source_digest", digestJson(base_digest)},
+            {"methods", methods}};
 }
 
 OrderedJson RenderConfigEditorService::getRayCallableRecords(const Json &params) const {
@@ -2179,6 +2596,9 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
          resolved.pipeline_preset ? "preset" : "direct"},
         {"graphs", std::move(graphs)},
         {"managed_fragments", std::move(fragments)},
+        // FR-1: what a rendering.snapshots entry's `after` may name here
+        // (snapshot.after_unknown@1 otherwise).
+        {"snapshot_after_candidates", renderSnapshotAfterCandidates(resolved.config)},
     };
 
     // F-1: every composed render target, where it was declared, and whether
@@ -2231,6 +2651,15 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         {"formats", imageFormatNames()},
         {"usage", imageUsageFlagNames()},
         {"format_classes", OrderedJson::array({"scene", "display", "data", "explicit"})},
+        // CT-5: how a class with an argument is written, as
+        // resolveRenderTargetFormatClasses reads it: "explicit(<format>)",
+        // the format one of `formats`.
+        {"format_class_patterns",
+         OrderedJson::array({OrderedJson{
+             {"name", "explicit"},
+             {"form", "explicit(<format>)"},
+             {"argument_choices_from",
+              {{"rpc", "get_render_authoring_context"}, {"key", "render_target_vocabulary.formats"}}}}})},
     };
     // EL-4: each format's aspect, from its Vulkan format traits; `formats`
     // stays the list of names.
@@ -2238,6 +2667,24 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
     for (const auto &[name, format] : imageFormats())
         format_aspects[name] = std::string{imageFormatAspectName(format)};
     result["render_target_vocabulary"]["format_aspects"] = std::move(format_aspects);
+    // CT-4: the names a pass's view_family and canonical_anchor take (the
+    // catalog's choices_from): the main family and each registered
+    // provider's, and the anchors featurecompose places passes at.
+    auto view_families = OrderedJson::array({std::string{mainRenderViewFamilyId}});
+    for (const auto &provider : renderViewFamilyProviderRegistry().providers())
+        view_families.push_back(provider.family_id);
+    result["view_families"] = std::move(view_families);
+    result["canonical_anchors"] = canonicalRenderPassAnchors();
+    // CT-5: the names a ray_query's acceleration_structure takes: "scene" and
+    // each composed scene_acceleration_structures entry
+    // (vulkanrendercompilerprogram.cpp refuses any other).
+    auto acceleration_structures = OrderedJson::array({"scene"});
+    if (const auto declared = resolved.config.find("scene_acceleration_structures");
+        declared != resolved.config.end() && declared->is_array())
+        for (const auto &entry : *declared)
+            if (entry.is_object() && entry.contains("name") && entry.at("name").is_string())
+                acceleration_structures.push_back(entry.at("name"));
+    result["acceleration_structures"] = std::move(acceleration_structures);
     // EL-1: the names a draw_loop branch's `when` and draw.variant take, from
     // what the draw-loop tables judge (MaterialDrawSubject): `id` is the
     // matching key `when.material` compares, `tags` what `when.tags` / `where`
@@ -2455,6 +2902,8 @@ OrderedJson RenderConfigEditorService::getGraphInstances(const Json &params) con
         // is already taken.
         {"nodes", std::move(nodes)},
         {"definitions", root.value("definitions", Json::object())},
+        // CT-5: who uses each definition (graphDefinitionInstances).
+        {"definition_instances", graphDefinitionInstances(root)},
         // N-6: the editor's own placement for the root scope. A definition's
         // travels inside its body, so this is the one that needs naming, and
         // reporting it here is what keeps the canvas from needing a read of
@@ -2472,12 +2921,22 @@ OrderedJson RenderConfigEditorService::editGraphInstances(const Json &params) {
     // edit_graph_document.
     return queueGraphRootEdit(params, digest, method,
         [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+            // CT-5: the root a refusal is judged against, as on
+            // edit_graph_document: the edited one once the edit applied.
+            Json judged;
             try {
-                const auto edited = Pelican::editGraphInstances(Json::parse(candidate.bytes()), attached, detached);
+                judged = Json::parse(candidate.bytes());
+                const auto edited = Pelican::editGraphInstances(judged, attached, detached);
+                judged = edited;
                 // CV-1b: judged as the engine will read it, lowered.
                 (void)partitionGraphDocument(lowerAuthoringDocument(edited, loweringContext(dependencies_)).document);
                 candidate = candidate.withRootValue("nodes", edited.at("nodes").dump(2));
                 return std::nullopt;
+            } catch (const GraphRegistryError &error) {
+                // CT-5: a named graph refusal keeps its code and fields, with
+                // CT-2's document, as edit_graph_document's does.
+                const auto named = graphRefusalInDocument(error, judged, dependencies_.source_reference);
+                return rejection(named.code(), named.what(), OrderedJson::parse(named.detail().dump()));
             } catch (const std::exception &error) {
                 return rejection("invalid_graph_attachment", error.what());
             }
@@ -2509,9 +2968,14 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
     // it on a pipeline that draws nothing deferred).
     return queueGraphRootEdit(params, digest, method,
         [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+            // CT-2: the root a refusal is judged against -- the edited one
+            // once the ops applied, so a node they added is found in it.
+            Json judged;
             try {
                 const auto source = Json::parse(candidate.bytes());
+                judged = source;
                 const auto edited = Pelican::editGraphDocument(source, ops);
+                judged = edited;
                 // CV-1b: judged as the engine will read it, lowered, so a
                 // lowering's named refusal is this edit's.
                 (void)partitionGraphDocument(lowerAuthoringDocument(edited, loweringContext(dependencies_)).document);
@@ -2536,8 +3000,10 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
                         "layout", edited.value("layout", Json::object()).dump(2));
                 return std::nullopt;
             } catch (const GraphRegistryError &error) {
-                return rejection(error.code(), error.what(),
-                                 OrderedJson::parse(error.detail().dump()));
+                const auto named = graphRefusalInDocument(
+                    error, judged, dependencies_.source_reference);
+                return rejection(named.code(), named.what(),
+                                 OrderedJson::parse(named.detail().dump()));
             } catch (const std::exception &error) {
                 return rejection("invalid_graph_document", error.what());
             }
@@ -3333,6 +3799,13 @@ OrderedJson RenderConfigEditorService::getEngineShaders(const Json &params) cons
     return engineShadersStatusJson();
 }
 
+OrderedJson RenderConfigEditorService::getRegisteredProviders(const Json &params) const {
+    requireOnly(params, {}, "get_registered_providers");
+    // EL-6: the registries as they are now; a game logic reload's providers
+    // show in the next call (nothing is kept between calls).
+    return registeredProvidersJson();
+}
+
 OrderedJson RenderConfigEditorService::getShaderInterface(const Json &params) const {
     constexpr auto method = "get_shader_interface";
     requireOnly(params, {"reference", "refresh"}, method);
@@ -4029,17 +4502,18 @@ OrderedJson RenderConfigEditorService::changeComputeTask(const Json &params, boo
         const auto selected = std::find_if(tasks.begin(), tasks.end(), [&](const auto &entry) { return entry.at("name") == name; });
         if (selected == tasks.end() || !selected->at("editable").get<bool>())
             return rejection("compute_task_not_editable", "Select a task declared in a project-owned document");
-        if (selected->at("source_digest").at("hex") != task_digest)
-            return rejection("external_modification", "The task source changed since it was read");
         // An editable task is declared in a project feature or a project
         // preset, never in the rendering root (MG-2b: the catalog lists the
         // root's tasks read-only, so the check above already refused them).
+        // FR-4: read as the editor holds it, so inside edit_batch the edit
+        // builds on the batch's earlier edits; the caller's digest is the
+        // document's before the batch.
         const auto reference = selected->at("source_reference").get<std::string>();
         const auto path = dependencies_.resolve_document_path(reference);
-        const auto bytes = readFileBytes(path);
-        if (renderConfigSourceDigest(bytes) != task_digest)
-            return rejection("external_modification", "The task source changed while the edit was prepared");
-        auto source = OrderedJson::parse(bytes);
+        const auto held = heldDocument(reference);
+        if (held.base_digest != task_digest)
+            return rejection("external_modification", "The task source changed since it was read");
+        auto source = OrderedJson::parse(held.bytes);
         auto &config = source.value("schema", std::string{}) == "pelican.render_feature"
             ? featureSourceFragment(source, selected->at("provider_feature").get<std::string>())
             : source.at("config");
@@ -4262,7 +4736,6 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
             !current.pipeline_preset->reference.starts_with("project://")))
             return rejection("project_preset_required", "Fork the selected preset into the project before editing its passes");
         std::string reference;
-        std::string bytes;
         std::string authored_name = name;
         std::string provider;
         if (feature_edit) {
@@ -4283,14 +4756,16 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
             if (!source->authored_name.empty() && source->authored_name != name)
                 return rejection("feature_pass_not_editable", "Generated feature variants must be edited in their source document");
             if (!source->authored_name.empty()) authored_name = source->authored_name;
-            bytes = readFileBytes(dependencies_.resolve_document_path(reference));
         } else {
             reference = current.pipeline_preset->reference;
-            bytes = *current.pipeline_preset_bytes;
         }
-        if (renderConfigSourceDigest(bytes) != preset_digest)
+        // FR-4: the preset or feature as the editor holds it, so inside
+        // edit_batch the edit builds on the batch's earlier edits; the
+        // caller's digest is the document's before the batch.
+        const auto held = heldDocument(reference);
+        if (held.base_digest != preset_digest)
             return rejection("external_modification", "The selected pass source changed since it was read");
-        auto preset = OrderedJson::parse(bytes);
+        auto preset = OrderedJson::parse(held.bytes);
         auto *pass = feature_edit ? findFeatureEditablePass(preset, authored_name, provider) : findPresetEditablePass(preset, graph, name);
         if (!pass) return rejection("preset_pass_not_editable", "The selected node is not an editable pass in the project preset");
         applyEditablePassFields(params, *pass, feature_edit ? nullptr : &preset.at("config"), method);
@@ -4357,20 +4832,26 @@ OrderedJson RenderConfigEditorService::enqueueAuthoredPassTicket(
         else details["fragment_reference"] = reference;
         return details;
     };
-    try {
-        // This is the decisive staged-file contrast: neither the feature nor
-        // preset resolver may bypass the request-local document set.
-        const auto candidate =
-            dependencies_.resolve_authoring_context(candidate_documents);
-        if (check) check(candidate);
-    } catch (const std::exception &error) {
-        return preflightRejection(error, preflight_details());
-    }
-    // G-6: the same candidate, by every variant the engine will compose it
-    // with when it publishes.
-    if (auto refused = preflightGraphVariants(
-            candidate_documents, preflight_details())) {
-        return *refused;
+    if (batch_) {
+        // FR-3: edit_batch composes its last candidate once, with this check.
+        batch_->composes = true;
+        if (check) batch_->checks.push_back(check);
+    } else {
+        try {
+            // This is the decisive staged-file contrast: neither the feature nor
+            // preset resolver may bypass the request-local document set.
+            const auto candidate =
+                dependencies_.resolve_authoring_context(candidate_documents);
+            if (check) check(candidate);
+        } catch (const std::exception &error) {
+            return preflightRejection(error, preflight_details());
+        }
+        // G-6: the same candidate, by every variant the engine will compose it
+        // with when it publishes.
+        if (auto refused = preflightGraphVariants(
+                candidate_documents, preflight_details())) {
+            return *refused;
+        }
     }
 
     const auto ticket_id =
@@ -4640,7 +5121,8 @@ OrderedJson RenderConfigEditorService::removeAuthoredPass(
             {{"fragment_reference", reference}});
     }
     const auto managed = managed_documents_.find(normalized);
-    if (managed != managed_documents_.end()) {
+    // FR-3: edit_batch compared every fragment before its first edit.
+    if (managed != managed_documents_.end() && !batch_) {
         try {
             if (renderConfigSourceDigest(
                     readFileBytes(managed->second.path)) !=
@@ -4770,7 +5252,8 @@ OrderedJson RenderConfigEditorService::editRenderTargets(const Json &params) {
     const auto managed = managed_documents_.find(normalized);
     const bool fragment_exists = managed != managed_documents_.end();
     if (fragment_exists) {
-        try {
+        // FR-3: edit_batch compared every fragment before its first edit.
+        if (!batch_) try {
             if (renderConfigSourceDigest(readFileBytes(managed->second.path)) !=
                 managed->second.digest) {
                 return rejection(
@@ -5982,7 +6465,32 @@ OrderedJson RenderConfigEditorService::reloadRenderDocuments(
         }
         if (previous != digest) changed.push_back(entry.reference);
     }
-    const bool no_change = changed.empty();
+    // IA-2: an initial asset rewritten on disk is a change though every
+    // document is the same: the new generation reads it again and its first
+    // frame copies it in (IA-3: a value.sample_table's table or its manifest,
+    // which the new generation's value graph reads again). One that cannot be
+    // read now counts as changed, and the composition refuses it as it would
+    // with a document edit.
+    auto changed_assets = OrderedJson::array();
+    if (dependencies_.published_assets) {
+        std::vector<RenderConfigPublishedAsset> assets;
+        try {
+            assets = dependencies_.published_assets();
+        } catch (const std::exception &) {
+        }
+        std::map<std::string, bool> asset_changed;
+        for (const auto &asset : assets) {
+            bool differs = true;
+            try {
+                differs = assetFileSha256(asset.file) != asset.sha256;
+            } catch (const std::exception &) {
+            }
+            asset_changed[asset.asset] = asset_changed[asset.asset] || differs;
+        }
+        for (const auto &[asset, differs] : asset_changed)
+            if (differs) changed_assets.push_back(asset);
+    }
+    const bool no_change = changed.empty() && changed_assets.empty();
     RenderConfigCandidateDocumentSet candidate_set{
         source_normalized_reference_, std::move(documents)};
 
@@ -6022,6 +6530,7 @@ OrderedJson RenderConfigEditorService::reloadRenderDocuments(
         .reload_documents = std::move(listed),
         .reload_changed = std::move(changed),
         .reload_digests = std::move(digests),
+        .reload_changed_assets = std::move(changed_assets),
     });
     results_[ticket_id] = {{"ticket", ticket_id}, {"status", "pending"}};
     return {{"ticket", ticket_id},
@@ -6160,6 +6669,11 @@ void RenderConfigEditorService::completeCommitTransaction(
                          refusal->second.items()) {
                         if (!details.contains(key)) details[key] = value;
                     }
+                    // CT-2: judged against the root this ticket carried.
+                    details = withGraphRefusalDocument(
+                        std::move(details), refusal->first,
+                        transaction->ticket.candidate.bytes(),
+                        dependencies_.source_reference);
                     finish(rejection(refusal->first, applied.error,
                                      std::move(details)));
                     return;
@@ -6267,11 +6781,23 @@ void RenderConfigEditorService::completeCommitTransaction(
             completed["fragment_reference"] =
                 transaction->ticket.fragment_reference;
         }
-        if (transaction->ticket.reload)
+        if (transaction->ticket.reload) {
             completed["changed"] = transaction->ticket.reload_changed;
+            completed["changed_assets"] =
+                transaction->ticket.reload_changed_assets;
+        }
         if (!applied.post_commit_error.empty()) {
             completed["post_commit_error"] =
                 applied.post_commit_error;
+        }
+        // PV-1: whether the generation this edit published has a preview,
+        // and why not (an edit preview cannot take is not refused).
+        try {
+            if (dependencies_.runtime_snapshot) {
+                auto preview = dependencies_.runtime_snapshot().preview;
+                if (!preview.is_null()) completed["preview"] = std::move(preview);
+            }
+        } catch (const std::exception &) {
         }
         for (const auto &[key, value] :
              transaction->ticket.result_extras.items()) {
@@ -6312,6 +6838,9 @@ void RenderConfigEditorService::completeCommitTransaction(
 }
 
 void RenderConfigEditorService::commitPending() noexcept {
+    // AB-1: a finished bake writes no render document, so it ends whatever
+    // ticket is in flight.
+    harvestAudioBakes();
     if (inflight_ticket_) return;
     // FG-2: a verify that passed queues its mark ahead of the queue below.
     harvestFoldVerifies();
@@ -6374,7 +6903,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                     if (normalized != source_normalized_reference_)
                         known_document_digests_.insert_or_assign(normalized,
                                                                  digest);
-                finish(OrderedJson{
+                finish(withPublishedPreview(OrderedJson{
                     {"ticket", ticket.id},
                     {"status", "committed"},
                     {"committed", true},
@@ -6385,7 +6914,8 @@ void RenderConfigEditorService::commitPending() noexcept {
                     {"source_commit_called", false},
                     {"documents", ticket.reload_documents},
                     {"changed", OrderedJson::array()},
-                });
+                    {"changed_assets", OrderedJson::array()},
+                }, runtime.preview));
                 continue;
             }
 
@@ -6395,7 +6925,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                 document_.sourceDigest()) {
                 const auto runtime =
                     dependencies_.runtime_snapshot();
-                finish(OrderedJson{
+                finish(withPublishedPreview(OrderedJson{
                     {"ticket", ticket.id},
                     {"status", "committed"},
                     {"committed", true},
@@ -6407,7 +6937,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                     {"source_commit_called", false},
                     // RD-1: nothing was written.
                     {"documents", OrderedJson::object()},
-                });
+                }, runtime.preview));
                 continue;
             }
 
@@ -6427,7 +6957,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                 rememberWrittenDocuments(*ticket.candidate_documents);
                 document_ = std::move(ticket.candidate);
                 const auto runtime = dependencies_.runtime_snapshot();
-                finish(OrderedJson{
+                finish(withPublishedPreview(OrderedJson{
                     {"ticket", ticket.id},
                     {"status", "committed"},
                     {"committed", true},
@@ -6438,7 +6968,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                     {"source_digest", digestJson(document_.sourceDigest())},
                     {"source_commit_called", true},
                     {"documents", std::move(written_documents)},
-                });
+                }, runtime.preview));
                 continue;
             }
 

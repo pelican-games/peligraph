@@ -1,5 +1,6 @@
 #include "punctualshadowview.hpp"
 #include "../cube_capture/cubecaptureview.hpp"
+#include "../../renderer/clipspace.hpp"
 
 #include <cmath>
 #include <stdexcept>
@@ -42,10 +43,13 @@ RenderViewFamily buildSpotShadowViewFamily(std::span<const SpotLight> lights,
         const auto direction = light.direction / length;
         const auto up = std::abs(direction.y) < 0.99f
             ? glm::vec3{0, 1, 0} : glm::vec3{0, 0, 1};
+        // CC-1a: the shared camera projection (clip y flipped), so the spot
+        // view is not mirrored and draws counter-clockwise front faces. Point
+        // lights keep the cube-face matrices above (mirrored, clockwise).
         result.views.push_back(RenderViewParameters{
-            .view = glm::lookAtRH(light.position, light.position + direction, up),
-            .projection = glm::perspectiveRH_ZO(glm::radians(light.outerConeAngle * 2.0f),
-                                               1.0f, near_distance, far_distance),
+            .view = viewFromBasis(light.position, direction, up),
+            .projection = vulkanPerspective(glm::radians(light.outerConeAngle * 2.0f),
+                                            1.0f, near_distance, far_distance),
             .camera_position = light.position,
             .first_person_view = false,
             .view_id = result.family_id + "/" + std::to_string(index),

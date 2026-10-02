@@ -116,8 +116,10 @@ targetViewExecutionRequest(
         }
     }
     for (const auto &task : compute_tasks) {
+        // PS-1: a once task, when it runs, runs as a per_frame one.
         if (task.schedule ==
-            ComputeTaskSchedule::per_frame) {
+                ComputeTaskSchedule::per_frame ||
+            task.schedule == ComputeTaskSchedule::once) {
             independent_candidates.insert(task.name);
         }
     }
@@ -897,15 +899,23 @@ compileDefaultVulkanVariant(
     auto frame_plans =
         framePlansByName(graph_definitions);
     if (logical.composed_config.contains("rendering_passes")) {
-        // EN-2: a file image holds its pixels before the frame, as a
-        // buffer holds its data, so no pass needs to have written it.
-        auto imported_names = buffer_names;
+        // IA-1: an image with an initial asset holds it before any pass of
+        // the frame runs, so a pass may read it without an earlier writer,
+        // as it reads a buffer.
+        auto produced_before_passes = buffer_names;
+        if (const auto targets = logical.composed_config.find("render_targets");
+            targets != logical.composed_config.end() && targets->is_array())
+            for (const auto &target : *targets)
+                if (target.is_object() && target.contains("initial") && target.contains("name") &&
+                    target.at("name").is_string())
+                    produced_before_passes.insert(target.at("name").get<std::string>());
+        // EN-2: a file image holds its pixels before the frame too.
         for (const auto &target : physical->render_target_definitions)
-            if (target.source) imported_names.insert(target.name);
+            if (target.source) produced_before_passes.insert(target.name);
         for (const auto &pass_set : logical.composed_config.at("rendering_passes")) {
             validateFramePlanPassInputsProduced(
                 frame_plans.at(pass_set.at("name").get<std::string>()),
-                pass_set, imported_names);
+                pass_set, produced_before_passes);
         }
     }
     auto execution_plans =
@@ -968,6 +978,27 @@ class DefaultVulkanRenderCompilerProgram final
             input.variants.size());
         for (const auto &request :
              input.variants) {
+            if (request.artifact ==
+                    RenderCompilerProgramArtifact::data_only &&
+                request.graph_variant ==
+                    RenderPipelineGraphVariant::preview) {
+                // PV-1: the request-local preview not composing the
+                // authoring does not stop the runtime variants. It is
+                // recorded as unavailable, with the refusal, and normal
+                // play publishes. The registration puts runtime variants
+                // first, so one that cannot compose has already thrown.
+                try {
+                    output.variants.push_back(
+                        compileDefaultVulkanVariant(
+                            input, backend, request));
+                } catch (...) {
+                    RenderCompilerProgramVariantOutput unavailable;
+                    unavailable.graph_variant = request.graph_variant;
+                    unavailable.unavailable = std::current_exception();
+                    output.variants.push_back(std::move(unavailable));
+                }
+                continue;
+            }
             output.variants.push_back(
                 compileDefaultVulkanVariant(
                     input, backend, request));
@@ -986,6 +1017,7 @@ class DefaultVulkanRenderCompilerProgram final
             std::vector<FrameGraphDefinition> no_graphs;
             detail::applyFrameNodeOrder(no_graphs, *order, false);
             for (const auto &variant : output.variants) {
+                if (variant.unavailable) continue;
                 for (const auto &[name, plan] : variant.frame_plans)
                     graph_names.insert(name);
                 if (variant.frame_plans.empty())

@@ -57,7 +57,20 @@ class RenderTargetLayoutTracker {
     }
 
   private:
+    // PS-1: a persistent target's entry names the image it was tracked on.
+    // reset() keeps such entries; a lookup that finds a different image (the
+    // target was made anew) starts over from the initial layout.
+    void forgetRecreatedPersistentImage(
+        const RenderTargetContainer &rt_container,
+        GlobalRenderTargetId rt_id, std::uint64_t key,
+        RenderTargetImageKind image_kind, bool history_read);
+    void notePersistentImage(
+        const RenderTargetContainer &rt_container,
+        GlobalRenderTargetId rt_id, std::uint64_t key,
+        RenderTargetImageKind image_kind, bool history_read);
+
     std::unordered_map<std::uint64_t, vk::ImageLayout> layouts;
+    std::unordered_map<std::uint64_t, VkImage> persistent_images;
     std::unordered_map<std::uint64_t, vk::PipelineStageFlags>
         shader_access_stages;
     std::unordered_map<std::uint64_t, std::uint64_t>

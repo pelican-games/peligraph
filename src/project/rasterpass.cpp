@@ -415,6 +415,14 @@ std::string_view rasterFrontFaceName(
     throw std::runtime_error("unknown raster front face");
 }
 
+std::string_view rasterClipYName(RasterClipY clip_y) {
+    switch (clip_y) {
+    case RasterClipY::down: return "down";
+    case RasterClipY::up: return "up";
+    }
+    throw std::runtime_error("unknown raster clip_y");
+}
+
 std::string_view rasterDepthCompareName(
     RasterDepthCompare compare) {
     switch (compare) {
@@ -446,6 +454,14 @@ RasterPassContract parseRasterPassContract(
         parseRasterFixedFunctionState(
             pass, color_attachment_count,
             context);
+    result.clip_y = optionalEnum(
+        pass, "clip_y", result.clip_y, context,
+        [](std::string_view value) {
+            return findName<RasterClipY>(
+                value,
+                {{"down", RasterClipY::down},
+                 {"up", RasterClipY::up}});
+        });
     validateRasterPassContract(
         result, color_attachment_count,
         has_depth_attachment, context);
@@ -584,6 +600,7 @@ nlohmann::json rasterPassContractToJson(
         {"schema_version",
          contract.schema_version},
         {"draw", std::move(draw)},
+        {"clip_y", rasterClipYName(contract.clip_y)},
         {"raster_state",
          {
              {"topology",

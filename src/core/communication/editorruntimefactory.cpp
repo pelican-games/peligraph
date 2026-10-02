@@ -24,6 +24,7 @@
 #include "../loader/editorprojectionadapters.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../loader/renderconfigcandidate.hpp"
+#include "../loader/sampletable.hpp"
 #include "../loader/scene.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../os/inputsequence.hpp"
@@ -38,6 +39,7 @@
 #include "../shader/raygrouplayout.hpp"
 #include "../userpublic/components/predefined.hpp"
 #include "../userpublic/details/event/registerer.hpp"
+#include "../userpublic/valuegraph.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
@@ -2069,7 +2071,8 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                     },
                     // This is the independent editor query policy.  In
                     // particular, it never calls ReloadGate::enabled(),
-                    // which is intentionally false for --rpc drivers.
+                    // which is intentionally false for --rpc drivers
+                    // (unless project.json declares hot_reload).
                     .gate = [runtime] {
                         const auto observation =
                             editorGateObservation(
@@ -2085,7 +2088,6 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         };
                     },
                     .runtime_snapshot = [runtime] {
-                        (void)runtime;
                         const auto generation =
                             GET_MODULE(FrameGraphRuntimeContainer)
                                 .snapshot();
@@ -2099,6 +2101,9 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                             .enabled_feature_names =
                                 generation
                                     ->enabled_feature_names,
+                            .preview = previewGraphStatusJson(
+                                runtime->modules.renderer
+                                    .previewGraphProgram()),
                         };
                     },
                     .apply_candidate =
@@ -2355,6 +2360,37 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         }
                         return result;
                     },
+                    // IA-2: the initial assets the live generation read, as
+                    // its programs recorded them. IA-3: and the tables its
+                    // value graphs' value.sample_table nodes read, each with
+                    // the manifest beside it, under the table's reference.
+                    .published_assets = [] {
+                        std::vector<RenderConfigPublishedAsset> result;
+                        const auto generation =
+                            GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+                        if (generation == nullptr) return result;
+                        for (const auto &[id, program] : generation->programs) {
+                            (void)id;
+                            for (const auto &[name, asset] :
+                                 program.frame_graph.image_initial_assets) {
+                                (void)name;
+                                result.push_back({.asset = asset->asset,
+                                                  .file = asset->file,
+                                                  .sha256 = asset->content_sha256});
+                            }
+                            if (!program.frame_graph.value_graph) continue;
+                            for (const auto &read :
+                                 program.frame_graph.value_graph->sampleTables()) {
+                                result.push_back({.asset = read.asset,
+                                                  .file = read.table->file,
+                                                  .sha256 = read.table->file_sha256});
+                                result.push_back({.asset = read.asset,
+                                                  .file = read.table->manifest,
+                                                  .sha256 = read.table->manifest_sha256});
+                            }
+                        }
+                        return result;
+                    },
                     // FG-2: verify_fold's runs are this executable, headless,
                     // in a copy of the project (graphfoldverify.hpp). What the
                     // children need of this launch is read once, here: the
@@ -2382,6 +2418,10 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         if (!foldVerifyExecutablePath())
                             return "executable_unknown";
                         return std::nullopt;
+                    },
+                    // AB-1: list_derived_assets walks the asset stores.
+                    .asset_stores = [runtime] {
+                        return runtime->modules.path_resolver.stores();
                     },
                 });
         }

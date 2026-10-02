@@ -951,4 +951,45 @@ void main() { outColor = vec4(pc.value, pc.more, 1.0); }
 #endif
 }
 
+// AB-1: the engine's include for a baked table (bake_audio_analysis) compiles
+// in a fragment and a compute stage, the table a sampler, the layout and the
+// time from a buffer, as a render.scalar vec4 passes them.
+TEST_CASE("AB-1 pelican_sample_table.glsl compiles where a fragment or compute stage reads a baked table",
+          "[shader][ab1]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    REQUIRE(engineResource("shaders/include/pelican_sample_table.glsl").has_value());
+    ShaderCompiler compiler;
+    compiler.addIncludeDir(sourceRoot() / "src/core/resources/shaders/include");
+    const auto fragment = compiler.compileSource(R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_sample_table.glsl"
+layout(set = 0, binding = 0) uniform sampler2D analysis;
+layout(set = 0, binding = 1) uniform Table { vec4 layout_and_time; } table;
+layout(location = 0) out vec4 outColor;
+void main() {
+    float level = pelican_sample_table(analysis, 0u, uint(table.layout_and_time.x), uint(table.layout_and_time.y),
+                                       table.layout_and_time.z, table.layout_and_time.w);
+    outColor = vec4(level, level, level, 1.0);
+}
+)glsl", vk::ShaderStageFlagBits::eFragment, "ab1_table.frag");
+    INFO(fragment.log);
+    CHECK(fragment.ok);
+    const auto compute = compiler.compileSource(R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_sample_table.glsl"
+layout(local_size_x = 8) in;
+layout(set = 0, binding = 0) uniform sampler2D analysis;
+layout(set = 0, binding = 1) buffer Levels { float levels[]; };
+void main() {
+    levels[gl_GlobalInvocationID.x] =
+        pelican_sample_table(analysis, gl_GlobalInvocationID.x, 1u, 101u, 0.01, 0.25);
+}
+)glsl", vk::ShaderStageFlagBits::eCompute, "ab1_table.comp");
+    INFO(compute.log);
+    CHECK(compute.ok);
+#endif
+}
+
 } // namespace Pelican

@@ -35,7 +35,7 @@
 | `PELICAN_WITH_RPC` | jsonrpc / rpcserver | |
 | `PELICAN_WITH_SEQPLAYER` | seqplayer | DCC プレビュー用。ゲーム配布では通常不要 |
 | `PELICAN_WITH_INPUT_ACTIONS` | actionmap | |
-| `PELICAN_WITH_HOT_RELOAD` | シェーダ監視 | 配布では常に OFF 相当 |
+| `PELICAN_WITH_HOT_RELOAD` | 開発中のファイルの世話: ファイル監視(全素材の hot reload)・game logic の DLL の poll・起動時の manifest との照合(OFF では `--strict-assets` のときだけ残る) | ✅AV-1(`5f7c5cdb`)。ソースは build から外さない(`#if` で監視を作らない・poll しない・照合を飛ばす)。dist-config が常に OFF を出す(§3)。明示の reload(F5・`reload_game_logic`・`reload_shaders`)の経路は AV-1 で変えていない |
 | (既存)`PELICAN_RUNTIME_SHADER_COMPILER` | shaderc | §4 の前提に注意 |
 
 規約(全ユニット共通・レビューで守らせる):
@@ -44,6 +44,12 @@
 2. OFF 時に該当機能を参照する入力が来たら、**silent skip ではなく明確なエラー**:
    「この バイナリは PELICAN_WITH_VAT=OFF でビルドされています」
    (参照パージの「reject は必ず理由を言う」文化の延長)
+   - 例外: `PELICAN_WITH_HOT_RELOAD=OFF` での `project.json` の `hot_reload`
+     (AV-1)。宣言は読み(形の拒否は ON と同じ)、効かず、起動時に INFO を
+     1 行(`project.json hot_reload is ignored: this binary was built with
+     PELICAN_WITH_HOT_RELOAD=OFF`)出して開く。理由は `ReloadService::setup()`
+     の注記のとおり、開発用の宣言を残した project もそのまま開くため
+     (監視の宣言は配布物の機能を要求しない)
 3. ユニットの粒度は粗く保つ(10 個前後まで。ファイル単位の細分化はしない)
 4. テスト: フル構成が正。各ユニット OFF は「ビルドが通る + OFF エラーが出る」の
    スモークのみ CI 化(組合せ爆発はテストしない — 単一 OFF × N 通りだけ)
@@ -67,7 +73,10 @@ pelican_cli dist-config <project> --out dist-preset.cmake
    (または CMakePresets.json の configurePreset)として出力
 3. 配布presetは`BUILD_TESTING=OFF`と`PELICAN_WITH_SPIRV_LINK=OFF`を必ず出力し、
    Catch2、Python test gate、fixture executable、experimental linker toolchainを
-   配布build graphへ入れない
+   配布build graphへ入れない。`PELICAN_WITH_IMGUI` / `PELICAN_WITH_RENDERDOC`
+   / `PELICAN_WITH_HOT_RELOAD` も project の中身に関係なく常に OFF で出す
+   (`PELICAN_WITH_HOT_RELOAD` は ✅AV-1。根拠のコメントは「配布 build は
+   ファイルを監視せず、資産は焼く時に確かめる」)
 4. **embed セットの絞り込み一覧**も同時に出力: プロジェクトが参照する
    engine:// id だけを埋め込む(engine_resources の部分集合。
    レジストリ一致テストは「フルセット」前提なので、配布ビルドでは

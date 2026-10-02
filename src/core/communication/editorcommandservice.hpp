@@ -106,6 +106,26 @@ struct EditorSceneTreeResult {
     std::vector<EditorObjectQueryResult> objects;
 };
 
+struct EditorSceneOutlineRequest {
+    std::optional<std::string> scene_id;
+    // Conditional reads must identify the scene whose list the caller holds.
+    std::optional<SceneRevision> if_scene_revision;
+};
+
+struct EditorOutlineObject {
+    AuthoringObjectId authoring_object_id{};
+    std::size_t declaration_index = 0;
+    std::optional<std::string> name;
+    std::optional<AuthoringObjectId> parent_authoring_object_id;
+};
+
+struct EditorSceneOutlineResult {
+    SceneRevision scene_revision{};
+    std::string scene_id;
+    bool not_modified = false;
+    std::vector<EditorOutlineObject> objects;
+};
+
 struct EditorGetComponentsRequest {
     std::optional<std::string> scene_id;
     std::optional<AuthoringObjectId> authoring_object_id;
@@ -298,6 +318,7 @@ class EditorCommandService {
     ~EditorCommandService();
 
     EditorSceneTreeResult sceneTree(const EditorSceneTreeRequest &request = {}) const;
+    EditorSceneOutlineResult sceneOutline(const EditorSceneOutlineRequest &request = {}) const;
     EditorSceneRevisionResult getSceneRevision() const;
     EditorObjectQueryResult getComponents(const EditorGetComponentsRequest &request) const;
     nlohmann::ordered_json getComponentAddCandidates(const EditorGetComponentsRequest &request) const;
@@ -349,6 +370,9 @@ class EditorCommandService {
     nlohmann::ordered_json getAuthoringLowering(const nlohmann::json &params) const;
     nlohmann::ordered_json foldNodes(const nlohmann::json &params);
     nlohmann::ordered_json verifyFold(const nlohmann::json &params);
+    // AB-1 (renderconfigeditor.hpp).
+    nlohmann::ordered_json bakeAudioAnalysis(const nlohmann::json &params);
+    nlohmann::ordered_json listDerivedAssets(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params);
     nlohmann::ordered_json editGraphDocument(const nlohmann::json &params);
@@ -360,6 +384,7 @@ class EditorCommandService {
     nlohmann::ordered_json getGraphCatalog(const nlohmann::json &params) const;
     nlohmann::ordered_json getEngineShaders(const nlohmann::json &params) const;
     nlohmann::ordered_json getShaderInterface(const nlohmann::json &params) const;
+    nlohmann::ordered_json getRegisteredProviders(const nlohmann::json &params) const;
     nlohmann::ordered_json editComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json addComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json removeComputeTask(const nlohmann::json &params);
@@ -370,6 +395,8 @@ class EditorCommandService {
     nlohmann::ordered_json addAuthoredPass(const nlohmann::json &params);
     nlohmann::ordered_json removeAuthoredPass(const nlohmann::json &params);
     nlohmann::ordered_json editRenderTargets(const nlohmann::json &params);
+    // FR-3.
+    nlohmann::ordered_json editBatch(const nlohmann::json &params);
     nlohmann::ordered_json getRenderDocuments(const nlohmann::json &params) const;
     nlohmann::ordered_json restoreRenderDocuments(const nlohmann::json &params);
     nlohmann::ordered_json reloadRenderDocuments(const nlohmann::json &params);
@@ -403,6 +430,7 @@ class EditorCommandRpcAdapter {
         SchemaTypeNameResolver resolver = {});
 
     nlohmann::ordered_json sceneTree(const nlohmann::json &params) const;
+    nlohmann::ordered_json sceneOutline(const nlohmann::json &params) const;
     nlohmann::ordered_json getSceneRevision(const nlohmann::json &params) const;
     nlohmann::ordered_json getComponents(const nlohmann::json &params) const;
     nlohmann::ordered_json getComponentAddCandidates(const nlohmann::json &params) const;
@@ -458,6 +486,8 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json getAuthoringLowering(const nlohmann::json &params) const;
     nlohmann::ordered_json foldNodes(const nlohmann::json &params) const;
     nlohmann::ordered_json verifyFold(const nlohmann::json &params) const;
+    nlohmann::ordered_json bakeAudioAnalysis(const nlohmann::json &params) const;
+    nlohmann::ordered_json listDerivedAssets(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphDocument(const nlohmann::json &params) const;
@@ -469,6 +499,7 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json getGraphCatalog(const nlohmann::json &params) const;
     nlohmann::ordered_json getEngineShaders(const nlohmann::json &params) const;
     nlohmann::ordered_json getShaderInterface(const nlohmann::json &params) const;
+    nlohmann::ordered_json getRegisteredProviders(const nlohmann::json &params) const;
     nlohmann::ordered_json addComputeTask(const nlohmann::json &params) const;
     nlohmann::ordered_json removeComputeTask(const nlohmann::json &params) const;
     nlohmann::ordered_json editRayCallableRecords(const nlohmann::json &params) const;
@@ -481,6 +512,8 @@ class EditorCommandRpcAdapter {
         const nlohmann::json &params) const;
     nlohmann::ordered_json editRenderTargets(
         const nlohmann::json &params) const;
+    // FR-3.
+    nlohmann::ordered_json editBatch(const nlohmann::json &params) const;
     nlohmann::ordered_json getRenderDocuments(
         const nlohmann::json &params) const;
     nlohmann::ordered_json restoreRenderDocuments(
@@ -508,6 +541,9 @@ class EditorCommandImGuiFakeAdapter {
     EditorSceneTreeResult sceneTree(const EditorSceneTreeRequest &request = {}) const {
         return service_.sceneTree(request);
     }
+    EditorSceneOutlineResult sceneOutline(const EditorSceneOutlineRequest &request = {}) const {
+        return service_.sceneOutline(request);
+    }
     EditorSceneRevisionResult getSceneRevision() const {
         return service_.getSceneRevision();
     }
@@ -533,6 +569,7 @@ nlohmann::ordered_json editorQueryJson(const EditorComponentQueryResult &compone
 nlohmann::ordered_json editorQueryJson(const EditorSceneRevisionResult &revision);
 nlohmann::ordered_json editorQueryJson(const EditorObjectQueryResult &object);
 nlohmann::ordered_json editorQueryJson(const EditorSceneTreeResult &scene);
+nlohmann::ordered_json editorQueryJson(const EditorSceneOutlineResult &scene);
 nlohmann::ordered_json editorQueryJson(const EditorListAssetsResult &assets);
 nlohmann::ordered_json editorQueryJson(const ExportSceneSnapshotResponseV2 &snapshot);
 nlohmann::ordered_json editorQueryJson(const ImportSceneSnapshotResult &snapshot);

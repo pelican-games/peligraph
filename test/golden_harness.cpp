@@ -337,7 +337,7 @@ nlohmann::json makeStemProjectJson() {
              {"window_size", {{"width", goldenWidth}, {"height", goldenHeight}}},
              {"fullscreen", false},
              {"framerate", 60},
-             {"camera", {{"yfov", 1.0471975511965976}, {"znear", 0.1}, {"zfar", 100.0}, {"up", {0, 1, 0}}}},
+             {"camera", {{"yfov", 1.0471975511965976}, {"znear", 0.1}, {"zfar", 100.0}}},
              {"default_scene_id", "default_scene"},
              {"scene_data_json", "scene.json"},
              {"asset_data_json", "assets.json"},
@@ -360,7 +360,7 @@ nlohmann::json makeVatProjectJson() {
              {"window_size", {{"width", goldenWidth}, {"height", goldenHeight}}},
              {"fullscreen", false},
              {"framerate", 60},
-             {"camera", {{"yfov", 0.7853981633974483}, {"znear", 0.1}, {"zfar", 1000.0}, {"up", {0, 1, 0}}}},
+             {"camera", {{"yfov", 0.7853981633974483}, {"znear", 0.1}, {"zfar", 1000.0}}},
              {"default_scene_id", "default_scene"},
              {"scene_data_json", "scenes/main.scene.json"},
              {"asset_data_json", "assets/asset_data.json"},
@@ -383,7 +383,7 @@ nlohmann::json makeFeatureProjectJson() {
              {"window_size", {{"width", goldenWidth}, {"height", goldenHeight}}},
              {"fullscreen", false},
              {"framerate", 60},
-             {"camera", {{"yfov", 0.7853981633974483}, {"znear", 0.1}, {"zfar", 100.0}, {"up", {0, 1, 0}}}},
+             {"camera", {{"yfov", 0.7853981633974483}, {"znear", 0.1}, {"zfar", 100.0}}},
              {"default_scene_id", "default_scene"},
              {"scene_data_json", "scene.json"},
              {"asset_data_json", "assets.json"},
@@ -406,7 +406,7 @@ nlohmann::json makeHdrProjectJson() {
              {"window_size", {{"width", goldenWidth}, {"height", goldenHeight}}},
              {"fullscreen", false},
              {"framerate", 60},
-             {"camera", {{"yfov", 0.7853981633974483}, {"znear", 0.1}, {"zfar", 100.0}, {"up", {0, 1, 0}}}},
+             {"camera", {{"yfov", 0.7853981633974483}, {"znear", 0.1}, {"zfar", 100.0}}},
              {"default_scene_id", "default_scene"},
              {"scene_data_json", "scene.json"},
              {"asset_data_json", "assets.json"},
@@ -429,7 +429,7 @@ nlohmann::json makeShadowProjectJson() {
              {"window_size", {{"width", goldenWidth}, {"height", goldenHeight}}},
              {"fullscreen", false},
              {"framerate", 60},
-             {"camera", {{"yfov", 0.8726646259971648}, {"znear", 0.1}, {"zfar", 100.0}, {"up", {0, 1, 0}}}},
+             {"camera", {{"yfov", 0.8726646259971648}, {"znear", 0.1}, {"zfar", 100.0}}},
              {"default_scene_id", "default_scene"},
              {"scene_data_json", "scene.json"},
              {"asset_data_json", "assets.json"},
@@ -452,7 +452,7 @@ nlohmann::json makeComputeProjectJson() {
              {"window_size", {{"width", goldenWidth}, {"height", goldenHeight}}},
              {"fullscreen", false},
              {"framerate", 60},
-             {"camera", {{"yfov", 0.7853981633974483}, {"znear", 0.1}, {"zfar", 100.0}, {"up", {0, 1, 0}}}},
+             {"camera", {{"yfov", 0.7853981633974483}, {"znear", 0.1}, {"zfar", 100.0}}},
              {"default_scene_id", "default_scene"},
              {"scene_data_json", "scene.json"},
              {"asset_data_json", "assets.json"},
@@ -658,7 +658,9 @@ const char *orthographicCameraFragmentShader() {
 #include "pelican_frame.glsl"
 layout(location = 0) out vec4 outColor;
 void main() {
-    outColor = vec4(pelicanFrame.projection[0][0], pelicanFrame.projection[1][1], 0.25, 1.0);
+    // The projection flips clip y (docs/design_coordinate_convention.md), so
+    // [1][1] is -1/ymag: green stays 1/ymag only while the flip is there.
+    outColor = vec4(pelicanFrame.projection[0][0], -pelicanFrame.projection[1][1], 0.25, 1.0);
 }
 )glsl";
 }
@@ -2030,6 +2032,8 @@ void main() {
 }
 
 void writeColliderDebugDrawProject(const std::filesystem::path &root) {
+    // The scene has no camera: the default one sits at the origin looking
+    // down -Z with +Y up, and the colliders stand 3 m in front of it.
     writeDebugDrawProject(root);
     writeTextFile(root / "scene.json", R"json({
   "schema": "pelican.scene",
@@ -2040,21 +2044,21 @@ void writeColliderDebugDrawProject(const std::filesystem::path &root) {
         {
           "name": "ColliderSphere",
           "components": [
-            {"name": "transform", "pos": [3.0, -0.45, -0.45], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            {"name": "transform", "pos": [-0.45, -0.45, -3.0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
             {"name": "collider", "shape": "sphere", "radius": 0.28}
           ]
         },
         {
           "name": "ColliderBox",
           "components": [
-            {"name": "transform", "pos": [3.0, 0.45, 0.0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            {"name": "transform", "pos": [0.0, 0.45, -3.0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
             {"name": "collider", "shape": "box", "half_extents": [0.28, 0.28, 0.28]}
           ]
         },
         {
           "name": "ColliderCapsule",
           "components": [
-            {"name": "transform", "pos": [3.0, -0.35, 0.45], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
+            {"name": "transform", "pos": [0.45, -0.35, -3.0], "rotation": [0, 0, 0, 1], "scale": [1, 1, 1]},
             {"name": "collider", "shape": "capsule", "radius": 0.18, "half_height": 0.32}
           ]
         }
