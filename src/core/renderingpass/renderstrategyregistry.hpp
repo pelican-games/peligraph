@@ -1,6 +1,7 @@
 #pragma once
 
 #include "frameplanner.hpp"
+#include "providerlisting.hpp"
 #include "../../project/graphvariantpolicy.hpp"
 #include "../userpublic/details/reload/registrationowner.hpp"
 #include "../userpublic/render/render_strategy_abi_v1.hpp"
@@ -12,6 +13,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Pelican {
 
@@ -83,6 +85,9 @@ class RenderStrategyRegistry {
         internal::RegistrationOwner owner) noexcept;
 
     RenderStrategyRegistrySnapshot snapshot() const;
+
+    // EL-6: every provider render_strategy.provider may name now, by name.
+    std::vector<RenderProviderListing> providerListing() const;
 
     void activateOwner(
         internal::RegistrationOwner owner) noexcept;

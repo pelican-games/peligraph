@@ -1,4 +1,5 @@
 #include "../src/core/appflow/teardown.hpp"
+#include "../src/core/communication/engineauthoringlists.hpp"
 #include "../src/core/gamelogic/gamelogicreload.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
@@ -608,6 +609,55 @@ TEST_CASE("public render providers survive reload rollback and in-flight unload"
     const auto builtin = renderPolicyRegistry().resolveDrawSortProvider(
         builtinStateBatchedDrawSortProvider);
     REQUIRE(builtin.info().owner == internal::engineRegistrationOwner);
+}
+
+// EL-6: get_registered_providers' lists (registeredProvidersJson) name the
+// game DLL's providers as the game's while it is loaded, again after a
+// reload, and drop them when it is unloaded; the engine's stay listed.
+TEST_CASE("EL-6 registered providers list the game DLL's providers as the game's across a reload",
+          "[render-policy-dll][el6]") {
+    ensureLogger();
+    const auto fixture_v1 = requiredFixture("PELICAN_RENDER_POLICY_FIXTURE_V1");
+    const auto fixture_v2 = requiredFixture("PELICAN_RENDER_POLICY_FIXTURE_V2");
+
+    const auto source_of = [](const char *registry, std::string_view name) {
+        const auto listed = registeredProvidersJson().at(registry);
+        for (const auto &entry : listed)
+            if (entry.at("name") == std::string{name})
+                return entry.at("source").get<std::string>();
+        return std::string{};
+    };
+    const std::vector<std::pair<const char *, std::string_view>> game_providers{
+        {"draw_sort", "fixture.draw_sort"},
+        {"pass_implementation", "fixture.fullscreen"},
+        {"region_replacements", "fixture.subgraph"},
+        {"graph_transforms", "fixture.graph_transform"},
+        {"render_strategy", "fixture.render_strategy"},
+    };
+    const auto require_game_listed = [&](bool listed) {
+        for (const auto &[registry, name] : game_providers) {
+            INFO(registry << " " << name << ": " << registeredProvidersJson().dump(2));
+            CHECK(source_of(registry, name) == (listed ? "game" : ""));
+        }
+        CHECK(source_of("draw_sort", builtinStateBatchedDrawSortProvider) == "engine");
+        CHECK(source_of("render_strategy", builtinAuthoredRenderStrategyProvider) == "engine");
+    };
+
+    require_game_listed(false);
+    Sandbox sandbox;
+    const auto live_dll = sandbox.root() / "render_policy_live.dll";
+    replaceFixture(fixture_v1, live_dll);
+    GameLogicReloader reloader;
+    REQUIRE(reloader.initialize(live_dll));
+    require_game_listed(true);
+
+    replaceFixture(fixture_v2, live_dll);
+    REQUIRE(reloader.reloadNow([] {}, [] {}));
+    REQUIRE(reloader.status().generation == 2);
+    require_game_listed(true);
+
+    reloader.shutdown();
+    require_game_listed(false);
 }
 
 } // namespace Pelican

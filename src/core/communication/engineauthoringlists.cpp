@@ -7,7 +7,12 @@
 #include "../fullscreenpass/passinputlayout.hpp"
 #include "../fullscreenpass/shaderinputmismatchjson.hpp"
 #include "../loader/engineresources.hpp"
+#include "../renderer/renderpolicyregistry.hpp"
+#include "../renderingpass/graphtransformregistry.hpp"
 #include "../renderingpass/materialpassattachments.hpp"
+#include "../renderingpass/passimplementationregistry.hpp"
+#include "../renderingpass/renderstrategyregistry.hpp"
+#include "../renderingpass/subgraphreplacementregistry.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../shader/shadercompiler.hpp"
@@ -640,5 +645,21 @@ void stopShaderInterfaceReflection() { shaderInterfaceReflection().stop(); }
 void resetShaderInterfaceReflectionForTesting() { shaderInterfaceReflection().reset(); }
 
 void holdShaderInterfaceReflectionForTesting(bool held) { shaderInterfaceReflection().hold(held); }
+
+OrderedJson registeredProvidersJson() {
+    const auto entries = [](const std::vector<RenderProviderListing> &providers) {
+        auto result = OrderedJson::array();
+        for (const auto &provider : providers)
+            result.push_back({{"name", provider.name},
+                              {"source", provider.engine_owned ? "engine" : "game"},
+                              {"provider_version", provider.provider_version}});
+        return result;
+    };
+    return {{"draw_sort", entries(renderPolicyRegistry().drawSortProviderListing())},
+            {"pass_implementation", entries(passImplementationRegistry().providerListing())},
+            {"region_replacements", entries(subgraphReplacementRegistry().providerListing())},
+            {"graph_transforms", entries(graphTransformRegistry().providerListing())},
+            {"render_strategy", entries(renderStrategyRegistry().providerListing())}};
+}
 
 } // namespace Pelican

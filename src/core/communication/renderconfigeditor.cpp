@@ -3327,6 +3327,13 @@ OrderedJson RenderConfigEditorService::getEngineShaders(const Json &params) cons
     return engineShadersStatusJson();
 }
 
+OrderedJson RenderConfigEditorService::getRegisteredProviders(const Json &params) const {
+    requireOnly(params, {}, "get_registered_providers");
+    // EL-6: the registries as they are now; a game logic reload's providers
+    // show in the next call (nothing is kept between calls).
+    return registeredProvidersJson();
+}
+
 OrderedJson RenderConfigEditorService::getShaderInterface(const Json &params) const {
     constexpr auto method = "get_shader_interface";
     requireOnly(params, {"reference", "refresh"}, method);

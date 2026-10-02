@@ -286,6 +286,11 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("get_shader_interface", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getShaderInterface(params); });
     });
+    // EL-6: the provider names Studio's draw_sort / render_strategy /
+    // graph_transforms combos offer, the game DLL's included.
+    server.setHandler("get_registered_providers", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getRegisteredProviders(params); });
+    });
     server.setHandler("edit_compute_task", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editComputeTask(params); });
     });

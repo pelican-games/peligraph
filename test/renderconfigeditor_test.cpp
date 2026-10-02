@@ -18,6 +18,7 @@
 #include "../src/core/loader/renderconfigcandidate.hpp"
 #include "../src/project/renderconfigsection.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/renderer/viewfamilyproviderregistry.hpp"
 #include "../src/core/renderingpass/previewgraph.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
@@ -10404,6 +10405,93 @@ TEST_CASE("EL-4 get_graph_catalog lists material pass formats, material output f
     CHECK(std::find(formats.begin(), formats.end(), mask.at("format")) != formats.end());
     CHECK(port_of(shadow_mask, "normal").at("type") == "sampled_image");
     CHECK_FALSE(port_of(shadow_mask, "normal").contains("format"));
+}
+
+namespace {
+
+RenderStrategy::Status el6RefuseStrategy(void *, const RenderStrategy::ResolveRenderStrategyInputV1 *,
+                                         RenderStrategy::RenderStrategyOutputV1 *) noexcept {
+    return RenderStrategy::Status::provider_error;
+}
+
+} // namespace
+
+// EL-6: get_registered_providers lists, per registry, the provider names a
+// document may give now: the engine's builtins, and a game owner's once it
+// is the active owner, read at each call (a released owner's are gone from
+// the next answer). The game DLL's own path is render_policy_dll_test's.
+TEST_CASE("EL-6 get_registered_providers lists each render provider registry's names, a game owner's as it changes",
+          "[render-config-editor][el6]") {
+    G6Harness harness{false};
+    harness.service = makeProjectService(harness.project, harness.resolver, harness.runtime);
+    CHECK_THROWS_AS(harness.service->getRegisteredProviders({{"unexpected", 1}}), std::invalid_argument);
+    const auto names = [](const Json &entries) {
+        std::vector<std::string> result;
+        for (const auto &entry : entries) result.push_back(entry.at("name").get<std::string>());
+        return result;
+    };
+    const auto entry_of = [](const Json &entries, std::string_view name) {
+        for (const auto &entry : entries)
+            if (entry.at("name") == std::string{name}) return entry;
+        return Json{};
+    };
+    const auto before = Json(harness.service->getRegisteredProviders(Json::object()));
+    INFO(before.dump(2));
+    REQUIRE(before.size() == 5);
+    for (const auto *registry :
+         {"draw_sort", "pass_implementation", "region_replacements", "graph_transforms", "render_strategy"}) {
+        REQUIRE(before.contains(registry));
+        const auto listed = names(before.at(registry));
+        CHECK(std::is_sorted(listed.begin(), listed.end()));
+    }
+    // The engine's builtins, each under the name a document gives.
+    const auto builtin = [&](const char *registry, std::string_view name) {
+        const auto entry = entry_of(before.at(registry), name);
+        REQUIRE(entry.is_object());
+        CHECK(entry.at("source") == "engine");
+        CHECK(entry.at("provider_version").get<std::uint32_t>() >= 1);
+        CHECK(entry.size() == 3);
+    };
+    builtin("draw_sort", "state_batched_v1");
+    builtin("draw_sort", "back_to_front_v1");
+    builtin("pass_implementation", "builtin.fullscreen_v1");
+    builtin("region_replacements", builtinTaggedSubgraphReplacementProvider);
+    builtin("graph_transforms", builtinLogicalGraphTransformProvider);
+    builtin("render_strategy", builtinAuthoredRenderStrategyProvider);
+
+    // A game owner's provider: not listed while a candidate, listed as the
+    // game's once its owner is active, gone once the owner is released.
+    constexpr std::string_view game_name = "el6.game_strategy";
+    auto provider = RenderStrategy::descriptor<RenderStrategy::ProviderV1>();
+    provider.capability_bits = RenderStrategy::builtinProviderCapabilitiesV1;
+    provider.name_utf8 = game_name.data();
+    provider.name_size = static_cast<std::uint32_t>(game_name.size());
+    provider.resolve_render_strategy = el6RefuseStrategy;
+    const auto owner = internal::allocateRegistrationOwner();
+    struct Release {
+        internal::RegistrationOwner owner;
+        ~Release() {
+            renderStrategyRegistry().releaseOwner(owner);
+            (void)internal::releaseRegistrationOwner(owner);
+        }
+    } release{owner};
+    RenderStrategy::ProviderHandleV1 handle{};
+    REQUIRE(renderStrategyRegistry().registerProvider(provider, owner, handle) == RenderStrategy::Status::ok);
+    const auto strategies = [&] {
+        return Json(harness.service->getRegisteredProviders(Json::object())).at("render_strategy");
+    };
+    CHECK(entry_of(strategies(), game_name).is_null());
+    renderStrategyRegistry().activateOwner(owner);
+    const auto game = entry_of(strategies(), game_name);
+    INFO(strategies().dump(2));
+    REQUIRE(game.is_object());
+    CHECK(game.at("source") == "game");
+    CHECK(game.at("provider_version") == RenderStrategy::providerVersionV1);
+    // The engine's builtin stays listed beside it.
+    CHECK(entry_of(strategies(), builtinAuthoredRenderStrategyProvider).at("source") == "engine");
+    renderStrategyRegistry().releaseOwner(owner);
+    CHECK(entry_of(strategies(), game_name).is_null());
+    CHECK(Json(harness.service->getRegisteredProviders(Json::object())) == before);
 }
 
 // EL-5: get_shader_interface reads a project stem's stages as

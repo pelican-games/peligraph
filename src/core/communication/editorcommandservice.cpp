@@ -1466,6 +1466,11 @@ OrderedJson EditorCommandService::getEngineShaders(const Json &params) const {
     return render_config_editor_->getEngineShaders(params);
 }
 
+OrderedJson EditorCommandService::getRegisteredProviders(const Json &params) const {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->getRegisteredProviders(params);
+}
+
 OrderedJson EditorCommandService::getShaderInterface(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->getShaderInterface(params);
@@ -2502,6 +2507,10 @@ OrderedJson EditorCommandRpcAdapter::getGraphCatalog(const Json &params) const {
 
 OrderedJson EditorCommandRpcAdapter::getEngineShaders(const Json &params) const {
     return service_.getEngineShaders(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getRegisteredProviders(const Json &params) const {
+    return service_.getRegisteredProviders(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getShaderInterface(const Json &params) const {

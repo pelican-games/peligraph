@@ -575,6 +575,11 @@ class RenderConfigEditorService {
     // rebuilt when their files' bytes change or on refresh
     // (engineauthoringlists.hpp). Reads the disk only.
     nlohmann::ordered_json getShaderInterface(const nlohmann::json &params) const;
+    // EL-6. {} -> {draw_sort, pass_implementation, region_replacements,
+    // graph_transforms, render_strategy: [{name, source: engine | game,
+    // provider_version}...]}: the provider names each render provider
+    // registry resolves now, read at each call (engineauthoringlists.hpp).
+    nlohmann::ordered_json getRegisteredProviders(const nlohmann::json &params) const;
     nlohmann::ordered_json getRayCallableRecords(const nlohmann::json &params) const;
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params);
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params);

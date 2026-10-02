@@ -12,6 +12,7 @@
 // public facade.
 
 #include "../registrationownerhost.hpp"
+#include "providerlisting.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -396,6 +397,24 @@ struct ProviderRegistry {
                   [](const ProviderSlot *left, const ProviderSlot *right) {
                       return left->name < right->name;
                   });
+        return result;
+    }
+
+    // EL-6: visibleProviders as the registry facades list them, read under
+    // the shared lock at each call (nothing is cached, so a game DLL's
+    // registration or release shows in the next listing).
+    std::vector<RenderProviderListing> listing() const {
+        std::shared_lock lock{mutex};
+        std::vector<RenderProviderListing> result;
+        for (const auto *slot : visibleProviders()) {
+            result.push_back({
+                .name = slot->name,
+                .engine_owned =
+                    slot->owner ==
+                    internal::engineRegistrationOwner,
+                .provider_version = slot->provider_version,
+            });
+        }
         return result;
     }
 

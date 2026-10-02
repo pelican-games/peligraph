@@ -1,6 +1,7 @@
 #pragma once
 
 #include "frameplanner.hpp"
+#include "providerlisting.hpp"
 #include "../../project/logicalrendergraph.hpp"
 #include "../userpublic/details/reload/registrationowner.hpp"
 #include "../userpublic/render/subgraph_replacement_abi_v1.hpp"
@@ -52,17 +53,9 @@ struct ResolvedTaggedRegionReplacement {
 // EL-1: one provider a region replacement may name (resolveRegion's
 // requested_provider), as get_render_authoring_context lists it. The
 // registry knows nothing of the regions a provider accepts: it is handed the
-// region's contract only when it resolves one.
-struct SubgraphReplacementProviderListing {
-    std::string name;
-    // Registered by the engine itself (the builtin identity provider), not
-    // by the game DLL.
-    bool engine_owned = false;
-    std::uint32_t provider_version = 0;
-
-    bool operator==(
-        const SubgraphReplacementProviderListing &) const = default;
-};
+// region's contract only when it resolves one. EL-6: the listing every
+// render provider registry gives.
+using SubgraphReplacementProviderListing = RenderProviderListing;
 
 TaggedRegionContract makeTaggedRegionContract(
     const CompiledLogicalRenderGraph &graph,
