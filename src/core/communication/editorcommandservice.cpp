@@ -94,6 +94,29 @@ OrderedJson schemaFieldJson(
     return result;
 }
 
+// A codec field read only under some values of another field carries that
+// condition beside it (SC-1): which values read it, which of them refuse its
+// absence, and what an absent field reads as otherwise.
+OrderedJson codecSchemaFieldJson(
+    const StructFieldSchema &field, std::string_view codec_name,
+    const EditorCommandRpcAdapter::SchemaTypeNameResolver &resolver) {
+    auto result = schemaFieldJson(field, resolver);
+    const auto names = [](std::span<const std::string_view> values) {
+        auto array = OrderedJson::array();
+        for (const auto value : values) array.push_back(value);
+        return array;
+    };
+    for (const auto &condition : componentCodecFieldConditions(codec_name)) {
+        if (condition.field != field.name) continue;
+        if (condition.default_value) result["default"] = *condition.default_value;
+        result["discriminant"] = condition.discriminant;
+        result["applies_to"] = names(condition.applies_to);
+        if (!condition.required_for.empty())
+            result["required_for"] = names(condition.required_for);
+    }
+    return result;
+}
+
 OrderedJson schemaNodeJson(
     const Schema::Node &node,
     const EditorCommandRpcAdapter::SchemaTypeNameResolver &resolver) {
@@ -842,7 +865,8 @@ OrderedJson EditorCommandService::getComponentAddCandidates(
         candidate["component_template"] = std::move(component_template);
         candidate["schema_fields"] = OrderedJson::array();
         for (const auto &field : codec.fieldSchema())
-            candidate["schema_fields"].push_back(schemaFieldJson(field, schema_type_name));
+            candidate["schema_fields"].push_back(
+                codecSchemaFieldJson(field, codec.name, schema_type_name));
         std::string_view asset_kind, asset_field;
         if (codec.name == "simplemodelview") { asset_kind = "model"; asset_field = "model"; }
         else if (codec.name == "sprite_view") { asset_kind = "texture"; asset_field = "texture"; }
@@ -1709,7 +1733,7 @@ OrderedJson editorComponentQueryJson(
         result["schema"]["fields"] = OrderedJson::array();
         for (const auto &field : component.schema_fields) {
             result["schema"]["fields"].push_back(
-                schemaFieldJson(field, resolver));
+                codecSchemaFieldJson(field, component.codec_name, resolver));
         }
         if (component.schema_node)
             result["schema"]["node"] =

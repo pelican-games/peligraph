@@ -55,6 +55,7 @@
 #include <mutex>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -3870,6 +3871,70 @@ TEST_CASE("P-2a-4a root scope materialization rewrites the section and releases 
     CHECK(derived.at("name") == "bloom");
     CHECK(derived.at("passes").size() == bloom.at("passes").size());
     CHECK(derived.contains("bound_parameters"));
+}
+
+// SC-1: a materialized feature reports the values it was cut with as its
+// parameters' `default`; the engine's own default stays beside it as
+// `engine_default`. A feature that is not materialized has only the one.
+TEST_CASE("SC-1 a materialized feature's parameter schema keeps the engine default",
+          "[render-config-editor][feature-materialize-edit][engine-default][sc1]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    auto root = Json::parse(readBytes(project.render_config));
+    auto &features = renderingSectionOf(root)["features"];
+    REQUIRE(features.at(1) == "engine://features/sky_ambient.json");
+    features[1] = {{"ref", "engine://features/sky_ambient.json"}, {"parameters", {{"color_r", 0.7}}}};
+    writeBytes(project.render_config, root.dump(2));
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+
+    const auto before = service->getRenderFeatures(Json::object());
+    const auto &engine_instance = before.at("feature_instances").at(1);
+    REQUIRE(engine_instance.at("reference") == "engine://features/sky_ambient.json");
+    for (const auto &declaration : engine_instance.at("parameter_schema").at("scalars"))
+        CHECK_FALSE(declaration.contains("engine_default"));
+
+    const auto accepted = service->editRenderFeatures(
+        {{"base_source_digest", before.at("source_digest").at("hex")},
+         {"operations",
+          Json::array({Json{{"op", "materialize"},
+                            {"scope", "root"},
+                            {"index", 1},
+                            {"destination_reference", "project://passes/sky-local.json"},
+                            {"base_feature_digest",
+                             engine_instance.at("feature_document_digest").at("hex")}}})}});
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    service->commitPending();
+    REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == true);
+
+    const auto after = service->getRenderFeatures(Json::object());
+    const auto &instance = after.at("feature_instances").at(1);
+    REQUIRE(instance.at("reference") == "project://passes/sky-local.json");
+    const auto &bound = instance.at("bound_parameters");
+    REQUIRE(bound.at("color_r") == 0.7);
+    const auto engine = nlohmann::ordered_json::parse(engineResourceOrThrow("features/sky_ambient.json"));
+    const auto &scalars = instance.at("parameter_schema").at("scalars");
+    REQUIRE(scalars.size() == engine.at("parameters").at("scalars").size());
+    for (const auto &original : engine.at("parameters").at("scalars")) {
+        const auto name = original.at("name").get<std::string>();
+        const auto declaration = std::find_if(scalars.begin(), scalars.end(), [&](const auto &entry) {
+            return entry.at("name") == name;
+        });
+        REQUIRE(declaration != scalars.end());
+        INFO(name);
+        CHECK(declaration->at("engine_default") == original.at("default"));
+        if (bound.contains(name)) CHECK(declaration->at("default") == bound.at(name));
+        else CHECK(declaration->at("default") == original.at("default"));
+    }
+    const auto color_r = std::find_if(scalars.begin(), scalars.end(), [](const auto &entry) {
+        return entry.at("name") == "color_r";
+    });
+    REQUIRE(color_r != scalars.end());
+    CHECK(color_r->at("default") == 0.7);
+    CHECK(color_r->at("engine_default") == 0.12);
+    std::cout << "SC1_ENGINE_DEFAULT " << color_r->dump() << '\n';
 }
 
 TEST_CASE("The shipping bloom component is readable from the project and derives without touching the engine document",

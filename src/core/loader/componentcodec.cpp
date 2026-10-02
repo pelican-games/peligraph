@@ -75,7 +75,15 @@ struct CameraSchemaFields {
     float ymag = 1.0f;
     CameraPixelPerfectMode pixel_perfect = CameraPixelPerfectMode::off;
     CameraSpriteSortPolicy sort = CameraSpriteSortPolicy::z;
-    std::string controller_type;
+    CameraControllerCodecType controller_type = CameraControllerCodecType::Orbit;
+    std::string controller_target;
+    float controller_distance = 0.0f;
+    float controller_yaw = 0.0f;
+    float controller_pitch = 0.0f;
+    float controller_sensitivity = 1.0f;
+    vec3 controller_offset{0.0f, 0.0f, 0.0f};
+    float controller_speed = 0.0f;
+    float controller_damping = 0.0f;
 };
 
 struct ColliderSchemaFields {
@@ -140,7 +148,24 @@ inline constexpr auto camera_schema = structFields(
               enumValues(enumValue("z", CameraSpriteSortPolicy::z),
                          enumValue("y_down", CameraSpriteSortPolicy::y_down),
                          enumValue("declaration", CameraSpriteSortPolicy::declaration))),
-    defaulted(field<&CameraSchemaFields::controller_type>("controller.type"), ""));
+    // The controller, as decodeController reads it. Which type reads which
+    // field, and which type refuses its absence, is camera_controller_uses
+    // below; a default here is what an absent field reads as where it is
+    // optional. The degree spellings yaw_degrees / pitch_degrees are accepted
+    // aliases of yaw / pitch and are not separate fields.
+    required(field<&CameraSchemaFields::controller_type>("controller.type"),
+             enumValues(enumValue("orbit", CameraControllerCodecType::Orbit),
+                        enumValue("follow", CameraControllerCodecType::Follow),
+                        enumValue("fly", CameraControllerCodecType::Fly))),
+    defaulted(field<&CameraSchemaFields::controller_target>("controller.target"), ""),
+    required(field<&CameraSchemaFields::controller_distance>("controller.distance", frange(0.0, 1.0e12))),
+    defaulted(field<&CameraSchemaFields::controller_yaw>("controller.yaw", internal::NoStructFieldRange{}, "rad"), 0.0f),
+    defaulted(field<&CameraSchemaFields::controller_pitch>("controller.pitch", internal::NoStructFieldRange{}, "rad"), 0.0f),
+    defaulted(field<&CameraSchemaFields::controller_sensitivity>("controller.sensitivity", frange(0.0, 1.0e12)),
+              1.0f),
+    required(field<&CameraSchemaFields::controller_offset>("controller.offset")),
+    required(field<&CameraSchemaFields::controller_speed>("controller.speed", frange(0.0, 1.0e12))),
+    defaulted(field<&CameraSchemaFields::controller_damping>("controller.damping", frange(0.0, 1.0e12)), 0.0f));
 
 inline constexpr auto light_schema = structFields(
     componentPolicy("light"),
@@ -2272,6 +2297,44 @@ ComponentCodecQueryMetadata componentCodecQueryMetadata(std::string_view name) n
         return {ComponentCodecState::Registered, true, codec->name};
     }
     return {ComponentCodecState::Missing, false, {}};
+}
+
+std::span<const ComponentCodecFieldCondition> componentCodecFieldConditions(
+    std::string_view codec_name) {
+    if (codec_name != "camera") return {};
+    // Which controller type decodeController reads each field for, and which
+    // of those refuse its absence. damping is decoded for every type but only
+    // the orbit and follow controllers read it (cameracontrollersystem.cpp).
+    static const auto conditions = [] {
+        static constexpr auto declared = internal::materializeSchemaNode(camera_schema);
+        const auto condition = [](std::string_view name,
+                                  std::vector<std::string_view> applies_to,
+                                  std::vector<std::string_view> required_for) {
+            ComponentCodecFieldCondition result{
+                .field = name,
+                .discriminant = "controller.type",
+                .applies_to = std::move(applies_to),
+                .required_for = std::move(required_for),
+            };
+            for (std::size_t index = 1; index < declared.node_count; ++index) {
+                const auto &node = declared.at(index);
+                if (node.name == name && node.presence == StructFieldPresence::Defaulted)
+                    result.default_value = internal::schemaDefaultJson(node);
+            }
+            return result;
+        };
+        return std::vector<ComponentCodecFieldCondition>{
+            condition("controller.target", {"orbit", "follow"}, {"follow"}),
+            condition("controller.distance", {"orbit"}, {"orbit"}),
+            condition("controller.yaw", {"orbit"}, {}),
+            condition("controller.pitch", {"orbit"}, {}),
+            condition("controller.sensitivity", {"orbit", "fly"}, {"fly"}),
+            condition("controller.offset", {"follow"}, {"follow"}),
+            condition("controller.speed", {"fly"}, {"fly"}),
+            condition("controller.damping", {"orbit", "follow"}, {}),
+        };
+    }();
+    return conditions;
 }
 
 TransformComponent composeWorldTransform(const TransformComponent *parent_world,

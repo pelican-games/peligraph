@@ -253,6 +253,92 @@ TEST_CASE("component addition catalog uses codec defaults and excludes attached 
     CHECK(requireComponentCodec("simplemodelview").encodeCanonical(model_decoded.value()) == authored_model);
 }
 
+// SC-1: the component schema the Inspector builds its rows from names the
+// controller types and, beside each controller field, the types that read it,
+// the types that refuse its absence, and what an absent field reads as.
+TEST_CASE("SC-1 get_components describes the camera controller by type",
+          "[editor-command][query][camera][controller][sc1]") {
+    const nlohmann::json source{
+        {"schema", "pelican.scene"},
+        {"version", 2},
+        {"scenes",
+         {{"main",
+           {{"objects",
+             nlohmann::json::array(
+                 {{{"name", "Target"},
+                   {"components", nlohmann::json::array({{{"name", "transform"}}})}},
+                  {{"name", "OrbitCam"},
+                   {"components",
+                    nlohmann::json::array(
+                        {{{"name", "transform"}},
+                         {{"name", "camera"},
+                          {"controller",
+                           {{"type", "orbit"}, {"target", "Target"}, {"distance", 4.0}}}}})}}})}}}}}};
+    const auto document = AuthoringSceneDocument::load(source.dump(), SceneRevision{91});
+    const auto service = makeQueryService(document);
+    const EditorCommandRpcAdapter rpc{service};
+    const auto response = rpc.getComponents({{"name", "OrbitCam"}});
+    const auto &components = response.at("components");
+    const auto camera = std::find_if(components.begin(), components.end(), [](const auto &component) {
+        return component.at("name") == "camera";
+    });
+    REQUIRE(camera != components.end());
+    REQUIRE_FALSE(camera->contains("resolution_error"));
+    const auto &fields = camera->at("schema").at("fields");
+    const auto field = [&](std::string_view name) {
+        const auto found = std::find_if(fields.begin(), fields.end(), [&](const auto &entry) {
+            return entry.at("name") == std::string{name};
+        });
+        REQUIRE(found != fields.end());
+        return *found;
+    };
+    CHECK(field("controller.type") ==
+          nlohmann::ordered_json{{"name", "controller.type"},
+                                 {"type", "enum"},
+                                 {"enum", {"orbit", "follow", "fly"}}});
+    CHECK(field("controller.distance") ==
+          nlohmann::ordered_json{{"name", "controller.distance"},
+                                 {"type", "f32"},
+                                 {"range", {0.0, 1.0e12}},
+                                 {"discriminant", "controller.type"},
+                                 {"applies_to", {"orbit"}},
+                                 {"required_for", {"orbit"}}});
+    CHECK(field("controller.sensitivity") ==
+          nlohmann::ordered_json{{"name", "controller.sensitivity"},
+                                 {"type", "f32"},
+                                 {"range", {0.0, 1.0e12}},
+                                 {"default", 1.0},
+                                 {"discriminant", "controller.type"},
+                                 {"applies_to", {"orbit", "fly"}},
+                                 {"required_for", {"fly"}}});
+    CHECK(field("controller.yaw") ==
+          nlohmann::ordered_json{{"name", "controller.yaw"},
+                                 {"type", "f32"},
+                                 {"unit", "rad"},
+                                 {"default", 0.0},
+                                 {"discriminant", "controller.type"},
+                                 {"applies_to", {"orbit"}}});
+    CHECK(field("controller.offset").at("type") == "vec3");
+    CHECK_FALSE(field("controller.offset").contains("default"));
+    CHECK(field("controller.target").at("default") == "");
+    CHECK(field("controller.damping").at("applies_to") == nlohmann::ordered_json{"orbit", "follow"});
+    // A field outside the controller is unchanged.
+    CHECK_FALSE(field("yfov").contains("applies_to"));
+    CHECK_FALSE(field("yfov").contains("default"));
+
+    // The addition catalog offers the camera with the same field list.
+    const auto candidates = rpc.getComponentAddCandidates({{"name", "Target"}}).at("candidates");
+    const auto candidate = std::find_if(candidates.begin(), candidates.end(), [](const auto &entry) {
+        return entry.at("name") == "camera";
+    });
+    REQUIRE(candidate != candidates.end());
+    CHECK(candidate->at("schema_fields") == fields);
+    std::cout << "SC1_CAMERA_CONTROLLER_SCHEMA ";
+    for (const auto &entry : fields)
+        if (entry.at("name").get<std::string>().starts_with("controller.")) std::cout << entry.dump() << ' ';
+    std::cout << '\n';
+}
+
 // PG-1: the builtin ray instance used to be cut off the end of the codec
 // catalog outside a layout-v2 ray tracing project, so the Studio could not
 // tell "not here" from "not in this project". It is listed now, unavailable,

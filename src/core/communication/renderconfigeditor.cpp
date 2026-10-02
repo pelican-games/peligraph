@@ -1101,7 +1101,9 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
             // values it was cut with.  Those values are this derivative's
             // defaults, so the schema reports them as such and readers that
             // only know the schema (the Studio dialog) show the current value
-            // instead of the engine default.
+            // instead of the engine default.  The declaration's own default
+            // (the engine's) stays readable as `engine_default`, on every
+            // declaration of a materialized feature that has one.
             if (const auto bound = feature.find("bound_parameters");
                 bound != feature.end() && bound->is_object()) {
                 instance["bound_parameters"] = *bound;
@@ -1112,6 +1114,10 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
                         if (declarations == schema.end() || !declarations->is_array()) continue;
                         for (auto &declaration : *declarations) {
                             if (!declaration.is_object() || !declaration.contains("name")) continue;
+                            if (const auto original = declaration.find("default"); original != declaration.end()) {
+                                auto engine_default = *original;
+                                declaration["engine_default"] = std::move(engine_default);
+                            }
                             const auto value = bound->find(declaration.at("name").get<std::string>());
                             if (value != bound->end()) declaration["default"] = *value;
                         }
