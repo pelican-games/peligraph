@@ -37,12 +37,28 @@ void renderMaterialPass(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDef
     }
 }
 
+// CC-2: a raster pass with clip_y up draws through a negative-height viewport
+// (its clip +y is the image's top; the scissor is unchanged), and puts back
+// the viewport setDynamicViewportAndScissor gave the scope, which a fused
+// rendering scope sets once for all of its passes.
+void setClipYViewport(vk::CommandBuffer cmd_buf, vk::Extent2D extent, bool up) {
+    const auto width = static_cast<float>(extent.width);
+    const auto height = static_cast<float>(extent.height);
+    cmd_buf.setViewport(0, up ? vk::Viewport{0.0f, height, width, -height, 0.0f, 1.0f}
+                              : vk::Viewport{0.0f, 0.0f, width, height, 0.0f, 1.0f});
+}
+
 void renderFullscreenPass(vk::CommandBuffer cmd_buf, PassId pass_id, const PassDefinition &pass_def,
+                          vk::Extent2D target_extent,
                           const RenderPassDispatchDependencies &dependencies,
                           RenderPassViewInvocation invocation) {
+    const bool clip_y_up = pass_def.isGenericRaster() &&
+                           pass_def.genericRasterInfo().contract.clip_y == RasterClipY::up;
+    if (clip_y_up) setClipYViewport(cmd_buf, target_extent, true);
     dependencies.fullscreen_pass_renderer.render(cmd_buf, pass_id, pass_def,
                                                  dependencies.fullscreen_pass_renderer_dependencies,
                                                  invocation);
+    if (clip_y_up) setClipYViewport(cmd_buf, target_extent, false);
 }
 
 void renderDebugDrawPass(vk::CommandBuffer cmd_buf, PassId pass_id,
@@ -183,8 +199,8 @@ void renderDynamicPassDrawCalls(vk::CommandBuffer cmd_buf, PassId pass_id, const
                            invocation);
     } else if (pass_def.isFullscreen() ||
                pass_def.isGenericRaster()) {
-        renderFullscreenPass(cmd_buf, pass_id, pass_def, dependencies,
-                             invocation);
+        renderFullscreenPass(cmd_buf, pass_id, pass_def, target_extent,
+                             dependencies, invocation);
     } else if (pass_def.isShadowDepth()) {
         renderShadowDepthPass(cmd_buf, pass_id, dependencies);
     } else if (pass_def.isVelocity()) {

@@ -44,6 +44,8 @@ constexpr std::array raster_fields{
     "draw"sv,
     "raster_state"sv,
     "shader"sv,
+    // CC-2: only a raster pass's vertex shader writes clip space itself.
+    "clip_y"sv,
 };
 constexpr std::array auxiliary_raster_fields{"shader"sv, "ray_query"sv};
 constexpr std::array canonical_anchor_fields{"anchor"sv};

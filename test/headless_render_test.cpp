@@ -15417,6 +15417,148 @@ void main() {
 #endif
 }
 
+// CC-2: one vertex shader drawn by raster passes with clip_y down and up. It
+// puts a red triangle at clip y < 0 and a green one at clip y > 0 (left half),
+// wound counter-clockwise on the image when clip_y is down, and a blue one
+// wound the other way (right half). clip_y up flips the image upside down and
+// so every winding on it; front_face (default counter-clockwise) and cull
+// mean the winding seen on the image either way, and the engine changes
+// nothing but the viewport. So with cull back, down keeps red and green and
+// culls blue, up keeps blue and culls red and green; gl_FrontFacing (cull
+// none, CC2_FACING: white in front, magenta behind) says the same.
+TEST_CASE("CC-2 a raster pass with clip_y up draws its clip +y at the top and judges faces on the image",
+          "[headless][gpu][cc2]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(temp_dir / "assets.json",
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
+        using Json = nlohmann::json;
+        const Json type{{"semantic", "pelican.render.color_signal@1"},
+            {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+        const auto image = [&](const std::string &id) {
+            return Json{{"id", id}, {"op", "render.image"},
+                        {"parameters", {{"type", type}, {"format", "R8G8B8A8_UNORM"}, {"extent_scale", 1.0},
+                                        {"usage", {"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"}}}},
+                        {"outputs", {"resource"}}};
+        };
+        const auto draw = [&](const std::string &id, const std::string &clip_y, bool facing,
+                              const std::string &target) {
+            Json shader{{"vertex", "shaders/cc2_flip"}, {"fragment", "shaders/cc2_flip"}};
+            if (facing) shader["defines"] = Json::array({"CC2_FACING"});
+            return Json{{"id", id}, {"op", "render.raster"},
+                        {"parameters",
+                         {{"pass_set", "main_render"}, {"shader", shader},
+                          {"draw", {{"vertex_count", 9}}}, {"clip_y", clip_y},
+                          {"raster_state", {{"cull", facing ? "none" : "back"}}},
+                          {"color_load_op", "clear"}, {"clear_color", {0.0, 0.0, 0.0, 1.0}},
+                          {"ports", {{"color", {{"kind", "image"}, {"type", type}, {"access", "write"},
+                                                {"attachment", "color"}, {"location", 0}}}}}}},
+                        {"inputs", {{"color", {{"node", target}, {"port", "resource"}}}}},
+                        {"outputs", {"color"}}};
+        };
+        const Json document{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", Json::object()},
+            {"nodes", Json::array({image("cull_down_image"), draw("cull_down", "down", false, "cull_down_image"),
+                                   image("cull_up_image"), draw("cull_up", "up", false, "cull_up_image"),
+                                   image("facing_down_image"), draw("facing_down", "down", true, "facing_down_image"),
+                                   image("facing_up_image"), draw("facing_up", "up", true, "facing_up_image")})},
+            {"outputs", Json::object()},
+            {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}}}};
+        writeTextFile(temp_dir / "hybrid.json", document.dump(2));
+        std::filesystem::create_directories(temp_dir / "shaders");
+        writeTextFile(temp_dir / "shaders" / "cc2_flip.vert", R"glsl(#version 450
+const vec2 positions[9] = vec2[](
+    vec2(-0.9, -0.9), vec2(-0.9, -0.1), vec2(-0.1, -0.1),
+    vec2(-0.9, 0.1), vec2(-0.9, 0.9), vec2(-0.1, 0.9),
+    vec2(0.1, -0.9), vec2(0.9, 0.9), vec2(0.1, 0.9));
+const vec3 colors[3] = vec3[](vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0));
+layout(location = 0) flat out vec3 outColor;
+void main() {
+    gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
+    outColor = colors[gl_VertexIndex / 3];
+}
+)glsl");
+        writeTextFile(temp_dir / "shaders" / "cc2_flip.frag", R"glsl(#version 450
+layout(location = 0) flat in vec3 inColor;
+layout(location = 0) out vec4 outColor;
+void main() {
+#ifdef CC2_FACING
+    outColor = gl_FrontFacing ? vec4(1.0) : vec4(1.0, 0.0, 1.0, 1.0);
+#else
+    outColor = vec4(inColor, 1.0);
+#endif
+}
+)glsl");
+        configureRayQueryTestRuntime(temp_dir);
+
+        auto &renderer = GET_MODULE(Renderer);
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+
+        using Texel = std::array<std::uint8_t, 4>;
+        constexpr Texel red{255, 0, 0, 255}, green{0, 255, 0, 255}, blue{0, 0, 255, 255}, black{0, 0, 0, 255},
+            front{255, 255, 255, 255}, back{255, 0, 255, 255};
+        // The texel under clip (x, y), with clip +y down or up the image.
+        const auto texel = [&](const std::string &target, float x, float y, bool up) {
+            const auto read = RendererTestAccess::readRenderTarget(renderer, target, ImageSubresourceRange{});
+            REQUIRE(read.format == vk::Format::eR8G8B8A8Unorm);
+            const auto column = static_cast<std::uint32_t>((x + 1.0f) * 0.5f * read.extent.width);
+            const auto row = static_cast<std::uint32_t>((up ? 1.0f - y : y + 1.0f) * 0.5f * read.extent.height);
+            const auto offset = (static_cast<std::size_t>(row) * read.extent.width + column) * 4;
+            return Texel{read.bytes.at(offset), read.bytes.at(offset + 1), read.bytes.at(offset + 2),
+                         read.bytes.at(offset + 3)};
+        };
+        // The triangles' centroids, in clip space.
+        const float left = -0.633f, red_y = -0.367f, green_y = 0.633f, blue_x = 0.367f, blue_y = 0.3f;
+        // down: red and green are counter-clockwise on the image, blue is not.
+        CHECK(texel("cull_down_image", left, red_y, false) == red);
+        CHECK(texel("cull_down_image", left, green_y, false) == green);
+        CHECK(texel("cull_down_image", blue_x, blue_y, false) == black);
+        CHECK(texel("facing_down_image", left, red_y, false) == front);
+        CHECK(texel("facing_down_image", left, green_y, false) == front);
+        CHECK(texel("facing_down_image", blue_x, blue_y, false) == back);
+        // up: the image is upside down, and so is every winding on it.
+        CHECK(texel("cull_up_image", left, red_y, true) == black);
+        CHECK(texel("cull_up_image", left, green_y, true) == black);
+        CHECK(texel("cull_up_image", blue_x, blue_y, true) == blue);
+        CHECK(texel("facing_up_image", left, red_y, true) == back);
+        CHECK(texel("facing_up_image", left, green_y, true) == back);
+        CHECK(texel("facing_up_image", blue_x, blue_y, true) == front);
+        // In image terms (read as the engine's clip space): under up, clip +y
+        // is the image's top, so the triangles sit in the mirrored rows.
+        CHECK(texel("facing_up_image", left, -green_y, false) == back);
+        CHECK(texel("facing_up_image", blue_x, -blue_y, false) == front);
+
+        // The engine changes no pipeline state for clip_y: the front face is
+        // the authored (default) one in all four.
+        const auto pass_id = GET_MODULE(RenderingPassContainer).getRenderingPassIdByName("main_render");
+        const auto program = GET_MODULE(FrameGraphRuntimeContainer).findProgram(pass_id);
+        REQUIRE(program != nullptr);
+        std::map<std::string, const CompiledPass *> passes;
+        for (const auto &compiled : program->rendering_pass.passes) passes.emplace(compiled.definition.name, &compiled);
+        auto &fullscreen = GET_MODULE(FullscreenPassContainer);
+        for (const auto *name : {"cull_down", "cull_up", "facing_down", "facing_up"}) {
+            INFO(name);
+            REQUIRE(passes.contains(name));
+            CHECK(fullscreen.graphicsPipelineDescForTesting(passes.at(name)->pass_id).front_face ==
+                  vk::FrontFace::eCounterClockwise);
+        }
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) std::filesystem::remove_all(temp_dir);
+        TestSupport::skipIfVulkanDeviceUnavailable(error, "Vulkan CC-2 clip_y fixture unavailable");
+        throw;
+    }
+#else
+    SUCCEED("CC-2 GPU acceptance is compiler-ON only");
+#endif
+}
+
 // LP-1b: a graph.loop whose elements hand their image on (carry). `seed`
 // clears an image; each of `chain`'s four elements samples what the element
 // before it drew (the seed for the first), adds STEP * 16/255 to red and draws

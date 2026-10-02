@@ -479,9 +479,13 @@ Table makeTable() {
              .field(string("implementation"))
              .field(shaderDefines())
              .required(),
-         object("draw").required().describe("What the pass draws."), json("raster_state"), passSchedule(),
-         rasterRayQuery(), loadOp("color_load_op"), storeOp("color_store_op"), loadOp("depth_load_op"),
-         storeOp("depth_store_op"), clearColor(), clearColors(), resolutionDomain("unclassified"), viewFamily(),
+         object("draw").required().describe("What the pass draws."), json("raster_state"),
+         // CC-2: parseRasterPassContract's clip_y.
+         enumeration("clip_y", {"down", "up"}).fallback("down")
+             .describe("Which way the vertex shader's clip +y points on the image (down: the engine's). "
+                       "front_face and cull mean the winding seen on the image either way."),
+         passSchedule(), rasterRayQuery(), loadOp("color_load_op"), storeOp("color_store_op"),
+         loadOp("depth_load_op"), storeOp("depth_store_op"), clearColor(), clearColors(), resolutionDomain("unclassified"), viewFamily(),
          viewSelect(), regionTags(), regions(), passSet(), order("after"), order("before"), insert(true),
          canonicalAnchor()});
     add(table, "render.compute", false,

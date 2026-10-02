@@ -14,6 +14,12 @@
 #define PELICAN_VIEW_INDEX 0u
 #endif
 
+// CC-2: clip space, NDC, pixels and uv all have +y down (Vulkan's); the world
+// has +y up. The only place one turns into the other is the camera's
+// projection, so NDC and uv point the same way and differ only in range.
+vec2 pelican_ndc_to_uv(vec2 ndc) { return ndc * 0.5 + 0.5; }
+vec2 pelican_uv_to_ndc(vec2 uv) { return uv * 2.0 - 1.0; }
+
 // A multiview pass may mix per-view array resources with shared 2D resources
 // (for example a stereo G-buffer plus one shared shadow map). The compiler
 // supplies PELICAN_INPUT_<binding>_LAYERED for each physical input.

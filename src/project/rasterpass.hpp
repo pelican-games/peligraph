@@ -46,6 +46,17 @@ enum class RasterFrontFace : std::uint8_t {
 
 std::string_view rasterFrontFaceName(RasterFrontFace face);
 
+// CC-2: which way the vertex shader's clip +y points on the output. `down` is
+// the engine's (Vulkan's) convention; `up` flips the pass's viewport so a
+// shader written for a y-up clip space draws upright. With either value,
+// front_face and cull mean the winding seen on the finished image.
+enum class RasterClipY : std::uint8_t {
+    down,
+    up,
+};
+
+std::string_view rasterClipYName(RasterClipY clip_y);
+
 enum class RasterDepthCompare : std::uint8_t {
     never,
     less,
@@ -168,6 +179,9 @@ struct RasterPassContract {
     std::uint32_t schema_version = 1;
     RasterGeometryContract geometry;
     RasterFixedFunctionState state;
+    // A pass-level field, not raster_state: fullscreen passes share
+    // raster_state and their clip space is the engine's.
+    RasterClipY clip_y = RasterClipY::down;
 
     bool operator==(
         const RasterPassContract &) const = default;

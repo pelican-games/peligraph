@@ -188,6 +188,10 @@ void applyVulkanRasterPassContract(
     applyVulkanRasterPassContract(
         contract.state, desc,
         physical_attachment_locations);
+    // CC-2: clip_y up is recorded with a negative-height viewport
+    // (render_pass_dispatch.cpp) and nothing else. Vulkan judges a face by
+    // its winding in framebuffer coordinates, after the viewport, so
+    // front_face keeps meaning the winding seen on the finished image.
 }
 
 void applyVulkanRasterPassContract(
