@@ -150,6 +150,107 @@ std::function<bool()> heldParametersEdit(GraphCanvasModel &model, std::string sc
     };
 }
 
+// --- PS-1s, decisions 1, 3 and 4: a pass's or task's Schedule.
+
+GraphCanvasScheduleRow::GraphCanvasScheduleRow(GraphCanvasModel &model, const QString &prefix,
+                                               std::function<void()> submitted, QWidget *parent)
+    : QWidget{parent}, model_{model}, submitted_{std::move(submitted)} {
+    setObjectName(prefix + QStringLiteral(".scheduleRow"));
+    held_ = std::make_unique<GraphCanvasHeldEdits>(model_, this);
+    held_->setSent([this] {
+        if (submitted_) submitted_();
+    });
+    auto *grid = new QGridLayout(this);
+    grid->setContentsMargins(0, 0, 0, 0);
+    schedule_ = new QComboBox(this);
+    schedule_->setObjectName(prefix + QStringLiteral(".schedule"));
+    schedule_->setToolTip(tr("When it runs. Once: on the first frame of a generation, then again "
+                             "only when what it reads changes, its output is made anew, or "
+                             "Recompute is pressed. What it writes is kept between frames "
+                             "(Persistent)."));
+    schedule_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    schedule_->setMinimumContentsLength(8);
+    recompute_ = new QPushButton(tr("Recompute"), this);
+    recompute_->setObjectName(prefix + QStringLiteral(".recompute"));
+    recompute_->setToolTip(tr("Run it again on the next frame (rerun_once)."));
+    run_ = new QLabel(this);
+    run_->setObjectName(prefix + QStringLiteral(".onceRun"));
+    run_->setFont(studioSmallFont());
+    run_->setWordWrap(true);
+    grid->addWidget(schedule_, 0, 0);
+    grid->addWidget(recompute_, 0, 1);
+    grid->addWidget(run_, 1, 0, 1, 2);
+    grid->setColumnStretch(0, 1);
+    connect(schedule_, &QComboBox::currentIndexChanged, this, [this] { commit(); });
+    connect(recompute_, &QPushButton::clicked, this, [this] { recompute(); });
+}
+
+void GraphCanvasScheduleRow::showNode(const std::string &scope, const std::string &node) {
+    scope_ = scope;
+    node_ = node;
+    const auto current = model_.nodeSchedule(scope_, node_);
+    // A task also runs once per view.
+    const bool compute = std::ranges::any_of(model_.nodes(scope_), [&](const GraphCanvasNode &each) {
+        return each.id == node_ && each.op == "render.compute";
+    });
+    QStringList wanted{QStringLiteral("per_frame")};
+    if (compute) wanted << QStringLiteral("per_view");
+    wanted << QStringLiteral("once");
+    QStringList held;
+    for (int index = 0; index < schedule_->count(); ++index)
+        held << schedule_->itemData(index).toString();
+    {
+        const QSignalBlocker block{schedule_};
+        // Built again only when the choices differ: an open list is not
+        // taken from under the hand by a plan arriving.
+        if (held != wanted) {
+            schedule_->clear();
+            for (const auto &value : wanted)
+                schedule_->addItem(value == QLatin1String{"per_frame"}  ? tr("Every frame")
+                                   : value == QLatin1String{"per_view"} ? tr("Every view")
+                                                                        : tr("Once"),
+                                   value);
+        }
+        selectOrAdd(*schedule_, qtext(current));
+    }
+    const auto run = model_.onceRun(scope_, node_);
+    recompute_->setVisible(run.has_value());
+    run_->setVisible(run.has_value());
+    if (!run) {
+        run_->clear();
+    } else if (!run->generation) {
+        run_->setText(tr("Not run yet"));
+    } else {
+        run_->setText(tr("Ran in generation %1, frame %2")
+                          .arg(*run->generation)
+                          .arg(run->frame ? QString::number(*run->frame) : QStringLiteral("?")));
+    }
+}
+
+void GraphCanvasScheduleRow::followEditable() {
+    held_->follow();
+    schedule_->setEnabled(model_.canEdit());
+    recompute_->setEnabled(model_.connected());
+}
+
+void GraphCanvasScheduleRow::commit() {
+    const auto picked = schedule_->currentData().toString().toStdString();
+    if (picked.empty() || node_.empty() || picked == model_.nodeSchedule(scope_, node_)) return;
+    // Decision 2: Once also keeps what the pass writes, in the same edit.
+    if (held_->sendOrHold([&model = model_, scope = scope_, node = node_, picked] {
+            return model.setNodeSchedule(scope, node, picked);
+        })) {
+        if (submitted_) submitted_();
+        return;
+    }
+    showNode(scope_, node_);
+}
+
+void GraphCanvasScheduleRow::recompute() {
+    if (node_.empty()) return;
+    if (model_.rerunOnce(scope_, node_) && submitted_) submitted_();
+}
+
 // --- Decision 1: render.image.
 
 GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
@@ -357,6 +458,27 @@ GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
         if (changed == parameters()) return;
         commit(changed);
     });
+    // PS-1s, decision 2: whether the image keeps its contents from one frame
+    // to the next (lifetime: persistent) -- what a pass that runs once
+    // writes has to.
+    lifetime_ = new QComboBox(fields_);
+    lifetime_->setObjectName(imageFieldName(QStringLiteral("lifetime")));
+    lifetime_->addItem(tr("Per frame"), QString{});
+    lifetime_->addItem(tr("Persistent"), QStringLiteral("persistent"));
+    lifetime_->setToolTip(tr("Per frame: the engine may share the memory with other images "
+                             "(aliasing). Persistent: one image kept from frame to frame, as a "
+                             "pass that runs once needs for what it writes."));
+    form->addRow(caption(tr("Lifetime"), fields_), lifetime_);
+    connect(lifetime_, &QComboBox::currentIndexChanged, this, [this] {
+        auto changed = parameters();
+        if (!changed.is_object()) return;
+        const auto lifetime = lifetime_->currentData().toString().toStdString();
+        if (lifetime.empty()) changed.erase("lifetime");
+        else changed["lifetime"] = lifetime;
+        if (changed == parameters()) return;
+        commit(changed);
+    });
+
 
     connect(size_scale_, &QRadioButton::clicked, this, [this] { commitSize(); });
     connect(size_fixed_, &QRadioButton::clicked, this, [this] { commitSize(); });
@@ -550,6 +672,13 @@ void GraphCanvasImageFields::load(const Json &parameters) {
         const auto history = parameters.is_object() ? parameters.find("history") : parameters.end();
         history_->setChecked(parameters.is_object() && history != parameters.end() &&
                              history->is_boolean() && history->get<bool>());
+    }
+    {
+        const QSignalBlocker block{lifetime_};
+        selectOrAdd(*lifetime_, qtext(stringOf(parameters, "lifetime")) ==
+                                        QLatin1String{"transient"}
+                                    ? QString{}
+                                    : qtext(stringOf(parameters, "lifetime")));
     }
 
     note_->setVisible(!missing.isEmpty());
@@ -921,6 +1050,18 @@ GraphCanvasPassFields::GraphCanvasPassFields(GraphCanvasModel &model,
     loop_element_->setWordWrap(true);
     form_->addRow(QString{}, loop_element_);
     form_->setRowVisible(loop_element_, false);
+    // PS-1s, decisions 1, 3 and 4: when the pass runs, and Recompute.
+    schedule_ = new GraphCanvasScheduleRow(
+        model_, QStringLiteral("pelican.graphCanvasPass"),
+        [this] {
+            if (submitted_) submitted_();
+        },
+        fields_);
+    schedule_->setPendingChanged([this] {
+        if (pending_changed_) pending_changed_();
+    });
+    form_->addRow(caption(tr("Schedule"), fields_), schedule_);
+
 
     // UX-6a, decision 5: the sampling of each image the pass reads, beside
     // the canvas -- the right-click entries were the only place, and a
@@ -1102,7 +1243,9 @@ void GraphCanvasPassFields::showNode(const GraphCanvasNode *node, const std::str
         load(current);
     }
     // The plan may say it later than the document: asked on every show.
-    showLoopElementRead();
+    showLoopElementRead();    // PS-1s: the plan may say when it ran later than the document changed.
+    schedule_->showNode(scope_, node_);
+
     if (other) {
         // Another pass: New... starts closed, its name proposed afresh.
         const QSignalBlocker block{new_shader_};
@@ -1142,7 +1285,8 @@ void GraphCanvasPassFields::showLoopElementRead() {
 }
 
 void GraphCanvasPassFields::followEditable() {
-    fields_->setEnabled(model_.canEdit());
+    fields_->setEnabled(model_.canEdit());    schedule_->followEditable();
+
     retryWhenEditable();
     held_->follow();
 }

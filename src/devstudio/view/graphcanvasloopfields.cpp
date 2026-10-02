@@ -403,6 +403,30 @@ GraphCanvasLoopFields::GraphCanvasLoopFields(
         after(model_.setLoopTier(loop_, tier_->itemData(index).toString().toStdString()));
     });
 
+    // PS-1s, decision 1: the body's passes and tasks all run once (each
+    // writes into images made Persistent in the same edit); decision 4:
+    // Recompute runs every copy again on the next frame.
+    auto *once_row = new QHBoxLayout;
+    body_once_ = new QCheckBox(tr("Run the body once"), this);
+    body_once_->setObjectName(fieldName(QStringLiteral("bodyOnce")));
+    body_once_->setToolTip(tr("Every pass of the body runs once (schedule: once): again only "
+                              "when what it reads changes, or on Recompute."));
+    once_row->addWidget(body_once_, 1);
+    recompute_ = new QPushButton(tr("Recompute"), this);
+    recompute_->setObjectName(fieldName(QStringLiteral("recompute")));
+    recompute_->setToolTip(tr("Run the loop's once passes again on the next frame (rerun_once)."));
+    once_row->addWidget(recompute_);
+    form->addRow(caption(tr("Once")), once_row);
+    connect(body_once_, &QCheckBox::clicked, this, [this](bool checked) {
+        if (loop_.empty()) return;
+        const bool sent = model_.setLoopBodyOnce(loop_, checked);
+        after(sent);
+        if (!sent) syncBodyOnce();
+    });
+    connect(recompute_, &QPushButton::clicked, this, [this] {
+        if (!loop_.empty()) after(model_.rerunOnce({}, loop_));
+    });
+
     // Where the copies land among the passes (LP-0b): a canonical anchor, or
     // the end of the pass family. Only a body that draws takes a place.
     place_ = new QComboBox(this);
@@ -531,6 +555,7 @@ void GraphCanvasLoopFields::showLoop(const std::string &id) {
         shown_ = shown;
         rebuild(*loop);
     }
+    syncBodyOnce();
     followEditable();
     show();
 }
@@ -542,6 +567,17 @@ void GraphCanvasLoopFields::followEditable() {
     // only refuse. A switched-off parent keeps each field's own state: a
     // field off for its own reason stays off when this comes back on.
     fields_->setEnabled(model_.canEdit());
+}
+
+void GraphCanvasLoopFields::syncBodyOnce() {
+    const auto once = loop_.empty() ? std::nullopt : model_.loopBodyOnce(loop_);
+    {
+        const QSignalBlocker block{body_once_};
+        body_once_->setChecked(once.value_or(false));
+    }
+    body_once_->setEnabled(once.has_value());
+    recompute_->setVisible(once.value_or(false));
+    recompute_->setEnabled(model_.connected());
 }
 
 void GraphCanvasLoopFields::clearRows() {

@@ -159,6 +159,12 @@ class GraphCanvasLoopFields final : public QWidget {
     QCheckBox *limit_enabled_ = nullptr;
     QSpinBox *limit_ = nullptr;
     QComboBox *tier_ = nullptr;
+    // PS-1s, decisions 1 and 4: every pass of the body runs once
+    // (`pelican.graphCanvasLoop.bodyOnce`), and Recompute (`.recompute`,
+    // rerun_once of the loop: all its copies).
+    QCheckBox *body_once_ = nullptr;
+    QPushButton *recompute_ = nullptr;
+    void syncBodyOnce();
     QComboBox *place_ = nullptr;
     QComboBox *where_kind_ = nullptr;
     QLineEdit *where_values_ = nullptr;

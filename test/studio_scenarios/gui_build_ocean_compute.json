@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_build_ocean_compute",
-  "description": "EL-5s decision 5: gui_build_ocean (GB-3 target A, a Tessendorf FFT ocean from File > New Project > Blank with Studio's GUI only) with its first stage, h0, a compute task instead of a fullscreen pass. shaders/ocean_h0.comp is written as a person does in an editor of their own (it declares its image, pelican_resource_h0, rgba32f, and computes the numbers ocean_h0.frag draws). The palette's render.compute lists it; picked, Studio asks the engine for its interface (get_shader_interface, EL-5) and places the task with its port, an R32G32B32A32_SFLOAT image of its own (STORAGE, SAMPLED) connected to it, and dispatch.groups_from that image, in one edit -- nothing typed but the filter. The image is made Fixed 256 x 256 with a press, the task's Shader field names the shader with no reflection error, and the task's h0 is dropped on the spectrum pass's + input. Everything after is gui_build_ocean's (the spectrum is the first fullscreen pass now, the displacement the second), and so are the pixel checks: the sea is not the gradient and not one colour, it stands still in edit, moves in Play, stops in Pause. Typed: the project folder and name, render.raster and render.compute in the palette's filter, 2 * log2(256) in Count's expression, and 2 in the raster pass's Instances.",
+  "description": "EL-5s decision 5: gui_build_ocean (GB-3 target A, a Tessendorf FFT ocean from File > New Project > Blank with Studio's GUI only) with its first stage, h0, a compute task instead of a fullscreen pass. shaders/ocean_h0.comp is written as a person does in an editor of their own (it declares its image, pelican_resource_h0, rgba32f, and computes the numbers ocean_h0.frag draws). The palette's render.compute lists it; picked, Studio asks the engine for its interface (get_shader_interface, EL-5) and places the task with its port, an R32G32B32A32_SFLOAT image of its own (STORAGE, SAMPLED) connected to it, and dispatch.groups_from that image, in one edit -- nothing typed but the filter. PS-1s: the task's Schedule is picked Once, which makes its image Persistent in the same edit; the frame plan says it ran in this generation and not again 30 frames later, and Recompute runs it again. The image is made Fixed 256 x 256 with a press, the task's Shader field names the shader with no reflection error, and the task's h0 is dropped on the spectrum pass's + input. Everything after is gui_build_ocean's (the spectrum is the first fullscreen pass now, the displacement the second), and so are the pixel checks: the sea is not the gradient and not one colour, it stands still in edit, moves in Play, stops in Pause. Typed: the project folder and name, render.raster and render.compute in the palette's filter, 2 * log2(256) in Count's expression, and 2 in the raster pass's Instances.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -370,6 +370,69 @@
       "name": "pelican.graphCanvasCompute.copyMessage",
       "timeout_ms": 10000,
       "visible": false
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick render_compute",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_compute"
+    },
+    {
+      "label": "PS-1s decision 1: its Schedule field",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasCompute.schedule",
+      "timeout_ms": 30000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "Schedule: Once (h0 is a function of the pixel alone)",
+      "cmd": "select",
+      "name": "pelican.graphCanvasCompute.schedule",
+      "text": "Once"
+    },
+    {
+      "label": "PS-1s decision 2: saved, and the image it writes made Persistent in the same edit",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "contains": "Saved; render_compute__h0 made Persistent"
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "PS-1s decision 3: the band says it runs once and has run",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_layer_band#render_compute",
+      "contains": "once \u00b7 ran gen",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "PS-1s decision 2: and the image says it is kept",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_layer_band#render_compute__h0",
+      "contains": "persistent",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick render_compute__h0",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_compute__h0"
+    },
+    {
+      "label": "its Lifetime field says Persistent",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.lifetime",
+      "timeout_ms": 30000,
+      "visible": true,
+      "text": "Persistent"
     },
     {
       "label": "fit",
@@ -1580,6 +1643,140 @@
       "value_of": "sea_0"
     },
     {
+      "label": "PS-1s decision 6: the frame plan's node 0 is render_compute",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes[0].name",
+      "value": "render_compute",
+      "retry_ms": 30000
+    },
+    {
+      "label": "and it runs once",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes[0].schedule",
+      "value": "once",
+      "retry_ms": 30000
+    },
+    {
+      "label": "it has run in this generation",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes[0].last_run_generation",
+      "op": "ne",
+      "value": null,
+      "retry_ms": 30000
+    },
+    {
+      "label": "the frame it last ran in",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes[0].last_run_frame",
+      "remember": "h0_ran"
+    },
+    {
+      "label": "the frame now",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.frame",
+      "remember": "h0_f0"
+    },
+    {
+      "label": "30 frames later",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.frame",
+      "op": "ge",
+      "value_of": "h0_f0",
+      "plus": 30,
+      "retry_ms": 30000
+    },
+    {
+      "label": "h0 has not run again: it does not run every frame",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes[0].last_run_frame",
+      "value_of": "h0_ran"
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick render_compute",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_compute"
+    },
+    {
+      "label": "PS-1s decision 3: its fields say when it ran",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasCompute.onceRun",
+      "timeout_ms": 30000,
+      "visible": true,
+      "contains": "Ran in generation"
+    },
+    {
+      "label": "PS-1s decision 4: Recompute",
+      "cmd": "click",
+      "name": "pelican.graphCanvasCompute.recompute"
+    },
+    {
+      "label": "rerun_once was asked",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 30000,
+      "contains": "Recompute: 1 once pass runs again"
+    },
+    {
+      "label": "h0 ran again after the press",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes[0].last_run_frame",
+      "op": "gt",
+      "value_of": "h0_ran",
+      "retry_ms": 30000
+    },
+    {
+      "label": "the band still says it runs once",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_layer_band#render_compute",
+      "contains": "once \u00b7 ran gen",
+      "timeout_ms": 30000
+    },
+    {
       "label": "press Play",
       "cmd": "click",
       "name": "pelican.play.play"
@@ -1589,7 +1786,7 @@
       "cmd": "wait",
       "name": "pelican.playStatus",
       "timeout_ms": 30000,
-      "contains": "Playing · frame"
+      "contains": "Playing \u00b7 frame"
     },
     {
       "label": "the engine has presented frames",
@@ -1726,7 +1923,7 @@
       "cmd": "wait",
       "name": "pelican.playStatus",
       "timeout_ms": 10000,
-      "contains": "Paused · frame"
+      "contains": "Paused \u00b7 frame"
     },
     {
       "label": "the engine has presented frames",
@@ -1871,7 +2068,7 @@
       "cmd": "wait",
       "name": "pelican.playStatus",
       "timeout_ms": 30000,
-      "contains": "Playing · frame"
+      "contains": "Playing \u00b7 frame"
     }
   ]
 }

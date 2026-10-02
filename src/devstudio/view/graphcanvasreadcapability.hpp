@@ -97,6 +97,10 @@ struct GraphCanvasReadCapability {
     // GL-4a: verify_fold, a ticket get_edit_result polls (running for as
     // long as the engine's child runs draw).
     std::function<qint64(const QJsonObject &params, QString *error)> requestVerifyFold;
+    // PS-1s, decision 4: rerun_once {node?} (engine PS-1), the passes that
+    // run once run again on the next frame -- a node's (an empty node: every
+    // one). It changes no document. Left empty: Recompute is not offered.
+    std::function<qint64(const QString &node, QString *error)> requestRerunOnce;
     std::function<void(QObject *context, ResultHandler handler)> result;
     std::function<void(QObject *context, FailureHandler handler)> failure;
     // EL-5s: get_shader_interface {reference, refresh?} (EL-5), what a

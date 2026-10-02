@@ -850,7 +850,7 @@ struct GraphLoopRefusalText {
     std::string_view code;
     std::string_view sentence;
 };
-constexpr std::array<GraphLoopRefusalText, 38> GraphLoopRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 41> GraphLoopRefusalTexts{{
     {"graph.loop_branch_else_missing@1",
      "Loop {node} has no else: its last branch must have no condition"},
     {"graph.loop_branch_interface@1",
@@ -934,6 +934,15 @@ constexpr std::array<GraphLoopRefusalText, 38> GraphLoopRefusalTexts{{
     {"shader.loop_push_overlap@1",
      "{shader} declares a push constant that overlaps the loop element at {range} in the "
      "{stage} stage \xE2\x80\x94 use PELICAN_LOOP_CUSTOM_PUSH and PELICAN_LOOP_PUSH_FIELDS"},
+    // PS-1s, decision 5 (engine PS-1): a pass that runs once and what it
+    // writes or reads; and rerun_once's node the plan does not have.
+    {"graph.once_writes_transient@1",
+     "{node} runs once but writes {resource}, which is not kept between frames \xE2\x80\x94 "
+     "make it Persistent"},
+    {"graph.once_reads_per_frame@1",
+     "{node} runs once but reads {input}, which changes every frame \xE2\x80\x94 it would "
+     "freeze at the first value"},
+    {"node_unknown", "{node} is not in the frame plan: there is nothing of it to recompute"},
 }};
 
 // UX-5c: graph.loop_output_reference_unknown@1's reasons, each a sentence that

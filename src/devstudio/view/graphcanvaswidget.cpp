@@ -1317,23 +1317,34 @@ QString zoneCondition(const GraphCanvasLoopBranch &branch) {
 // reads the loop element (the frame plan's reads_loop_index on its copies),
 // the band GL-2b draws under a root node, saying `reads element`. `zone`: the
 // body is drawn in its loop's zone on the root canvas, not descended into.
+// PS-1s, decisions 2 and 3: a node that runs once says when it last ran
+// (`once · ran gen N`), a Persistent image says `persistent`.
+QString scheduleBand(const GraphCanvasModel &model, const std::string &scope,
+                     const std::string &id) {
+    if (const auto once = model.onceBand(scope, id); !once.empty()) return qtext(once);
+    if (model.persistentImage(scope, id)) return QObject::tr("persistent");
+    return {};
+}
+
 void addLoopElementBands(QGraphicsScene &scene, const GraphCanvasModel &model,
                          GraphCanvasDrawing::Builder &drawing, const QString &scope,
                          bool zone) {
     if (scope.isEmpty() || !model.isLoopBodyScope(scope.toStdString())) return;
-    std::vector<QGraphicsItem *> passes;
+    std::vector<std::pair<QGraphicsItem *, QString>> bands;
     for (QGraphicsItem *item : scene.items()) {
         if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem}) continue;
         if (item->data(GraphCanvasScopeRole).toString() != scope) continue;
         if (item->data(GraphCanvasZoneScopeRole).toString().isEmpty() == zone) continue;
-        const auto id = item->data(NodeGraphNameRole).toString();
-        if (model.loopElementRead(scope.toStdString(), id.toStdString()) ==
-            GraphCanvasLoopElementRead::in_loop)
-            passes.push_back(item);
+        const auto id = item->data(NodeGraphNameRole).toString().toStdString();
+        QStringList parts;
+        if (model.loopElementRead(scope.toStdString(), id) == GraphCanvasLoopElementRead::in_loop)
+            parts.push_back(QObject::tr("reads element"));
+        if (const auto band = scheduleBand(model, scope.toStdString(), id); !band.isEmpty())
+            parts.push_back(band);
+        if (!parts.isEmpty()) bands.emplace_back(item, parts.join(QStringLiteral(" · ")));
     }
-    for (QGraphicsItem *item : passes)
-        drawing.addLayerBand(*item, item->data(NodeGraphNameRole).toString(),
-                             QObject::tr("reads element"));
+    for (const auto &[item, text] : bands)
+        drawing.addLayerBand(*item, item->data(NodeGraphNameRole).toString(), text);
 }
 
 } // namespace
@@ -1380,6 +1391,8 @@ std::map<std::string, std::string, std::less<>> graphCanvasVoiceBands(const nloh
 QString GraphCanvasScene::layerBandText(const std::string &id) const {
     if (model_ == nullptr) return {};
     QStringList parts;
+    // PS-1s, decisions 2 and 3: once, persistent.
+    if (const auto band = scheduleBand(*model_, {}, id); !band.isEmpty()) parts.push_back(band);
     if (const auto band = model_->layerBand(id); !band.empty()) parts.push_back(qtext(band));
     // UX-6b, decision 4: what the plan says the node's passes do for nothing.
     for (const auto &note : model_->planNotes(id))
@@ -4868,6 +4881,8 @@ struct GraphCanvasWidget::Impl {
     QLabel *perf_delta = nullptr;
     QLabel *plan_notes = nullptr;
     QAction *add_loop_action = nullptr;
+    // PS-1s, decision 4: rerun_once {} -- every pass that runs once.
+    QAction *recompute_once_action = nullptr;
     QAction *add_fullscreen_action = nullptr;
     // Q-19, decision 4: "Rename definition…" and "Delete definition", and
     // the row they open under the scope controls -- the new name, or the
@@ -5238,6 +5253,31 @@ struct GraphCanvasWidget::Impl {
             QObject::connect(action, &QAction::changed, button,
                              [button, action] { button->setEnabled(action->isEnabled()); });
             button->setEnabled(action->isEnabled());
+        }
+        // PS-1s, decision 4: every pass that runs once runs again on the
+        // next frame (rerun_once {}). Named, and a button in the row.
+        recompute_once_action = new QAction(QObject::tr("Recompute all once passes"), &view);
+        recompute_once_action->setObjectName(QStringLiteral("pelican.graphCanvas.recomputeOnce"));
+        recompute_once_action->setToolTip(
+            QObject::tr("Run every pass that runs once again on the next frame"));
+        recompute_once_action->setEnabled(false);
+        view.addAction(recompute_once_action);
+        QObject::connect(recompute_once_action, &QAction::triggered, &view, [this] {
+            if (model.rerunOnce({}, {})) dispatch();
+        });
+        {
+            auto *button = new QPushButton(QObject::tr("Recompute once"), &view);
+            button->setObjectName(recompute_once_action->objectName() + QStringLiteral("Button"));
+            button->setToolTip(recompute_once_action->toolTip());
+            controls->insertWidget(controls->count() - 1, button);
+            QObject::connect(button, &QPushButton::clicked, recompute_once_action,
+                             &QAction::trigger);
+            QObject::connect(recompute_once_action, &QAction::changed, button, [this, button] {
+                button->setEnabled(recompute_once_action->isEnabled());
+                button->setVisible(recompute_once_action->isEnabled());
+            });
+            button->setEnabled(false);
+            button->setVisible(false);
         }
         tie_action = new QAction(QObject::tr("Tie together"), &view);
         tie_action->setObjectName(
@@ -6144,6 +6184,9 @@ struct GraphCanvasWidget::Impl {
                 transport = graph.requestShaderInterface(
                     qtext(request.params.value("reference", std::string{})),
                     request.params.value("refresh", false), &error);
+            else if (request.method == "rerun_once" && graph.requestRerunOnce)
+                transport = graph.requestRerunOnce(
+                    qtext(request.params.value("node", std::string{})), &error);
             else if (request.method == "get_render_authoring_context" &&
                      graph.requestRenderAuthoringContext)
                 transport = graph.requestRenderAuthoringContext(&error);
@@ -7540,6 +7583,14 @@ struct GraphCanvasWidget::Impl {
         row(QObject::tr("id"), qtext(found->id));
         row(QObject::tr("sink"),
             found->sink ? QObject::tr("yes") : QObject::tr("no"));
+        // PS-1s, decision 3: when a node that runs once last ran.
+        if (const auto run = model.onceRun(scope, found->id))
+            row(QObject::tr("once"),
+                run->generation
+                    ? QObject::tr("ran in generation %1 · frame %2")
+                          .arg(*run->generation)
+                          .arg(run->frame ? QString::number(*run->frame) : QStringLiteral("?"))
+                    : QObject::tr("not run yet"));
         if (!found->definition.empty())
             row(QObject::tr(found->loop ? "body" : "definition"), qtext(found->definition));
         if (found->refused)
@@ -7678,6 +7729,7 @@ struct GraphCanvasWidget::Impl {
         undo_action->setEnabled(history_available && scene->canUndoAny());
         redo_action->setEnabled(history_available && scene->canRedoAny());
         add_loop_action->setEnabled(model.canEdit() && model.currentScope().empty());
+        recompute_once_action->setEnabled(model.connected() && model.planHasOncePasses());
         // UX-6b: Add follows the same tick as Add loop. Set only when the
         // details were drawn, it stayed on through the document read that
         // follows a commit, while Add loop -- fired right after it -- was off.

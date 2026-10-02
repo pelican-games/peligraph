@@ -667,8 +667,25 @@ struct GraphCanvasPlanPass {
     // LC-1: its shader reads pelican_loop_element() / _count()
     // (get_frame_plan's reads_loop_index).
     bool reads_loop_index = false;
+    // PS-1s (engine PS-1): `schedule: "once"`, and when it last ran -- the
+    // runtime generation and the logical frame; empty before it has.
+    bool once = false;
+    std::optional<std::uint64_t> last_run_generation;
+    std::optional<std::uint64_t> last_run_frame;
 
     bool operator==(const GraphCanvasPlanPass &) const = default;
+};
+
+// PS-1s, decision 3: what the plan says of a once node's passes (all of a
+// loop body node's copies): the latest generation and frame any of them ran
+// in, empty while none has run.
+struct GraphCanvasOnceRun {
+    std::optional<std::uint64_t> generation;
+    std::optional<std::uint64_t> frame;
+    // How many of the plan's passes the node made run once.
+    std::size_t passes = 0;
+
+    bool operator==(const GraphCanvasOnceRun &) const = default;
 };
 
 // LC-1s, decision 2: whether a pass node's shader reads the loop element, as
@@ -931,6 +948,8 @@ class GraphCanvasModel {
         // UX-5b: get_engine_shaders (EL-4b), asked only when a shader list
         // is opened -- the engine compiles its shaders to answer it.
         EngineShaders,
+        // PS-1s, decision 4: rerun_once {node?}.
+        RerunOnce,
     };
     struct PendingRequest {
         std::uint64_t id = 0;
@@ -1150,6 +1169,19 @@ class GraphCanvasModel {
     int plan_retry_budget_ = 0;
     bool plan_retry_wanted_ = false;
     static constexpr int planRetryLimit = 40;
+    // PS-1s, decision 4: after rerun_once, the plan is read again on the
+    // clock until a pass it scheduled says it ran later than it had (by name:
+    // the frame it had last run in, 0 for never), at most this many times.
+    int once_follow_reads_ = 0;
+    std::map<std::string, std::uint64_t, std::less<>> once_follow_from_;
+    static constexpr int onceFollowLimit = 40;
+    // The node the rerun_once in flight was about ("" for every once node).
+    std::string once_rerun_node_;
+    // Decision 2: what the next commit says in place of "Graph change saved."
+    // (one sentence: the notice shows its first).
+    std::string saved_note_;
+    void receiveRerunOnce(const nlohmann::json &response);
+    void receiveRerunOnceRefusal(const std::string &message);
     // GL-1: how many more times a plan that failed, while none has arrived
     // yet, is asked for -- two minutes of polls.
     int plan_wait_budget_ = 0;
@@ -1302,6 +1334,10 @@ class GraphCanvasModel {
     [[nodiscard]] std::vector<GraphCanvasFoldedNode> rootFoldedNodes() const;
     [[nodiscard]] std::vector<GraphCanvasFoldedNode> featurePassNodes(std::string_view feature) const;
     [[nodiscard]] const GraphCanvasPlanPass *planPass(std::string_view name) const;
+    // The plan's passes a node of `scope` made: a root node's, or a body
+    // node's copies (as loopElementRead finds them).
+    [[nodiscard]] std::vector<const GraphCanvasPlanPass *>
+    planPassesMadeBy(std::string_view scope, std::string_view node) const;
     // The document a step shows; false when the plan (or the templates) no
     // longer holds what it names.
     [[nodiscard]] bool foldedDocument(const GraphCanvasFoldedStep &step, nlohmann::json &nodes,
@@ -1413,7 +1449,7 @@ class GraphCanvasModel {
     [[nodiscard]] bool pollWanted() const noexcept {
         if (!connected_) return false;
         return !catalog_requested_ || live_ || (!pending_ && !ticket_.empty()) ||
-               plan_retry_wanted_;
+               plan_retry_wanted_ || once_follow_reads_ > 0;
     }
 
     std::vector<InspectorRpcRequest> takeRpcRequests();
@@ -2357,6 +2393,46 @@ class GraphCanvasModel {
     // contract's combination that holds the new one. False when nothing
     // changed or no edit can go out.
     bool setImageFormat(std::string_view scope, const std::string &node, const std::string &format);
+
+    // --- PS-1s (engine PS-1): passes that run once, images that are kept.
+
+    // Decision 1. A pass's or task's `schedule`: "per_frame" (also when the
+    // key is absent), "once", or -- a render.compute only -- "per_view".
+    // Empty for a node that has none to choose.
+    [[nodiscard]] std::string nodeSchedule(std::string_view scope, std::string_view node) const;
+    // The images the pass writes (a port with access write / read_write or an
+    // attachment, followed through the passes that hand them on) that are
+    // render.image nodes of `scope` without `lifetime: "persistent"`.
+    [[nodiscard]] std::vector<std::string> transientImagesWrittenBy(std::string_view scope,
+                                                                    std::string_view node) const;
+    // One edit (one Undo step): the schedule ("per_frame" leaves the key
+    // out), and -- decision 2 -- for "once" every transient image it writes
+    // made Persistent, which the saved notice then says in one line.
+    bool setNodeSchedule(std::string_view scope, const std::string &node,
+                         const std::string &schedule);
+    // The loop's "Run the body once": true when every pass and task of its
+    // bodies runs once, false when one does not; empty for bodies with none.
+    [[nodiscard]] std::optional<bool> loopBodyOnce(std::string_view loop) const;
+    // One edit over every pass and task of the loop's bodies, as
+    // setNodeSchedule for each.
+    bool setLoopBodyOnce(const std::string &loop, bool once);
+    // Decision 3. What the plan says of a once node's passes; empty when the
+    // document does not run it once.
+    [[nodiscard]] std::optional<GraphCanvasOnceRun> onceRun(std::string_view scope,
+                                                            std::string_view node) const;
+    // Its band: `once · ran gen N`, `once · not run yet`; empty for a node
+    // that runs every frame.
+    [[nodiscard]] std::string onceBand(std::string_view scope, std::string_view node) const;
+    // Decision 2: a render.image with `lifetime: "persistent"` (its band
+    // says `persistent`).
+    [[nodiscard]] bool persistentImage(std::string_view scope, std::string_view node) const;
+    // Decision 4. rerun_once {node} (empty: every once node); a node of a
+    // loop's body asks for its loop, whose copies the plan has. The plan is
+    // read again until the scheduled passes say they ran.
+    bool rerunOnce(std::string_view scope, const std::string &node);
+    // Whether the plan has a once pass at all (Recompute all once passes).
+    [[nodiscard]] bool planHasOncePasses() const;
+
     // Decision 2. The images a fullscreen template's inputs are filled
     // from, in `scope`, `node` itself left out: each image by its id, with
     // the end of the pass that writes it (its output of the socket's name)

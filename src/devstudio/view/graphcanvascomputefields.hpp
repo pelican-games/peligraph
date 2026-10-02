@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../model/graphcanvasmodel.hpp"
+#include "graphcanvasrenderfields.hpp"
 
 #include <QWidget>
 
@@ -47,6 +48,9 @@ class GraphCanvasComputeFields final : public QWidget {
     QComboBox *shader_ = nullptr;
     QLabel *status_ = nullptr;
     QPushButton *copy_ = nullptr;
+    // PS-1s, decisions 1, 3 and 4: Every frame / Every view / Once, and
+    // Recompute (`pelican.graphCanvasCompute.schedule` / `.recompute`).
+    GraphCanvasScheduleRow *schedule_ = nullptr;
 };
 
 } // namespace PelicanStudio

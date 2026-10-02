@@ -3932,3 +3932,188 @@ TEST_CASE("UX-8 decision 9: sounds are copied into assets/audio, _2 beside a nam
                                                     "project://assets/audio/pulse_2.wav"});
     std::filesystem::remove_all(root);
 }
+
+// --- PS-1s (engine PS-1): passes that run once, images that are kept.
+
+namespace {
+
+// A loop over a body whose one pass draws into an image of the body's own.
+struct Ps1sLoopHarness : GraphHistoryHarness {
+    Ps1sLoopHarness() {
+        client.catalog_reply = ux8Catalog();
+        auto image = ux8Document().at("nodes").at(1);
+        image["id"] = "blur__color";
+        auto pass = ux8Document().at("nodes").at(2);
+        pass["id"] = "blur";
+        pass["inputs"]["color"]["node"] = "blur__color";
+        document = {{"schema", "pelican.graph"},
+                    {"version", 1},
+                    {"outputs", Json::object()},
+                    {"nodes", Json::array({{{"id", "blur_loop"},
+                                            {"op", "graph.loop"},
+                                            {"parameters",
+                                             {{"over", {{"range", {{"count", 2}}}}},
+                                              {"branches", Json::array({{{"body", "blur_body"}}})}}},
+                                            {"outputs", Json::array()}}})},
+                    {"definitions",
+                     {{"blur_body",
+                       {{"nodes", Json::array({image, pass})}, {"outputs", Json::object()}}}}}};
+    }
+};
+
+} // namespace
+
+// Decisions 1 and 2: Schedule = Once is one edit with the images the pass
+// writes made Persistent, said in one line; back to Every frame takes only
+// the schedule out. A loop's "Run the body once" is the same over its body.
+TEST_CASE("PS-1s Once keeps what the pass writes in the same edit, for a pass and a loop's body",
+          "[studio][graph-canvas][ps1s]") {
+    SECTION("a pass") {
+        Ux8Harness h;
+        h.open();
+        h.report();
+        auto &model = h.client.model;
+        CHECK(model.nodeSchedule({}, "shade") == "per_frame");
+        CHECK(model.nodeSchedule({}, "shade__color").empty());
+        CHECK(model.transientImagesWrittenBy({}, "shade") == std::vector<std::string>{"shade__color"});
+        // Every view is a task's.
+        CHECK_FALSE(model.setNodeSchedule({}, "shade", "per_view"));
+        REQUIRE(model.setNodeSchedule({}, "shade", "once"));
+        h.commitAndReport();
+        REQUIRE(h.last_ops.size() == 2);
+        CHECK(h.last_ops[0].at("node") == "shade");
+        CHECK(h.last_ops[0].at("parameters").at("schedule") == "once");
+        CHECK(h.last_ops[1].at("node") == "shade__color");
+        CHECK(h.last_ops[1].at("parameters").at("lifetime") == "persistent");
+        CHECK(model.notice().message ==
+              "Saved; shade__color made Persistent: what a once pass writes is kept.");
+        CHECK(model.persistentImage({}, "shade__color"));
+        CHECK(model.transientImagesWrittenBy({}, "shade").empty());
+        h.partitions();
+        // Every frame again: the schedule goes, the image stays as it is.
+        REQUIRE(model.setNodeSchedule({}, "shade", "per_frame"));
+        h.commitAndReport();
+        REQUIRE(h.last_ops.size() == 1);
+        CHECK_FALSE(h.last_ops[0].at("parameters").contains("schedule"));
+        CHECK(model.notice().message == "Graph change saved.");
+        CHECK(model.persistentImage({}, "shade__color"));
+    }
+    SECTION("a loop's body") {
+        Ps1sLoopHarness h;
+        h.open();
+        auto &model = h.client.model;
+        CHECK(model.loopBodyOnce("blur_loop") == std::optional<bool>{false});
+        REQUIRE(model.setLoopBodyOnce("blur_loop", true));
+        h.commit();
+        REQUIRE(h.last_ops.size() == 2);
+        CHECK(h.last_ops[0].at("scope") == "blur_body");
+        CHECK(h.last_ops[0].at("parameters").at("schedule") == "once");
+        CHECK(h.last_ops[1].at("node") == "blur__color");
+        CHECK(h.last_ops[1].at("parameters").at("lifetime") == "persistent");
+        CHECK(model.loopBodyOnce("blur_loop") == std::optional<bool>{true});
+        CHECK(model.persistentImage("blur_body", "blur__color"));
+        REQUIRE(model.setLoopBodyOnce("blur_loop", false));
+        h.commit();
+        REQUIRE(h.last_ops.size() == 1);
+        CHECK_FALSE(h.last_ops[0].at("parameters").contains("schedule"));
+        CHECK(model.loopBodyOnce("blur_loop") == std::optional<bool>{false});
+    }
+}
+
+// Decisions 3 and 4: a once node's band says the generation it last ran in
+// (a body node's: its copies'), Recompute asks rerun_once for it (a body
+// node: for its loop; nothing named: every once node), and the plan is read
+// again until it says the pass ran after the press.
+TEST_CASE("PS-1s a once node says when it last ran, and Recompute asks rerun_once and follows it",
+          "[studio][graph-canvas][ps1s]") {
+    Harness h;
+    auto document = gl2bDocument();
+    document["nodes"][0]["parameters"]["schedule"] = "once";
+    // Every render node has its pass in the plan (sky is switched off): the
+    // plan is not read again for one missing.
+    document["nodes"].erase(1);
+    document["definitions"]["cascade"]["nodes"][0] = {
+        {"id", "depth"}, {"op", "render.fullscreen"},
+        {"parameters", {{"schedule", "once"}}}, {"outputs", Json::array({"color"})}};
+    h.open(document);
+    const auto ran = [](Json plan, const std::string &name, Json generation, Json frame) {
+        for (auto &node : plan["nodes"])
+            if (node.at("name") == name) {
+                node["schedule"] = "once";
+                node["last_run_generation"] = generation;
+                node["last_run_frame"] = frame;
+            }
+        return plan;
+    };
+    auto plan = ran(gl2bPlan(), "tint", nullptr, nullptr);
+    plan = ran(plan, "cascades/1/depth", 3, 118);
+    plan = ran(plan, "cascades/2/depth", 3, 119);
+    // Every pass says what its shader declares: the plan is not read again
+    // for a pass that has not said it yet.
+    for (auto &node : plan["nodes"])
+        node["pass_inputs"] = {{"state", "declared"}, {"declarations", Json::array()}};
+    h.reply(h.take("get_frame_plan"), plan);
+    auto &model = h.model;
+    CHECK(model.onceBand({}, "tint") == "once \xC2\xB7 not run yet");
+    CHECK(model.onceBand({}, "left").empty());
+    const auto body = model.onceRun("cascade", "depth");
+    REQUIRE(body);
+    CHECK(body->passes == 2);
+    CHECK(body->generation == std::optional<std::uint64_t>{3});
+    CHECK(body->frame == std::optional<std::uint64_t>{119});
+    CHECK(model.planHasOncePasses());
+    plan = ran(plan, "tint", 3, 120);
+    model.refresh();
+    h.reply(h.take("get_graph_instances"), document);
+    h.reply(h.take("get_frame_plan"), plan);
+    CHECK(model.onceBand({}, "tint") == "once \xC2\xB7 ran gen 3");
+    CHECK(model.onceRun({}, "tint")->frame == std::optional<std::uint64_t>{120});
+
+    REQUIRE(model.rerunOnce({}, "tint"));
+    auto rerun = h.take("rerun_once");
+    CHECK(rerun.params == Json{{"node", "tint"}});
+    h.reply(rerun, {{"scheduled", Json::array({"tint"})}});
+    CHECK(model.notice().message == "Recompute: 1 once pass runs again on the next frame.");
+    // The plan is read on the clock; one that has not run it yet is read
+    // again, one that has ends it.
+    REQUIRE(model.pollWanted());
+    model.poll();
+    h.reply(h.take("get_frame_plan"), plan);
+    model.poll();
+    h.reply(h.take("get_frame_plan"), ran(plan, "tint", 3, 124));
+    CHECK(model.onceRun({}, "tint")->frame == std::optional<std::uint64_t>{124});
+    CHECK_FALSE(model.pollWanted());
+
+    // A body node is no node of the plan: its loop is asked for.
+    REQUIRE(model.rerunOnce("cascade", "depth"));
+    CHECK(h.take("rerun_once").params == Json{{"node", "cascades"}});
+    REQUIRE(model.rerunOnce({}, {}));
+    CHECK(h.take("rerun_once").params == Json::object());
+    // A node the plan does not have: the engine's invalid params, said as a
+    // sentence.
+    REQUIRE(model.rerunOnce({}, "ghost"));
+    model.receiveRpcFailure(
+        h.take("rerun_once").request_id,
+        "RPC -32602: rerun_once node names no node of the frame plan: ghost");
+    CHECK(model.notice().kind == InspectorNoticeKind::Error);
+    CHECK(model.notice().message ==
+          "ghost is not in the frame plan: there is nothing of it to recompute (node_unknown).");
+}
+
+// Decision 5: the engine's two refusals of a once pass, as sentences.
+TEST_CASE("PS-1s a once pass's refusals read as sentences", "[studio][graph-canvas][ps1s][refusal]") {
+    using PelicanStudio::graphLoopRefusalDescription;
+    using PelicanStudio::knownRefusalDescription;
+    const std::string writes =
+        "h0 runs once but writes h0__color, which is not kept between frames \xE2\x80\x94 make it "
+        "Persistent (graph.once_writes_transient@1).";
+    CHECK(graphLoopRefusalDescription({{"code", "graph.once_writes_transient@1"},
+                                       {"node", "h0"}, {"resource", "h0__color"}}) == writes);
+    CHECK(knownRefusalDescription("invalid_graph_document",
+                                  "graph.once_writes_transient@1 {\"node\":\"h0\",\"resource\":"
+                                  "\"h0__color\"}") == writes);
+    CHECK(graphLoopRefusalDescription({{"code", "graph.once_reads_per_frame@1"},
+                                       {"node", "h0"}, {"input", "input0"}}) ==
+          "h0 runs once but reads input0, which changes every frame \xE2\x80\x94 it would freeze "
+          "at the first value (graph.once_reads_per_frame@1).");
+}

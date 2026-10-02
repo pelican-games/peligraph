@@ -71,6 +71,15 @@ GraphCanvasComputeFields::GraphCanvasComputeFields(GraphCanvasModel &model,
     });
     status_row->addWidget(copy_, 0, Qt::AlignTop);
     layout->addLayout(status_row);
+    schedule_ = new GraphCanvasScheduleRow(
+        model_, QStringLiteral("pelican.graphCanvasCompute"),
+        [this] {
+            if (submitted_) submitted_();
+        },
+        this);
+    auto *schedule_caption = new QLabel(tr("Schedule"), this);
+    schedule_caption->setFont(studioSmallFont());
+    form->addRow(schedule_caption, schedule_);
     status_->hide();
     copy_->hide();
     hide();
@@ -102,11 +111,16 @@ void GraphCanvasComputeFields::showNode(const GraphCanvasNode *node, const std::
         shown_ = shown;
         load(reference);
     }
+    // PS-1s: when it last ran comes with the plan, not the document.
+    schedule_->showNode(scope_, node_);
     followEditable();
     show();
 }
 
-void GraphCanvasComputeFields::followEditable() { shader_->setEnabled(model_.canEdit()); }
+void GraphCanvasComputeFields::followEditable() {
+    shader_->setEnabled(model_.canEdit());
+    schedule_->followEditable();
+}
 
 void GraphCanvasComputeFields::load(const std::string &reference) {
     {

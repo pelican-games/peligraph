@@ -70,6 +70,37 @@ class GraphCanvasHeldEdits {
                                                        std::string node, nlohmann::json base,
                                                        nlohmann::json changed);
 
+// PS-1s, decisions 1, 3 and 4 (engine PS-1): when a fullscreen / raster pass
+// or a compute task runs -- Every frame, Once (and a task's Every view) --
+// with, for one that runs once, when it last ran (the frame plan's
+// last_run_generation / last_run_frame) and Recompute (rerun_once). Named
+// `<prefix>.schedule` / `.onceRun` / `.recompute`. Once is one edit that
+// also makes Persistent each transient image the pass writes.
+class GraphCanvasScheduleRow final : public QWidget {
+  public:
+    GraphCanvasScheduleRow(GraphCanvasModel &model, const QString &prefix,
+                           std::function<void()> submitted, QWidget *parent = nullptr);
+    void showNode(const std::string &scope, const std::string &node);
+    void followEditable();
+    [[nodiscard]] bool valuePending() const noexcept { return held_->pending(); }
+    void setPendingChanged(std::function<void()> changed) {
+        held_->setChanged(std::move(changed));
+    }
+
+  private:
+    void commit();
+    void recompute();
+
+    GraphCanvasModel &model_;
+    std::function<void()> submitted_;
+    std::string scope_;
+    std::string node_;
+    QComboBox *schedule_ = nullptr;
+    QLabel *run_ = nullptr;
+    QPushButton *recompute_ = nullptr;
+    std::unique_ptr<GraphCanvasHeldEdits> held_;
+};
+
 // UX-2, decision 1: the fields of the selected render.image, beside the Graph
 // tab's canvas above the details (as the Loop, Draw and View fields). Every
 // value is picked, none typed as JSON:
@@ -144,7 +175,10 @@ class GraphCanvasImageFields final : public QWidget {
     QLineEdit *layers_expression_ = nullptr;
     QLineEdit *mip_levels_expression_ = nullptr;
     // UX-7, decision 6: `history: true`, named `pelican.graphCanvasImage.history`.
-    QCheckBox *history_ = nullptr;
+    QCheckBox *history_ = nullptr;    // PS-1s, decision 2: `lifetime` -- Per frame (the key left out) or
+    // Persistent, named `pelican.graphCanvasImage.lifetime`.
+    QComboBox *lifetime_ = nullptr;
+
     QLabel *note_ = nullptr;
     // UX-5d, decision 1: the size as an expression ({"$expr": ...}), behind
     // the f button as the loop's Count is -- extent_scale for a screen-sized
@@ -234,7 +268,9 @@ class GraphCanvasPassFields final : public QWidget {
     QLabel *ports_ = nullptr;
     // LC-1s, decision 2: one line when the frame plan says the pass's shader
     // reads the loop element (`pelican.graphCanvasPass.loopElement`).
-    QLabel *loop_element_ = nullptr;
+    QLabel *loop_element_ = nullptr;    // PS-1s, decisions 1, 3 and 4: the pass's Schedule.
+    GraphCanvasScheduleRow *schedule_ = nullptr;
+
     void showLoopElementRead();
     // Named `pelican.graphCanvasPass.input.<port>.filter` / `.address` /
     // `.mip`; a setting the socket cannot take is there, off, saying why.
@@ -301,7 +337,8 @@ class GraphCanvasPassFields final : public QWidget {
     // Whether a value given while the model was busy waits to be sent; the
     // owner's notice says "Saving" meanwhile, not the last save's words.
     [[nodiscard]] bool valuePending() const noexcept {
-        return static_cast<bool>(retry_) || held_->pending();
+        return static_cast<bool>(retry_) || held_->pending() ||
+               (schedule_ != nullptr && schedule_->valuePending());
     }
     // Called when that changes.
     void setPendingChanged(std::function<void()> changed) {
