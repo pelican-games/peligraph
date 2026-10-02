@@ -42,7 +42,7 @@ engine が開く文書の `(schema, version)` は、**その engine に移行の
 
 | schema | version | parser | 備考 |
 |---|---|---|---|
-| `pelican.project` | 1 | `src/project/projectformat.cpp` | `project.json`。`engine_min_version` と `requires` を持つ。MG-1 で記録だけの `saved_by_engine` を足した(version は 1 のまま。MG-1 より前の player もこの key 入りで開けることを実物で確認) |
+| `pelican.project` | 1 | `src/project/projectformat.cpp` | `project.json`。`engine_min_version` と `requires` を持つ。MG-1 で記録だけの `saved_by_engine` を足した(version は 1 のまま。MG-1 より前の player もこの key 入りで開けることを実物で確認)。CC-1(`c8367b87`)で `basic_config.camera.up` を撤去し、書いてあれば `project.camera_up_removed@1` で断る(version は 1 のまま、移行の手順は登録していない。変換は `tools/convert_camera_convention.py`。[design_coordinate_convention.md](design_coordinate_convention.md) §4) |
 | `pelican.scene` | 2 | `src/project/sceneformat.cpp` | MG-2b で 1 の読み手を撤去し、2 以外は `pelican.scene.version_unsupported@1`(v1 は prefab キーを受けないことだけが違う版)。出荷 7 本と雛形・devcli の glTF / rules importer・import manifest の `pelican.scene` 出力は 2。SnapshotV1(scene v1 を運ぶ export / import)も撤去 |
 | `pelican.graph` | 1 | `src/project/graphcomposition.cpp` | 共通グラフ。`definitions` / `nodes` / `outputs` と構造の node `graph.instance` / `graph.input` / `graph.loop`(LP-1a。catalog には載らない)。rendering config の root もこれだけ(§1.6) |
 | `pelican.value_graph` | 1 | `src/core/userpublic/valuegraph.cpp` | **内部 IR + test 面**。外部契約ではない(§2 行 1) |
@@ -453,6 +453,8 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | draw-loop の表の登録簿の静的破棄の順序 | `cf40ec93` |
 | TI-1 test の CRT assert を stderr と終了へ | `3483aba1` |
 | RD-1b `restore_render_documents` の作成と削除 | `6c77d4f8` |
+| CC-1 座標の規約(画面を world の鏡像でなくす、camera は −Z・up は回転から、面の表は反時計回り、`basic_config.camera.up` の撤去と変換の script) | `c8367b87` |
+| CC-2 raster pass の `clip_y` と `pelican_ndc_to_uv` / `pelican_uv_to_ndc` | `1501685a` |
 
 ## 6. v0.1.0 tag の手順
 

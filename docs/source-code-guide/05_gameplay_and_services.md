@@ -305,7 +305,7 @@ GP-4 の [`rayThroughPixel()`](../../src/core/renderer/camera.cpp#L434) は、fr
 
 `RenderContext::setCamera(name)`(`ctx.render().setCamera`)は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L534) を呼び、以後そのcameraのpose/projectionをactiveにします。
 
-このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L90)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L409) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L330)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L486) を通るため、このフラグの影響を受けません。
+このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L90)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L409) と CC-1 で足された [`Camera::setRotation()`](../../src/core/renderer/camera.cpp#L423)(回転から dir と up を `cameraBasis()` で作る)がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L330)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L486) を通るため、このフラグの影響を受けません。
 
 ### controller
 
@@ -320,28 +320,27 @@ controllerは名前bindingからtarget transformを毎回resolveし、scene遷�
 
 controller の鍵を読むのは camera codec の `decodeController()` で、どの type がどの鍵を読み、どれが必須かは ✅SC-1 から component の schema にも載ります(§3.11 の「別の field の値で読まれる field」、manual [第4章](../manual/04_scene_ecs.md) §4.2 の camera の項)。damping は codec がどの type でも読みますが、system が使うのは orbit と follow だけです。
 
-> 🧩 **難所 — +Z 前方と project up から基底を作る**([`rotationFromPose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L180))
+> 🧩 **難所 — −Z 前方の基底と、yaw / pitch だけが +Z を基準にしている所**([`rotationFromPose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L180))
 >
-> **何をする所か**: controller が作った `CameraPose`(pos / dir / up)を、scene object の transform へ書き戻すための四元数へ変換します。直交化してから `glm::quat_cast`(回転行列から四元数を復元する glm の関数)へ渡す 4 行です。
+> **何をする所か**: controller が作った `CameraPose`(pos / dir / up)を、scene object の transform へ書き戻すための四元数へ変換します。直交化してから [`cameraRotation()`](../../src/core/renderer/clipspace.hpp#L85)(`clipspace.hpp`。中で `glm::quat_cast` = 回転行列から四元数を復元する glm の関数を呼ぶ)へ渡す 6 行です。
 >
-> **素朴に読むと**: `right = cross(pose.up, dir)` の順が `glm::lookAt` の慣習と逆で、しかも `up` を `cross(dir, right)` で作り直しています。前提は **このエンジンのカメラは local +Z が前**であること — ECS 側の [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) も `rotation * vec3{0,0,1}` を dir にしています。一方、world の上方向は固定 +Y ではなく `basic_config.camera.up` です。[`directionFromYawPitch()`](../../src/core/userpublic/cameracontrollersystem.cpp#L131) は、宣言 up に直交する面へ canonical +Z を射影して forward を作り、`right = cross(up, forward)` と合わせて yaw/pitch 基底にします。逆変換も固定の `atan2(x,z)` / `asin(y)` ではなく、この基底との内積から求めます。宣言 up が +Y なら従来の +Z forward / +X right と同じ式になります。
+> **素朴に読むと**: ✅CC-1(`c8367b87`)から、このエンジンの camera は glTF と同じく **local −Z が前、local +Y が上**です。ECS 側の [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) は transform の回転を `Camera::setRotation()` に渡し、[`cameraBasis()`](../../src/core/renderer/clipspace.hpp#L74) が dir = R·(0,0,−1)、up = R·(0,1,0)、right = R·(1,0,0) を作ります。world の上方向は [`projectWorldUp()`](../../src/core/userpublic/cameracontrollersystem.cpp#L70) が返す固定の +Y です(関数名は CC-1 より前に `basic_config.camera.up` を読んでいた名残)。外積は `right = cross(dir, up)`、`up = cross(right, dir)` の順で、`glm::lookAt` と同じ巡回順です。読み違えやすいのは、**orbit の yaw / pitch の基底だけは canonical +Z を forward にしたまま**な所です。[`yawPitchBasis()`](../../src/core/userpublic/cameracontrollersystem.cpp#L104) は forward = +Z、right = `cross(forward, up)` = **−X** を作り(+Z を向いた camera の画面の右は −X)、[`directionFromYawPitch()`](../../src/core/userpublic/cameracontrollersystem.cpp#L131) は「target から camera への方向」をこの基底で作ります。yaw 0 / pitch 0 は camera が target の +Z 側にいて −Z を向く配置です。
 >
-> 正規直交基底の巡回順は `up × dir = right`、`dir × right = up` です。`glm::lookAt` 系は view 空間の前方が -Z なので `cross(dir, up)` の順で、そこから写すと外積が逆向きになります。厄介なのは**どちらも例外にならず画が出る**ことです。2 本とも反転すれば行列式は +1 のままなので、前方軸まわりに 180° 回った上下逆の回転が返ります。片方だけ直すと行列式 -1 の鏡像行列になり、`quat_cast` は入力が正規直交(各列が長さ 1 で互いに直交)な回転行列である前提で符号を復元するため、返る四元数に意味がなくなります。`up` を作り直すのも同じ系統で、ユーザが与えた `pose.up` が `dir` と直交している保証はなく、そのまま列に置くと非直交な行列を `quat_cast` へ渡して回転が歪みます。
+> 厄介なのは、外積の順や前方軸の符号を取り違えても**例外にならず画が出る**ことです。前方を R·(0,0,+1) と読む(CC-1 より前の規約)と後ろを向いた回転が返り、外積を 2 本とも逆にすると行列式は +1 のまま前方軸まわりに 180° 回った上下逆の回転が返ります。片方だけ逆にすると行列式 −1 の鏡像行列になり、`quat_cast` は入力が正規直交(各列が長さ 1 で互いに直交)な回転行列である前提で符号を復元するため、返る四元数に意味がなくなります。`up` を作り直すのも同じ系統で、`pose.up` が `dir` と直交している保証はなく、そのまま列に置くと非直交な行列を `quat_cast` へ渡して回転が歪みます。
 >
 > **骨子**:
 > ```text
-> glm::mat3{right, up, dir} は列ベクトル 3 本 = 第1列 X基底 / 第2列 Y基底 / 第3列 Z基底
->   dir        = normalizeOr(pose.dir, +Z)             ← 第 3 列が前方
->   up_hint    = worldUpFor(dir)                       ← project up または極点退避軸
->   right_hint = normalizeOr(cross(up_hint, dir), +X)
->   right      = normalizeOr(cross(pose.up, dir), right_hint)
->   up         = normalizeOr(cross(dir, right), up_hint) ← 与えられた up を直交化
-> quat_cast(mat3{right, up, dir})
+>   dir        = normalizeOr(pose.dir, -Z)
+>   up_hint    = worldUpFor(dir)                         ← +Y、ほぼ鉛直なら +Z
+>   right_hint = normalizeOr(cross(dir, up_hint), +X)
+>   right      = normalizeOr(cross(dir, pose.up), right_hint)
+>   up         = normalizeOr(cross(right, dir), up_hint)  ← 与えられた up を直交化
+> cameraRotation(dir, up)  = quat_cast(mat3{right, up, -dir})   ← 第 3 列は「後ろ」
 > ```
 >
-> **手がかり**: `projectWorldUp()` は `ProjectBasicConfig` が既に読み取った `basic_config.camera.up` を正規化します。`worldUpFor()` はその up と dir がほぼ平行(内積の絶対値が 0.98 超)なら、宣言 up と最も平行でない canonical 軸へ退避します。+Y 規約では従来どおり +Z を選びますが、up 自体が +Z の project では +X を選ぶため、退避先まで平行になることはありません。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L117) 経由で orbit / follow が共有し、fly も直接使います。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L486) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
+> **手がかり**: `worldUpFor()` は +Y と dir がほぼ平行(内積の絶対値が 0.98 超)なら、+Y と最も平行でない canonical 軸(+Z)へ退避します。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L117) 経由で orbit / follow が共有し、fly も直接使います。回転を組むのは `cameraRotation()` の 1 か所で、camera bake([`CameraBakeRecorder::recordFrame()`](../../src/core/playback/camerabake.cpp#L95))と起動時の camera の上書き([`applyLaunchCameraOverride()`](../../src/core/playback/launchcameraoverride.cpp#L13))も同じ関数を通ります。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L486) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
 >
-> **不変条件**: 外積の順は `right = cross(up, dir)` / `up = cross(dir, right)`(+Z 前方の巡回順)を保つ。`quat_cast` へ渡す前に必ず直交化する。project up を固定軸へ読み替えず、極点の fallback も宣言 up に対して非平行な軸を選ぶ。
+> **不変条件**: 外積の順は `right = cross(dir, up)` / `up = cross(right, dir)`(−Z 前方の巡回順)を保つ。`quat_cast` へ渡す前に必ず直交化する。回転を組むのは `cameraRotation()`、回転から基底を読むのは `cameraBasis()` に限る(どちらも `clipspace.hpp`)。yaw / pitch の基底(+Z 基準、right は −X)を変えると、保存済みの orbit の `yaw` / `pitch` の意味が変わる。
 
 ## 5.7 Physics
 

@@ -178,7 +178,8 @@ CameraComponent 自体は**マーカー**です。マーカーコンポーネン
 
 - 旧キー `fov_y` / `near` / `far` は移行先を案内する hard error です(WP63)。
 - パラメータを何も書かなければ `basic_config.camera` の既定投影を使います(example の 1 個目のカメラがこの形)。
-- **シーン中で最初に現れた camera の投影がアクティブ**になります。位置・向きは同じオブジェクトの `transform` から取られます(rotation の +Z が視線方向)。
+- **シーン中で最初に現れた camera の投影がアクティブ**になります。位置・向きは同じオブジェクトの `transform` から取られます。**向きは glTF の camera と同じ**で、視線は rotation の −Z(R·(0,0,−1))、画面の上は rotation の +Y(R·(0,1,0))、画面の右は rotation の +X です(✅CC-1、`c8367b87`。[`cameraBasis()`](../../src/core/renderer/clipspace.hpp#L74))。回転なしの camera は −Z を向き、+X が画面の右、+Y が上です。rotation のロール(視線まわりの回転)は絵を回します。CC-1 より前は rotation の +Z が視線で、up は `basic_config.camera.up` から取っていました(撤去。直し方は [第3章 §3.13](03_project_format.md) の「camera の向きの規約の変換」)。
+- glTF の camera を `pelican_cli import gltf --extract-scene` で取り込むと、node の回転がそのまま `transform` に入り([TRS を書く所](../../src/devcli/gltfsceneextract.cpp#L159))、CC-1 からは変換なしで glTF と同じ向きになります(取り込みの経路で絵を比べる test は無く、未確認)。
 - `controller` の種類: `orbit`(`distance` 必須)/ `follow`(`target`・`offset` 必須)/ `fly`(`speed`・`sensitivity` 必須)。controller 付きカメラのオブジェクトは **name 必須**です。`type` は必須で、ほかの値は `value '<値>' is not supported` で拒まれます。
 
 **controller の field(codec の読み。✅SC-1 で component の schema に載りました)。**`controller` は閉じた object で、読む鍵は `type` によって違います([`decodeController()`](../../src/core/loader/componentcodec.cpp#L841))。
@@ -196,7 +197,9 @@ CameraComponent 自体は**マーカー**です。マーカーコンポーネン
 
 - 範囲は codec の検査です。schema の `range` はどれも `[0, 1e12]` で、0 を含むかどうかは載りません。
 - `yaw_degrees` / `pitch_degrees` も受けます(orbit で度として読み、ラジアンに直す)。`yaw` と `yaw_degrees` を両方書くと `UnknownField` の error(`duplicates its radian field`)で拒まれます。schema には別の field として載せていません(SC-1 の codec の注記。`yaw` / `pitch` の別名の扱い)。
-- `up` は鍵として受けますが、codec は値を読みません。schema にも載せていません。
+- `up` の鍵は ✅CC-1(`c8367b87`)で撤去しました。書くと閉じた object の未知の鍵として `UnknownField`(path `camera.controller.up`、`is unknown`)で拒まれます([鍵の一覧](../../src/core/loader/componentcodec.cpp#L844))。controller の world の上は常に +Y です。
+- orbit の `yaw` / `pitch` は、target から camera へ向かう方向です。`yaw = pitch = 0` は +Z(camera は target の +Z 側から −Z を向いて target を見る)、`yaw` が増えると −X 側へ回り、`pitch` が増えると上(+Y)へ上がります([yaw / pitch の基底](../../src/core/userpublic/cameracontrollersystem.cpp#L104))。CC-1 より前の値は、変換の script が同じ方向を指す値に書き換えます([第3章 §3.13](03_project_format.md))。
+- fly の `move` の x は画面の右へ(`kbd:wasd` なら D が右)、y は視線の前へ動きます。`look` の x は視線を画面の右へ、y は画面の下へ向けます([fly の更新](../../src/core/userpublic/cameracontrollersystem.cpp#L331))。
 - `damping` は codec がどの `type` でも読みますが、動かすときに使うのは orbit と follow だけなので、`applies_to` は orbit / follow です(コードの注記。`cameracontrollersystem.cpp`)。
 - Studio の Inspector が欄を作るときに読む schema(`get_components` の `schema.fields[]`)には、この表が `discriminant: "controller.type"`・`applies_to`・`required_for`・`default` の鍵で載ります([条件の表](../../src/core/loader/componentcodec.cpp#L2304))。鍵の意味は [第13章](13_editor.md) §13.5 の「ほかの field の値で読まれ方が変わる field」。test: `componentcodec_test` の [「SC-1 camera controller schema states each type and the fields it reads」](../../test/componentcodec_test.cpp#L593)(各 `type` の最小の controller から、`required_for` の field を抜くと拒まれ、`applies_to` だけの field は書かなければ `default` で読まれ、書けば読まれることを codec で確かめる)。
 
@@ -598,7 +601,7 @@ DECLARE_COMPONENT(MyComponent, 61);   // 0..63 の空き番号(エンジンは 0
 ## 4.6 既知の注意点
 
 - `CameraSystem` は現状、camera コンポーネントを持つ**先頭 1 entity のみ**を処理します。複数カメラを置いた場合の意味論は未規定です(アクティブ投影は「シーン中最初の camera」)。
-- example の `basic_config.camera.up` は `[0,-1,0]`(Y 下向き up)です。自作プロジェクトで座標系に迷ったらここを確認してください。
+- 座標系は world が右手系・+Y 上、camera は回転なしで −Z を向きます(§4.2 の camera、[第6章 §6.1](06_rendering.md) の「座標の規約」)。以前の example は `basic_config.camera.up` を `[0,-1,0]` にしていましたが、この鍵は ✅CC-1(`c8367b87`)で撤去され、example も変換済みです。
 - スケルタルアニメーション(glTF スキン再生)は ✅WP38 で実装済みです(§4.2 の `animation` コンポーネント)。頂点キャッシュ系のアニメーションは従来どおり VAT([第5章](05_assets.md))が担当します。
 
 ## 関連文書

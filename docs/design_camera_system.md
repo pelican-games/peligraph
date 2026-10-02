@@ -49,6 +49,13 @@ transform_seq v2 予約(カメラトラック)。
   上げず追加キーのみで済む想定。ずれる場合は v1.2 として追記)
 - project.json の `basic_config.camera` は「カメラ未定義シーンの既定」として
   存続(意味論変更なし)
+- **向きの規約(2026-10-03 追記、CC-1 `c8367b87`、[design_coordinate_convention.md](design_coordinate_convention.md))**:
+  camera の向きは glTF と同じになった。回転なしの camera は −Z を向き、up は transform の
+  回転の +Y、画面の右は回転の +X(`src/core/renderer/clipspace.hpp` の `cameraBasis`)。
+  `basic_config.camera.up` と controller の `up` の鍵は撤去(書くと
+  `project.camera_up_removed@1` / 未知の鍵)。controller の world の上は +Y 固定。
+  scene に camera が無いときの既定の視点は原点から −Z(以前は +X)。それより前の
+  project は `tools/convert_camera_convention.py` で変換する
 - 入力とカメラ: orbit/fly コントローラは Actions(`move` / `look`、orbit はさらに
   `pan` / `zoom`)を消費する。binding は入力 profile 側で与える
 

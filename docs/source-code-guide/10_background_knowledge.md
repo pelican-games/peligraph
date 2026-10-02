@@ -173,7 +173,7 @@
 - w 除算(パースペクティブ除算)と w ≤ 0 のガード
 - `ndc * 0.5 + 0.5` と、その逆変換の `2 / size`
 - NDC 空間のオフセットは、w を掛けてクリップ空間で足す
-- 画像の行 0 は上端 — CPU ラスタで Y 反転が要る理由
+- 画像の行 0 は上端 — CPU ラスタの Y の向き
 - ピクセル中心は n + 0.5、テクセル中心は (i + 0.5) / size
 - `floor(x + 0.5)` と `round()` は同じ丸めではない
 - ε 比較:絶対誤差・相対誤差・その混合
@@ -1019,13 +1019,15 @@ JSON-RPC 2.0 の request は `{"jsonrpc": "2.0", "method": ..., "params": ..., "
 
 GLM の射影行列生成関数は名前に規約が埋め込まれています。`RH` は右手系のビュー空間(カメラは -Z を向く)、`LH` は左手系。`ZO` は深度出力が **Z**ero-to-**O**ne、`NO` は **N**egative-one-to-**O**ne です。サフィックス無しの `glm::perspective` は `GLM_FORCE_DEPTH_ZERO_TO_ONE` というコンパイル時マクロの有無で `_ZO` / `_NO` に切り替わるため、マクロの定義漏れで深度が壊れる事故が起きやすい箇所です。サフィックス付きの関数を直接呼べばマクロに依存しません。なお GLM の `perspectiveRH_ZO` は `Result[1][1]` が正であり、Y 軸の反転は射影行列側では行われません。
 
-**このリポジトリでは**: `src/core/renderer/camera.cpp` の `rebuildProjectionMatrix()`(473・481 行)と `prepareSceneCameras()` 内の `rebuild` ラムダ(541・548 行ほか)が、透視は `glm::perspectiveRH_ZO(yfov, aspect, znear, zfar)`、平行投影は `glm::orthoRH_ZO(-xmag, xmag, -ymag, ymag, znear, zfar)` とサフィックス付きで呼び分けます。深度 `[0,1]`・右手系という前提は深度バッファ・TAA・preview まで全経路で共有されるため、もしどこか 1 つの翻訳単位で `GLM_FORCE_DEPTH_ZERO_TO_ONE` を定義し忘れると、その TU だけ `glm::perspective` が `[-1,1]` 深度を吐き、include 順に依存して深度クリア/比較が壊れます。サフィックスを明示することでこの規約をマクロから切り離し、`getVPMatrix()`(673 行)の `glm::lookAt`(-Z を向く右手系)とも符号を合わせています。
+**このリポジトリでは**: 射影は [`clipspace.hpp`](../../src/core/renderer/clipspace.hpp#L35) の 3 関数に集めてあります(✅CC-1、`c8367b87`)。`vulkanPerspective(yfov, aspect, znear, zfar)` は `glm::perspectiveRH_ZO`、`vulkanOrtho(...)` は `glm::orthoRH_ZO` をサフィックス付きで呼び、その結果の y 行の符号を反転します(`flipClipY`。`[1][1]` が負になる)。XR の非対称の射影 `vulkanAsymmetric(...)` は成分を自前で書いて同じ反転を掛けます。flat の camera は `camera.cpp` の `cameraProjectionMatrix()` がこれを呼び(`rebuildProjectionMatrix()` と scene camera の `rebuildPreparedProjection()` の両方がここを通る)、editor の preview・spot と directional の影も同じ関数です。深度 `[0,1]`・右手系という前提は深度バッファ・TAA・preview まで全経路で共有されるため、もしどこか 1 つの翻訳単位で `GLM_FORCE_DEPTH_ZERO_TO_ONE` を定義し忘れると、その TU だけ `glm::perspective` が `[-1,1]` 深度を吐き、include 順に依存して深度クリア/比較が壊れます。サフィックスを明示することでこの規約をマクロから切り離し、view の [`viewFromBasis()`](../../src/core/renderer/clipspace.hpp#L94)(`glm::lookAtRH`。−Z を向く右手系)とも符号を合わせています。CC-1 から `[1][1]` が負なので、射影の成分を直接読む code は符号に依らない形にします(例: [clustered_light_select.comp](../../src/core/resources/shaders/compute/clustered_light_select.comp#L82) は `abs(pelicanFrame.projection[1][1])` で読む)。
 
 ### ビューポート変換と「負の height」による Y 反転
 
 NDC からフレームバッファ座標への変換は Vulkan 仕様 "Controlling the Viewport" に式として書かれています。`x_f = (p_x/2)·x_d + o_x`、`y_f = (p_y/2)·y_d + o_y`、`z_f = p_z·z_d + o_z` で、`p_x` = viewport.width、`o_x` = viewport.x + width/2、`p_y` = viewport.height、`o_y` = viewport.y + height/2、`p_z` = maxDepth - minDepth、`o_z` = minDepth です。ここで **height に負の値を入れると y の符号が反転する**というのが VK_KHR_maintenance1(Vulkan 1.1 でコアに昇格)で入った仕様で、「OpenGL 流の Y 上向き NDC をそのまま使うためのトリック」として広く使われています。逆に height を正のままにするなら、NDC の +Y は画面下方向という Vulkan 本来の向きになります。
 
-**このリポジトリでは**: `src/core/vkcore/offscreenframetarget.cpp` の `setViewportAndScissor()`(84 行)と `src/core/vkcore/swapchainframetarget.cpp` のフレーム開始処理(287 行)が、どちらも `viewport.height` に **正の** `extent.height` を、`minDepth=0 / maxDepth=1` を入れます。つまり負 height の Y 反転トリックは使わず、NDC の +Y はフレームバッファ下方向に対応します。この符号は engine 全体の約束事で、`src/core/renderer/projectionjitter.cpp` の `projectionJitterSample()`(69〜70 行コメント)が「positive-height だから CPU/シェーダ/画像の符号が一致する」と明記します。片方のターゲットだけ反転させると、ジッタやピクセルスナップが逆向きに効いて preview と実画面がずれるため、GPU 各ターゲットと CPU ラスタで Y の向きを 1 つに固定しています。
+**このリポジトリでは**: **viewport は正の height のまま、y の反転は camera の射影の中で行います**(✅CC-1、`c8367b87`。[design_coordinate_convention.md](../design_coordinate_convention.md) §2)。`src/core/vkcore/offscreenframetarget.cpp` の `setViewportAndScissor()`(85 行)と `src/core/vkcore/swapchainframetarget.cpp` のフレーム開始処理が、どちらも `viewport.height` に **正の** `extent.height` を、`minDepth=0 / maxDepth=1` を入れます。つまり負 height の Y 反転トリックは使わず、NDC の +Y はフレームバッファ下方向に対応し、clip・NDC・画素・uv はすべて y 下で揃います。例外は利用者が clip を直接書く `raster` pass の `clip_y: "up"`(✅CC-2、`1501685a`)だけで、その pass を描く間だけ負の height の viewport にして戻します([`setClipYViewport()`](../../src/core/vkcore/render_pass_dispatch.cpp#L44))。world(y 上)から画面(y 下)への変換点は射影の 1 か所で、[`vulkanPerspective()`](../../src/core/renderer/clipspace.hpp#L35) などが clip の y を反転します。負の height ではなく射影で反転するのは、NDC と画素と uv の向きを揃えたまま(`uv = ndc * 0.5 + 0.5`)にしておけば、TAA の jitter・velocity・再投影、SSAO、影の参照、gizmo の投影など NDC と画素の対応に依る code を変えずに済むからです(設計 §3.4 の「変えなくてよい所」)。この符号は engine 全体の約束事で、`src/core/renderer/projectionjitter.cpp` の `projectionJitterSample()`(69〜70 行コメント)が「positive-height だから CPU/シェーダ/画像の符号が一致する」と明記します。y の反転は jitter を足す前の射影に入っているので、この約束は CC-1 の前後で変わっていません。片方のターゲットだけ反転させると、ジッタやピクセルスナップが逆向きに効いて preview と実画面がずれるため、GPU 各ターゲットと CPU ラスタで Y の向きを 1 つに固定しています。
+
+CC-1 より前は、射影が y を反転せず viewport の height も正だったので、右手系の world が y 下の画面にそのまま写り、**3D の画面は world の鏡像**でした(+X が画面の左)。鏡に写すと画面上の三角形の巻き方も逆になるので、glTF の表(反時計回り)は画面では時計回りに見え、面の表を時計回りに固定することで cull は正しく働いていました。絵が破綻しないので長く気付かれませんでした([第9章 §9.8](09_black_magic_and_gotchas.md) の「画面は長く world の鏡像だった」)。
 
 ### w 除算(パースペクティブ除算)と w ≤ 0 のガード
 
@@ -1045,11 +1047,11 @@ NDC からフレームバッファ座標への変換は Vulkan 仕様 "Controlli
 
 **このリポジトリでは**: 頂点単位版が `src/core/resources/sprite.vert` の `clip.xy += deltaNdc * clip.w`(53 行)です。最終 NDC を `deltaNdc` だけずらしたいが `gl_Position` は後段で w 除算されるため、先に `clip.w` を掛けておき、除算後にちょうど `deltaNdc` だけ動くようにしています。行列版は `src/core/renderer/projectionjitter.cpp` の `applyProjectionJitter()`(79〜80 行)で、各列の第 4 行(w を作る成分)`projection[column][3]` の `jitter_ndc` 倍を第 0/1 行へ加え、その行列を通る全頂点の `clip.xy` を一括で `jitter*w` ずらします。w を掛けずに直接足すと実ずれが `deltaNdc/w` になり、奥のスプライトほどスナップが弱く近いほど強い深度依存のブレになって pixel perfect も TAA のジッタも崩れます。
 
-### 画像の行 0 は上端 — CPU ラスタで Y 反転が要る理由
+### 画像の行 0 は上端 — CPU ラスタの Y の向き
 
 PNG をはじめ多くのラスタ画像フォーマットは、非インタレース時のスキャンラインを**上から下へ**格納します(PNG 仕様 ISO/IEC 15948)。したがって `pixels[y * width + x]` のような線形バッファでは、y = 0 が画像の上端です。GPU 経由で描く場合はこの対応をビューポート変換が引き受けるので、シェーダ側に反転は現れません。一方、CPU で NDC から直接ピクセルを書き込むコードは、自分の座標系の Y の向きと画像の行方向の対応を明示的に書く必要があります。GPU 経路と CPU 経路で反転の有無が食い違って見えるのは、この責務の置き場所が違うためです。
 
-**このリポジトリでは**: `src/core/vkcore/previewexecutor.cpp` の `raster()`(153 行)が `y = (1.0f - (ndc.y * 0.5f + 0.5f)) * request.height` と明示的に Y を反転して、+Y の NDC を小さい行番号(= PNG の上端)に落とします。続く `encodePng()`(73〜78 行)は行 0 から順にスキャンラインを並べる(各行頭にフィルタバイト 0 を積む)ので、PNG の「上から下」格納と一致します。GPU 経路では正 height のビューポート変換が NDC→ピクセルの Y を引き受けるため `src/core/resources/sprite.vert` に反転は現れません。CPU ラスタにはその変換が無いので自前で反転する必要があり、外すと preview の PNG だけが実画面に対して上下逆さまに出ます。
+**このリポジトリでは**: `src/core/vkcore/previewexecutor.cpp` の `raster()`(154 行)は `y = (ndc.y * 0.5f + 0.5f) * request.height` で、**Y を反転しません**。✅CC-1(`c8367b87`)から射影が clip の y を反転するので、NDC の +y がもう画像の下(大きい行番号)を指しているからです。CC-1 より前は射影が y を反転していなかったので、ここで `1.0f - (...)` と反転していました。続く `encodePng()`(73〜78 行)は行 0 から順にスキャンラインを並べる(各行頭にフィルタバイト 0 を積む)ので、PNG の「上から下」格納と一致します。GPU 経路では正 height のビューポート変換が NDC→ピクセルの Y を引き受けるため `src/core/resources/sprite.vert` に反転は現れません。CPU で NDC から画素を書くコードは、NDC の y の向き(ここでは画像と同じ下向き)を自分で確かめる必要があり、向きを取り違えると preview の PNG だけが実画面に対して上下逆さまに出ます。
 
 ### ピクセル中心は n + 0.5、テクセル中心は (i + 0.5) / size
 
@@ -1143,6 +1145,8 @@ mip レベル m の寸法は `max(1, n >> m)` です(2 で割ることを右シ�
 ビュー行列 V は world → view の変換なので、その逆 `world_from_view = inverse(V)` は view → world、つまり**カメラの姿勢そのもの**です。列優先の 4×4 では、第 0・1・2 列が**ビュー空間の +X / +Y / +Z 軸**を world 座標で表し、第 3 列がカメラ位置になります。右手座標系のカメラは −Z を向くので、第 2 列は「前」ではなく**後ろ向き**であり、視線ベクトルは `-world_from_view[2]` です(この符号の取り違えが、ソートや背面判定が丸ごと反転するよくある原因です)。ビュー行列が直交かつ一様スケールなら、逆行列は回転部の転置 + 平行移動の付け替えで安く求まりますが、素直に `inverse()` を呼んでも意味は同じです。
 
 **使用場所**: [drawQueueSortView()](../../src/core/renderer/polygoninstancecontainer.cpp#L52)(`inverse(view)` の第 2 列を符号反転して正規化し、描画順のソート軸にする)
+
+✅CC-1(`c8367b87`)から、camera の view は transform の回転から作り(前方 R·(0,0,−1)、up R·(0,1,0)。[`viewFromWorld()`](../../src/core/renderer/clipspace.hpp#L100))、`world_from_view` は camera の transform(位置と回転)そのものになりました。XR の `world_from_stage = inverse(active camera の view)` もこれに依っています。CC-1 より前は前方が R·(0,0,+1) で、`world_from_view` は transform と一致しませんでした。
 
 ## 10.7 OpenXR ランタイムの作法
 

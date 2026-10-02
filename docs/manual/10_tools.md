@@ -628,7 +628,7 @@ v0 の engine は手順を 1 本も登録していないので、今日はどの
 DCC 納品物の取り込み。3 つの形があります:
 
 - `import <delivery_dir> --project <dir>` — `pelican.import` manifest の sha256 照合 → asset_data.json へ glb 登録(冪等)
-- `import gltf --extract-scene <glb> ...` — glTF のノード階層を scene v2(`parent` 付き)として抽出(✅WP79。MG-2b から v2 を書く。[第5章](05_assets.md))
+- `import gltf --extract-scene <glb> ...` — glTF のノード階層を scene v2(`parent` 付き)として抽出(✅WP79。MG-2b から v2 を書く。[第5章](05_assets.md))。camera の node の回転は変換せずに `transform` へ書き、✅CC-1(`c8367b87`)からはそのまま glTF と同じ向きになります([第4章 §4.2](04_scene_ecs.md) の camera)
 - `import --rules ...` — `imports.rules.json`(glob → レシピ表)に従った一括取り込み(✅WP84)
 
 manifest の形式・実例は [第5章](05_assets.md) を参照してください。
@@ -652,6 +652,8 @@ pelican_cli assets status --project mygame              # OK / MISSING / MISMATC
 ### `pelican_cli bake-camera --replay <path.jsonl> --project <dir>`(✅WP89)
 
 リプレイを headless 実行し、カメラ軌跡を `imports/pelican-camera/<name>/` に `camera.transform_seq.jsonl` + `pelican.import` manifest として着地させます(DCC への逆輸出)。
+
+各 frame の `rot` は camera の transform の回転で、✅CC-1(`c8367b87`)から glTF の camera と同じ規約です(R·(0,0,−1) が視線、R·(0,1,0) が up。[回転を作る所](../../src/core/playback/camerabake.cpp#L104))。CC-1 より前に焼いた列は視線が R·(0,0,+1) の規約なので、`tools/convert_camera_convention.py` が `generator: pelican2-camera-bake` の列の `rot` に Y 軸まわり 180° を掛けて直します(§10.10、[第3章 §3.13](03_project_format.md))。
 
 ### `pelican_cli dump-lowered-material [--project <dir>] <surface> [material.json] [material-name]`(✅WP76)
 
@@ -905,7 +907,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 応答に `published_frames` を足します([commandWaitEngine()](../../src/devstudio/automation/automationcommands.cpp#L1877))。
 `published_frames` は renderer がその起動で公開した logical frame の数で、飛ばした frame は数えません。
 
-回す側は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1276)(`uv run`、標準ライブラリだけ)です。
+回す側は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1268)(`uv run`、標準ライブラリだけ)です。
 Studio を `--automation --project --tab` で起動し、シナリオ JSON(`test/studio_scenarios/<名前>.json`)の step を
 順に送り、期待を検査して `report.json` を書きます。
 
@@ -918,7 +920,7 @@ uv run tools/studio_drive.py --studio build/dist/Debug/pelican_studio.exe \
 ```
 
 report は `verdict`(`green` / `red`)・`summary`(step ごとに 1 行)・`failures`(送受信・理由・失敗時の
-スクリーンショット)・`studio_log` を持ちます([組み立て](../../tools/studio_drive.py#L1445))。
+スクリーンショット)・`studio_log` を持ちます([組み立て](../../tools/studio_drive.py#L1437))。
 最後の `shutdown` step は終了コード 0 での正常終了を検査します。異常終了・終了待ちのタイムアウト・watchdog による
 強制終了はシナリオの操作が成功していても失敗です。`studio_exit_code` と `studio_shutdown_forced` に結果を記録します。
 書式・命令表・名前の付け方は [README](../../test/studio_scenarios/README.md#L1) と
@@ -933,7 +935,7 @@ pan が書け、`key` は `route`(`widget` 既定 / `window`)を取って **`win
 
 ✅IA-1s で、シナリオが Studio の外の作業を代わりにする口が 2 つ増えました。
 
-- **`file` step の `copy`**: `{"file": "copy", "path": "{project}/x", "from": "{artifacts}/y"}` は `from` の file を `path` へ byte のまま写します(あれば上書きします。[file step の copy](../../tools/studio_drive.py#L809))。`write` は UTF-8 の文字しか書けないので、人が外で焼き直した binary の file を project の file に上書きする、の代わりです。`path` と `from` のどちらも run の持つ 2 つの directory(`{project}` と `{artifacts}`)の中でなければ step の失敗です(ほかの `file` step と同じ範囲。[第13章](13_editor.md) §13.5「Studio の自動化面」)。
+- **`file` step の `copy`**: `{"file": "copy", "path": "{project}/x", "from": "{artifacts}/y"}` は `from` の file を `path` へ byte のまま写します(あれば上書きします。[file step の copy](../../tools/studio_drive.py#L801))。`write` は UTF-8 の文字しか書けないので、人が外で焼き直した binary の file を project の file に上書きする、の代わりです。`path` と `from` のどちらも run の持つ 2 つの directory(`{project}` と `{artifacts}`)の中でなければ step の失敗です(ほかの `file` step と同じ範囲。[第13章](13_editor.md) §13.5「Studio の自動化面」)。
 - **`<名前>.prepare.py`**: `test/studio_scenarios/<名前>.json` の隣に `<名前>.prepare.py` があると、ctest の `run_studio_scenario.cmake`([prepare の script を走らせる cmake の口](../../test/run_studio_scenario.cmake#L68))は driver を起こす前に `<python> -B <名前>.prepare.py --out <run の directory>/incoming --cli <pelican_cli>` を走らせます(120 秒で打ち切り)。人が Studio を開く前に外で作る file(自分の script で書いて CLI で焼いた資産など)の代わりで、シナリオは `{artifacts}/incoming/` の file を Studio の Import で取り込みます(`{artifacts}` がその run の directory です)。`pelican_cli` は ctest の登録が target から `-DCLI=` で渡し([prepare に CLI を渡す登録](../../test/CMakeLists.txt#L3563))、target が無いか file が無ければ、prepare を持つシナリオは失敗です。prepare が 0 以外で終わっても、その stderr を付けて失敗です。`tools/studio_drive.py` を直接回すときは prepare は走りません(ctest の cmake の口のため)。
   - 今 prepare を持つのは `gui_build_ltc` と、✅AB-1s の `gui_build_audio_reactive`(音量が時間で変わる 1 秒の小さな WAV 2 つを書く。`--cli` は受けるが使わない)の 2 本です。[`gui_build_ltc.prepare.py`](../../test/studio_scenarios/gui_build_ltc.prepare.py) は LTC の表 2 枚と焼き直した 1 枚を raw の float で書き、`pelican_cli image ktx2 --format R32G32B32A32_SFLOAT --raw … --width 64 --height 64`(§10.4)で `.ktx2` にします。
   - 書式の正の [README](../../test/studio_scenarios/README.md) には、`copy` と prepare はまだ書かれていません(IA-1s の commit は README を変えていません)。
@@ -1185,6 +1187,7 @@ Python 3.11 以上を用意します。`uv` は不要です。完全な GPU gate
 | [`codex_bg_build.sh`](../../tools/codex_bg_build.sh) / [`codex_bg_status.sh`](../../tools/codex_bg_status.sh) | 長い build を切り離して起動し、あとから状態を見る |
 | [`public_api_inventory.py`](../../tools/public_api_inventory.py) | 公開 context API の exact inventory を生成・照合(✅WP380b/380e) |
 | [`doclink.py`](../../tools/doclink.py) | docs 内の `#L<行番号>` リンクを追随させる |
+| [`convert_camera_convention.py`](../../tools/convert_camera_convention.py) | CC-1 より前に書いた project の camera を今の向きの規約へ変換する(`uv run tools/convert_camera_convention.py [--dry-run] [--assume-up X,Y,Z] <project dir>...`。✅CC-1 `c8367b87`。何を書き換えるかは [第3章 §3.13](03_project_format.md) の「camera の向きの規約の変換」) |
 
 ### `tools/worktree.sh` — worktree ごとの configure / build / test
 

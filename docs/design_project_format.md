@@ -131,7 +131,7 @@ myproject/
     "window_size": {"width": 1920, "height": 1080},
     "fullscreen": false,
     "framerate": 60,
-    "camera": {"yfov": 1.0471975511965976, "znear": 0.1, "zfar": 100.0, "up": [0, 1, 0]},
+    "camera": {"yfov": 1.0471975511965976, "znear": 0.1, "zfar": 100.0},
     "default_scene_id": "default_scene",
     "scene_data_json": "scenes/main.scene.json",
     "asset_data_json": "assets/asset_data.json",
@@ -142,6 +142,10 @@ myproject/
 }
 ```
 
+- (2026-10-03 追記)上の例の `camera` は、以前は `"up": [0, 1, 0]` を持っていた。CC-1
+  (`c8367b87`、[design_coordinate_convention.md](design_coordinate_convention.md) §4)で
+  `basic_config.camera.up` は撤去され、書くと `project.camera_up_removed@1` で起動しない
+  (camera の up は transform の回転から取る)。`pelican.project` の version は 1 のまま
 - `basic_config` の中身は**現行 `default_config.json` / settings_str と同形を維持**。
   追加必須フィールドは `schema` / `version` / `name` のみ(R10 と同じバージョニング流儀)。
 - **`engine_min_version` を満たせない場合は hard error で起動しない**("min" の意味論どおり)。

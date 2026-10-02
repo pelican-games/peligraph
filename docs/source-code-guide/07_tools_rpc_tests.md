@@ -650,9 +650,9 @@ protocol は**改行区切り JSON 1 行 = 1 命令**で、`{id, cmd, ...}` に 
 `text` は描かれた字ではなく item が data role に入れた値を優先します
 ([優先](../../src/devstudio/automation/automationcommands.cpp#L552))。
 
-driver は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1276)(stdlib のみ)。シナリオ JSON の step を順に送り、
+driver は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1268)(stdlib のみ)。シナリオ JSON の step を順に送り、
 `rpc_equals` / `text_equals` / `visible` / `list_count` / `screenshot` の期待を検査し、`verdict` / `summary` /
-`failures` / `steps` / `studio_log` を持つ `report.json` を書きます([組み立て](../../tools/studio_drive.py#L1445))。
+`failures` / `steps` / `studio_log` を持つ `report.json` を書きます([組み立て](../../tools/studio_drive.py#L1437))。
 最後の `shutdown` step で終了コード 0 と強制終了されていないことを検査します。異常終了や終了待ちのタイムアウトは
 失敗になり、`studio_exit_code` / `studio_shutdown_forced` と `failures` に結果を記録します。
 書式の正本は [`test/studio_scenarios/README.md`](../../test/studio_scenarios/README.md#L1) です。
@@ -962,7 +962,7 @@ root だけの編集が definition のバイト列を動かさないようにす
 
 ✅CT-1 から、同じ表を [`operationJson()`](../../src/project/graphmodule.cpp#L550) が catalog の `required_parameters` に写し(表は 1 つ)、`value.input` の `input_names` は [`graphFrameInputNames()`](../../src/project/graphmodule.cpp#L927) の表を、catalog と frame の検査 [`validateGraphInputs()`](../../src/core/renderingpass/graphinputs.cpp#L13) の両方が読みます。render の pass の port の欠けは [`checkRenderPortDeclaration()`](../../src/project/graphmodule.cpp#L313) が `graph.port_field_missing@1` `{node, port, field}` で、resource の型の中の欠け(`element`、`type.semantic` など)は呼び手が渡す `MissingField` で port なら同じ code、node の parameters なら `graph.render_node_parameters_missing@1` で断ります。graph の展開器の欠けた鍵は [`member()`](../../src/project/graphcomposition.cpp#L32) が場所を名指す `std::invalid_argument` にします。
 
-✅CT-3 から、`renderNodeRequiredParameters()` の表は [`graphparameterschema.cpp` の CT-3 の parameter の表](../../src/project/graphparameterschema.cpp#L294) に置き換わり、RS-9 の必須はその `required` の entry から作ります(新しく必須になったのは `pose.clip_sample` の `rig` / `clip`、`pose.state_machine` の `rig` / `graph`、`pose.retarget` の `profile`、`draw.variant` の `variant`)。同じ表が値の kind・enum・範囲も持ち、`resolveOperation()` が RS-9 の検査の直後に [`checkGraphNodeParameterTypes()`](../../src/project/graphparameterschema.cpp#L762) を呼んで、合わない値を `graph.render_node_parameter_invalid@1` `{node, op, parameter, expected, reason: type | enum | range, allowed? | min? / max?}` で断ります。`GraphRegistryError` なので、編集の ticket では CT-2 の `rejection()` が `document` を足して rejected にします(test: `renderconfigeditor_test` の「CT-3 an edit with a parameter of the wrong kind, enum or range is refused by name」)。表の形と検査の規則は第3章 §3.15「op の parameter の表」です。
+✅CT-3 から、`renderNodeRequiredParameters()` の表は [`graphparameterschema.cpp` の CT-3 の parameter の表](../../src/project/graphparameterschema.cpp#L294) に置き換わり、RS-9 の必須はその `required` の entry から作ります(新しく必須になったのは `pose.clip_sample` の `rig` / `clip`、`pose.state_machine` の `rig` / `graph`、`pose.retarget` の `profile`、`draw.variant` の `variant`)。同じ表が値の kind・enum・範囲も持ち、`resolveOperation()` が RS-9 の検査の直後に [`checkGraphNodeParameterTypes()`](../../src/project/graphparameterschema.cpp#L766) を呼んで、合わない値を `graph.render_node_parameter_invalid@1` `{node, op, parameter, expected, reason: type | enum | range, allowed? | min? / max?}` で断ります。`GraphRegistryError` なので、編集の ticket では CT-2 の `rejection()` が `document` を足して rejected にします(test: `renderconfigeditor_test` の「CT-3 an edit with a parameter of the wrong kind, enum or range is refused by name」)。表の形と検査の規則は第3章 §3.15「op の parameter の表」です。
 
 利用者向けの手順と GUI の対応は [manual 第13章](../manual/13_editor.md) §13.5 が正です。
 

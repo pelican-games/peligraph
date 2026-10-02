@@ -1,6 +1,6 @@
 # 座標の規約 —— 鏡像の解消と、world から画面までの約束
 
-状態: v1(2026-10-02)。v0 に入れる。§1 は実測と code で確かめた事実、§2 は裁定、§3 以降は形。branch `feature/coordinate-convention`。
+状態: **着地**。CC-1(CC-1a / 1b / 1c を 1 本に squash)は develop `c8367b87`(2026-10-03)、CC-2 は `1501685a`(2026-10-03)。v0 に入る。§1 は着地前の実測と code で確かめた事実(develop `bdc96e2d` の時点。今の code ではない)、§2 は裁定、§3 以降は形、§5・§6 に結果。書いた時点は v1(2026-10-02、branch `feature/coordinate-convention`)。利用者向けの説明は [manual 第6章 §6.1](manual/06_rendering.md) の「座標の規約」と [第3章 §3.13](manual/03_project_format.md) の「camera の向きの規約の変換」。
 
 ## 0. 経緯と裁定
 
@@ -82,6 +82,8 @@ world 空間は変えない(右手系、+Y 上、メートル、glTF と同じ)�
 - `gl_FrontFacing` を読む shader(`openpbr_lighting.glsl`)と、接線の向きの `sign(determinant)` は、直した後に実測で確かめる
 - raster の pass の既定(反時計回り・cull なし)は変えない
 
+**結果(CC-1 `c8367b87`)**: `VK_DYNAMIC_STATE_FRONT_FACE` を採った(Vulkan 1.3 の core で、pipeline の数が増えない)。material・velocity・shadow depth の pipeline は `GraphicsPipelineDesc::dynamic_front_face` を立て、記録のときに `viewIsMirrored` で view ごとに選ぶ(`materialrender.cpp` の `setViewFrontFace`。bind の直後に設定する)。影(spot / directional)の射影は共通の関数(`vulkanPerspective` / `vulkanOrtho`)に寄せ、反時計回りの鏡像でない view になった。点光源の影と cube capture は cube の面の行列のまま(鏡像、時計回り)。`gl_FrontFacing` と接線の `sign(determinant)` の実測の記録は commit に無い(未確認)。
+
 ### 3.4 shader と描画で直す所
 
 | 所 | 直し方 |
@@ -98,8 +100,10 @@ world 空間は変えない(右手系、+Y 上、メートル、glTF と同じ)�
 ### 3.5 利用者の raster の pass の option(CC-2)
 
 - `render.raster`(と rendering 節の raster の pass)に `clip_y: "down" | "up"`(既定 `down` = engine と同じ)。`up` は、その pass の viewport の height を負にする。出力の画像の向きは変わらない
-- `up` のとき、その pass の面の表の判定も反転するので、engine が `front_face` を入れ替えて、作者が書いた `front_face` の意味(world で見た巻き方)を保つ
+- ~~`up` のとき、その pass の面の表の判定も反転するので、engine が `front_face` を入れ替えて、作者が書いた `front_face` の意味(world で見た巻き方)を保つ~~ → **この案は誤りで、engine は `front_face` を入れ替えない**(CC-2 `1501685a`)。Vulkan は viewport を通した後の framebuffer の座標で面を判定するので、`front_face` と `cull` は `clip_y` がどちらでも**出来上がった画像の上で見た巻き方**を指す。engine は viewport だけを変える(`render_pass_dispatch.cpp` の `setClipYViewport`。描く直前に負の height を設定し、描いた後に戻す)。`up` では絵が上下に反転するので、同じ頂点データの表と裏も入れ替わる。raster の pass の clip は利用者の shader が書くもので、「world で見た巻き方」を engine は知らない
 - GLSL の関数を `pelican_view.glsl`(か新しい include)に足す: `pelican_ndc_to_uv(vec2)`、`pelican_uv_to_ndc(vec2)`。manual と雛形の shader はこの関数を使う
+
+**結果(CC-2 `1501685a`)**: `clip_y` は `RasterPassContract` の pass 直下の field(`src/project/rasterpass.{hpp,cpp}` の `RasterClipY`。`raster_state` は fullscreen と共有するので入れない)。正規形の JSON に常に出て、fingerprint に入る。未知の値は `raster pass '<名前>' field 'clip_y' has unknown value '<値>'`、graph では `graph.render_node_parameter_invalid@1`。fullscreen の pass に書くと `Pass '<名前>' type 'fullscreen' does not own field 'clip_y'`(`passfieldownership.cpp`)。catalog の `render.raster` に enum `clip_y`(既定 `down`)。関数は `pelican_view.glsl` に入った。「manual と雛形の shader はこの関数を使う」のうち雛形の shader の書き換えは CC-2 の commit に無い(未確認)。test は `rasterpass_test` と `headless_render_test` の `CC-2 …`(GPU。同じ vertex shader を `down` / `up` で描き、`cull: back` と `gl_FrontFacing` で表裏の入れ替わりを見る)
 
 ## 4. 文書の書き換え(版は上げない)
 
@@ -118,6 +122,8 @@ world 空間は変えない(右手系、+Y 上、メートル、glTF と同じ)�
 
 出荷の project 側で手で直すもの: 鏡像や逆さまを打ち消すために置いた補正(vrm_xr_demo の主役の Z 軸 180°)、world の X を直接動かす game code の左右(example の `playercontrol.cpp`、sprite_demo の `flipbook_demo.cpp`、vrm_xr_demo の視線の yaw)。
 
+**結果(CC-1 `c8367b87`)**: 撤去と断りは `project.camera_up_removed@1`(`src/project/projectformat.cpp` の envelope の検査と、`basicconfig.cpp` の `rejectRemovedCameraUp` の 2 か所。controller の `up` は codec の閉じた鍵の一覧から外して未知の鍵として断る)。変換の script は `tools/convert_camera_convention.py`(`--dry-run`、`--assume-up X,Y,Z`。prefab の camera は transform が無いので報告だけ、camera bake 以外の transform_seq も報告だけ。test `convert_camera_convention_unit`)。出荷の 7 project、`test/fixtures/project_corpus/v0/`、camera を持つ fixture と test を変換した。手で直したのは example の `playercontrol.cpp`(D で画面の右へ)、vrm_xr_demo の主役の補正の除去と視線の yaw、RT の shader(`pt.rgen` の `ndc.y` の反転の削除、`spheres.rgen` を −Z 向きに、`spheres.rchit` の光の向き)。**sprite_demo の game code(`flipbook_demo.cpp`)は直す必要が無かった**(commit に差分が無い)。scene に camera が無いときの既定の向きは +X から −Z に、blank の雛形の MainCamera は z = +3・回転なしになった。
+
 ## 5. 検査
 
 | 何を | どう | 何を取り消したら落ちるか |
@@ -130,22 +136,36 @@ world 空間は変えない(右手系、+Y 上、メートル、glTF と同じ)�
 | TAA | jitter だけの fixture で velocity が 0 のまま | 反転を jitter の後に掛ける |
 | XR | 左右の眼の像と面の表(今は鏡像でないのに時計回りで描いている疑い。実測) | — |
 
+**結果(CC-1 `c8367b87`)**:
+
+- 鏡像の検査は `coordinate_mirror_headless`(GPU。`test/coordinate_mirror_check.cpp` が project を書き、player が headless で描き、同じ program が画像を読む。camera は `front`(+Z から回転なし)/ `side`(camera と scene を Y 軸まわりに 90°)/ `roll`(front を Z 軸まわりに 90° ロール。+Y が画面の右、+X が下に出る)の 3 通り)。CPU は `camera_test` の CC-1 の case(回転なしの camera が −Z を向き鏡像でない、対称の `vulkanAsymmetric` が `vulkanPerspective` と一致、`cameraRotation` が `cameraBasis` の逆、cube の面は鏡像で flat の camera は鏡像でない、scene の camera の基底が回転から来て画面の右半分の ray が camera の +X を向く)
+- golden は 27 件を作り直した(`test/golden/*/expected.png` と `inventory.json`)。統合時に各件を旧 golden と比べた内訳(commit の記録と統合側の報告による。比べた script は repo に無い): 比べた 52 件のうち同一 25、上下反転で完全一致 8、上下反転 + 丸めや縁(TAA の縁の行など)12、sprite の修正によるもの 6、その他 1。上下反転が多いのは、golden の harness の project が `up` を +Y にしていて(CC-1 で外した)、旧 golden が上下逆さまの絵だったため
+- XR と planar の SSAO の旧 byte golden(`test/fixtures/wp338_ssao/*.r8`)は物体が写っていなかった(面の表が cull されていた。commit の記録)。作り直した。XR の実機での確認は未
+- RGBA8 の hash(`wp73_rgba8_hashes.json`)と trace の fixture(`wp364`)、向きを数値で見る test(`gizmo_test`、`camera_test`、`projection_jitter_consumers.json`)も更新した
+- 着地の gate の件数は commit に書かれておらず、この文書では確かめていない(未確認)
+
 ## 6. 段(WP の順。1 本の統合 branch で順に積み、develop へは一度に着地する)
 
-| WP | 中身 |
-|---|---|
-| **CC-1a** | `clipspace.hpp`、camera の規約(−Z、up は回転から)、操作系の符号、editor の preview、面の表(material / velocity / cube の切り替え / 影)、§3.4 の shader と描画、鏡像の検査(§5 の 1〜3 行目) |
-| **CC-1b** | `up` の撤去と名前付きの断り、変換の script、雛形と `default_config.json`、出荷の project 7 本と test の文書の書き換え(camera を持つものだけ)、game code の左右、補正の除去、RT の shader |
-| **CC-1c** | golden の作り直しと確かめ、RGBA8 の hash と trace の fixture、向きを数値で見ている test(`gizmo_test`、`camera_test`、`projection_jitter_consumers.json`) |
-| **CC-2** | raster の pass の `clip_y` と、NDC と uv の変換の関数、雛形の shader |
-| docs | manual(2・3・4・6・10 章)、source-code-guide(5 章の +Z 前方の難所、10 章の viewport の節)、`design_camera_system.md` ほか §1 の記述 |
-| Studio(GUI session) | viewport の左右に依る scenario 6〜8 本の期待値、Inspector の方位角 / 仰角と yaw / pitch の欄の確かめ |
+| WP | 中身 | 結果 |
+|---|---|---|
+| **CC-1a** | `clipspace.hpp`、camera の規約(−Z、up は回転から)、操作系の符号、editor の preview、面の表(material / velocity / cube の切り替え / 影)、§3.4 の shader と描画、鏡像の検査(§5 の 1〜3 行目) | ✅ CC-1a / 1b / 1c を 1 本に squash して develop `c8367b87`(2026-10-03) |
+| **CC-1b** | `up` の撤去と名前付きの断り、変換の script、雛形と `default_config.json`、出荷の project 7 本と test の文書の書き換え(camera を持つものだけ)、game code の左右、補正の除去、RT の shader | ✅ `c8367b87`(同上)。sprite_demo の game code は直す必要が無かった |
+| **CC-1c** | golden の作り直しと確かめ、RGBA8 の hash と trace の fixture、向きを数値で見ている test(`gizmo_test`、`camera_test`、`projection_jitter_consumers.json`) | ✅ `c8367b87`(同上)。golden 27 件(§5 の結果) |
+| **CC-2** | raster の pass の `clip_y` と、NDC と uv の変換の関数、雛形の shader | ✅ `1501685a`(2026-10-03)。`front_face` は入れ替えない(§3.5 の訂正)。雛形の shader の書き換えは commit に無い |
+| docs | manual(2・3・4・6・10 章)、source-code-guide(5 章の +Z 前方の難所、10 章の viewport の節)、`design_camera_system.md` ほか §1 の記述 | ✅ manual 2・3・4・6・8・10・13 章、source-code-guide 5・6・8・9・10 章、`design_camera_system.md` / `design_project_format.md` / `design_project_format_web_profile.md` / `design_openxr.md` / `design_taa_jitter.md` / `design_2d_game_layer.md` / `design_pathtracing.md`、`v0_freeze.md`、台帳(branch `agent/cc-docs`) |
+| Studio(GUI session) | viewport の左右に依る scenario 6〜8 本の期待値、Inspector の方位角 / 仰角と yaw / pitch の欄の確かめ | GUI session が持つ(この文書では未確認) |
 
 着地は、GUI session と engine session が develop への着地を止めた状態で行う(両 session と合意済み)。外部の web viewer(別 repo)は同じ規約に追随する必要がある。
 
 ## 7. 残る論点
 
-- 影の射影を共通の関数に寄せるか据え置くか(実測で決める)
-- `VK_DYNAMIC_STATE_FRONT_FACE` か pipeline 2 種類か
-- 移行でロールを保つ camera の扱い(今まで無視されていたロールが効くようになる)
+決着したもの(CC-1 `c8367b87`):
+
+- ~~影の射影を共通の関数に寄せるか据え置くか(実測で決める)~~ → 寄せた(spot は `vulkanPerspective` と `viewFromBasis`、directional は `vulkanOrtho`。`lightcontainer.cpp` と `directionalshadowcascade.cpp` の重複した `vulkanOrtho` は消えた)。点光源の影は cube の面の行列のまま
+- ~~`VK_DYNAMIC_STATE_FRONT_FACE` か pipeline 2 種類か~~ → `VK_DYNAMIC_STATE_FRONT_FACE`(§3.3 の結果)
+- ~~移行でロールを保つ camera の扱い(今まで無視されていたロールが効くようになる)~~ → ロールは捨て、捨てたことを変換の script が `camera_roll_dropped` で報告する(§4 の規則のまま)
+
+残るもの:
+
 - v1 の `canvas.place`(branch `feature/v1-vector2d`)は右手系で実装済みなので、この修正が develop_v1 に入れば正しく読める。canvas の 3D の test の期待値は入った後に直す
+- 外部の web viewer(別 repo)の追随(§6 の末尾)

@@ -104,6 +104,10 @@ WP88/95、「feature 層 = ユーザー空間」方針。
   framebuffer 下向き(Vulkan viewport 正 height・画像座標と同義)**と
   規範化し、CPU offset・`jitter_ndc`・shader sampling の三者同符号を
   fixture で固定(J1-MATH 末尾)
+- (2026-10-03 追記)CC-1(`c8367b87`、[design_coordinate_convention.md](design_coordinate_convention.md))で
+  camera の射影が clip の y を反転するようになった(`[1][1]` が負)。反転は jitter を
+  足す前の射影の中(`clipspace.hpp` の `vulkanPerspective` / `vulkanOrtho` の結果に
+  `applyProjectionJitter` が足す)なので、上の「正 height」の規範と符号はそのまま正しい
 
 ### 1-3. 投影式の規範(J1-MATH — v1 の式を全面訂正)
 

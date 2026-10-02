@@ -511,6 +511,19 @@ Light cap exceeded: <type> light #<ordinal> '<name>' will not be rendered (cap <
 
 名前付き camera/controller と「最初の ECS camera」の責務が重なるため、camera 変更では両方を追う必要があります。`CameraSystem::process()` は現在 [`count == 0` で早期 return](../../src/core/ecs/predefined/camerasystem.cpp#L14) するようになりましたが、「先頭1件のみ使用」は変わっていません。複数 camera entity を扱う修正ではここを重点的にテストしてください。
 
+### 画面は長く world の鏡像だった(CC-1、`c8367b87`)
+
+2026-10-02 に v1 の `canvas.place` で板の文字が左右反転して出たのをきっかけに、glTF だけの project でも同じことを確かめ、**engine の 3D の画面が world の鏡像だった**と分かりました。CC-1 で直しましたが、多くの code と golden がこの状態を前提に積まれていたので、経緯を残します([design_coordinate_convention.md](../design_coordinate_convention.md) §1)。
+
+- **何が重なっていたか**: view は右手系の `glm::lookAt`、射影は y を反転しない `glm::perspectiveRH_ZO` / `orthoRH_ZO`、viewport の height は正(NDC の +y が画面の下)。右手系の world を y 下の画面にそのまま写すので、画面は必ず鏡像になります。そのうえ camera は回転の +Z を前方にし、up は回転からではなく project の `basic_config.camera.up`(既定 −Y)から取っていました。
+- **なぜ長く気付かれなかったか**:
+  1. 鏡に写すと三角形の画面上の巻き方も逆になります。material / velocity / shadow depth の pipeline は面の表を `vk::FrontFace::eClockwise` に固定していたので、glTF の表(反時計回り)が正しく表として扱われ、物体は欠けませんでした。辻褄が合っていたので、時計回りの固定は「そういうもの」として読まれていました。
+  2. 既定の up が −Y だったので、既定の project は上下が正しく見え、残るのは左右の反転だけでした。左右対称に近い scene では見分けがつきません。
+  3. golden は自分の前の出力と比べるので、規約の誤りは検出できません。golden の harness の project は `up` を +Y にしていて(CC-1 で外した)、CC-1 の作り直しの比較では 8 件が旧 golden の上下反転と完全に一致しました。つまり上下逆さまの絵が正として固定されていました。XR と planar の SSAO の旧 byte golden には物体が写っていませんでした(面の表が cull されていた。commit の記録)。
+  4. 画面との境目のあちこちに打ち消しの反転が置かれていました: preview の CPU ラスタの `1 - (ndc.y * 0.5 + 0.5)`、`pt.rgen` の `ndc.y = -ndc.y`、sprite の quad の y、vrm_xr_demo の主役の Z 軸まわりの 180°、example の `playercontrol.cpp` の左右。どれも単独では「その場の直し」に見えます。
+- **何を見れば鏡像と分かるか**: 左右も上下も非対称なもの(文字の「F」)を正面から写す。world の +X に置いた印が画面の右に、+Y の印が上に出るか。camera をロールさせて絵が回るか(回らなければ up が回転から取られていない)。数式では、画面の右・画面の上・視点へ向かう向きが world で右手系か([`viewIsMirrored()`](../../src/core/renderer/clipspace.hpp#L110) が行列の符号でこれを判定する)。code では、射影の外で y を `1 - y` や `-y` で反転している所と、面の表を view と無関係に時計回りに固定している所が手がかりです。
+- **今の守り**: `coordinate_mirror_headless`(GPU。「F」の板と +X 赤・+Y 緑の印を `front` / `side` / `roll` の 3 通りの camera で写し、四象限の色と F の向きを見る。[検査の本体](../../test/coordinate_mirror_check.cpp#L1))と、`camera_test` の CC-1 の case(回転なしの camera が −Z を向き鏡像でない、画面の右半分の ray が camera の +X を向く、cube の面は鏡像で flat の camera は鏡像でない)。規約は 1 か所([`clipspace.hpp`](../../src/core/renderer/clipspace.hpp#L35))にあり、cube の面だけが意図して鏡像です(Vulkan の cube の面の規約。mesh の pipeline の面の表は `viewIsMirrored()` が view ごとに選ぶ)。
+
 ## 9.9 Frame graph が保証するもの、しないもの
 
 第6章の要点を、変更時の安全条件として再掲します。
@@ -693,6 +706,7 @@ optional build feature には stub 実装もあります。たとえば SeqPlaye
 | `OverlapEnter` が 1 フレーム遅れる | `PhysicsTriggerSystem` は order `INT_MAX` | event は通常キュー経由なので配送は次フレーム |
 | ライトが動かなくなった | engine 側の名前ベース自動アニメーションは撤去済み(§9.8) | `ctx.render().set*Light*()` をユーザーコードから毎フレーム呼ぶ |
 | ライトが 1 個だけ描かれない | ログの `Light cap exceeded: ...` | `MAX_*_LIGHTS` |
+| 絵が左右・上下に反転する / 面が裏から描かれて消える | 射影が `clipspace.hpp` の関数か(射影の外で y を反転していないか)、camera の前方が R·(0,0,−1) か(§9.8「画面は長く world の鏡像だった」) | mesh の pipeline の front face が dynamic か、`viewIsMirrored()`、raster pass の `clip_y` と `front_face`(画像の上で見た巻き方) |
 | ModelInstance の描画が別モデルに化ける | `ModelInstanceId{index, generation, scene_epoch}` の generation | `isModelInstanceAlive()`、scene 再ロードによる epoch 進行 |
 | `save_scene` が `RuntimeOnlyData` で失敗 | `load_gltf` で transient モデルを足していないか | `SceneLoader::hasRuntimeOnlyChanges()` |
 | `edit` が `stale_revision` | `get_scene_revision` の `EditorWatchToken` | preview lease が `preview_epoch` を進めていないか |

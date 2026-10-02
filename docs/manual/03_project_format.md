@@ -82,7 +82,7 @@ v0 より前のエンジンは、commit の決定を別ファイル `committed` 
     "window_size": { "width": 1920, "height": 1080 },
     "fullscreen": false,
     "framerate": 60,
-    "camera": { "yfov": 0.7853981633974483, "znear": 0.1, "zfar": 1000, "up": [0.0, -1.0, 0.0] },
+    "camera": { "yfov": 0.7853981633974483, "znear": 0.1, "zfar": 1000 },
     "default_scene_id": "default_scene",
     "scene_data_json": "scenes/main.scene.json",
     "asset_data_json": "assets/asset_data.json",
@@ -228,6 +228,14 @@ Studio は engine を `--rpc` で起こし、`--rpc` の engine は宣言が無�
 | `camera.sprite` | object | `{"pixel_perfect":"off","sort":"z"}` | スプライトの pixel perfect / ソートポリシー(camera 内。シーン側 camera コンポーネントにも書ける) |
 
 `camera` は glTF のカメラ定義と同形です。`type` は `"perspective"`(既定)か `"orthographic"` のみ。perspective は `yfov`(**ラジアン**)/`znear`/`zfar` 必須・`aspect` 任意、orthographic は `xmag`/`ymag`/`znear`/`zfar` 必須です。
+
+**`camera.up` は撤去されました(✅CC-1、`c8367b87`)。** camera の向きは glTF と同じ規約になり、回転なしの camera は −Z を向き、up は transform の回転の +Y です(world の上は常に +Y。[第6章 §6.1](06_rendering.md) の「座標の規約」)。`up` を書いた project.json は、どの値でも(配列でなくても)次の名前で開けません。検査は envelope の `schema` / `version` の検査の直後です([project.json で断る所](../../src/project/projectformat.cpp#L250)。project.json 以外の経路で渡った config も [`rejectRemovedCameraUp()`](../../src/core/loader/basicconfig.cpp#L247) が同じ名前で断ります):
+
+```
+project.camera_up_removed@1: project.json basic_config.camera.up was removed: the camera convention changed (a camera looks along -Z of its rotation, its up is the rotation's +Y and the world's up is +Y). Convert the project with `uv run tools/convert_camera_convention.py <project dir>`, which removes the key and turns its cameras to look the way they did
+```
+
+CC-1 より前の project.json は `up` が必須だったので、古い project はここで必ず止まります。`pelican.project` の `version` は 1 のままで、移行の手順(§3.13)も登録していません(v0 の前なので。[設計 §4](../design_coordinate_convention.md))。直し方は §3.13 の「camera の向きの規約の変換」です。scene に camera が無いときの既定の視点は、原点から −Z を見る向きです(CC-1 より前は +X)。
 
 > **設計決定(fail-fast):** 旧キー名 `fov_y` / `near` / `far` は「黙って無視」ではなく `'fov_y' is not supported in v1; use 'yfov' (radians)` という**移行先を案内する名指しエラー**で拒否される(WP63)。「読めるふりをしない」— 警告止まりだと『動いたように見えて新機能の挙動だけ壊れる』事故になるため。互換受理の追加はプロジェクト規則で禁止されており、旧形式の変換は外部ツールの仕事。
 
@@ -812,6 +820,29 @@ production の登録表([`makeBuiltinDocumentMigrationRegistry()`](../../src/pro
 - 検出が歩くのは project root の下だけで、**root の外に mount した asset store の中の文書は見ません**。
 - ~~apply が最初に transaction の復旧を走らせ、別のプロセスの commit 途中の編集を巻き戻しうる~~ → **解消(MG-1b、`09f9151d`)**。apply は復旧せず、transaction のディレクトリを取れなければ `project.migration_transaction_busy@1` で止まります(上の 4.)。
 - 開く入口の復旧は、排他を取らずにディレクトリを消します(MG-1 より前からの性質で、MG-1b でも変えていません)。
+
+### camera の向きの規約の変換(✅CC-1、`c8367b87`)
+
+CC-1 で camera の向きの規約が変わりました(回転なしの camera は +Z ではなく −Z を向き、up は `basic_config.camera.up` ではなく回転の +Y。[第6章 §6.1](06_rendering.md) の「座標の規約」)。文書の `version` は上げておらず、上の移行の枠の手順でもありません(v0 の前なので。[設計 §4](../design_coordinate_convention.md))。代わりに `up` を名前で断り(§3.2 の `project.camera_up_removed@1`)、変換は repo の script で行います:
+
+```sh
+uv run tools/convert_camera_convention.py [--dry-run] [--assume-up X,Y,Z] <project dir>...
+```
+
+[`tools/convert_camera_convention.py`](../../tools/convert_camera_convention.py#L518) は project の下(`.` で始まるディレクトリを除く)の `*.json` / `*.jsonl` を読み、変える値だけをその場で書き換えます(ほかの bytes は変えません)。
+
+| 文書 | 書き換え |
+|---|---|
+| `project.json` | `basic_config.camera.up` を消す(`camera` がそれだけなら `camera` ごと) |
+| `pelican.scene` | `camera` を持つ object の回転を、前と同じ方向(前の前方 = R·(0,0,+1))を向き up が world の +Y になる回転にする。前方がほぼ鉛直(\|前方·Y\| > 0.999)なら、自分の Y 軸まわりに 180° 回すだけ。前の回転にロールがあれば捨て、`camera_roll_dropped` に載せる。`transform` の無い camera には Y 軸まわり 180° の `transform` を足す。orbit の controller の `yaw` / `pitch`(`*_degrees` も)を同じ方向を指す値に書き換え、controller の `up` を消す |
+| `pelican.prefab` | controller だけを書き換える。prefab は transform を持たないので、camera を持つ prefab は `camera_prefab_instances` に載せて手で直す |
+| `pelican.transform_seq`(`.jsonl`) | camera bake の出力(`generator: pelican2-camera-bake`)だけ、各 `rot` に Y 軸まわり 180° を右から掛ける。ほかの生成元のものは `transform_seq_not_camera_bake` に載せて触らない |
+
+- 標準出力は JSON の報告 `{projects: [{project, dry_run, old_up, changed, camera_roll_dropped, camera_prefab_instances, transform_seq_not_camera_bake, manual}]}` です。`--dry-run` は何も書きません。
+- `basic_config.camera.up` が無い project は断ります(変換済みか、もともと書いていない)。それでも変換するときは `--assume-up X,Y,Z` で前の up を与えます(前の engine の既定は `0,-1,0`)。断った project には何も書かず、exit 1 です。
+- 絵の変わり方(設計 §4 の規則): 前の `up` が −Y の project(前の `blank` の雛形、example)は、変換後に前の絵の左右反転になります。+Y の project は、前は上下逆さまに描かれていたので、変換後は正立します。
+- 出荷の 7 project と `test/fixtures/project_corpus/v0/` の corpus、camera を持つ test の fixture は CC-1 で変換済みです。world の X を直接動かす game code の左右(example の `playercontrol.cpp`)と、鏡像を打ち消すために置いていた補正(vrm_xr_demo の主役の Z 軸 180°)は手で直しました。sprite_demo の game code は直す必要がありませんでした。
+- test: `convert_camera_convention_unit`([test_convert_camera_convention.py](../../test/ci/test_convert_camera_convention.py))。
 
 ## 関連文書
 

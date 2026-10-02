@@ -260,7 +260,7 @@ mygame/
     "window_size": { "width": 1280, "height": 720 },
     "fullscreen": false,
     "framerate": 60,
-    "camera": { "yfov": 0.7853981633974483, "znear": 0.1, "zfar": 1000, "up": [0.0, -1.0, 0.0] },
+    "camera": { "yfov": 0.7853981633974483, "znear": 0.1, "zfar": 1000 },
     "default_scene_id": "default_scene",
     "scene_data_json": "scenes/main.scene.json",
     "asset_data_json": "assets/asset_data.json",
@@ -275,6 +275,8 @@ mygame/
 ```
 
 各フィールドの意味は [第3章](03_project_format.md) で詳しく説明します。
+
+`camera` に `up` はありません。✅CC-1(`c8367b87`)で camera の up は transform の回転から取るようになり、`basic_config.camera.up` は撤去されました(書いてあると `project.camera_up_removed@1` で開けません。前に作った project の直し方は [第3章 §3.13](03_project_format.md) の「camera の向きの規約の変換」)。雛形の `scenes/main.scene.json` の `MainCamera` は `pos` が `(0, 0, 3)`・回転なしで、回転なしの camera は −Z を向くので原点を見ます([雛形の scene](../../src/project/projecttemplate.cpp#L133))。座標の規約は [第6章 §6.1](06_rendering.md) の「座標の規約」です。
 
 **描画パイプラインを 0 から組みたいときは `--template blank`** です(✅F-2。既定は上の `standard`)。
 `pelican_cli project init mygame --template blank` は上と同じ 16 エントリを書きますが、

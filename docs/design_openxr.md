@@ -140,6 +140,15 @@ projection[i]     = XrFovf からの非対称 RH_ZO
 
 - active camera transform = **`world_from_stage`**(フラットの
   camera API は不変・XR adapter 内でのみ上式)
+- (2026-10-03 追記、CC-1 `c8367b87`、[design_coordinate_convention.md](design_coordinate_convention.md))
+  flat の camera の view が transform の逆行列(回転の −Z が前方、up は回転の +Y。
+  `clipspace.hpp` の `viewFromBasis`)になったので、`world_from_stage` は active camera の
+  transform(位置と回転)と一致する。それまでは camera の回転の +Z が前方で、up は
+  `basic_config.camera.up` から取っていたため、一致しなかった。`projection[i]` は
+  以前から clip の y を反転していて(正 height の viewport で angleUp を画面の上へ)、
+  CC-1 で flat と共通の `vulkanAsymmetric` に寄せた。material などの面の表が時計回り
+  固定から反時計回り(view ごと)に変わり、commit の記録では XR の SSAO の旧 byte
+  golden は面の表が cull されて物体が写っていなかった。実機(Quest 3)での確認は未
 - reference space は **STAGE → LOCAL_FLOOR → LOCAL** の優先順。
   LOCAL fallback は floor 非保証を明示(get_status に選択 space と
   floor semantics)。LOCAL を無補正で STAGE と呼ばない
