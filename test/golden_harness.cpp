@@ -8764,50 +8764,51 @@ double averageFrameGpuMs(
            static_cast<double>(found);
 }
 
+// ST-1: get_status carries only the last frame's samples, so the measured
+// frames' samples are read from the timing history itself.
 double averageNodeBodyGpuMs(
-    const nlohmann::json &status,
+    const std::deque<GpuTimingHistoryFrame> &history,
     const std::set<std::uint64_t> &frames,
     std::initializer_list<std::string_view>
         node_names,
     std::string_view node_kind) {
     double total = 0.0;
     std::size_t found = 0;
-    for (const auto &sample :
-         status.at("nodes")) {
-        const auto name =
-            sample.at("node_name")
-                .get<std::string>();
-        if (sample.at("graph_variant") != "flat" ||
-            sample.at("view_index") != 0 ||
-            sample.at("node_kind") !=
-                std::string{node_kind} ||
-            sample.at("subrange") != "body" ||
-            std::find(
-                node_names.begin(),
-                node_names.end(),
-                name) == node_names.end() ||
-            !frames.contains(
-                sample.at("logical_frame")
-                    .get<std::uint64_t>())) {
-            continue;
+    for (const auto &frame : history) {
+        for (const auto &sample : frame.samples) {
+            const auto &name =
+                sample.identity.node_name;
+            if (sample.identity.graph_variant != "flat" ||
+                sample.identity.view_index != 0 ||
+                sample.identity.node_kind !=
+                    node_kind ||
+                sample.identity.subrange !=
+                    GpuTimingSubrange::body ||
+                std::find(
+                    node_names.begin(),
+                    node_names.end(),
+                    name) == node_names.end() ||
+                !frames.contains(
+                    sample.identity.logical_frame)) {
+                continue;
+            }
+            if (!sample.supported ||
+                !sample.reason.empty()) {
+                throw std::runtime_error(
+                    "GPU draw timing body sample is unsupported: " +
+                    name);
+            }
+            const auto identity =
+                makeGpuTimingSampleLabel(
+                    sample.identity);
+            if (!identity.ends_with(
+                    ":" + name + "/body")) {
+                throw std::runtime_error(
+                    "GPU draw timing body identity does not match its node");
+            }
+            total += sample.ms;
+            ++found;
         }
-        if (!sample.at("supported").get<bool>() ||
-            !sample.at("reason").is_null()) {
-            throw std::runtime_error(
-                "GPU draw timing body sample is unsupported: " +
-                name);
-        }
-        const auto identity =
-            sample.at("identity")
-                .get<std::string>();
-        if (!identity.ends_with(
-                ":" + name + "/body")) {
-            throw std::runtime_error(
-                "GPU draw timing body identity does not match its node");
-        }
-        total +=
-            sample.at("ms").get<double>();
-        ++found;
     }
     const auto expected =
         frames.size() * node_names.size();
@@ -8939,7 +8940,7 @@ GpuDrawTimingPathCapture captureGpuDrawTimingPath(
             status, measured_frames);
     capture.material_draw_gpu_ms =
         averageNodeBodyGpuMs(
-            status, measured_frames,
+            timing.historyForTesting(), measured_frames,
             {"gbuffer_pass"}, "render");
     capture.host_frame_ms =
         host_frame_total_ms /
@@ -8949,7 +8950,7 @@ GpuDrawTimingPathCapture captureGpuDrawTimingPath(
     if (!cpu_baseline) {
         capture.culling_gpu_ms =
             averageNodeBodyGpuMs(
-                status, measured_frames,
+                timing.historyForTesting(), measured_frames,
                 {"occlusion_count_reset",
                  "occlusion_cull"},
                 "compute");
@@ -14473,8 +14474,9 @@ void GoldenHarness::runGpuTimingRing() {
     REQUIRE(status.at("logical_frame_averages")
                 .at(0)
                 .at("frame_count") == 120);
-    REQUIRE(status.at("nodes").size() == 120 * plan.size() * 2);
-    REQUIRE(status.at("nodes").front().at("logical_frame") == 3);
+    // ST-1: get_status carries the last frame's samples only.
+    REQUIRE(status.at("nodes").size() == plan.size() * 2);
+    REQUIRE(status.at("nodes").front().at("logical_frame") == 122);
     REQUIRE(status.at("nodes").back().at("logical_frame") == 122);
     REQUIRE(status.at("views").size() == 1);
     REQUIRE(status.at("views").at(0).at("logical_frame") == 122);
@@ -14491,6 +14493,8 @@ void GoldenHarness::runGpuTimingRing() {
             gpu_timing_node_average_window);
     REQUIRE(node_average.at("nodes").size() == plan.size());
     REQUIRE_FALSE(node_average.contains("logical_frame_history"));
+    // ST-1: get_status's node_averages are get_gpu_timing's rows.
+    REQUIRE(status.at("node_averages") == node_average.at("nodes"));
     for (const auto &node : node_average.at("nodes")) {
         REQUIRE(node.at("sample_count") ==
                 gpu_timing_node_average_window);

@@ -133,6 +133,42 @@ GpuTimingNodeFrame makeGpuTimingNodeFrame(
     return result;
 }
 
+// The node averages over the window's last frames: get_gpu_timing's nodes and
+// get_status's gpu_timing.node_averages both come from here (ST-1).
+GpuTimingNodeAverageSnapshot averageGpuTimingHistoryNodes(
+    const std::deque<GpuTimingHistoryFrame> &history) {
+    const auto frame_count =
+        std::min(gpu_timing_node_average_window, history.size());
+    std::vector<GpuTimingNodeFrame> node_frames;
+    node_frames.reserve(frame_count);
+    const auto first =
+        history.end() - static_cast<std::ptrdiff_t>(frame_count);
+    for (auto frame = first; frame != history.end(); ++frame) {
+        node_frames.push_back(makeGpuTimingNodeFrame(*frame));
+    }
+    return averageGpuTimingNodeFrames(node_frames);
+}
+
+nlohmann::json gpuTimingNodeAverageRowsJson(
+    const GpuTimingNodeAverageSnapshot &snapshot) {
+    auto nodes = nlohmann::json::array();
+    for (const auto &row : snapshot.nodes) {
+        nodes.push_back({
+            {"logical_frame", row.logical_frame},
+            {"graph_variant", row.graph_variant},
+            {"view_index", row.view_index},
+            {"node_ordinal", row.node_ordinal},
+            {"node_kind", row.node_kind},
+            {"node_name", row.node_name},
+            {"barriers_ms", row.barriers_ms},
+            {"body_ms", row.body_ms},
+            {"body_supported", row.body_supported},
+            {"sample_count", row.sample_count},
+        });
+    }
+    return nodes;
+}
+
 } // namespace
 
 std::string_view gpuTimingSubrangeName(GpuTimingSubrange subrange) noexcept {
@@ -207,6 +243,7 @@ nlohmann::json disabledGpuTimingStatusJson() {
         {"logical_frame_total_sum_views_ms", 0.0},
         {"views", nlohmann::json::array()},
         {"nodes", nlohmann::json::array()},
+        {"node_averages", nlohmann::json::array()},
         {"query_pool", {{"frame_slots", 0}, {"range_slots", 0},
                          {"max_nodes", 0}, {"query_capacity", 0},
                          {"create_count", 0}, {"pending_ranges", 0}}},
@@ -265,14 +302,14 @@ GpuTimingStatusProjection projectGpuTimingStatus(
         .logical_frame_history = nlohmann::json::array(),
         .views = nlohmann::json::array(),
         .nodes = nlohmann::json::array(),
+        .node_averages = nlohmann::json::array(),
     };
 
-    for (const auto &frame : history) {
-        const auto ordered_samples =
-            canonicalSamplePointers(frame);
-        const std::span<const GpuTimingSample *const> sample_span{
-            ordered_samples};
-        for (const auto *sample : sample_span) {
+    // ST-1: only the last frame's samples. The whole window as samples was
+    // thousands of objects per get_status for an unrolled loop; the window
+    // is read as node_averages (and logical_frame_history) instead.
+    if (!history.empty()) {
+        for (const auto *sample : canonicalSamplePointers(history.back())) {
             result.nodes.push_back(sampleJson(*sample));
         }
     }
@@ -338,6 +375,8 @@ GpuTimingStatusProjection projectGpuTimingStatus(
             {"total_ms", row.total_ms},
         });
     }
+    result.node_averages =
+        gpuTimingNodeAverageRowsJson(averageGpuTimingHistoryNodes(history));
     return result;
 }
 
@@ -397,21 +436,6 @@ GpuTimingNodeAverageSnapshot averageGpuTimingNodeFrames(
 nlohmann::json gpuTimingNodeAverageStatusJson(
     const GpuTimingNodeAverageSnapshot &snapshot, bool enabled,
     bool supported, std::string_view reason) {
-    auto nodes = nlohmann::json::array();
-    for (const auto &row : snapshot.nodes) {
-        nodes.push_back({
-            {"logical_frame", row.logical_frame},
-            {"graph_variant", row.graph_variant},
-            {"view_index", row.view_index},
-            {"node_ordinal", row.node_ordinal},
-            {"node_kind", row.node_kind},
-            {"node_name", row.node_name},
-            {"barriers_ms", row.barriers_ms},
-            {"body_ms", row.body_ms},
-            {"body_supported", row.body_supported},
-            {"sample_count", row.sample_count},
-        });
-    }
     return nlohmann::json{
         {"schema", "pelican.gpu_timing_node_averages"},
         {"version", 1},
@@ -420,7 +444,7 @@ nlohmann::json gpuTimingNodeAverageStatusJson(
         {"reason", std::string{reason}},
         {"window_size", gpu_timing_node_average_window},
         {"frame_count", snapshot.frame_count},
-        {"nodes", std::move(nodes)},
+        {"nodes", gpuTimingNodeAverageRowsJson(snapshot)},
     };
 }
 
@@ -679,11 +703,6 @@ void RenderTiming::collectGpuResults(bool wait) {
     if (changed) publishSnapshot();
 }
 
-GpuTimingNodeFrame RenderTiming::makeNodeFrame(
-    const GpuTimingHistoryFrame &frame) const {
-    return makeGpuTimingNodeFrame(frame);
-}
-
 void RenderTiming::publishSnapshot() {
     auto snapshot =
         publishLatestGpuTimingSnapshot(gpu_history);
@@ -696,17 +715,8 @@ void RenderTiming::publishSnapshot() {
 }
 
 nlohmann::json RenderTiming::nodeAverageJson() const {
-    const auto frame_count =
-        std::min(gpu_timing_node_average_window, gpu_history.size());
-    std::vector<GpuTimingNodeFrame> node_frames;
-    node_frames.reserve(frame_count);
-    const auto first = gpu_history.end() -
-                       static_cast<std::ptrdiff_t>(frame_count);
-    for (auto frame = first; frame != gpu_history.end(); ++frame) {
-        node_frames.push_back(makeNodeFrame(*frame));
-    }
     return gpuTimingNodeAverageStatusJson(
-        averageGpuTimingNodeFrames(node_frames), true,
+        averageGpuTimingHistoryNodes(gpu_history), true,
         gpu_timestamps_supported, supportReason());
 }
 
@@ -741,6 +751,7 @@ nlohmann::json RenderTiming::statusJson() const {
          projection.logical_frame_total_sum_views_ms},
         {"views", std::move(projection.views)},
         {"nodes", std::move(projection.nodes)},
+        {"node_averages", std::move(projection.node_averages)},
         {"query_pool",
          {{"frame_slots", configured_frame_slots},
           {"range_slots", configured_range_slots},

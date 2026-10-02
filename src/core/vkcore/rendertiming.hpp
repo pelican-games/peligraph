@@ -110,7 +110,10 @@ struct GpuTimingStatusProjection {
     nlohmann::json logical_frame_averages;
     nlohmann::json logical_frame_history;
     nlohmann::json views;
+    // ST-1: the last frame's samples, and the node averages get_gpu_timing
+    // answers (its nodes rows).
     nlohmann::json nodes;
+    nlohmann::json node_averages;
     double logical_frame_total_sum_views_ms = 0.0;
 };
 
@@ -212,8 +215,6 @@ DECLARE_MODULE(RenderTiming) {
     bool collectGpuRange(std::size_t pending_index, bool wait);
     void collectGpuResults(bool wait);
     void addGpuSample(GpuTimingSample sample);
-    GpuTimingNodeFrame makeNodeFrame(
-        const GpuTimingHistoryFrame &frame) const;
     void publishSnapshot();
     std::string formatGpuAverages() const;
     void logAndReset();
@@ -261,7 +262,11 @@ DECLARE_MODULE(RenderTiming) {
     std::uint64_t queryPoolCreateCountForTesting() const { return query_pool_create_count; }
     std::size_t historyFrameCountForTesting() const noexcept {
         return gpu_history.size();
-    }    std::size_t lastSnapshotHistoryFrameVisitsForTesting() const noexcept {
+    }
+    const std::deque<GpuTimingHistoryFrame> &historyForTesting() const noexcept {
+        return gpu_history;
+    }
+    std::size_t lastSnapshotHistoryFrameVisitsForTesting() const noexcept {
         return last_snapshot_history_frame_visits;
     }
     std::size_t pendingRangeCountForTesting() const;

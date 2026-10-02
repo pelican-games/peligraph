@@ -1481,6 +1481,56 @@ TEST_CASE("PO-1 get_status's GPU time starts a new window when an edit publishes
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+TEST_CASE("ST-1 get_status carries the last frame's GPU samples and get_gpu_timing's node averages",
+          "[st1][gpu-timing][status][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("st1_gpu_timing");
+    const auto root = dir.root / "project";
+    writeQ14eProject(root, Json::array({"q14e_a"}), q14f_reads_one_frag);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    {
+        auto authored = Json::parse(readFile(rendering_path));
+        renderingSectionOf(authored)["features"] =
+            Json::array({"engine://features/gpu_timing.json"});
+        writeFile(rendering_path, authored.dump(2));
+    }
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    // More frames than the 120-frame history holds, so the window is full.
+    for (int frame = 0; frame < 130; ++frame) (void)rpc.result("step_frame");
+    const auto status = rpc.result("get_status");
+    const auto timing = status.at("gpu_timing");
+    const auto averages = rpc.result("get_gpu_timing");
+    WARN("ST-1 size: get_status " << status.dump().size() << " bytes, gpu_timing "
+                                  << timing.dump().size() << " bytes, nodes "
+                                  << timing.at("nodes").size() << " rows, history "
+                                  << timing.at("history_count") << " frames");
+    INFO(timing.dump(2));
+    REQUIRE(timing.at("enabled") == true);
+    REQUIRE(timing.at("supported") == true);
+    REQUIRE(timing.at("history_count").get<std::size_t>() >= 2);
+    const auto last_frame = timing.at("logical_frame_history").back().at("logical_frame");
+
+    // nodes: the last frame's samples only (barriers and body per node).
+    const auto &rows = averages.at("nodes");
+    REQUIRE_FALSE(rows.empty());
+    REQUIRE(timing.at("nodes").size() == rows.size() * 2);
+    for (const auto &sample : timing.at("nodes")) {
+        CHECK(sample.at("logical_frame") == last_frame);
+        CHECK(sample.contains("subrange"));
+    }
+
+    // node_averages: the rows get_gpu_timing answers, value for value.
+    REQUIRE(timing.contains("node_averages"));
+    CHECK(timing.at("node_averages") == rows);
+    for (const auto &row : timing.at("node_averages"))
+        CHECK(row.at("sample_count") == averages.at("frame_count"));
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
 TEST_CASE("EL-1 get_render_authoring_context lists the materials a draw_loop judges, by the names it takes",
           "[el1][primitives][draw-loop][rpc][gpu]") {
     setupLogger(true);
