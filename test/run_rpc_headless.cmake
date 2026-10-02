@@ -174,7 +174,7 @@ function(validate_rpc_stdout stdout label)
         message(FATAL_ERROR "${label}: get_status.memory did not expose the additive diagnostics schema:\n${line0}")
     endif()
     # AU-1 decision 9: a headless player mixes into the device-less engine.
-    if(NOT line0 MATCHES [=["audio":\{"available":true,"backend":"offline"\}]=])
+    if(NOT line0 MATCHES [=["audio":\{"available":true,"backend":"offline","voices":\[]=])
         message(FATAL_ERROR "${label}: get_status did not report the headless audio backend:\n${line0}")
     endif()
     if(NOT line0 MATCHES "\"renderdoc\":\"${RENDERDOC_STATUS}\"" OR NOT line0 MATCHES "\"reason\":\"${RENDERDOC_REASON}\"")
