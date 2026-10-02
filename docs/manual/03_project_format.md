@@ -665,7 +665,7 @@ RPC `uninstall_package{namespace}` は `packages/<ns>/` を消し、`project.jso
 - `sha256` は `package list` が再計算して照合します。エンジン起動時には照合しません。
 - `provides.components` は複製されるだけで、engine 側の消費者はまだありません。この `components` は **`pelican.render_component`**(§3.12)のディレクトリを指す語で、**ECS のコンポーネント([第4章](04_scene_ecs.md))とも、`project.json` の他の語とも無関係**です。今日それを読むのは `import_render_feature` だけで、package 経由では読まれません。
 - **install が途中で死ぬと `packages/<namespace>.tmp-<pid>` が残ります**。install 自体は失敗時に自分の staging を消しますが、プロセスごと消えた場合の残骸を**誰も掃除しません**(export 側の `user://components/*.tmp-*` は次の export が掃除します — §3.12。install 側にその機構はありません)。残骸は `pelican_packages()` が飛ばすのでビルドは壊れませんが、手で消す必要があります —— **glob(`packages/*/package.json`)自体は残骸も拾い**、拾ってから `if(package_name MATCHES "\\.tmp-") continue()` で落とす形です([src/player/CMakeLists.txt:277](../../src/player/CMakeLists.txt#L279))。
-- `uninstall_package` が「まだ使われているか」を見るのは **rendering config の root 文書と、その preset だけ**です([renderconfigeditor.cpp:1119](../../src/core/communication/renderconfigeditor.cpp#L1568))。他の feature 文書の中から `project://packages/<ns>/` を参照していても検出されません。
+- `uninstall_package` が「まだ使われているか」を見るのは **rendering config の root 文書と、その preset だけ**です([renderconfigeditor.cpp:1119](../../src/core/communication/renderconfigeditor.cpp#L1580))。他の feature 文書の中から `project://packages/<ns>/` を参照していても検出されません。
 - shader を持ち込む package は未対応です(feature が `engine://` shader だけを参照できる範囲)。
 
 ## 3.12 共有部品(render component)— feature 1 本を持ち出して別 project へ入れる(✅P-2a-3)
@@ -676,7 +676,7 @@ RPC `uninstall_package{namespace}` は `packages/<ns>/` を消し、`project.jso
 
 ### 書き出す(export)
 
-RPC [`export_render_feature{scope, index}`](../../src/core/communication/renderconfigeditor.cpp#L1342)(`scope` は `"root"` か `"preset"`、`index` は `features[]` の何番目か)が 1 本を書き出します。書き先は**固定で `user://components/<name>/`**([renderconfigeditor.cpp:944](../../src/core/communication/renderconfigeditor.cpp#L1393))、`<name>` は feature 文書の `name` です。プロジェクトには 1 バイトも書きません(設計決定 7 — [第1章 §1.5](01_overview.md))。
+RPC [`export_render_feature{scope, index}`](../../src/core/communication/renderconfigeditor.cpp#L1354)(`scope` は `"root"` か `"preset"`、`index` は `features[]` の何番目か)が 1 本を書き出します。書き先は**固定で `user://components/<name>/`**([renderconfigeditor.cpp:944](../../src/core/communication/renderconfigeditor.cpp#L1405))、`<name>` は feature 文書の `name` です。プロジェクトには 1 バイトも書きません(設計決定 7 — [第1章 §1.5](01_overview.md))。
 
 ディレクトリの中身は 2 ファイルです(以下は例):
 
@@ -712,7 +712,7 @@ user://components/glow_bloom/
 
 ### 取り込む(import)
 
-RPC [`import_render_feature{base_source_digest, source_dir, destination_reference}`](../../src/core/communication/renderconfigeditor.cpp#L1411) が、component ディレクトリを読んで **`destination_reference`(`project://…` の新規ファイル)に feature 文書を作り、`rendering.features` に足す**ところまでを **1 つのトランザクション**で行います(`base_source_digest` は CAS。[第13章](13_editor.md))。`source_dir` は**絶対パス**でなければならず、`destination_reference` は `project://` で始まる**新規**ファイル(`#` フラグメント不可)です。**この 3 つは別々の code で断られます** —— `project://` でない / `#` を含むは `invalid_feature_destination`([renderconfigeditor.cpp:974](../../src/core/communication/renderconfigeditor.cpp#L1423))、`source_dir` が絶対でないのは `render_component_invalid`([:980](../../src/core/communication/renderconfigeditor.cpp#L1429))、宛先が既にあるのは `feature_destination_exists`([:1026](../../src/core/communication/renderconfigeditor.cpp#L1475))です。
+RPC [`import_render_feature{base_source_digest, source_dir, destination_reference}`](../../src/core/communication/renderconfigeditor.cpp#L1423) が、component ディレクトリを読んで **`destination_reference`(`project://…` の新規ファイル)に feature 文書を作り、`rendering.features` に足す**ところまでを **1 つのトランザクション**で行います(`base_source_digest` は CAS。[第13章](13_editor.md))。`source_dir` は**絶対パス**でなければならず、`destination_reference` は `project://` で始まる**新規**ファイル(`#` フラグメント不可)です。**この 3 つは別々の code で断られます** —— `project://` でない / `#` を含むは `invalid_feature_destination`([renderconfigeditor.cpp:974](../../src/core/communication/renderconfigeditor.cpp#L1435))、`source_dir` が絶対でないのは `render_component_invalid`([:980](../../src/core/communication/renderconfigeditor.cpp#L1441))、宛先が既にあるのは `feature_destination_exists`([:1026](../../src/core/communication/renderconfigeditor.cpp#L1487))です。
 
 **複製であって参照ではありません** —— 取り込んだ後は component ディレクトリを消してもプロジェクトは描けます。
 
@@ -730,8 +730,8 @@ RPC [`import_render_feature{base_source_digest, source_dir, destination_referenc
 | `render_component_destination_exists` | `user://components/<name>/` が既にある(上書きしません) |
 | `render_component_digest_mismatch` | `feature.json` が `sha256` と一致しない |
 | `render_component_source_inside_project` | `source_dir` が取り込み先プロジェクトの中(それは `project://` で参照するものであって import ではありません) |
-| `render_component_requires_missing` | 宿主が宣言していない RT がある(`render_targets` に不足を列挙 — [renderconfigeditor.cpp:1019](../../src/core/communication/renderconfigeditor.cpp#L1468)) |
-| `render_component_write_failed` | staging ディレクトリの作成・2 ファイルの書き込み・公開 rename のどれかが失敗した([rendercomponent.cpp:37](../../src/project/rendercomponent.cpp#L37)、[:282](../../src/project/rendercomponent.cpp#L282))。受付では export / import の両方が `RenderComponentError` をそのままの code で返します([renderconfigeditor.cpp:955](../../src/core/communication/renderconfigeditor.cpp#L1404)、[:1050](../../src/core/communication/renderconfigeditor.cpp#L1404)) |
+| `render_component_requires_missing` | 宿主が宣言していない RT がある(`render_targets` に不足を列挙 — [renderconfigeditor.cpp:1019](../../src/core/communication/renderconfigeditor.cpp#L1480)) |
+| `render_component_write_failed` | staging ディレクトリの作成・2 ファイルの書き込み・公開 rename のどれかが失敗した([rendercomponent.cpp:37](../../src/project/rendercomponent.cpp#L37)、[:282](../../src/project/rendercomponent.cpp#L282))。受付では export / import の両方が `RenderComponentError` をそのままの code で返します([renderconfigeditor.cpp:955](../../src/core/communication/renderconfigeditor.cpp#L1416)、[:1050](../../src/core/communication/renderconfigeditor.cpp#L1416)) |
 | `invalid_feature_destination` | `destination_reference` が `project://` で始まらない、または `#` を含む(取り込み先の 2 種の 1 つ) |
 | `feature_destination_exists` | `destination_reference` のファイルが既にある(同上) |
 

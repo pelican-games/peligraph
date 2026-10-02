@@ -7,7 +7,7 @@
 - `pelican_player` の全 CLI 引数(**30 個**。正は [main.cpp](../../src/player/main.cpp) の `add_argument` 群)
 - JSON-RPC(stdio)による外部制御 — 基盤メソッド、エディタ拡張、実セッション例
   - **JSON-RPC** は外部プロセスからエンジンを操る制御プロトコル、**stdio** はその通り道です: 起動した `pelican_player --rpc` の標準入力へリクエスト行を書き、標準出力から応答行を読みます(1 行 = 1 リクエスト / 1 応答の NDJSON。詳細は §10.3)
-- `pelican_cli` の **10 サブコマンド系統**(`assets` / `bake-camera` / `image` / `import` / `dist-config` / `package` / `project` / `dump-lowered-material` / `vrm` / `graph-catalog`。正は [main.cpp の usage](../../src/devcli/main.cpp#L47))
+- `pelican_cli` の **11 サブコマンド系統**(`assets` / `audio` / `bake-camera` / `image` / `import` / `dist-config` / `package` / `project` / `dump-lowered-material` / `vrm` / `graph-catalog`。正は [main.cpp の usage](../../src/devcli/main.cpp#L51))
 - ホットリロード(シェーダ・テクスチャ・マテリアル・モデル・ゲーム DLL)と起動高速化
 - ImGui 開発者 UI(F1)と Frame Plan Viewer
 - 配布ビルド、Pelican Studio の現状、テスト基盤
@@ -157,8 +157,8 @@ test は `ew1_engine_window_embedded`([engine_window_embedded.py](../../test/eng
 | `render_frame` | `{}` | 時刻を進めず描画のみ |
 | `capture_gpu` | `{}` | `render_frame` と同じcurrent-time描画を1回だけ**RenderDoc**(GPU に送った描画コマンドを 1 フレーム分丸ごと記録して後から追える外部デバッガ)で captureし、実際に増えたindexのcanonical `.rdc` pathを返す |
 | `capture` | `{path}` | 直近フレームを PNG 保存(sRGB。応答に `encoding:"srgb"`) |
-| `get_frame_plan` | `{}`、または `{loop_elements: {node, offset?, limit?}}`(✅LP-3b。draw_loop の要素の paging) | フレームプラン JSON(fullscreen / raster pass の node には shader の set 1 の宣言 `pass_inputs` が付く。✅VI-1 / VI-1b。LP 系からは最上位の `loops[]`、node と resource の `loop_origin`、node の `view_select` / `view_axes` / `no_selected_view` も。✅LC-1 から、shader が `pelican_loop.glsl` の回の番号を読む pass / task の node に `reads_loop_index: true`。✅PS-1 から、`schedule: "once"` の node に `schedule: "once"`・`last_run_generation`・`last_run_frame`(まだ走っていなければ `null`)。✅IA-1 から、`physical_target_plan.resources[]` の `initial: {asset}` を持つ image の要素に `initial_asset: {asset, sha256}`(`sha256` は `assets.manifest` の値、載っていなければ `null`)。形は[第 13 章](13_editor.md) §13.5「ループと分解の RPC」) |
-| `rerun_once` | `{node?}`(✅PS-1。`node` は空でない文字列。ほかの鍵は `-32602`) | `{scheduled: [<pass / task の名前>...]}`。`schedule: "once"` の node を次の frame で走らせる。`node` を省くと今の frame plan の once の全部、graph の node の id ならその node が作った once、`graph.loop` の id なら全回の once。per_frame の node は `[]`。frame plan に無い名前は `-32602` で `data` が `{code: "node_unknown", node}`([`rerun_once` の登録](../../src/core/communication/rpcserver.cpp#L2445)、[`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4086)。走る条件は[第 6 章](06_rendering.md) §6.18「一度だけ走る pass と、frame をまたぐ image」) |
+| `get_frame_plan` | `{}`、または `{loop_elements: {node, offset?, limit?}}`(✅LP-3b。draw_loop の要素の paging) | フレームプラン JSON(fullscreen / raster pass の node には shader の set 1 の宣言 `pass_inputs` が付く。✅VI-1 / VI-1b。LP 系からは最上位の `loops[]`、node と resource の `loop_origin`、node の `view_select` / `view_axes` / `no_selected_view` も。✅LC-1 から、shader が `pelican_loop.glsl` の回の番号を読む pass / task の node に `reads_loop_index: true`。✅PS-1 から、`schedule: "once"` の node に `schedule: "once"`・`last_run_generation`・`last_run_frame`(まだ走っていなければ `null`)。✅IA-1 から、`physical_target_plan.resources[]` の `initial: {asset}` を持つ image の要素に `initial_asset: {asset, sha256}`(`sha256` は `assets.manifest` の値、載っていなければ `null`。✅AB-1 から、asset の隣に `.import.json` があれば `derived_from` / `stale` / `stale_reasons` も)。形は[第 13 章](13_editor.md) §13.5「ループと分解の RPC」) |
+| `rerun_once` | `{node?}`(✅PS-1。`node` は空でない文字列。ほかの鍵は `-32602`) | `{scheduled: [<pass / task の名前>...]}`。`schedule: "once"` の node を次の frame で走らせる。`node` を省くと今の frame plan の once の全部、graph の node の id ならその node が作った once、`graph.loop` の id なら全回の once。per_frame の node は `[]`。frame plan に無い名前は `-32602` で `data` が `{code: "node_unknown", node}`([`rerun_once` の登録](../../src/core/communication/rpcserver.cpp#L2445)、[`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4087)。走る条件は[第 6 章](06_rendering.md) §6.18「一度だけ走る pass と、frame をまたぐ image」) |
 | `pick_object` | `{x, y}` | 最後に完了した **ID バッファ**(色ではなく「そのピクセルに写っているオブジェクトの ID」を書き出す描画出力。`picking` feature が宣言する `R32_UINT` のレンダーターゲット `picking_id` — [picking.json](../../src/core/resources/features/picking.json))の 1 ピクセルを同期読み出し。`engine://features/picking.json` が必要 |
 | `set_gizmo` | `{selection:GizmoSelection\|null, mode}` | 選択 transform のギズモ表示を設定/解除。`engine://features/gizmo.json` が必要 |
 | `query_gizmo_handle` | `{selection:GizmoSelection, mode, x, y}` | 指定した選択・mode・物理 pixel にある handle を状態なしで問い合わせ。同 feature が必要 |
@@ -316,25 +316,25 @@ component に `resolution_error`。
 
 2026-09 の追加(GP-4、`c095493c`): `get_status` の `input` に `cursor {requested, effective, embedded}`([組み立て](../../src/core/communication/rpcserver.cpp#L1731))。`requested` はゲームコードが `ctx.input().setCursorMode` で頼んだモード、`effective` は窓に適用したモード(`normal` / `hidden` / `locked`)、`embedded` は窓が別の窓に埋め込まれているか(`--rpc` かつ `WS_CHILD`。Windows だけで判定)。埋め込みでは `locked` を頼んでも `effective` は `normal` です。headless は窓が無いので `effective` は常に `normal`、`embedded` は `false`。
 
-2026-09 の追加(AG-3a、`32d9a20b`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L3313)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L383))。読み取り専用で `edit_*` の CAS には乗らない。
+2026-09 の追加(AG-3a、`32d9a20b`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L3325)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L383))。読み取り専用で `edit_*` の CAS には乗らない。
 
 **`get_graph_values` と `get_graph_node_values` は問いが違います。**前者は `instance` 必須で、その
 **instance の入力 port だけ**を `{port, value, source, connected|parameter}` として返します(`source` は
 `connected` / `parameter` / `default` / `override`)。後者は**展開木のノードを全部**並べ、各ノードの出力値を
-`outputs` に入れます([実装](../../src/core/communication/renderconfigeditor.cpp#L3232))。両方とも
+`outputs` に入れます([実装](../../src/core/communication/renderconfigeditor.cpp#L3244))。両方とも
 **同じ publish snapshot を読むだけ**で再評価しません —— 再評価は graph の時計を進め event を二重に消費するためです。
 `source: "rendering"` は「これは描画側の評価が使った値だ」という明示で、animation phase は同じ文書を
 自分の state で評価するため、event や trigger で駆動される文書では両者が恒久的に違いうることを表します。
 
 2026-09 の追加(グラフ・共有部品・package): `get_graph_instances` / `get_graph_catalog` / `get_graph_values` /
-`edit_graph_document` / `edit_graph_instances`([登録](../../src/core/communication/editorrpchandlers.cpp#L256))、
+`edit_graph_document` / `edit_graph_instances`([登録](../../src/core/communication/editorrpchandlers.cpp#L264))、
 `export_render_feature` / `import_render_feature`(`user://components/<name>/` 経由の共有部品)、
 `install_package` / `uninstall_package`(`project://packages/<ns>/` への vendoring)。params と返り値、
 `ops` の 5 種と `scope`、名前付きの拒否は [第13章](13_editor.md) §13.5 が正です。
 
 2026-10 の追加(IA-2 / SC-1 / EL-6。形の正は [第13章](13_editor.md) §13.5):
 
-- 新メソッド `get_registered_providers {}`(✅EL-6、`5582bb93`)→ `{draw_sort, pass_implementation, region_replacements, graph_transforms, render_strategy}`。各値は `[{name, source: "engine" | "game", provider_version}]` を名前順で、呼ぶたびに registry から読みます([登録 `get_registered_providers`](../../src/core/communication/editorrpchandlers.cpp#L291))。
+- 新メソッド `get_registered_providers {}`(✅EL-6、`5582bb93`)→ `{draw_sort, pass_implementation, region_replacements, graph_transforms, render_strategy}`。各値は `[{name, source: "engine" | "game", provider_version}]` を名前順で、呼ぶたびに registry から読みます([登録 `get_registered_providers`](../../src/core/communication/editorrpchandlers.cpp#L299))。
 - `reload_render_documents` の committed の結果に `changed_assets`(✅IA-2、`cdcdebc1`)。image の `initial` の asset の中身だけが変わったときも組み直して公開し、その asset を辞書順で並べます。何も変わらなければ `no_change: true`・`changed_assets: []`。
 - `get_components` / `scene_tree` の `schema.fields[]` と `get_component_add_candidates` の `schema_fields[]` に、camera の `controller.*` の `discriminant` / `applies_to` / `required_for` / `default`(✅SC-1、`14e10b19`)。`controller.type` は `enum` `["orbit", "follow", "fly"]` になりました。
 - `get_render_features` の `feature_instances[].parameter_schema` の宣言に `engine_default`(✅SC-1)。materialize 済みの feature で、元の `default` を持つ宣言だけです。
@@ -345,6 +345,14 @@ component に `resolution_error`。
 - 名前付きの拒否 `graph.render_node_parameter_invalid@1 {node, op, parameter, expected, reason: type | enum | range, allowed? | min? / max?}`(✅CT-3)。編集の rejected には CT-2 の `document` も付きます。
 - `get_graph_catalog` の `material_pass_contracts` の各 contract に `screen_inputs` / `surface_resources`(`[{name, source_type}]`。✅MP-1、`afd923e1`)。CLI には出ません。
 - `get_frame_plan` の material pass の node に `drawn_materials: [{material?, id, draws}]`・`drawn_materials_frame`、256 件を超えたら `drawn_materials_truncated: true`(✅MP-1)。最後に公開した logical frame で、その pass が描いた material です。
+
+2026-10 の追加(FR-1 / FR-2 / AB-1。形の正は [第13章](13_editor.md) §13.5、[第6章](06_rendering.md) §6.5・§6.8・§6.18、[第5章](05_assets.md) §5.8):
+
+- `list_render_features` の各 feature に `required_targets: [{name, type, usage?}]`(✅FR-1、`45ca769b`)と `insertion: [{pass, anchor, position}]`(✅FR-2、`0b15fb62`)。feature を足す前に、pipeline に要る target と挿入先が分かります。
+- `get_render_authoring_context` に `snapshot_after_candidates`(✅FR-1)。`rendering.snapshots` の `after` に書ける名前です。
+- 名前付きの拒否 `feature.required_target_missing@1 {feature, target, type, document}`・`snapshot.after_unknown@1 {snapshot, after, resolved?, candidates}`(✅FR-1)、`feature.insertion_anchor_missing@1 {feature, anchor, candidates, document}`(✅FR-2)。`graph.target_ref_type_mismatch@1` に `expected: {type, layers?}`(✅FR-1)。
+- 新メソッド `bake_audio_analysis {asset, out, settings?}`(✅AB-1、`892a1455`)→ `{ticket, status: "accepted", asset, out}`。worker で焼き、`get_edit_result` の committed に `{operation: "bake_audio_analysis", asset, out, manifest, layout}`([登録 `bake_audio_analysis`](../../src/core/communication/editorrpchandlers.cpp#L258))。
+- 新メソッド `list_derived_assets {}`(✅AB-1)→ `[{asset, manifest, tool, source, derived_from, stale, stale_reasons}]`(配列)。asset store の `*.import.json` を全部読みます([登録 `list_derived_assets`](../../src/core/communication/editorrpchandlers.cpp#L261))。
 
 ### 起動時の asset 検証の結果(✅AV-1)
 
@@ -515,7 +523,7 @@ AuthoringObjectId は scratch session 内で新しく採番されます。採用
 ## 10.4 pelican_cli リファレンス
 
 ```
-pelican_cli <assets|bake-camera|image|import|dist-config|package|project|dump-lowered-material|vrm|graph-catalog> ...
+pelican_cli <assets|audio|bake-camera|image|import|dist-config|package|project|dump-lowered-material|vrm|graph-catalog> ...
 ```
 
 エラーは stderr+終了コード -1、成功は 1 行サマリ+終了コード 0。
@@ -732,6 +740,30 @@ pelican_cli image ktx2 --out sky.ktx2 --hdr sky.hdr
 - 成功すると `ktx2 <format> <W>x<H> -> <out>` の 1 行で終了コード 0、失敗は stderr に理由で -1 です。
 - 書いた file は engine の KTX2 の読み込みで読めます([第5章](05_assets.md) §5.2「テクスチャ・画像と atlas」の KTX2 の対応範囲)。test: `ia1_ktx2_cli_test` の [「IA-1 pelican_cli image ktx2 writes --raw and --hdr files the loader reads」](../../test/ia1_ktx2_cli_test.cpp#L97)。
 
+### `pelican_cli audio analyze --asset <file> --out <file.ktx2> [options]`(✅AB-1)
+
+音(WAV / Ogg Vorbis)を解析して、rms・peak・帯域の値の表(`R32_SFLOAT` の KTX2)と、隣の manifest `<out>.import.json` を書きます(`892a1455`。[`runAnalyze()`](../../src/devcli/audiocommand.cpp#L33))。RPC `bake_audio_analysis` と同じ関数を呼び、同じ settings を受けます。表の形・manifest・settings の既定と範囲は [第5章](05_assets.md) §5.8「音の解析を焼いた表」です。
+
+```sh
+pelican_cli audio analyze --asset sounds/tone.wav --out tables/tone.ktx2
+pelican_cli audio analyze --asset sounds/tone.wav --out tables/few.ktx2 --features rms,bands --bands 4 --hop-ms 20 --channels left
+```
+
+| option | settings の鍵 |
+|---|---|
+| `--features rms,peak,bands` | `features`(カンマ区切り) |
+| `--bands N` | `bands` |
+| `--hop-ms MS` / `--window-ms MS` | `hop_ms` / `window_ms` |
+| `--attack-ms MS` / `--release-ms MS` | `smoothing.attack_ms` / `smoothing.release_ms` |
+| `--channels mix\|left\|right` | `channels` |
+
+- 数の option は JSON の数として読むので、整数は整数のまま RPC と同じ検査を通ります。数でない文字は `<option> must be a number: <文字>` です。
+- `--out` の拡張子が `.ktx2` でなければ断ります。`--asset` と `--out` は project の参照ではなく file の path です。
+- 成功すると stdout に `{"out", "manifest", "layout"}` の JSON(字下げ 2)を出して終了コード 0。名前付きの拒否は stderr に `<code> <fields の JSON>`(`audio.analysis_settings_invalid@1` など)、ほかの失敗は理由の文で、どちらも -1 です。settings で断ったときは何も書きません。
+- `PELICAN_WITH_AUDIO=OFF` の build の `pelican_cli` は `audio.analysis_unavailable@1 {"reason":"built_without_audio"}` で断ります。
+- `pelican_cli` は engine を link しないので、engine の decode(`src/core/audio/sounddecode.cpp`)と bake(`audioanalysis.cpp`)を自分の source に入れ、miniaudio の実装を自分の unit(`src/devcli/miniaudioimpl.cpp`)で持ちます([`src/devcli/CMakeLists.txt` の AB-1 の部分](../../src/devcli/CMakeLists.txt#L28))。
+- test: `ab1_audio_analysis_test` の [「AB-1 a bake of 440 Hz then silence: rms and peak follow the tone and the band holding 440 Hz leads」](../../test/ab1_audio_analysis_test.cpp#L151)(`runAudioCommand()` を直接呼ぶ)。
+
 ## 10.5 ホットリロード(✅WP90/96〜110/147/162/178)
 
 保存すれば動いたまま反映される、が現在の開発体験です。基盤は [src/core/watch/](../../src/core/watch)(FileWatcher + ReloadService。デバウンス 200ms、適用は**次フレーム先頭で一括**、mid-frame 差し替えなし)。
@@ -884,7 +916,7 @@ pan が書け、`key` は `route`(`widget` 既定 / `window`)を取って **`win
 ✅IA-1s で、シナリオが Studio の外の作業を代わりにする口が 2 つ増えました。
 
 - **`file` step の `copy`**: `{"file": "copy", "path": "{project}/x", "from": "{artifacts}/y"}` は `from` の file を `path` へ byte のまま写します(あれば上書きします。[file step の copy](../../tools/studio_drive.py#L801))。`write` は UTF-8 の文字しか書けないので、人が外で焼き直した binary の file を project の file に上書きする、の代わりです。`path` と `from` のどちらも run の持つ 2 つの directory(`{project}` と `{artifacts}`)の中でなければ step の失敗です(ほかの `file` step と同じ範囲。[第13章](13_editor.md) §13.5「Studio の自動化面」)。
-- **`<名前>.prepare.py`**: `test/studio_scenarios/<名前>.json` の隣に `<名前>.prepare.py` があると、ctest の `run_studio_scenario.cmake`([prepare の script を走らせる cmake の口](../../test/run_studio_scenario.cmake#L68))は driver を起こす前に `<python> -B <名前>.prepare.py --out <run の directory>/incoming --cli <pelican_cli>` を走らせます(120 秒で打ち切り)。人が Studio を開く前に外で作る file(自分の script で書いて CLI で焼いた資産など)の代わりで、シナリオは `{artifacts}/incoming/` の file を Studio の Import で取り込みます(`{artifacts}` がその run の directory です)。`pelican_cli` は ctest の登録が target から `-DCLI=` で渡し([prepare に CLI を渡す登録](../../test/CMakeLists.txt#L3527))、target が無いか file が無ければ、prepare を持つシナリオは失敗です。prepare が 0 以外で終わっても、その stderr を付けて失敗です。`tools/studio_drive.py` を直接回すときは prepare は走りません(ctest の cmake の口のため)。
+- **`<名前>.prepare.py`**: `test/studio_scenarios/<名前>.json` の隣に `<名前>.prepare.py` があると、ctest の `run_studio_scenario.cmake`([prepare の script を走らせる cmake の口](../../test/run_studio_scenario.cmake#L68))は driver を起こす前に `<python> -B <名前>.prepare.py --out <run の directory>/incoming --cli <pelican_cli>` を走らせます(120 秒で打ち切り)。人が Studio を開く前に外で作る file(自分の script で書いて CLI で焼いた資産など)の代わりで、シナリオは `{artifacts}/incoming/` の file を Studio の Import で取り込みます(`{artifacts}` がその run の directory です)。`pelican_cli` は ctest の登録が target から `-DCLI=` で渡し([prepare に CLI を渡す登録](../../test/CMakeLists.txt#L3537))、target が無いか file が無ければ、prepare を持つシナリオは失敗です。prepare が 0 以外で終わっても、その stderr を付けて失敗です。`tools/studio_drive.py` を直接回すときは prepare は走りません(ctest の cmake の口のため)。
   - 今 prepare を持つのは `gui_build_ltc` だけです。[`gui_build_ltc.prepare.py`](../../test/studio_scenarios/gui_build_ltc.prepare.py) は LTC の表 2 枚と焼き直した 1 枚を raw の float で書き、`pelican_cli image ktx2 --format R32G32B32A32_SFLOAT --raw … --width 64 --height 64`(§10.4)で `.ktx2` にします。
   - 書式の正の [README](../../test/studio_scenarios/README.md) には、`copy` と prepare はまだ書かれていません(IA-1s の commit は README を変えていません)。
 
@@ -1110,7 +1142,7 @@ HEAD が動くと configure が再実行される。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。2026-07-10 以降の追加: `run_devcli_assets`(WP66)/ `run_event_schema_compile`(WP71)/ `run_dump_lowered_material`(WP76)/ `run_devcli_gltf_extract`(WP79)/ `run_spvlink_golden`(WP80)/ `run_devcli_rules_import`(WP84)/ `run_devcli_bake_camera` + `run_input_record_replay_headless`(WP89)/ `run_ui_u2_rpc_replay`(WP93)など。
 - 2026-09 の追加: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(ctest 名 `devcli_graph_catalog`。`pelican_cli graph-catalog` の出力を検査し、**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` / `:end` のコメントで区切られていて、誰も比べない写しを 2 つ目の正にしないための仕掛けです)、`package_install_smoke`(X-1。install → カタログ → 描画 → uninstall を実 player で。`gpu` ラベル)、[`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(出荷 project の走査。`project.json` の `requires` が満たせない project は**名前を出して skip** し、player の中で落ちません)。
 - **Studio のシナリオ(Q-1)**: `test/studio_scenarios/*.json` は 1 本が 1 つの ctest `studio_scenario_<名前>` になり
-([登録](../../test/CMakeLists.txt#L3494))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
+([登録](../../test/CMakeLists.txt#L3504))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
 実物の player が埋まるので `QT_QPA_PLATFORM=offscreen` は掛けません。Studio target と Python 製テストを有効にし、
 Python 3.11 以上を用意します。`uv` は不要です。完全な GPU gate はシナリオの未登録・skip を失敗にするため、
 `SKIP_DEVSTUDIO=OFF` と `PELICAN_PYTHON_TESTS=ON` を指定します。[`run_studio_scenario.cmake`](../../test/run_studio_scenario.cmake#L30) が fixture

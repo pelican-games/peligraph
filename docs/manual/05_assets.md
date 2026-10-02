@@ -225,9 +225,9 @@ pelican_player --headless --project <dir> --frames 3 --size 160x90 --fps 30 \
 外部ツール(Houdini アダプタ・Blender スクリプト等)は、変換結果を `imports/<tool>/<納品名>/` に **manifest.json(`pelican.import` v1)付き**で書き出します。manifest の実例とスキーマは [第10章](10_tools.md) §10.4 を参照してください。要点:
 
 - `outputs[]` の各ファイルに **sha256 必須**。`pelican_cli import` が全数照合し、不一致は即エラー。
-- 出力の `schema` は 8 種のみ受理されます([importmanifest.cpp](../../src/project/importmanifest.cpp) の `validateOutputSchema`)。それ以外は `import manifest output schema is not supported` で拒否です。
+- 出力の `schema` は 9 種のみ受理されます([importmanifest.cpp](../../src/project/importmanifest.cpp) の `validateOutputSchema`)。それ以外は `import manifest output schema is not supported` で拒否です。
   - `gltf` / `png` — `version` を**書いてはいけません**(書くとエラー)
-  - `pelican.transform_seq` / `pelican.layout` / `pelican.atlas` / `pelican.material` — `version: 1` が**必須**(欠落も `requires version 1` で拒否)
+  - `pelican.transform_seq` / `pelican.layout` / `pelican.atlas` / `pelican.material` / `pelican.audio_analysis_table`(✅AB-1。音の解析を焼いた表。§5.8 の「音の解析を焼いた表」)— `version: 1` が**必須**(欠落も `requires version 1` で拒否)
   - `pelican.scene` — `version: 2` が**必須**(✅MG-2b。エンジンが scene v2 しか読まないため、`1` を名乗る納品は `expected=2, actual=1` で拒否)
   - `khronos.ktx2` — `version: 2` が**必須**
 - glb だけが `asset_data.json` に自動登録されます(それ以外の schema は検証のみ)。
@@ -310,6 +310,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 | pelican.vat(glb extras) | 頂点アニメ | ✅ WP20(`PELICAN_WITH_VAT`) |
 | pelican.anim_graph | アニメーショングラフ([第8章](08_gameplay.md)) | ✅ WP101 |
 | pelican.import(manifest) | 納品の検証・登録 | ✅ WP21 |
+| 音の解析の表(R32_SFLOAT の KTX2 + `<表>.import.json`) | 音から焼いた rms / peak / 帯域の値の表。`value.sample_table` と `pelican_sample_table.glsl` で読む | ✅ AB-1(焼くのは `PELICAN_WITH_AUDIO` の build だけ。下の「音の解析を焼いた表」) |
 | pelican.import_rules | 一括取り込みのルール表 | ✅ WP84 |
 | pelican.assets(manifest) | バイナリの sha256 台帳 | ✅ WP66 |
 | pelican.input_seq(JSONL) | 入力収録([第7章](07_input_ui.md)) | ✅ WP89 |
@@ -323,7 +324,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 
 ### 音声形式(✅AU-2)
 
-エンジンが鳴らせる音は **WAV と Ogg Vorbis** の 2 つです(2026-09-24 利用者裁定。MP3 / FLAC は需要が出てから)。`playSound` でもグラフの `audio.playback` の `asset` でも同じ規則で、**拡張子と先頭 bytes が同じ形式を指すときだけ**受け付けます([`detectSoundFormat`](../../src/core/audio/audio.cpp#L318))。
+エンジンが鳴らせる音は **WAV と Ogg Vorbis** の 2 つです(2026-09-24 利用者裁定。MP3 / FLAC は需要が出てから)。`playSound` でもグラフの `audio.playback` の `asset` でも同じ規則で、**拡張子と先頭 bytes が同じ形式を指すときだけ**受け付けます([`detectSoundFormat`](../../src/core/audio/sounddecode.cpp#L263)。✅AB-1 で decode は `audio.cpp` から `sounddecode.cpp` に移りました)。
 
 | 形式 | 拡張子(大文字小文字は区別しない) | 先頭 bytes |
 |---|---|---|
@@ -333,6 +334,80 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 - それ以外は decode の前に `audio.format_unsupported@1` `{asset, extension, signature, supported}` で拒否されます。拡張子と中身が食い違うもの(中身が WAV の `.ogg` など)や、Opus / FLAC を入れた `.ogg` もここで止まります。
 - 10 秒を超える音は全体を decode せず streaming で鳴ります(第8章 §8.11「長い音の streaming」)。
 - 方針の正は [資産形式の方針](../design_asset_format_policy.md) §1.1 です。
+
+### 音の解析を焼いた表(✅AB-1)
+
+音の大きさや帯域ごとの強さで絵を動かすときは、音を**先に解析して表に焼き**、その表を読みます(`892a1455`)。解析は取り込みのたびには走らず、明示の Bake(RPC `bake_audio_analysis` か `pelican_cli audio analyze`)だけが表を書きます。方針と設計は [design_audio.md](../design_audio.md) §6 です。
+
+**焼く口は 2 つで、中身は同じ関数です**([`bakeAudioAnalysis()`](../../src/core/audio/audioanalysis.cpp#L201))。
+
+- RPC `bake_audio_analysis {asset, out, settings?}`: render config の ticket で、worker の thread で焼きます([第13章](13_editor.md) §13.5「音の解析を焼く」)。
+- CLI `pelican_cli audio analyze --asset <file> --out <file.ktx2> [...]`([第10章](10_tools.md) §10.4)。
+- 音の decode は engine の音の再生と同じ関数の集まり([`decodeWholeSound()`](../../src/core/audio/sounddecode.cpp#L345))で、上の「音声形式」と同じ規則で WAV / Ogg Vorbis だけを受けます。10 秒を超える音も streaming にせず全体を decode します。
+
+**settings**([`parseAudioAnalysisSettings()`](../../src/project/audioanalysisformat.cpp#L91))。どれも省けます。`settings` を省くか `null` なら全部が既定です。
+
+| 鍵 | 既定 | 受ける値 |
+|---|---|---|
+| `features` | `["rms", "peak", "bands"]`(全部) | この 3 つの名前の、空でない配列(同じ名前を 2 度書くと断る) |
+| `bands` | `8` | 整数 1〜128 |
+| `hop_ms` | `10` | 数 1〜1000(標本の間隔) |
+| `window_ms` | `hop_ms` の 2 倍 | 数 1〜4000(1 標本が見る幅) |
+| `smoothing.attack_ms` / `smoothing.release_ms` | `0`(なし) | 数 0〜60000 |
+| `channels` | `"mix"` | `"mix"` / `"left"` / `"right"` |
+
+ほかの鍵・型の違い・範囲の外は `audio.analysis_settings_invalid@1` `{field, reason, value?}` で断られ、何も書きません(`field` は `smoothing.attack_ms` のように道筋で)。
+
+**計算**([`analyzeAudio()`](../../src/core/audio/audioanalysis.cpp#L93))
+
+- 標本 i は時刻 `i × hop` を中心にした `window_ms` の窓で、標本の数は `floor(frame の数 / hop) + 1` です。窓が音の外にはみ出した所は 0 として数えます。
+- `channels` の `mix` はチャンネルの平均、`left` は 1 本目、`right` は 2 本目(モノラルなら 1 本目)です。
+- `rms` と `peak` は窓の中の値そのものから取ります。
+- 帯域は Hann 窓をかけた FFT(自前の radix-2。大きさは窓の幅以上の 2 の冪)で、帯 b は `[20 × (nyquist/20)^(b/N), 20 × (nyquist/20)^((b+1)/N))` Hz に入る bin の振幅(`2|X| / 窓の和`)の二乗和の平方根です(20 Hz から Nyquist までの対数間隔。最後の帯は Nyquist の bin まで)。コードの注記では、振幅 1 の正弦は rms 約 0.71、peak 1、自分の帯で約 1.2 です。
+- `smoothing` は行ごとの 1 次の追従で、値が上がる時は `attack_ms`、下がる時は `release_ms` の時定数です(0 はその向きの追従なし)。
+- 同じ bytes と同じ settings からは同じ file が書かれます(test で 2 回焼いて bytes を比べています)。
+
+**表の形**(`R32_SFLOAT` の 2D の KTX2。mip 1 段)
+
+- 幅は 4096 で固定です。行の並び(feature)は `rms`、`peak`、`band:0` 〜 `band:<N-1>` の順で、`features` で省いたものは入りません。
+- 各 feature は `rows_per_feature = ceil(標本の数 / 4096)` 行を縦に使います。feature f の標本 i は texel `(i % 4096, f × rows_per_feature + i / 4096)` で、余りは 0 です。
+- 例(test): 48 kHz・1 秒の WAV を既定の settings で焼くと、`width` 4096・`rows_per_feature` 1・`sample_count` 101・`hop_seconds` 0.01、`features` は `rms` / `peak` / `band:0` 〜 `band:7` の 10 行です。
+
+**manifest**(表の隣の `<out>.import.json`。既存の `pelican.import` v1 の形。[`audioAnalysisManifest()`](../../src/project/audioanalysisformat.cpp#L230))。test の 1 回目の bake の形です(音と表が同じ dir):
+
+```json
+{"schema": "pelican.import", "version": 1,
+ "tool": {"name": "pelican.audio_analysis", "version": "1"},
+ "source": {"file": "tone.wav",
+            "metadata": {"sha256": "<音の sha256>",
+                         "settings": {"features": ["rms", "peak", "bands"], "bands": 8, "hop_ms": 10.0,
+                                      "window_ms": 20.0, "smoothing": {"attack_ms": 0.0, "release_ms": 0.0},
+                                      "channels": "mix"},
+                         "settings_sha256": "<settings の sha256>",
+                         "layout": {"width": 4096, "rows_per_feature": 1, "sample_count": 101,
+                                    "hop_seconds": 0.01, "features": ["rms", "peak", "band:0", "...", "band:7"]}}},
+ "outputs": [{"file": "tone.ktx2", "schema": "pelican.audio_analysis_table", "version": 1, "sha256": "<表の sha256>"}]}
+```
+
+- `source.file` は manifest の置き場所からの相対です。`settings` は既定を埋めた全部の鍵で、`settings_sha256` はその JSON の sha256 です。
+- `created` は書きません。同じ bytes と settings からは同じ manifest になります。
+- 表と manifest は、隣の一時 file に書いてから名前を付け替えます(コードの注記: 読む側が書きかけを見ないため)。
+
+**読む**: CPU は graph の op `value.sample_table {asset, row, time?}`、GPU は engine の include `pelican_sample_table.glsl` です([第6章](06_rendering.md) §6.18「焼いた音の解析の表を読む」)。
+
+**古いかどうか**: RPC `list_derived_assets {}` と、`get_frame_plan` の `initial_asset` が、manifest を持つ file について `stale` と `stale_reasons` を返します([第13章](13_editor.md) §13.5)。理由は `source_missing` / `source_changed`(元の音が無い・sha256 が違う)、`output_missing` / `output_changed`(表が無い・sha256 が違う)、`settings_changed`(manifest の `settings` が `settings_sha256` と合わない)、`tool_version`(版が `"1"` でない)です([`readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250))。古くなっても自動では焼き直しません。
+
+**拒否**(RPC では rejected、CLI では stderr に `<code> <fields の JSON>` と終了コード -1)
+
+| code | いつ | fields |
+|---|---|---|
+| `audio.analysis_settings_invalid@1` | settings が読めない(RPC ではすぐ断る) | `{field, reason, value?}` |
+| `audio.format_unsupported@1` | 音が WAV / Ogg Vorbis でない(上の「音声形式」と同じ判定) | AU-2 と同じ(RPC では `asset` / `out` が要求の値) |
+| `audio.analysis_failed@1` | settings の後の失敗(音が読めない・decode できない・`hop_ms` が音の 1 標本より短い・file が書けない) | `{asset, out, message}` |
+| `audio.analysis_busy@1` | 同じ `out` を焼いている途中(RPC だけ) | `{out, ticket}` |
+| `audio.analysis_unavailable@1` | `PELICAN_WITH_AUDIO=OFF` の build | `{reason: "built_without_audio"}` |
+
+test: `ab1_audio_analysis_test` の [「AB-1 a bake of 440 Hz then silence: rms and peak follow the tone and the band holding 440 Hz leads」](../../test/ab1_audio_analysis_test.cpp#L151)(CLI で焼く。前半 440 Hz・後半無音の 1 秒の WAV で、前半の rms と peak、440 Hz を含む `band:3` が他の帯より大きいこと、後半がほぼ 0、2 回焼いて同じ bytes、option の組、範囲外の `--bands 0` で何も書かないこと)。
 
 ## 関連文書
 

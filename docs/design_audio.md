@@ -74,3 +74,49 @@ headless は device を開かない offline エンジン、null は開けなか�
 2. web プロファイル: WebAudio 写像は形式(WAV/Ogg)がそのまま通るので
    サブセット原則は保てる — WW 化は web 側に音の需要が出てから
 3. SoundHandle の世代管理(再利用事故防止)— handle.hpp の既存流儀に従う
+
+## 6. 音の解析の焼き込み(AB-1、`892a1455`、2026-10-02)
+
+利用者の方針(2026-10-02): DCC 寄りの機能は入れるが、完成時は完全に焼き込む。v0 の音の解析は焼き込みにする。将来のリアルタイムを塞がない。
+決定性(scrub / headless / null backend で同じ値)を保つ。形は GUI session と合意した(2026-10-02)。利用者向けの説明は
+`docs/manual/05_assets.md` §5.8「音の解析を焼いた表」、読み方は `docs/manual/06_rendering.md` §6.18「焼いた音の解析の表を読む」。
+
+### 6.1 焼く
+
+- 操作は明示の Bake だけ。取り込みのたびには走らない。口は 2 つで同じ関数を呼ぶ:
+  RPC `bake_audio_analysis {asset, out, settings}`(render config editor の非同期 ticket。worker の thread で焼き、frame と RPC を止めない。
+  committed の結果は `{out, manifest, layout}`)と、CLI `pelican_cli audio analyze`
+- decode は engine の既存の decode を使い、新しい decoder は入れない。CLI が engine を link せずに同じ decode を使えるよう、
+  WAV / Ogg の decode を `src/core/audio/sounddecode.cpp` に移した
+- 解析は rms・peak・N 本の帯域。帯域は 20 Hz から Nyquist までの対数間隔で、Hann 窓と自前の FFT で計算する(依存を足さない)
+- settings: `features`(rms / peak / bands、既定は全部)、`bands`(既定 8)、`hop_ms`(既定 10)、`window_ms`(既定は hop の 2 倍)、
+  `smoothing {attack_ms, release_ms}`(既定 0 = なし)、`channels`(mix / left / right、既定 mix)。範囲は manual 05 の表
+
+### 6.2 保存形
+
+- 表は 1 つの KTX2(`R32_SFLOAT`、2D)。幅は 4096 で固定。行の並び(feature)は rms、peak、band:0 .. band:N-1(settings で省いたものは入れない)。
+  各 feature は `ceil(標本の数 / 4096)` 行を縦に使い、feature f の標本 i は `(i % 4096, f × rows_per_feature + i / 4096)`
+- 隣に既存の `pelican.import` manifest(`<out>.import.json`)を置く。新しい manifest の形は作らない。
+  tool は `pelican.audio_analysis`(版 `"1"`)、`source.metadata` に元の音の sha256・settings(既定を埋めた全部)・settings_sha256・layout、
+  output の schema は `pelican.audio_analysis_table` v1
+- `created` は書かない。同じ bytes と settings からは同じ 2 つの file になる
+
+### 6.3 読む
+
+- CPU: graph の op `value.sample_table {asset, row, time?}`(module `pelican.value`、`evaluation: baked`)。row は名前か番号。
+  time の edge を省くと scene_time(`audio.playback` と同じ時計)。表は graph を組む時に読むので、焼き直しは graph の組み直しまで届かない
+- GPU: engine の include `pelican_sample_table.glsl` の `pelican_sample_table(...)`。CPU と同じ読み方(2 標本の線形補間)。
+  表は `render.image` の `initial: {asset}`(IA-1)で読み込む想定。GPU で実際に描く test は無い(未確認)
+
+### 6.4 古いかどうか
+
+- 元の音の sha256 が manifest の値と違うか、manifest の settings が settings_sha256 と合わなければ stale。表そのものの欠けや sha256 の違い、tool の版の違いも stale の理由になる
+- RPC `list_derived_assets {}` が asset store の `*.import.json` を全部読み、`get_frame_plan` の `initial_asset` も同じ判定を付ける。
+  古くなっても自動では焼き直さない
+
+### 6.5 将来のリアルタイム(未実装)
+
+- 将来の op `audio.analysis {voice|bus, features}` は、bake と同じ行の並び(rms、peak、band:0 ..)で、**今の frame の値**を出す形にする。
+  表の形式と row の名前を bake と共有するので、`value.sample_table` で組んだ graph をリアルタイムの値へ差し替えられる
+  (`src/project/audioanalysisformat.hpp` の冒頭の注記も同じことを書いている)
+- 今回は design に書くだけで、op も parameter も登録していない

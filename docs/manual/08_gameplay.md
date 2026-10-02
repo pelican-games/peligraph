@@ -207,7 +207,7 @@ engine は RPC の `set_play_state` で一時停止でき、`advance_frames` で
 
 > **この 3 本は「アニメーションの API」ですが、対象が 2 つに分かれていて互いに委譲しません(✅AG-1b 決定 5)。ファサード分割もその線を引き直しただけで、行き先は変わっていません。** `render().setValueGraphParameter` が触るのは **pass 文書の `graph.instance`** の入力ポート、`animation().setParameter` / `animation().forceState` が触るのは **シーンの `animation` コンポーネント**が持つ評価器です(前者は [gamecontext.cpp:406](../../src/core/userpublic/gamecontext.cpp#L630) で `SceneLoader` へ、後者は [:319](../../src/core/userpublic/gamecontext.cpp#L535) / [:329](../../src/core/userpublic/gamecontext.cpp#L545) で `AnimationSystem` へ行きます)。**姿勢の装着様式が 2 つある**(§8.13)ことがそのまま API に出ています。同じ owner に両方は付かないので、「どちらを呼ぶか」は装着の仕方で決まります。
 >
-> 同じ `graph.instance` 側には `render().emitValueGraphEvent(object, input, command)` もあります。`input` は **`event.playback` ノードの(展開後の)id** で、そこから `value.event_clock` / `audio.playback` の `events` ポートへ再生制御イベントが流れます([valuegraph.cpp:302](../../src/core/userpublic/valuegraph.cpp#L517))。
+> 同じ `graph.instance` 側には `render().emitValueGraphEvent(object, input, command)` もあります。`input` は **`event.playback` ノードの(展開後の)id** で、そこから `value.event_clock` / `audio.playback` の `events` ポートへ再生制御イベントが流れます([valuegraph.cpp:302](../../src/core/userpublic/valuegraph.cpp#L568))。
 >
 > 一方、**姿勢の評価器そのものは `GameContext` に載っていません** — 評価器を載せると標準の評価器だけが特権を持ってしまい、「評価器ごと自作できる」という設計が空文になるためです([../design_animation_graph.md](../design_animation_graph.md))。自作評価器は凍結 C-ABI 経由です(§8.13)。
 
@@ -833,7 +833,7 @@ bool playing = ctx.audio().isPlaying(h);
 ctx.audio().stopSound(h);
 ```
 
-- 対応フォーマットは **WAV と Ogg Vorbis** です(✅AU-2。MP3 / FLAC は需要が出てから)。**拡張子(大文字小文字は区別しない)と先頭 bytes が同じ形式を指すときだけ**受け付けます([`detectSoundFormat`](../../src/core/audio/audio.cpp#L318))。
+- 対応フォーマットは **WAV と Ogg Vorbis** です(✅AU-2。MP3 / FLAC は需要が出てから)。**拡張子(大文字小文字は区別しない)と先頭 bytes が同じ形式を指すときだけ**受け付けます([`detectSoundFormat`](../../src/core/audio/sounddecode.cpp#L263)。✅AB-1 で decode は `sounddecode.cpp` に移りました)。
   - `.wav` は先頭が `RIFF`、8 byte 目から `WAVE`。中身は PCM か IEEE float で、規格から外れたもの(chunk の食い違い、block align の不一致など)は `Invalid WAV: ...` で拒否します。
   - `.ogg` は先頭が `OggS` で、最初の packet が Vorbis の識別 header(`\x01vorbis`)であること。**Opus や FLAC を入れた Ogg は通りません。**
   - それ以外(`.mp3`、拡張子なし、中身が WAV の `.ogg` のような食い違い)は、decode の前に **`audio.format_unsupported@1`** `{asset, extension, signature, supported}` で拒否します。`signature` は先頭 bytes の判定(`wav` / `ogg` / `unknown`)です。`playSound` からもこの名前の例外が出ます。
@@ -841,13 +841,13 @@ ctx.audio().stopSound(h);
 - 再生バックエンドは miniaudio(0.11.25)で、Ogg Vorbis の decoder は miniaudio に同梱の stb_vorbis です(`PELICAN_WITH_AUDIO` の中だけで有効)。
 - **10 秒を超える音は streaming で鳴ります**(✅AU-2。長さは header で判断)。全体を decode せず、符号化されたままの bytes を 1 つだけ持ち、voice ごとに自分の decoder で再生しながら読みます。下の「長い音の streaming」を見てください。
 - `playSound(path)` は se バスで鳴ります。**`playSound(path, bus)`**([宣言](../../src/core/userpublic/gamecontext.hpp#L89))は `"se"` か `"bgm"` を受け、それ以外(`"master"` を含む)は `Unknown audio bus: <名前> (a voice plays on se or bgm)` で投げます。master は se と bgm の両方に掛かる音量で、voice を載せる先ではありません。実効音量は master × 各バスです。
-- **同じアセットの decode は 1 回です**(✅AU-1)。decode した結果はアセットの正規化した参照を鍵に保持し、ディスク上のファイルなら更新時刻とサイズも鍵に含めます(置き換えたファイルは decode し直す)。合計の上限は 256 MB で、超えたときは **どの voice も持っていないもの**から捨てます([`decodedCacheBudget`](../../src/core/audio/audio.cpp#L408))。`playSound`、グラフの voice、rendering config 登録時のアセット検査が同じ decode を共有します。streaming の音(10 秒超)も同じ cache に入りますが、持つのは PCM ではなく符号化された bytes で、上限にはその大きさで数えます。
+- **同じアセットの decode は 1 回です**(✅AU-1)。decode した結果はアセットの正規化した参照を鍵に保持し、ディスク上のファイルなら更新時刻とサイズも鍵に含めます(置き換えたファイルは decode し直す)。合計の上限は 256 MB で、超えたときは **どの voice も持っていないもの**から捨てます([`decodedCacheBudget`](../../src/core/audio/audio.cpp#L58))。`playSound`、グラフの voice、rendering config 登録時のアセット検査が同じ decode を共有します。streaming の音(10 秒超)も同じ cache に入りますが、持つのは PCM ではなく符号化された bytes で、上限にはその大きさで数えます。
 - `PELICAN_WITH_AUDIO=OFF` ビルドで音 API を呼ぶと、どのフラグで無効化されたかを言うエラー(`BuildFeatureCallDisabledError`、`code()` = `build_feature_disabled@1`)になります。`onDestroy` の中だけは例外にならず `effect_errors` に積まれます(§8.4「機能を外した build」)。
 - **シーンロード中(behavior の `onInit` / `onDestroy`)に呼ぶと、再生・停止・バス音量はロードの成功後にまとめて適用されます**(§8.4 の囲み・[第4章 §4.3](04_scene_ecs.md))。`isPlaying` / `busVolume` はその予約を反映した値を返します。
 
 ### どのバックエンドで鳴るか(✅AU-1、起動時の指定は ✅AU-3)
 
-起動で名指ししなければ、起動の形でバックエンドが決まります([`preferredAudioBackend`](../../src/core/audio/audio.cpp#L437)、[`Audio::Audio()`](../../src/core/audio/audio.cpp#L807))。
+起動で名指ししなければ、起動の形でバックエンドが決まります([`preferredAudioBackend`](../../src/core/audio/audio.cpp#L87)、[`Audio::Audio()`](../../src/core/audio/audio.cpp#L457))。
 
 | 起動の形 | バックエンド | 音 |
 |---|---|---|
@@ -886,14 +886,14 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
   - 値は mixer ではなく、直前の frame が各 voice に求めたことから読みます。なので **null backend でも同じ値**です。
   - `idle` は voice が無いとき(まだ始まっていない・reset された・scene の commit で止まった)、`paused` は voice が止められているとき(voice 自身の pause、時計や `position` が止まっている、`delay` に届いていない)です。
   - 編集モード(`get_status.play.state` が `edit`)の間は何も鳴らないので、全部 `idle` で 0 です。game を一時停止している間は mix 全体が止まるので、鳴るはずの voice は `paused` になります。
-  - `get_graph_node_values` で読める `audio.playback` の node の値(lowering の後の op は `audio_playback`)は、その node の `time` 入力の秒で、`position_seconds`(音源の秒)とは意味が違います([評価する所](../../src/core/userpublic/valuegraph.cpp#L801))。
+  - `get_graph_node_values` で読める `audio.playback` の node の値(lowering の後の op は `audio_playback`)は、その node の `time` 入力の秒で、`position_seconds`(音源の秒)とは意味が違います([評価する所](../../src/core/userpublic/valuegraph.cpp#L853))。
   - 例(Play → 数 frame): `"voices": [{"node": "voice", "state": "playing", "position_seconds": <進んだ秒>}]`(test の、`time` に `scene_time` を繋いだ voice では、0 から frame ごとに 1 frame の秒ずつ進む)。Pause の後は `paused` になり、Stop の後は `{"node": "voice", "state": "idle", "position_seconds": 0.0}` です。test: `audio_test` の [「CT-1 get_status lists each graph voice's state and position, the same on the null backend」](../../test/audio_test.cpp#L908)(null backend の headless)。
   - Studio のシナリオ `graph_read` は、`9ca2d3ce` から `audio` の鍵が 3 つ(`available`・`backend`・`voices`)であることを見ます(`audio.$len` が 3。[第13章](13_editor.md) の「シナリオは無音です」)。CT-1 の着地の docs の時点では 2 つを見ていて、鍵の数が合わないはずでした。この docs ではシナリオを走らせて確かめていません(未確認)。
   - Studio の Graph は ✅UX-9 から、`audio.playback` の node の下の帯にこの `state` と `position_seconds` を `playing · 1.2 s` の形で出します(`edit` の間の `idle` は出しません。[第13章](13_editor.md) の「保存中でも palette が開く、確定前の値を送る、voice の帯、起動時の致命の 1 文」)。
 
 ### グラフで鳴らす — `audio.playback`(✅AU-1)
 
-`audio.playback` は 1 ノードで 1 つの voice です。catalog の入力と parameter は次のとおりです([登録](../../src/project/graphmodule.cpp#L806))。
+`audio.playback` は 1 ノードで 1 つの voice です。catalog の入力と parameter は次のとおりです([登録](../../src/project/graphmodule.cpp#L815))。
 
 | 種類 | 名前 | 意味 |
 |---|---|---|
@@ -916,7 +916,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 **一体版でも `events` は任意です**(✅AU-3。AU-2 までは必須で、無いと `unconnected graph input: <node>.events` で拒否されていました)。
 
-- `events` も `position` も無いノードは、**owner の最初のフレームで鳴り始め**、そのフレームから `time` 入力の時計で経過時間(写像の elapsed)を数えます([開始](../../src/core/userpublic/valuegraph.cpp#L964))。分解版の「`events` が無ければ owner の最初のフレーム」と同じ規則です。
+- `events` も `position` も無いノードは、**owner の最初のフレームで鳴り始め**、そのフレームから `time` 入力の時計で経過時間(写像の elapsed)を数えます([開始](../../src/core/userpublic/valuegraph.cpp#L1016))。分解版の「`events` が無ければ owner の最初のフレーム」と同じ規則です。
 - `events` が無いときの `time` は、どの時計から来てもかまいません(`time` でも `scene_time` でも、時計の無い定数でも拒否されない)。
 - `time` は必須のままです。`events` を繋ぐなら `time` は `scene_time` だけから、の検査(`audio.clock_mismatch@1`、下の「状態と拒否」)も変わりません。
 - Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L3485)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。✅UX-8 から、palette の `audio.volume` / `audio.pitch` は置く前に駆動する voice(scope の `audio.playback`)を聞き、その `voice` からの線と、`value` に 1 の `value.constant` をつないだ形で置かれます。palette の `value.curve`(`time` が `scene_time` につながった、1 秒で 0 から 1 の key)を `value` へ線で落とせば、下の「フェード」の形になります。音声の file は Studio の File ▸ Import Sound… か Sound の欄の Import… で project の `assets/audio/` に写せます(同じ名前があれば `_2`)。どれも [第13章](13_editor.md) の「音の node を置く・音声を Import する(✅UX-8)」です。
@@ -947,7 +947,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 (`rendering` など pass 文書の他のキーは省略しています。)ゲームコードからは `ctx.render().emitValueGraphEvent(object, "car_hum/cue", Animation::CurvePlaybackCommand::start)` で鳴らします(§8.4。`pause` / `resume` / `reset` も同じ口)。
 
-- `wrap` が `once` / `repeat` で、`speed` / 範囲 / `delay` が**固定値**かつ `speed > 0` のとき、voice は miniaudio のループ点で **sample 精度のネイティブループ**になります([判定](../../src/core/userpublic/valuegraph.cpp#L439))。voice は自分の時計で進み、フレームと mixer の普通のずれでは seek しません。**グラフの時刻と 0.25 s 以上離れたとき**(`set_time` で時刻が飛んだ、engine の時計がフレームを丸めた、など)だけ seek してグラフの時刻へ戻します([`nativeResyncSeconds`](../../src/core/loader/scenegraphruntime.cpp#L19))。
+- `wrap` が `once` / `repeat` で、`speed` / 範囲 / `delay` が**固定値**かつ `speed > 0` のとき、voice は miniaudio のループ点で **sample 精度のネイティブループ**になります([判定](../../src/core/userpublic/valuegraph.cpp#L472))。voice は自分の時計で進み、フレームと mixer の普通のずれでは seek しません。**グラフの時刻と 0.25 s 以上離れたとき**(`set_time` で時刻が飛んだ、engine の時計がフレームを丸めた、など)だけ seek してグラフの時刻へ戻します([`nativeResyncSeconds`](../../src/core/loader/scenegraphruntime.cpp#L19))。
 - それ以外(`ping_pong`、負の `speed`、写像のどれかを edge で駆動)は、下の分解版と同じ追従で鳴ります。
 - `delay` の間と、`once` で範囲の終わりを過ぎた後は止まっています。
 
@@ -977,9 +977,9 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 #### 状態と拒否
 
 - 各ノードは **idle / playing / paused** の状態機械を持ちます。`start` で(もう一度 `start` すれば voice を作り直して)playing、`pause` で paused、`resume` で playing に戻り、`reset` で idle(voice を止める)。
-- `position` と写像(`wrap` / `source_begin` / `source_end` / `speed` / `delay` のどれか。parameter でも edge でも)を 1 ノードに同時に書くと **`audio.playback_mapping_conflict@1`** `{node, parameters}`([valuegraph.cpp](../../src/core/userpublic/valuegraph.cpp#L97))。
-- `events` を繋いだノードで、`time` が読む時計(上流を辿って届く `value.input` のうち `time` / `scene_time` の名前の集合)が **`scene_time` だけ**でないと **`audio.clock_mismatch@1`** `{node, events_clock: ["scene_time"], time_clock}`(✅AU-2、[events の時計の検査](../../src/core/userpublic/valuegraph.cpp#L110))。`time` に `time` を繋いだもの、`time` と `scene_time` の両方が届くもの、**時計の無い定数**(`time_clock` が空)も拒否されます。一体版にも分解版にも掛かります。
-- さらに `position` も繋いだノードで、`position` が読む時計が `time` の時計と違うと **`audio.clock_mismatch@1`** `{node, events_clock, position_clock}`([position の時計の検査](../../src/core/userpublic/valuegraph.cpp#L122))。`position` の上流に時計が無いとき(定数など)はこの検査をしません。
+- `position` と写像(`wrap` / `source_begin` / `source_end` / `speed` / `delay` のどれか。parameter でも edge でも)を 1 ノードに同時に書くと **`audio.playback_mapping_conflict@1`** `{node, parameters}`([valuegraph.cpp](../../src/core/userpublic/valuegraph.cpp#L108))。
+- `events` を繋いだノードで、`time` が読む時計(上流を辿って届く `value.input` のうち `time` / `scene_time` の名前の集合)が **`scene_time` だけ**でないと **`audio.clock_mismatch@1`** `{node, events_clock: ["scene_time"], time_clock}`(✅AU-2、[events の時計の検査](../../src/core/userpublic/valuegraph.cpp#L121))。`time` に `time` を繋いだもの、`time` と `scene_time` の両方が届くもの、**時計の無い定数**(`time_clock` が空)も拒否されます。一体版にも分解版にも掛かります。
+- さらに `position` も繋いだノードで、`position` が読む時計が `time` の時計と違うと **`audio.clock_mismatch@1`** `{node, events_clock, position_clock}`([position の時計の検査](../../src/core/userpublic/valuegraph.cpp#L121))。`position` の上流に時計が無いとき(定数など)はこの検査をしません。
 - `bus` が `se` / `bgm` 以外なら `unknown audio bus: <名前> (a voice plays on se or bgm)`。
 
 #### events を使うなら `time` は `scene_time`(✅AU-2 で強制)
@@ -1044,7 +1044,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 ### 長い音の streaming(✅AU-2)
 
-- header が言う長さが **10 秒を超える**音は、WAV でも Ogg Vorbis でも streaming で鳴ります(判定は [`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L864)、10 秒は [`defaultStreamingThresholdSeconds`](../../src/core/audio/audio.cpp#L401))。
+- header が言う長さが **10 秒を超える**音は、WAV でも Ogg Vorbis でも streaming で鳴ります(判定は [`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L514)、10 秒は [`defaultStreamingThresholdSeconds`](../../src/core/audio/audio.cpp#L51))。
 - 全体を decode しません。**rendering config 登録時のアセット検査も header だけを読みます**(WAV は短い WAV と同じ chunk の規則、Ogg Vorbis は decoder で header と長さを読む)。
 - decode の cache が持つのは PCM ではなく **符号化された bytes** で、同じアセットを鳴らす voice の間で 1 つを共有します。voice はそれぞれ自分の decoder(`ma_decoder`)を持ち、再生しながら読みます。
 - 一体版のネイティブループも、分解版の seek も、decode 済みの音と同じ意味で動きます(範囲・ループ点・開始位置は同じ frame 番号で指定します)。
@@ -1063,7 +1063,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 ### 残した穴(AU-3 の時点)
 
-- **`events` の無い voice は、owner がいったん不活性になって戻ると頭から鳴り直します。** 不活性の間はノードの状態を捨て([該当箇所](../../src/core/userpublic/valuegraph.cpp#L926))、戻ったフレームで改めて開始する(一体版は経過時間をそのフレームから数え直す)ためです。
+- **`events` の無い voice は、owner がいったん不活性になって戻ると頭から鳴り直します。** 不活性の間はノードの状態を捨て([該当箇所](../../src/core/userpublic/valuegraph.cpp#L978))、戻ったフレームで改めて開始する(一体版は経過時間をそのフレームから数え直す)ためです。
 - **`wrap: once`(既定)で `events` が無いと、owner の最初のフレームから 1 回だけ鳴って止まります。** 好きな時に鳴らしたいなら `events` を繋ぎます(ループさせたいなら `wrap: repeat`)。
 
 ## 8.12 永続化(✅WP65)

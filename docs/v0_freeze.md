@@ -118,13 +118,13 @@ parameter ごとに既定と違う扱い(catalog の `change.parameters`)があ�
 `?` の付いた入力は任意。
 
 **`PELICAN_WITH_ANIMATION=OFF` build では `pelican.pose` module が無い**。
-catalog は 4 module / 30 op になり、下表の `pose.*` 6 本(`pose.blend` / `pose.clip_sample` /
+catalog は 4 module / 31 op になり、下表の `pose.*` 6 本(`pose.blend` / `pose.clip_sample` /
 `pose.retarget` / `pose.skeletal` / `pose.state_machine` / `pose.transform`)だけが消える。
 この関係は `test/run_devcli_graph_catalog.cmake` が「この表の op 集合 == ON の catalog、⊇ OFF の catalog」として検査する
 (表の範囲は下の 2 つのコメント行で区切る。行を足すときは ON の catalog に載る op だけ)。
 
 **`PELICAN_WITH_AUDIO=OFF` build では `pelican.audio` module が無い**。下表の `audio.*` 3 本(`audio.pitch` / `audio.playback` / `audio.volume`)が消え、
-catalog は 4 module / 33 op(animation も OFF なら 3 module / 27 op)になる。`audio.*` を書いた文書は `graph.operation_unregistered@1`。
+catalog は 4 module / 34 op(animation も OFF なら 3 module / 28 op)になる。`audio.*` を書いた文書は `graph.operation_unregistered@1`。
 `event.playback` とその出力型 `pelican.event.playback_control@1` は `pelican.value` に属するので残る(PG-1 で型を `pelican.value` へ移した)。
 同じ test は `WITH_AUDIO` と `WITH_ANIMATION` の両方を受け取り、module 数(3 + audio + animation。GP-3 までは 2 が基数で、`pelican.ui` が常に加わって 3 になった)と、この表のうち
 build から外した unit の op(`audio.*` / `pose.*`)だけが欠けてよいことを確かめる(`de84fddb`。AUDIO=OFF は catalog から
