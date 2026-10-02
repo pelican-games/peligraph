@@ -350,7 +350,7 @@ color attachment stateは「未指定」の空表現を保ちます。省略をo
 
 **stem(ステム)** はファイル名から拡張子を落とした部分のことです([用語集](14_glossary.md))。シェーダは**拡張子なしの stem** で参照します(例: `"shaders/lava"`、`"engine://ssao"`)。`.vert` / `.frag` / `.spv` などの拡張子を書くと「use an extensionless <stage> shader stem」エラーになります(WP63)。
 
-拡張子は stem ではなく、**その参照を書いた場所(どのシェーダステージか)**が決めます。`shader.vertex` に書いた `"shaders/lava"` なら `.vert`、`shader.fragment` なら `.frag`、compute の `shader` なら `.comp` です。そのうえで解決順は ① `<stem>.<ステージ拡張子>`(GLSL ソース → 実行時コンパイル)→ ② `<stem>.<ステージ拡張子>.spv`(ビルド済み SPIR-V)。つまり fragment に `"shaders/lava"` と書くと `shaders/lava.frag` → `shaders/lava.frag.spv` の順に探します。①の候補は**実行時コンパイラを含むビルドでのみ**列に入る(`PELICAN_RUNTIME_SHADER_COMPILER` — [第2章](02_getting_started.md))ので、配布ビルドでは実質 `.spv` だけです([shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp#L558))。どちらも無ければ試行パス一覧付きエラー。
+拡張子は stem ではなく、**その参照を書いた場所(どのシェーダステージか)**が決めます。`shader.vertex` に書いた `"shaders/lava"` なら `.vert`、`shader.fragment` なら `.frag`、compute の `shader` なら `.comp` です。そのうえで解決順は ① `<stem>.<ステージ拡張子>`(GLSL ソース → 実行時コンパイル)→ ② `<stem>.<ステージ拡張子>.spv`(ビルド済み SPIR-V)。つまり fragment に `"shaders/lava"` と書くと `shaders/lava.frag` → `shaders/lava.frag.spv` の順に探します。①の候補は**実行時コンパイラを含むビルドでのみ**列に入る(`PELICAN_RUNTIME_SHADER_COMPILER` — [第2章](02_getting_started.md))ので、配布ビルドでは実質 `.spv` だけです([shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp#L590))。どちらも無ければ試行パス一覧付きエラー。
 
 (**GLSL** は Vulkan/OpenGL 系のシェーダ言語、**SPIR-V** はそれをコンパイルした GPU 向け中間バイナリ形式です。)
 
@@ -3076,7 +3076,7 @@ graph の fullscreen / raster pass の読む image port は、既定では resou
   - fullscreen と raster の pass は、それをその入力のサンプラーと view に載せます([`applyPassInputSettings()`](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L1673))。同じ pass の名前付きの resource port とは同居できます。既定値は変わりません(sampling は linear・repeat。subresource を書かない入力の view は RS-14 の前のまま)。
   - 画素で確かめたこと: 上半分が赤・下半分が緑の画像を下端の外(v = 1.25)で読む fullscreen pass は、`address: "clamp_to_edge"` を書くと全面緑、書かないと(repeat)全面赤です。サンプラーの値は、`bloom_composite` の番号 1 に `nearest` / `clamp_to_edge` / `mip 0` を書き、番号 0 は既定のまま、という組でも確かめています。raster の番号付きの入力と、`subresource` の画素は test で見ていません。
   - test: `featurecompose_test` の [「RS-14 a numbered input's sampling and subresource reach the pass as input_settings」](../../test/featurecompose_test.cpp#L8443)(書かなければ field が無い / 番号 1 だけなら `[null, {…}]` / 番号 0 だけなら 1 要素 / 名前付きの port と同じ言葉で断る / `view` は断る)、`vi1_variadic_inputs_test` の [「RS-14 a graph numbered input takes a named port's sampling and subresource onto its sampler」](../../test/vi1_variadic_inputs_test.cpp#L1634)(GPU)。
-  - Studio の pass の欄は、この文書の時点で番号付きの入力の Filter / Address / mip を押せません([第13章](13_editor.md) §13.5「pass の欄の Inputs」の ⚠)。
+  - Studio の Graph の pass の欄は ✅UX-7(`1fcd155e`)から番号付きの入力の Filter / Address / mip を押せて、この 2 つを port に書きます。fullscreen の pass に新しく作る番号付きの入力には `clamp_to_edge` を書きます(engine の既定は `repeat` のまま。[第13章](13_editor.md) §13.5「pass の欄の Inputs」)。
 
 ### view の軸を選ぶ —— `view_select`(✅LP-Va / LP-Va2)
 
@@ -3378,7 +3378,7 @@ feature の instance は object 形で `pass_replacements` を持てます。値
   - **resource の node の欠け**: `render.buffer` / `render.attribute` の `element`、`render.image` / `render.target_ref` の `type` の中の `semantic` / `arguments` の欠けは、RS-9 の `graph.render_node_parameters_missing@1` で、`missing` にその名前(`type.semantic` など)が 1 つ入ります([作る所](../../src/project/graphmodule.cpp#L310))。
   - **graph の展開の欠け**: 文書や definition の `nodes` / `outputs`、node の `id` / `op`、`graph.instance` の `definition`、edge の `node` / `port` が無いと、場所を名指す `std::invalid_argument`(`graph definition <名前> requires nodes`、`graph node <id> requires op` など。[作る所](../../src/project/graphcomposition.cpp#L31))。node の `outputs` が無いときは、出力の無い node として `unknown graph output port: <id>.<port>` になります。`render.raster` の `draw` の `vertex_source` / `index_source` が pass の port でない、または edge の来ない port を名指すと `render.raster draw <鍵> names no port of this pass` / `names a port no edge feeds`。
   - **どこで断られるか**: 編集の RPC では rejected で、engine は動き続けます(test で確かめています)。`reload_render_documents` では `render_pipeline_preflight_failed` の message の中に code が入ります。起動時の読み込みでは今も致命の扱いで engine は終了し、その致命の行に code が出るようになっただけです(この 2 つは実装者の報告で、test はありません)。
-  - test: `renderconfigeditor_test` の [「CT-1 a render port or parameter field the document lacks is refused by name」](../../test/renderconfigeditor_test.cpp#L1312)。
+  - test: `renderconfigeditor_test` の [「CT-1 a render port or parameter field the document lacks is refused by name」](../../test/renderconfigeditor_test.cpp#L1316)。
 - `graph.loop_*` の draw_loop の 5 つ(`variant_missing` 以下)と `view_select` の 4 つは、例外の文として `<code>: <JSON の fields>` の形で運ばれ、編集 RPC の結果では**その code のまま**、fields を `ticket` と `participant` の横に並べて返ります(message の頭は `<code>: <JSON>` のまま)。draw_loop の 5 つがこの形になったのは engine の `992225fb` からで、それより前は `render_pipeline_preflight_failed` の message に code が埋もれ、fields がありませんでした([`isCarriedRefusalCode()`](../../src/core/communication/renderconfigeditor.cpp#L76))。変種(preview / xr)の preflight で断られたときも同じ形で、横に `variant` が付きます(第13章「変種と組み直しの拒否の形」)。
 - web は `graph.loop` と LP 系の op を読みません(`graph.operation_unregistered@1`)。`view_select` と `pass_replacements` を web の parser が名前付きで断る件は WEB-1(別 repo)の範囲で、この repo では確かめていません(未確認)。
 

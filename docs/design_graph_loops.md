@@ -344,6 +344,8 @@ GB-3(Blank から GUI で FFT の海を組む試験)で、body の shader に回
 - ray tracing の pipeline は重なりを検査しない。
 - fullscreen pass の `push_constants: "camera_position"` / `"projection_view"` は宣言だけで、engine は値を push していない(LC-1 の前からの状態。`PELICAN_LOOP_CUSTOM_PUSH` で `projection_view` と並べる形は compile と反映の test でだけ確かめた)。
 
+**Studio 側(LC-1s、`ed4ed5f9`、2026-10-02)**: Graph の pass の欄の New… でループの body(分岐の body を含む)の pass に雛形を作ると、`pelican_sets.glsl` の include の次に `#include "pelican_loop.glsl"` と使い方の 1 行を入れる(ループの外では入れない。雛形は自分の push constant の block を持たないので `PELICAN_LOOP_CUSTOM_PUSH` の形にはしない。Pass Editor の New… は入れない。[`withLoopElementInclude()`](../src/devstudio/view/fullscreenshadertemplate.cpp#L358))。frame plan の node の `reads_loop_index` を読み、その node が作った pass が読んでいれば、body の pass の帯に `reads element`、pass の欄に「This shader reads the loop element (pelican_loop_element)」(ループに複製されない pass なら「outside a loop it reads element 0」)を出す([`GraphCanvasModel::loopElementRead()`](../src/devstudio/model/graphcanvasmodel.cpp#L3687))。`shader.loop_push_overlap@1` は Graph の拒否の 1 文の表に入る。GB-3 の `gui_build_ocean` は FFT の段を 16 本の分岐から 1 本の body(`ocean_fft.frag` が `pelican_loop_element()` で段を選ぶ、Count は `2 * log2(256)`)に書き直し、json の step は 552 から 235 になった。見え方は manual 第13章 §13.5 の「ループの body の pass は回の番号を読めます」。
+
 ## 3. 実行の段(engine が決めるもの)
 
 | `over` の種類 | body の中身 | 段 | 実行 |
