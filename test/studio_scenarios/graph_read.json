@@ -20,12 +20,12 @@
       "value": "null"
     },
     {
-      "label": "it was named, not fallen back to: no fallback_reason beside it",
+      "label": "it was named, not fallen back to: no fallback_reason beside it (available, backend and, from CT-1, voices)",
       "expect": "rpc_equals",
       "method": "get_status",
       "params": {},
       "path": "audio.$len",
-      "value": 2
+      "value": 3
     },
     {
       "label": "the Graph tab is the one on screen",
