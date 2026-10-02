@@ -1,8 +1,13 @@
 #pragma once
 
+#include <cstddef>
 #include <filesystem>
+#include <functional>
+#include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Pelican {
@@ -26,8 +31,26 @@ struct AuthoringGeneratedSource {
     // lives under .pelican/generated/ (never in the project's history) and is
     // named by its content's digest.
     std::string path;
+    // A text file (a shader) fills `text`; CV-4: a binary one (a glyph atlas
+    // PNG) fills `bytes` and leaves `text` empty.
     std::string text;
+    std::vector<std::byte> bytes;
 };
+
+// CV-4: what a lowering may read besides the document. `read_asset` takes a
+// project reference (project://...) and returns the file's bytes -- the same
+// buffer while the file is unchanged, so a lowering can keep what it made of
+// it -- or nullptr when there is no such file. Without it, a document that
+// needs a file (a shape.text's font) is refused by name.
+struct AuthoringLoweringContext {
+    std::function<std::shared_ptr<const std::vector<std::byte>>(std::string_view reference)> read_asset;
+};
+
+// CV-4: a read_asset over the project's files: `resolve` maps a reference to
+// a path (nullopt: no such file). A file is read once while its size and
+// modification time stay the same (a process-wide memo).
+AuthoringLoweringContext projectFileLoweringContext(
+    std::function<std::optional<std::filesystem::path>(std::string_view reference)> resolve);
 
 struct AuthoringLowering {
     nlohmann::json document;
@@ -42,10 +65,11 @@ struct AuthoringLowering {
     nlohmann::json reports = nlohmann::json::object();
 };
 
-AuthoringLowering lowerAuthoringDocument(const nlohmann::json &graph_document);
+AuthoringLowering lowerAuthoringDocument(const nlohmann::json &graph_document,
+                                         const AuthoringLoweringContext &context = {});
 
 // Writes the generated sources under `project_root`. A file that already holds
-// the same text is left as it is -- its name is its content's digest, so a
+// the same bytes is left as it is -- its name is its content's digest, so a
 // published generation reading it never sees it change -- and a new one is
 // written beside its place and renamed into it.
 void writeAuthoringGeneratedSources(const AuthoringLowering &lowering, const std::filesystem::path &project_root);

@@ -9,10 +9,13 @@
 #include <argparse/argparse.hpp>
 #include <nlohmann/json.hpp>
 
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <set>
+#include <string_view>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -38,6 +41,18 @@ void writeText(const fs::path &path, const std::string &text) {
     if (!out) throw std::runtime_error("cannot write " + path.string());
     out << text;
     if (!out) throw std::runtime_error("cannot write " + path.string());
+}
+
+// CV-4: a shape.text font, read from the project being lowered.
+std::shared_ptr<const std::vector<std::byte>> readProjectAsset(const fs::path &project_dir, std::string_view reference) {
+    constexpr std::string_view scheme = "project://";
+    if (!reference.starts_with(scheme)) return nullptr;
+    const auto path = project_dir / fs::path{std::string{reference.substr(scheme.size())}};
+    std::error_code error;
+    if (!fs::is_regular_file(path, error)) return nullptr;
+    const auto text = readText(path);
+    const auto *begin = reinterpret_cast<const std::byte *>(text.data());
+    return std::make_shared<const std::vector<std::byte>>(begin, begin + text.size());
 }
 
 // The project, less what belongs to one checkout: its history and the
@@ -86,7 +101,9 @@ int lower(const fs::path &project_dir, const fs::path &out_dir) {
     std::vector<Lowered> lowered;
     for (const auto &document : renderingDocuments(project)) {
         auto text = readText(project_dir / document);
-        auto lowering = lowerCanvasNodes(nlohmann::json::parse(text));
+        auto lowering = lowerCanvasNodes(nlohmann::json::parse(text), {}, [&](std::string_view reference) {
+            return readProjectAsset(project_dir, reference);
+        });
         lowered.push_back({document, std::move(text), std::move(lowering)});
     }
 
@@ -96,7 +113,10 @@ int lower(const fs::path &project_dir, const fs::path &out_dir) {
         if (!entry.lowering.changed) continue;
         writeText(out_dir / entry.path, entry.lowering.document.dump(2) + "\n");
         for (const auto &generated : entry.lowering.generated_sources)
-            writeText(out_dir / generated.path, generated.text);
+            writeText(out_dir / generated.path,
+                      generated.bytes.empty()
+                          ? generated.text
+                          : std::string{reinterpret_cast<const char *>(generated.bytes.data()), generated.bytes.size()});
     }
     if (const auto requires_list = project.find("requires");
         requires_list != project.end() && requires_list->is_array()) {
@@ -119,10 +139,15 @@ int lower(const fs::path &project_dir, const fs::path &out_dir) {
             auto kind_names = OrderedJson::array();
             for (const auto kind : kinds) kind_names.push_back(std::string{canvasItemKindName(kind)});
             // Each draw of the output (its groups' first, its own last)
-            // generated one vertex and one fragment source.
+            // generated one vertex and one fragment source; CV-4: each font
+            // face a glyph atlas.
             auto generated = OrderedJson::array();
-            for (const auto &source : lowering.generated_sources)
-                if (source.output == output.id && source.stage == "vert") generated.push_back(source.stem);
+            auto atlases = OrderedJson::array();
+            for (const auto &source : lowering.generated_sources) {
+                if (source.output != output.id || source.scope != output.scope) continue;
+                if (source.stage == "vert") generated.push_back(source.stem);
+                else if (source.stage == "atlas") atlases.push_back(source.path);
+            }
             OrderedJson row{{"id", output.id}};
             if (!output.scope.empty()) row["scope"] = output.scope;
             row["document"] = entry.path;
@@ -130,6 +155,7 @@ int lower(const fs::path &project_dir, const fs::path &out_dir) {
             if (!output.groups.empty()) row["groups"] = output.groups.size();
             row["kinds"] = std::move(kind_names);
             row["generated"] = std::move(generated);
+            if (!atlases.empty()) row["atlases"] = std::move(atlases);
             report["outputs"].push_back(std::move(row));
         }
         for (const auto &diagnostic : lowering.diagnostics) report["diagnostics"].push_back(diagnostic);

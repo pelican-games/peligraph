@@ -28,7 +28,8 @@ std::vector<SemanticTypeSchema> builtinCanvasTypeSchemas() {
 const std::vector<std::string> &canvasGraphOperations() {
     static const std::vector<std::string> operations{"canvas.color", "canvas.from_image", "canvas.image",
                                                      "canvas.output", "canvas.stack", "canvas.transform",
-                                                     "shape.ellipse", "shape.fill", "shape.rect", "shape.stroke"};
+                                                     "shape.ellipse", "shape.fill", "shape.rect", "shape.stroke",
+                                                     "shape.text"};
     return operations;
 }
 
@@ -128,6 +129,18 @@ void registerCanvasGraphModule(GraphModuleRegistry &registry) {
 
     auto output = declared({{"layer", layer_input}}, {{"image", image}}, GraphParameterChange::rebuild);
 
+    // CV-4: text; its origin and size are values, the rest rebuilds (the
+    // layout and the atlas).
+    auto text = declared(ports({"origin.x", "origin.y", "size"}), {{"geometry", geometry}}, GraphParameterChange::value);
+    text.contract.parameter_changes = {{"font", GraphParameterChange::rebuild},
+                                       {"face", GraphParameterChange::rebuild},
+                                       {"text", GraphParameterChange::rebuild},
+                                       {"align", GraphParameterChange::rebuild},
+                                       {"line_height", GraphParameterChange::rebuild},
+                                       {"tracking", GraphParameterChange::rebuild},
+                                       {"box_width", GraphParameterChange::rebuild},
+                                       {"atlas_cell", GraphParameterChange::rebuild}};
+
     // CV-2a: image, color and transform layers.
     auto canvas_image = declared(ports({"offset.x", "offset.y"}), {{"layer", layer}}, GraphParameterChange::value);
     canvas_image.contract.parameter_changes = {{"asset", GraphParameterChange::rebuild},
@@ -161,6 +174,7 @@ void registerCanvasGraphModule(GraphModuleRegistry &registry) {
             {"canvas.from_image", std::move(from_image)},
             {"canvas.color", std::move(color)},
             {"canvas.transform", std::move(transform)},
+            {"shape.text", std::move(text)},
         },
         {}});
 }

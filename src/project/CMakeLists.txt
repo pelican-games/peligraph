@@ -84,7 +84,13 @@ target_sources(pelican_project PRIVATE
     canvas/canvasmodule.cpp
     canvas/canvaslowering.cpp
     canvas/canvasreference.cpp
+    # CV-4: shape.text -- the font file, the distance fields and the atlas.
+    canvas/canvastext.cpp
+    canvas/distancefield.cpp
+    canvas/fontfile.cpp
 )
+# stb_truetype reads the fonts, stb_image_write encodes the atlas.
+target_link_libraries(pelican_project PRIVATE stb)
 endif()
 target_include_directories(pelican_project PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(pelican_project PUBLIC nlohmann_json pelican_schema_leaf PRIVATE picosha2)

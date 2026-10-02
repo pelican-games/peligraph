@@ -1258,6 +1258,19 @@ EditorProjectionContext makeEditorProjectionContext(
 
 namespace {
 
+// CV-4: the authoring lowerings read project files (a shape.text's font)
+// through the project's paths; a reference that names no file reads nothing.
+AuthoringLoweringContext projectLoweringContext(const PathResolver &paths) {
+    return projectFileLoweringContext(
+        [&paths](std::string_view reference) -> std::optional<std::filesystem::path> {
+            try {
+                return paths.resolveExistingFile(reference);
+            } catch (const std::exception &) {
+                return std::nullopt;
+            }
+        });
+}
+
 EditorProjectionResult rejectProjectionPlanFailure(
     ProjectionPlanFailure failure, SceneRevision base_revision,
     SceneRevision committed_revision) {
@@ -2151,11 +2164,17 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                             std::optional<std::string> preset_bytes;
                             // CV-1b / EN-2: composed as the registration composes it --
                             // from the lowered document, with render.image sources
-                            // sized from their files.
+                            // sized from their files. CV-4: the files the lowering
+                            // generated (a glyph atlas is such a source) are written
+                            // first.
+                            const auto lowering = lowerAuthoringDocument(
+                                nlohmann::json::parse(documents.rootDocument().bytes),
+                                projectLoweringContext(runtime->modules.path_resolver));
+                            writeAuthoringGeneratedSources(
+                                lowering, runtime->modules.path_resolver.projectRoot());
                             auto composed = composeRenderFeatureConfig(
                                 resolveGraphImageSourceExtents(
-                                    lowerAuthoringDocument(nlohmann::json::parse(
-                                        documents.rootDocument().bytes)).document,
+                                    lowering.document,
                                     runtime->modules.path_resolver),
                                 RenderFeatureComposeDependencies{
                                     .load_feature_json = loader,
@@ -2226,7 +2245,11 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                             // flat variant's own failure is).
                             try {
                                 auto lowering = lowerAuthoringDocument(
-                                    nlohmann::json::parse(bytes));
+                                    nlohmann::json::parse(bytes),
+                                    projectLoweringContext(runtime->modules.path_resolver));
+                                // CV-4: an atlas is sized from its file below.
+                                writeAuthoringGeneratedSources(
+                                    lowering, runtime->modules.path_resolver.projectRoot());
                                 if (lowering.changed)
                                     bytes = lowering.document.dump();
                             } catch (const std::exception &) {

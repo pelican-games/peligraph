@@ -1521,7 +1521,19 @@ registerRenderingPassConfigVariantsData(
     // sources, the composition -- reads the document the authoring lowerings
     // made, and the shaders they generated are on disk before anything
     // compiles. A named failure here is this candidate's failure.
-    const auto lowering = lowerAuthoringDocument(rendering_pass_data);
+    // CV-4: a lowering reads project files (a shape.text's font) through the
+    // project's paths.
+    const auto &paths = dependencies.front().runtime.path_resolver;
+    const auto lowering = lowerAuthoringDocument(
+        rendering_pass_data,
+        projectFileLoweringContext(
+            [&paths](std::string_view reference) -> std::optional<std::filesystem::path> {
+                try {
+                    return paths.resolveExistingFile(reference);
+                } catch (const std::exception &) {
+                    return std::nullopt;
+                }
+            }));
     if (!lowering.generated_sources.empty())
         writeAuthoringGeneratedSources(
             lowering,

@@ -2,7 +2,10 @@
 
 #include <array>
 #include <compare>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -12,8 +15,9 @@
 namespace Pelican {
 
 // CV-1: the pelican.canvas lowering. A pure function of the graph document:
-// it reads no file and no clock, and the same document always lowers to the
-// same bytes (document and shaders).
+// it reads no clock, and the same document always lowers to the same bytes
+// (document, shaders and atlases). CV-4: the one file it reads is a font a
+// shape.text names, through the caller's CanvasAssetReader.
 //
 // Two stages share one intermediate form. buildCanvasIr walks every
 // canvas.output down its layer stack and flattens it into the list of things
@@ -35,6 +39,13 @@ namespace Pelican {
 //   canvas.mask_unsupported@1      {node, layer, op}     a mask that is not a canvas.image
 //   canvas.instance_inputs_unsupported@1 {node, definition}  a canvas definition with graph.input
 //   canvas.draw_images_exceeded@1  {output, count, limit}    one item reads more images than a draw can
+// CV-4 adds:
+//   canvas.font_missing@1          {node, font, reason}       a shape.text font the reader does not have
+//   canvas.font_unreadable@1       {node, font, face, reason} not a font, or no such face in it
+//   canvas.glyph_missing@1         {node, codepoint}          a character the face has no glyph for
+// and the diagnostic canvas.glyph_range_exceeded {node, width, range, limit}:
+// a shape.stroke of a shape.text wider than the atlas's distances reach,
+// cut to `limit` (stack units).
 // `layer` names the layer by its `name`, or by its index when it has none.
 // Wrong types and unknown ports are the graph's own checks.
 
@@ -45,8 +56,14 @@ enum class CanvasFit : std::uint8_t { contain, stretch };
 // CV-2a: what an item draws. A shape is CV-1's (shape times paint); an image
 // is a texture over a rectangle (canvas.image, canvas.from_image); a color
 // fills the canvas (canvas.color); a group is the image a nested stack was
-// composited into, read back over the whole canvas.
-enum class CanvasItemSource : std::uint8_t { shape, image, color, group };
+// composited into, read back over the whole canvas. CV-4: a glyph is one
+// character of a shape.text, read from its output's atlas.
+enum class CanvasItemSource : std::uint8_t { shape, image, color, group, glyph };
+
+// CV-4: reads a project file by its reference (project://...): the same
+// buffer while the file is unchanged, nullptr when there is none. The canvas
+// lowering reads the fonts shape.text names through it.
+using CanvasAssetReader = std::function<std::shared_ptr<const std::vector<std::byte>>(std::string_view reference)>;
 
 // How a texture holds alpha, and the conversion between the stack's blend
 // space and the texture's values.
@@ -118,11 +135,33 @@ std::size_t canvasPaintParameterCount(CanvasPaint paint);
 inline constexpr std::uint32_t canvas_kind_image = 4;
 inline constexpr std::uint32_t canvas_kind_color = 5;
 inline constexpr std::uint32_t canvas_kind_group = 6;
+// CV-4, a glyph of a shape.text (one instance per character with an outline):
+//   7 glyph_fill:   origin.x origin.y size  cell.x cell.y cell.w cell.h  uv.x uv.y uv.w uv.h  texels
+//                   then fill's color.r .. color.a
+//   8 glyph_stroke: the same, then stroke's color.r .. color.a width align
+// `cell` is the glyph's atlas cell in em, relative to the origin (+y down; the
+// glyph's pen position is folded in), so the cell covers origin + size * cell
+// in the stack. `uv` is the cell in the atlas (normalized), `texels` its side.
+inline constexpr std::uint32_t canvas_kind_glyph_fill = 7;
+inline constexpr std::uint32_t canvas_kind_glyph_stroke = 8;
+inline constexpr std::size_t canvas_glyph_parameter_count = 12;
 
 // The images one draw may read; past it the items are split across draws of
 // the same image. The engine sizes a pass's descriptor budget by the same
 // number (passVariadicInputLimit).
 inline constexpr std::size_t canvas_draw_image_limit = 16;
+
+// CV-4: which glyph a glyph item draws, before the atlas places it.
+struct CanvasGlyph {
+    // The lowering's font face (in the order shape.text nodes name them).
+    std::size_t font = 0;
+    int glyph = 0;
+    char32_t codepoint = 0;
+    // The pen position (baseline, left) in em from the text's origin, +y down.
+    std::array<double, 2> pen{};
+    // shape.text atlas_cell, or 0 for the size the codepoint asks for.
+    std::uint32_t cell = 0;
+};
 
 struct CanvasItem {
     CanvasShape shape = CanvasShape::rect;
@@ -137,7 +176,7 @@ struct CanvasItem {
     std::vector<std::string> nodes;
     // CV-2a.
     CanvasItemSource source = CanvasItemSource::shape;
-    CanvasTexture texture; // image and group items
+    CanvasTexture texture; // image, group and (CV-4) glyph items
     std::vector<CanvasMask> masks;
     // A clip layer's base: the index of the item in the same list. The item
     // is drawn atop what is below it (the base alone: a base and its clip
@@ -145,6 +184,9 @@ struct CanvasItem {
     std::optional<std::size_t> clip_base;
     // The map from the item's stack to the canvas (canvas.transform).
     std::array<double, 6> affine{1.0, 0.0, 0.0, 1.0, 0.0, 0.0};
+    // CV-4: a glyph item's character (its cell, uv and texture are filled in
+    // when the output's atlas is baked).
+    std::optional<CanvasGlyph> glyph;
 };
 
 std::uint32_t canvasItemKind(const CanvasItem &item);
@@ -158,6 +200,29 @@ struct CanvasGroup {
     bool srgb = false;
     // The authored stack (or clip base) it was made for.
     std::string node;
+};
+
+// CV-4: an output's glyph atlas for one font face (canvastext.hpp has the
+// layout): RGBA bytes, and the same as a PNG, which the lowering writes.
+struct CanvasAtlasPixels {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint8_t> rgba;
+    std::vector<std::byte> png;
+};
+
+struct CanvasAtlas {
+    // The font as shape.text names it, and the face.
+    std::string font;
+    int face = 0;
+    std::uint32_t cell = 0;
+    // `canvas_<output>_font<k>_<first 8 hex digits of the PNG's digest>`.
+    std::string stem;
+    // The file, relative to the project (CanvasLoweringOptions), and the
+    // render.image source asset that reads it (project://<path>).
+    std::string path;
+    std::string asset;
+    std::shared_ptr<const CanvasAtlasPixels> pixels;
 };
 
 struct CanvasOutput {
@@ -178,6 +243,8 @@ struct CanvasOutput {
     // drawn into `<id>$canvas_g<n>_image`, numbered in the order the walk of
     // the document meets them.
     std::vector<CanvasGroup> groups;
+    // CV-4: one per font face its glyph items read, in first-use order.
+    std::vector<CanvasAtlas> atlases;
 };
 
 struct CanvasIr {
@@ -191,17 +258,16 @@ struct CanvasIr {
 // True when the document names a canvas or shape op anywhere.
 bool documentHasCanvasNodes(const nlohmann::json &document);
 
-CanvasIr buildCanvasIr(const nlohmann::json &document);
-
 struct CanvasGeneratedSource {
     // `canvas_<output id>_<first 8 hex digits of the sources' digest>`; the
     // pass reads project://<path less its extension>, which the caller writes.
     // CV-2a: each draw of an output (its groups', its split draws') has its
     // own stem, and its own path by the same CanvasLoweringOptions rule.
     std::string stem;
-    // "vert" or "frag".
+    // "vert" or "frag"; CV-4: "atlas" for a glyph atlas, whose PNG is `bytes`.
     std::string stage;
     std::string text;
+    std::vector<std::byte> bytes;
     // The canvas.output the draw belongs to.
     std::string output;
     // The file, relative to the project (CanvasLoweringOptions).
@@ -218,6 +284,9 @@ struct CanvasLoweringOptions {
     // one pair's key from moving when another output's pair is written.
     std::string shader_directory = "shaders/generated";
     bool directory_per_stem = false;
+    // CV-4: where a glyph atlas lives, by the same rule (the shader
+    // compiler's cache key never sees it: it is not beside a shader).
+    std::string asset_directory = "canvas_generated";
 };
 
 struct CanvasLowering {
@@ -232,6 +301,11 @@ struct CanvasLowering {
     nlohmann::json diagnostics = nlohmann::json::array();
     CanvasIr ir;
 };
+
+// CV-4: `read_asset` reads the fonts shape.text names (without it a
+// shape.text is canvas.font_missing@1); the options place the atlases.
+CanvasIr buildCanvasIr(const nlohmann::json &document, const CanvasAssetReader &read_asset = {},
+                       const CanvasLoweringOptions &options = {});
 
 // The names a canvas.output `<id>` lowers to. The raster pass keeps `<id>`
 // itself, so its pass name is the author's node and its written image port is
@@ -261,6 +335,7 @@ nlohmann::json expandCanvasInstances(const nlohmann::json &document);
 // its id (`"input": ["out"]`, or `out@history`) reads the image the lowering
 // made, `out$canvas_image`, instead -- unless the section declares a target or
 // buffer of that name itself.
-CanvasLowering lowerCanvasNodes(const nlohmann::json &document, const CanvasLoweringOptions &options = {});
+CanvasLowering lowerCanvasNodes(const nlohmann::json &document, const CanvasLoweringOptions &options = {},
+                                const CanvasAssetReader &read_asset = {});
 
 } // namespace Pelican

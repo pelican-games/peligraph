@@ -15,7 +15,7 @@ namespace Pelican {
 //
 // Both types are symbolic: no value flows on a geometry or a layer port, the
 // lowering removes every edge that carries one.
-//   pelican.canvas.geometry@1  shape.rect / shape.ellipse -> shape.fill / shape.stroke
+//   pelican.canvas.geometry@1  shape.rect / shape.ellipse (CV-4: shape.text) -> shape.fill / shape.stroke
 //   pelican.canvas.layer@1     shape.fill / shape.stroke / canvas.stack -> canvas.stack / canvas.output
 //                              CV-2a: also canvas.image / canvas.from_image / canvas.color /
 //                              canvas.transform, and a stack layer's `mask` names a layer port

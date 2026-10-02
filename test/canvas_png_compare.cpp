@@ -17,6 +17,10 @@
 // CanvasReferenceImages is: a file's asset, or <node>.<port>), decoded from a
 // PNG; --image-color a 1 x 1 one. --against holds the frame against another
 // PNG instead of the CPU reference (an opaque RGB file counts as alpha 255).
+//
+// CV-4: --project names the project the document is in, whose files
+// (project://...) the lowering reads: a shape.text's font. The reference draws
+// the glyphs from the atlas the lowering bakes.
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
@@ -27,7 +31,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <memory>
+#include <string_view>
 #include <iostream>
 #include <string>
 #include <utility>
@@ -56,6 +65,7 @@ int main(int argc, char *argv[]) {
         Pelican::CanvasValues values;
         Pelican::CanvasReferenceImages images;
         std::string against;
+        std::string project;
         const auto keyed = [](const std::string &argument) {
             const auto equals = argument.find('=');
             if (equals == std::string::npos) throw std::invalid_argument("expected key=value: " + argument);
@@ -81,6 +91,8 @@ int main(int argc, char *argv[]) {
                     at = comma == std::string::npos ? rgba.size() : comma + 1;
                 }
                 images[key] = std::move(image);
+            } else if (argument == "--project" && i + 1 < argc) {
+                project = argv[++i];
             } else if (argument == "--against" && i + 1 < argc) {
                 against = argv[++i];
             } else if (argument == "--tolerance" && i + 1 < argc) {
@@ -114,7 +126,18 @@ int main(int argc, char *argv[]) {
             std::ifstream in(argv[1], std::ios::binary);
             if (!in) throw std::runtime_error(std::string{"cannot read "} + argv[1]);
             const auto document = nlohmann::json::parse(in);
-            const auto ir = Pelican::buildCanvasIr(document);
+            const Pelican::CanvasAssetReader read_asset =
+                [&](std::string_view reference) -> std::shared_ptr<const std::vector<std::byte>> {
+                constexpr std::string_view scheme = "project://";
+                if (project.empty() || !reference.starts_with(scheme)) return nullptr;
+                std::ifstream file(std::filesystem::path{project} / std::string{reference.substr(scheme.size())},
+                                   std::ios::binary);
+                if (!file) return nullptr;
+                const std::string bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+                const auto *begin = reinterpret_cast<const std::byte *>(bytes.data());
+                return std::make_shared<const std::vector<std::byte>>(begin, begin + bytes.size());
+            };
+            const auto ir = Pelican::buildCanvasIr(document, read_asset);
             const auto output =
                 std::find_if(ir.outputs.begin(), ir.outputs.end(),
                              [&](const Pelican::CanvasOutput &candidate) { return candidate.id == argv[2]; });

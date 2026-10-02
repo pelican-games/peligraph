@@ -2,6 +2,7 @@
 
 #include "../graphcomposition.hpp"
 #include "canvasmodule.hpp"
+#include "canvastext.hpp"
 
 #include <picosha2.h>
 
@@ -171,6 +172,8 @@ struct Flattening {
     bool own_opacity = false;
     // Where groups are collected.
     CanvasOutput *output = nullptr;
+    // CV-4: the fonts shape.text reads.
+    CanvasFontLibrary *fonts = nullptr;
 };
 
 // The context a list starts from when it is composited on its own: no
@@ -180,6 +183,7 @@ Flattening freshFlattening(const Flattening &outer) {
     fresh.stacks = outer.stacks;
     fresh.srgb = outer.srgb;
     fresh.output = outer.output;
+    fresh.fonts = outer.fonts;
     return fresh;
 }
 
@@ -196,6 +200,40 @@ void applyFlattening(CanvasItem &item, const Flattening &flattening) {
 void appendLayer(const Scope &scope, const Json &endpoint, const Flattening &flattening,
                  std::vector<std::string> &active, CanvasIr &ir, std::vector<CanvasItem> &items);
 
+// A paint's parameters, in table order: color, then a stroke's width and align.
+std::vector<CanvasParameter> paintParameters(const Scope &scope, const Json &paint, bool stroke) {
+    std::vector<CanvasParameter> parameters;
+    appendVector(parameters, scope, paint, "color", {"r", "g", "b", "a"});
+    if (stroke) {
+        parameters.push_back(parameter(scope, paint, "width", std::nullopt, 0, "width", std::nullopt));
+        // `align` rebuilds; it is a constant of the bake table, never an edge.
+        double align = 0.0;
+        if (const auto found = objectMember(paint, "parameters").find("align");
+            found != objectMember(paint, "parameters").end()) {
+            if (*found == "center") align = 0.0;
+            else if (*found == "inner") align = 1.0;
+            else if (*found == "outer") align = 2.0;
+            else throw std::invalid_argument("shape.stroke align must be center, inner or outer: " + nodeId(paint));
+        }
+        parameters.push_back(CanvasParameter{align, std::nullopt});
+    }
+    return parameters;
+}
+
+// The paint's item under `flattening`, as appendPaint makes it.
+void placePaintItem(CanvasItem &item, const std::string &paint, const std::string &shape,
+                    const Flattening &flattening) {
+    item.opacity = flattening.opacity;
+    item.opacity_edges = flattening.opacity_edges;
+    item.masks = flattening.masks;
+    item.affine = flattening.affine;
+    item.nodes = {paint, shape};
+    item.nodes.insert(item.nodes.end(), flattening.stacks.begin(), flattening.stacks.end());
+}
+
+void appendText(const Scope &scope, const Json &paint, const Json &text, bool stroke, const Flattening &flattening,
+                std::vector<CanvasItem> &items);
+
 void appendPaint(const Scope &scope, const Json &paint, const Flattening &flattening, std::vector<CanvasItem> &items) {
     const auto op = nodeOp(paint);
     const auto id = nodeId(paint);
@@ -205,8 +243,9 @@ void appendPaint(const Scope &scope, const Json &paint, const Flattening &flatte
     const auto &inputs = objectMember(paint, "inputs");
     const auto geometry_edge = inputs.find("geometry");
     const auto *shape = geometry_edge == inputs.end() ? nullptr : producer(scope, *geometry_edge);
+    if (shape != nullptr && nodeOp(*shape) == "shape.text") return appendText(scope, paint, *shape, stroke, flattening, items);
     if (shape == nullptr || (nodeOp(*shape) != "shape.rect" && nodeOp(*shape) != "shape.ellipse"))
-        throw std::invalid_argument(op + " requires a geometry edge from shape.rect or shape.ellipse: " + id);
+        throw std::invalid_argument(op + " requires a geometry edge from shape.rect, shape.ellipse or shape.text: " + id);
     CanvasItem item;
     item.shape = nodeOp(*shape) == "shape.rect" ? CanvasShape::rect : CanvasShape::ellipse;
     item.paint = stroke ? CanvasPaint::stroke : CanvasPaint::fill;
@@ -217,27 +256,78 @@ void appendPaint(const Scope &scope, const Json &paint, const Flattening &flatte
     if (item.shape == CanvasShape::rect)
         item.parameters.push_back(parameter(scope, *shape, "corner_radius", std::nullopt, 0, "corner_radius", 0.0));
     item.parameters.push_back(parameter(scope, *shape, "rotation", std::nullopt, 0, "rotation", 0.0));
-    appendVector(item.parameters, scope, paint, "color", {"r", "g", "b", "a"});
-    if (stroke) {
-        item.parameters.push_back(parameter(scope, paint, "width", std::nullopt, 0, "width", std::nullopt));
-        // `align` rebuilds; it is a constant of the bake table, never an edge.
-        double align = 0.0;
-        if (const auto found = objectMember(paint, "parameters").find("align");
-            found != objectMember(paint, "parameters").end()) {
-            if (*found == "center") align = 0.0;
-            else if (*found == "inner") align = 1.0;
-            else if (*found == "outer") align = 2.0;
-            else throw std::invalid_argument("shape.stroke align must be center, inner or outer: " + id);
-        }
-        item.parameters.push_back(CanvasParameter{align, std::nullopt});
-    }
-    item.opacity = flattening.opacity;
-    item.opacity_edges = flattening.opacity_edges;
-    item.masks = flattening.masks;
-    item.affine = flattening.affine;
-    item.nodes = {id, nodeId(*shape)};
-    item.nodes.insert(item.nodes.end(), flattening.stacks.begin(), flattening.stacks.end());
+    for (auto &entry : paintParameters(scope, paint, stroke)) item.parameters.push_back(std::move(entry));
+    placePaintItem(item, id, nodeId(*shape), flattening);
     items.push_back(std::move(item));
+}
+
+// --- CV-4: shape.text ------------------------------------------------------
+
+// One item per character with an outline; the atlas places them later
+// (bakeGlyphAtlases).
+void appendText(const Scope &scope, const Json &paint, const Json &text, bool stroke, const Flattening &flattening,
+                std::vector<CanvasItem> &items) {
+    const auto id = nodeId(text);
+    onlyKeys(text, {"font", "face", "text", "size", "origin", "align", "line_height", "tracking", "box_width",
+                    "atlas_cell"});
+    const auto &parameters = objectMember(text, "parameters");
+    const auto what = [&](const char *key) { return std::string{"shape.text "} + key + ": " + id; };
+    const auto font = parameters.find("font");
+    if (font == parameters.end() || !font->is_string() || font->get_ref<const std::string &>().empty())
+        throw std::invalid_argument("shape.text requires a font: " + id);
+    int face = 0;
+    if (const auto found = parameters.find("face"); found != parameters.end()) {
+        if (!found->is_number_integer() || *found < 0 || *found > 0xFFFF)
+            throw std::invalid_argument("shape.text face must be a face index: " + id);
+        face = found->get<int>();
+    }
+    const auto string = parameters.find("text");
+    if (string == parameters.end() || !string->is_string()) throw std::invalid_argument("shape.text requires a text: " + id);
+    CanvasTextStyle style;
+    if (const auto align = parameters.find("align"); align != parameters.end()) {
+        if (*align == "left") style.align = CanvasTextAlign::left;
+        else if (*align == "center") style.align = CanvasTextAlign::center;
+        else if (*align == "right") style.align = CanvasTextAlign::right;
+        else throw std::invalid_argument("shape.text align must be left, center or right: " + id);
+    }
+    if (const auto found = parameters.find("line_height"); found != parameters.end())
+        style.line_height = number(*found, what("line_height"));
+    if (const auto found = parameters.find("tracking"); found != parameters.end())
+        style.tracking = number(*found, what("tracking"));
+    if (const auto found = parameters.find("box_width"); found != parameters.end()) {
+        style.box_width = number(*found, what("box_width"));
+        if (style.box_width < 0.0) throw std::invalid_argument("shape.text box_width must not be negative: " + id);
+    }
+    std::uint32_t cell = 0;
+    if (const auto found = parameters.find("atlas_cell"); found != parameters.end()) {
+        if (!found->is_number_integer() || *found < 16 || *found > 256)
+            throw std::invalid_argument("shape.text atlas_cell must be a whole number from 16 to 256: " + id);
+        cell = found->get<std::uint32_t>();
+    }
+    std::vector<CanvasParameter> shared;
+    appendVector(shared, scope, text, "origin", {"x", "y"}, 0.0);
+    shared.push_back(parameter(scope, text, "size", std::nullopt, 0, "size", std::nullopt));
+    style.size = shared.back().value;
+    if (style.box_width > 0.0 && !(style.size > 0.0))
+        throw std::invalid_argument("shape.text box_width wraps at the authored size, which must be positive: " + id);
+    const auto paint_parameters = paintParameters(scope, paint, stroke);
+
+    auto &fonts = *flattening.fonts;
+    const auto font_index = fonts.open(font->get<std::string>(), face, id);
+    auto &opened = fonts.face(font_index);
+    const auto codepoints = decodeCanvasUtf8(string->get_ref<const std::string &>(), what("text"));
+    for (const auto &placed : layoutCanvasText(*opened.file, codepoints, style, id)) {
+        if (opened.glyph(placed.glyph).outline.contours.empty()) continue;
+        CanvasItem item;
+        item.source = CanvasItemSource::glyph;
+        item.paint = stroke ? CanvasPaint::stroke : CanvasPaint::fill;
+        item.parameters = shared;
+        item.parameters.resize(canvas_glyph_parameter_count);
+        item.parameters.insert(item.parameters.end(), paint_parameters.begin(), paint_parameters.end());
+        item.glyph = CanvasGlyph{font_index, placed.glyph, placed.codepoint, {placed.x, placed.y}, cell};
+        placePaintItem(item, nodeId(paint), id, flattening);
+        items.push_back(std::move(item));
+    }
 }
 
 // --- CV-2a: image, color and transform layers, masks, clips, groups -------
@@ -674,7 +764,7 @@ void appendLayer(const Scope &scope, const Json &endpoint, const Flattening &fla
                                 op + ": " + nodeId(*from));
 }
 
-CanvasOutput buildOutput(const Scope &scope, const Json &node, CanvasIr &ir) {
+CanvasOutput buildOutput(const Scope &scope, const Json &node, CanvasIr &ir, CanvasFontLibrary &fonts) {
     const auto id = nodeId(node);
     onlyKeys(node, {"extent_scale", "size", "format", "fit"});
     const auto &parameters = objectMember(node, "parameters");
@@ -721,6 +811,7 @@ CanvasOutput buildOutput(const Scope &scope, const Json &node, CanvasIr &ir) {
     Flattening top;
     top.pass_through = true;
     top.output = &output;
+    top.fonts = &fonts;
     appendLayer(scope, *layer, top, active, ir, output.items);
     return output;
 }
@@ -892,6 +983,97 @@ std::size_t parameterIndex(CanvasShape shape, std::size_t paint_parameter) {
     return canvasShapeParameterCount(shape) + paint_parameter;
 }
 
+// --- CV-4: the glyph atlases ----------------------------------------------
+
+// Each item of an output's lists, its groups' too.
+template <typename Visit> void eachOutputItem(CanvasOutput &output, Visit visit) {
+    for (auto &item : output.items) visit(item);
+    for (auto &group : output.groups)
+        for (auto &item : group.items) visit(item);
+}
+
+// Bakes one atlas per font face the output's glyph items read (in first-use
+// order), then fills in each glyph item's cell, uv and texture, and cuts a
+// constant stroke width the atlas's distances do not reach.
+void bakeGlyphAtlases(CanvasOutput &output, CanvasFontLibrary &fonts, const CanvasLoweringOptions &options,
+                      Json &diagnostics) {
+    std::vector<std::size_t> order;
+    std::map<std::size_t, std::set<int>> glyphs;
+    std::map<std::size_t, std::uint32_t> cells;
+    eachOutputItem(output, [&](CanvasItem &item) {
+        if (!item.glyph) return;
+        const auto font = item.glyph->font;
+        if (!glyphs.contains(font)) order.push_back(font);
+        glyphs[font].insert(item.glyph->glyph);
+        const auto wanted = item.glyph->cell != 0                                 ? item.glyph->cell
+                            : item.glyph->codepoint >= canvas_glyph_cjk_first ? canvas_glyph_cell_cjk
+                                                                                : canvas_glyph_cell_latin;
+        cells[font] = std::max(cells[font], wanted);
+    });
+    if (order.empty()) return;
+    std::map<std::size_t, std::pair<std::size_t, CanvasBakedAtlas>> baked;
+    for (const auto font : order) {
+        auto &face = fonts.face(font);
+        auto atlas = bakeCanvasAtlas(face, {glyphs[font].begin(), glyphs[font].end()}, cells[font]);
+        const auto &png = atlas.pixels->png;
+        const auto *bytes = reinterpret_cast<const unsigned char *>(png.data());
+        const auto digest = picosha2::hash256_hex_string(bytes, bytes + png.size());
+        const auto stem =
+            "canvas_" + fileStem(output.id) + "_font" + std::to_string(output.atlases.size()) + "_" + digest.substr(0, 8);
+        const auto path = options.asset_directory + (options.directory_per_stem ? "/" + stem : std::string{}) + "/" +
+                          stem + ".png";
+        baked.emplace(font, std::pair{output.atlases.size(), atlas});
+        output.atlases.push_back({face.reference, face.index, cells[font], stem, path, "project://" + path, atlas.pixels});
+    }
+    // The widest stroke each stroke node may have, in stack units: the
+    // distances stop `range` texels out, and the last texel is the edge's
+    // antialiasing.
+    std::map<std::string, std::pair<double, double>> stroke_limits; // node -> (limit, range)
+    eachOutputItem(output, [&](CanvasItem &item) {
+        if (!item.glyph) return;
+        auto &face = fonts.face(item.glyph->font);
+        const auto &[index, atlas] = baked.at(item.glyph->font);
+        const auto &entry = output.atlases[index];
+        const auto placement = canvasGlyphPlacement(face.glyph(item.glyph->glyph), face.file->unitsPerEm(), entry.cell);
+        // Texels per em.
+        const auto em = placement.scale * face.file->unitsPerEm();
+        const auto [column, row] = atlas.cells.at(item.glyph->glyph);
+        const double cell = entry.cell;
+        const double values[9] = {item.glyph->pen[0] - placement.x0 / em,
+                                  item.glyph->pen[1] - placement.y0 / em,
+                                  cell / em,
+                                  cell / em,
+                                  column * cell / atlas.pixels->width,
+                                  row * cell / atlas.pixels->height,
+                                  cell / atlas.pixels->width,
+                                  cell / atlas.pixels->height,
+                                  cell};
+        for (std::size_t k = 0; k < 9; ++k) item.parameters.at(3 + k) = CanvasParameter{values[k], std::nullopt};
+        item.texture = {CanvasTexture::Origin::file, entry.asset, true, std::nullopt, {}, 0, false};
+        if (item.paint != CanvasPaint::stroke) return;
+        const auto size = std::abs(item.parameters.at(2).value);
+        if (item.parameters.at(canvas_glyph_parameter_count + 4).edge || !(size > 0.0)) return;
+        const auto align = item.parameters.at(canvas_glyph_parameter_count + 5).value;
+        const auto limit = (align > 0.5 ? 1.0 : 2.0) * (canvas_glyph_range - 1.0) * size / em;
+        auto [found, inserted] = stroke_limits.emplace(item.nodes.front(), std::pair{limit, canvas_glyph_range * size / em});
+        if (!inserted && limit < found->second.first) found->second = {limit, canvas_glyph_range * size / em};
+    });
+    if (stroke_limits.empty()) return;
+    std::set<std::string> reported;
+    eachOutputItem(output, [&](CanvasItem &item) {
+        if (!item.glyph || item.paint != CanvasPaint::stroke) return;
+        const auto found = stroke_limits.find(item.nodes.front());
+        if (found == stroke_limits.end()) return;
+        auto &width = item.parameters.at(canvas_glyph_parameter_count + 4).value;
+        const auto [limit, range] = found->second;
+        if (std::abs(width) <= limit) return;
+        if (reported.insert(found->first).second)
+            diagnostics.push_back({{"code", "canvas.glyph_range_exceeded"}, {"node", found->first}, {"width", width},
+                                   {"range", range}, {"limit", limit}});
+        width = std::copysign(limit, width);
+    });
+}
+
 const char *const parameter_layout_comment =
     "// Item table, one mat4 per item (column c is it[c]):\n"
     "//   it[0] = (kind, bake offset, source offset or -1, constant opacity)\n"
@@ -905,6 +1087,8 @@ const char *const parameter_layout_comment =
     "//   or stroke: color.r color.g color.b color.a width align(0 center, 1 inner, 2 outer)\n"
     "//   image: offset.x offset.y size.x size.y alpha(0 straight, 1 premultiplied, 2 opaque) encode\n"
     "//   color: color.r color.g color.b color.a; group: encode (0 none, 1 to sRGB, 2 to linear)\n"
+    "//   glyph: origin.x origin.y size cell.x cell.y cell.w cell.h (em) uv.x uv.y uv.w uv.h texels,\n"
+    "//          then fill's or stroke's\n"
     "// At the source offset, one entry per parameter: 0 reads the bake table,\n"
     "// k reads frame table entry k - 1. At the opacity edge offset, the frame\n"
     "// table entries whose values multiply the constant opacity. At the mask\n"
@@ -1018,6 +1202,15 @@ void main() {
             text += "        vec2 size = vec2(canvasParam(it, 2u), canvasParam(it, 3u));\n";
             text += "        center = vec2(canvasParam(it, 0u), canvasParam(it, 1u)) + 0.5 * size;\n";
             text += "        bound = 0.5 * abs(size);\n";
+            text += "        break;\n    }\n";
+            continue;
+        }
+        if (kind == canvas_kind_glyph_fill || kind == canvas_kind_glyph_stroke) {
+            text += "        float s = canvasParam(it, 2u);\n";
+            text += "        vec2 cell_size = s * vec2(canvasParam(it, 5u), canvasParam(it, 6u));\n";
+            text += "        center = vec2(canvasParam(it, 0u), canvasParam(it, 1u)) +\n";
+            text += "                 s * vec2(canvasParam(it, 3u), canvasParam(it, 4u)) + 0.5 * cell_size;\n";
+            text += "        bound = 0.5 * abs(cell_size);\n";
             text += "        break;\n    }\n";
             continue;
         }
@@ -1149,6 +1342,28 @@ vec4 canvasTexel(vec4 t, float alpha_mode, float encode) {
 
 )glsl";
     }
+    if (draw.kinds.contains(canvas_kind_glyph_fill) || draw.kinds.contains(canvas_kind_glyph_stroke)) {
+        text += "const float CANVAS_GLYPH_RANGE = " + glslNumber(canvas_glyph_range) + ";\n\n";
+        text += R"glsl(// A glyph atlas texel (8-bit d / (2 range) + 0.5) to a distance in texels,
+// positive outside: the median clamped to A +- 0.5 near the outline, A alone
+// from 2 texels out (smoothstep between 1 and 2).
+float canvasGlyphDistance(vec4 t) {
+    vec4 d = (t - 0.5) * (2.0 * CANVAS_GLYPH_RANGE);
+    float m = max(min(d.r, d.g), min(max(d.r, d.g), d.b));
+    float near = clamp(m, d.a - 0.5, d.a + 0.5);
+    float x = clamp(abs(d.a) - 1.0, 0.0, 1.0);
+    return mix(near, d.a, x * x * (3.0 - 2.0 * x));
+}
+
+// A glyph's stroke, in texels: no wider than the stored distances reach,
+// less the texel the edge's antialiasing takes.
+float canvasGlyphStroke(float d, float width, float align) {
+    float limit = (align > 0.5 ? 1.0 : 2.0) * (CANVAS_GLYPH_RANGE - 1.0);
+    return canvasStroke(d, min(abs(width), limit), align);
+}
+
+)glsl";
+    }
     if (draw.masks)
         text += R"glsl(float canvasMask(mat4 it, vec2 p) {
     float m = 1.0;
@@ -1189,6 +1404,30 @@ vec4 canvasTexel(vec4 t, float alpha_mode, float encode) {
             text += "        if (canvasInside(uv))\n";
             text += "            color = canvasTexel(canvasSample(uint(it[3].z + 0.5), uv), " + param(4) + ", " +
                     param(5) + ");\n";
+            text += "        break;\n    }\n";
+            continue;
+        }
+        if (kind == canvas_kind_glyph_fill || kind == canvas_kind_glyph_stroke) {
+            // The texel the point falls on in the glyph's cell, kept a half
+            // texel inside it so the filter never reads the next cell.
+            text += "        float s = " + param(2) + ";\n";
+            text += "        vec2 cell_size = s * vec2(" + param(5) + ", " + param(6) + ");\n";
+            text += "        float n = " + param(11) + ";\n";
+            text += "        vec2 tex = (q - vec2(" + param(0) + ", " + param(1) + ") - s * vec2(" + param(3) + ", " +
+                    param(4) + ")) / cell_size * n;\n";
+            text += "        vec2 uv = vec2(" + param(7) + ", " + param(8) + ") + clamp(tex, vec2(0.5), vec2(n - 0.5)) / n * vec2(" +
+                    param(9) + ", " + param(10) + ");\n";
+            text += "        float d = canvasGlyphDistance(canvasSample(uint(it[3].z + 0.5), uv));\n";
+            if (kind == canvas_kind_glyph_stroke)
+                text += "        d = canvasGlyphStroke(d, " + param(canvas_glyph_parameter_count + 4) + " * n / abs(cell_size.x), " +
+                        param(canvas_glyph_parameter_count + 5) + ");\n";
+            // Texels per pixel, from the screen-space change of the texel.
+            text += "        float aa = max(length(vec2(length(dFdx(tex)), length(dFdy(tex)))) * 0.70710678, 1e-6);\n";
+            text += "        float a = clamp(" + param(canvas_glyph_parameter_count + 3) +
+                    ", 0.0, 1.0) * clamp(0.5 - d / aa, 0.0, 1.0);\n";
+            text += "        color = vec4(canvasShapeColor(vec3(" + param(canvas_glyph_parameter_count) + ", " +
+                    param(canvas_glyph_parameter_count + 1) + ", " + param(canvas_glyph_parameter_count + 2) +
+                    ")) * a, a);\n";
             text += "        break;\n    }\n";
             continue;
         }
@@ -1265,7 +1504,9 @@ void itemTextures(const CanvasItem &item, std::vector<CanvasTexture> &into) {
     const auto add = [&](const CanvasTexture &texture) {
         if (std::find(into.begin(), into.end(), texture) == into.end()) into.push_back(texture);
     };
-    if (item.source == CanvasItemSource::image || item.source == CanvasItemSource::group) add(item.texture);
+    if (item.source == CanvasItemSource::image || item.source == CanvasItemSource::group ||
+        item.source == CanvasItemSource::glyph)
+        add(item.texture);
     for (const auto &mask : item.masks) add(mask.texture);
 }
 
@@ -1408,7 +1649,8 @@ void lowerComposite(const CanvasOutput &output, const std::vector<CanvasItem> &a
                 }
             }
             const double clip = item.clip_base ? static_cast<double>(*item.clip_base) : -1.0;
-            const bool sampled = item.source == CanvasItemSource::image || item.source == CanvasItemSource::group;
+            const bool sampled = item.source == CanvasItemSource::image || item.source == CanvasItemSource::group ||
+                                 item.source == CanvasItemSource::glyph;
             const double row[16] = {static_cast<double>(kind), bake_offset, source_offset, item.opacity,
                                     opacity_offset, static_cast<double>(item.opacity_edges.size()), mask_offset,
                                     static_cast<double>(item.masks.size()),
@@ -1433,8 +1675,8 @@ void lowerComposite(const CanvasOutput &output, const std::vector<CanvasItem> &a
         const auto digest = picosha2::hash256_hex_string(vertex + std::string(1, '\0') + fragment);
         const auto stem = "canvas_" + fileStem(name) + "_" + digest.substr(0, 8);
         const auto directory = options.shader_directory + (options.directory_per_stem ? "/" + stem : std::string{});
-        lowered.sources.push_back({stem, "vert", vertex, id, directory + "/" + stem + ".vert"});
-        lowered.sources.push_back({stem, "frag", fragment, id, directory + "/" + stem + ".frag"});
+        lowered.sources.push_back({stem, "vert", vertex, {}, id, directory + "/" + stem + ".vert"});
+        lowered.sources.push_back({stem, "frag", fragment, {}, id, directory + "/" + stem + ".frag"});
 
         const auto items_id = tables + "items";
         const auto bake_id = tables + "bake";
@@ -1530,6 +1772,10 @@ LoweredOutput lowerOutput(const CanvasOutput &output, const CanvasLoweringOption
         }
         return endpoint(found->second, "resource");
     };
+    // CV-4: the atlases are files the caller writes; their render.image nodes
+    // come with the first draw that reads them.
+    for (const auto &atlas : output.atlases)
+        lowered.sources.push_back({atlas.stem, "atlas", {}, atlas.pixels->png, id, atlas.path});
     for (std::size_t group = 0; group < output.groups.size(); ++group)
         lowerComposite(output, output.groups[group].items, output.groups[group].srgb, group, texture_source, options,
                        lowered);
@@ -1617,6 +1863,8 @@ std::string_view canvasItemKindName(std::uint32_t kind) {
     case canvas_kind_image: return "image_rgba";
     case canvas_kind_color: return "color";
     case canvas_kind_group: return "group";
+    case canvas_kind_glyph_fill: return "glyph_fill";
+    case canvas_kind_glyph_stroke: return "glyph_stroke";
     default: throw std::invalid_argument("unknown canvas item kind: " + std::to_string(kind));
     }
 }
@@ -1627,6 +1875,8 @@ std::uint32_t canvasItemKind(const CanvasItem &item) {
     case CanvasItemSource::image: return canvas_kind_image;
     case CanvasItemSource::color: return canvas_kind_color;
     case CanvasItemSource::group: return canvas_kind_group;
+    case CanvasItemSource::glyph:
+        return item.paint == CanvasPaint::fill ? canvas_kind_glyph_fill : canvas_kind_glyph_stroke;
     }
     throw std::invalid_argument("unknown canvas item source");
 }
@@ -1687,30 +1937,36 @@ bool documentHasCanvasNodes(const nlohmann::json &document) {
     return found;
 }
 
-CanvasIr buildCanvasIr(const nlohmann::json &authored) {
+CanvasIr buildCanvasIr(const nlohmann::json &authored, const CanvasAssetReader &read_asset,
+                       const CanvasLoweringOptions &options) {
     CanvasIr ir;
     if (!documentHasCanvasNodes(authored)) return ir;
     const auto document = expandCanvasInstances(authored);
     const auto bodies = loopBodies(document);
     eachScope(document, [&](const std::string &name, const Json &holder) { checkScope(name, holder, bodies); });
+    CanvasFontLibrary fonts{read_asset};
     eachScope(document, [&](const std::string &name, const Json &holder) {
         const auto nodes = holder.find("nodes");
         if (nodes == holder.end() || !nodes->is_array()) return;
         const auto scope = indexScope(name, *nodes);
         for (const auto &node : *nodes)
-            if (nodeOp(node) == "canvas.output") ir.outputs.push_back(buildOutput(scope, node, ir));
+            if (nodeOp(node) == "canvas.output") {
+                ir.outputs.push_back(buildOutput(scope, node, ir, fonts));
+                bakeGlyphAtlases(ir.outputs.back(), fonts, options, ir.diagnostics);
+            }
     });
     return ir;
 }
 
-CanvasLowering lowerCanvasNodes(const nlohmann::json &document, const CanvasLoweringOptions &options) {
+CanvasLowering lowerCanvasNodes(const nlohmann::json &document, const CanvasLoweringOptions &options,
+                                const CanvasAssetReader &read_asset) {
     CanvasLowering result;
     if (!documentHasCanvasNodes(document)) {
         result.document = document;
         return result;
     }
     result.document = expandCanvasInstances(document);
-    result.ir = buildCanvasIr(result.document);
+    result.ir = buildCanvasIr(result.document, read_asset, options);
     result.diagnostics = result.ir.diagnostics;
     result.changed = true;
     std::map<std::pair<std::string, std::string>, const CanvasOutput *> outputs;

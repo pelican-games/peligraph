@@ -715,6 +715,22 @@ renderTargetUsers(const Json &composed) {
     return users;
 }
 
+// CV-4: the authoring lowerings read project files (a shape.text's font)
+// where the editor resolves its documents; a reference that names no file
+// reads nothing.
+AuthoringLoweringContext loweringContext(const RenderConfigEditorDependencies &dependencies) {
+    if (!dependencies.resolve_document_path) return {};
+    return projectFileLoweringContext(
+        [resolve = dependencies.resolve_document_path](
+            std::string_view reference) -> std::optional<std::filesystem::path> {
+            try {
+                return resolve(reference);
+            } catch (const std::exception &) {
+                return std::nullopt;
+            }
+        });
+}
+
 } // namespace
 
 std::vector<RenderFeatureCatalogEntry>
@@ -1207,7 +1223,11 @@ OrderedJson RenderConfigEditorService::materializeRenderFeature(const std::strin
         };
         // CV-1b / EN-2: composed from the lowered root, as the registration does,
         // with render.image sources sized from their files.
-        auto root = lowerAuthoringDocument(Json::parse(document_.bytes())).document;
+        // CV-4: the files the lowering generated (a glyph atlas is an image
+        // source) are on disk before the sources are sized.
+        const auto lowering = lowerAuthoringDocument(Json::parse(document_.bytes()), loweringContext(dependencies_));
+        if (!dependencies_.project_root.empty()) writeAuthoringGeneratedSources(lowering, dependencies_.project_root);
+        auto root = lowering.document;
         if (dependencies_.resolve_image_sources) root = dependencies_.resolve_image_sources(root);
         const auto composition = composeRenderFeatureConfig(std::move(root), RenderFeatureComposeDependencies{
             .load_feature_json = loader,
@@ -2455,7 +2475,7 @@ OrderedJson RenderConfigEditorService::editGraphInstances(const Json &params) {
             try {
                 const auto edited = Pelican::editGraphInstances(Json::parse(candidate.bytes()), attached, detached);
                 // CV-1b: judged as the engine will read it, lowered.
-                (void)partitionGraphDocument(lowerAuthoringDocument(edited).document);
+                (void)partitionGraphDocument(lowerAuthoringDocument(edited, loweringContext(dependencies_)).document);
                 candidate = candidate.withRootValue("nodes", edited.at("nodes").dump(2));
                 return std::nullopt;
             } catch (const std::exception &error) {
@@ -2494,7 +2514,7 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
                 const auto edited = Pelican::editGraphDocument(source, ops);
                 // CV-1b: judged as the engine will read it, lowered, so a
                 // lowering's named refusal is this edit's.
-                (void)partitionGraphDocument(lowerAuthoringDocument(edited).document);
+                (void)partitionGraphDocument(lowerAuthoringDocument(edited, loweringContext(dependencies_)).document);
                 candidate = candidate.withRootValue("nodes", edited.at("nodes").dump(2));
                 // An op may now address a definition body. The root `nodes`
                 // write-back alone would drop that edit on the floor, so the
@@ -2540,7 +2560,7 @@ OrderedJson RenderConfigEditorService::getFoldGroups(const Json &params) const {
 OrderedJson RenderConfigEditorService::getAuthoringLowering(const Json &params) const {
     requireOnly(params, {}, "get_authoring_lowering");
     try {
-        const auto lowering = lowerAuthoringDocument(Json::parse(document_.bytes()));
+        const auto lowering = lowerAuthoringDocument(Json::parse(document_.bytes()), loweringContext(dependencies_));
         return {{"source_digest", digestJson(document_.sourceDigest())},
                 {"reports", OrderedJson::parse(lowering.reports.dump())},
                 {"diagnostics", OrderedJson::parse(lowering.diagnostics.dump())}};

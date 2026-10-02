@@ -1,5 +1,8 @@
 #include "canvasreference.hpp"
 
+#include "canvastext.hpp"
+#include "distancefield.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -148,6 +151,9 @@ class Reference {
         if (output.fit == CanvasFit::contain) scale_.x = scale_.y = std::min(scale_.x, scale_.y);
         offset_ = {(width - output.size[0] * scale_.x) * 0.5, (height - output.size[1] * scale_.y) * 0.5};
         margin_ = 2.0 / std::min(scale_.x, scale_.y);
+        // CV-4: the output's own glyph atlases, unless the caller hands one in.
+        for (const auto &atlas : output.atlases)
+            atlases_[atlas.asset] = {atlas.pixels->width, atlas.pixels->height, atlas.pixels->rgba};
         for (const auto &group : output.groups) groups_.push_back(composite(group.items, group.srgb));
     }
 
@@ -163,13 +169,16 @@ class Reference {
     Vec2 offset_;
     double margin_ = 0.0;
     std::vector<std::vector<float>> groups_;
+    CanvasReferenceImages atlases_;
 
     Vec2 canvasPoint(double px, double py) const { return {(px - offset_.x) / scale_.x, (py - offset_.y) / scale_.y}; }
 
     const CanvasReferenceImage &imageOf(const CanvasTexture &texture) const {
         const auto key = texture.origin == CanvasTexture::Origin::file ? texture.asset
                                                                        : texture.node.value_or("") + "." + texture.port;
-        const auto found = images_.find(key);
+        auto found = images_.find(key);
+        if (found == images_.end())
+            if (const auto atlas = atlases_.find(key); atlas != atlases_.end()) return atlas->second;
         if (found == images_.end()) throw std::invalid_argument("canvas reference has no image for " + key);
         if (found->second.rgba.size() != std::size_t{found->second.width} * found->second.height * 4)
             throw std::invalid_argument("canvas reference image " + key + " does not hold width x height RGBA");
@@ -286,6 +295,42 @@ class Reference {
             color = texel(sample(item.texture, uv), 1.0, param(item, 0));
             break;
         }
+        case CanvasItemSource::glyph: {
+            // As the generated shader: the texel in the glyph's cell, the
+            // atlas read with the filter, the distance reconstructed, and
+            // the texels per pixel from the next pixel over.
+            const auto s = param(item, 2);
+            const Vec2 cell_min{param(item, 0) + s * param(item, 3), param(item, 1) + s * param(item, 4)};
+            const Vec2 cell_size{s * param(item, 5), s * param(item, 6)};
+            const auto n = param(item, 11);
+            const auto texel_at = [&](double x, double y) {
+                const auto at = itemPoint(item.affine, canvasPoint(x, y));
+                return Vec2{(at.x - cell_min.x) / cell_size.x * n, (at.y - cell_min.y) / cell_size.y * n};
+            };
+            const auto tex = texel_at(px, py);
+            const Vec2 uv{param(item, 7) + std::clamp(tex.x, 0.5, n - 0.5) / n * param(item, 9),
+                          param(item, 8) + std::clamp(tex.y, 0.5, n - 0.5) / n * param(item, 10)};
+            const auto t = sample(item.texture, uv);
+            const auto decode = [](double v) { return static_cast<float>((v - 0.5) * 2.0 * canvas_glyph_range); };
+            const float rgba[4] = {decode(t.r), decode(t.g), decode(t.b), decode(t.a)};
+            double d = reconstructMtsdfNear(rgba, 0.5f, 1.0f);
+            const auto base = canvas_glyph_parameter_count;
+            if (item.paint == CanvasPaint::stroke) {
+                const auto align = param(item, base + 5);
+                const auto limit = (align > 0.5 ? 1.0 : 2.0) * (canvas_glyph_range - 1.0);
+                d = strokeDistance(d, std::min(std::abs(param(item, base + 4) * n / std::abs(cell_size.x)), limit),
+                                   align);
+            }
+            const auto right = texel_at(px + 1.0, py), below = texel_at(px, py + 1.0);
+            const auto aa = std::max(length({length({right.x - tex.x, right.y - tex.y}),
+                                             length({below.x - tex.x, below.y - tex.y})}) *
+                                         0.70710678,
+                                     1e-6);
+            const auto a = std::clamp(param(item, base + 3), 0.0, 1.0) * std::clamp(0.5 - d / aa, 0.0, 1.0);
+            color = {shape_color(param(item, base)) * a, shape_color(param(item, base + 1)) * a,
+                     shape_color(param(item, base + 2)) * a, a};
+            break;
+        }
         }
         return color.scaled(mask(item, p));
     }
@@ -311,6 +356,12 @@ class Reference {
         case CanvasItemSource::image: {
             const Vec2 size{param(item, 2), param(item, 3)};
             return {{param(item, 0) + 0.5 * size.x, param(item, 1) + 0.5 * size.y},
+                    {0.5 * std::abs(size.x), 0.5 * std::abs(size.y)}};
+        }
+        case CanvasItemSource::glyph: {
+            const auto s = param(item, 2);
+            const Vec2 size{s * param(item, 5), s * param(item, 6)};
+            return {{param(item, 0) + s * param(item, 3) + 0.5 * size.x, param(item, 1) + s * param(item, 4) + 0.5 * size.y},
                     {0.5 * std::abs(size.x), 0.5 * std::abs(size.y)}};
         }
         case CanvasItemSource::color:

@@ -31,7 +31,8 @@ struct CanvasImage {
 // A file texture is keyed by its asset and read as the shader reads it (the
 // sRGB decode, or the bytes as they are when `linear`); a canvas.from_image
 // texture by "<node>.<port>", its bytes taken as linear values. A missing one
-// is refused.
+// is refused. CV-4: an output's glyph atlases come with the output; one handed
+// in under the same asset is read instead.
 struct CanvasReferenceImage {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
