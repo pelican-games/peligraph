@@ -2,6 +2,7 @@
 #include "graphcanvascomputefields.hpp"
 #include "graphcanvasdrawing.hpp"
 #include "graphcanvasfoldgroups.hpp"
+#include "graphcanvaslayerspanel.hpp"
 #include "graphcanvasloopfields.hpp"
 #include "graphcanvasrenderfields.hpp"
 #include "graphcanvasvaluefields.hpp"
@@ -4769,6 +4770,8 @@ struct GraphCanvasWidget::Impl {
     // UX-8: a curve's keys, a playback's map, a scalar's numbers, a
     // pass's buffers.
     GraphCanvasValueFields *value_fields = nullptr;
+    // SG-1: a canvas.stack's layers.
+    GraphCanvasLayersPanel *canvas_layers = nullptr;
     QComboBox *loop_branch = nullptr;
     QLabel *shared_mark = nullptr;
     // GL-1, decision 5: Show: one box per domain the root canvas can draw.
@@ -5260,6 +5263,19 @@ struct GraphCanvasWidget::Impl {
         folded_summary->setWordWrap(true);
         folded_summary->hide();
         side_layout->addWidget(folded_summary);
+        // SG-1: the canvas's Layers panel, first in the column: it stays
+        // while the pick goes to another node, as a paint program's does.
+        canvas_layers = new GraphCanvasLayersPanel(
+            model,
+            [this] {
+                dispatch();
+                showNotice();
+            },
+            side);
+        canvas_layers->nodePicked = [this](const std::string &scope, const std::string &node) {
+            scene->selectNode(scope, node);
+        };
+        side_layout->addWidget(canvas_layers);
         // UX-6b, decision 4.
         plan_notes = new QLabel(side);
         plan_notes->setObjectName(QStringLiteral("pelican.graphCanvasPlanNotes"));
@@ -7066,11 +7082,13 @@ struct GraphCanvasWidget::Impl {
             for (const auto &entry : model.paletteOperationsIn(
                      scope, search->text().toStdString(),
                      domains->currentData().toString().toStdString())) {
+                // SG-1: canvas.output is offered as the Canvas it places.
+                const auto label = graphCanvasPaletteLabel(entry.op);
                 auto *row = new QListWidgetItem(
-                    entry.structural
-                        ? QStringLiteral("%1   (structure)").arg(qtext(entry.op))
-                        : QStringLiteral("%1   (%2)").arg(qtext(entry.op),
-                                                          qtext(entry.domain)),
+                    label                ? qtext(*label)
+                    : entry.structural ? QStringLiteral("%1   (structure)").arg(qtext(entry.op))
+                                       : QStringLiteral("%1   (%2)").arg(qtext(entry.op),
+                                                                         qtext(entry.domain)),
                     list);
                 row->setData(Qt::UserRole, qtext(entry.op));
             }
@@ -7277,6 +7295,7 @@ struct GraphCanvasWidget::Impl {
         editing_parameter = nullptr;
         details->clear();
         const auto &selected = scene->selectedNode();
+        canvas_layers->showSelection(scene->selectedScope(), selected);
         label_edit->setEnabled(selected.has_value() && model.canEdit());
         apply_label->setEnabled(selected.has_value() && model.canEdit());
         add_node->setEnabled(model.canEdit());
@@ -7569,6 +7588,7 @@ struct GraphCanvasWidget::Impl {
         if (compute_fields != nullptr) compute_fields->followEditable();
         if (place_fields != nullptr) place_fields->followEditable();
         if (value_fields != nullptr) value_fields->followEditable();
+        if (canvas_layers != nullptr && canvas_layers->isVisible()) canvas_layers->followEditable();
         // GL-4a, decision 2: a node of a group being verified takes no edit
         // from the side fields until the verify finishes.
         if (folds)

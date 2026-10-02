@@ -1272,7 +1272,8 @@ class GraphCanvasModel {
     bool templates_requested_ = false;
     nlohmann::json templates_ = nlohmann::json::object();
     // Decision 5: the domains the root canvas shows (session state).
-    std::set<std::string, std::less<>> domains_shown_{"render", "pose", "value", "audio", "ui"};
+    std::set<std::string, std::less<>> domains_shown_{"render", "pose", "value", "audio", "ui",
+                                                      "canvas"};
     // Decision 3. A folded view is a document Studio builds and draws in
     // place of the real one, read only: the real one waits in the stash,
     // and every reply is read against it (FoldedSuspend) before the view

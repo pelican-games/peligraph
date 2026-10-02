@@ -21,6 +21,9 @@ add_library(pelican_studio_inspector_model STATIC
     # GL-3a: fold groups, read and written from the Graph tab.
     graphfoldgroups.cpp
     graphfoldgroups.hpp
+    # SG-1: pelican.canvas -- a stack's sockets and the Layers panel's edits.
+    graphcanvaslayerstack.cpp
+    graphcanvaslayerstack.hpp
     renderedithistory.cpp
     renderedithistory.hpp
     # RSX: the one reading of a render config ticket's last answer.

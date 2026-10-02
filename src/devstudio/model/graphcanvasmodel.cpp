@@ -1,6 +1,7 @@
 #include "graphcanvasmodel.hpp"
 
 #include "frameplanmodel.hpp"
+#include "graphcanvaslayerstack.hpp"
 #include "projectformat.hpp"
 #include "projectpathresolver.hpp"
 #include "rendereditcompletion.hpp"
@@ -1994,6 +1995,10 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
             } else {
                 socket("after", false, std::string{kDrawStreamType});
             }
+        } else if (drawn.op == "canvas.stack") {
+            // SG-1: parameter_dependent -- a layer and its opacity per
+            // element of `layers`, bottom first, then the empty `+ layer`.
+            ports = graphCanvasStackPorts(drawn.parameters);
         } else if (declared) {
             for (const auto &input : contract->value("inputs", Json::array())) {
                 GraphCanvasPort port;
@@ -2145,6 +2150,9 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
             // The structural boundary port. Its single output is the scalar
             // the expansion produces, which no catalog entry can say.
             drawn.outputs.push_back(GraphCanvasOutput{"value", kGraphInputType});
+        } else if (drawn.op == "canvas.stack") {
+            // SG-1: the stack it composes, a layer like any other.
+            drawn.outputs.push_back(GraphCanvasOutput{"layer", std::string{graphCanvasLayerType}});
         } else if (declared) {
             for (const auto &output : contract->value("outputs", Json::array())) {
                 const auto name = text(output, "port");
@@ -2817,6 +2825,10 @@ bool GraphCanvasModel::connectInput(std::string_view scope, const std::string &n
                                     const std::string &source_port) {
     if (!canEdit()) return false;
     if (!canConnect(scope, source_node, source_port, node, port)) return false;
+    // SG-1: a line on a stack's `+ layer` is a layer on top -- an element
+    // of `layers` and its line, one edit.
+    if (port == graphCanvasStackAddPort)
+        return submitOps(graphCanvasConnectLayerOps(nodes(scope), scope, node, source_node, source_port));
     // EL-5s, decision 1: a compute node's empty socket (a sampled image its
     // shader declares) is declared as the line lands, in the same edit.
     if (const auto open = computeOpenSockets(scope, node); std::ranges::find(open, port) != open.end()) {
@@ -2868,6 +2880,10 @@ bool GraphCanvasModel::disconnectInput(const std::string &node, const std::strin
 bool GraphCanvasModel::disconnectInput(std::string_view scope, const std::string &node,
                                        const std::string &port) {
     if (!canEdit() || findNode(scope, node) == nullptr) return false;
+    // SG-1: a stack's layer is its line; taking the line away takes the
+    // layer (one with no line is refused, canvas.layer_input_missing@1).
+    if (auto ops = graphCanvasDisconnectLayerOps(nodes(scope), scope, node, port); !ops.empty())
+        return submitOps(std::move(ops));
     // Q-19, decision 2: a numbered port is its line; taking the line away
     // takes the port, and the ones after it move down a number.
     if (auto ops = removeInputPortOps(scope, node, port); !ops.empty())
@@ -2992,6 +3008,12 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
     const auto scope = scopeToken(in_scope);
     const bool root = in_scope.empty();
     if (!root && !definitions_.contains(std::string{in_scope})) return ops;
+    // SG-1: the canvas's nodes arrive with the parameters the engine takes
+    // (a stack's `layers`, a shape's size), and canvas.output with its stack.
+    if (isGraphCanvasOperation(op))
+        return operation(op) == nullptr || drawBodyScope(in_scope)
+                   ? ops
+                   : graphCanvasPaletteOps(nodes(in_scope), in_scope, op);
     auto id = suggestNodeId(in_scope, op);
     Json node{{"id", id}, {"op", op}};
     if (op == "graph.input") {
@@ -4741,8 +4763,12 @@ std::vector<GraphCanvasCatalogEntry> GraphCanvasModel::paletteOperationsIn(
                 !project_ray_tracing_choices_.empty() ||
                 !engine_shaders_known_ || !rayTracingPipelines().empty())) ||
               (op == "render.raster" && rasterTemplateAvailable())));
-        if (text(declaration, "ports") != "declared" && !seeded) continue;
-        GraphCanvasCatalogEntry entry{op, text(declaration, "domain"),
+        // SG-1: the canvas's nodes, each seeded (a stack's `layers`), filed
+        // under their own domain rather than the catalog's `rendering`.
+        const bool canvas = isGraphCanvasOperation(op);
+        if (canvas && body_of_draws) continue;
+        if (text(declaration, "ports") != "declared" && !seeded && !canvas) continue;
+        GraphCanvasCatalogEntry entry{op, canvas ? std::string{"canvas"} : text(declaration, "domain"),
                                       text(declaration, "evaluation"),
                                       declaration.value("sink", false), false};
         if (matches(entry)) result.push_back(std::move(entry));
@@ -5816,6 +5842,9 @@ std::string GraphCanvasModel::scopeOutputResource(std::string_view scope, std::s
         const auto op = text(*found, "op");
         if (op == "render.image" || op == "render.buffer" || op == "render.attribute")
             return socket == "resource" ? at : std::string{};
+        // SG-1 (CV-1b): a pass names a canvas by its output node; the engine
+        // reads that as the canvas's image.
+        if (op == "canvas.output") return socket == "image" ? at : std::string{};
         if (op == "render.target_ref") {
             const auto parameters = found->find("parameters");
             return parameters != found->end() && parameters->is_object()
@@ -6509,13 +6538,15 @@ bool GraphCanvasModel::refuseFoldedEdit(const Json &ops) {
 }
 
 const std::vector<std::string> &GraphCanvasModel::domainNames() {
-    static const std::vector<std::string> names{"render", "pose", "value", "audio", "ui"};
+    static const std::vector<std::string> names{"render", "pose", "value", "audio", "ui", "canvas"};
     return names;
 }
 
 std::string GraphCanvasModel::opDomain(std::string_view op) {
     const auto dot = op.find('.');
     if (dot == std::string_view::npos) return {};
+    // SG-1 (design_canvas_2d 4): canvas.*, shape.* and filter.*.
+    if (isGraphCanvasOperation(op)) return "canvas";
     const auto prefix = op.substr(0, dot);
     // design_graph_layers 3.3: draw.* is drawn with render.*, and event.*
     // is shown with the values it drives.
@@ -6541,6 +6572,9 @@ bool GraphCanvasModel::nodeShown(std::string_view scope, const GraphCanvasNode &
     // A graph.instance and a graph.loop are structure: whatever domain their
     // body is in, they stay (opDomain answers nothing for graph.*).
     if (!scope.empty() || folded_stash_) return true;
+    // SG-1: a canvas.output is a render pass as well -- the Render filter
+    // shows it, and cuts the line into it with `← canvas (N)`.
+    if (node.op == "canvas.output" && domainShown("render")) return true;
     return domainShown(opDomain(node.op));
 }
 

@@ -399,6 +399,9 @@ if(TARGET pelican_studio_inspector_model)
   # GL-3a: fold groups as the Graph tab and the Frame Plan read and write
   # them, without Qt.
   pelican_define_test(devstudio_graph_fold_test pelican_studio_inspector_model)
+  # SG-1: pelican.canvas in the Graph tab -- a stack's sockets, the Layers
+  # panel's rows and the op lists its gestures send, without Qt.
+  pelican_define_test(devstudio_canvas_layers_test pelican_studio_inspector_model)
   target_compile_definitions(pelican_test_devstudio_graph_fold_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   target_compile_definitions(pelican_test_devstudio_graphcanvas_test PRIVATE
@@ -583,6 +586,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascomputefields.cpp
     # GL-3a: the fold groups the Graph tab draws and writes.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
+    # SG-1: a canvas.stack's Layers panel.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaslayerspanel.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
@@ -629,6 +634,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasvaluefields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascomputefields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaslayerspanel.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp

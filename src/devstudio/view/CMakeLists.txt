@@ -85,6 +85,9 @@ add_library(pelican_studio_view STATIC
     # GL-3a: fold groups on the Graph canvas, and their Decisions.
     graphcanvasfoldgroups.cpp
     graphcanvasfoldgroups.hpp
+    # SG-1: a canvas.stack's Layers panel.
+    graphcanvaslayerspanel.cpp
+    graphcanvaslayerspanel.hpp
     graphcanvasreadcapability.cpp
     graphcanvasreadcapability.hpp
     proceduralassetdialog.cpp
