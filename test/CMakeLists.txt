@@ -581,6 +581,10 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasdrawing.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasloopfields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasrenderfields.cpp
+    # UX-11: the tag picker and a material pass's settings (UX-4a's form).
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvastagpicker.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasmaterialfields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/materialsettingsform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasvaluefields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascomputefields.cpp
     # GL-3a: the fold groups the Graph tab draws and writes.
@@ -628,6 +632,10 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasdrawing.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasloopfields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasrenderfields.cpp
+    # UX-11: the tag picker and a material pass's settings (UX-4a's form).
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvastagpicker.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasmaterialfields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/materialsettingsform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasvaluefields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascomputefields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp

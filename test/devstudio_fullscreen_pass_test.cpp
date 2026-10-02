@@ -2556,7 +2556,12 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
         other.setPlainText("[]");
         CHECK_FALSE(save.isEnabled());
         other.clear();
-        required<QLineEdit>(form, "pelican.fullscreenPass.materialFilter.include").setText("actors");
+        // UX-11, decision 2: the Tags are a picker; a tag no material lists
+        // is typed in its "+ new tag" line.
+        auto &new_tag = required<QLineEdit>(form, "pelican.fullscreenPass.materialFilter.include.newTag");
+        new_tag.setText("actors");
+        Q_EMIT new_tag.returnPressed();
+        QCoreApplication::processEvents();
         expected["material_filter"] = {{"include", {"actors"}}};
         auto &contract = required<QComboBox>(form, "pelican.fullscreenPass.materialContract");
         contract.setCurrentIndex(contract.findData("forward_transparent_v1"));

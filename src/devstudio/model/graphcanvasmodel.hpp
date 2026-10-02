@@ -664,6 +664,12 @@ struct GraphCanvasPlanPass {
     std::string contract;
     // material_filter.resolved_draw_count, when the engine resolved it.
     std::optional<std::size_t> draw_count;
+    // UX-11, decision 4: the material_routing routes that name it (the
+    // Frame Plan's Materials rows), and the tags its material_filter takes
+    // and leaves out, as the plan says.
+    std::vector<std::string> routes;
+    std::vector<std::string> material_include;
+    std::vector<std::string> material_exclude;
     // LC-1: its shader reads pelican_loop_element() / _count()
     // (get_frame_plan's reads_loop_index).
     bool reads_loop_index = false;

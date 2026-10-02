@@ -955,6 +955,10 @@ class GraphCanvasWidget final : public QWidget {
     // GL-2b, decision 3: what a click on an L1 row of the Layers section does
     // -- the owner brings the Frame Plan forward with that plan node picked.
     void setFramePlanNodeAction(std::function<void(const QString &node)> action);
+    // UX-11, decision 4: what a press on a material pass's Materials drawn
+    // row does -- the owner brings the Frame Plan forward with its Materials
+    // rows of that pass (the plan's name) picked.
+    void setFramePlanMaterialsAction(std::function<void(const QString &pass)> action);
     // GL-1, decision 4: what "Expand to edit…" runs -- the Frame Plan's
     // Decompose into loop on a material pass (`graph` is the plan's), the
     // Features tab's Replace with loop version on a feature.

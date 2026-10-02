@@ -1,6 +1,8 @@
 #include "materialsettingsform.hpp"
 
 #include "materialoutput.hpp"
+// UX-11, decision 2: the Tags are the Graph's tag picker.
+#include "../graphcanvastagpicker.hpp"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -80,6 +82,15 @@ void putOptional(Json &object, const char *key, std::optional<Json> value) {
         object.erase(key);
 }
 
+// A tag list's names; what is not a string is no tag.
+std::vector<std::string> namesOf(const Json &names) {
+    std::vector<std::string> result;
+    if (names.is_array())
+        for (const auto &name : names)
+            if (name.is_string()) result.push_back(name.get<std::string>());
+    return result;
+}
+
 Json objectOr(const Json &object, const char *key) {
     const auto found = object.find(key);
     return found != object.end() && found->is_object() ? *found : Json::object();
@@ -143,6 +154,7 @@ MaterialSettingsForm::MaterialSettingsForm(const QString &object_prefix,
     : PassForm(object_prefix, parent) {
     setObjectName(childName("materialSettings"));
     auto *form = new QFormLayout(this);
+    form_ = form;
     form->setContentsMargins(0, 0, 0, 0);
     const auto changed = [this] { notifyChanged(); };
 
@@ -159,20 +171,22 @@ MaterialSettingsForm::MaterialSettingsForm(const QString &object_prefix,
     auto *filter_row = new QWidget(this);
     auto *filter_layout = new QHBoxLayout(filter_row);
     filter_layout->setContentsMargins(0, 0, 0, 0);
-    filter_include_ = new QLineEdit(filter_row);
-    filter_include_->setObjectName(childName("materialFilter.include"));
-    filter_include_->setPlaceholderText(tr("any of these tags"));
+    // UX-11, decision 2: picked among the engine's tags (the Loop's picker),
+    // a new one typed in the menu's "+ new tag" line.
+    filter_include_ = new GraphCanvasTagPicker(childName("materialFilter.include"),
+                                               tr("any tag (every material)"), filter_row);
     filter_include_->setToolTip(tr("material_filter.include: materials with any "
-                                   "of these tags (commas between); empty: every material"));
-    filter_exclude_ = new QLineEdit(filter_row);
-    filter_exclude_->setObjectName(childName("materialFilter.exclude"));
-    filter_exclude_->setPlaceholderText(tr("none of these tags"));
+                                   "of these tags; none picked: every material"));
+    filter_exclude_ = new GraphCanvasTagPicker(childName("materialFilter.exclude"),
+                                               tr("leave none out"), filter_row);
     filter_exclude_->setToolTip(tr("material_filter.exclude: leave out materials "
                                    "with any of these tags"));
     filter_layout->addWidget(filter_include_, 1);
     filter_layout->addWidget(filter_exclude_, 1);
-    for (auto *field : {filter_include_, filter_exclude_})
-        QObject::connect(field, &QLineEdit::textChanged, this, changed);
+    for (auto *field : {filter_include_, filter_exclude_}) {
+        field->allowNewTags(true);
+        field->changed = changed;
+    }
     form->addRow(tr("Tags"), filter_row);
 
     variant_ = new QComboBox(this);
@@ -299,6 +313,18 @@ void MaterialSettingsForm::setVariantCandidates(const std::vector<std::string> &
     variant_->setEditText(current);
 }
 
+void MaterialSettingsForm::setTagCandidates(const std::vector<std::string> &tags) {
+    if (tags == tag_candidates_) return;
+    tag_candidates_ = tags;
+    const Loading loading{*this};
+    for (auto *picker : {filter_include_, filter_exclude_}) picker->setTags(tags, picker->selected());
+}
+
+void MaterialSettingsForm::setContractAndVariantShown(bool shown) {
+    form_->setRowVisible(contract_, shown);
+    form_->setRowVisible(variant_, shown);
+}
+
 void MaterialSettingsForm::load(const Json &declaration) {
     const Loading loading{*this};
     original_ = Json::object();
@@ -310,8 +336,8 @@ void MaterialSettingsForm::load(const Json &declaration) {
     passform::showOptionalValue(*contract_,
                                 contract == original_.end() ? nullptr : &*contract);
     const Json filter = objectOr(original_, "material_filter");
-    filter_include_->setText(passform::joinNames(filter.value("include", Json::array())));
-    filter_exclude_->setText(passform::joinNames(filter.value("exclude", Json::array())));
+    filter_include_->setTags(tag_candidates_, namesOf(filter.value("include", Json::array())));
+    filter_exclude_->setTags(tag_candidates_, namesOf(filter.value("exclude", Json::array())));
     variant_->setEditText(original_.contains("material_variant") &&
                                   original_.at("material_variant").is_string()
                               ? text(original_.at("material_variant").get<std::string>())
@@ -493,7 +519,7 @@ Json MaterialSettingsForm::settings() const {
     Json filter = objectOr(original_, "material_filter");
     for (const auto &[key, field] :
          {std::pair{"include", filter_include_}, std::pair{"exclude", filter_exclude_}}) {
-        const auto names = passform::splitNames(field->text());
+        const auto names = field->selected();
         if (names.empty())
             filter.erase(key);
         else

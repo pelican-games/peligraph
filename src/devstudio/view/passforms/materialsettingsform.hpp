@@ -13,14 +13,19 @@ class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
+class QFormLayout;
 
 namespace PelicanStudio {
+
+class GraphCanvasTagPicker;
 
 // UX-4a. A material pass's ten settings (edit_preset_pass's
 // material_settings), as a form:
 //   - material_contract: the contracts the engine knows
 //   - material_filter: the tags a material must have any of / none of
-//     (written, commas between: the engine reports no tag list yet)
+//     (UX-11, decision 2: picked among the engine's material tags with the
+//     Graph's Loop picker; a tag no material lists is typed in its
+//     "+ new tag" line)
 //   - material_variant: a name, offered from the variants other passes use
 //   - material_range: on / off, start and count
 //   - material_outputs and material_output_states: one row an output -- its
@@ -50,6 +55,13 @@ class MaterialSettingsForm final : public PassForm {
     void setResourceCandidates(const std::vector<std::string> &resources);
     // The variant names other passes use.
     void setVariantCandidates(const std::vector<std::string> &variants);
+    // UX-11, decision 2: the tags the Tags pickers offer (the engine's
+    // material_tags); what the pass names stays offered, checked.
+    void setTagCandidates(const std::vector<std::string> &tags);
+    // UX-11, decision 1: the Graph shows its own Contract and Variant
+    // (pick-only, beside the node's other fields), so it hides these two.
+    // Hidden, they still come back from settings() as they were loaded.
+    void setContractAndVariantShown(bool shown);
 
     // Each of the ten keys the pass has now; one left out is absent. Throws
     // when Other is not a JSON object of the keys it may hold.
@@ -64,10 +76,12 @@ class MaterialSettingsForm final : public PassForm {
 
     nlohmann::json original_ = nlohmann::json::object();
     std::vector<std::string> resource_candidates_;
+    std::vector<std::string> tag_candidates_;
+    QFormLayout *form_ = nullptr;
 
     QComboBox *contract_ = nullptr;
-    QLineEdit *filter_include_ = nullptr;
-    QLineEdit *filter_exclude_ = nullptr;
+    GraphCanvasTagPicker *filter_include_ = nullptr;
+    GraphCanvasTagPicker *filter_exclude_ = nullptr;
     QComboBox *variant_ = nullptr;
     QCheckBox *range_ = nullptr;
     QSpinBox *range_start_ = nullptr;

@@ -567,6 +567,14 @@ void MainWindow::createWorkspace() {
         docks_[FramePlanDock]->raise();
         frame_plan_->showPlanNode(node);
     });
+    // UX-11, decision 4: a material pass's Materials drawn row picks the
+    // Frame Plan's Materials rows of that pass.
+    graph_canvas_->setFramePlanMaterialsAction([this, render_tabs](const QString &pass) {
+        render_tabs->setCurrentWidget(frame_plan_);
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        frame_plan_->showMaterialRoutes(pass);
+    });
     // Decision 4: "Expand to edit…" inside a folded view runs the flow that
     // already exists for it, with its confirmation.
     graph_canvas_->setFoldedExpandActions(

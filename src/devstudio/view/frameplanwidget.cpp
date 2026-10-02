@@ -3155,6 +3155,26 @@ struct FramePlanWidget::Impl {
     }
 
     // GL-2b, decision 3: the Graph tab's Layers row picks a plan node here.
+    // UX-11, decision 4.
+    void showMaterialRoutes(const QString &pass) {
+        tabs->setCurrentWidget(materials);
+        materials->clearSelection();
+        QTreeWidgetItem *first = nullptr;
+        for (int index = 0; index < materials->topLevelItemCount(); ++index) {
+            auto *item = materials->topLevelItem(index);
+            if (item->text(1) != pass) continue;
+            item->setSelected(true);
+            if (first == nullptr) first = item;
+        }
+        if (first == nullptr) {
+            showStatus(owner.tr("The frame plan routes no material to %1.").arg(pass));
+            return;
+        }
+        materials->setCurrentItem(first, 0, QItemSelectionModel::NoUpdate);
+        materials->scrollToItem(first);
+        showStatus(owner.tr("The material routes to %1 are picked.").arg(pass));
+    }
+
     void showPlanNode(const std::string &name) {
         tabs->setCurrentWidget(logical_splitter);
         if (!model || !logical_scene->selectPlanNode(FramePlanNodeKey{model->graph, name})) {
@@ -4736,6 +4756,10 @@ void FramePlanWidget::showLoopGroup(const QString &loop) {
 
 void FramePlanWidget::showPlanNode(const QString &node) {
     impl_->showPlanNode(node.toStdString());
+}
+
+void FramePlanWidget::showMaterialRoutes(const QString &pass) {
+    impl_->showMaterialRoutes(pass);
 }
 
 void FramePlanWidget::setGraphPassOpenAction(GraphPassOpenAction action) {

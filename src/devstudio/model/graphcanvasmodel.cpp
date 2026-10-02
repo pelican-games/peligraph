@@ -5475,16 +5475,18 @@ void GraphCanvasModel::readPlanPasses(const Json &plan) {
     plan_graph_ = text(plan, "graph");
     // The contract each material pass draws with, as material_routing says.
     std::map<std::string, std::string, std::less<>> contracts;
+    // UX-11, decision 4: and the routes that name each.
+    std::map<std::string, std::vector<std::string>, std::less<>> pass_routes;
     if (const auto routing = plan.find("material_routing");
         routing != plan.end() && routing->is_object())
         if (const auto routes = routing->find("routes");
             routes != routing->end() && routes->is_object())
             for (const auto &[route, value] : routes->items()) {
-                (void)route;
                 if (!value.is_object()) continue;
                 const auto pass = text(value, "pass");
                 if (!pass.empty() && !contracts.contains(pass))
                     contracts[pass] = text(value, "contract");
+                if (!pass.empty()) pass_routes[pass].push_back(route);
             }
     std::vector<GraphCanvasPlanPass> passes;
     const auto nodes = plan.find("nodes");
@@ -5553,6 +5555,12 @@ void GraphCanvasModel::readPlanPasses(const Json &plan) {
                 if (const auto count = filter->find("resolved_draw_count");
                     count != filter->end() && count->is_number_unsigned())
                     pass.draw_count = count->get<std::size_t>();
+            if (filtered) {
+                pass.material_include = planStrings(*filter, "include");
+                pass.material_exclude = planStrings(*filter, "exclude");
+            }
+            if (const auto routes = pass_routes.find(pass.name); routes != pass_routes.end())
+                pass.routes = routes->second;
             if (const auto contract = contracts.find(pass.name); contract != contracts.end())
                 pass.contract = contract->second;
             // LC-1: present (and true) only for a shader that reads it.

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "../model/graphcanvasmodel.hpp"
+// UX-3, decision 5: GraphCanvasTagPicker (its own file since UX-11).
+#include "graphcanvastagpicker.hpp"
 
 #include <QToolButton>
 #include <QWidget>
@@ -28,27 +30,6 @@ class QVBoxLayout;
 namespace PelicanStudio {
 
 class ViewSelectField;
-
-// UX-3, decision 5: a choice of any number of the engine's material tags
-// (get_render_authoring_context's material_tags), in place of a line of
-// comma-separated names: a button whose menu holds one check per tag. A tag
-// the document names that the engine does not list stays, checked. Each
-// check sends `changed`. The button is named `object_name`, each check
-// `<object_name>.<tag>`.
-class GraphCanvasTagPicker final : public QToolButton {
-  public:
-    GraphCanvasTagPicker(const QString &object_name, const QString &empty_text,
-                         QWidget *parent = nullptr);
-    void setTags(const std::vector<std::string> &all, const std::vector<std::string> &selected);
-    [[nodiscard]] std::vector<std::string> selected() const;
-    std::function<void()> changed;
-
-  private:
-    void showSelection();
-
-    QString empty_text_;
-    std::vector<std::pair<std::string, QAction *>> checks_;
-};
 
 // LP-4c, decisions 3 and 4: the Loop fields beside the Graph tab's canvas, for
 // the root graph.loop that is selected. The loop's parameters are edited here

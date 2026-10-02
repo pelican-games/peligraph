@@ -132,55 +132,7 @@ bool selectableAxis(const FramePlanViewAxis &axis) {
 
 } // namespace
 
-// --- UX-3, decision 5: the engine's material tags, picked.
-
-GraphCanvasTagPicker::GraphCanvasTagPicker(const QString &object_name, const QString &empty_text,
-                                           QWidget *parent)
-    : QToolButton{parent}, empty_text_{empty_text} {
-    setObjectName(object_name);
-    setPopupMode(QToolButton::InstantPopup);
-    setToolButtonStyle(Qt::ToolButtonTextOnly);
-    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    auto *list = new QMenu(this);
-    list->setObjectName(object_name + QStringLiteral(".menu"));
-    setMenu(list);
-    showSelection();
-}
-
-void GraphCanvasTagPicker::setTags(const std::vector<std::string> &all,
-                                   const std::vector<std::string> &selected) {
-    menu()->clear();
-    checks_.clear();
-    auto tags = all;
-    // What the document names stays visible, even a tag no material has.
-    for (const auto &tag : selected)
-        if (std::ranges::find(tags, tag) == tags.end()) tags.push_back(tag);
-    for (const auto &tag : tags) {
-        auto *check = menu()->addAction(qtext(tag));
-        check->setObjectName(objectName() + QLatin1Char{'.'} + qtext(tag));
-        check->setCheckable(true);
-        check->setChecked(std::ranges::find(selected, tag) != selected.end());
-        connect(check, &QAction::triggered, this, [this] {
-            showSelection();
-            if (changed) changed();
-        });
-        checks_.emplace_back(tag, check);
-    }
-    showSelection();
-}
-
-std::vector<std::string> GraphCanvasTagPicker::selected() const {
-    std::vector<std::string> tags;
-    for (const auto &[tag, check] : checks_)
-        if (check->isChecked()) tags.push_back(tag);
-    return tags;
-}
-
-void GraphCanvasTagPicker::showSelection() {
-    QStringList names;
-    for (const auto &tag : selected()) names << qtext(tag);
-    setText(names.isEmpty() ? empty_text_ : names.join(QStringLiteral(", ")));
-}
+// --- UX-3, decision 5: the picker is graphcanvastagpicker.cpp's (UX-11).
 
 QString GraphCanvasLoopFields::elementText(const GraphCanvasLoop &loop, std::int64_t element) {
     if (loop.view_axis_info && element >= 0)

@@ -3,6 +3,7 @@
 #include "graphcanvasdrawing.hpp"
 #include "graphcanvasfoldgroups.hpp"
 #include "graphcanvasloopfields.hpp"
+#include "graphcanvasmaterialfields.hpp"
 #include "graphcanvasrenderfields.hpp"
 #include "graphcanvasvaluefields.hpp"
 #include "fullscreenshadertemplate.hpp"
@@ -4837,6 +4838,9 @@ struct GraphCanvasWidget::Impl {
     GraphCanvasLoopFields *loop_fields = nullptr;
     // LP-4e: a material pass's contract, a draw step's variant or override.
     GraphCanvasDrawFields *draw_fields = nullptr;
+    // UX-11: the rest of a material pass's settings, in the Pass Editor's
+    // forms, and what it draws.
+    GraphCanvasMaterialPassFields *material_fields = nullptr;
     // LP-4f1: a render node's View field.
     GraphCanvasViewFields *view_fields = nullptr;
     // UX-2: a render.image's values (decision 1) and a render pass's
@@ -4872,6 +4876,9 @@ struct GraphCanvasWidget::Impl {
     QPushButton *layers_toggle = nullptr;
     QTreeWidget *layers = nullptr;
     std::function<void(const QString &)> frame_plan_node_action;
+    // UX-11, decision 4: who brings the Frame Plan's Materials rows of a
+    // pass forward when a Materials drawn row is pressed.
+    std::function<void(const QString &)> frame_plan_materials_action;
     QPushButton *diagnostics_toggle = nullptr;
     QLabel *diagnostics_list = nullptr;
     // UX-6b, decision 1 and 3: the frame's GPU time and the plan's size
@@ -5522,6 +5529,18 @@ struct GraphCanvasWidget::Impl {
         side_layout->addWidget(loop_fields);
         draw_fields = new GraphCanvasDrawFields(model, [this] { dispatch(); }, side);
         side_layout->addWidget(draw_fields);
+        material_fields = new GraphCanvasMaterialPassFields(
+            model,
+            [this] {
+                dispatch();
+                showNotice();
+            },
+            side);
+        material_fields->setPendingChanged([this] { showNotice(); });
+        material_fields->setMaterialsAction([this](const QString &pass) {
+            if (frame_plan_materials_action) frame_plan_materials_action(pass);
+        });
+        side_layout->addWidget(material_fields);
         view_fields = new GraphCanvasViewFields(model, [this] { dispatch(); }, side);
         side_layout->addWidget(view_fields);
         // UX-9, decision 2: the image's, place's and value fields say
@@ -7519,6 +7538,7 @@ struct GraphCanvasWidget::Impl {
             syncAudioRow(nullptr);
             loop_fields->showLoop({});
             draw_fields->showNode(nullptr);
+            material_fields->showNode(nullptr, {});
             view_fields->showNode(nullptr, {});
             image_fields->showNode(nullptr, {});
             pass_fields->showNode(nullptr, {});
@@ -7538,6 +7558,7 @@ struct GraphCanvasWidget::Impl {
             syncAudioRow(nullptr);
             loop_fields->showLoop({});
             draw_fields->showNode(nullptr);
+            material_fields->showNode(nullptr, {});
             view_fields->showNode(nullptr, {});
             image_fields->showNode(nullptr, {});
             pass_fields->showNode(nullptr, {});
@@ -7555,6 +7576,8 @@ struct GraphCanvasWidget::Impl {
         loop_fields->showLoop(found->loop ? found->id : std::string{});
         // LP-4e: and so are a material pass's and a draw step's.
         draw_fields->showNode(&*found, scope);
+        // UX-11: and the rest of a material pass's settings.
+        material_fields->showNode(&*found, scope);
         // LP-4f1: and a render node's views.
         view_fields->showNode(&*found, scope);
         // UX-2: and a render.image's values, a render pass's shaders.
@@ -7805,6 +7828,7 @@ struct GraphCanvasWidget::Impl {
         if (loop_fields != nullptr) loop_fields->followEditable();
         // Q-18: and so do the draw.* fields and a render node's View field.
         if (draw_fields != nullptr) draw_fields->followEditable();
+        if (material_fields != nullptr) material_fields->followEditable();
         if (view_fields != nullptr) view_fields->followEditable();
         // UX-2: and so do a render.image's and a render pass's.
         if (image_fields != nullptr) image_fields->followEditable();
@@ -7815,7 +7839,7 @@ struct GraphCanvasWidget::Impl {
         // GL-4a, decision 2: a node of a group being verified takes no edit
         // from the side fields until the verify finishes.
         if (folds)
-            folds->gateNodeFields({loop_fields, draw_fields, view_fields, image_fields,
+            folds->gateNodeFields({loop_fields, draw_fields, material_fields, view_fields, image_fields,
                                    pass_fields, place_fields, value_fields, label_edit,
                                    apply_label});
         showNotice();
@@ -7833,6 +7857,7 @@ struct GraphCanvasWidget::Impl {
         return (pass_fields != nullptr && pass_fields->valuePending()) ||
                (image_fields != nullptr && image_fields->valuePending()) ||
                (place_fields != nullptr && place_fields->valuePending()) ||
+               (material_fields != nullptr && material_fields->valuePending()) ||
                (value_fields != nullptr && value_fields->valuePending());
     }
 
@@ -7981,6 +8006,10 @@ bool GraphCanvasWidget::revealPlanPass(const QString &pass) {
 
 void GraphCanvasWidget::setFramePlanNodeAction(std::function<void(const QString &node)> action) {
     impl_->frame_plan_node_action = std::move(action);
+}
+
+void GraphCanvasWidget::setFramePlanMaterialsAction(std::function<void(const QString &pass)> action) {
+    impl_->frame_plan_materials_action = std::move(action);
 }
 
 void GraphCanvasWidget::setFoldedExpandActions(

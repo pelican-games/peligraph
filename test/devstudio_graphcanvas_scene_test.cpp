@@ -10393,3 +10393,190 @@ TEST_CASE("IA-1s decision 1: Initial contents lists the project's images, is off
     CHECK(tab.sent(4).at("parameters") == image);
     std::filesystem::remove_all(root);
 }
+
+// --- UX-11: a material pass's settings on the Graph, in the Pass Editor's
+// forms, and what it draws.
+
+namespace {
+
+// The Graph tab over a recorded transport that answers the frame plan and
+// the authoring context too.
+struct Ux11Tab {
+    RecordedCapability transport;
+    std::unique_ptr<PelicanStudio::GraphCanvasWidget> widget;
+
+    Ux11Tab() {
+        auto capability = transport.capability();
+        capability.requestRenderAuthoringContext = [this](QString *) {
+            transport.calls.push_back({QStringLiteral("get_render_authoring_context")});
+            return transport.next++;
+        };
+        capability.requestFramePlan = [this](QString *) {
+            transport.calls.push_back({QStringLiteral("get_frame_plan")});
+            return transport.next++;
+        };
+        widget = std::make_unique<PelicanStudio::GraphCanvasWidget>(capability);
+        widget->resize(1100, 900);
+        widget->show();
+        QCoreApplication::processEvents();
+    }
+    void answer(const char *method, const Json &reply) {
+        const qint64 id = transport.idOf(QString::fromLatin1(method));
+        REQUIRE(id != 0);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    }
+    [[nodiscard]] int reads(const char *method) const {
+        return transport.countOf(QString::fromLatin1(method));
+    }
+    void read(const Json &document, const std::string &digest) {
+        auto reply = context(document);
+        reply["source_digest"]["hex"] = digest;
+        answer("get_graph_instances", reply);
+    }
+    void commit(const Json &document, const std::string &digest) {
+        answer("edit_graph_document", Json{{"status", "accepted"}, {"ticket", "ux11"}});
+        answer("get_edit_result", Json{{"status", "committed"}, {"committed", true},
+                                       {"source_digest", {{"hex", digest}}}});
+        read(document, digest);
+    }
+    [[nodiscard]] Json sent(int count) const {
+        REQUIRE(reads("edit_graph_document") == count);
+        const auto ops = Json::parse(transport.calls[static_cast<std::size_t>(
+                                                         transport.idOf(QStringLiteral("edit_graph_document")) - 1)]
+                                         .body.toStdString());
+        REQUIRE(ops.size() == 1);
+        CHECK(ops[0].at("op") == "set_node_parameters");
+        return ops[0];
+    }
+    template <typename T> T *field(const char *name) {
+        auto *found = widget->findChild<T *>(QString::fromLatin1(name));
+        REQUIRE(found != nullptr);
+        return found;
+    }
+};
+
+// The plan of ux5bDeferredDocument's material pass: one route to it, its
+// filter as the engine resolved it, two draws.
+Json ux11Plan() {
+    auto pass = gl1bPass("mp", 0, "project", Json::array(),
+                         Json::array({"mp__albedo", "mp__normal", "mp__material", "mp__worldpos",
+                                      "mp__emissive", "mp__depth"}));
+    pass["origin"] = {{"graph", "main_render"}, {"node", "mp"}};
+    pass["material_filter"] = {{"include", {"hero"}}, {"exclude", Json::array()},
+                               {"resolved_draw_count", 2}};
+    return {{"schema", "pelican.frame_plan"},
+            {"version", 1},
+            {"graph", "main_render"},
+            {"loops", Json::array()},
+            {"material_routing",
+             {{"policy", "hybrid_auto_v1"},
+              {"routes", {{"deferred_geometry",
+                           {{"pass", "mp"}, {"contract", "deferred_geometry_v1"},
+                            {"phase", "opaque"}}}}}}},
+            {"nodes", Json::array({pass})}};
+}
+
+} // namespace
+
+TEST_CASE("UX-11 decisions 1 and 4: a material pass's Tags, outputs, bindings and attachment "
+          "ops are the Pass Editor's forms on the Graph, each one set_node_parameters; "
+          "Materials drawn lists the plan's routes and the materials its filter takes, and a "
+          "row opens the Frame Plan's Materials",
+          "[devstudio][graph-canvas][scene][ux11]") {
+    (void)application();
+    auto document = ux5bDeferredDocument();
+    Ux11Tab tab;
+    QString materials_for;
+    tab.widget->setFramePlanMaterialsAction([&](const QString &pass) { materials_for = pass; });
+    tab.read(document, "ux11-0");
+    tab.answer("get_graph_catalog", ux5bCatalog());
+    if (tab.reads("get_frame_plan") > 0) tab.answer("get_frame_plan", ux11Plan());
+    tab.widget->scene().selectNode("mp");
+    QCoreApplication::processEvents();
+    tab.widget->poll();
+    REQUIRE(tab.reads("get_render_authoring_context") >= 1);
+    tab.answer("get_render_authoring_context", ux3Authoring());
+    if (tab.reads("get_frame_plan") > 0) tab.answer("get_frame_plan", ux11Plan());
+    tab.widget->poll();
+    QCoreApplication::processEvents();
+    REQUIRE(tab.widget->model().planPasses().size() == 1);
+
+    // Decision 1: the forms are there, the Draw fields' Contract above them
+    // and the form's own out of sight; no JSON row to type for them.
+    CHECK(tab.field<QComboBox>("pelican.graphCanvasDraw.contract")->isVisibleTo(tab.widget.get()));
+    CHECK_FALSE(tab.field<QComboBox>("pelican.graphCanvasMaterial.materialContract")
+                    ->isVisibleTo(tab.widget.get()));
+    auto *include = tab.field<QToolButton>("pelican.graphCanvasMaterial.materialFilter.include");
+    REQUIRE(include->isVisibleTo(tab.widget.get()));
+    CHECK(tab.field<QPushButton>("pelican.graphCanvasMaterial.materialOutputs.add")
+              ->isVisibleTo(tab.widget.get()));
+    CHECK(tab.field<QPushButton>("pelican.graphCanvasMaterial.materialResources.add")
+              ->isVisibleTo(tab.widget.get()));
+    // A colour row per G-buffer socket, and depth.
+    CHECK(tab.field<QComboBox>("pelican.graphCanvasMaterial.outputLoad.4")->isVisibleTo(tab.widget.get()));
+    CHECK(tab.widget->findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasMaterial.outputLoad.5")) ==
+          nullptr);
+    CHECK(tab.field<QComboBox>("pelican.graphCanvasMaterial.depthLoad")->isVisibleTo(tab.widget.get()));
+
+    // Decision 2 on the Graph: a tag picked among the engine's.
+    int edits = 0;
+    tab.field<QAction>("pelican.graphCanvasMaterial.materialFilter.include.hero")->trigger();
+    QCoreApplication::processEvents();
+    auto op = tab.sent(++edits);
+    CHECK(op.at("node") == "mp");
+    auto expected = document["nodes"][6]["parameters"];
+    REQUIRE(expected.at("material_contract") == "deferred_geometry_v1");
+    expected["material_filter"] = {{"include", {"hero"}}};
+    CHECK(op.at("parameters") == expected);
+    document["nodes"][6]["parameters"] = op.at("parameters");
+    tab.commit(document, "ux11-1");
+    QCoreApplication::processEvents();
+
+    // A colour row's Clear is the pass's color_load_op.
+    auto *albedo_load = tab.field<QComboBox>("pelican.graphCanvasMaterial.outputLoad.0");
+    albedo_load->setCurrentIndex(albedo_load->findData(QStringLiteral("clear")));
+    QCoreApplication::processEvents();
+    op = tab.sent(++edits);
+    expected["color_load_op"] = "clear";
+    CHECK(op.at("parameters") == expected);
+    document["nodes"][6]["parameters"] = op.at("parameters");
+    tab.commit(document, "ux11-2");
+    QCoreApplication::processEvents();
+    // Read back, every colour row says it.
+    CHECK(tab.field<QComboBox>("pelican.graphCanvasMaterial.outputLoad.3")->currentData() ==
+          QStringLiteral("clear"));
+
+    // Depth's Load is depth_load_op.
+    auto *depth_load = tab.field<QComboBox>("pelican.graphCanvasMaterial.depthLoad");
+    depth_load->setCurrentIndex(depth_load->findData(QStringLiteral("clear")));
+    QCoreApplication::processEvents();
+    op = tab.sent(++edits);
+    expected["depth_load_op"] = "clear";
+    CHECK(op.at("parameters") == expected);
+    document["nodes"][6]["parameters"] = op.at("parameters");
+    tab.commit(document, "ux11-3");
+    QCoreApplication::processEvents();
+
+    // A binding: Add binding is a screen input, its name picked.
+    tab.field<QPushButton>("pelican.graphCanvasMaterial.materialResources.add")->click();
+    QCoreApplication::processEvents();
+    op = tab.sent(++edits);
+    expected["screen_inputs"] = {{"opaque_color", ""}};
+    CHECK(op.at("parameters") == expected);
+
+    // Decision 4: the route the plan names and the two materials tagged hero
+    // (not the built-in one), with their tags.
+    auto *drawn = tab.field<QTreeWidget>("pelican.graphCanvasMaterial.drawn");
+    REQUIRE(drawn->isVisibleTo(tab.widget.get()));
+    QStringList rows;
+    for (int index = 0; index < drawn->topLevelItemCount(); ++index)
+        rows << drawn->topLevelItem(index)->text(0) + QStringLiteral(" | ") +
+                    drawn->topLevelItem(index)->text(1);
+    CHECK(rows == QStringList({QStringLiteral("route deferred_geometry | deferred_geometry_v1"),
+                               QStringLiteral("metal | hero"), QStringLiteral("glass | crowd, hero")}));
+    CHECK(tab.field<QLabel>("pelican.graphCanvasMaterial.drawnHeading")->text().contains(
+        QStringLiteral("2 draw")));
+    Q_EMIT drawn->itemClicked(drawn->topLevelItem(1), 0);
+    CHECK(materials_for == QStringLiteral("mp"));
+}

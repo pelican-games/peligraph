@@ -81,6 +81,9 @@ class FramePlanWidget final : public QWidget {
     // GL-2b, decision 3. The Graph tab's Layers row names a plan node: the
     // Logical graph comes forward with it picked (its group opened).
     void showPlanNode(const QString &node);
+    // UX-11, decision 4: the Materials tab in front with the rows whose
+    // target pass is `pass` picked (the Graph's Materials drawn).
+    void showMaterialRoutes(const QString &pass);
     // LP-4d2, decision 5: the Graph tab's Show in Frame Plan. The plan is read
     // again (the loop was just edited), and once it is here the loop's group
     // is opened with its copies picked. The status line says so when the

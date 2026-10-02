@@ -260,6 +260,8 @@ struct FullscreenPassWidget::Impl {
     MaterialSettingsForm *material_form = nullptr;
     MaterialRoutingForm *routing_form = nullptr;
     Json preset_material_routing = nullptr;
+    // UX-11, decision 2: the engine's material tags, for the Tags pickers.
+    std::vector<std::string> material_tags;
     QComboBox *input_candidate = nullptr;
     QLabel *connection_hint = nullptr;
     std::optional<QStringList> input_filter;
@@ -2632,6 +2634,7 @@ struct FullscreenPassWidget::Impl {
       if (editingMaterialPass()) {
         material_form->setResourceCandidates(resourceNames());
         material_form->setVariantCandidates(materialVariantNames());
+        material_form->setTagCandidates(material_tags);
         material_form->load(declaration);
         routing_form->setPassCandidates(materialPassNames());
         routing_form->load(preset_material_routing);
@@ -2760,6 +2763,9 @@ struct FullscreenPassWidget::Impl {
         root_passes.clear();
         feature_pass_info.clear();
         preset_material_routing = context.value("preset_material_routing", Json(nullptr));
+        material_tags.clear();
+        for (const auto &tag : context.value("material_tags", Json::array()))
+            if (tag.is_string()) material_tags.push_back(tag.get<std::string>());
         preset_digest = context.value("pipeline_preset", Json::object()).value("source_digest", Json::object()).value("hex", std::string{});
         decltype(authored_passes) next_passes;
         decltype(authored_pass_counts) next_counts;

@@ -15,6 +15,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <QAction>
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
@@ -295,7 +296,12 @@ TEST_CASE("UX-4a MaterialSettingsForm gives back the ten settings it was given, 
 
     // Contract, tags, variant.
     choose(required<QComboBox>(form, "materialContract"), "forward_transparent_v1");
-    required<QLineEdit>(form, "materialFilter.exclude").setText("decal");
+    // UX-11, decision 2: a tag no material lists is typed in the picker's
+    // "+ new tag" line.
+    auto &new_exclude = required<QLineEdit>(form, "materialFilter.exclude.newTag");
+    new_exclude.setText("decal");
+    Q_EMIT new_exclude.returnPressed();
+    QCoreApplication::processEvents();
     required<QComboBox>(form, "materialVariant").setEditText("");
     expected["material_contract"] = "forward_transparent_v1";
     expected["material_filter"]["exclude"] = {"decal"};
@@ -335,6 +341,43 @@ TEST_CASE("UX-4a MaterialSettingsForm gives back the ten settings it was given, 
     CHECK(added.at("material_outputs").at("outputs").size() == 1);
     required<QPushButton>(form, "materialResources.add").click();
     CHECK(form.settings().at("screen_inputs") == Json{{"opaque_color", ""}});
+}
+
+TEST_CASE("UX-11 decision 2: MaterialSettingsForm's Tags are picked among the engine's "
+          "material tags, a tag the pass names stays checked, and a new one is typed in "
+          "+ new tag",
+          "[devstudio][pass-forms][ux11]") {
+    (void)application();
+    MaterialSettingsForm form{prefix};
+    ChangeCounter changes{form};
+    form.load(Json{{"type", "material"},
+                   {"material_filter", {{"include", {"hero", "legacy"}}}}});
+    form.setTagCandidates({"crowd", "hero"});
+    CHECK(changes.count == 0);
+    // No line of names: a picker, with a check per tag.
+    CHECK(form.findChild<QLineEdit *>(prefix + QStringLiteral(".materialFilter.include")) == nullptr);
+    auto &include = required<QToolButton>(form, "materialFilter.include");
+    CHECK(include.text() == QStringLiteral("hero, legacy"));
+    // The engine's tags in its order, then the one only the pass names.
+    auto &crowd = required<QAction>(form, "materialFilter.include.crowd");
+    CHECK_FALSE(crowd.isChecked());
+    CHECK(required<QAction>(form, "materialFilter.include.legacy").isChecked());
+    crowd.trigger();
+    CHECK(changes.count == 1);
+    CHECK(form.settings().at("material_filter") ==
+          Json{{"include", {"crowd", "hero", "legacy"}}});
+    // Exclude: none checked is no key; a new tag typed is checked at once.
+    auto &line = required<QLineEdit>(form, "materialFilter.exclude.newTag");
+    line.setText("  decal ");
+    Q_EMIT line.returnPressed();
+    QCoreApplication::processEvents();
+    CHECK(changes.count == 2);
+    CHECK(required<QAction>(form, "materialFilter.exclude.decal").isChecked());
+    CHECK(form.settings().at("material_filter") ==
+          Json{{"include", {"crowd", "hero", "legacy"}}, {"exclude", {"decal"}}});
+    // Unchecked, the tag leaves the filter.
+    required<QAction>(form, "materialFilter.exclude.decal").trigger();
+    CHECK(form.settings().at("material_filter") == Json{{"include", {"crowd", "hero", "legacy"}}});
 }
 
 TEST_CASE("UX-4a MaterialRoutingForm is the three routes, each a material pass",
