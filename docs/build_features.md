@@ -28,6 +28,7 @@
 | `PELICAN_WITH_JOLT_PHYSICS` | `OFF` | `ON` | `PELICAN_WITH_BUILTIN_PHYSICS=OFF` |
 | `PELICAN_WITH_BUILTIN_PHYSICS` | `ON` | `OFF` | — |
 | `SKIP_DEVSTUDIO` | `OFF` | `ON` | — |
+| `PELICAN_WITH_INTRO_LINK` | `ON` | `OFF` | — |
 <!-- PELICAN_FEATURE_REGISTRY_END -->
 
 変更時は registry を編集し、リポジトリの root から既存の生成・検証を実行する。

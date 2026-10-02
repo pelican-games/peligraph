@@ -3304,6 +3304,11 @@ add_test(
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_dist_config.cmake
 )
 
+# IL-1: pelican_cli intro-link and tools/intro_link (removed whole when OFF).
+if(PELICAN_WITH_INTRO_LINK)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/intro_link_tests.cmake)
+endif()
+
 add_test(
     NAME devcli_project_init_command
     COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}

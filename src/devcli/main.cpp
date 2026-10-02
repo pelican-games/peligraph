@@ -3,6 +3,7 @@
 #include "distconfig.hpp"
 #include "graphcatalogcommand.hpp"
 #include "importcommand.hpp"
+#include "introlinkcommand.hpp"
 #include "materialcommand.hpp"
 #include "packagecommand.hpp"
 #include "projectinit.hpp"
@@ -39,8 +40,11 @@ int main(int argc, char *argv[]) {
     if (argc > 1 && std::string_view{argv[1]} == "graph-catalog") {
         return Pelican::DevCli::runGraphCatalogCommand(argc - 1, argv + 1);
     }
+    if (argc > 1 && std::string_view{argv[1]} == "intro-link") {
+        return Pelican::DevCli::runIntroLinkCommand(argc - 1, argv + 1);
+    }
 
-    std::cerr << "usage: pelican_cli <assets|bake-camera|import|dist-config|package|project|dump-lowered-material|vrm|graph-catalog> ..."
+    std::cerr << "usage: pelican_cli <assets|bake-camera|import|dist-config|package|project|dump-lowered-material|vrm|graph-catalog|intro-link> ..."
               << std::endl;
     return -1;
 }

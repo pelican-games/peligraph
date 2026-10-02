@@ -221,6 +221,13 @@ pelican_register_feature(
   CONTRAST ON
   SMOKE_ID skip-devstudio
 )
+pelican_register_feature(
+  NAME PELICAN_WITH_INTRO_LINK
+  DESCRIPTION "Build pelican_cli intro-link (curve and shader link to an external intro program)"
+  BASELINE ON
+  CONTRAST OFF
+  SMOKE_ID intro_link
+)
 
 function(pelican_validate_feature_registry)
   set(smoke_ids)

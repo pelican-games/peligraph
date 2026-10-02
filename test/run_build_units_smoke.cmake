@@ -1173,6 +1173,28 @@ function(run_seqplayer_smoke)
     clean_successful_build("${seq_build_dir}")
 endfunction()
 
+# IL-1: OFF compiles none of the intro link sources into pelican_cli, and the
+# subcommand says the build left it out.
+function(run_intro_link_smoke)
+    configure_and_build("intro_link" "PELICAN_WITH_INTRO_LINK" intro_link_build_dir)
+    file(GLOB_RECURSE intro_link_objects LIST_DIRECTORIES false
+        "${intro_link_build_dir}/src/devcli/*introlinkcommand.cpp.*"
+        "${intro_link_build_dir}/src/devcli/*introlinkproject.cpp.*"
+        "${intro_link_build_dir}/src/devcli/*introlinkserve.cpp.*")
+    if(intro_link_objects)
+        message(FATAL_ERROR "PELICAN_WITH_INTRO_LINK=OFF compiled intro link sources: ${intro_link_objects}")
+    endif()
+    find_built_executable("${intro_link_build_dir}" "pelican_cli" intro_link_cli)
+    set(intro_link_project "${ARTIFACT_ROOT}/intro_link_project")
+    write_empty_project("${intro_link_project}")
+    expect_disabled_error(
+        "intro_link_cli"
+        "PELICAN_WITH_INTRO_LINK"
+        "${intro_link_cli}" intro-link bake "${intro_link_project}" --out "${ARTIFACT_ROOT}/intro_link_baked.h"
+    )
+    clean_successful_build("${intro_link_build_dir}")
+endfunction()
+
 function(run_imgui_smoke)
     configure_and_build("imgui" "PELICAN_WITH_IMGUI" imgui_build_dir)
     verify_imgui_absent("${imgui_build_dir}")
@@ -1354,6 +1376,10 @@ function(run_registered_feature_smoke feature_name)
     elseif(feature_name STREQUAL "SKIP_DEVSTUDIO")
         if(NOT dry_run)
             run_skip_devstudio_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_INTRO_LINK")
+        if(NOT dry_run)
+            run_intro_link_smoke()
         endif()
     else()
         message(FATAL_ERROR

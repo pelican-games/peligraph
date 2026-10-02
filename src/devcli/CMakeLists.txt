@@ -21,3 +21,18 @@ target_sources(pelican_cli PRIVATE
 )
 
 target_link_libraries(pelican_cli PRIVATE argparse nlohmann_json picosha2 glm pelican_project tinygltf)
+
+# IL-1 intro link: `pelican_cli intro-link bake|serve`. OFF compiles only the
+# stub that says the build left it out; nothing else refers to these sources.
+if(PELICAN_WITH_INTRO_LINK)
+  target_sources(pelican_cli PRIVATE
+    introlinkcommand.cpp
+    introlinkproject.cpp
+    introlinkserve.cpp
+  )
+  if(WIN32)
+    target_link_libraries(pelican_cli PRIVATE ws2_32)
+  endif()
+else()
+  target_sources(pelican_cli PRIVATE introlinkdisabled.cpp)
+endif()
