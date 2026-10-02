@@ -96,6 +96,15 @@ bool isGraphicsPass(std::string_view op) {
     return op == "render.fullscreen" || op == "render.raster";
 }
 
+// UX-7, decision 1 (engine RS-14). A numbered input a fullscreen pass gains
+// reads an image the size of what it draws -- a bloom's chain, a blur, a tone
+// map, a G-buffer -- whose far edge is not its near one: it is clamped there.
+// The engine's default stays repeat, so Studio writes it. A raster pass's
+// input (a displacement a vertex shader reads) keeps the default.
+void clampFullscreenInput(std::string_view op, Json &port) {
+    if (op == "render.fullscreen") port["sampling"] = Json{{"address", "clamp_to_edge"}};
+}
+
 // LP-4c. The bodies of a loop's branches, in order; an empty string is a
 // branch with `"body": null` (or none the table can read).
 std::vector<std::string> loopBranchBodies(const Json &node) {
@@ -3298,6 +3307,11 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
     // (events, position, the time map) are left for the user to connect.
     if (isAudioPlayback(op) && !audio_assets_.empty())
         node["parameters"] = Json{{"asset", audio_assets_.front()}};
+    // UX-7, decision 5: what the palette's small dialog asked for -- the
+    // parameters an op cannot be placed without (requiredParameters).
+    if (seed.is_object())
+        if (const auto given = seed.find("parameters"); given != seed.end() && given->is_object())
+            for (const auto &[key, value] : given->items()) node["parameters"][key] = value;
     ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", std::move(node)}});
     return ops;
 }
@@ -5004,6 +5018,7 @@ Json GraphCanvasModel::socketOps(std::string_view scope, const std::string &node
     parameters["ports"][name] = Json{{"kind", "image"},        {"type", type},
                                      {"access", "read"},       {"binding", "input"},
                                      {"input_index", binding}};
+    clampFullscreenInput(text(*target, "op"), parameters["ports"][name]);
     ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", scope_token}, {"node", node},
                        {"parameters", std::move(parameters)}});
     ops.push_back(Json{{"op", "set_input"}, {"scope", scope_token}, {"node", node},
@@ -6830,12 +6845,13 @@ GraphCanvasModel::portSettings(std::string_view scope, std::string_view node,
     const bool graphics = op != "render.compute";
     // graphmodule.cpp / rendergraphcomposition.cpp, restated: a previous
     // frame is read, never written; an attachment takes no shader resource
-    // setting, a numbered input no sampling or subresource.
+    // setting. UX-7, decision 1 (engine RS-14): a numbered input takes
+    // sampling and a subresource as a named port does (input_settings); its
+    // view stays the shader's.
     settings.history_allowed = image && access == "read" && attachment.empty();
     settings.sampling_allowed = image && access == "read" && attachment.empty() &&
-                                binding != "input" &&
                                 (graphics ? binding != "storage" : binding == "sampled");
-    settings.subresource_allowed = image && attachment.empty() && binding != "input";
+    settings.subresource_allowed = image && attachment.empty();
     settings.location_allowed = graphics && attachment == "color";
     if (const auto history = declaration.find("history");
         history != declaration.end() && history->is_boolean())
@@ -6889,6 +6905,168 @@ bool GraphCanvasModel::setPortSettings(std::string_view scope, const std::string
     if (current->location_allowed && settings.location >= 0)
         declaration["location"] = settings.location;
     return setNodeParameters(scope, node, parameters);
+}
+
+namespace {
+
+// UX-7, decision 3: the port of a raster's parameters that is its depth
+// attachment; empty for none.
+std::string rasterDepthPort(const Json &parameters) {
+    const auto ports = parameters.is_object() ? parameters.value("ports", Json::object()) : Json::object();
+    if (!ports.is_object()) return {};
+    for (const auto &[port, declaration] : ports.items())
+        if (declaration.is_object() && text(declaration, "attachment") == "depth") return port;
+    return {};
+}
+
+const Json &depthImageType() {
+    static const Json type{{"semantic", "pelican.render.depth@1"},
+                           {"arguments", Json{{"representation", "device"}, {"space", "projection"}}}};
+    return type;
+}
+
+bool depthImageNode(const Json &node) {
+    if (!node.is_object() || text(node, "op") != "render.image") return false;
+    const auto parameters = node.value("parameters", Json::object());
+    if (!parameters.is_object()) return false;
+    const auto format = text(parameters, "format");
+    if (format.starts_with("D16") || format.starts_with("D24") || format.starts_with("D32") ||
+        format.starts_with("X8_D24"))
+        return true;
+    const auto type = parameters.value("type", Json::object());
+    return type.is_object() && text(type, "semantic") == "pelican.render.depth@1";
+}
+
+} // namespace
+
+std::string GraphCanvasModel::rasterDepth(std::string_view scope, std::string_view node) const {
+    const auto *found = findNode(scope, node);
+    if (found == nullptr || text(*found, "op") != "render.raster") return {};
+    const auto port = rasterDepthPort(nodeParameters(scope, node));
+    if (port.empty()) return {};
+    const auto inputs = found->value("inputs", Json::object());
+    if (!inputs.is_object()) return {};
+    const auto edge = inputs.find(port);
+    return edge != inputs.end() && edge->is_object() ? text(*edge, "node") : std::string{};
+}
+
+std::vector<std::string> GraphCanvasModel::rasterDepthChoices(std::string_view scope) const {
+    std::vector<std::string> result;
+    if (const auto *nodes = scopeNodes(scope))
+        for (const auto &node : *nodes)
+            if (depthImageNode(node)) result.push_back(text(node, "id"));
+    return result;
+}
+
+bool GraphCanvasModel::setRasterDepth(std::string_view scope, const std::string &node,
+                                      const std::string &depth) {
+    if (!canEdit()) return false;
+    const auto *found = findNode(scope, node);
+    if (found == nullptr || text(*found, "op") != "render.raster") return false;
+    if (depth == rasterDepth(scope, node) && !depth.empty()) return false;
+    Json replaced = *found;
+    auto parameters = nodeParameters(scope, node);
+    if (!parameters.is_object()) parameters = Json::object();
+    if (!parameters.contains("ports") || !parameters.at("ports").is_object())
+        parameters["ports"] = Json::object();
+    auto inputs = replaced.value("inputs", Json::object());
+    if (!inputs.is_object()) inputs = Json::object();
+    auto outputs = replaced.value("outputs", Json::array());
+    if (!outputs.is_array()) outputs = Json::array();
+    const auto token = scopeToken(scope);
+    Json ops = Json::array();
+    std::string image = depth;
+    Json type = depthImageType();
+    if (depth == kNewRasterDepth) {
+        // Beside the pass, as an Add fullscreen pass's colour image is, and
+        // the size of what the pass draws into: a pass's attachments are
+        // one size (the colour image's extent_scale, width, height, layers).
+        image = node + "__depth";
+        for (int suffix = 2; findNode(scope, image) != nullptr && suffix < 10000; ++suffix)
+            image = node + "__depth_" + std::to_string(suffix);
+        Json image_parameters{{"type", type}, {"format", "D32_SFLOAT"}, {"extent_scale", 1.0},
+                              {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"})}};
+        for (const auto &[port, declaration] : parameters.at("ports").items()) {
+            if (!declaration.is_object() || text(declaration, "attachment") != "color") continue;
+            const auto edge = inputs.find(port);
+            if (edge == inputs.end() || !edge->is_object()) continue;
+            const auto *color = findNode(scope, text(*edge, "node"));
+            if (color == nullptr || text(*color, "op") != "render.image") continue;
+            const auto shape = color->value("parameters", Json::object());
+            for (const char *key : {"extent_scale", "width", "height", "layers"})
+                if (shape.is_object() && shape.contains(key)) image_parameters[key] = shape.at(key);
+            break;
+        }
+        ops.push_back(Json{{"op", "add_node"}, {"scope", token},
+                           {"node", Json{{"id", image}, {"op", "render.image"},
+                                         {"parameters", std::move(image_parameters)},
+                                         {"outputs", Json::array({"resource"})}}}});
+    } else if (!depth.empty()) {
+        const auto choices = rasterDepthChoices(scope);
+        if (std::ranges::find(choices, depth) == choices.end()) return false;
+        const auto *picked = findNode(scope, depth);
+        const auto declared = picked->value("parameters", Json::object()).value("type", Json{});
+        if (declared.is_object()) type = declared;
+    }
+    auto port = rasterDepthPort(parameters);
+    if (!port.empty()) {
+        parameters["ports"].erase(port);
+        inputs.erase(port);
+        outputs.erase(std::remove(outputs.begin(), outputs.end(), Json(port)), outputs.end());
+    }
+    auto state = parameters.value("raster_state", Json::object());
+    if (!state.is_object()) state = Json::object();
+    if (image.empty()) {
+        for (const char *key : {"depth_test", "depth_write", "depth_compare"}) state.erase(key);
+    } else {
+        if (port.empty()) {
+            port = "depth";
+            for (int suffix = 2; parameters.at("ports").contains(port) && suffix < 10000; ++suffix)
+                port = "depth_" + std::to_string(suffix);
+        }
+        parameters["ports"][port] = Json{{"kind", "image"}, {"type", type}, {"access", "write"},
+                                         {"attachment", "depth"}};
+        inputs[port] = Json{{"node", image}, {"port", "resource"}};
+        outputs.push_back(port);
+        // Nearer surfaces in front: what a depth attachment is given for.
+        if (!state.contains("depth_test")) state["depth_test"] = true;
+        if (!state.contains("depth_write")) state["depth_write"] = true;
+    }
+    if (state.empty()) parameters.erase("raster_state");
+    else parameters["raster_state"] = std::move(state);
+    replaced["parameters"] = std::move(parameters);
+    replaced["inputs"] = std::move(inputs);
+    replaced["outputs"] = std::move(outputs);
+    if (replaced == *found) return false;
+    ops.push_back(Json{{"op", "replace_node"}, {"scope", token}, {"node", std::move(replaced)}});
+    return submitOps(std::move(ops));
+}
+
+std::vector<GraphCanvasModel::RequiredParameter>
+GraphCanvasModel::requiredParameters(std::string_view op) {
+    if (op == "render.scalar") return {{"target", "buffer"}};
+    if (op == "value.constant") return {{"value", "number"}};
+    if (op == "value.input") return {{"name", "input"}};
+    return {};
+}
+
+std::vector<std::string> GraphCanvasModel::valueInputNames() {
+    return {"scene_time", "time", "delta_time"};
+}
+
+std::vector<std::string> GraphCanvasModel::bufferChoices(std::string_view scope) const {
+    std::vector<std::string> result;
+    for (const std::string_view each : {std::string_view{}, scope}) {
+        const auto *nodes = scopeNodes(each);
+        if (nodes == nullptr) continue;
+        for (const auto &node : *nodes)
+            if (node.is_object() && text(node, "op") == "render.buffer") {
+                const auto id = text(node, "id");
+                if (!id.empty() && std::ranges::find(result, id) == result.end()) result.push_back(id);
+            }
+        if (scope.empty()) break;
+    }
+    return result;
 }
 
 std::string GraphCanvasModel::proposeDefinitionName(std::string_view definition) const {
@@ -7281,6 +7459,7 @@ bool GraphCanvasModel::setPassShaderTemplate(std::string_view scope, const std::
                                          {"access", "read"},
                                          {"binding", "input"},
                                          {"input_index", next++}};
+        clampFullscreenInput(text(*target, "op"), parameters["ports"][name]);
         inputs.push_back(Json{{"op", "set_input"}, {"scope", token}, {"node", node},
                               {"port", name},
                               {"source", Json{{"node", source.node}, {"port", source.port}}}});

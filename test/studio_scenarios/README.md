@@ -593,6 +593,26 @@ second. `center` answers however the view implements a pan -- scrollbars, a
 translated transform, or a changed scene rect -- which is why it, not `scroll`,
 is what a scenario should compare.
 
+## A node's parameters
+
+UX-7, decision 8. A scenario writes a graph node's parameter through its value
+pill on the canvas, not through the details table: click
+`pelican.graphCanvasView::graph_value_pill#<node>/<key>` (a wheel over it first
+when the canvas is zoomed out), type into
+`pelican.graphCanvasView::graph_inline_editor#<node>/<key>` and press Return.
+That is one `set_node_parameters` of that key, the same edit a double-click in
+the details table makes; the table's editor is the tree's own and has no name
+the channel can reach, so the table is for reading. `gui_build_C`,
+`graph_edit_roundtrip` and `graph_observe_roundtrip` write pills this way.
+
+A key the node does not hold yet has no pill. A render node's are written by
+its fields (`pelican.graphCanvasPass.*`, `pelican.graphCanvasImage.*`, the Loop
+and Draw fields); the parameters render.scalar (`target`), value.constant
+(`value`) and value.input (`name`) cannot be placed without are asked for when
+the palette places them, in `pelican.graphCanvasRequired` (a field
+`pelican.graphCanvasRequired.<parameter>` each, then
+`pelican.graphCanvasRequired.ok`).
+
 ## Menus and shortcuts
 
 A `QAction` is not a widget: it has no place on screen until a popup opens over

@@ -113,8 +113,10 @@ void AutomationServer::handleLine(QLocalSocket *socket, const QByteArray &line) 
         writeLine(socket, encodeReply(id, AutomationReply::success(QJsonObject{
                                               {QStringLiteral("quitting"), true}})));
         socket->waitForBytesWritten(2000);
-        QTimer::singleShot(0, QCoreApplication::instance(),
-                           &QCoreApplication::quit);
+        QTimer::singleShot(0, QCoreApplication::instance(), [before = host_.before_quit] {
+            if (before) before([] { QCoreApplication::quit(); });
+            else QCoreApplication::quit();
+        });
         return;
     }
 

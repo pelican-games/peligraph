@@ -246,6 +246,7 @@ void PlayControls::engineUnavailable() {
     follow_timer_->stop();
     retry_timer_->stop();
     transport_.clear();
+    answered_.clear();
     refused_.clear();
     model_.disconnect();
     synchronize();
@@ -255,7 +256,19 @@ void PlayControls::observeStatus(const QByteArray &result_json) {
     if (model_.observeStatus(parsed(result_json))) synchronize();
 }
 
+void PlayControls::observeStatus(qint64 transport_id, const Json &status) {
+    if (model_.observeStatus(status)) synchronize();
+    const auto found = transport_.find(transport_id);
+    if (found == transport_.end()) return;
+    const auto id = found.value();
+    transport_.erase(found);
+    answered_.insert(transport_id);
+    model_.receiveResult(id, status);
+    dispatch();
+}
+
 bool PlayControls::receiveResult(qint64 transport_id, const QByteArray &result_json) {
+    if (answered_.remove(transport_id)) return true;
     const auto found = transport_.find(transport_id);
     if (found == transport_.end()) return false;
     const auto id = found.value();

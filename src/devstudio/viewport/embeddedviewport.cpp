@@ -11,6 +11,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QMetaMethod>
 #include <QMouseEvent>
 #include <QPalette>
 #include <QProcess>
@@ -405,12 +406,12 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                 if (request_id != 0 && request_id == readiness_request_) {
                     // PM-3a: the probe is a get_status, and what it says of
                     // the play state is known before anyone is told "ready".
-                    emit engineStatusRead(result_json);
+                    emitStatus(request_id, result_json);
                     markRpcReady();
                     return;
                 }
                 if (status_requests_.remove(request_id)) {
-                    emit engineStatusRead(result_json);
+                    emitStatus(request_id, result_json);
                 }
                 // Passed straight through. The reply was walked once by
                 // EngineProcess and is parsed once by whichever model wants
@@ -828,6 +829,17 @@ void EmbeddedViewport::attachEngineWindow(NativeWindowHandle window) {
     readiness_request_ =
         process_.requestRpc(QStringLiteral("get_status"), QJsonObject{});
     updateDiagnostics();
+}
+
+void EmbeddedViewport::emitStatus(qint64 request_id, const QByteArray &result_json) {
+    emit engineStatusRead(result_json);
+    // Parsed only once, and only when someone reads it parsed.
+    if (!isSignalConnected(QMetaMethod::fromSignal(&EmbeddedViewport::engineStatusParsed))) return;
+    const auto status = nlohmann::json::parse(result_json.constData(),
+                                              result_json.constData() + result_json.size(), nullptr,
+                                              false);
+    static const nlohmann::json none;
+    emit engineStatusParsed(request_id, status.is_discarded() ? none : status);
 }
 
 void EmbeddedViewport::markRpcReady() {

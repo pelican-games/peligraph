@@ -4,12 +4,14 @@
 #include "fullscreenshadertemplate.hpp"
 #include "passforms/attachmentopsform.hpp"
 #include "passforms/rasterstateform.hpp"
+#include "passforms/shaderdefinesform.hpp"
 #include "studiotheme.hpp"
 
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDialogButtonBox>
 #include <QEvent>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
@@ -34,6 +36,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <tuple>
 
 namespace PelicanStudio {
@@ -247,6 +250,23 @@ GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
     layers_->setToolTip(tr("Array layers (six for a cube)."));
     form->addRow(caption(tr("Layers"), fields_), layers_);
 
+    // UX-7, decision 6: the engine keeps the frame before as a second
+    // image (a render target's `history: true`), which a port reads with
+    // its Previous frame -- TAA's way in.
+    history_ = new QCheckBox(tr("Keep previous frame (history)"), fields_);
+    history_->setObjectName(imageFieldName(QStringLiteral("history")));
+    history_->setToolTip(tr("The engine keeps the frame before as a second image, which a "
+                            "pass's input reads with Previous frame (history: true)."));
+    form->addRow(QString{}, history_);
+    connect(history_, &QCheckBox::clicked, this, [this](bool checked) {
+        auto changed = parameters();
+        if (!changed.is_object()) return;
+        if (checked) changed["history"] = true;
+        else changed.erase("history");
+        if (changed == parameters()) return;
+        commit(changed);
+    });
+
     connect(size_scale_, &QRadioButton::clicked, this, [this] { commitSize(); });
     connect(size_fixed_, &QRadioButton::clicked, this, [this] { commitSize(); });
     for (QAbstractSpinBox *spin : std::initializer_list<QAbstractSpinBox *>{extent_scale_, width_,
@@ -398,6 +418,12 @@ void GraphCanvasImageFields::load(const Json &parameters) {
         size_expression_toggle_->setChecked(written);
     }
     showSizeExpression(written);
+    {
+        const QSignalBlocker block{history_};
+        const auto history = parameters.is_object() ? parameters.find("history") : parameters.end();
+        history_->setChecked(parameters.is_object() && history != parameters.end() &&
+                             history->is_boolean() && history->get<bool>());
+    }
 
     note_->setVisible(!missing.isEmpty());
     if (!missing.isEmpty())
@@ -744,10 +770,81 @@ GraphCanvasPassFields::GraphCanvasPassFields(GraphCanvasModel &model,
     inputs_form_->setContentsMargins(0, 0, 0, 0);
     form_->addRow(caption(tr("Inputs"), fields_), inputs_);
 
+    // UX-7, decision 2: shader.defines, a name and a value a row.
+    defines_ = new ShaderDefinesForm(QStringLiteral("pelican.graphCanvasPass"), fields_);
+    form_->addRow(caption(tr("Defines"), fields_), defines_);
+    connect(defines_, &PassForm::changed, this, [this] {
+        if (!loading_) commitDefines();
+    });
+
+    // UX-7, decision 3: a raster pass's depth attachment.
+    depth_ = new QComboBox(fields_);
+    depth_->setObjectName(passFieldName(QStringLiteral("depth")));
+    depth_->setToolTip(tr("The depth image the pass tests and writes: none, a depth image of "
+                          "the graph, or a new D32_SFLOAT one the size of its colour image."));
+    depth_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    depth_->setMinimumContentsLength(12);
+    form_->addRow(caption(tr("Depth"), fields_), depth_);
+    connect(depth_, &QComboBox::currentIndexChanged, this, [this] { commitDepth(); });
+
+    // UX-7, decision 4: a raster pass's draw, counted rather than typed as JSON.
+    draw_ = new QWidget(fields_);
+    draw_->setObjectName(passFieldName(QStringLiteral("draw")));
+    auto *draw_layout = new QGridLayout(draw_);
+    draw_layout->setContentsMargins(0, 0, 0, 0);
+    vertex_count_ = new QSpinBox(draw_);
+    vertex_count_->setObjectName(passFieldName(QStringLiteral("vertexCount")));
+    vertex_count_->setRange(0, std::numeric_limits<int>::max());
+    vertex_count_->setKeyboardTracking(false);
+    vertex_count_->setToolTip(tr("draw.vertex_count: the vertices the pass draws (no vertex "
+                                 "buffer: the vertex shader makes them from gl_VertexIndex)."));
+    instance_count_ = new QSpinBox(draw_);
+    instance_count_->setObjectName(passFieldName(QStringLiteral("instanceCount")));
+    instance_count_->setRange(0, std::numeric_limits<int>::max());
+    instance_count_->setKeyboardTracking(false);
+    instance_count_->setToolTip(tr("draw.instance_count: how many times they are drawn "
+                                   "(gl_InstanceIndex)."));
+    grid_size_ = new QSpinBox(draw_);
+    grid_size_->setObjectName(passFieldName(QStringLiteral("gridSize")));
+    // 6 · 16384² still fits the count.
+    grid_size_->setRange(2, 16385);
+    grid_size_->setValue(257);
+    grid_size_->setKeyboardTracking(false);
+    grid_size_->setToolTip(tr("N: the grid's vertices along a side (257: 256 × 256 quads)."));
+    grid_ = new QPushButton(draw_);
+    grid_->setObjectName(passFieldName(QStringLiteral("grid")));
+    const auto gridText = [this] {
+        grid_->setText(tr("Grid %1×%1 (triangles)").arg(grid_size_->value()));
+        grid_->setToolTip(tr("Vertices for an N × N grid of vertices drawn as triangles: "
+                             "6 · (N − 1)² = %1.")
+                              .arg(6LL * (grid_size_->value() - 1) * (grid_size_->value() - 1)));
+    };
+    gridText();
+    draw_layout->addWidget(caption(tr("Vertices"), draw_), 0, 0);
+    draw_layout->addWidget(vertex_count_, 0, 1, 1, 2);
+    draw_layout->addWidget(caption(tr("Instances"), draw_), 1, 0);
+    draw_layout->addWidget(instance_count_, 1, 1, 1, 2);
+    draw_layout->addWidget(grid_size_, 2, 1);
+    draw_layout->addWidget(grid_, 2, 2);
+    draw_layout->setColumnStretch(2, 1);
+    form_->addRow(caption(tr("Draw"), fields_), draw_);
+    connect(grid_size_, &QSpinBox::valueChanged, this, gridText);
+    for (QSpinBox *spin : {vertex_count_, instance_count_})
+        connect(spin, &QAbstractSpinBox::editingFinished, this, [this] { commitDraw(); });
+    connect(grid_, &QPushButton::clicked, this, [this] {
+        const qint64 side = grid_size_->value() - 1;
+        {
+            const QSignalBlocker block{vertex_count_};
+            vertex_count_->setValue(static_cast<int>(6 * side * side));
+        }
+        commitDraw();
+    });
+
     // UX-5b, decision 3: the Pass Editor's settings, its UX-4a parts.
     settings_ = new QWidget(fields_);
     settings_->setObjectName(passFieldName(QStringLiteral("settings")));
     auto *settings_form = new QFormLayout(settings_);
+    settings_form_ = settings_form;
     settings_form->setContentsMargins(0, 0, 0, 0);
     const auto prefix = QStringLiteral("pelican.graphCanvasPass");
     interface_ = new FullscreenPassInterfaceRow(settings_, prefix);
@@ -770,6 +867,9 @@ GraphCanvasPassFields::GraphCanvasPassFields(GraphCanvasModel &model,
     settings_timer_->setSingleShot(true);
     settings_timer_->setInterval(500);
     connect(settings_timer_, &QTimer::timeout, this, [this] { commitSettings(); });
+    retry_timer_ = new QTimer(this);
+    retry_timer_->setInterval(100);
+    connect(retry_timer_, &QTimer::timeout, this, [this] { retryWhenEditable(); });
     interface_->setChangedAction([this] {
         if (!loading_) commitSettings();
     });
@@ -812,6 +912,11 @@ void GraphCanvasPassFields::showNode(const GraphCanvasNode *node, const std::str
     const auto template_key = scope + "|" + node->id;
     const bool other = template_key != template_for_;
     template_for_ = template_key;
+    // A value waiting to be sent belongs to the pass it was given for.
+    if (other) {
+        retry_ = {};
+        retry_timer_->stop();
+    }
     // EL-4b: the shader combos are on screen: the engine's list is asked for
     // now (once), and replaces the fixed one when it arrives.
     model_.askEngineShaders();
@@ -852,7 +957,29 @@ void GraphCanvasPassFields::showNode(const GraphCanvasNode *node, const std::str
     }
 }
 
-void GraphCanvasPassFields::followEditable() { fields_->setEnabled(model_.canEdit()); }
+void GraphCanvasPassFields::followEditable() {
+    fields_->setEnabled(model_.canEdit());
+    retryWhenEditable();
+}
+
+bool GraphCanvasPassFields::deferWhileBusy(std::function<void()> again) {
+    if (model_.canEdit()) return false;
+    retry_ = std::move(again);
+    // The model says nothing when it becomes editable; it is asked.
+    retry_timer_->start();
+    return true;
+}
+
+void GraphCanvasPassFields::retryWhenEditable() {
+    if (!retry_) {
+        retry_timer_->stop();
+        return;
+    }
+    if (!model_.canEdit() || node_.empty()) return;
+    retry_timer_->stop();
+    auto again = std::exchange(retry_, {});
+    again();
+}
 
 void GraphCanvasPassFields::load(const Json &parameters) {
     const auto shader = parameters.is_object() ? parameters.value("shader", Json::object()) : Json::object();
@@ -896,7 +1023,144 @@ void GraphCanvasPassFields::load(const Json &parameters) {
     ports_->setText(lines.isEmpty() ? tr("(none declared)") : lines.join(QLatin1Char{'\n'}));
     ports_->setToolTip(tip);
     loadInputSettings(parameters);
+    loadDefines(parameters);
+    loadDepth();
+    loadDraw(parameters);
     loadPassSettings(parameters);
+}
+
+void GraphCanvasPassFields::loadDefines(const Json &parameters) {
+    const auto shader =
+        parameters.is_object() ? parameters.value("shader", Json::object()) : Json::object();
+    const bool previous = loading_;
+    loading_ = true;
+    defines_->setPassName(node_);
+    defines_->load(shader.is_object() ? shader.value("defines", Json(nullptr)) : Json(nullptr));
+    loading_ = previous;
+}
+
+void GraphCanvasPassFields::commitDefines() {
+    if (node_.empty()) return;
+    // A row the engine would refuse is red with its sentence, and not sent.
+    if (!defines_->refusal().isEmpty()) return;
+    auto changed = model_.nodeParameters(scope_, node_);
+    if (!changed.is_object()) return;
+    auto shader = changed.value("shader", Json::object());
+    if (!shader.is_object()) return;
+    const auto defines = defines_->defines();
+    if (defines.is_null()) shader.erase("defines");
+    else shader["defines"] = defines;
+    changed["shader"] = std::move(shader);
+    if (changed == model_.nodeParameters(scope_, node_)) return;
+    if (model_.setNodeParameters(scope_, node_, changed)) {
+        if (submitted_) submitted_();
+        return;
+    }
+    // The value itself waits: a read arriving meanwhile reloads the rows.
+    if (deferWhileBusy([this, defines] {
+            const bool previous = loading_;
+            loading_ = true;
+            defines_->load(defines);
+            loading_ = previous;
+            commitDefines();
+        }))
+        return;
+    // Refused: the rows show the document again, from the event loop (the
+    // table whose signal is handled is the one a load refills).
+    QMetaObject::invokeMethod(
+        this, [this] { loadDefines(model_.nodeParameters(scope_, node_)); }, Qt::QueuedConnection);
+}
+
+void GraphCanvasPassFields::loadDepth() {
+    const bool raster = op_ == "render.raster";
+    form_->setRowVisible(depth_, raster);
+    if (!raster) return;
+    const QSignalBlocker block{depth_};
+    depth_->clear();
+    depth_->addItem(tr("(none)"), QString{});
+    for (const auto &image : model_.rasterDepthChoices(scope_)) depth_->addItem(qtext(image), qtext(image));
+    depth_->addItem(tr("New depth image (D32_SFLOAT)"),
+                    qtext(std::string{GraphCanvasModel::kNewRasterDepth}));
+    selectOrAdd(*depth_, qtext(model_.rasterDepth(scope_, node_)));
+    if (depth_->currentIndex() < 0) depth_->setCurrentIndex(0);
+}
+
+void GraphCanvasPassFields::commitDepth() {
+    if (node_.empty() || op_ != "render.raster") return;
+    const auto picked = depth_->currentData().toString().toStdString();
+    if (picked == model_.rasterDepth(scope_, node_)) return;
+    if (model_.setRasterDepth(scope_, node_, picked)) {
+        if (submitted_) submitted_();
+        return;
+    }
+    if (deferWhileBusy([this, picked] {
+            const QSignalBlocker block{depth_};
+            selectOrAdd(*depth_, qtext(picked));
+            commitDepth();
+        }))
+        return;
+    QMetaObject::invokeMethod(this, [this] { loadDepth(); }, Qt::QueuedConnection);
+}
+
+void GraphCanvasPassFields::loadDraw(const Json &parameters) {
+    const bool raster = op_ == "render.raster";
+    form_->setRowVisible(draw_, raster);
+    if (!raster) return;
+    const auto draw = parameters.is_object() ? parameters.value("draw", Json::object()) : Json::object();
+    const auto count = [&](const char *key, int fallback) {
+        const auto found = draw.is_object() ? draw.find(key) : draw.end();
+        return draw.is_object() && found != draw.end() && found->is_number_integer()
+                   ? static_cast<int>(std::clamp<std::int64_t>(found->get<std::int64_t>(), 0,
+                                                               std::numeric_limits<int>::max()))
+                   : fallback;
+    };
+    for (auto [spin, key, fallback] : {std::tuple{vertex_count_, "vertex_count", 3},
+                                       std::tuple{instance_count_, "instance_count", 1}}) {
+        const QSignalBlocker block{spin};
+        spin->setValue(count(key, fallback));
+    }
+    // A count an attribute or an index buffer gives is not typed here.
+    const bool derived = draw.is_object() && (draw.contains("vertex_source") ||
+                                              draw.contains("index_source") ||
+                                              stringOf(draw, "operation") == "indexed");
+    for (QWidget *field : std::initializer_list<QWidget *>{vertex_count_, grid_size_, grid_})
+        field->setEnabled(!derived);
+    vertex_count_->setToolTip(
+        derived ? tr("The count comes from the draw's source (an attribute or an index buffer).")
+                : tr("draw.vertex_count: the vertices the pass draws (no vertex buffer: the "
+                     "vertex shader makes them from gl_VertexIndex)."));
+}
+
+void GraphCanvasPassFields::commitDraw() {
+    if (node_.empty() || op_ != "render.raster") return;
+    auto changed = model_.nodeParameters(scope_, node_);
+    if (!changed.is_object()) return;
+    auto draw = changed.value("draw", Json::object());
+    if (!draw.is_object()) draw = Json::object();
+    if (!draw.contains("vertex_source") && !draw.contains("index_source") &&
+        stringOf(draw, "operation") != "indexed")
+        draw["vertex_count"] = vertex_count_->value();
+    // One instance is what a draw without the key draws.
+    if (instance_count_->value() != 1 || draw.contains("instance_count"))
+        draw["instance_count"] = instance_count_->value();
+    changed["draw"] = std::move(draw);
+    if (changed == model_.nodeParameters(scope_, node_)) return;
+    if (model_.setNodeParameters(scope_, node_, changed)) {
+        if (submitted_) submitted_();
+        return;
+    }
+    if (deferWhileBusy([this, vertices = vertex_count_->value(),
+                        instances = instance_count_->value()] {
+            {
+                const QSignalBlocker block_vertices{vertex_count_};
+                const QSignalBlocker block_instances{instance_count_};
+                vertex_count_->setValue(vertices);
+                instance_count_->setValue(instances);
+            }
+            commitDraw();
+        }))
+        return;
+    loadDraw(model_.nodeParameters(scope_, node_));
 }
 
 void GraphCanvasPassFields::loadInputSettings(const Json &parameters) {
@@ -922,13 +1186,11 @@ void GraphCanvasPassFields::loadInputSettings(const Json &parameters) {
             auto *row_layout = new QHBoxLayout(row);
             row_layout->setContentsMargins(0, 0, 0, 0);
             const auto name = passFieldName(QStringLiteral("input.") + qtext(port) + QLatin1Char{'.'});
-            const bool numbered = stringOf(declaration, "binding") == "input";
+            // UX-7, decision 1 (engine RS-14): a numbered input takes them
+            // too, written on its port as a named one's are.
             const QString sampling_why =
-                numbered ? tr("A numbered input takes no sampling (the engine refuses it): it is "
-                              "read linear, repeat.")
-                         : tr("Only an image the shader samples by a binding of its own takes "
-                              "sampling.");
-            const QString mip_why = tr("A numbered input reads the whole image.");
+                tr("Only an image the shader samples by a binding of its own takes sampling.");
+            const QString mip_why = tr("An attachment takes no mip of its own here.");
             const auto combo = [&](const char *field,
                                    const std::vector<std::pair<QString, QString>> &values,
                                    const QString &current, bool allowed, const QString &why) {
@@ -1007,13 +1269,29 @@ std::vector<std::string> GraphCanvasPassFields::colorPorts(const Json &parameter
 
 void GraphCanvasPassFields::loadPassSettings(const Json &parameters) {
     // Frame data, blend and the colour output's ops are a fullscreen pass's.
+    // UX-7, decision 3: a raster pass's raster_state (cull, blend, and the
+    // depth rows once it has a depth image) is the same form.
     const bool fullscreen = op_ == "render.fullscreen";
-    form_->setRowVisible(settings_, fullscreen);
+    const bool raster = op_ == "render.raster";
+    form_->setRowVisible(settings_, fullscreen || raster);
+    settings_form_->setRowVisible(interface_, fullscreen);
+    settings_form_->setRowVisible(outputs_, fullscreen);
+    if (raster) {
+        loading_ = true;
+        const Json declaration = parameters.is_object() ? parameters : Json::object();
+        raster_->setDepthShown(!model_.rasterDepth(scope_, node_).empty());
+        raster_->setColorAttachments(colorPorts(declaration));
+        raster_->load(declaration.value("raster_state", Json(nullptr)), Json(nullptr));
+        compactCombos(*settings_);
+        loading_ = false;
+        return;
+    }
     if (!fullscreen) return;
     loading_ = true;
     const Json declaration = parameters.is_object() ? parameters : Json::object();
     interface_->load(declaration);
     const auto colors = colorPorts(declaration);
+    raster_->setDepthShown(false);
     raster_->setColorAttachments(colors);
     raster_->load(declaration.value("raster_state", Json(nullptr)), Json(nullptr));
     // The pass's own ops stand for each colour output: a graph pass names no
@@ -1041,7 +1319,33 @@ void GraphCanvasPassFields::loadPassSettings(const Json &parameters) {
 
 void GraphCanvasPassFields::commitSettings() {
     settings_timer_->stop();
-    if (node_.empty() || op_ != "render.fullscreen") return;
+    if (node_.empty()) return;
+    if (op_ == "render.raster") {
+        // UX-7, decision 3: a raster pass's raster_state only.
+        auto changed = model_.nodeParameters(scope_, node_);
+        if (!changed.is_object()) return;
+        if (const auto state = raster_->rasterState(); state.is_null())
+            changed.erase("raster_state");
+        else
+            changed["raster_state"] = state;
+        if (changed == model_.nodeParameters(scope_, node_)) return;
+        if (model_.setNodeParameters(scope_, node_, changed)) {
+            if (submitted_) submitted_();
+            return;
+        }
+        if (deferWhileBusy([this, state = raster_->rasterState()] {
+                loading_ = true;
+                raster_->load(state, Json(nullptr));
+                loading_ = false;
+                commitSettings();
+            }))
+            return;
+        QMetaObject::invokeMethod(
+            this, [this] { loadPassSettings(model_.nodeParameters(scope_, node_)); },
+            Qt::QueuedConnection);
+        return;
+    }
+    if (op_ != "render.fullscreen") return;
     auto changed = model_.nodeParameters(scope_, node_);
     if (!changed.is_object()) return;
     interface_->apply(changed);
@@ -1349,6 +1653,98 @@ void GraphCanvasPlaceFields::commit() {
     load();
 }
 
+// --- UX-7, decision 5: the parameters an op cannot be placed without.
+
+GraphCanvasRequiredDialog::GraphCanvasRequiredDialog(const GraphCanvasModel &model,
+                                                     const std::string &scope,
+                                                     const std::string &op, QWidget *parent)
+    : QDialog{parent} {
+    setObjectName(QStringLiteral("pelican.graphCanvasRequired"));
+    setWindowTitle(tr("%1 needs").arg(qtext(op)));
+    auto *layout = new QVBoxLayout(this);
+    auto *intro = new QLabel(
+        tr("The engine does not take %1 without these. They can be changed afterwards in the "
+           "node's details.")
+            .arg(qtext(op)),
+        this);
+    intro->setWordWrap(true);
+    intro->setFont(studioSmallFont());
+    layout->addWidget(intro);
+    auto *form = new QFormLayout;
+    layout->addLayout(form);
+    const auto fieldName = [](const std::string &parameter) {
+        return QStringLiteral("pelican.graphCanvasRequired.") + qtext(parameter);
+    };
+    for (const auto &required : GraphCanvasModel::requiredParameters(op)) {
+        QWidget *field = nullptr;
+        if (required.kind == "number") {
+            auto *spin = new QDoubleSpinBox(this);
+            spin->setRange(-1.0e9, 1.0e9);
+            spin->setDecimals(4);
+            spin->setValue(0.0);
+            spin->setToolTip(tr("The constant's value."));
+            field = spin;
+        } else {
+            auto *combo = new QComboBox(this);
+            if (required.kind == "input") {
+                for (const auto &name : GraphCanvasModel::valueInputNames())
+                    combo->addItem(qtext(name), qtext(name));
+                combo->setToolTip(tr("The value the engine hands the graph each frame: "
+                                     "scene_time from the scene's start, time, delta_time."));
+            } else {
+                // A buffer of the graph's, or a new name typed in.
+                combo->setEditable(true);
+                combo->setInsertPolicy(QComboBox::NoInsert);
+                for (const auto &buffer : model.bufferChoices(scope))
+                    combo->addItem(qtext(buffer), qtext(buffer));
+                if (combo->count() == 0) combo->setEditText(QStringLiteral("value_buffer"));
+                combo->setToolTip(tr("The buffer the value is written into: one of the graph's "
+                                     "render.buffer nodes, or a new name."));
+                connect(combo, &QComboBox::editTextChanged, this, [this] { follow(); });
+            }
+            field = combo;
+        }
+        field->setObjectName(fieldName(required.name));
+        form->addRow(qtext(required.name), field);
+        fields_.emplace_back(required, field);
+    }
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    ok_ = buttons->button(QDialogButtonBox::Ok);
+    ok_->setObjectName(QStringLiteral("pelican.graphCanvasRequired.ok"));
+    buttons->button(QDialogButtonBox::Cancel)
+        ->setObjectName(QStringLiteral("pelican.graphCanvasRequired.cancel"));
+    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
+    layout->addWidget(buttons);
+    follow();
+}
+
+void GraphCanvasRequiredDialog::follow() {
+    // A buffer needs a name.
+    const auto json = parameters();
+    bool ready = true;
+    for (const auto &[required, field] : fields_)
+        if (required.kind == "buffer" &&
+            (!json.contains(required.name) || json.at(required.name).get<std::string>().empty()))
+            ready = false;
+    if (ok_ != nullptr) ok_->setEnabled(ready);
+}
+
+nlohmann::json GraphCanvasRequiredDialog::parameters() const {
+    Json result = Json::object();
+    for (const auto &[required, field] : fields_) {
+        if (const auto *spin = qobject_cast<const QDoubleSpinBox *>(field)) {
+            result[required.name] = spin->value();
+        } else if (const auto *combo = qobject_cast<const QComboBox *>(field)) {
+            const auto text = (combo->isEditable() ? combo->currentText() : combo->currentData().toString())
+                                  .trimmed()
+                                  .toStdString();
+            result[required.name] = text;
+        }
+    }
+    return result;
+}
+
 // --- UX-3, decision 3: a socket's settings, on its right-click.
 
 void addGraphCanvasSocketEntries(QMenu &menu, GraphCanvasModel &model, const std::string &scope,
@@ -1447,8 +1843,7 @@ void addGraphCanvasSocketEntries(QMenu &menu, GraphCanvasModel &model, const std
             send([&](GraphCanvasPortSettings &now) { now.*member = picked; });
         });
     };
-    const auto no_subresource =
-        QObject::tr("An attachment or a numbered input reads the whole image.");
+    const auto no_subresource = QObject::tr("An attachment reads the whole image.");
     spinEntry(QObject::tr("Mip level"), "mip", settings->mip, 15, settings->subresource_allowed,
               no_subresource, &GraphCanvasPortSettings::mip);
     spinEntry(QObject::tr("Layer"), "layer", settings->layer, 2047, settings->subresource_allowed,

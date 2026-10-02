@@ -64,6 +64,7 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
+#include <QElapsedTimer>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QVariant>
@@ -73,8 +74,10 @@
 #include <filesystem>
 #include <optional>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -1339,9 +1342,10 @@ void MainWindow::createPlayControls(QToolBar *band) {
     viewport_->setStopGuard([this](std::function<void()> stop) {
         return !askToEndPlaySession(tr("Stop the engine"), false, std::move(stop), {});
     });
-    connect(viewport_, &EmbeddedViewport::engineStatusRead, this,
-            [this](const QByteArray &result_json) {
-                play_controls_->observeStatus(result_json);
+    // UX-7, decision 10: read from the viewport's one parse of the reply.
+    connect(viewport_, &EmbeddedViewport::engineStatusParsed, this,
+            [this](qint64 request_id, const nlohmann::json &status) {
+                play_controls_->observeStatus(request_id, status);
             });
     connect(viewport_, &EmbeddedViewport::engineRpcRefused, this,
             [this](qint64 request_id, int code, const QString &message,
@@ -1382,6 +1386,46 @@ QWidget *MainWindow::withRenderBanner(QWidget *panel, const QString &name) {
     layout->addWidget(panel, 1);
     render_banners_.push_back(banner);
     return holder;
+}
+
+void MainWindow::stopPlayThen(std::function<void()> then) {
+    if (!then) return;
+    // A run is Playing or Paused as the controls show it; get_status's
+    // play.session can still say no for a moment after Play, and then says
+    // yes to the close that follows (which asks).
+    const auto running = [this] {
+        const PlayStateModel &model = play_controls_->model();
+        return model.session() || model.playing() || model.paused();
+    };
+    if (play_controls_ == nullptr || !running()) {
+        then();
+        return;
+    }
+    // Stop is asked whenever the controls can send it (not while a read or
+    // a change of theirs is in flight), and `then` runs once the run has
+    // ended -- or after fifteen seconds whatever happened, so a Stop the
+    // engine never answers does not hold the quit for ever.
+    auto *poll = new QTimer(this);
+    poll->setInterval(100);
+    auto clock = std::make_shared<QElapsedTimer>();
+    clock->start();
+    auto asked_at = std::make_shared<qint64>(-1);
+    const auto step = [this, poll, clock, asked_at, running, then = std::move(then)] {
+        const PlayStateModel &model = play_controls_->model();
+        if ((!running() && !model.busy()) || clock->elapsed() > 15000) {
+            poll->stop();
+            poll->deleteLater();
+            then();
+            return;
+        }
+        if (running() && !model.busy() &&
+            (*asked_at < 0 || clock->elapsed() - *asked_at > 2000) &&
+            play_controls_->stopDiscarding())
+            *asked_at = clock->elapsed();
+    };
+    connect(poll, &QTimer::timeout, this, step);
+    poll->start();
+    step();
 }
 
 bool MainWindow::askToEndPlaySession(const QString &action, bool stop_first,

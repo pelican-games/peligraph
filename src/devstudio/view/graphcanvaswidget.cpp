@@ -6548,6 +6548,13 @@ struct GraphCanvasWidget::Impl {
             if (op == "render.attribute")
                 seed["domain"] = attribute_domain->currentData().toString().toStdString();
         }
+        // UX-7, decision 5: an op the engine refuses without a parameter
+        // asks for just those first (render.scalar's target, ...).
+        if (!GraphCanvasModel::requiredParameters(op).empty()) {
+            GraphCanvasRequiredDialog ask{model, scope, op, &view};
+            if (ask.exec() != QDialog::Accepted) return;
+            seed["parameters"] = ask.parameters();
+        }
         if (!seed.empty()) {
             scene->addFromPalette(scope, op, {}, seed);
             return;
@@ -6791,8 +6798,15 @@ struct GraphCanvasWidget::Impl {
         // item, and rebuilding would delete what it is holding.
         const bool placement_changed =
             rendered_placement != model.placementRevision();
-        if ((content_changed || report_changed || placement_changed) &&
-            !scene->editingInline() && !scene->dragging() && editing_parameter == nullptr) {
+        // UX-7, decision 7: a document that changed (a node added from the
+        // palette, a reload) is drawn even while a pill's editor is open --
+        // repopulate carries the editor and what was typed over the new
+        // items. Waiting for the editor to close left a node the document
+        // and the plan had off the canvas, Refresh or not, for as long as an
+        // editor stayed open somewhere on it (GB-3).
+        const bool editor_holds = scene->editingInline() && !content_changed;
+        if ((content_changed || report_changed || placement_changed) && !editor_holds &&
+            !scene->dragging() && editing_parameter == nullptr) {
             rendered_content = model.contentRevision();
             rendered_report = model.reportRevision();
             rendered_placement = model.placementRevision();

@@ -7,6 +7,7 @@
 #include <QJsonValue>
 #include <QObject>
 #include <QPointer>
+#include <QSet>
 #include <QString>
 
 #include <cstdint>
@@ -75,6 +76,10 @@ class PlayControls final : public QObject {
 
     // A get_status result, whoever asked.
     void observeStatus(const QByteArray &result_json);
+    // UX-7, decision 10: the viewport's one parse of it (engineStatusParsed).
+    // A reply to one of its own reads is also taken as that read's answer,
+    // so receiveResult does not parse it again.
+    void observeStatus(qint64 transport_id, const nlohmann::json &status);
     // The replies to what this sent. False for an id that is not its own.
     bool receiveResult(qint64 transport_id, const QByteArray &result_json);
     bool receiveRefusal(qint64 transport_id, int code, const QString &message,
@@ -136,6 +141,9 @@ class PlayControls final : public QObject {
     std::vector<std::string> row_ids_;
     // transport id -> the model's request id.
     QHash<qint64, std::uint64_t> transport_;
+    // UX-7, decision 10: its own get_status reads already answered from the
+    // parsed reply; receiveResult takes the raw one as answered, unparsed.
+    QSet<qint64> answered_;
     // A refusal's error, kept until the failure that follows it for the same
     // id finishes the request.
     QHash<qint64, QJsonObject> refused_;

@@ -587,6 +587,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenpasssettings.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/passform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/rasterstateform.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/shaderdefinesform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/attachmentopsform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp
@@ -628,6 +629,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenpasssettings.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/passform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/rasterstateform.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/shaderdefinesform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/attachmentopsform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp

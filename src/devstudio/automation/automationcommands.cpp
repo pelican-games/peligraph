@@ -1807,6 +1807,65 @@ SyncRpcOutcome callEngineRpc(const AutomationHost &host, const QString &method,
     return {.result = parseRpcPayload(payload)};
 }
 
+// UX-7, decision 10: get_status's render.published_frames, read from the
+// viewport's one parse of the reply (engineStatusParsed) rather than parsed
+// again here: `wait_engine` asks every 50 ms, and a large graph's status is
+// megabytes.
+struct PublishedFrames {
+    qint64 published = -1;
+    std::optional<AutomationReply> failure;
+};
+
+PublishedFrames publishedFrames(const AutomationHost &host, int timeout_ms) {
+    QString error;
+    const qint64 id = host.viewport->requestRpc(QStringLiteral("get_status"), QJsonObject{}, &error);
+    if (id == 0)
+        return {.failure = AutomationReply::failure(
+                    EngineNotReady,
+                    error.isEmpty() ? QStringLiteral("the engine refused the request") : error)};
+    QEventLoop loop;
+    bool answered = false;
+    bool succeeded = false;
+    qint64 published = -1;
+    QString message;
+    const auto on_status = QObject::connect(
+        host.viewport, &EmbeddedViewport::engineStatusParsed, &loop,
+        [&](qint64 reply_id, const nlohmann::json &status) {
+            if (reply_id != id) return;
+            answered = true;
+            succeeded = true;
+            const auto render = status.is_object() ? status.find("render") : status.end();
+            if (status.is_object() && render != status.end() && render->is_object()) {
+                const auto frames = render->find("published_frames");
+                if (frames != render->end() && frames->is_number())
+                    published = static_cast<qint64>(frames->get<double>());
+            }
+            loop.quit();
+        });
+    const auto on_failure = QObject::connect(
+        host.viewport, &EmbeddedViewport::inspectorRpcFailed, &loop,
+        [&](qint64 reply_id, const QString &reason) {
+            if (reply_id != id) return;
+            answered = true;
+            message = reason;
+            loop.quit();
+        });
+    QTimer timer;
+    timer.setSingleShot(true);
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timer.start(timeout_ms);
+    if (!answered) loop.exec();
+    QObject::disconnect(on_status);
+    QObject::disconnect(on_failure);
+    if (!answered)
+        return {.failure = AutomationReply::failure(
+                    RpcFailed, QStringLiteral("get_status did not answer within %1 ms").arg(timeout_ms))};
+    if (!succeeded)
+        return {.failure = AutomationReply::failure(
+                    RpcFailed, QStringLiteral("get_status failed: %1").arg(message))};
+    return {.published = published};
+}
+
 // `wait_engine` answers once the engine takes editor RPC. With `frames` it
 // also waits until the engine has published that many logical frames
 // (get_status render.published_frames): the engine answers RPC before its
@@ -1844,13 +1903,9 @@ AutomationReply commandWaitEngine(const AutomationHost &host,
     while (frames > 0) {
         const auto remaining =
             std::max<qint64>(1, timeout - elapsed.elapsed());
-        auto status = callEngineRpc(host, QStringLiteral("get_status"),
-                                    QJsonObject{}, static_cast<int>(remaining));
+        auto status = publishedFrames(host, static_cast<int>(remaining));
         if (status.failure) return *status.failure;
-        published = static_cast<qint64>(
-            status.result->toObject()
-                .value(QStringLiteral("render")).toObject()
-                .value(QStringLiteral("published_frames")).toDouble(-1));
+        published = status.published;
         if (published < 0)
             return AutomationReply::failure(
                 RpcFailed, QStringLiteral("get_status has no render.published_frames"));

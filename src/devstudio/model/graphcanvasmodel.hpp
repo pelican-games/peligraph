@@ -512,8 +512,9 @@ struct GraphCanvasPlace {
 // UX-3, decision 3: what one port of a render node's `ports` says about how
 // it is read or written, and which of it the engine lets the port say: a
 // previous frame only on an image read that is no attachment, sampling on a
-// sampled image read, a subresource on an image that is no attachment and no
-// numbered input, a location on a colour attachment.
+// sampled image read, a subresource on an image that is no attachment (a
+// numbered input too since UX-7: engine RS-14), a location on a colour
+// attachment.
 struct GraphCanvasPortSettings {
     bool history = false;
     // Empty: the engine's default (linear, repeat).
@@ -2086,6 +2087,39 @@ class GraphCanvasModel {
     // out); what the port cannot take is not written.
     bool setPortSettings(std::string_view scope, const std::string &node, const std::string &port,
                          const GraphCanvasPortSettings &settings);
+
+    // UX-7, decision 3. A render.raster's depth attachment: the image its
+    // `attachment: "depth"` port is connected to ("" for none), and the
+    // depth images of the scope it can take (render.image nodes of a depth
+    // format or type). setRasterDepth names one of those, "" for none, or
+    // kNewRasterDepth for a new D32_SFLOAT image the size of the pass's
+    // colour image: one edit (the image, and the pass replaced with its
+    // port, edge and output). A pass given a depth tests and writes it
+    // unless its raster_state says otherwise; one left without loses its
+    // depth keys (the engine refuses depth state with no attachment).
+    static constexpr std::string_view kNewRasterDepth = "+new";
+    [[nodiscard]] std::string rasterDepth(std::string_view scope, std::string_view node) const;
+    [[nodiscard]] std::vector<std::string> rasterDepthChoices(std::string_view scope) const;
+    bool setRasterDepth(std::string_view scope, const std::string &node, const std::string &depth);
+
+    // UX-7, decision 5. The parameters an op cannot be placed without, the
+    // engine checks by name (graph.render_node_parameters_missing@1, RS-15)
+    // but its catalog does not list: render.scalar's `target` (a buffer),
+    // value.constant's `value`, value.input's `name`. The palette asks for
+    // them in a small dialog and hands them over as the seed's
+    // `parameters`. Empty for any other op.
+    struct RequiredParameter {
+        std::string name;
+        // "buffer": a buffer's name, picked or new; "number"; "input": one
+        // of valueInputNames().
+        std::string kind;
+    };
+    [[nodiscard]] static std::vector<RequiredParameter> requiredParameters(std::string_view op);
+    // The clocks the engine hands a value graph (graphinputs.cpp).
+    [[nodiscard]] static std::vector<std::string> valueInputNames();
+    // The buffers a render.scalar in `scope` can write: the render.buffer
+    // nodes of the root and of the scope, by id.
+    [[nodiscard]] std::vector<std::string> bufferChoices(std::string_view scope) const;
 
     // Decision 4. The name Rename proposes for a definition: `<runner>_body`
     // after the first node that runs it, free of every other definition's

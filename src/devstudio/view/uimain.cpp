@@ -46,6 +46,9 @@ int uimain(int argc, char **argv, LaunchOptions options) {
         host.open_project = [&window](const QString &directory) {
             window.openProject(directory);
         };
+        host.before_quit = [&window](std::function<void()> quit) {
+            window.stopPlayThen(std::move(quit));
+        };
         automation = std::make_unique<AutomationServer>(std::move(host));
         // A scenario drives Studio, not the desktop: a shader "opened" under
         // automation is written to the log instead of starting an editor.

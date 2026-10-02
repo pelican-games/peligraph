@@ -13,6 +13,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
 #include <QColor>
@@ -42,6 +43,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QRadioButton>
+#include <QTableWidget>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QSpinBox>
@@ -5815,7 +5817,9 @@ Json q19ReadPort(std::int64_t index) {
             {"type", {{"semantic", "pelican.render.color_signal@1"},
                       {"arguments", {{"reference", "scene"}, {"transfer", "linear"},
                                      {"range", "extended"}}}}},
-            {"access", "read"}, {"binding", "input"}, {"input_index", index}};
+            {"access", "read"}, {"binding", "input"}, {"input_index", index},
+            // UX-7, decision 1: a fullscreen pass's input is clamped at its edge.
+            {"sampling", {{"address", "clamp_to_edge"}}}};
 }
 
 } // namespace
@@ -8091,8 +8095,8 @@ TEST_CASE("UX-3 decision 3: a render node's socket menu writes its port's previo
 }
 
 TEST_CASE("UX-6a decision 5: the Pass fields show each read image's Filter, Address and mip as "
-          "combos, each pick one set_node_parameters; a numbered input's are there, off, "
-          "saying why",
+          "combos, each pick one set_node_parameters; UX-7 decision 1: a numbered input's are "
+          "picked too",
           "[devstudio][graph-canvas][scene][ux6a]") {
     (void)application();
     Ux2Tab tab{true};
@@ -8112,11 +8116,10 @@ TEST_CASE("UX-6a decision 5: the Pass fields show each read image's Filter, Addr
     CHECK(address->isEnabled());
     CHECK(address->currentText() == QStringLiteral("default (repeat)"));
     CHECK(tab.field<QComboBox>("pelican.graphCanvasPass.input.previous.mip")->isEnabled());
-    // The numbered input: the engine takes no sampling or mip for it.
+    // UX-7, decision 1 (engine RS-14): the numbered input takes them too.
     auto *numbered = tab.field<QComboBox>("pelican.graphCanvasPass.input.input.address");
-    CHECK_FALSE(numbered->isEnabled());
-    CHECK(numbered->toolTip().contains(QStringLiteral("numbered input")));
-    CHECK_FALSE(tab.field<QComboBox>("pelican.graphCanvasPass.input.input.mip")->isEnabled());
+    CHECK(numbered->isEnabled());
+    CHECK(tab.field<QComboBox>("pelican.graphCanvasPass.input.input.mip")->isEnabled());
     // The attachment is not an input.
     CHECK(tab.widget->findChild<QComboBox *>(
               QStringLiteral("pelican.graphCanvasPass.input.color.address")) == nullptr);
@@ -8136,6 +8139,41 @@ TEST_CASE("UX-6a decision 5: the Pass fields show each read image's Filter, Addr
              QStringLiteral("2"));
     op = tab.sent(2);
     expected["ports"]["previous"]["subresource"] = {{"mip", 2}};
+    CHECK(op.at("parameters") == expected);
+    document["nodes"][1]["parameters"] = expected;
+    tab.commit(document, "ux6a-2");
+    QCoreApplication::processEvents();
+
+    // UX-7, decision 1: the numbered input's, written in the engine's form
+    // on its port (the lowering puts them in input_settings).
+    tab.pick(tab.field<QComboBox>("pelican.graphCanvasPass.input.input.address"),
+             QStringLiteral("clamp_to_edge"));
+    op = tab.sent(3);
+    expected["ports"]["input"]["sampling"] = {{"address", "clamp_to_edge"}};
+    CHECK(op.at("parameters") == expected);
+    document["nodes"][1]["parameters"] = expected;
+    tab.commit(document, "ux6a-3");
+    QCoreApplication::processEvents();
+    tab.pick(tab.field<QComboBox>("pelican.graphCanvasPass.input.input.filter"),
+             QStringLiteral("nearest"));
+    op = tab.sent(4);
+    expected["ports"]["input"]["sampling"]["filter"] = "nearest";
+    CHECK(op.at("parameters") == expected);
+    document["nodes"][1]["parameters"] = expected;
+    tab.commit(document, "ux6a-4");
+    QCoreApplication::processEvents();
+    tab.pick(tab.field<QComboBox>("pelican.graphCanvasPass.input.input.mip"), QStringLiteral("1"));
+    op = tab.sent(5);
+    expected["ports"]["input"]["subresource"] = {{"mip", 1}};
+    CHECK(op.at("parameters") == expected);
+    document["nodes"][1]["parameters"] = expected;
+    tab.commit(document, "ux6a-5");
+    QCoreApplication::processEvents();
+    // The defaults picked again leave no key: the pass is byte for byte the
+    // one it was.
+    tab.pick(tab.field<QComboBox>("pelican.graphCanvasPass.input.input.address"), QString{});
+    op = tab.sent(6);
+    expected["ports"]["input"]["sampling"].erase("address");
     CHECK(op.at("parameters") == expected);
 }
 
@@ -9014,4 +9052,337 @@ TEST_CASE("UX-5d a refusal names a graph pass's image only when a graph pass wri
         "Pass input target is not produced as an earlier output: nothing in pass: present"));
     // present (the rendering section's) writes display: no graph pass either.
     CHECK_FALSE(model.graphWritesResourceNamedIn("display in pass: output_transform"));
+}
+
+// --- UX-7: what GB-3 typed or could not write.
+
+namespace {
+
+// A raster pass `sea` writing the image `shade__color`, as the palette adds
+// one, in a document the engine's graph validation reads.
+Json ux7RasterPass() {
+    return {{"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
+            {"ports", {{"color", {{"kind", "image"}, {"type", ux2ColorType()}, {"access", "write"},
+                                  {"attachment", "color"}, {"location", 0}}}}},
+            {"draw", {{"vertex_count", 3}}}};
+}
+
+Json ux7RasterDocument(const Json &pass = ux7RasterPass()) {
+    auto document = ux3Document();
+    document["nodes"][1] = {{"id", "sea"}, {"op", "render.raster"}, {"parameters", pass},
+                            {"inputs", {{"color", {{"node", "shade__color"}, {"port", "resource"}}}}},
+                            {"outputs", Json::array({"color"})}};
+    return document;
+}
+
+Json ux7Catalog() {
+    auto catalog = ux2Catalog();
+    catalog["modules"][1]["operations"].push_back({{"op", "render.raster"},
+                                                   {"domain", "rendering"},
+                                                   {"evaluation", "direct"},
+                                                   {"sink", false},
+                                                   {"ports", "parameter_dependent"}});
+    return catalog;
+}
+
+// The ops of the `count`th edit, however many there are.
+Json ux7Ops(const Ux2Tab &tab, int count) {
+    REQUIRE(tab.reads("edit_graph_document") == count);
+    return Json::parse(tab.transport.calls[static_cast<std::size_t>(
+                                               tab.transport.idOf(QStringLiteral("edit_graph_document")) - 1)]
+                           .body.toStdString());
+}
+
+void ux7Click(QAbstractButton *button) {
+    button->click();
+    QCoreApplication::processEvents();
+}
+
+} // namespace
+
+TEST_CASE("UX-7 decision 2: a pass's Defines rows are its shader.defines, written in one "
+          "set_node_parameters; a row the engine refuses is red and not sent",
+          "[devstudio][graph-canvas][scene][ux7]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto pass = ux2Pass();
+    auto document = ux2Document(ux2Image(), pass);
+    tab.read(document, "ux7-d-0");
+    tab.answer("get_graph_catalog", ux2Catalog());
+    tab.widget->scene().selectNode("shade");
+    QCoreApplication::processEvents();
+    auto *table = tab.field<QTableWidget>("pelican.graphCanvasPass.shaderDefines.table");
+    REQUIRE(table->isVisible());
+    CHECK(table->rowCount() == 0);
+
+    // Add puts a row; nothing is sent for an empty one.
+    ux7Click(tab.field<QPushButton>("pelican.graphCanvasPass.shaderDefines.add"));
+    REQUIRE(table->rowCount() == 1);
+    CHECK(tab.reads("edit_graph_document") == 0);
+    // The value first: a row with no name yet is refused, and not sent.
+    table->item(0, 1)->setText(QStringLiteral("3"));
+    QCoreApplication::processEvents();
+    CHECK(tab.reads("edit_graph_document") == 0);
+    table->item(0, 0)->setText(QStringLiteral("OCEAN_STAGE"));
+    QCoreApplication::processEvents();
+    auto op = tab.sent(1);
+    pass["shader"]["defines"] = Json::array({"OCEAN_STAGE=3"});
+    CHECK(op.at("parameters") == pass);
+    document["nodes"][1]["parameters"] = pass;
+    tab.commit(document, "ux7-d-1");
+    QCoreApplication::processEvents();
+    table = tab.field<QTableWidget>("pelican.graphCanvasPass.shaderDefines.table");
+    REQUIRE(table->rowCount() == 1);
+    CHECK(table->item(0, 0)->text() == QStringLiteral("OCEAN_STAGE"));
+    CHECK(table->item(0, 1)->text() == QStringLiteral("3"));
+
+    // A name the engine defines itself: red, with the engine's sentence.
+    table->item(0, 0)->setText(QStringLiteral("PELICAN_INPUT_0"));
+    QCoreApplication::processEvents();
+    CHECK(tab.reads("edit_graph_document") == 1);
+    CHECK(table->item(0, 0)->toolTip().contains(QStringLiteral("defines itself")));
+
+    // Remove takes the row away: the key goes.
+    table->setCurrentCell(0, 0);
+    ux7Click(tab.field<QPushButton>("pelican.graphCanvasPass.shaderDefines.remove"));
+    op = tab.sent(2);
+    pass["shader"].erase("defines");
+    CHECK(op.at("parameters") == pass);
+}
+
+TEST_CASE("UX-7 decisions 3 and 4: a raster pass's Depth is picked (a new D32_SFLOAT image in "
+          "one edit the engine takes), its raster_state from the Raster form, and its draw "
+          "counted, Grid NxN writing 6(N-1)^2 vertices",
+          "[devstudio][graph-canvas][scene][ux7]") {
+    (void)application();
+    Ux2Tab tab{true};
+    auto pass = ux7RasterPass();
+    auto document = ux7RasterDocument(pass);
+    tab.read(document, "ux7-r-0");
+    tab.answer("get_graph_catalog", ux7Catalog());
+    tab.widget->scene().selectNode("sea");
+    QCoreApplication::processEvents();
+    REQUIRE(tab.field<QWidget>("pelican.graphCanvasPass")->isVisible());
+
+    // Decision 4: the draw, counted.
+    auto *vertices = tab.field<QSpinBox>("pelican.graphCanvasPass.vertexCount");
+    REQUIRE(vertices->isVisible());
+    CHECK(vertices->value() == 3);
+    CHECK(tab.field<QSpinBox>("pelican.graphCanvasPass.instanceCount")->value() == 1);
+    CHECK(tab.field<QSpinBox>("pelican.graphCanvasPass.gridSize")->value() == 257);
+    ux7Click(tab.field<QPushButton>("pelican.graphCanvasPass.grid"));
+    auto op = tab.sent(1);
+    pass["draw"]["vertex_count"] = 6 * 256 * 256;
+    CHECK(op.at("parameters") == pass);
+    // A count given while that edit is in flight waits for it, and is sent
+    // then -- not dropped, nor the field put back under the hand.
+    auto *instances = tab.field<QSpinBox>("pelican.graphCanvasPass.instanceCount");
+    instances->setValue(2);
+    Q_EMIT instances->editingFinished();
+    QCoreApplication::processEvents();
+    CHECK(tab.reads("edit_graph_document") == 1);
+    CHECK(instances->value() == 2);
+    document = ux7RasterDocument(pass);
+    tab.commit(document, "ux7-r-1");
+    QCoreApplication::processEvents();
+    CHECK(tab.field<QSpinBox>("pelican.graphCanvasPass.vertexCount")->value() == 393216);
+    for (int wait = 0; wait < 100 && tab.reads("edit_graph_document") < 2; ++wait) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        QCoreApplication::processEvents();
+    }
+    op = tab.sent(2);
+    pass["draw"]["instance_count"] = 2;
+    CHECK(op.at("parameters") == pass);
+    document = ux7RasterDocument(pass);
+    tab.commit(document, "ux7-r-2");
+    QCoreApplication::processEvents();
+
+    // Decision 3: the Raster form is a raster pass's too; no depth rows
+    // without a depth image.
+    REQUIRE(tab.field<QWidget>("pelican.graphCanvasPass.rasterState")->isVisible());
+    CHECK_FALSE(tab.field<QComboBox>("pelican.graphCanvasPass.rasterState.depthTest")->isVisible());
+    auto *depth = tab.field<QComboBox>("pelican.graphCanvasPass.depth");
+    REQUIRE(depth->isVisible());
+    CHECK(depth->currentData().toString().isEmpty());
+    tab.pick(depth, QString::fromStdString(std::string{GraphCanvasModel::kNewRasterDepth}));
+    const auto ops = ux7Ops(tab, 3);
+    REQUIRE(ops.size() == 2);
+    CHECK(ops[0].at("op") == "add_node");
+    const auto image = ops[0].at("node");
+    CHECK(image.at("id") == "sea__depth");
+    CHECK(image.at("parameters").at("format") == "D32_SFLOAT");
+    CHECK(image.at("parameters").at("extent_scale") == 1.0);
+    CHECK(image.at("parameters").at("usage") == Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"}));
+    CHECK(ops[1].at("op") == "replace_node");
+    const auto sea = ops[1].at("node");
+    CHECK(sea.at("parameters").at("ports").at("depth") ==
+          Json{{"kind", "image"},
+               {"type", image.at("parameters").at("type")},
+               {"access", "write"},
+               {"attachment", "depth"}});
+    CHECK(sea.at("inputs").at("depth") == Json{{"node", "sea__depth"}, {"port", "resource"}});
+    CHECK(sea.at("outputs") == Json::array({"color", "depth"}));
+    CHECK(sea.at("parameters").at("raster_state") == Json{{"depth_test", true}, {"depth_write", true}});
+    // The engine's graph edit takes it.
+    Json deep;
+    REQUIRE_NOTHROW(deep = Pelican::editGraphDocument(document, ops));
+    tab.commit(deep, "ux7-r-3");
+    QCoreApplication::processEvents();
+    CHECK(tab.field<QComboBox>("pelican.graphCanvasPass.depth")->currentData().toString() ==
+          QStringLiteral("sea__depth"));
+    auto *compare = tab.field<QComboBox>("pelican.graphCanvasPass.rasterState.depthCompare");
+    REQUIRE(compare->isVisible());
+    tab.pick(compare, QStringLiteral("less_equal"));
+    op = tab.sent(4);
+    auto expected = sea.at("parameters");
+    expected["raster_state"]["depth_compare"] = "less_equal";
+    CHECK(op.at("parameters") == expected);
+    deep = Pelican::editGraphDocument(deep, Json::array({op}));
+    tab.commit(deep, "ux7-r-4");
+    QCoreApplication::processEvents();
+    tab.pick(tab.field<QComboBox>("pelican.graphCanvasPass.rasterState.cull"), QStringLiteral("back"));
+    op = tab.sent(5);
+    expected["raster_state"]["cull"] = "back";
+    CHECK(op.at("parameters") == expected);
+    deep = Pelican::editGraphDocument(deep, Json::array({op}));
+    tab.commit(deep, "ux7-r-5");
+    QCoreApplication::processEvents();
+
+    // None again: the port, its line and output go, and so do the depth keys
+    // (the engine refuses depth state without an attachment).
+    tab.pick(tab.field<QComboBox>("pelican.graphCanvasPass.depth"), QString{});
+    const auto back = ux7Ops(tab, 6);
+    REQUIRE(back.size() == 1);
+    CHECK(back[0].at("op") == "replace_node");
+    CHECK_FALSE(back[0].at("node").at("parameters").at("ports").contains("depth"));
+    CHECK_FALSE(back[0].at("node").at("inputs").contains("depth"));
+    CHECK(back[0].at("node").at("outputs") == Json::array({"color"}));
+    CHECK(back[0].at("node").at("parameters").at("raster_state") == Json{{"cull", "back"}});
+    CHECK_NOTHROW(Pelican::editGraphDocument(deep, back));
+}
+
+TEST_CASE("UX-7 decision 5: render.scalar, value.constant and value.input ask for what they "
+          "cannot be placed without, and are placed with it",
+          "[devstudio][graph-canvas][scene][ux7]") {
+    (void)application();
+    auto document = ux3Document();
+    document["nodes"].push_back({{"id", "params"}, {"op", "render.buffer"},
+                                 {"parameters", {{"element", "vec4"}, {"size", 16}}},
+                                 {"outputs", Json::array({"resource"})}});
+    GraphCanvasModel model;
+    model.setConnected(true);
+    answer(model, document, engineCatalog());
+    REQUIRE(model.canEdit());
+
+    // Nothing to ask for a node the engine takes as it is.
+    CHECK_FALSE(PelicanStudio::GraphCanvasRequiredDialog(model, {}, "render.image").asks());
+
+    {
+        PelicanStudio::GraphCanvasRequiredDialog ask{model, {}, "render.scalar"};
+        REQUIRE(ask.asks());
+        auto *target = ask.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRequired.target"));
+        REQUIRE(target != nullptr);
+        CHECK(target->currentText() == QStringLiteral("params"));
+        CHECK(ask.parameters() == Json{{"target", "params"}});
+        // A new name; an empty one cannot be OK'd.
+        target->setEditText(QStringLiteral("glow"));
+        CHECK(ask.parameters() == Json{{"target", "glow"}});
+        auto *ok = ask.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasRequired.ok"));
+        REQUIRE(ok != nullptr);
+        CHECK(ok->isEnabled());
+        target->setEditText(QString{});
+        CHECK_FALSE(ok->isEnabled());
+    }
+    {
+        PelicanStudio::GraphCanvasRequiredDialog ask{model, {}, "value.input"};
+        auto *name = ask.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRequired.name"));
+        REQUIRE(name != nullptr);
+        CHECK(ask.parameters() == Json{{"name", "scene_time"}});
+        name->setCurrentIndex(name->findData(QStringLiteral("delta_time")));
+        CHECK(ask.parameters() == Json{{"name", "delta_time"}});
+    }
+    PelicanStudio::GraphCanvasRequiredDialog constant{model, {}, "value.constant"};
+    auto *value =
+        constant.findChild<QDoubleSpinBox *>(QStringLiteral("pelican.graphCanvasRequired.value"));
+    REQUIRE(value != nullptr);
+    value->setValue(2.5);
+    CHECK(constant.parameters() == Json{{"value", 2.5}});
+
+    // Placed with them, in the engine's form.
+    const auto registry = Pelican::makeBuiltinGraphModuleRegistry();
+    for (const auto &[op, parameters] :
+         std::vector<std::pair<std::string, Json>>{{"value.constant", {{"value", 2.5}}},
+                                                   {"value.input", {{"name", "scene_time"}}},
+                                                   {"render.scalar", {{"target", "params"}}}}) {
+        INFO(op);
+        const auto ops = model.addNodeOpsIn({}, op, {}, Json{{"parameters", parameters}});
+        REQUIRE_FALSE(ops.empty());
+        CHECK(ops.back().at("node").at("parameters") == parameters);
+        auto placed = document;
+        for (const auto &each : ops) placed["nodes"].push_back(each.at("node"));
+        CHECK_NOTHROW(Pelican::partitionGraphDocument(placed, registry));
+    }
+}
+
+TEST_CASE("UX-7 decision 6: a render.image keeps the previous frame by its check "
+          "(history: true), one set_node_parameters each way",
+          "[devstudio][graph-canvas][scene][ux7]") {
+    (void)application();
+    Ux2Tab tab{true};
+    auto image = ux2Image();
+    auto document = ux2Document(image);
+    tab.read(document, "ux7-h-0");
+    tab.answer("get_graph_catalog", ux2Catalog());
+    tab.widget->scene().selectNode("shade__color");
+    QCoreApplication::processEvents();
+    auto *history = tab.field<QCheckBox>("pelican.graphCanvasImage.history");
+    REQUIRE(history->isVisible());
+    CHECK_FALSE(history->isChecked());
+    ux7Click(history);
+    auto op = tab.sent(1);
+    image["history"] = true;
+    CHECK(op.at("parameters") == image);
+    document = ux2Document(image);
+    tab.commit(document, "ux7-h-1");
+    QCoreApplication::processEvents();
+    history = tab.field<QCheckBox>("pelican.graphCanvasImage.history");
+    CHECK(history->isChecked());
+    ux7Click(history);
+    op = tab.sent(2);
+    image.erase("history");
+    CHECK(op.at("parameters") == image);
+}
+
+TEST_CASE("UX-7 decision 7: a node the document gains is drawn while a pill's editor is open, "
+          "the editor carried over the new drawing",
+          "[devstudio][graph-canvas][scene][ux7]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = ux3Document();
+    tab.read(document, "ux7-p-0");
+    tab.answer("get_graph_catalog", ux7Catalog());
+    auto &scene = tab.widget->scene();
+    REQUIRE(nodeItem(scene, QStringLiteral("shade")) != nullptr);
+    // GB-3: a pick that lands on a pill leaves its editor open; the raster
+    // pass the palette added after it reached the document and the plan,
+    // but not the canvas, Refresh or not.
+    REQUIRE(scene.beginValueEdit("shade", "shader"));
+    REQUIRE(scene.editingInline());
+    auto gained = document;
+    const auto raster = ux7RasterDocument();
+    gained["nodes"].push_back({{"id", "sea__color"}, {"op", "render.image"},
+                               {"parameters", raster.at("nodes").at(0).at("parameters")},
+                               {"outputs", Json::array({"resource"})}});
+    auto sea = raster.at("nodes").at(1);
+    sea["inputs"]["color"]["node"] = "sea__color";
+    gained["nodes"].push_back(sea);
+    REQUIRE_NOTHROW(Pelican::editGraphDocument(gained, Json::array()));
+    tab.field<QPushButton>("pelican.graphCanvasRefresh")->click();
+    QCoreApplication::processEvents();
+    tab.read(gained, "ux7-p-1");
+    QCoreApplication::processEvents();
+    CHECK(nodeItem(scene, QStringLiteral("sea")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("sea__color")) != nullptr);
+    // The editor is still open, over the new drawing.
+    CHECK(scene.editingInline());
 }

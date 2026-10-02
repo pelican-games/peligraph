@@ -2,6 +2,7 @@
 
 #include "../model/graphcanvasmodel.hpp"
 
+#include <QDialog>
 #include <QWidget>
 
 #include <filesystem>
@@ -28,6 +29,7 @@ namespace PelicanStudio {
 class AttachmentOpsForm;
 class FullscreenPassInterfaceRow;
 class RasterStateForm;
+class ShaderDefinesForm;
 
 // UX-2, decision 1: the fields of the selected render.image, beside the Graph
 // tab's canvas above the details (as the Loop, Draw and View fields). Every
@@ -86,6 +88,8 @@ class GraphCanvasImageFields final : public QWidget {
     QSpinBox *width_ = nullptr;
     QSpinBox *height_ = nullptr;
     QSpinBox *layers_ = nullptr;
+    // UX-7, decision 6: `history: true`, named `pelican.graphCanvasImage.history`.
+    QCheckBox *history_ = nullptr;
     QLabel *note_ = nullptr;
     // UX-5d, decision 1: the size as an expression ({"$expr": ...}), behind
     // the f button as the loop's Count is -- extent_scale for a screen-sized
@@ -184,6 +188,41 @@ class GraphCanvasPassFields final : public QWidget {
     QTimer *settings_timer_ = nullptr;
     // The colour attachment settings as last loaded, to tell which row moved.
     nlohmann::json loaded_settings_ = nlohmann::json::object();
+
+    // UX-7. The rows GB-3 had to type as JSON or could not write at all.
+    // Decision 2: shader.defines, a row each (the Pass Editor's form, named
+    // `pelican.graphCanvasPass.shaderDefines.*`); a row the engine would
+    // refuse stays red and is not sent.
+    ShaderDefinesForm *defines_ = nullptr;
+    void loadDefines(const nlohmann::json &parameters);
+    void commitDefines();
+    // Decision 3: a raster pass's depth attachment -- none, a depth image of
+    // the scope, or a new one (`pelican.graphCanvasPass.depth`) -- and its
+    // raster_state with the depth rows (the Raster form, shown for a raster
+    // pass too).
+    QComboBox *depth_ = nullptr;
+    QFormLayout *settings_form_ = nullptr;
+    void loadDepth();
+    void commitDepth();
+    // Decision 4: a raster pass's draw: its vertex and instance counts, and
+    // Grid N×N, which writes the 6·(N−1)² vertices of a grid of triangles
+    // (`pelican.graphCanvasPass.vertexCount` / `.instanceCount` /
+    // `.gridSize` / `.grid`).
+    QWidget *draw_ = nullptr;
+    QSpinBox *vertex_count_ = nullptr;
+    QSpinBox *instance_count_ = nullptr;
+    QSpinBox *grid_size_ = nullptr;
+    QPushButton *grid_ = nullptr;
+    void loadDraw(const nlohmann::json &parameters);
+    void commitDraw();
+    // A value given while the model cannot take an edit (a save or a read in
+    // flight -- a pick's placement save, say) is not dropped: it is sent
+    // again once the model can (followEditable), rather than the field going
+    // back to the document's value under the hand that typed it.
+    std::function<void()> retry_;
+    QTimer *retry_timer_ = nullptr;
+    bool deferWhileBusy(std::function<void()> again);
+    void retryWhenEditable();
 };
 
 // UX-3, decision 2: where the selected render node (fullscreen, raster,
@@ -216,6 +255,28 @@ class GraphCanvasPlaceFields final : public QWidget {
     QComboBox *place_ = nullptr;
     QComboBox *pass_set_ = nullptr;
     QLabel *note_ = nullptr;
+};
+
+// UX-7, decision 5: the small dialog the palette shows before it places an
+// op the engine refuses without a parameter its catalog does not list
+// (GraphCanvasModel::requiredParameters): one field each -- a buffer picked
+// from the graph's or named anew, a number, one of the engine's clocks --
+// and OK / Cancel. Named `pelican.graphCanvasRequired` and
+// `pelican.graphCanvasRequired.<parameter>` (`.ok`, `.cancel`). What is
+// written here can be changed afterwards in the node's details.
+class GraphCanvasRequiredDialog final : public QDialog {
+  public:
+    GraphCanvasRequiredDialog(const GraphCanvasModel &model, const std::string &scope,
+                              const std::string &op, QWidget *parent = nullptr);
+    // Whether the op asks for anything at all.
+    [[nodiscard]] bool asks() const noexcept { return !fields_.empty(); }
+    // The parameters as the fields hold them now.
+    [[nodiscard]] nlohmann::json parameters() const;
+
+  private:
+    void follow();
+    std::vector<std::pair<GraphCanvasModel::RequiredParameter, QWidget *>> fields_;
+    QPushButton *ok_ = nullptr;
 };
 
 // UX-3, decision 3: the entries a render node's input socket offers on a

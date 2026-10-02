@@ -2331,6 +2331,14 @@ Json q19Port(std::int64_t index) {
             {"binding", "input"}, {"input_index", index}};
 }
 
+// UX-7, decision 1: a line onto a fullscreen pass's socket makes the port
+// clamped at the image's edge (the engine's default is repeat).
+Json q19Connected(std::int64_t index) {
+    auto port = q19Port(index);
+    port["sampling"] = {{"address", "clamp_to_edge"}};
+    return port;
+}
+
 struct Q19Harness : LoopHarness {
     Q19Harness() { document = q19Document(); }
     // Every edit reads the document again, and that read asks for the plan.
@@ -2442,7 +2450,7 @@ TEST_CASE("Q-19 a line on a socket is a numbered port and its edge in one list; 
     REQUIRE(h.client.model.connectSocket({}, "post", "in:variadic", "lit", "resource"));
     h.commitAndReport();
     auto expected = post_parameters;
-    expected["ports"]["resource"] = q19Port(0);
+    expected["ports"]["resource"] = q19Connected(0);
     CHECK(h.last_ops == Json::array({
         {{"op", "set_node_parameters"}, {"scope", "root"}, {"node", "post"}, {"parameters", expected}},
         {{"op", "set_input"}, {"scope", "root"}, {"node", "post"}, {"port", "resource"},
@@ -2454,7 +2462,7 @@ TEST_CASE("Q-19 a line on a socket is a numbered port and its edge in one list; 
     // A second one takes binding 1 and a name of its own.
     REQUIRE(h.client.model.connectSocket({}, "post", "in:variadic", "extra", "resource"));
     h.commitAndReport();
-    CHECK(h.node({}, "post").at("parameters").at("ports").at("resource_2") == q19Port(1));
+    CHECK(h.node({}, "post").at("parameters").at("ports").at("resource_2") == q19Connected(1));
     CHECK(h.node({}, "post").at("inputs").at("resource_2") == edge("extra"));
 
     // Onto the connected socket at binding 0: the edge moves, nothing else.
@@ -2471,7 +2479,7 @@ TEST_CASE("Q-19 a line on a socket is a numbered port and its edge in one list; 
     REQUIRE(h.client.model.disconnectInput({}, "post", "resource"));
     h.commitAndReport();
     auto renumbered = post_parameters;
-    renumbered["ports"]["resource_2"] = q19Port(0);
+    renumbered["ports"]["resource_2"] = q19Connected(0);
     CHECK(h.last_ops == Json::array({
         {{"op", "set_input"}, {"scope", "root"}, {"node", "post"}, {"port", "resource"},
          {"source", nullptr}},
@@ -2513,7 +2521,7 @@ TEST_CASE("Q-19 a line on a socket past the next binding, on a buffer or on a fu
     h.commitAndReport(q19Plan(1));
     REQUIRE(h.last_ops.size() == 2);
     CHECK(h.last_ops[0].at("scope") == "paint");
-    CHECK(h.last_ops[0].at("parameters").at("ports").at("target") == q19Port(0));
+    CHECK(h.last_ops[0].at("parameters").at("ports").at("target") == q19Connected(0));
     CHECK(h.last_ops[1] == Json{{"op", "set_input"}, {"scope", "paint"}, {"node", "fill"},
                                 {"port", "target"},
                                 {"source", {{"node", "target"}, {"port", "value"}}}});
@@ -2521,7 +2529,7 @@ TEST_CASE("Q-19 a line on a socket past the next binding, on a buffer or on a fu
     // a port of its own.
     REQUIRE(h.client.model.connectSocket("paint", "fill", "in@1", "target", "value"));
     h.commitAndReport(q19Plan(1));
-    CHECK(h.node("paint", "fill").at("parameters").at("ports").at("target_2") == q19Port(1));
+    CHECK(h.node("paint", "fill").at("parameters").at("ports").at("target_2") == q19Connected(1));
 
     // The root pass's band holds one input at most here.
     REQUIRE(h.client.model.connectSocket({}, "post", "in:variadic", "lit", "resource"));

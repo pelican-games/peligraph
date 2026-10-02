@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_build_ocean",
-  "description": "GB-3 target A (a Tessendorf FFT ocean), from File > New Project > Blank with Studio's GUI only; the shaders are written into the project's shaders/ as a person does in an editor of their own (file steps). Every stage is a fullscreen pass into a Fixed 256 x 256 R32G32B32A32_SFLOAT image (Add fullscreen pass, the image's Format picked and Fixed pressed): h0 (Phillips, a hash for the noise), the spectrum at the scene's time (pelicanFrame.time_delta.x, read in the shader: the graph has no way to hand a pass a value), then the inverse FFT as a graph.loop of 16 copies (Count 16 typed: no log2 in the expressions), the carry drawn from the body's output back onto its boundary input. A compute task could not be used: the palette places one with no ports, a shader that declares a descriptor is refused at placement, and ports written later are refused for the unconnected input/output they add. The stage number cannot be handed to a copy (shader.defines take {$format} but have no field, and a width expression is refused: field_not_allowed), so the loop has one branch per stage: Add branch copies the body, each branch's element is typed into its spin, and its pass picks ocean_fft_<k> from the Fragment list. A displacement pass applies (-1)^(x+y); a render.raster from the palette draws the sea with project vertex and fragment shaders (fragment first: a vertex shader declaring input 0 beside engine://passthrough is refused), its draw pill typed as JSON (3 + 6 x 256 x 256 vertices, no index buffer), the displacement dropped on its input 0 (read in the vertex stage) and its colour on present's + input. It has no depth attachment (no field for one), so the rows are drawn far to near. The raster pass is added first: added after the loop it reached the document but the canvas never drew it. Pixels: the sea is not the gradient and not one colour; in edit two readings 30 frames apart agree; Play moves the waves (and one frame differs from a later one); Pause stops them; Stop returns to edit. Typed: the project folder and name, render.raster in the palette's filter, 16 in Count, the 14 branch elements, and the draw pill's JSON.",
+  "description": "GB-3 target A (a Tessendorf FFT ocean), from File > New Project > Blank with Studio's GUI only; the shaders are written into the project's shaders/ as a person does in an editor of their own (file steps). Every stage is a fullscreen pass into a Fixed 256 x 256 R32G32B32A32_SFLOAT image (Add fullscreen pass, the image's Format picked and Fixed pressed): h0 (Phillips, a hash for the noise), the spectrum at the scene's time (pelicanFrame.time_delta.x, read in the shader: the graph has no way to hand a pass a value), then the inverse FFT as a graph.loop of 16 copies (Count 16 typed: no log2 in the expressions), the carry drawn from the body's output back onto its boundary input. A compute task could not be used: the palette places one with no ports, a shader that declares a descriptor is refused at placement, and ports written later are refused for the unconnected input/output they add. The stage number cannot be handed to a copy (UX-7 gave shader.defines a field, but a copy's number reaches a define only through {$format}, which waits for the engine's LC-1; a width expression is refused: field_not_allowed), so the loop has one branch per stage: Add branch copies the body, each branch's element is typed into its spin, and its pass picks ocean_fft_<k> from the Fragment list. A displacement pass applies (-1)^(x+y); a render.raster from the palette draws the sea with project vertex and fragment shaders (fragment first: a vertex shader declaring input 0 beside engine://passthrough is refused), its draw counted in the Pass fields (UX-7 decision 4: Grid 257 x 257 pressed, 6 x 256 x 256 vertices with no index buffer, and 2 instances typed into the spin: instance 1 is the sky on the far plane), a new D32_SFLOAT depth image picked in its Depth field and less_equal in the Raster form's depth compare (UX-7 decision 3: the waves hide each other by depth, the sky is drawn where none is), the displacement dropped on its input 0 (read in the vertex stage) and its colour on present's + input. The raster pass is added first: added after the loop it reached the document but the canvas never drew it, because a pick that landed on a pill left that pill's editor open and the canvas waited for it to close (fixed by UX-7 decision 7). Pixels: the sea is not the gradient and not one colour; in edit two readings 30 frames apart agree; Play moves the waves (and one frame differs from a later one); Pause stops them; Stop returns to edit; the run is played again at the end, so Studio's quit comes during Play and has to stop it first (UX-7 decision 9). Typed: the project folder and name, render.raster in the palette's filter, 16 in Count, the 14 branch elements, and 2 in the raster pass's Instances.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -93,7 +93,7 @@
       "label": "write shaders/ocean_surface.vert (as an editor of one's own would)",
       "file": "write",
       "path": "{artifacts}/gb_ocean/shaders/ocean_surface.vert",
-      "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_frame.glsl\"\n#include \"pelican_view.glsl\"\n\n// GB-3 A: the sea surface, drawn by a raster pass with no vertex buffer\n// (draw.vertex_count = 3 + 6 * GRID * GRID). Vertices 0..2 are a sky triangle\n// over the whole screen; the rest are a GRID x GRID grid of quads on the plane\n// y = SEA_LEVEL, displaced by the displacement image (input 0, read here in\n// the vertex stage). The pass has no depth attachment (the Graph tab cannot\n// give a raster pass one), so the rows are emitted far to near and the\n// nearer waves paint over the farther ones.\n\nPELICAN_DECLARE_INPUT_0(displacement);\n\n#if PELICAN_INPUT_0_LAYERED\n#define FETCH0(p) texelFetch(displacement, ivec3((p), 0), 0)\n#else\n#define FETCH0(p) texelFetch(displacement, (p), 0)\n#endif\n\nlayout(location = 0) out vec3 outWorld;\nlayout(location = 1) out vec2 outPatch;\nlayout(location = 2) out float outSky;\n\nconst int GRID = 256;\nconst float PATCH = 64.0;        // metres one displacement tile covers\nconst float SEA_LEVEL = -2.0;\nconst vec2 EXTENT_X = vec2(-60.0, 60.0);\nconst vec2 EXTENT_Z = vec2(-2.5, 140.0);\n\n// Bilinear, wrapping, by texel: the same in both stages.\nvec3 displacementAt(vec2 world_xz) {\n    vec2 t = world_xz / PATCH * 256.0 - 0.5;\n    ivec2 i = ivec2(floor(t));\n    vec2 f = t - vec2(i);\n    ivec2 a = i & 255, b = (i + 1) & 255;\n    vec3 d00 = FETCH0(ivec2(a.x, a.y)).xyz, d10 = FETCH0(ivec2(b.x, a.y)).xyz;\n    vec3 d01 = FETCH0(ivec2(a.x, b.y)).xyz, d11 = FETCH0(ivec2(b.x, b.y)).xyz;\n    return mix(mix(d00, d10, f.x), mix(d01, d11, f.x), f.y);\n}\n\nvoid main() {\n    if (gl_VertexIndex < 3) {\n        vec2 uv = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);\n        gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);\n        outWorld = vec3(uv, 0.0);\n        outPatch = vec2(0.0);\n        outSky = 1.0;\n        return;\n    }\n    int v = gl_VertexIndex - 3;\n    int quad = v / 6;\n    int corner = v % 6;\n    // far rows first\n    int row = GRID - 1 - quad / GRID;\n    int column = quad % GRID;\n    const ivec2 corners[6] = ivec2[6](ivec2(0, 0), ivec2(1, 0), ivec2(1, 1),\n                                      ivec2(0, 0), ivec2(1, 1), ivec2(0, 1));\n    ivec2 cell = ivec2(column, row) + corners[corner];\n    vec2 s = vec2(cell) / float(GRID);\n    // denser near the camera: z grows with the square of the row\n    vec2 xz = vec2(mix(EXTENT_X.x, EXTENT_X.y, s.x), mix(EXTENT_Z.x, EXTENT_Z.y, s.y * s.y));\n    vec3 d = displacementAt(xz);\n    vec3 world = vec3(xz.x + d.x, SEA_LEVEL + d.y, xz.y + d.z);\n    outWorld = world;\n    outPatch = xz;\n    outSky = 0.0;\n    gl_Position = pelicanFrame.projection * pelicanFrame.view * vec4(world, 1.0);\n}\n"
+      "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_frame.glsl\"\n#include \"pelican_view.glsl\"\n\n// GB-3 A: the sea surface, drawn by a raster pass with no vertex buffer\n// (draw.vertex_count = 6 * GRID * GRID: Grid 257 x 257 in its Pass fields,\n// draw.instance_count = 2). Instance 0 is a GRID x GRID grid of quads on the\n// plane y = SEA_LEVEL, displaced by the displacement image (input 0, read here\n// in the vertex stage); the pass's depth image (D32_SFLOAT) puts the nearer\n// waves in front. Instance 1 is the sky: its first triangle covers the screen\n// on the far plane (depth 1, drawn where no wave is: depth_compare less_equal),\n// its other vertices fall outside the screen.\n\nPELICAN_DECLARE_INPUT_0(displacement);\n\n#if PELICAN_INPUT_0_LAYERED\n#define FETCH0(p) texelFetch(displacement, ivec3((p), 0), 0)\n#else\n#define FETCH0(p) texelFetch(displacement, (p), 0)\n#endif\n\nlayout(location = 0) out vec3 outWorld;\nlayout(location = 1) out vec2 outPatch;\nlayout(location = 2) out float outSky;\n\nconst int GRID = 256;\nconst float PATCH = 64.0;        // metres one displacement tile covers\nconst float SEA_LEVEL = -2.0;\nconst vec2 EXTENT_X = vec2(-60.0, 60.0);\nconst vec2 EXTENT_Z = vec2(-2.5, 140.0);\n\n// Bilinear, wrapping, by texel: the same in both stages.\nvec3 displacementAt(vec2 world_xz) {\n    vec2 t = world_xz / PATCH * 256.0 - 0.5;\n    ivec2 i = ivec2(floor(t));\n    vec2 f = t - vec2(i);\n    ivec2 a = i & 255, b = (i + 1) & 255;\n    vec3 d00 = FETCH0(ivec2(a.x, a.y)).xyz, d10 = FETCH0(ivec2(b.x, a.y)).xyz;\n    vec3 d01 = FETCH0(ivec2(a.x, b.y)).xyz, d11 = FETCH0(ivec2(b.x, b.y)).xyz;\n    return mix(mix(d00, d10, f.x), mix(d01, d11, f.x), f.y);\n}\n\nvoid main() {\n    if (gl_InstanceIndex == 1) {\n        int i = gl_VertexIndex < 3 ? gl_VertexIndex : 0;\n        vec2 uv = vec2((i << 1) & 2, i & 2);\n        gl_Position = gl_VertexIndex < 3 ? vec4(uv * 2.0 - 1.0, 1.0, 1.0) : vec4(2.0, 2.0, 2.0, 1.0);\n        outWorld = vec3(uv, 0.0);\n        outPatch = vec2(0.0);\n        outSky = 1.0;\n        return;\n    }\n    int quad = gl_VertexIndex / 6;\n    int corner = gl_VertexIndex % 6;\n    int row = quad / GRID;\n    int column = quad % GRID;\n    const ivec2 corners[6] = ivec2[6](ivec2(0, 0), ivec2(1, 0), ivec2(1, 1),\n                                      ivec2(0, 0), ivec2(1, 1), ivec2(0, 1));\n    ivec2 cell = ivec2(column, row) + corners[corner];\n    vec2 s = vec2(cell) / float(GRID);\n    // denser near the camera: z grows with the square of the row\n    vec2 xz = vec2(mix(EXTENT_X.x, EXTENT_X.y, s.x), mix(EXTENT_Z.x, EXTENT_Z.y, s.y * s.y));\n    vec3 d = displacementAt(xz);\n    vec3 world = vec3(xz.x + d.x, SEA_LEVEL + d.y, xz.y + d.z);\n    outWorld = world;\n    outPatch = xz;\n    outSky = 0.0;\n    gl_Position = pelicanFrame.projection * pelicanFrame.view * vec4(world, 1.0);\n}\n"
     },
     {
       "label": "write shaders/ocean_surface.frag (as an editor of one's own would)",
@@ -356,27 +356,25 @@
       "name": "pelican.graphCanvasView::graph_node#render_raster"
     },
     {
-      "label": "zoom in over render_raster's draw",
-      "cmd": "wheel",
-      "name": "pelican.graphCanvasView::graph_value_pill#render_raster/draw",
-      "delta": 480
+      "label": "the canvas takes input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 120000
     },
     {
-      "label": "3 + 6 x 256 x 256 vertices: the draw pill, as JSON (no field for the count)",
+      "label": "its draw fields",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.grid",
+      "timeout_ms": 30000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "Grid 257 x 257 (triangles): 6 x 256 x 256 vertices, nothing typed",
       "cmd": "click",
-      "name": "pelican.graphCanvasView::graph_value_pill#render_raster/draw"
-    },
-    {
-      "label": "type draw",
-      "cmd": "type",
-      "name": "pelican.graphCanvasView::graph_inline_editor#render_raster/draw",
-      "text": "{\"vertex_count\": 393219}"
-    },
-    {
-      "label": "Return",
-      "cmd": "key",
-      "name": "pelican.graphCanvasView::graph_inline_editor#render_raster/draw",
-      "sequence": "Return"
+      "name": "pelican.graphCanvasPass.grid"
     },
     {
       "label": "saved",
@@ -391,7 +389,157 @@
       "method": "get_graph_instances",
       "params": {},
       "path": "nodes[1].parameters.draw.vertex_count",
-      "value": 393219,
+      "value": 393216,
+      "retry_ms": 30000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick render_raster",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_raster"
+    },
+    {
+      "label": "the canvas takes input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "its instances",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.instanceCount",
+      "timeout_ms": 30000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "2 instances: the sea and the sky (typed into the spin)",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPass.instanceCount",
+      "text": "2"
+    },
+    {
+      "label": "Return",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPass.instanceCount",
+      "sequence": "Return"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "two instances",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[1].parameters.draw.instance_count",
+      "value": 2,
+      "retry_ms": 30000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick render_raster",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_raster"
+    },
+    {
+      "label": "the canvas takes input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "its depth field",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.depth",
+      "timeout_ms": 30000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "Depth: a new D32_SFLOAT image",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPass.depth",
+      "text": "New depth image (D32_SFLOAT)"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the surface writes depth",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[1].parameters.raster_state.depth_write",
+      "value": true,
+      "retry_ms": 30000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick render_raster",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_raster"
+    },
+    {
+      "label": "the canvas takes input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the depth rows of its Raster form",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.rasterState.depthCompare",
+      "timeout_ms": 30000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "depth compare less_equal: the sky on the far plane is drawn where no wave is",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPass.rasterState.depthCompare",
+      "text": "less_equal"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "less_equal",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[1].parameters.raster_state.depth_compare",
+      "value": "less_equal",
       "retry_ms": 30000
     },
     {
@@ -883,7 +1031,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.carry[0].to",
+      "path": "nodes[7].parameters.carry[0].to",
       "value": "color",
       "retry_ms": 10000
     },
@@ -1011,7 +1159,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[0].body",
+      "path": "nodes[7].parameters.branches[0].body",
       "value": "loop_body_2",
       "retry_ms": 30000
     },
@@ -1098,7 +1246,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[1].body",
+      "path": "nodes[7].parameters.branches[1].body",
       "value": "loop_body_3",
       "retry_ms": 30000
     },
@@ -1144,7 +1292,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[1].when.element",
+      "path": "nodes[7].parameters.branches[1].when.element",
       "value": 1,
       "retry_ms": 30000
     },
@@ -1231,7 +1379,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[2].body",
+      "path": "nodes[7].parameters.branches[2].body",
       "value": "loop_body_4",
       "retry_ms": 30000
     },
@@ -1277,7 +1425,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[2].when.element",
+      "path": "nodes[7].parameters.branches[2].when.element",
       "value": 2,
       "retry_ms": 30000
     },
@@ -1364,7 +1512,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[3].body",
+      "path": "nodes[7].parameters.branches[3].body",
       "value": "loop_body_5",
       "retry_ms": 30000
     },
@@ -1410,7 +1558,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[3].when.element",
+      "path": "nodes[7].parameters.branches[3].when.element",
       "value": 3,
       "retry_ms": 30000
     },
@@ -1497,7 +1645,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[4].body",
+      "path": "nodes[7].parameters.branches[4].body",
       "value": "loop_body_6",
       "retry_ms": 30000
     },
@@ -1543,7 +1691,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[4].when.element",
+      "path": "nodes[7].parameters.branches[4].when.element",
       "value": 4,
       "retry_ms": 30000
     },
@@ -1630,7 +1778,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[5].body",
+      "path": "nodes[7].parameters.branches[5].body",
       "value": "loop_body_7",
       "retry_ms": 30000
     },
@@ -1676,7 +1824,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[5].when.element",
+      "path": "nodes[7].parameters.branches[5].when.element",
       "value": 5,
       "retry_ms": 30000
     },
@@ -1763,7 +1911,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[6].body",
+      "path": "nodes[7].parameters.branches[6].body",
       "value": "loop_body_8",
       "retry_ms": 30000
     },
@@ -1809,7 +1957,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[6].when.element",
+      "path": "nodes[7].parameters.branches[6].when.element",
       "value": 6,
       "retry_ms": 30000
     },
@@ -1896,7 +2044,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[7].body",
+      "path": "nodes[7].parameters.branches[7].body",
       "value": "loop_body_9",
       "retry_ms": 30000
     },
@@ -1942,7 +2090,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[7].when.element",
+      "path": "nodes[7].parameters.branches[7].when.element",
       "value": 7,
       "retry_ms": 30000
     },
@@ -2029,7 +2177,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[8].body",
+      "path": "nodes[7].parameters.branches[8].body",
       "value": "loop_body_10",
       "retry_ms": 30000
     },
@@ -2075,7 +2223,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[8].when.element",
+      "path": "nodes[7].parameters.branches[8].when.element",
       "value": 8,
       "retry_ms": 30000
     },
@@ -2162,7 +2310,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[9].body",
+      "path": "nodes[7].parameters.branches[9].body",
       "value": "loop_body_11",
       "retry_ms": 30000
     },
@@ -2208,7 +2356,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[9].when.element",
+      "path": "nodes[7].parameters.branches[9].when.element",
       "value": 9,
       "retry_ms": 30000
     },
@@ -2295,7 +2443,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[10].body",
+      "path": "nodes[7].parameters.branches[10].body",
       "value": "loop_body_12",
       "retry_ms": 30000
     },
@@ -2341,7 +2489,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[10].when.element",
+      "path": "nodes[7].parameters.branches[10].when.element",
       "value": 10,
       "retry_ms": 30000
     },
@@ -2428,7 +2576,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[11].body",
+      "path": "nodes[7].parameters.branches[11].body",
       "value": "loop_body_13",
       "retry_ms": 30000
     },
@@ -2474,7 +2622,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[11].when.element",
+      "path": "nodes[7].parameters.branches[11].when.element",
       "value": 11,
       "retry_ms": 30000
     },
@@ -2561,7 +2709,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[12].body",
+      "path": "nodes[7].parameters.branches[12].body",
       "value": "loop_body_14",
       "retry_ms": 30000
     },
@@ -2607,7 +2755,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[12].when.element",
+      "path": "nodes[7].parameters.branches[12].when.element",
       "value": 12,
       "retry_ms": 30000
     },
@@ -2694,7 +2842,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[13].body",
+      "path": "nodes[7].parameters.branches[13].body",
       "value": "loop_body_15",
       "retry_ms": 30000
     },
@@ -2740,7 +2888,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[13].when.element",
+      "path": "nodes[7].parameters.branches[13].when.element",
       "value": 13,
       "retry_ms": 30000
     },
@@ -2827,7 +2975,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[14].body",
+      "path": "nodes[7].parameters.branches[14].body",
       "value": "loop_body_16",
       "retry_ms": 30000
     },
@@ -2873,7 +3021,7 @@
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[6].parameters.branches[14].when.element",
+      "path": "nodes[7].parameters.branches[14].when.element",
       "value": 14,
       "retry_ms": 30000
     },
@@ -3371,7 +3519,7 @@
       "cmd": "wait",
       "name": "pelican.playStatus",
       "timeout_ms": 30000,
-      "contains": "Playing · frame"
+      "contains": "Playing \u00b7 frame"
     },
     {
       "label": "the engine has presented frames",
@@ -3508,7 +3656,7 @@
       "cmd": "wait",
       "name": "pelican.playStatus",
       "timeout_ms": 10000,
-      "contains": "Paused · frame"
+      "contains": "Paused \u00b7 frame"
     },
     {
       "label": "the engine has presented frames",
@@ -3642,6 +3790,18 @@
       "expect": "screenshot",
       "name": "pelican.graphCanvas",
       "path": "gui_build_ocean_graph.png"
+    },
+    {
+      "label": "UX-7 decision 9: Play again, so the scenario's quit comes while the game runs (it is stopped, then Studio closes; a prompt nobody answers held it 30 s)",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "playing",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "timeout_ms": 30000,
+      "contains": "Playing \u00b7 frame"
     }
   ]
 }

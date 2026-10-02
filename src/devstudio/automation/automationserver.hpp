@@ -21,6 +21,10 @@ struct AutomationHost {
     QWidget *window = nullptr;
     EmbeddedViewport *viewport = nullptr;
     std::function<void(const QString &directory)> open_project;
+    // UX-7, decision 9: run before `quit` closes the window, with the quit
+    // to call once it is done (a run in Play is stopped first). Absent: the
+    // quit goes at once.
+    std::function<void(std::function<void()> quit)> before_quit;
 };
 
 // One newline-delimited JSON channel into a running Studio, opened only by

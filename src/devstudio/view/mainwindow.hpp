@@ -87,6 +87,11 @@ class MainWindow : public QMainWindow {
     // scenario never starts an application.
     void setShaderSourceOpenAction(
         std::function<bool(const std::filesystem::path &)> action);
+    // UX-7, decision 9. The automation channel's quit: a run in Play or Pause
+    // is stopped (nothing kept) and `then` is called once it has; with no
+    // run, at once. A person closing the window is still asked; a scenario's
+    // shutdown is no person, and the prompt nobody answered held it 30 s.
+    void stopPlayThen(std::function<void()> then);
 
   protected:
     void closeEvent(QCloseEvent *event) override;

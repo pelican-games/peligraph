@@ -49,9 +49,10 @@ RuntimeOutliner::RuntimeOutliner(EmbeddedViewport &viewport, OutlinerTree &tree,
     });
     // Every get_status reply, whoever asked: the play controls' reads after
     // Pause, Step, Play and Stop are the ones that move the state.
-    connect(&viewport_, &EmbeddedViewport::engineStatusRead, this,
-            [this](const QByteArray &result_json) {
-                if (model_.observeStatus(parsed(result_json))) dispatch();
+    // UX-7, decision 10: the viewport's one parse of it.
+    connect(&viewport_, &EmbeddedViewport::engineStatusParsed, this,
+            [this](qint64, const nlohmann::json &status) {
+                if (model_.observeStatus(status)) dispatch();
             });
     connect(&viewport_, &EmbeddedViewport::engineRpcBecameAvailable, this, [this] {
         model_.connect();

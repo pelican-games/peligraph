@@ -12,6 +12,8 @@
 #include <QStringList>
 #include <QWidget>
 
+#include <nlohmann/json.hpp>
+
 #include <functional>
 #include <optional>
 
@@ -145,6 +147,11 @@ class EmbeddedViewport final : public QWidget {
     // probe's and any panel's -- before it is handed on. The play state rides
     // on these reads instead of on a clock of its own.
     void engineStatusRead(const QByteArray &result_json);
+    // UX-7, decision 10. The same reply, parsed here once and handed to
+    // every reader (a null value when it was not JSON), with the request it
+    // answers: a get_status of a large graph is megabytes, and each reader
+    // parsing it again on the GUI thread stopped the window.
+    void engineStatusParsed(qint64 request_id, const nlohmann::json &status);
     void engineInputActiveChanged(bool active);
     // MG-1. `refusal` is the line the player wrote:
     // "project.migration_required@1: {documents:[...]}".
@@ -212,6 +219,9 @@ class EmbeddedViewport final : public QWidget {
     void setEngineLoadingNotice(const QString &message);
     void layoutEngineLoadingNotice();
     void markRpcReady();
+    // UX-7, decision 10: engineStatusRead, then engineStatusParsed with the
+    // one parse of it.
+    void emitStatus(qint64 request_id, const QByteArray &result_json);
     void abandonEngine(const QString &reason);
     void requestEmbeddedWindowResize(ViewportExtentChangeKind kind);
     void applyEmbeddedWindowResizeDecision(const ViewportResizeDecision &decision);
