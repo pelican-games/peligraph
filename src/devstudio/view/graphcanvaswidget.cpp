@@ -1,4 +1,5 @@
 #include "graphcanvaswidget.hpp"
+#include "graphcanvascomputefields.hpp"
 #include "graphcanvasdrawing.hpp"
 #include "graphcanvasfoldgroups.hpp"
 #include "graphcanvasloopfields.hpp"
@@ -33,6 +34,8 @@
 #include <QFileDialog>
 #include <QMimeData>
 #include <QUrl>
+#include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QFont>
 #include <QFontMetrics>
 #include <QFormLayout>
@@ -72,6 +75,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -4720,6 +4724,23 @@ struct GraphCanvasWidget::Impl {
     QWidget *timeline_panel = nullptr;
     QLabel *breadcrumb = nullptr;
     QLabel *notice = nullptr;
+    // EL-5s, decision 4: "Update ports" under the notice that a compute
+    // node's shader changed its ports.
+    QPushButton *update_ports = nullptr;
+    // EL-5s, decision 4: the project shader files compute nodes run, watched
+    // for a change of their ports (a burst of writes is one refresh).
+    QFileSystemWatcher *compute_watch = nullptr;
+    QTimer *compute_watch_settle = nullptr;
+    QStringList compute_watched;
+    // EL-5s, decision 1: a palette pick of a project shader, placed once the
+    // engine has read its ports.
+    struct PendingComputePlacement {
+        std::string scope;
+        nlohmann::json seed;
+        std::string reference;
+        std::chrono::steady_clock::time_point deadline;
+    };
+    std::optional<PendingComputePlacement> pending_compute_placement;
     QTreeWidget *details = nullptr;
     // UX-2, decision 5: the parameter row of the details whose value is
     // being typed as JSON, and the node it belongs to. A redraw waits for it,
@@ -4738,6 +4759,8 @@ struct GraphCanvasWidget::Impl {
     // shaders (decision 2), picked rather than typed.
     GraphCanvasImageFields *image_fields = nullptr;
     GraphCanvasPassFields *pass_fields = nullptr;
+    // EL-5s: a compute node's Shader and what the engine could not read.
+    GraphCanvasComputeFields *compute_fields = nullptr;
     // GL-3a: the root's fold groups -- drawn over the canvas, picked by
     // their headings, written with fold_nodes -- and their Decisions.
     std::unique_ptr<GraphCanvasFoldController> folds;
@@ -5020,6 +5043,32 @@ struct GraphCanvasWidget::Impl {
         applyPanelNoticeStyle(notice);
         notice->hide();
         layout->addWidget(notice);
+        update_ports = new QPushButton(QObject::tr("Update ports"), &view);
+        update_ports->setObjectName(QStringLiteral("pelican.graphCanvasUpdatePorts"));
+        update_ports->setToolTip(QObject::tr(
+            "Make the compute nodes' ports their shader's again: new ports get their images, "
+            "ports of the same name keep their lines"));
+        update_ports->hide();
+        layout->addWidget(update_ports, 0, Qt::AlignLeft);
+        QObject::connect(update_ports, &QPushButton::clicked, &view, [this] {
+            if (model.updateComputePorts()) dispatch();
+            else synchronize();
+        });
+        compute_watch = new QFileSystemWatcher(&view);
+        compute_watch_settle = new QTimer(&view);
+        compute_watch_settle->setSingleShot(true);
+        compute_watch_settle->setInterval(200);
+        QObject::connect(compute_watch, &QFileSystemWatcher::fileChanged, &view,
+                         [this](const QString &path) {
+                             // An editor that replaces the file drops it from the watch.
+                             if (!compute_watch->files().contains(path) && QFileInfo::exists(path))
+                                 compute_watch->addPath(path);
+                             compute_watch_settle->start();
+                         });
+        QObject::connect(compute_watch_settle, &QTimer::timeout, &view, [this] {
+            model.refreshComputeShaderInterfaces();
+            dispatch();
+        });
         // GL-1, decision 4.
         folded_notice = new QLabel(&view);
         folded_notice->setObjectName(QStringLiteral("pelican.graphCanvasFoldedNotice"));
@@ -5369,6 +5418,8 @@ struct GraphCanvasWidget::Impl {
         // UX-5b: New... wrote a shader; the lists hold it from now on.
         pass_fields->setShadersChanged([this] { refreshShaderChoices(); });
         side_layout->addWidget(pass_fields);
+        compute_fields = new GraphCanvasComputeFields(model, [this] { dispatch(); }, side);
+        side_layout->addWidget(compute_fields);
         place_fields = new GraphCanvasPlaceFields(model, [this] { dispatch(); }, side);
         side_layout->addWidget(place_fields);
         value_fields = new GraphCanvasValueFields(model, [this] { dispatch(); }, side);
@@ -6008,6 +6059,10 @@ struct GraphCanvasWidget::Impl {
                 transport = graph.requestGraphTemplates(&error);
             else if (request.method == "get_engine_shaders" && graph.requestEngineShaders)
                 transport = graph.requestEngineShaders(&error);
+            else if (request.method == "get_shader_interface" && graph.requestShaderInterface)
+                transport = graph.requestShaderInterface(
+                    qtext(request.params.value("reference", std::string{})),
+                    request.params.value("refresh", false), &error);
             else if (request.method == "get_render_authoring_context" &&
                      graph.requestRenderAuthoringContext)
                 transport = graph.requestRenderAuthoringContext(&error);
@@ -6605,6 +6660,121 @@ struct GraphCanvasWidget::Impl {
         std::vector<std::string> references;
         for (const auto &name : names) references.push_back(shaderTemplateReference(name));
         model.setComputeShaderChoices(std::move(references));
+        // EL-5s, decision 1: and its ray tracing sets -- a stem with a raygen,
+        // a miss and a closest hit shader beside each other.
+        std::vector<std::string> tracing;
+        if (!project_root.empty()) {
+            const auto folder = std::filesystem::path{project_root} / "shaders";
+            std::error_code error;
+            for (std::filesystem::directory_iterator entry{folder, error}, end;
+                 !error && entry != end; entry.increment(error)) {
+                std::error_code type_error;
+                if (!entry->is_regular_file(type_error) || entry->path().extension().string() != ".rgen")
+                    continue;
+                const auto stem = entry->path().stem().string();
+                std::error_code exists_error;
+                if (isValidShaderTemplateName(stem) &&
+                    std::filesystem::exists(folder / (stem + ".rmiss"), exists_error) &&
+                    std::filesystem::exists(folder / (stem + ".rchit"), exists_error))
+                    tracing.push_back(stem);
+            }
+        }
+        std::ranges::sort(tracing);
+        std::vector<std::string> tracing_references;
+        for (const auto &name : tracing) tracing_references.push_back(shaderTemplateReference(name));
+        model.setProjectRayTracingChoices(std::move(tracing_references));
+    }
+
+    // --- EL-5s: project compute / ray tracing shaders and their ports.
+
+    // The files of the project stem a compute node runs that exist: its
+    // .comp, or its .rgen / .rmiss / .rchit.
+    [[nodiscard]] std::vector<std::filesystem::path> computeShaderFiles(
+        const nlohmann::json &parameters) const {
+        std::vector<std::filesystem::path> files;
+        const auto stem = GraphCanvasModel::computeShaderStem(parameters);
+        constexpr std::string_view prefix = "project://";
+        if (project_root.empty() || !stem.starts_with(prefix)) return files;
+        const auto base =
+            (project_root / std::filesystem::path{stem.substr(prefix.size())}).lexically_normal();
+        for (const char *extension : {".comp", ".rgen", ".rmiss", ".rchit"}) {
+            auto path = base;
+            path += extension;
+            std::error_code error;
+            if (std::filesystem::exists(path, error)) files.push_back(std::move(path));
+        }
+        return files;
+    }
+
+    // Decision 1 / 3: each compute node's project stem is read once (its
+    // empty sockets, what the engine could not read); decision 4: and its
+    // files are watched.
+    void followComputeShaders() {
+        QStringList watched;
+        for (const auto &scope : model.scopes())
+            for (const auto &node : model.nodes(scope.id)) {
+                if (node.op != "render.compute") continue;
+                const auto parameters = model.nodeParameters(scope.id, node.id);
+                const auto stem = GraphCanvasModel::computeShaderStem(parameters);
+                if (stem.empty()) continue;
+                if (graph.requestShaderInterface && !model.shaderInterface(stem))
+                    model.askShaderInterface(stem);
+                for (const auto &path : computeShaderFiles(parameters))
+                    watched << QString::fromStdWString(path.wstring());
+            }
+        watched.removeDuplicates();
+        watched.sort();
+        if (watched == compute_watched) return;
+        compute_watched = watched;
+        if (!compute_watch->files().isEmpty()) compute_watch->removePaths(compute_watch->files());
+        if (!watched.isEmpty()) compute_watch->addPaths(watched);
+    }
+
+    // Decision 1. The palette's pick of a project shader: the engine is asked
+    // for its ports (an answer it has for the same files comes at once), and
+    // the node is placed with them when it answers. False for anything else.
+    bool placeComputeWhenRead(const std::string &scope, const nlohmann::json &seed) {
+        if (!graph.requestShaderInterface) return false;
+        auto reference = seed.value("shader", std::string{});
+        if (reference.empty()) reference = seed.value("ray_tracing", std::string{});
+        if (!reference.starts_with("project://")) return false;
+        model.askShaderInterface(reference);
+        pending_compute_placement = PendingComputePlacement{
+            scope, seed, reference, std::chrono::steady_clock::now() + std::chrono::seconds{120}};
+        model.setEditNotice({InspectorNoticeKind::Information,
+                             "Reading " + reference + "'s ports..."});
+        dispatch();
+        return true;
+    }
+
+    void followComputePlacement() {
+        if (!pending_compute_placement) return;
+        const auto &pending = *pending_compute_placement;
+        const auto known = model.shaderInterface(pending.reference);
+        const bool waiting = model.shaderInterfaceWaiting(pending.reference) ||
+                             (known && known->status == "building");
+        if (waiting) {
+            if (std::chrono::steady_clock::now() < pending.deadline) return;
+            const auto reference = pending.reference;
+            pending_compute_placement.reset();
+            model.setEditNotice({InspectorNoticeKind::Error,
+                                 "The engine did not finish reading " + reference + "'s ports."});
+            return;
+        }
+        if (!model.canEdit()) return;
+        const auto placing = std::move(*pending_compute_placement);
+        pending_compute_placement.reset();
+        if (!known || !known->ready()) {
+            model.setEditNotice({InspectorNoticeKind::Error,
+                                 "The engine could not read " + placing.reference + "'s ports: " +
+                                     (known ? known->error : std::string{"no answer"})});
+            return;
+        }
+        if (!scene->addFromPalette(placing.scope, "render.compute", {}, placing.seed))
+            model.setEditNotice({InspectorNoticeKind::Error,
+                                 placing.reference + " declares nothing a compute task can run: "
+                                                     "no compute stage, or a ray tracing set that "
+                                                     "writes no image."});
     }
 
     // Q-10. The project's sounds, read again whenever they are about to be
@@ -6945,6 +7115,10 @@ struct GraphCanvasWidget::Impl {
                 compute_shader->clear();
                 for (const auto &shader : model.computeShaderChoices())
                     compute_shader->addItem(qtext(shader), QStringLiteral("shader|") + qtext(shader));
+                // EL-5s, decision 1: the project's ray tracing sets.
+                for (const auto &stem : model.projectRayTracingChoices())
+                    compute_shader->addItem(QObject::tr("%1  (ray tracing)").arg(qtext(stem)),
+                                            QStringLiteral("ray_tracing|") + qtext(stem));
                 for (const auto &pipeline : model.rayTracingPipelines())
                     compute_shader->addItem(
                         QObject::tr("%1  (ray tracing)").arg(qtext(pipeline.reference)),
@@ -7083,6 +7257,9 @@ struct GraphCanvasWidget::Impl {
             const auto chosen = ask.seed();
             for (const auto &[key, value] : chosen.items()) seed[key] = value;
         }
+        // EL-5s, decision 1: a project shader is placed with its ports once
+        // the engine has read them (get_shader_interface), from the poll.
+        if (op == "render.compute" && placeComputeWhenRead(scope, seed)) return;
         if (!seed.empty()) {
             scene->addFromPalette(scope, op, {}, seed);
             return;
@@ -7112,6 +7289,7 @@ struct GraphCanvasWidget::Impl {
             view_fields->showNode(nullptr, {});
             image_fields->showNode(nullptr, {});
             pass_fields->showNode(nullptr, {});
+            compute_fields->showNode(nullptr, {});
             place_fields->showNode(nullptr, {});
             value_fields->showNode(nullptr, {});
             return;
@@ -7130,11 +7308,14 @@ struct GraphCanvasWidget::Impl {
             view_fields->showNode(nullptr, {});
             image_fields->showNode(nullptr, {});
             pass_fields->showNode(nullptr, {});
+            compute_fields->showNode(nullptr, {});
             place_fields->showNode(nullptr, {});
             value_fields->showNode(nullptr, {});
             return;
         }
         label_edit->setText(qtext(found->label));
+        // EL-5s: the compute fields' Shader list is the project's as it is.
+        if (found->op == "render.compute") refreshComputeShaderChoices();
         syncUiNodeRow(&*found);
         syncAudioRow(&*found);
         // LP-4c: a loop's parameters are its fields, not rows of JSON.
@@ -7147,6 +7328,7 @@ struct GraphCanvasWidget::Impl {
         if (found->op == "render.fullscreen" || found->op == "render.raster") refreshShaderChoices();
         image_fields->showNode(&*found, scope);
         pass_fields->showNode(&*found, scope);
+        compute_fields->showNode(&*found, scope);
         place_fields->showNode(&*found, scope);
         // UX-8: a curve's keys, a playback's map, a scalar's numbers, a
         // pass's buffers.
@@ -7278,6 +7460,13 @@ struct GraphCanvasWidget::Impl {
         if (!project_root.empty())
             for (const auto &scope : model.scopes())
                 for (const auto &node : model.nodes(scope.id)) {
+                    // EL-5s: a compute node's project shader files, read again on a write.
+                    if (node.op == "render.compute") {
+                        const auto key = scope.root ? node.id : scope.id + "/" + node.id;
+                        for (auto &path : computeShaderFiles(model.nodeParameters(scope.id, node.id)))
+                            sources[key].push_back(std::move(path));
+                        continue;
+                    }
                     if (node.op != "render.fullscreen" && node.op != "render.raster") continue;
                     const auto shader =
                         model.nodeParameters(scope.id, node.id).value("shader", nlohmann::json::object());
@@ -7353,6 +7542,8 @@ struct GraphCanvasWidget::Impl {
             rendered_placement = model.placementRevision();
             publishEngineShaders();
             publishShaderSources();
+            // EL-5s: the compute nodes' shaders, read and watched.
+            followComputeShaders();
             // Q-5: a read that only moved the placement -- the reply to the
             // drag that was just made -- keeps the scene when the scene is
             // already drawing it. Rebuilding there threw every item away and
@@ -7375,6 +7566,7 @@ struct GraphCanvasWidget::Impl {
         // UX-2: and so do a render.image's and a render pass's.
         if (image_fields != nullptr) image_fields->followEditable();
         if (pass_fields != nullptr) pass_fields->followEditable();
+        if (compute_fields != nullptr) compute_fields->followEditable();
         if (place_fields != nullptr) place_fields->followEditable();
         if (value_fields != nullptr) value_fields->followEditable();
         // GL-4a, decision 2: a node of a group being verified takes no edit
@@ -7384,6 +7576,8 @@ struct GraphCanvasWidget::Impl {
                                    pass_fields, place_fields, value_fields, label_edit,
                                    apply_label});
         showNotice();
+        // EL-5s, decision 1: a palette pick waiting for its shader's ports.
+        followComputePlacement();
         refresh->setEnabled(model.canRefresh());
         synchronizeTimeline();
     }
@@ -7397,6 +7591,9 @@ struct GraphCanvasWidget::Impl {
             message.kind != InspectorNoticeKind::Error)
             message = {InspectorNoticeKind::Information,
                        "Saving the graph change..."};
+        // EL-5s, decision 4.
+        update_ports->setVisible(!model.computePortChanges().empty());
+        update_ports->setEnabled(model.canEdit());
         if (message.kind == InspectorNoticeKind::None) {
             notice->clear();
             notice->hide();

@@ -580,6 +580,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasloopfields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasrenderfields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasvaluefields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascomputefields.cpp
     # GL-3a: the fold groups the Graph tab draws and writes.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
@@ -626,6 +627,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasloopfields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasrenderfields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasvaluefields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascomputefields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp

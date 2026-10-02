@@ -5,6 +5,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -457,6 +458,52 @@ struct GraphCanvasRayTracingPipeline {
     std::map<std::string, std::string> formats;
 
     bool operator==(const GraphCanvasRayTracingPipeline &) const = default;
+};
+
+// EL-5s: one resource port a project shader declares, as the engine's
+// get_shader_interface (EL-5) reflected it: its name, its descriptor type
+// (sampled_image, storage_image, storage_buffer...) and, for a storage
+// image whose layout names one, its format.
+struct GraphCanvasShaderPort {
+    std::string port;
+    std::string type;
+    std::string format;
+
+    bool operator==(const GraphCanvasShaderPort &) const = default;
+};
+
+// EL-5s: what get_shader_interface answered for one shader stem. `status`
+// is the engine's: "building" (asked again half a second later), "ready" or
+// "failed" (`error`, e.g. shader_not_found). A ready stem is a compute
+// shader (`compute`, its `local_size`) or a ray tracing set (raygen, miss
+// and closesthit). `ports` are its stages' resource ports, each once, in
+// the order the stages list them. `reflection_error`: a stage the engine
+// could not compile on its own (its message names the file by project://).
+struct GraphCanvasShaderInterface {
+    std::string reference;
+    std::string status;
+    std::string error;
+    bool compute = false;
+    bool ray_tracing = false;
+    std::vector<GraphCanvasShaderPort> ports;
+    std::array<std::int64_t, 3> local_size{0, 0, 0};
+    std::string reflection_error;
+
+    [[nodiscard]] bool ready() const noexcept { return status == "ready"; }
+    bool operator==(const GraphCanvasShaderInterface &) const = default;
+};
+
+// EL-5s, decision 4: a compute node whose shader file changed its ports
+// since the canvas last read them -- the names added and removed. "Update
+// ports" makes the node's ports the shader's again (decision 2).
+struct GraphCanvasPortChange {
+    std::string scope;
+    std::string node;
+    std::string shader;
+    std::vector<std::string> added;
+    std::vector<std::string> removed;
+
+    bool operator==(const GraphCanvasPortChange &) const = default;
 };
 
 // UX-5b, decision 4: a render.image a root render.material_pass draws into
@@ -944,6 +991,27 @@ class GraphCanvasModel {
     std::optional<std::chrono::steady_clock::time_point> engine_shaders_again_at_;
     std::uint64_t engine_shaders_revision_ = 0;
     void takeEngineShaders(const nlohmann::json &shaders);
+    // EL-5s: get_shader_interface's answers by stem; the questions in the
+    // air (request id -> stem), outside the one-per-kind read slots since
+    // several stems may be asked at once; when a "building" stem is asked
+    // again; the stems a refresh (decision 4) waits on, with the ports the
+    // canvas had for them; a Shader picked again (decision 2) that waits for
+    // its interface.
+    std::map<std::string, GraphCanvasShaderInterface, std::less<>> shader_interfaces_;
+    std::map<std::uint64_t, std::string> shader_interface_reads_;
+    std::map<std::string, std::chrono::steady_clock::time_point, std::less<>> shader_interface_again_at_;
+    std::map<std::string, std::vector<std::string>, std::less<>> shader_interface_refreshing_;
+    struct PendingComputeShader {
+        std::string scope;
+        std::string node;
+        std::string reference;
+    };
+    std::optional<PendingComputeShader> pending_compute_shader_;
+    std::vector<GraphCanvasPortChange> compute_port_changes_;
+    std::uint64_t shader_interface_revision_ = 0;
+    std::vector<std::string> project_ray_tracing_choices_;
+    bool takeShaderInterfaceReply(std::uint64_t id, const std::string *json, const std::string &failure);
+    void comparePortsAfterRefresh(const std::string &reference);
     // passInputs' lookup in the plan alone.
     [[nodiscard]] const FramePlanPassInputs *passInputsFromPlan(
         std::string_view scope, std::string_view node,
@@ -2200,6 +2268,74 @@ class GraphCanvasModel {
     // resource ports its stages declare (port, descriptor type), in the
     // list's order. Empty until get_engine_shaders is answered.
     [[nodiscard]] std::vector<GraphCanvasRayTracingPipeline> rayTracingPipelines() const;
+
+    // --- EL-5s: a project's compute / ray tracing shader placed from the
+    // palette takes its ports from the shader's declarations
+    // (get_shader_interface, EL-5).
+
+    // The project's ray tracing stems (shaders/<name>.rgen with its .rmiss
+    // and .rchit, as project://shaders/<name>), set by the owner, who knows
+    // the project. The palette offers them beside the compute shaders.
+    void setProjectRayTracingChoices(std::vector<std::string> choices);
+    [[nodiscard]] const std::vector<std::string> &projectRayTracingChoices() const noexcept {
+        return project_ray_tracing_choices_;
+    }
+    // Asks get_shader_interface for a stem (`refresh`: build it again even
+    // when the files hash the same -- an include changed). One question per
+    // stem in the air; "building" is asked again half a second later, from
+    // poll(). Goes out with the next dispatch.
+    void askShaderInterface(const std::string &reference, bool refresh = false);
+    // What the engine last answered for the stem; nothing before an answer.
+    // A refresh in the air keeps the previous answer until the new one.
+    [[nodiscard]] std::optional<GraphCanvasShaderInterface>
+    shaderInterface(std::string_view reference) const;
+    [[nodiscard]] std::uint64_t shaderInterfaceRevision() const noexcept {
+        return shader_interface_revision_;
+    }
+    // A question about the stem is in the air or waits to be asked again.
+    [[nodiscard]] bool shaderInterfaceWaiting(std::string_view reference) const;
+    // The project stem a render.compute runs: its `shader`, or its ray
+    // tracing raygen; empty for an engine:// shader or none.
+    [[nodiscard]] static std::string computeShaderStem(const nlohmann::json &parameters);
+    // Decision 1 / 2. The ops that make `node` (a new id: add it; an existing
+    // render.compute: replace it) run `reference` with the ports its
+    // interface declares: a storage image is written into an image of its own
+    // (the format the shader declares, else R16G16B16A16_SFLOAT; STORAGE and
+    // SAMPLED), connected; a sampled image is an empty socket until a line is
+    // dropped on it (the engine refuses a declared port no edge feeds); an
+    // existing port of the same name keeps its line, a port the shader no
+    // longer declares loses its readers' lines. dispatch.groups_from the
+    // first written image (local_size_z 1), else one group; a ray tracing set
+    // traces rays_from it. Empty when the interface is not ready or cannot
+    // run (a ray tracing set that writes no image).
+    [[nodiscard]] nlohmann::json computeShaderOps(std::string_view scope, const std::string &node,
+                                                  const std::string &reference) const;
+    // Decision 2. The node's Shader picked again: computeShaderOps when the
+    // interface is known, else it is asked for and the edit is sent from
+    // poll() once it is ready.
+    bool setComputeShader(std::string_view scope, const std::string &node, const std::string &reference);
+    // The sampled image ports of a compute node's shader that the node does
+    // not declare yet: the empty sockets a line can be dropped on.
+    [[nodiscard]] std::vector<std::string> computeOpenSockets(std::string_view scope,
+                                                              std::string_view node) const;
+    // Decision 3. A reflection error's sentence for the node fields: the
+    // message's first line, with kReflectionDefinesHint when the message
+    // reads like a shader that needs a define (an undeclared identifier,
+    // an #error).
+    static constexpr std::string_view kReflectionDefinesHint =
+        "the shader may need defines the reflection does not pass";
+    [[nodiscard]] static std::string reflectionErrorSentence(std::string_view reference,
+                                                             std::string_view message);
+    // Decision 4. Every compute node's project stem asked again with
+    // refresh; an answer whose ports differ from what the canvas had is a
+    // change (computePortChanges) and a notice line.
+    void refreshComputeShaderInterfaces();
+    [[nodiscard]] const std::vector<GraphCanvasPortChange> &computePortChanges() const noexcept {
+        return compute_port_changes_;
+    }
+    // "Update ports": decision 2 for every changed node, in one edit.
+    bool updateComputePorts();
+
     // Decision 4. render_target_vocabulary.format_aspects: "color", "depth",
     // "depth_stencil" or "stencil"; empty for a format the engine did not
     // list (or an engine before it).

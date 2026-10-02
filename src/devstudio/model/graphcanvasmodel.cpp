@@ -754,6 +754,15 @@ void GraphCanvasModel::setConnected(bool connected) {
     // stays, one that did not is asked again when a list is opened.
     engine_shaders_asked_ = false;
     engine_shaders_again_at_.reset();
+    // EL-5s: a stem's interface is the project's files, which another engine
+    // (another project) reads differently: asked again.
+    shader_interfaces_.clear();
+    shader_interface_reads_.clear();
+    shader_interface_again_at_.clear();
+    shader_interface_refreshing_.clear();
+    pending_compute_shader_.reset();
+    compute_port_changes_.clear();
+    ++shader_interface_revision_;
     operations_ = Json::object();
     types_ = Json::object();
     failure_ = {};
@@ -950,6 +959,35 @@ void GraphCanvasModel::poll() {
         engine_shaders_again_at_.reset();
         read(RequestKind::EngineShaders, "get_engine_shaders", Json::object());
     }
+    // EL-5s: a stem the engine is still reflecting is asked again; a Shader
+    // picked again whose interface has arrived is sent.
+    if (connected_ && !shader_interface_again_at_.empty()) {
+        const auto now = std::chrono::steady_clock::now();
+        std::vector<std::string> due;
+        for (const auto &[reference, at] : shader_interface_again_at_)
+            if (now >= at) due.push_back(reference);
+        for (const auto &reference : due) {
+            shader_interface_again_at_.erase(reference);
+            askShaderInterface(reference);
+        }
+    }
+    if (pending_compute_shader_ && canEdit()) {
+        const auto known = shaderInterface(pending_compute_shader_->reference);
+        if (known && known->status != "building" &&
+            !shaderInterfaceWaiting(pending_compute_shader_->reference)) {
+            const auto pending = *std::exchange(pending_compute_shader_, std::nullopt);
+            if (known->ready()) {
+                if (auto ops = computeShaderOps(pending.scope, pending.node, pending.reference);
+                    !ops.empty())
+                    submitOps(std::move(ops));
+            } else {
+                edit_notice_ = {InspectorNoticeKind::Error,
+                                "The engine could not read " + pending.reference + "'s ports: " +
+                                    known->error};
+                ++report_revision_;
+            }
+        }
+    }
     if (!pollWanted()) return;
     requestCatalog();
     // Live is the only thing that reads on a clock. Off, the overlay follows
@@ -978,6 +1016,8 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
         ++report_revision_;
         return;
     }
+    // EL-5s: get_shader_interface has slots of its own.
+    if (takeShaderInterfaceReply(id, nullptr, message)) return;
     // GL-1: a folded view on screen stands aside while the reply is read.
     const FoldedSuspend suspend{*this};
     if (const auto pending = takeRead(id)) {
@@ -1039,6 +1079,12 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         scrub_render_ = 0;
         requestObservation();
         ++report_revision_;
+        return;
+    }
+    // EL-5s: get_shader_interface has slots of its own.
+    if (shader_interface_reads_.contains(id)) {
+        const std::string reply{json};
+        takeShaderInterfaceReply(id, &reply, {});
         return;
     }
     // GL-1: a folded view on screen stands aside while the reply is read,
@@ -2024,6 +2070,16 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
             }
         }
         drawn.inputs = std::move(ports);
+        // EL-5s, decision 1: a compute node's sampled images its shader
+        // declares and no line feeds yet, as empty sockets to drop one on.
+        if (drawn.op == "render.compute")
+            for (auto &open : computeOpenSockets(scope, drawn.id)) {
+                GraphCanvasPort socket;
+                socket.port = std::move(open);
+                socket.declared = true;
+                socket.required = true;
+                drawn.inputs.push_back(std::move(socket));
+            }
         // Q-19, decision 1: a render node whose pass published its shader's
         // declarations draws them as its input sockets, and its numbered
         // ports are theirs rather than rows of their own. Without them (no
@@ -2761,6 +2817,22 @@ bool GraphCanvasModel::connectInput(std::string_view scope, const std::string &n
                                     const std::string &source_port) {
     if (!canEdit()) return false;
     if (!canConnect(scope, source_node, source_port, node, port)) return false;
+    // EL-5s, decision 1: a compute node's empty socket (a sampled image its
+    // shader declares) is declared as the line lands, in the same edit.
+    if (const auto open = computeOpenSockets(scope, node); std::ranges::find(open, port) != open.end()) {
+        auto parameters = nodeParameters(scope, node);
+        parameters["ports"][port] =
+            Json{{"kind", "image"},
+                 {"type", imageTypeOf(scope, source_node, source_port, 8)},
+                 {"access", "read"},
+                 {"binding", "sampled"},
+                 {"sampling", Json{{"filter", "nearest"}, {"address", "clamp_to_edge"}}}};
+        return submitOps(Json::array(
+            {Json{{"op", "set_node_parameters"}, {"scope", scopeToken(scope)}, {"node", node},
+                  {"parameters", std::move(parameters)}},
+             Json{{"op", "set_input"}, {"scope", scopeToken(scope)}, {"node", node}, {"port", port},
+                  {"source", Json{{"node", source_node}, {"port", source_port}}}}}));
+    }
     Json ops = Json::array();
     // UX-8, decision 1: a buffer fed by a value is one runtime float
     // (graphpartition: "scalar-connected buffer requires one runtime float").
@@ -3016,6 +3088,20 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
             node["outputs"] = Json::array({"resource"});
             add(std::move(node));
             return ops;
+        }
+        if (op == "render.compute") {
+            // EL-5s, decision 1: a project shader whose interface the engine
+            // has read arrives with its ports, images and lines.
+            auto stem = seedText("shader");
+            if (stem.empty() && seedText("ray_tracing").starts_with("project://"))
+                stem = seedText("ray_tracing");
+            if (const auto known = stem.empty() ? std::nullopt : shaderInterface(stem);
+                known && known->ready() &&
+                (std::ranges::find(compute_shader_choices_, stem) != compute_shader_choices_.end() ||
+                 std::ranges::find(project_ray_tracing_choices_, stem) !=
+                     project_ray_tracing_choices_.end()))
+                return computeShaderOps(in_scope, id, stem);
+            if (seedText("ray_tracing").starts_with("project://")) return Json::array();
         }
         if (op == "render.compute" && !seedText("ray_tracing").empty()) {
             // UX-5d, decision 2: a task tracing with one of the engine's ray
@@ -4652,6 +4738,7 @@ std::vector<GraphCanvasCatalogEntry> GraphCanvasModel::paletteOperationsIn(
             (!body_of_draws &&
              ((isPaletteSeededRender(op) &&
                (op != "render.compute" || !compute_shader_choices_.empty() ||
+                !project_ray_tracing_choices_.empty() ||
                 !engine_shaders_known_ || !rayTracingPipelines().empty())) ||
               (op == "render.raster" && rasterTemplateAvailable())));
         if (text(declaration, "ports") != "declared" && !seeded) continue;
@@ -7701,6 +7788,391 @@ bool GraphCanvasModel::setPassShaderTemplate(std::string_view scope, const std::
                        {"parameters", std::move(parameters)}});
     for (auto &op : inputs) ops.push_back(std::move(op));
     return submitOps(std::move(ops));
+}
+
+// --- EL-5s: a project's compute / ray tracing shader takes its ports from
+// its declarations (get_shader_interface, EL-5).
+
+namespace {
+
+constexpr std::string_view kProjectPrefix = "project://";
+
+// The resource ports Studio wires: images, written or sampled.
+std::vector<std::string> imagePortNames(const GraphCanvasShaderInterface &shader) {
+    std::vector<std::string> names;
+    for (const auto &port : shader.ports)
+        if (port.type == "storage_image" || port.type == "sampled_image") names.push_back(port.port);
+    return names;
+}
+
+} // namespace
+
+void GraphCanvasModel::setProjectRayTracingChoices(std::vector<std::string> choices) {
+    project_ray_tracing_choices_ = std::move(choices);
+}
+
+bool GraphCanvasModel::shaderInterfaceWaiting(std::string_view reference) const {
+    return shader_interface_again_at_.contains(reference) ||
+           std::ranges::any_of(shader_interface_reads_,
+                               [&](const auto &entry) { return entry.second == reference; });
+}
+
+void GraphCanvasModel::askShaderInterface(const std::string &reference, bool refresh) {
+    if (reference.empty() || !connected_) return;
+    const auto asked = [&](const auto &entry) { return entry.second == reference; };
+    // One question per stem in the air; a refresh replaces it, so the answer
+    // to the older question is dropped when it arrives.
+    if (!refresh && std::ranges::any_of(shader_interface_reads_, asked)) return;
+    std::erase_if(shader_interface_reads_, asked);
+    shader_interface_again_at_.erase(reference);
+    const auto id = next_request_++;
+    shader_interface_reads_.emplace(id, reference);
+    Json params{{"reference", reference}};
+    if (refresh) params["refresh"] = true;
+    requests_.push_back({id, "get_shader_interface", std::move(params)});
+}
+
+std::optional<GraphCanvasShaderInterface>
+GraphCanvasModel::shaderInterface(std::string_view reference) const {
+    const auto found = shader_interfaces_.find(reference);
+    if (found == shader_interfaces_.end()) return std::nullopt;
+    return found->second;
+}
+
+bool GraphCanvasModel::takeShaderInterfaceReply(std::uint64_t id, const std::string *json,
+                                                const std::string &failure) {
+    const auto found = shader_interface_reads_.find(id);
+    if (found == shader_interface_reads_.end()) return false;
+    const auto reference = found->second;
+    shader_interface_reads_.erase(found);
+    GraphCanvasShaderInterface answer;
+    answer.reference = reference;
+    answer.status = "failed";
+    answer.error = failure;
+    if (json != nullptr) {
+        try {
+            const auto response = Json::parse(*json);
+            const auto status = response.is_object() ? text(response, "status") : std::string{};
+            if (status == "building") {
+                // Asked again half a second later, from poll(). What the
+                // canvas had for the stem stays until the new answer.
+                shader_interface_again_at_[reference] =
+                    std::chrono::steady_clock::now() + std::chrono::milliseconds{500};
+                if (!shader_interfaces_.contains(reference)) {
+                    answer.status = "building";
+                    answer.error.clear();
+                    shader_interfaces_[reference] = std::move(answer);
+                    ++shader_interface_revision_;
+                }
+                return true;
+            }
+            if (status == "ready") {
+                answer.status = "ready";
+                answer.error.clear();
+                bool raygen = false;
+                bool miss = false;
+                bool closesthit = false;
+                for (const auto &stage : response.value("stages", Json::array())) {
+                    if (!stage.is_object()) continue;
+                    const auto name = text(stage, "stage");
+                    raygen = raygen || name == "raygen";
+                    miss = miss || name == "miss";
+                    closesthit = closesthit || name == "closesthit";
+                    if (name == "compute") {
+                        answer.compute = true;
+                        const auto size = stage.value("local_size", Json::array());
+                        if (size.is_array() && size.size() == 3)
+                            for (std::size_t axis = 0; axis < 3; ++axis)
+                                if (size[axis].is_number_integer())
+                                    answer.local_size[axis] = size[axis].get<std::int64_t>();
+                    }
+                    if (answer.reflection_error.empty() && stage.contains("reflection_error"))
+                        answer.reflection_error = text(stage, "reflection_error");
+                    for (const auto &port : stage.value("resource_ports", Json::array())) {
+                        if (!port.is_object() || text(port, "port").empty()) continue;
+                        if (std::ranges::any_of(answer.ports, [&](const GraphCanvasShaderPort &known) {
+                                return known.port == text(port, "port");
+                            }))
+                            continue;
+                        answer.ports.push_back({text(port, "port"), text(port, "type"), text(port, "format")});
+                    }
+                }
+                answer.ray_tracing = raygen && miss && closesthit;
+            } else if (status == "failed") {
+                answer.error = text(response, "error");
+            } else if (response.is_object() && response.contains("error")) {
+                answer.error = diagnostic(response);
+            }
+        } catch (const std::exception &error) {
+            answer.error = error.what();
+        }
+    }
+    shader_interfaces_[reference] = std::move(answer);
+    ++shader_interface_revision_;
+    // The canvas draws a compute node's empty sockets from it.
+    ++report_revision_;
+    if (shader_interface_refreshing_.contains(reference)) comparePortsAfterRefresh(reference);
+    return true;
+}
+
+std::string GraphCanvasModel::computeShaderStem(const Json &parameters) {
+    if (!parameters.is_object()) return {};
+    if (const auto shader = text(parameters, "shader"); shader.starts_with(kProjectPrefix)) return shader;
+    const auto tracing = parameters.find("ray_tracing");
+    if (tracing != parameters.end() && tracing->is_object())
+        if (const auto raygen = text(*tracing, "raygen"); raygen.starts_with(kProjectPrefix)) return raygen;
+    return {};
+}
+
+std::vector<std::string> GraphCanvasModel::computeOpenSockets(std::string_view scope,
+                                                              std::string_view node) const {
+    std::vector<std::string> open;
+    const auto *found = findNode(scope, node);
+    if (found == nullptr || text(*found, "op") != "render.compute") return open;
+    const auto parameters = found->value("parameters", Json::object());
+    const auto known = shaderInterface(computeShaderStem(parameters));
+    if (!known || !known->ready()) return open;
+    const auto ports = parameters.is_object() ? parameters.value("ports", Json::object()) : Json::object();
+    for (const auto &port : known->ports)
+        if (port.type == "sampled_image" && !(ports.is_object() && ports.contains(port.port)))
+            open.push_back(port.port);
+    return open;
+}
+
+Json GraphCanvasModel::computeShaderOps(std::string_view scope, const std::string &node,
+                                        const std::string &reference) const {
+    const auto known = shaderInterface(reference);
+    if (!known || !known->ready() || node.empty()) return Json::array();
+    const auto *existing = findNode(scope, node);
+    if (existing != nullptr && text(*existing, "op") != "render.compute") return Json::array();
+    // A set with no compute stage traces; one with neither runs nothing --
+    // unless the engine could not read it, which the node fields then say.
+    const bool ray_tracing = !known->compute && known->ray_tracing;
+    if (!known->compute && !known->ray_tracing && known->reflection_error.empty()) return Json::array();
+    const auto token = scopeToken(scope);
+    auto parameters = existing != nullptr ? existing->value("parameters", Json::object()) : Json::object();
+    if (!parameters.is_object()) parameters = Json::object();
+    auto old_ports = parameters.value("ports", Json::object());
+    if (!old_ports.is_object()) old_ports = Json::object();
+    auto old_inputs = existing != nullptr ? existing->value("inputs", Json::object()) : Json::object();
+    if (!old_inputs.is_object()) old_inputs = Json::object();
+    const auto kept = [&](const std::string &port) {
+        return old_ports.contains(port) && old_inputs.contains(port);
+    };
+
+    Json images = Json::array();
+    std::set<std::string> added_ids;
+    const auto freeId = [&](const std::string &base) {
+        const auto taken = [&](const std::string &candidate) {
+            return findNode(scope, candidate) != nullptr || added_ids.contains(candidate);
+        };
+        auto chosen = base;
+        for (int suffix = 2; taken(chosen) && suffix < 10000; ++suffix)
+            chosen = base + "_" + std::to_string(suffix);
+        added_ids.insert(chosen);
+        return chosen;
+    };
+    // In the body of a loop over a view axis, an image is made at the
+    // family's size, as the palette's render.image is.
+    const auto family = viewAxisFamilyOf(scope);
+    const auto extent = family.empty() ? std::nullopt : viewFamilyImageExtent(family);
+    Json ports = Json::object();
+    Json inputs = Json::object();
+    Json outputs = Json::array();
+    std::string first_written;
+    for (const auto &port : known->ports) {
+        if (port.type == "storage_image") {
+            if (kept(port.port)) {
+                ports[port.port] = old_ports.at(port.port);
+                inputs[port.port] = old_inputs.at(port.port);
+            } else {
+                const auto image = freeId(node + "__" + port.port);
+                Json image_parameters{{"type", sceneColorType()},
+                                      {"format", port.format.empty() ? std::string{"R16G16B16A16_SFLOAT"}
+                                                                     : port.format},
+                                      {"extent_scale", 1.0},
+                                      {"usage", Json::array({"STORAGE", "SAMPLED"})}};
+                if (extent)
+                    for (const auto &[key, value] : extent->items()) image_parameters[key] = value;
+                images.push_back(Json{{"op", "add_node"}, {"scope", token},
+                                      {"node", Json{{"id", image}, {"op", "render.image"},
+                                                    {"parameters", std::move(image_parameters)},
+                                                    {"outputs", Json::array({"resource"})}}}});
+                ports[port.port] = Json{{"kind", "image"}, {"type", sceneColorType()},
+                                        {"access", "write"}, {"binding", "storage"}};
+                inputs[port.port] = Json{{"node", image}, {"port", "resource"}};
+            }
+            outputs.push_back(port.port);
+            if (first_written.empty()) first_written = port.port;
+        } else if (port.type == "sampled_image" && kept(port.port)) {
+            // A sampled image already fed keeps its line; one not fed yet is
+            // an empty socket (computeOpenSockets).
+            ports[port.port] = old_ports.at(port.port);
+            inputs[port.port] = old_inputs.at(port.port);
+        }
+    }
+
+    parameters.erase("shader");
+    parameters.erase("ray_tracing");
+    if (ray_tracing)
+        parameters["ray_tracing"] = Json{{"raygen", reference}, {"miss", reference}, {"closesthit", reference}};
+    else
+        parameters["shader"] = reference;
+    parameters["ports"] = ports;
+    if (ray_tracing) {
+        if (first_written.empty()) return Json::array();
+        parameters["dispatch"] = Json{{"rays_from", Json{{"port", first_written}}}};
+    } else if (!first_written.empty() && known->local_size[0] > 0 && known->local_size[2] == 1) {
+        parameters["dispatch"] = Json{{"groups_from", Json{{"port", first_written}}}};
+    } else {
+        // Nothing written to count groups from: a fixed count, the one the
+        // node had if it had one.
+        const auto dispatch = parameters.value("dispatch", Json::object());
+        if (!(dispatch.is_object() && dispatch.size() == 1 && dispatch.contains("groups")))
+            parameters["dispatch"] = Json{{"groups", Json::array({1, 1, 1})}};
+    }
+
+    // A port the shader no longer declares loses the lines read from it.
+    Json disconnects = Json::array();
+    if (existing != nullptr) {
+        if (const auto *nodes = scopeNodes(scope))
+            for (const auto &reader : *nodes) {
+                if (!reader.is_object()) continue;
+                const auto reader_inputs = reader.value("inputs", Json::object());
+                if (!reader_inputs.is_object()) continue;
+                for (const auto &[reader_port, edge] : reader_inputs.items()) {
+                    if (!edge.is_object() || text(edge, "node") != node) continue;
+                    const auto port = text(edge, "port");
+                    if (!old_ports.contains(port) || ports.contains(port)) continue;
+                    auto ops = removeInputPortOps(scope, text(reader, "id"), reader_port);
+                    if (ops.empty())
+                        ops = Json::array({Json{{"op", "set_input"}, {"scope", token},
+                                                {"node", text(reader, "id")}, {"port", reader_port},
+                                                {"source", nullptr}}});
+                    for (auto &op : ops) disconnects.push_back(std::move(op));
+                }
+            }
+    }
+
+    Json written = existing != nullptr ? *existing : Json{{"id", node}, {"op", "render.compute"}};
+    written["parameters"] = std::move(parameters);
+    if (inputs.empty()) written.erase("inputs");
+    else written["inputs"] = std::move(inputs);
+    written["outputs"] = std::move(outputs);
+    if (existing != nullptr && written == *existing && images.empty() && disconnects.empty())
+        return Json::array();
+    Json ops = std::move(disconnects);
+    for (auto &image : images) ops.push_back(std::move(image));
+    ops.push_back(Json{{"op", existing != nullptr ? "replace_node" : "add_node"},
+                       {"scope", token},
+                       {"node", std::move(written)}});
+    return ops;
+}
+
+bool GraphCanvasModel::setComputeShader(std::string_view scope, const std::string &node,
+                                        const std::string &reference) {
+    if (!canEdit() || reference.empty()) return false;
+    const auto *found = findNode(scope, node);
+    if (found == nullptr || text(*found, "op") != "render.compute") return false;
+    if (!reference.starts_with(kProjectPrefix)) return setNodeParameter(scope, node, "shader", reference);
+    const auto known = shaderInterface(reference);
+    if (known && known->ready() && !shaderInterfaceWaiting(reference)) {
+        auto ops = computeShaderOps(scope, node, reference);
+        return !ops.empty() && submitOps(std::move(ops));
+    }
+    // Sent from poll() once the engine has read it.
+    pending_compute_shader_ = PendingComputeShader{std::string{scope}, node, reference};
+    askShaderInterface(reference);
+    return true;
+}
+
+std::string GraphCanvasModel::reflectionErrorSentence(std::string_view reference,
+                                                      std::string_view message) {
+    auto first = std::string{message.substr(0, message.find('\n'))};
+    while (!first.empty() && (first.back() == '\r' || first.back() == ' ')) first.pop_back();
+    auto sentence = "The engine could not read " + std::string{reference} + "'s ports: " + first;
+    if (message.find("undeclared identifier") != std::string_view::npos ||
+        message.find("#error") != std::string_view::npos ||
+        message.find("undefined macro") != std::string_view::npos)
+        sentence += " (" + std::string{kReflectionDefinesHint} + ")";
+    return sentence;
+}
+
+void GraphCanvasModel::refreshComputeShaderInterfaces() {
+    std::map<std::string, std::vector<std::string>, std::less<>> stems;
+    for (const auto &scope : scopes()) {
+        const auto *nodes = scopeNodes(scope.id);
+        if (nodes == nullptr) continue;
+        for (const auto &node : *nodes) {
+            if (!node.is_object() || text(node, "op") != "render.compute") continue;
+            const auto parameters = node.value("parameters", Json::object());
+            const auto stem = computeShaderStem(parameters);
+            if (stem.empty()) continue;
+            // Without an earlier answer, what the nodes declare is what the
+            // new one is compared with.
+            auto &declared = stems[stem];
+            const auto ports = parameters.value("ports", Json::object());
+            if (ports.is_object())
+                for (const auto &[port, declaration] : ports.items()) {
+                    (void)declaration;
+                    if (std::ranges::find(declared, port) == declared.end()) declared.push_back(port);
+                }
+        }
+    }
+    for (auto &[stem, declared] : stems) {
+        if (!shader_interface_refreshing_.contains(stem)) {
+            const auto known = shaderInterface(stem);
+            shader_interface_refreshing_[stem] =
+                known && known->ready() ? imagePortNames(*known) : std::move(declared);
+        }
+        askShaderInterface(stem, true);
+    }
+}
+
+void GraphCanvasModel::comparePortsAfterRefresh(const std::string &reference) {
+    const auto baseline = std::move(shader_interface_refreshing_.at(reference));
+    shader_interface_refreshing_.erase(reference);
+    const auto known = shaderInterface(reference);
+    if (!known || !known->ready()) return;
+    const auto now = imagePortNames(*known);
+    std::vector<std::string> added;
+    std::vector<std::string> removed;
+    for (const auto &port : now)
+        if (std::ranges::find(baseline, port) == baseline.end()) added.push_back(port);
+    for (const auto &port : baseline)
+        if (std::ranges::find(now, port) == now.end()) removed.push_back(port);
+    if (added.empty() && removed.empty()) return;
+    std::erase_if(compute_port_changes_,
+                  [&](const GraphCanvasPortChange &change) { return change.shader == reference; });
+    for (const auto &scope : scopes()) {
+        const auto *nodes = scopeNodes(scope.id);
+        if (nodes == nullptr) continue;
+        for (const auto &node : *nodes)
+            if (node.is_object() && text(node, "op") == "render.compute" &&
+                computeShaderStem(node.value("parameters", Json::object())) == reference)
+                compute_port_changes_.push_back({scope.id, text(node, "id"), reference, added, removed});
+    }
+    if (std::ranges::none_of(compute_port_changes_, [&](const GraphCanvasPortChange &change) {
+            return change.shader == reference;
+        }))
+        return;
+    std::string line = reference + " changed its ports:";
+    if (!added.empty()) line += " + " + joinedNames(added);
+    if (!added.empty() && !removed.empty()) line += " /";
+    if (!removed.empty()) line += " \xE2\x88\x92 " + joinedNames(removed);
+    edit_notice_ = {InspectorNoticeKind::Information, std::move(line)};
+    ++report_revision_;
+}
+
+bool GraphCanvasModel::updateComputePorts() {
+    if (!canEdit() || compute_port_changes_.empty()) return false;
+    Json ops = Json::array();
+    for (const auto &change : compute_port_changes_)
+        for (auto &op : computeShaderOps(change.scope, change.node, change.shader))
+            ops.push_back(std::move(op));
+    compute_port_changes_.clear();
+    ++report_revision_;
+    return !ops.empty() && submitOps(std::move(ops));
 }
 
 } // namespace PelicanStudio

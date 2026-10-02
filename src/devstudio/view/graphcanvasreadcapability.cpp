@@ -155,6 +155,12 @@ GraphCanvasReadCapability graphCanvasReadCapability(EmbeddedViewport &viewport) 
                     handler(request_id, message);
                 });
         },
+        .requestShaderInterface = [&viewport](const QString &reference, bool refresh,
+                                              QString *error) {
+            QJsonObject params{{QStringLiteral("reference"), reference}};
+            if (refresh) params.insert(QStringLiteral("refresh"), true);
+            return viewport.requestRpc(QStringLiteral("get_shader_interface"), params, error);
+        },
     };
 }
 

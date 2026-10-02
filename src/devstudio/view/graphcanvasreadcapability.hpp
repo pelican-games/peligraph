@@ -99,6 +99,11 @@ struct GraphCanvasReadCapability {
     std::function<qint64(const QJsonObject &params, QString *error)> requestVerifyFold;
     std::function<void(QObject *context, ResultHandler handler)> result;
     std::function<void(QObject *context, FailureHandler handler)> failure;
+    // EL-5s: get_shader_interface {reference, refresh?} (EL-5), what a
+    // project shader stem declares, which a compute node takes its ports
+    // from. Left empty: compute nodes are placed as before.
+    std::function<qint64(const QString &reference, bool refresh, QString *error)>
+        requestShaderInterface;
 };
 
 // Production adapter. MainWindow is the composition root that converts its
