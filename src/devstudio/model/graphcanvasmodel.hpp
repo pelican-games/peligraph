@@ -602,6 +602,19 @@ struct GraphCanvasRefusalMark {
     bool operator==(const GraphCanvasRefusalMark &) const = default;
 };
 
+// UX-12a, decision 4: graph.render_node_parameter_invalid@1 (engine CT-3) --
+// which node's which parameter the engine refused, and the sentence it reads
+// as. `scope` is the scope the refused edit was made in; `parameter` is the
+// engine's path ("size", "size_from_extent.tile_width", "keys[0].time").
+struct GraphCanvasParameterRefusal {
+    std::string scope;
+    std::string node;
+    std::string parameter;
+    std::string sentence;
+
+    bool operator==(const GraphCanvasParameterRefusal &) const = default;
+};
+
 // GL-2b (design_graph_layers 5.1). Where the graph node that made a pass is
 // authored: get_frame_plan's `origin`. `definition` and `instance_path` are
 // empty for a root node; `loop` is set for one copy of a graph.loop.
@@ -1364,7 +1377,12 @@ class GraphCanvasModel {
 
     // Decision 9: what the last refusal pointed at.
     std::vector<GraphCanvasRefusalMark> refusal_marks_;
-    void markRefusal(const nlohmann::json &error, const std::string &reason);
+    // `scope`: where the refused edit was made (UX-12a: a node the engine
+    // names by its parameter is marked there).
+    void markRefusal(const nlohmann::json &error, const std::string &reason,
+                     const std::string &scope = {});
+    // UX-12a, decision 4.
+    std::optional<GraphCanvasParameterRefusal> parameter_refusal_;
     // The branch a loop runs for one element: the report's answer when there
     // is one, else the first branch whose integer condition holds.
     std::optional<std::size_t> branchForElement(std::string_view loop,
@@ -2259,19 +2277,25 @@ class GraphCanvasModel {
     [[nodiscard]] std::vector<std::string> rasterDepthChoices(std::string_view scope) const;
     bool setRasterDepth(std::string_view scope, const std::string &node, const std::string &depth);
 
-    // UX-7, decision 5. The parameters an op cannot be placed without, the
-    // engine checks by name (graph.render_node_parameters_missing@1, RS-15)
-    // but its catalog does not list: render.scalar's `target` (a buffer),
-    // value.constant's `value`, value.input's `name`. The palette asks for
-    // them in a small dialog and hands them over as the seed's
-    // `parameters`. Empty for any other op.
+    // UX-7, decision 5 / UX-12a, decision 2. A parameter an op cannot be
+    // placed without (graph.render_node_parameters_missing@1, RS-9): one
+    // `required` entry of the catalog's `parameters` (engine CT-3). The
+    // palette asks for them in a small dialog and hands them over as the
+    // seed's `parameters` (and an edge's `inputs`).
     struct RequiredParameter {
         std::string name;
-        // "buffer": a buffer's name, picked or new; "number"; "input": one
-        // of valueInputNames().
+        // The table's kind (number, integer, bool, string, enum, asset,
+        // json...), or what Studio knows the string names: "buffer" (a
+        // render.scalar's target: a buffer's name, picked or new), "input"
+        // (value.input's name: one of valueInputNamesFor()).
         std::string kind;
+        // The table's entry as the catalog gives it.
+        nlohmann::json schema = nlohmann::json::object();
+        // `alternatives`: one of these instead does; one that is an input
+        // port of the op (audio.volume's `voice`) is met by an edge too.
+        std::vector<std::string> alternatives;
+        std::vector<std::string> edge_alternatives;
     };
-    [[nodiscard]] static std::vector<RequiredParameter> requiredParameters(std::string_view op);
     // The clocks the engine hands a value graph (graphinputs.cpp).
     [[nodiscard]] static std::vector<std::string> valueInputNames();
     // The buffers a render.scalar in `scope` can write: the render.buffer
@@ -2678,12 +2702,35 @@ class GraphCanvasModel {
     // bloom.intensity).
     [[nodiscard]] std::vector<std::string> scalarTargets(std::string_view scope) const;
 
-    // Decision 13 (a) (engine CT-1): the parameters the palette asks for,
-    // from the catalog's `required_parameters` when the engine lists them
-    // (the ones Studio seeds itself left out), else requiredParameters();
-    // and the names value.input takes, from the catalog's `input_names`.
+    // Decision 13 (a) (engine CT-1) / UX-12a, decision 2 (engine CT-3): the
+    // parameters the palette asks for -- the `required` entries of the
+    // catalog's `parameters`, less the ones the palette seeds itself (a
+    // curve's keys, a voice's sound, a UI sink's node, a render node's row
+    // beside the op, a draw step's); none before the catalog -- and the
+    // names value.input takes, from the catalog's `input_names`.
     [[nodiscard]] std::vector<RequiredParameter> requiredParametersFor(std::string_view op) const;
     [[nodiscard]] std::vector<std::string> valueInputNamesFor() const;
+
+    // --- UX-12a (engine CT-3): a node's fields from the catalog's table.
+
+    // The op's `parameters` ([{name, kind, required?, alternatives?,
+    // default?, enum?, min?, max?, items?, fields?, expression?,
+    // description?}]); an empty array when the catalog gives none.
+    [[nodiscard]] nlohmann::json operationParameters(std::string_view op) const;
+    // `parameters_complete`: false when the op's parser reads more keys than
+    // the table lists (render.image, the passes, render.compute).
+    [[nodiscard]] bool operationParametersComplete(std::string_view op) const;
+    // One top-level entry by name, or nullopt.
+    [[nodiscard]] std::optional<nlohmann::json> parameterSchema(std::string_view op,
+                                                                std::string_view name) const;
+    // The input ports the catalog declares for the op.
+    [[nodiscard]] std::vector<std::string> operationInputPorts(std::string_view op) const;
+    // Decision 4: the last edit refused as graph.render_node_parameter_invalid@1
+    // -- the node, its parameter as the engine names it (`size`,
+    // `keys[0].interpolation`), and the sentence; reset by the next commit.
+    [[nodiscard]] const std::optional<GraphCanvasParameterRefusal> &parameterRefusal() const noexcept {
+        return parameter_refusal_;
+    }
 };
 
 // UX-8, decision 9: sound files copied into a project's assets/audio. Each

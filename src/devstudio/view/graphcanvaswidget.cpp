@@ -6,6 +6,7 @@
 #include "graphcanvasmaterialfields.hpp"
 #include "graphcanvasrenderfields.hpp"
 #include "graphcanvasvaluefields.hpp"
+#include "graphcanvasparameterfields.hpp"
 #include "graphcanvasposefields.hpp"
 #include "fullscreenshadertemplate.hpp"
 
@@ -3480,6 +3481,8 @@ struct GraphCanvasScene::InlineEditor {
     std::string node;
     std::string port;
     ValueEditorKind value_kind = ValueEditorKind::number;
+    // UX-12a, decision 3: the table types the parameter as an integer.
+    bool integer = false;
     // UX-2: what a `choice` editor's items stand for (an item's data is its
     // index here; -1 is the document's own value when no choice is it).
     std::vector<GraphCanvasValueChoice> choices;
@@ -3663,7 +3666,7 @@ bool GraphCanvasScene::beginValueEdit(const std::string &scope, const std::strin
     // What is being edited is the stored value, even when the pill is showing
     // the number a published generation fed the port: the document is the only
     // thing an edit can change.
-    const nlohmann::json current =
+    nlohmann::json current =
         entry->has_parameter ? entry->parameter
         : entry->has_value   ? nlohmann::json(entry->value)
                              : nlohmann::json(0.0);
@@ -3672,9 +3675,41 @@ bool GraphCanvasScene::beginValueEdit(const std::string &scope, const std::strin
     editor->scope = scope;
     editor->node = id;
     editor->port = port;
+    // UX-12a, decision 3: the kind the op's table gives the parameter comes
+    // first; the stored value's JSON type is read only for a parameter the
+    // table does not name.
+    const auto schema = model_->parameterSchema(found->op, port);
+    const auto table_kind = schema ? schema->value("kind", std::string{}) : std::string{};
+    if (schema && !entry->has_parameter && schema->contains("default")) current = schema->at("default");
     editor->value_kind = editorKindFor(current);
+    if (table_kind == "bool") {
+        editor->value_kind = ValueEditorKind::boolean;
+        if (!current.is_boolean()) current = false;
+    } else if (table_kind == "number" || table_kind == "integer") {
+        editor->value_kind = ValueEditorKind::number;
+        editor->integer = table_kind == "integer";
+        if (!current.is_number()) current = 0.0;
+    } else if (table_kind == "string" || table_kind == "asset" || table_kind == "node_ref" ||
+               (table_kind == "shader" && !schema->contains("fields"))) {
+        editor->value_kind = ValueEditorKind::text;
+        if (!current.is_string()) current = std::string{};
+    } else if (!table_kind.empty() && table_kind != "enum") {
+        editor->value_kind = ValueEditorKind::json;
+    }
     // UX-2, decision 4: a value with a list is picked from it.
     editor->choices = model_->valueChoices(scope, id, port);
+    // UX-12a: and an enum's values are that list.
+    if (editor->choices.empty() && table_kind == "enum") {
+        const auto parameters = model_->nodeParameters(scope, id);
+        for (const auto &value : schema->value("enum", nlohmann::json::array())) {
+            if (!value.is_string()) continue;
+            GraphCanvasValueChoice choice;
+            choice.label = value.get<std::string>();
+            choice.parameters = parameters.is_object() ? parameters : nlohmann::json::object();
+            choice.parameters[port] = value;
+            editor->choices.push_back(std::move(choice));
+        }
+    }
     if (!editor->choices.empty()) editor->value_kind = ValueEditorKind::choice;
     switch (editor->value_kind) {
     case ValueEditorKind::choice: {
@@ -3686,6 +3721,11 @@ bool GraphCanvasScene::beginValueEdit(const std::string &scope, const std::strin
             if (selected < 0 && editor->choices[index].parameters == parameters)
                 selected = static_cast<int>(index);
         }
+        // UX-12a: an enum left unwritten shows its default among the values.
+        if (selected < 0 && current.is_string())
+            for (std::size_t index = 0; index < editor->choices.size(); ++index)
+                if (editor->choices[index].label == current.get<std::string>())
+                    selected = static_cast<int>(index);
         if (selected < 0) {
             // The document's value is none of the choices: it is shown
             // first, as itself, and picking it changes nothing.
@@ -3712,7 +3752,7 @@ bool GraphCanvasScene::beginValueEdit(const std::string &scope, const std::strin
     }
     case ValueEditorKind::number: {
         auto *spin = new QDoubleSpinBox;
-        spin->setDecimals(6);
+        spin->setDecimals(editor->integer ? 0 : 6);
         spin->setRange(-1.0e9, 1.0e9);
         spin->setValue(current.get<double>());
         spin->setKeyboardTracking(false);
@@ -3791,6 +3831,7 @@ bool GraphCanvasScene::commitInlineEdit() {
     const auto node = editor_->node;
     const auto port = editor_->port;
     const auto value_kind = editor_->value_kind;
+    const bool integer = editor_->integer;
     // A spin box with keyboard tracking off holds the value it was given until
     // something asks it to read what was typed -- normally the Return key or
     // losing focus. The editor's filter consumes Return before the spin box
@@ -3828,7 +3869,9 @@ bool GraphCanvasScene::commitInlineEdit() {
         bool numeric = false;
         const double parsed = text.toDouble(&numeric);
         if (!numeric) return false;
-        value = parsed;
+        // UX-12a, decision 3: an integer goes as one (the engine refuses 2.0).
+        if (integer) value = static_cast<std::int64_t>(std::llround(parsed));
+        else value = parsed;
         break;
     }
     case ValueEditorKind::text:
@@ -4860,6 +4903,8 @@ struct GraphCanvasWidget::Impl {
     GraphCanvasValueFields *value_fields = nullptr;
     // UX-10, decision 5: a pose.clip_sample's rig, clip, speed and loop.
     GraphCanvasPoseFields *pose_fields = nullptr;
+    // UX-12a: the rest of a node's parameters, from the catalog's table.
+    GraphCanvasParameterFields *parameter_fields = nullptr;
     QComboBox *loop_branch = nullptr;
     QLabel *shared_mark = nullptr;
     // GL-1, decision 5: Show: one box per domain the root canvas can draw.
@@ -5579,7 +5624,14 @@ struct GraphCanvasWidget::Impl {
         value_fields->setPendingChanged([this] { showNotice(); });
         side_layout->addWidget(value_fields);
         pose_fields = new GraphCanvasPoseFields(model, sent, side);
+        pose_fields->setPendingChanged([this] { showNotice(); });
         side_layout->addWidget(pose_fields);
+        // UX-12a, decision 1: every other op's parameters from its table (an
+        // op with fields of its own lists the rest under More parameters).
+        parameter_fields = new GraphCanvasParameterFields(model, sent, side);
+        parameter_fields->setOps([](std::string_view op) { return op != "pose.clip_sample"; });
+        parameter_fields->setPendingChanged([this] { showNotice(); });
+        side_layout->addWidget(parameter_fields);
         details = new QTreeWidget(side);
         details->setObjectName(QStringLiteral("pelican.graphCanvasDetails"));
         details->setColumnCount(2);
@@ -7454,7 +7506,7 @@ struct GraphCanvasWidget::Impl {
             placeWhenEditable(std::move(choice));
             return;
         }
-        auto *ask = new GraphCanvasRequiredDialog{model, choice.scope, choice.op, &view};
+        auto *ask = new GraphCanvasRequiredDialog{model, choice.scope, choice.op, &view, project_root};
         ask->setAttribute(Qt::WA_DeleteOnClose);
         QObject::connect(ask, &QDialog::finished, &view,
                          [this, ask, choice = std::move(choice)](int result) mutable {
@@ -7551,6 +7603,7 @@ struct GraphCanvasWidget::Impl {
             place_fields->showNode(nullptr, {});
             value_fields->showNode(nullptr, {});
             pose_fields->showNode(nullptr, {});
+            parameter_fields->showNode(nullptr, {});
             return;
         }
         // LP-4d1: the node is looked for in the scope it was picked in -- a
@@ -7572,6 +7625,7 @@ struct GraphCanvasWidget::Impl {
             place_fields->showNode(nullptr, {});
             value_fields->showNode(nullptr, {});
             pose_fields->showNode(nullptr, {});
+            parameter_fields->showNode(nullptr, {});
             return;
         }
         label_edit->setText(qtext(found->label));
@@ -7598,6 +7652,8 @@ struct GraphCanvasWidget::Impl {
         value_fields->showNode(&*found, scope);
         // UX-10: a pose.clip_sample's rig and clip from the project.
         pose_fields->showNode(&*found, scope);
+        // UX-12a: and the rest of its parameters, from the catalog's table.
+        parameter_fields->showNode(&*found, scope);
         const auto row = [this](const QString &field, const QString &value) {
             auto *item = new QTreeWidgetItem(details);
             item->setText(0, field);
@@ -7782,7 +7838,11 @@ struct GraphCanvasWidget::Impl {
             !model.paletteOperationsIn(scene->addScope(), "render.fullscreen").empty());
         // Q-19: the definition actions follow what they would be about.
         syncDefinitionActions();
-        if (!definition_subject.empty()) {
+        // A new definition's row names none yet (UX-12a: the tick closed it
+        // before a name could be typed).
+        if (definition_creating) {
+            validateDefinitionRow();
+        } else if (!definition_subject.empty()) {
             const auto known = model.scopes();
             if (std::ranges::none_of(known, [&](const GraphCanvasScope &scope) {
                     return !scope.root && scope.id == definition_subject;
@@ -7846,12 +7906,13 @@ struct GraphCanvasWidget::Impl {
         if (place_fields != nullptr) place_fields->followEditable();
         if (value_fields != nullptr) value_fields->followEditable();
         if (pose_fields != nullptr) pose_fields->followEditable();
+        if (parameter_fields != nullptr) parameter_fields->followEditable();
         // GL-4a, decision 2: a node of a group being verified takes no edit
         // from the side fields until the verify finishes.
         if (folds)
             folds->gateNodeFields({loop_fields, draw_fields, material_fields, view_fields, image_fields,
-                                   pass_fields, place_fields, value_fields, label_edit,
-                                   apply_label});
+                                   pass_fields, place_fields, value_fields, pose_fields,
+                                   parameter_fields, label_edit, apply_label});
         showNotice();
         // EL-5s, decision 1: a palette pick waiting for its shader's ports.
         followComputePlacement();
@@ -7868,7 +7929,9 @@ struct GraphCanvasWidget::Impl {
                (image_fields != nullptr && image_fields->valuePending()) ||
                (place_fields != nullptr && place_fields->valuePending()) ||
                (material_fields != nullptr && material_fields->valuePending()) ||
-               (value_fields != nullptr && value_fields->valuePending());
+               (value_fields != nullptr && value_fields->valuePending()) ||
+               (pose_fields != nullptr && pose_fields->valuePending()) ||
+               (parameter_fields != nullptr && parameter_fields->valuePending());
     }
 
     void showNotice() {
@@ -8286,6 +8349,7 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
     impl_->value_fields->setProjectRoot(project_root);
     impl_->image_fields->setProjectRoot(project_root);
     impl_->pose_fields->setProjectRoot(project_root);
+    impl_->parameter_fields->setProjectRoot(project_root);
     impl_->publishShaderSources();
     impl_->published_initial_assets.reset();
     impl_->publishInitialAssets();

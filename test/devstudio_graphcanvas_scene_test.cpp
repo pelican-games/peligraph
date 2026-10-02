@@ -1,6 +1,7 @@
 #include "fullscreenshadertemplate.hpp"
 #include "graphcanvascomputefields.hpp"
 #include "graphcanvasloopfields.hpp"
+#include "graphcanvasparameterfields.hpp"
 #include "graphcanvasposefields.hpp"
 #include "graphcanvasrenderfields.hpp"
 #include "graphcanvasvaluefields.hpp"
@@ -10088,7 +10089,14 @@ TEST_CASE("UX-9 decision 1: an unchanged pill sends nothing as it loses the keyb
     Ux2Tab tab{false};
     auto document = readFixture("graph_node_visuals");
     tab.read(document, "ux9-a-0");
-    tab.answer("get_graph_catalog", visualCatalog());
+    // UX-12a, decision 2: what the dialog asks for is the table's (CT-3).
+    auto catalog = visualCatalog();
+    for (auto &module : catalog.at("modules"))
+        for (auto &operation : module.at("operations"))
+            if (operation.value("op", std::string{}) == "value.input")
+                operation["parameters"] =
+                    Json::array({{{"name", "name"}, {"kind", "string"}, {"required", true}}});
+    tab.answer("get_graph_catalog", catalog);
     auto *show_values = tab.field<QCheckBox>("pelican.graphCanvasShow.value");
     show_values->setChecked(true);
     QCoreApplication::processEvents();
@@ -10720,7 +10728,7 @@ TEST_CASE("UX-12c decision 3: a binding's names are the engine's list for its ki
 TEST_CASE("UX-10 decision 5: a pose.clip_sample's rig is picked from the project's glTF files "
           "and its clip from the animations the rig's file holds; speed and loop are fields, "
           "each change one edit",
-          "[devstudio][graph-canvas][scene][ux10]") {
+          "[devstudio][graph-canvas][scene][ux10][ux12a]") {
     (void)application();
     const auto root = std::filesystem::temp_directory_path() /
                       ("pelican_ux10_" +
@@ -10761,7 +10769,8 @@ TEST_CASE("UX-10 decision 5: a pose.clip_sample's rig is picked from the project
                                                 {"outputs", Json::array({"pose"})}}})}};
         };
         tab.read(document(), "ux10-0");
-        tab.answer("get_graph_catalog", ux2Catalog());
+        // UX-12a, decision 5: the fields are the table's (engine CT-3).
+        tab.answer("get_graph_catalog", engineCatalog());
         tab.widget->scene().selectNode("walk");
         QCoreApplication::processEvents();
         REQUIRE(tab.field<QWidget>("pelican.graphCanvasPose")->isVisible());
@@ -10775,6 +10784,13 @@ TEST_CASE("UX-10 decision 5: a pose.clip_sample's rig is picked from the project
         // Unwritten: the engine's defaults.
         CHECK(tab.field<QDoubleSpinBox>("pelican.graphCanvasPose.speed")->value() == 1.0);
         CHECK(tab.field<QCheckBox>("pelican.graphCanvasPose.loop")->isChecked());
+        // UX-12a, decision 5: and the rest the table lists.
+        CHECK(tab.field<QDoubleSpinBox>("pelican.graphCanvasPose.start_time")->value() == 0.0);
+        CHECK(tab.field<QComboBox>("pelican.graphCanvasPose.root_motion")->currentData() ==
+              QStringLiteral("none"));
+        CHECK(tab.field<QDoubleSpinBox>("pelican.graphCanvasPose.root_node")->decimals() == 0);
+        // The generic fields leave the pose's to them.
+        CHECK_FALSE(tab.field<QWidget>("pelican.graphCanvasParameters")->isVisible());
 
         tab.pick(clip, QStringLiteral("Run"));
         auto op = tab.sent(1);
@@ -10782,8 +10798,7 @@ TEST_CASE("UX-10 decision 5: a pose.clip_sample's rig is picked from the project
         parameters["clip"] = "Run";
         CHECK(op.at("parameters") == parameters);
         tab.commit(document(), "ux10-1");
-        // The test's catalog does not know pose.*: the node is picked again
-        // after each read.
+        // The node is picked again after each read.
         const auto pickWalk = [&] {
             tab.widget->scene().selectNode("walk");
             QCoreApplication::processEvents();
@@ -10793,6 +10808,12 @@ TEST_CASE("UX-10 decision 5: a pose.clip_sample's rig is picked from the project
 
         tab.field<QDoubleSpinBox>("pelican.graphCanvasPose.speed")->setValue(2.0);
         QCoreApplication::processEvents();
+        // A spin's steps are gathered over 150 ms (UX-12a).
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        while (tab.reads("edit_graph_document") < 2 && std::chrono::steady_clock::now() < until) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+            std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        }
         op = tab.sent(2);
         parameters["speed"] = 2.0;
         CHECK(op.at("parameters") == parameters);
@@ -10818,4 +10839,258 @@ TEST_CASE("UX-10 decision 5: a pose.clip_sample's rig is picked from the project
     }
     std::error_code ignored;
     std::filesystem::remove_all(root, ignored);
+}
+
+// --- UX-12a (engine CT-3): a node's fields from the catalog's table.
+
+namespace {
+
+// Lets the event loop run until `done` holds or `ms` pass (the 150 ms a spin's
+// steps are gathered over).
+bool ux12aWait(const std::function<bool()> &done, int ms = 2000) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds{ms};
+    while (std::chrono::steady_clock::now() < until) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        if (done()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    QCoreApplication::processEvents();
+    return done();
+}
+
+Json ux12aBufferDocument(const Json &parameters) {
+    return Json{{"schema", "pelican.graph"},
+                {"version", 1},
+                {"definitions", Json::object()},
+                {"nodes", Json::array({{{"id", "buf"},
+                                        {"op", "render.buffer"},
+                                        {"parameters", parameters},
+                                        {"outputs", Json::array({"resource"})}}})}};
+}
+
+} // namespace
+
+TEST_CASE("UX-12a decision 1: a render.buffer's parameters are fields made from the catalog's "
+          "table -- an enum a combo, an integer a spin, a bool a check, an object folded, an array "
+          "rows -- each change one set_node_parameters (a spin's steps gathered), Reset back to the "
+          "engine's default",
+          "[devstudio][graph-canvas][scene][ux12a]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto parameters = Json{{"element", "vec4"}, {"size", 16}};
+    tab.read(ux12aBufferDocument(parameters), "ux12a-0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    const auto pick = [&] {
+        tab.widget->scene().selectNode("buf");
+        QCoreApplication::processEvents();
+    };
+    pick();
+    REQUIRE(tab.field<QWidget>("pelican.graphCanvasParameters")->isVisible());
+    auto *element = tab.field<QComboBox>("pelican.graphCanvasParameters.element");
+    CHECK(element->currentData().toString() == QStringLiteral("vec4"));
+    CHECK(element->findData(QStringLiteral("mat4")) >= 0);
+    auto *size = tab.field<QDoubleSpinBox>("pelican.graphCanvasParameters.size");
+    CHECK(size->value() == 16.0);
+    CHECK(size->decimals() == 0);
+    // Unwritten: the engine's default, marked.
+    auto *lifetime = tab.field<QComboBox>("pelican.graphCanvasParameters.lifetime");
+    CHECK(lifetime->currentData().toString() == QStringLiteral("persistent"));
+    CHECK(lifetime->currentText().contains(QStringLiteral("default")));
+    CHECK_FALSE(tab.field<QToolButton>("pelican.graphCanvasParameters.lifetime.reset")->isVisible());
+    CHECK_FALSE(tab.field<QCheckBox>("pelican.graphCanvasParameters.index_buffer")->isChecked());
+    // The required one is marked.
+    CHECK(tab.field<QLabel>("pelican.graphCanvasParameters.element.label")->text().endsWith(
+        QStringLiteral("*")));
+    // An object's fields fold under it; an array is rows with +.
+    auto *fold = tab.field<QToolButton>("pelican.graphCanvasParameters.size_from_extent.fold");
+    CHECK_FALSE(tab.field<QWidget>("pelican.graphCanvasParameters.size_from_extent.tile_width")
+                    ->isVisible());
+    fold->click();
+    CHECK(tab.field<QWidget>("pelican.graphCanvasParameters.size_from_extent.tile_width")->isVisible());
+    CHECK(tab.field<QPushButton>("pelican.graphCanvasParameters.initial_f32.add")->isVisible());
+
+    // A pick is one edit of the whole parameters.
+    tab.pick(lifetime, QStringLiteral("transient"));
+    auto op = tab.sent(1);
+    CHECK(op.at("node") == "buf");
+    parameters["lifetime"] = "transient";
+    CHECK(op.at("parameters") == parameters);
+    tab.commit(ux12aBufferDocument(parameters), "ux12a-1");
+    pick();
+    CHECK(tab.field<QToolButton>("pelican.graphCanvasParameters.lifetime.reset")->isVisible());
+
+    // A spin's steps are gathered into one edit, an integer sent as one.
+    CHECK(tab.field<QDoubleSpinBox>("pelican.graphCanvasParameters.size") == size);
+    CHECK(tab.field<QWidget>("pelican.graphCanvasParameters")->isVisible());
+    CHECK(size->isVisible());
+    size->setValue(32.0);
+    size->setValue(64.0);
+    CHECK(tab.reads("edit_graph_document") == 1);
+    REQUIRE(ux12aWait([&] { return tab.reads("edit_graph_document") == 2; }));
+    op = tab.sent(2);
+    parameters["size"] = 64;
+    CHECK(op.at("parameters") == parameters);
+    CHECK(op.at("parameters").at("size").is_number_integer());
+    tab.commit(ux12aBufferDocument(parameters), "ux12a-2");
+    pick();
+
+    // Reset takes the key out: the engine's default applies.
+    tab.field<QToolButton>("pelican.graphCanvasParameters.lifetime.reset")->click();
+    QCoreApplication::processEvents();
+    op = tab.sent(3);
+    parameters.erase("lifetime");
+    CHECK(op.at("parameters") == parameters);
+
+    // An op with fields of its own lists only the rest, folded.
+    CHECK(PelicanStudio::GraphCanvasParameterFields::hasOwnFields("render.image"));
+    CHECK_FALSE(PelicanStudio::GraphCanvasParameterFields::hasOwnFields("render.buffer"));
+    const auto rest = PelicanStudio::GraphCanvasParameterFields::ownFieldNames("value.playback");
+    CHECK(std::ranges::find(rest, "sample_interval") == rest.end());
+}
+
+TEST_CASE("UX-12a decision 2: the palette's dialog is made from the table -- pose.clip_sample asks "
+          "for its rig among the project's glTF files and its clip among the rig's animations, "
+          "and is placed with them",
+          "[devstudio][graph-canvas][scene][ux12a]") {
+    (void)application();
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_ux12a_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "assets");
+    std::ofstream{root / "assets" / "hero.gltf"}
+        << R"({"asset":{"version":"2.0"},"animations":[{"name":"Walk"},{"name":"Run"}]})";
+    {
+        GraphCanvasModel model;
+        model.setConnected(true);
+        answer(model, ux3Document(), engineCatalog());
+        REQUIRE(model.canEdit());
+        // The table's required entries, less what the palette seeds itself.
+        const auto names = [&](const char *op) {
+            std::vector<std::string> result;
+            for (const auto &each : model.requiredParametersFor(op))
+                result.push_back(each.name + ":" + each.kind);
+            return result;
+        };
+        CHECK(names("pose.clip_sample") == std::vector<std::string>{"rig:asset", "clip:string"});
+        CHECK(names("value.constant") == std::vector<std::string>{"value:number"});
+        CHECK(names("render.buffer").empty());
+        const auto volume = model.requiredParametersFor("audio.volume");
+        REQUIRE(volume.size() == 1);
+        CHECK(volume[0].edge_alternatives == std::vector<std::string>{"voice"});
+
+        PelicanStudio::GraphCanvasRequiredDialog ask{model, {}, "pose.clip_sample", nullptr, root};
+        REQUIRE(ask.asks());
+        auto *rig = ask.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRequired.rig"));
+        REQUIRE(rig != nullptr);
+        CHECK(ux2Items(*rig) == QStringList{"(choose)", "project://assets/hero.gltf"});
+        CHECK(ask.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasRequired.rig.import")) !=
+              nullptr);
+        auto *ok = ask.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasRequired.ok"));
+        REQUIRE(ok != nullptr);
+        CHECK_FALSE(ok->isEnabled());
+        rig->setCurrentIndex(rig->findData(QStringLiteral("project://assets/hero.gltf")));
+        auto *clip = ask.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRequired.clip"));
+        REQUIRE(clip != nullptr);
+        CHECK(ux2Items(*clip) == QStringList{"(choose)", "Walk", "Run"});
+        CHECK_FALSE(ok->isEnabled());
+        clip->setCurrentIndex(clip->findData(QStringLiteral("Run")));
+        CHECK(ok->isEnabled());
+        const Json parameters{{"rig", "project://assets/hero.gltf"}, {"clip", "Run"}};
+        CHECK(ask.parameters() == parameters);
+        const auto ops = model.addNodeOpsIn({}, "pose.clip_sample", {}, ask.seed());
+        REQUIRE_FALSE(ops.empty());
+        CHECK(ops.back().at("node").at("parameters") == parameters);
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+TEST_CASE("UX-12a decision 3: a value pill's editor is chosen by the table's kind before the "
+          "stored value's JSON type",
+          "[devstudio][graph-canvas][scene][ux12a]") {
+    (void)application();
+    Ux2Tab tab{false};
+    // A trigger clock's `paused` holds a string: the table says it is a number.
+    const Json document{{"schema", "pelican.graph"},
+                        {"version", 1},
+                        {"definitions", Json::object()},
+                        {"nodes", Json::array({{{"id", "clock"},
+                                                {"op", "value.trigger_clock"},
+                                                {"parameters", {{"paused", "x"}}},
+                                                {"outputs", Json::array({"value"})}}})}};
+    tab.read(document, "ux12a-v0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    // The root draws its value nodes once asked to (GL-1).
+    tab.field<QCheckBox>("pelican.graphCanvasShow.value")->setChecked(true);
+    QCoreApplication::processEvents();
+    REQUIRE(tab.widget->scene().beginValueEdit(std::string{}, "clock", "paused"));
+    QDoubleSpinBox *spin = nullptr;
+    for (QGraphicsItem *item : tab.widget->scene().items())
+        if (auto *proxy = dynamic_cast<QGraphicsProxyWidget *>(item))
+            if (auto *found = qobject_cast<QDoubleSpinBox *>(proxy->widget())) spin = found;
+    REQUIRE(spin != nullptr);
+    spin->setValue(1.0);
+    REQUIRE(tab.widget->scene().commitInlineEdit());
+    QCoreApplication::processEvents();
+    const auto op = tab.sent(1);
+    CHECK(op.at("parameters") == Json{{"paused", 1.0}});
+}
+
+TEST_CASE("UX-12a decision 4: graph.render_node_parameter_invalid@1 reads as one sentence and "
+          "the field it names is red with it",
+          "[devstudio][graph-canvas][scene][ux12a]") {
+    (void)application();
+    CHECK(PelicanStudio::graphLoopRefusalDescription(
+              {{"code", "graph.render_node_parameter_invalid@1"},
+               {"node", "buf"},
+               {"op", "render.buffer"},
+               {"parameter", "lifetime"},
+               {"expected", "enum"},
+               {"reason", "enum"},
+               {"allowed", {"persistent", "transient"}}}) ==
+          "buf.lifetime must be enum (one of: persistent, transient) "
+          "(graph.render_node_parameter_invalid@1).");
+    CHECK(PelicanStudio::graphLoopRefusalDescription(
+              {{"code", "graph.render_node_parameter_invalid@1"},
+               {"node", "clip"},
+               {"op", "pose.clip_sample"},
+               {"parameter", "speed"},
+               {"expected", "number"},
+               {"reason", "type"},
+               {"document", "project://graphs/main.json"}}) ==
+          "clip.speed must be number (wrong type) (in graphs/main.json, "
+          "graph.render_node_parameter_invalid@1).");
+
+    Ux2Tab tab{false};
+    auto parameters = Json{{"element", "vec4"}, {"size", 16}};
+    tab.read(ux12aBufferDocument(parameters), "ux12a-r0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    tab.widget->scene().selectNode("buf");
+    QCoreApplication::processEvents();
+    auto *size = tab.field<QDoubleSpinBox>("pelican.graphCanvasParameters.size");
+    // Not held to the range: the engine is the one that says what is wrong.
+    size->setValue(-4.0);
+    REQUIRE(ux12aWait([&] { return tab.reads("edit_graph_document") == 1; }));
+    CHECK(tab.sent(1).at("parameters").at("size") == -4);
+    tab.answer("edit_graph_document",
+               Json{{"error",
+                     {{"code", "graph.render_node_parameter_invalid@1"},
+                      {"message", "graph.render_node_parameter_invalid@1"},
+                      {"node", "buf"},
+                      {"op", "render.buffer"},
+                      {"parameter", "size"},
+                      {"expected", "integer"},
+                      {"reason", "range"},
+                      {"min", 0}}}});
+    if (tab.reads("get_graph_instances") > 0) tab.read(ux12aBufferDocument(parameters), "ux12a-r0");
+    tab.widget->scene().selectNode("buf");
+    QCoreApplication::processEvents();
+    const auto sentence = QStringLiteral("buf.size must be integer (range: at least 0)");
+    CHECK(tab.field<QLabel>("pelican.graphCanvasNotice")->text().contains(sentence));
+    auto *problem = tab.field<QLabel>("pelican.graphCanvasParameters.size.problem");
+    CHECK(problem->isVisible());
+    CHECK(problem->text().contains(sentence));
+    CHECK(tab.field<QLabel>("pelican.graphCanvasParameters.size.label")->styleSheet().contains(
+        QStringLiteral("#d94c3d")));
+    CHECK_FALSE(tab.field<QLabel>("pelican.graphCanvasParameters.element.problem")->isVisible());
 }

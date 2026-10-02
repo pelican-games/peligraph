@@ -210,6 +210,23 @@ projectShaderReferences(const std::filesystem::path &project_root) {
     return shaders;
 }
 
+QDoubleSpinBox *makeParameterSpin(QWidget *parent, const QString &object_name, bool integer,
+                                  const std::optional<std::pair<double, double>> &range) {
+    auto *editor = new QDoubleSpinBox(parent);
+    editor->setObjectName(object_name);
+    const double low = range ? range->first : (integer ? -2147483648.0 : -1.0e9);
+    const double high = range ? range->second : (integer ? 2147483647.0 : 1.0e9);
+    editor->setRange(low, high);
+    const double span = high - low;
+    editor->setDecimals(integer ? 0 : (range && span <= 1.0 ? 4 : 3));
+    editor->setSingleStep(integer ? 1.0 : (range ? std::max(span / 100.0, 0.0001) : 0.1));
+    editor->setKeyboardTracking(false);
+    editor->setAccelerated(true);
+    editor->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    if (range) editor->setToolTip(QObject::tr("%1 to %2").arg(low).arg(high));
+    return editor;
+}
+
 struct FeatureParameterForm::Impl {
     struct RowWidgets {
         std::vector<QDoubleSpinBox *> spins;
@@ -312,22 +329,8 @@ struct FeatureParameterForm::Impl {
 
     static QDoubleSpinBox *spin(QWidget *parent, const QString &object_name,
                                 const FeatureParameterRow &row, int at) {
-        auto *editor = new QDoubleSpinBox(parent);
-        editor->setObjectName(object_name);
-        const bool integer = row.type == QStringLiteral("int");
-        const auto &range = row.ranges[static_cast<std::size_t>(at)];
-        const double low = range ? range->first : (integer ? -2147483648.0 : -1.0e9);
-        const double high = range ? range->second : (integer ? 2147483647.0 : 1.0e9);
-        editor->setRange(low, high);
-        const double span = high - low;
-        editor->setDecimals(integer ? 0 : (range && span <= 1.0 ? 4 : 3));
-        editor->setSingleStep(integer ? 1.0 : (range ? std::max(span / 100.0, 0.0001) : 0.1));
-        editor->setKeyboardTracking(false);
-        editor->setAccelerated(true);
-        editor->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        if (range)
-            editor->setToolTip(QObject::tr("%1 to %2").arg(low).arg(high));
-        return editor;
+        return makeParameterSpin(parent, object_name, row.type == QStringLiteral("int"),
+                                 row.ranges[static_cast<std::size_t>(at)]);
     }
 
     QWidget *build(std::size_t index, QWidget *parent) {

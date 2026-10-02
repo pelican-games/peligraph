@@ -1,0 +1,818 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "gui_node_parameters",
+  "description": "UX-12a (engine CT-3): a Graph node's parameters are fields made from the catalog's table. From File > New Project > Blank: the palette's render.buffer is picked and its fields are the table's -- size an integer spin (64 typed goes into the document), lifetime a combo of its enum (transient picked, then Reset takes the key out and the engine's default applies), and -4 typed below the table's 0 is refused by the engine as graph.render_node_parameter_invalid@1, said in one sentence on the Graph's notice and under the size row (decision 4); 128 is taken after. The palette's value.trigger_clock's paused is a number field (1 typed). The palette's pose.clip_sample asks for what the table requires (decision 2): its rig by Import... (a rigged glTF written outside the project is copied into assets/models) and its clip among the rig's animations (Run); its fields are then the table's (decision 5): speed 2, loop off, start time 0.5. Nothing is JSON. Typed: the project folder and name, the palette filters, the glTF's path in the import dialog, and the numbers 64, -4, 128, 1, 2 and 0.5.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "File > New Project...",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "timeout_ms": 10000,
+      "visible": true
+    },
+    {
+      "label": "the folder: this run's own artifacts",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "gnp"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "timeout_ms": 10000,
+      "missing": true
+    },
+    {
+      "label": "the blank project's present is on the Frame Plan canvas",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "timeout_ms": 180000,
+      "visible": true
+    },
+    {
+      "label": "the new engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the Graph tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "Show: Value",
+      "cmd": "click",
+      "name": "pelican.graphCanvasShow.value"
+    },
+    {
+      "label": "Show: Pose",
+      "cmd": "click",
+      "name": "pelican.graphCanvasShow.pose"
+    },
+    {
+      "label": "a rigged, animated glTF outside the project (Walk, Run, Jump; its buffer a data URI)",
+      "file": "write",
+      "path": "{artifacts}/incoming/hero.gltf",
+      "text": "{\"asset\":{\"version\":\"2.0\",\"generator\":\"Pelican WP101 animgraph demo\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"name\":\"DemoMesh\",\"mesh\":0,\"skin\":0,\"children\":[1]},{\"name\":\"RootJoint\",\"children\":[2]},{\"name\":\"TipJoint\",\"translation\":[0,1,0]}],\"skins\":[{\"name\":\"TwoBone\",\"joints\":[1,2],\"inverseBindMatrices\":6}],\"meshes\":[{\"name\":\"Body\",\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2,\"JOINTS_0\":3,\"WEIGHTS_0\":4},\"indices\":5,\"material\":0}]}],\"materials\":[{\"name\":\"DemoOrange\",\"pbrMetallicRoughness\":{\"baseColorFactor\":[1,0.35,0.08,1],\"metallicFactor\":0,\"roughnessFactor\":1}}],\"animations\":[{\"name\":\"Walk\",\"samplers\":[{\"input\":7,\"output\":8,\"interpolation\":\"LINEAR\"}],\"channels\":[{\"sampler\":0,\"target\":{\"node\":2,\"path\":\"rotation\"}}]},{\"name\":\"Run\",\"samplers\":[{\"input\":7,\"output\":9,\"interpolation\":\"LINEAR\"}],\"channels\":[{\"sampler\":0,\"target\":{\"node\":2,\"path\":\"rotation\"}}]},{\"name\":\"Jump\",\"samplers\":[{\"input\":7,\"output\":10,\"interpolation\":\"LINEAR\"}],\"channels\":[{\"sampler\":0,\"target\":{\"node\":1,\"path\":\"translation\"}}]}],\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":48},{\"buffer\":0,\"byteOffset\":48,\"byteLength\":48},{\"buffer\":0,\"byteOffset\":96,\"byteLength\":32},{\"buffer\":0,\"byteOffset\":128,\"byteLength\":32},{\"buffer\":0,\"byteOffset\":160,\"byteLength\":64},{\"buffer\":0,\"byteOffset\":224,\"byteLength\":12},{\"buffer\":0,\"byteOffset\":236,\"byteLength\":128},{\"buffer\":0,\"byteOffset\":364,\"byteLength\":20},{\"buffer\":0,\"byteOffset\":384,\"byteLength\":80},{\"buffer\":0,\"byteOffset\":464,\"byteLength\":80},{\"buffer\":0,\"byteOffset\":544,\"byteLength\":60}],\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\",\"min\":[-0.3,0,0],\"max\":[0.3,2,0]},{\"bufferView\":1,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},{\"bufferView\":2,\"componentType\":5126,\"count\":4,\"type\":\"VEC2\"},{\"bufferView\":3,\"componentType\":5123,\"count\":4,\"type\":\"VEC4\"},{\"bufferView\":4,\"componentType\":5126,\"count\":4,\"type\":\"VEC4\"},{\"bufferView\":5,\"componentType\":5123,\"count\":6,\"type\":\"SCALAR\"},{\"bufferView\":6,\"componentType\":5126,\"count\":2,\"type\":\"MAT4\"},{\"bufferView\":7,\"componentType\":5126,\"count\":5,\"type\":\"SCALAR\",\"min\":[0],\"max\":[1]},{\"bufferView\":8,\"componentType\":5126,\"count\":5,\"type\":\"VEC4\"},{\"bufferView\":9,\"componentType\":5126,\"count\":5,\"type\":\"VEC4\"},{\"bufferView\":10,\"componentType\":5126,\"count\":5,\"type\":\"VEC3\"}],\"buffers\":[{\"byteLength\":604,\"uri\":\"data:application/octet-stream;base64,mpmZvgAAAAAAAAAAmpmZPgAAAAAAAAAAmpmZvgAAAEAAAAAAmpmZPgAAAEAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAABAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAEAAgACAAEAAwAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgL8AAAAAAACAPwAAAAAAAIA+AAAAPwAAQD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAA1NAxPlwcfD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAADU0DG+XBx8PwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAABsYdg+ygNoPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAGxh2L7KA2g/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAABmZuY+AAAAAAAAAADNzEw/AAAAAAAAAABmZuY+AAAAAAAAAAAAAAAAAAAAAA==\"}]}\n"
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "Add: the palette opens (render.buffer)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "timeout_ms": 10000,
+      "visible": true
+    },
+    {
+      "label": "the filter: render.buffer",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "render.buffer"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "render_buffer is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_buffer",
+      "timeout_ms": 120000,
+      "visible": true
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "a float buffer of one element",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.size",
+      "value": 4,
+      "retry_ms": 60000
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick the buffer",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node_header#render_buffer"
+    },
+    {
+      "label": "decision 1: its parameters are fields from the table",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasParameters",
+      "timeout_ms": 30000,
+      "visible": true
+    },
+    {
+      "label": "element is a combo of the table's values",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasParameters.element",
+      "timeout_ms": 30000,
+      "text": "float"
+    },
+    {
+      "label": "lifetime shows the engine's default",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasParameters.lifetime",
+      "timeout_ms": 30000,
+      "contains": "persistent"
+    },
+    {
+      "label": "size: an integer spin, 64 typed",
+      "cmd": "type",
+      "name": "pelican.graphCanvasParameters.size",
+      "text": "64"
+    },
+    {
+      "label": "Return gives it",
+      "cmd": "key",
+      "name": "pelican.graphCanvasParameters.size",
+      "sequence": "Return"
+    },
+    {
+      "label": "decision 1: size 64 is in the document",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.size",
+      "value": 64,
+      "retry_ms": 60000
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "lifetime: Transient picked",
+      "cmd": "select",
+      "name": "pelican.graphCanvasParameters.lifetime",
+      "text": "transient"
+    },
+    {
+      "label": "lifetime transient is in the document",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.lifetime",
+      "value": "transient",
+      "retry_ms": 60000
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "Reset is offered on lifetime (not the default any more)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasParameters.lifetime.reset",
+      "timeout_ms": 30000,
+      "visible": true
+    },
+    {
+      "label": "Reset",
+      "cmd": "click",
+      "name": "pelican.graphCanvasParameters.lifetime.reset"
+    },
+    {
+      "label": "Reset takes lifetime out of the document: the engine's default applies",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.nodes[0].parameters",
+      "op": "excludes",
+      "value": "lifetime",
+      "retry_ms": 60000
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "the field shows the default again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasParameters.lifetime",
+      "timeout_ms": 30000,
+      "contains": "persistent"
+    },
+    {
+      "label": "size: -4 typed, below the table's 0",
+      "cmd": "type",
+      "name": "pelican.graphCanvasParameters.size",
+      "text": "-4"
+    },
+    {
+      "label": "Return gives it",
+      "cmd": "key",
+      "name": "pelican.graphCanvasParameters.size",
+      "sequence": "Return"
+    },
+    {
+      "label": "decision 4: refused in one sentence",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "contains": "render_buffer.size must be integer (range: at least 0)"
+    },
+    {
+      "label": "decision 4: and the size row says it, red",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasParameters.size.problem",
+      "timeout_ms": 30000,
+      "visible": true,
+      "contains": "render_buffer.size must be integer"
+    },
+    {
+      "label": "the document keeps 64",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.size",
+      "value": 64,
+      "retry_ms": 60000
+    },
+    {
+      "label": "size: 128 typed",
+      "cmd": "type",
+      "name": "pelican.graphCanvasParameters.size",
+      "text": "128"
+    },
+    {
+      "label": "Return gives it",
+      "cmd": "key",
+      "name": "pelican.graphCanvasParameters.size",
+      "sequence": "Return"
+    },
+    {
+      "label": "taken: 128",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.size",
+      "value": 128,
+      "retry_ms": 60000
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the row is not red any more",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasParameters.size.problem",
+      "timeout_ms": 30000,
+      "visible": false
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "Add: the palette opens (value.trigger_clock)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "timeout_ms": 10000,
+      "visible": true
+    },
+    {
+      "label": "the filter: value.trigger_clock",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "value.trigger_clock"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "value_trigger_clock is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#value_trigger_clock",
+      "timeout_ms": 120000,
+      "visible": true
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "what the root holds now (read in full)",
+      "cmd": "rpc",
+      "method": "get_graph_instances",
+      "params": {}
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick the clock",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node_header#value_trigger_clock"
+    },
+    {
+      "label": "its fields",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasParameters.paused",
+      "timeout_ms": 30000,
+      "visible": true
+    },
+    {
+      "label": "paused: 1 typed",
+      "cmd": "type",
+      "name": "pelican.graphCanvasParameters.paused",
+      "text": "1"
+    },
+    {
+      "label": "Return gives it",
+      "cmd": "key",
+      "name": "pelican.graphCanvasParameters.paused",
+      "sequence": "Return"
+    },
+    {
+      "label": "decision 1: paused 1 is in the document",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].parameters.paused",
+      "value": 1,
+      "retry_ms": 60000
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "New definition",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.newDefinition"
+    },
+    {
+      "label": "its name is offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasDefinitionName",
+      "timeout_ms": 10000,
+      "visible": true
+    },
+    {
+      "label": "the name: walk_pose",
+      "cmd": "type",
+      "name": "pelican.graphCanvasDefinitionName",
+      "text": "walk_pose"
+    },
+    {
+      "label": "Enter makes it",
+      "cmd": "key",
+      "name": "pelican.graphCanvasDefinitionName",
+      "sequence": "Return"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the canvas shows the new definition",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasScope",
+      "timeout_ms": 60000,
+      "contains": "walk_pose"
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "Add: the palette opens (pose.clip_sample)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "timeout_ms": 10000,
+      "visible": true
+    },
+    {
+      "label": "the filter: pose.clip_sample",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "pose.clip_sample"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "decision 2: the dialog asks for the rig and the clip",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasRequired",
+      "timeout_ms": 20000,
+      "visible": true
+    },
+    {
+      "label": "rig: Import...",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasRequired.rig.import",
+      "timeout_ms": 10000,
+      "visible": true
+    },
+    {
+      "label": "Import...",
+      "cmd": "click",
+      "name": "pelican.graphCanvasRequired.rig.import"
+    },
+    {
+      "label": "the import dialog",
+      "cmd": "wait",
+      "name": "pelican.assetImportDialog",
+      "timeout_ms": 20000,
+      "visible": true
+    },
+    {
+      "label": "the glTF's path",
+      "cmd": "type",
+      "name": "pelican.assetImportDialog.fileName",
+      "text": "{artifacts}/incoming/hero.gltf"
+    },
+    {
+      "label": "Return opens it",
+      "cmd": "key",
+      "name": "pelican.assetImportDialog.fileName",
+      "sequence": "Return"
+    },
+    {
+      "label": "the import dialog closed",
+      "cmd": "wait",
+      "name": "pelican.assetImportDialog",
+      "timeout_ms": 20000,
+      "missing": true
+    },
+    {
+      "label": "the rig is the copy in the project",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasRequired.rig",
+      "timeout_ms": 20000,
+      "text": "project://assets/models/hero.gltf"
+    },
+    {
+      "label": "clip: Run, among the rig's animations",
+      "cmd": "select",
+      "name": "pelican.graphCanvasRequired.clip",
+      "text": "Run"
+    },
+    {
+      "label": "OK is offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasRequired.ok",
+      "timeout_ms": 10000,
+      "enabled": true
+    },
+    {
+      "label": "OK",
+      "cmd": "click",
+      "name": "pelican.graphCanvasRequired.ok"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasRequired",
+      "timeout_ms": 20000,
+      "missing": true
+    },
+    {
+      "label": "pose_clip_sample is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#pose_clip_sample",
+      "timeout_ms": 120000,
+      "visible": true
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "what the root holds now (read in full)",
+      "cmd": "rpc",
+      "method": "get_graph_instances",
+      "params": {}
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "the canvas is in walk_pose",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasScope",
+      "timeout_ms": 30000,
+      "text": "walk_pose"
+    },
+    {
+      "label": "pick the clip (its body: the definition's breadcrumb may stand over its heading)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#pose_clip_sample"
+    },
+    {
+      "label": "and the canvas stays there",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasScope",
+      "timeout_ms": 10000,
+      "text": "walk_pose"
+    },
+    {
+      "label": "decision 5: its fields",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPose",
+      "timeout_ms": 30000,
+      "visible": true
+    },
+    {
+      "label": "decision 2: placed with the imported rig",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.walk_pose.nodes[1].parameters.rig",
+      "value": "project://assets/models/hero.gltf",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and the clip picked",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.walk_pose.nodes[1].parameters.clip",
+      "value": "Run",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the clip is Run",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPose.clip",
+      "timeout_ms": 30000,
+      "text": "Run"
+    },
+    {
+      "label": "speed: 2 typed",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPose.speed",
+      "text": "2"
+    },
+    {
+      "label": "Return gives it",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPose.speed",
+      "sequence": "Return"
+    },
+    {
+      "label": "decision 5: speed 2",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.walk_pose.nodes[1].parameters.speed",
+      "value": 2,
+      "retry_ms": 60000
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "loop off: Space on its check (the side panel scrolls it out of reach of a click)",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPose.loop",
+      "sequence": "Space"
+    },
+    {
+      "label": "loop false",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.walk_pose.nodes[1].parameters.loop",
+      "value": false,
+      "retry_ms": 60000
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "start time: 0.5 typed (from the table)",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPose.start_time",
+      "text": "0.5"
+    },
+    {
+      "label": "Return gives it",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPose.start_time",
+      "sequence": "Return"
+    },
+    {
+      "label": "start_time 0.5",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.walk_pose.nodes[1].parameters.start_time",
+      "value": 0.5,
+      "retry_ms": 60000
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "what the root holds now (read in full)",
+      "cmd": "rpc",
+      "method": "get_graph_instances",
+      "params": {}
+    },
+    {
+      "label": "a picture of the window",
+      "expect": "screenshot",
+      "path": "gui_node_parameters_window.png"
+    }
+  ]
+}

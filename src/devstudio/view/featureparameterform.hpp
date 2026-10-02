@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+class QDoubleSpinBox;
+
 namespace PelicanStudio {
 
 // UX-10, decision 1. How a feature's parameter_schema (get_render_features'
@@ -53,6 +55,13 @@ struct FeatureParameterRow {
 };
 
 [[nodiscard]] std::vector<FeatureParameterRow> featureParameterRows(const QJsonObject &schema);
+
+// The spin a number row is made of (UX-12a: the Graph's parameter fields use
+// it too): no decimals for an integer, bounded by `range` (and saying so in
+// its tooltip) or wide without one, keyboard tracking off.
+[[nodiscard]] QDoubleSpinBox *makeParameterSpin(QWidget *parent, const QString &object_name,
+                                                bool integer,
+                                                const std::optional<std::pair<double, double>> &range);
 
 // The project's own shaders, as project://shaders/<stem> with the stage their
 // extension says (.comp compute, .frag fragment, .vert vertex, ...).

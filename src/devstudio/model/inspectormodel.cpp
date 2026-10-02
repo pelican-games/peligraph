@@ -962,7 +962,7 @@ struct GraphLoopRefusalText {
     std::string_view code;
     std::string_view sentence;
 };
-constexpr std::array<GraphLoopRefusalText, 44> GraphLoopRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 45> GraphLoopRefusalTexts{{
     {"graph.loop_branch_else_missing@1",
      "Loop {node} has no else: its last branch must have no condition"},
     {"graph.loop_branch_interface@1",
@@ -1017,6 +1017,9 @@ constexpr std::array<GraphLoopRefusalText, 44> GraphLoopRefusalTexts{{
     {"graph.loop_output_reference_unknown@1", "{pass} reads {reference}, which is no loop output"},
     // UX-5c (RS-9): a render node lacks a parameter its op needs.
     {"graph.render_node_parameters_missing@1", "The {op} node {node} needs {missing}"},
+    // UX-12a, decision 4 (CT-3): a value of the wrong kind, outside the
+    // enum or the range; {why} is said from `reason` (see below).
+    {"graph.render_node_parameter_invalid@1", "{node}.{parameter} must be {expected} ({why})"},
     // UX-8, decision 12 (c) (RS-15): the render.scalar sinks on one buffer
     // tile it from byte 0; `reason` says which way they do not.
     {"graph.render_scalar_layout_invalid@1",
@@ -1195,6 +1198,21 @@ bool graphRefusalSentenceNamesDefinition(std::string_view code) {
 
 } // namespace
 
+std::optional<nlohmann::json> graphRefusalFields(const nlohmann::json &error, std::string_view code) {
+    if (!error.is_object()) return std::nullopt;
+    std::optional<nlohmann::json> fields;
+    if (error.value("code", std::string{}) == code) {
+        const auto relayed = error.find("error_fields");
+        fields = relayed != error.end() && relayed->is_object() ? *relayed : error;
+    }
+    if (auto quoted = graphFieldsAfterCode(error.value("message", std::string{}), code)) {
+        if (!fields) fields = nlohmann::json::object();
+        for (auto member = quoted->begin(); member != quoted->end(); ++member)
+            (*fields)[member.key()] = member.value();
+    }
+    return fields;
+}
+
 std::string graphLoopRefusalDescription(const nlohmann::json &error, bool name_document) {
     if (!error.is_object()) return {};
     const auto own_code = error.value("code", std::string{});
@@ -1250,6 +1268,24 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error, bool name_d
                 fields["range"] = std::to_string(from) + ".." + std::to_string(to);
             }
         }
+    // UX-12a, decision 4: why, in the reason's word -- the values an enum
+    // takes, the range a number lies in.
+    if (entry->code == "graph.render_node_parameter_invalid@1") {
+        const auto reason = graphRefusalFieldText(fields, "reason");
+        std::string why = "wrong type";
+        if (reason == "enum") {
+            why = "one of: " + graphRefusalFieldText(fields, "allowed");
+        } else if (reason == "range") {
+            const bool low = fields.contains("min");
+            const bool high = fields.contains("max");
+            const auto min = low ? graphRefusalFieldText(fields, "min") : std::string{};
+            const auto max = high ? graphRefusalFieldText(fields, "max") : std::string{};
+            why = "range: " + (low && high ? min + ".." + max
+                               : low       ? "at least " + min
+                                           : "at most " + max);
+        }
+        fields["why"] = why;
+    }
     std::string sentence;
     std::string_view pattern = entry->sentence;
     if (entry->code == "graph.loop_tier_unsupported@1") {

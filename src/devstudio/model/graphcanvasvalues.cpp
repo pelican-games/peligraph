@@ -542,42 +542,76 @@ std::vector<std::string> GraphCanvasModel::scalarTargets(std::string_view scope)
     return result;
 }
 
-// --- Decision 13 (a): the catalog's required parameters.
+// --- Decision 13 (a) / UX-12a: the catalog's required parameters and its table.
 
 std::vector<GraphCanvasModel::RequiredParameter>
 GraphCanvasModel::requiredParametersFor(std::string_view op) const {
-    const auto *contract = operation(op);
-    // UX-8 decision 7: a sound sink drives a voice the scope already plays.
-    const auto voice = RequiredParameter{"voice", "voice"};
-    const auto listed = contract != nullptr ? contract->find("required_parameters") : Json::const_iterator{};
-    if (contract == nullptr || listed == contract->end() || !listed->is_array()) {
-        if (op == "audio.volume" || op == "audio.pitch") return {voice};
-        return requiredParameters(op);
-    }
     std::vector<RequiredParameter> result;
-    for (const auto &entry : *listed) {
-        if (!entry.is_object()) continue;
-        std::vector<std::string> names;
-        if (const auto name = textOf(entry, "name"); !name.empty()) names.push_back(name);
-        if (const auto one_of = entry.find("one_of"); one_of != entry.end() && one_of->is_array())
-            for (const auto &name : *one_of)
-                if (name.is_string()) names.push_back(name.get<std::string>());
-        if (names.empty()) continue;
-        const auto has = [&](const char *name) { return std::ranges::find(names, name) != names.end(); };
-        // What the palette seeds on its own is not asked for: a curve's keys,
-        // a voice's sound, a UI sink's node, a render node's parameters
-        // (UX-3's row beside the op).
-        if (op == "value.curve" || op == "audio.playback" || op.starts_with("ui.") ||
-            (op.starts_with("render.") && op != "render.scalar") || op.starts_with("draw."))
-            continue;
-        if (has("voice")) result.push_back(voice);
-        else if (op == "render.scalar" && has("target")) result.push_back({"target", "buffer"});
-        else if (op == "value.input" && has("name")) result.push_back({"name", "input"});
-        else if (has("value") || has("default")) result.push_back({names.front(), "number"});
-        else if (op == "value.parameter" && has("name")) result.push_back({"name", "text"});
-        else result.push_back({names.front(), "number"});
+    // What the palette seeds on its own is not asked for: a curve's keys,
+    // a voice's sound, a UI sink's node, a render node's parameters (UX-3's
+    // row beside the op), a draw step's.
+    if (op == "value.curve" || op == "audio.playback" || op.starts_with("ui.") ||
+        (op.starts_with("render.") && op != "render.scalar") || op.starts_with("draw."))
+        return result;
+    const auto inputs = operationInputPorts(op);
+    for (const auto &entry : operationParameters(op)) {
+        if (!entry.is_object() || !entry.value("required", false)) continue;
+        RequiredParameter required;
+        required.name = textOf(entry, "name");
+        if (required.name.empty()) continue;
+        required.kind = textOf(entry, "kind");
+        required.schema = entry;
+        if (const auto alternatives = entry.find("alternatives");
+            alternatives != entry.end() && alternatives->is_array())
+            for (const auto &name : *alternatives) {
+                if (!name.is_string()) continue;
+                required.alternatives.push_back(name.get<std::string>());
+                if (std::ranges::find(inputs, name.get<std::string>()) != inputs.end())
+                    required.edge_alternatives.push_back(name.get<std::string>());
+            }
+        // What Studio knows the string names.
+        if (op == "render.scalar" && required.name == "target") required.kind = "buffer";
+        else if (op == "value.input" && required.name == "name") required.kind = "input";
+        result.push_back(std::move(required));
     }
     return result;
+}
+
+Json GraphCanvasModel::operationParameters(std::string_view op) const {
+    const auto *contract = operation(op);
+    if (contract == nullptr) return Json::array();
+    const auto found = contract->find("parameters");
+    if (found == contract->end() || !found->is_array()) return Json::array();
+    return *found;
+}
+
+bool GraphCanvasModel::operationParametersComplete(std::string_view op) const {
+    const auto *contract = operation(op);
+    if (contract == nullptr) return false;
+    const auto found = contract->find("parameters_complete");
+    return found != contract->end() && found->is_boolean() && found->get<bool>();
+}
+
+std::optional<Json> GraphCanvasModel::parameterSchema(std::string_view op,
+                                                      std::string_view name) const {
+    const auto *contract = operation(op);
+    if (contract == nullptr) return std::nullopt;
+    const auto found = contract->find("parameters");
+    if (found == contract->end() || !found->is_array()) return std::nullopt;
+    for (const auto &entry : *found)
+        if (entry.is_object() && textOf(entry, "name") == name) return entry;
+    return std::nullopt;
+}
+
+std::vector<std::string> GraphCanvasModel::operationInputPorts(std::string_view op) const {
+    std::vector<std::string> ports;
+    const auto *contract = operation(op);
+    if (contract == nullptr) return ports;
+    const auto found = contract->find("inputs");
+    if (found == contract->end() || !found->is_array()) return ports;
+    for (const auto &input : *found)
+        if (input.is_object() && !textOf(input, "port").empty()) ports.push_back(textOf(input, "port"));
+    return ports;
 }
 
 std::vector<std::string> GraphCanvasModel::valueInputNamesFor() const {

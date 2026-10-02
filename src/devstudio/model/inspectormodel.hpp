@@ -290,6 +290,11 @@ modelReferenceChoices(std::string_view current,
 // of its own (graph.definition_*) is not given the other.
 [[nodiscard]] std::string graphLoopRefusalDescription(const nlohmann::json &error,
                                                       bool name_document = true);
+// UX-12a: the fields of a refusal of `code` -- beside the code, relayed as
+// error_fields, or quoted after the code in the message of a broader one
+// ("<code> {...}"); nullopt when the error is no such refusal.
+[[nodiscard]] std::optional<nlohmann::json> graphRefusalFields(const nlohmann::json &error,
+                                                               std::string_view code);
 // A string field of a refusal's fields (`document`, `definition`); empty
 // when it has none. A `document` reads without its project:// (as the
 // project names it: "passes/main.json").

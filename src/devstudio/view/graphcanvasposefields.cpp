@@ -1,13 +1,10 @@
 #include "graphcanvasposefields.hpp"
 
+#include "graphcanvasparameterfields.hpp"
 #include "studiotheme.hpp"
 
-#include <QCheckBox>
-#include <QComboBox>
-#include <QDoubleSpinBox>
-#include <QFormLayout>
 #include <QLabel>
-#include <QSignalBlocker>
+#include <QVBoxLayout>
 
 #include <algorithm>
 #include <array>
@@ -101,139 +98,71 @@ std::filesystem::path projectReferenceFile(const std::filesystem::path &project_
 
 GraphCanvasPoseFields::GraphCanvasPoseFields(GraphCanvasModel &model,
                                              std::function<void()> submitted, QWidget *parent)
-    : QWidget{parent}, model_{model}, submitted_{std::move(submitted)} {
+    : QWidget{parent} {
     setObjectName(QStringLiteral("pelican.graphCanvasPose"));
-    auto *form = new QFormLayout(this);
-    form->setContentsMargins(0, 0, 0, 0);
-    const auto caption = [this](const QString &text) {
-        auto *label = new QLabel(text, this);
-        label->setFont(studioSmallFont());
-        return label;
-    };
-    rig_ = new QComboBox(this);
-    rig_->setObjectName(QStringLiteral("pelican.graphCanvasPose.rig"));
-    rig_->setToolTip(tr("The model whose skeleton the clip is sampled on: a glTF or VRM file of "
-                        "the project."));
-    form->addRow(caption(tr("Rig")), rig_);
-    clip_ = new QComboBox(this);
-    clip_->setObjectName(QStringLiteral("pelican.graphCanvasPose.clip"));
-    clip_->setToolTip(tr("The animation of the rig's file that is sampled."));
-    form->addRow(caption(tr("Clip")), clip_);
-    speed_ = new QDoubleSpinBox(this);
-    speed_->setObjectName(QStringLiteral("pelican.graphCanvasPose.speed"));
-    speed_->setRange(0.0, 1000.0);
-    speed_->setDecimals(3);
-    speed_->setSingleStep(0.1);
-    speed_->setKeyboardTracking(false);
-    speed_->setToolTip(tr("Playback speed: 1 is the clip's own pace."));
-    form->addRow(caption(tr("Speed")), speed_);
-    loop_ = new QCheckBox(tr("Loop"), this);
-    loop_->setObjectName(QStringLiteral("pelican.graphCanvasPose.loop"));
-    loop_->setToolTip(tr("Whether the clip starts again at its end."));
-    form->addRow(caption(QString{}), loop_);
+    auto *layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    // UX-12a, decision 5: the parameter fields of the op's table, under this
+    // prefix; only clip is Studio's own list.
+    fields_ = new GraphCanvasParameterFields(model, std::move(submitted), this,
+                                             QStringLiteral("pelican.graphCanvasPose"));
+    fields_->setObjectName(QStringLiteral("pelican.graphCanvasPose.fields"));
+    fields_->setOps([](std::string_view op) { return op == "pose.clip_sample"; });
+    fields_->setStrings([this](const std::string &name,
+                               const Json &around) -> std::optional<std::vector<std::string>> {
+        if (name != "clip") return std::nullopt;
+        return gltfAnimationNames(projectReferenceFile(project_root_, stringParameter(around, "rig")));
+    });
+    fields_->setFollow([this](const Json &parameters) { showNote(parameters); });
+    layout->addWidget(fields_);
     note_ = new QLabel(this);
     note_->setObjectName(QStringLiteral("pelican.graphCanvasPose.note"));
     note_->setFont(studioSmallFont());
     note_->setWordWrap(true);
-    form->addRow(note_);
-    QObject::connect(rig_, &QComboBox::currentIndexChanged, this, [this] {
-        if (loading_) return;
-        const auto rig = rig_->currentData().toString().toStdString();
-        if (!rig.empty()) commit("rig", rig);
-    });
-    QObject::connect(clip_, &QComboBox::currentIndexChanged, this, [this] {
-        if (loading_) return;
-        const auto clip = clip_->currentData().toString().toStdString();
-        if (!clip.empty()) commit("clip", clip);
-    });
-    QObject::connect(speed_, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
-                     [this](double value) {
-                         if (!loading_) commit("speed", value);
-                     });
-    QObject::connect(loop_, &QCheckBox::toggled, this, [this](bool value) {
-        if (!loading_) commit("loop", value);
-    });
+    note_->hide();
+    layout->addWidget(note_);
     hide();
+}
+
+void GraphCanvasPoseFields::setProjectRoot(const std::filesystem::path &root) {
+    project_root_ = root;
+    fields_->setProjectRoot(root);
+}
+
+bool GraphCanvasPoseFields::valuePending() const noexcept { return fields_->valuePending(); }
+
+void GraphCanvasPoseFields::setPendingChanged(std::function<void()> changed) {
+    fields_->setPendingChanged(std::move(changed));
 }
 
 void GraphCanvasPoseFields::showNode(const GraphCanvasNode *node, const std::string &scope) {
     if (node == nullptr || node->op != "pose.clip_sample") {
-        node_.clear();
+        fields_->showNode(nullptr, scope);
         hide();
         return;
     }
-    const bool same = node_ == node->id && scope_ == scope && parameters_ == node->parameters;
-    node_ = node->id;
-    scope_ = scope;
-    parameters_ = node->parameters.is_object() ? node->parameters : Json::object();
-    if (!same) load();
-    followEditable();
-    show();
+    fields_->showNode(node, scope);
+    setVisible(fields_->isVisibleTo(this));
 }
 
-void GraphCanvasPoseFields::followEditable() {
-    const bool editable = !node_.empty() && model_.canEdit();
-    rig_->setEnabled(editable);
-    clip_->setEnabled(editable);
-    speed_->setEnabled(editable);
-    loop_->setEnabled(editable);
-}
+void GraphCanvasPoseFields::followEditable() { fields_->followEditable(); }
 
-void GraphCanvasPoseFields::load() {
-    loading_ = true;
-    const QSignalBlocker block_rig{rig_};
-    const QSignalBlocker block_clip{clip_};
-    const QSignalBlocker block_speed{speed_};
-    const QSignalBlocker block_loop{loop_};
-    const auto rig = stringParameter(parameters_, "rig");
-    auto rigs = projectRigReferences(project_root_);
-    if (!rig.empty() && std::ranges::find(rigs, rig) == rigs.end()) rigs.insert(rigs.begin(), rig);
-    rig_->clear();
-    for (const auto &reference : rigs) rig_->addItem(qtext(reference), qtext(reference));
-    rig_->setCurrentIndex(rig_->findData(qtext(rig)));
-    loadClips(rigs.empty());
-    const auto speed = parameters_.find("speed");
-    speed_->setValue(speed != parameters_.end() && speed->is_number() ? speed->get<double>() : 1.0);
-    const auto loop = parameters_.find("loop");
-    loop_->setChecked(loop != parameters_.end() && loop->is_boolean() ? loop->get<bool>() : true);
-    loading_ = false;
-}
-
-// The clips of the rig the node names, and the line that says what is amiss.
-void GraphCanvasPoseFields::loadClips(bool no_rigs) {
-    const bool was_loading = std::exchange(loading_, true);
-    const QSignalBlocker block_clip{clip_};
-    const auto rig = stringParameter(parameters_, "rig");
-    const auto clip = stringParameter(parameters_, "clip");
-    auto clips = gltfAnimationNames(projectReferenceFile(project_root_, rig));
+// The line that says what is amiss with the rig and the clip.
+void GraphCanvasPoseFields::showNote(const Json &parameters) {
+    const auto rig = stringParameter(parameters, "rig");
+    const auto clip = stringParameter(parameters, "clip");
+    const auto clips = gltfAnimationNames(projectReferenceFile(project_root_, rig));
     QString note;
-    if (no_rigs)
-        note = tr("The project has no .gltf, .glb or .vrm file to sample.");
+    if (projectRigReferences(project_root_).empty() && rig.empty())
+        note = tr("The project has no .gltf, .glb or .vrm file to sample: Import... one.");
     else if (rig.empty())
         note = tr("Pick the rig the clip is sampled on.");
     else if (clips.empty())
         note = tr("%1 lists no animation Studio can read.").arg(qtext(rig));
-    if (!clip.empty() && std::ranges::find(clips, clip) == clips.end()) {
-        clips.insert(clips.begin(), clip);
-        if (note.isEmpty()) note = tr("%1 is not an animation of %2.").arg(qtext(clip), qtext(rig));
-    }
-    clip_->clear();
-    for (const auto &name : clips) clip_->addItem(qtext(name), qtext(name));
-    clip_->setCurrentIndex(clip_->findData(qtext(clip)));
+    else if (!clip.empty() && std::ranges::find(clips, clip) == clips.end())
+        note = tr("%1 is not an animation of %2.").arg(qtext(clip), qtext(rig));
     note_->setText(note);
     note_->setVisible(!note.isEmpty());
-    loading_ = was_loading;
-}
-
-void GraphCanvasPoseFields::commit(const std::string &key, const nlohmann::json &value) {
-    if (node_.empty()) return;
-    const auto stored = parameters_.find(key);
-    if (stored != parameters_.end() && *stored == value) return;
-    if (!model_.setNodeParameter(scope_, node_, key, value)) return;
-    parameters_[key] = value;
-    // A new rig lists its own clips.
-    if (key == "rig") loadClips(false);
-    if (submitted_) submitted_();
 }
 
 } // namespace PelicanStudio

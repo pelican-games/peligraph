@@ -589,6 +589,9 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascomputefields.cpp
     # UX-10: a pose.clip_sample's fields.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasposefields.cpp
+    # UX-12a: a node's parameters from the catalog's table (UX-10's spins).
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasparameterfields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/featureparameterform.cpp
     # GL-3a: the fold groups the Graph tab draws and writes.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
@@ -641,6 +644,9 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasvaluefields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascomputefields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasposefields.cpp
+    # UX-12a: a node's parameters from the catalog's table (UX-10's spins).
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasparameterfields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/featureparameterform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp

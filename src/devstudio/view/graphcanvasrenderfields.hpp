@@ -405,17 +405,24 @@ class GraphCanvasPlaceFields final : public QWidget {
     QLabel *note_ = nullptr;
 };
 
-// UX-7, decision 5: the small dialog the palette shows before it places an
-// op the engine refuses without a parameter its catalog does not list
-// (GraphCanvasModel::requiredParameters): one field each -- a buffer picked
-// from the graph's or named anew, a number, one of the engine's clocks --
-// and OK / Cancel. Named `pelican.graphCanvasRequired` and
-// `pelican.graphCanvasRequired.<parameter>` (`.ok`, `.cancel`). What is
-// written here can be changed afterwards in the node's details.
+// UX-7, decision 5 / UX-12a, decision 2: the small dialog the palette shows
+// before it places an op the engine refuses without a parameter
+// (GraphCanvasModel::requiredParametersFor, the `required` entries of the
+// catalog's table, engine CT-3): one field each, made by its kind as the
+// node's parameter fields are (GraphParameterEditor) -- with what Studio
+// knows the table does not: a render.scalar's buffer (picked from the
+// graph's or named anew), value.input's clocks, pose.clip_sample's clips
+// (the animations of the rig picked above it). A parameter with
+// alternatives is "one of": a radio each, and one an edge meets (a sound
+// sink's voice) says "or connect a line". OK / Cancel. Named
+// `pelican.graphCanvasRequired` and `pelican.graphCanvasRequired.<parameter>`
+// (`.<parameter>.choose` for a radio, `.ok`, `.cancel`). What is written here
+// can be changed afterwards in the node's fields.
 class GraphCanvasRequiredDialog final : public QDialog {
   public:
     GraphCanvasRequiredDialog(const GraphCanvasModel &model, const std::string &scope,
-                              const std::string &op, QWidget *parent = nullptr);
+                              const std::string &op, QWidget *parent = nullptr,
+                              const std::filesystem::path &project_root = {});
     // Whether the op asks for anything at all.
     [[nodiscard]] bool asks() const noexcept { return !fields_.empty(); }
     // The parameters as the fields hold them now.
@@ -426,8 +433,17 @@ class GraphCanvasRequiredDialog final : public QDialog {
     [[nodiscard]] nlohmann::json seed() const;
 
   private:
+    struct Field {
+        std::string name;
+        // "buffer", "input", "voice" (an edge), or the table's kind (the
+        // editor's).
+        std::string kind;
+        QWidget *widget = nullptr;
+        QRadioButton *choose = nullptr;
+    };
     void follow();
-    std::vector<std::pair<GraphCanvasModel::RequiredParameter, QWidget *>> fields_;
+    [[nodiscard]] bool chosen(const Field &field) const;
+    std::vector<Field> fields_;
     QPushButton *ok_ = nullptr;
 };
 

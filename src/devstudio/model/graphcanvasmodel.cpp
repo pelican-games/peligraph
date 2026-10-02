@@ -699,6 +699,7 @@ void GraphCanvasModel::clearContext() {
     plan_retry_wanted_ = false;
     committed_renames_.clear();
     refusal_marks_.clear();
+    parameter_refusal_.reset();
     values_received_ = false;
     values_published_ = false;
     values_ = Json::array();
@@ -1329,6 +1330,15 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                                                    "set_layout";
                                         }))
                     layout_retry_ = pending_history_->entry.forward;
+                // UX-12a, decision 4: the scope the refused edit was made in.
+                std::string edit_scope;
+                if (pending_history_)
+                    for (const auto &op : pending_history_->entry.forward)
+                        if (op.is_object() && op.contains("scope")) {
+                            edit_scope = text(op, "scope");
+                            if (edit_scope == "root") edit_scope.clear();
+                            break;
+                        }
                 pending_history_.reset();
                 edit_notice_ = {InspectorNoticeKind::Error, diagnostic(response)};
                 // GL-1b, decision 3: an engine that cannot yet answer a graph
@@ -1341,7 +1351,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                     std::string::npos)
                     edit_notice_.message += restartNotOfferedHint;
                 // LP-4c, decision 9: and where the refusal points.
-                markRefusal(error, edit_notice_.message);
+                markRefusal(error, edit_notice_.message, edit_scope);
                 ++content_revision_;
                 refresh();
                 return;
@@ -1366,6 +1376,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             commitHistory(response);
             layout_retrying_ = false;
             refusal_marks_.clear();
+            parameter_refusal_.reset();
             // GL-1b, decision 2: written, but the engine can only run it
             // after a restart (RS-1). The owner restarts it; the document and
             // the plan are read from the engine that comes back. RSX: read
@@ -4686,8 +4697,10 @@ std::string GraphCanvasModel::showLoopOrigin(std::string_view loop, std::int64_t
     return body;
 }
 
-void GraphCanvasModel::markRefusal(const Json &error, const std::string &reason) {
+void GraphCanvasModel::markRefusal(const Json &error, const std::string &reason,
+                                   const std::string &scope) {
     refusal_marks_.clear();
+    parameter_refusal_.reset();
     if (!error.is_object()) return;
     // The engine puts a named refusal's fields beside its code; a relayed
     // one may carry them as error_fields.
@@ -4716,6 +4729,21 @@ void GraphCanvasModel::markRefusal(const Json &error, const std::string &reason)
             if (branch && *branch < bodies.size() && !bodies[*branch].empty())
                 mark(bodies[*branch], text(*origin, "node"));
         }
+        return;
+    }
+    // UX-12a, decision 4: a node refused by its parameter's value (CT-3), or
+    // for one it lacks (RS-9), in the scope the edit was made in.
+    // The fields may be quoted in the message of a broader refusal.
+    if (const auto invalid = graphRefusalFields(error, "graph.render_node_parameter_invalid@1")) {
+        const auto node = text(*invalid, "node");
+        mark(scope, node);
+        if (!node.empty())
+            parameter_refusal_ =
+                GraphCanvasParameterRefusal{scope, node, text(*invalid, "parameter"), reason};
+        return;
+    }
+    if (const auto missing = graphRefusalFields(error, "graph.render_node_parameters_missing@1")) {
+        mark(scope, text(*missing, "node"));
         return;
     }
     // A loop refused by name.
@@ -7474,14 +7502,6 @@ bool GraphCanvasModel::setRasterDepth(std::string_view scope, const std::string 
     if (replaced == *found) return false;
     ops.push_back(Json{{"op", "replace_node"}, {"scope", token}, {"node", std::move(replaced)}});
     return submitOps(std::move(ops));
-}
-
-std::vector<GraphCanvasModel::RequiredParameter>
-GraphCanvasModel::requiredParameters(std::string_view op) {
-    if (op == "render.scalar") return {{"target", "buffer"}};
-    if (op == "value.constant") return {{"value", "number"}};
-    if (op == "value.input") return {{"name", "input"}};
-    return {};
 }
 
 std::vector<std::string> GraphCanvasModel::valueInputNames() {

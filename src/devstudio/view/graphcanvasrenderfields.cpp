@@ -2,6 +2,8 @@
 
 #include "fullscreenpasssettings.hpp"
 #include "fullscreenshadertemplate.hpp"
+#include "graphcanvasparameterfields.hpp"
+#include "graphcanvasposefields.hpp"
 #include "passforms/attachmentopsform.hpp"
 #include "passforms/rasterstateform.hpp"
 #include "passforms/shaderdefinesform.hpp"
@@ -2333,77 +2335,153 @@ void GraphCanvasPlaceFields::commit() {
     load();
 }
 
-// --- UX-7, decision 5: the parameters an op cannot be placed without.
+// --- UX-7, decision 5 / UX-12a, decision 2: the parameters an op cannot be
+// placed without, from the catalog's table.
 
 GraphCanvasRequiredDialog::GraphCanvasRequiredDialog(const GraphCanvasModel &model,
                                                      const std::string &scope,
-                                                     const std::string &op, QWidget *parent)
+                                                     const std::string &op, QWidget *parent,
+                                                     const std::filesystem::path &project_root)
     : QDialog{parent} {
     setObjectName(QStringLiteral("pelican.graphCanvasRequired"));
     setWindowTitle(tr("%1 needs").arg(qtext(op)));
     auto *layout = new QVBoxLayout(this);
     auto *intro = new QLabel(
         tr("The engine does not take %1 without these. They can be changed afterwards in the "
-           "node's details.")
+           "node's fields.")
             .arg(qtext(op)),
         this);
     intro->setWordWrap(true);
     intro->setFont(studioSmallFont());
     layout->addWidget(intro);
     auto *form = new QFormLayout;
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     layout->addLayout(form);
     const auto fieldName = [](const std::string &parameter) {
         return QStringLiteral("pelican.graphCanvasRequired.") + qtext(parameter);
     };
-    // UX-8, decision 13 (a): what the engine's catalog lists, when it does.
+    // The editors read the scope's nodes and the project's files; a clip is
+    // one of its rig's animations (UX-12a, decision 5).
+    auto choices = std::make_shared<GraphParameterChoices>();
+    choices->model = &model;
+    choices->scope = scope;
+    choices->op = op;
+    choices->project_root = project_root;
+    choices->strings = [op, project_root](const std::string &name, const Json &around)
+        -> std::optional<std::vector<std::string>> {
+        if (op != "pose.clip_sample" || name != "clip") return std::nullopt;
+        const auto rig = around.is_object() ? around.value("rig", std::string{}) : std::string{};
+        return gltfAnimationNames(projectReferenceFile(project_root, rig));
+    };
+    std::vector<GraphParameterEditor *> editors;
+    const auto editorFor = [&](const Json &schema, const std::string &name) {
+        auto *editor = new GraphParameterEditor(schema, choices, fieldName(name), {}, this);
+        // A number starts written (0, or its least), so OK places it as shown.
+        const auto kind = schema.value("kind", std::string{});
+        if (!schema.contains("default")) {
+            if (kind == "number") editor->setValue(0.0);
+            else if (kind == "integer")
+                editor->setValue(static_cast<std::int64_t>(schema.value("min", 0.0)));
+            else if (kind == "bool") editor->setValue(false);
+            else if (kind == "string" && op == "value.parameter" && name == "name")
+                editor->setValue(model.suggestNodeId(scope, name));
+        }
+        editors.push_back(editor);
+        return editor;
+    };
+    auto *group = new QButtonGroup(this);
     for (const auto &required : model.requiredParametersFor(op)) {
         QWidget *field = nullptr;
-        if (required.kind == "number") {
-            auto *spin = new QDoubleSpinBox(this);
-            spin->setRange(-1.0e9, 1.0e9);
-            spin->setDecimals(4);
-            spin->setValue(0.0);
-            spin->setToolTip(tr("The constant's value."));
-            field = spin;
-        } else if (required.kind == "text") {
-            auto *line = new QLineEdit(this);
-            line->setText(qtext(model.suggestNodeId(scope, required.name)));
-            line->setToolTip(tr("The name the value is set by from outside."));
-            connect(line, &QLineEdit::textChanged, this, [this] { follow(); });
-            field = line;
-        } else {
+        if (required.kind == "input") {
             auto *combo = new QComboBox(this);
-            if (required.kind == "voice") {
+            for (const auto &name : model.valueInputNamesFor())
+                combo->addItem(qtext(name), qtext(name));
+            combo->setToolTip(tr("The value the engine hands the graph each frame: "
+                                 "scene_time from the scene's start, time, delta_time."));
+            field = combo;
+        } else if (required.kind == "buffer") {
+            // A buffer of the graph's, or a new name typed in.
+            auto *combo = new QComboBox(this);
+            combo->setEditable(true);
+            combo->setInsertPolicy(QComboBox::NoInsert);
+            // UX-8, decision 3: the graph's buffers and the plan's (a
+            // feature's, as bloom.intensity).
+            for (const auto &buffer : model.scalarTargets(scope))
+                combo->addItem(qtext(buffer), qtext(buffer));
+            if (combo->count() == 0) combo->setEditText(QStringLiteral("value_buffer"));
+            combo->setToolTip(tr("The buffer the value is written into: one of the graph's "
+                                 "render.buffer nodes, or a new name."));
+            connect(combo, &QComboBox::editTextChanged, this, [this] { follow(); });
+            field = combo;
+        } else {
+            field = editorFor(required.schema, required.name);
+        }
+        // An editor names its own fields (`.<parameter>` is its main one).
+        if (dynamic_cast<GraphParameterEditor *>(field) == nullptr)
+            field->setObjectName(fieldName(required.name));
+        Field entry{required.name, required.kind, field, nullptr};
+        if (required.alternatives.empty()) {
+            auto *label = new QLabel(qtext(required.name) + QStringLiteral(" *"), this);
+            label->setToolTip(field->toolTip());
+            form->addRow(label, field);
+            fields_.push_back(entry);
+            continue;
+        }
+        // "One of": a radio each.
+        const auto first = fields_.size();
+        entry.choose = new QRadioButton(qtext(required.name), this);
+        entry.choose->setObjectName(fieldName(required.name) + QStringLiteral(".choose"));
+        group->addButton(entry.choose);
+        form->addRow(entry.choose, field);
+        fields_.push_back(entry);
+        for (const auto &alternative : required.alternatives) {
+            const bool edge = std::ranges::find(required.edge_alternatives, alternative) !=
+                              required.edge_alternatives.end();
+            Field other{alternative, edge ? std::string{"voice"} : std::string{}, nullptr, nullptr};
+            other.choose = new QRadioButton(qtext(alternative), this);
+            other.choose->setObjectName(fieldName(alternative) + QStringLiteral(".choose"));
+            group->addButton(other.choose);
+            if (edge) {
                 // UX-8, decision 7: the voice the sink drives, one of the
-                // scope's audio.playback nodes.
+                // scope's audio.playback nodes -- an edge.
+                auto *combo = new QComboBox(this);
                 for (const auto &voice : model.voiceChoices(scope))
                     combo->addItem(qtext(voice), qtext(voice));
                 combo->setToolTip(tr("The voice whose sound this changes: an audio.playback of "
                                      "this scope."));
-            } else if (required.kind == "input") {
-                for (const auto &name : model.valueInputNamesFor())
-                    combo->addItem(qtext(name), qtext(name));
-                combo->setToolTip(tr("The value the engine hands the graph each frame: "
-                                     "scene_time from the scene's start, time, delta_time."));
+                other.widget = combo;
+            } else if (const auto schema = model.parameterSchema(op, alternative)) {
+                other.kind = schema->value("kind", std::string{});
+                other.widget = editorFor(*schema, alternative);
             } else {
-                // A buffer of the graph's, or a new name typed in.
-                combo->setEditable(true);
-                combo->setInsertPolicy(QComboBox::NoInsert);
-                // UX-8, decision 3: the graph's buffers and the plan's (a
-                // feature's, as bloom.intensity).
-                for (const auto &buffer : model.scalarTargets(scope))
-                    combo->addItem(qtext(buffer), qtext(buffer));
-                if (combo->count() == 0) combo->setEditText(QStringLiteral("value_buffer"));
-                combo->setToolTip(tr("The buffer the value is written into: one of the graph's "
-                                     "render.buffer nodes, or a new name."));
-                connect(combo, &QComboBox::editTextChanged, this, [this] { follow(); });
+                other.widget = new QLabel(tr("(set it in the node's fields)"), this);
             }
-            field = combo;
+            if (dynamic_cast<GraphParameterEditor *>(other.widget) == nullptr)
+                other.widget->setObjectName(fieldName(alternative));
+            auto *cell = new QWidget(this);
+            auto *column = new QVBoxLayout(cell);
+            column->setContentsMargins(0, 0, 0, 0);
+            column->addWidget(other.widget);
+            if (edge) {
+                auto *hint = new QLabel(tr("or connect a line to %1 after placing").arg(qtext(alternative)),
+                                        cell);
+                hint->setFont(studioSmallFont());
+                column->addWidget(hint);
+            }
+            form->addRow(other.choose, cell);
+            fields_.push_back(other);
         }
-        field->setObjectName(fieldName(required.name));
-        form->addRow(qtext(required.name), field);
-        fields_.emplace_back(required, field);
+        // An edge with something to take it from is the one picked first.
+        QRadioButton *picked = fields_[first].choose;
+        for (auto index = first; index < fields_.size(); ++index)
+            if (const auto *combo = qobject_cast<const QComboBox *>(fields_[index].widget);
+                fields_[index].kind == "voice" && combo != nullptr && combo->count() > 0) {
+                picked = fields_[index].choose;
+                break;
+            }
+        picked->setChecked(true);
     }
+    connect(group, &QButtonGroup::buttonToggled, this, [this] { follow(); });
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     ok_ = buttons->button(QDialogButtonBox::Ok);
     ok_->setObjectName(QStringLiteral("pelican.graphCanvasRequired.ok"));
@@ -2412,20 +2490,38 @@ GraphCanvasRequiredDialog::GraphCanvasRequiredDialog(const GraphCanvasModel &mod
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
+    // An editor's change reads the others again (a clip after its rig).
+    const auto refresh = [this, editors] {
+        const auto now = parameters();
+        for (auto *each : editors) each->refreshChoices(now);
+    };
+    for (auto *editor : editors)
+        editor->setEdited([this, refresh](bool) {
+            refresh();
+            follow();
+        });
+    refresh();
     follow();
 }
 
+bool GraphCanvasRequiredDialog::chosen(const Field &field) const {
+    return field.choose == nullptr || field.choose->isChecked();
+}
+
 void GraphCanvasRequiredDialog::follow() {
-    // A buffer needs a name.
     const auto json = parameters();
     bool ready = true;
-    for (const auto &[required, field] : fields_) {
-        if ((required.kind == "buffer" || required.kind == "text") &&
-            (!json.contains(required.name) || json.at(required.name).get<std::string>().empty()))
-            ready = false;
-        // A sound sink drives a voice: none to drive, nothing to place.
-        if (const auto *combo = qobject_cast<const QComboBox *>(field);
-            required.kind == "voice" && combo != nullptr && combo->count() == 0)
+    for (const auto &field : fields_) {
+        if (!chosen(field)) continue;
+        if (field.kind == "voice") {
+            // A sound sink drives a voice: none to drive, nothing to place.
+            const auto *combo = qobject_cast<const QComboBox *>(field.widget);
+            if (combo == nullptr || combo->count() == 0) ready = false;
+            continue;
+        }
+        const auto found = json.find(field.name);
+        if (found == json.end() || found->is_null() ||
+            (found->is_string() && found->get<std::string>().empty()))
             ready = false;
     }
     if (ok_ != nullptr) ok_->setEnabled(ready);
@@ -2433,28 +2529,27 @@ void GraphCanvasRequiredDialog::follow() {
 
 nlohmann::json GraphCanvasRequiredDialog::seed() const {
     Json result{{"parameters", parameters()}};
-    for (const auto &[required, field] : fields_)
-        if (const auto *combo = qobject_cast<const QComboBox *>(field);
-            required.kind == "voice" && combo != nullptr && combo->count() > 0)
-            result["inputs"][required.name] =
+    for (const auto &field : fields_)
+        if (const auto *combo = qobject_cast<const QComboBox *>(field.widget);
+            field.kind == "voice" && chosen(field) && combo != nullptr && combo->count() > 0)
+            result["inputs"][field.name] =
                 Json{{"node", combo->currentData().toString().toStdString()}, {"port", "voice"}};
     return result;
 }
 
 nlohmann::json GraphCanvasRequiredDialog::parameters() const {
     Json result = Json::object();
-    for (const auto &[required, field] : fields_) {
-        // UX-8: a voice is an edge (seed()), not a parameter.
-        if (required.kind == "voice") continue;
-        if (const auto *spin = qobject_cast<const QDoubleSpinBox *>(field)) {
-            result[required.name] = spin->value();
-        } else if (const auto *line = qobject_cast<const QLineEdit *>(field)) {
-            result[required.name] = line->text().trimmed().toStdString();
-        } else if (const auto *combo = qobject_cast<const QComboBox *>(field)) {
+    for (const auto &field : fields_) {
+        // UX-8: a voice is an edge (seed()), not a parameter; an alternative
+        // not picked is not written.
+        if (field.kind == "voice" || !chosen(field)) continue;
+        if (const auto *editor = dynamic_cast<const GraphParameterEditor *>(field.widget)) {
+            if (auto value = editor->value(); !value.is_null()) result[field.name] = std::move(value);
+        } else if (const auto *combo = qobject_cast<const QComboBox *>(field.widget)) {
             const auto text = (combo->isEditable() ? combo->currentText() : combo->currentData().toString())
                                   .trimmed()
                                   .toStdString();
-            result[required.name] = text;
+            result[field.name] = text;
         }
     }
     return result;

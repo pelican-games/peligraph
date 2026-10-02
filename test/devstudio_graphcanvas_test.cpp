@@ -3793,7 +3793,10 @@ TEST_CASE("UX-8 decisions 7 and 13: a sound sink is placed driving the voice the
             result.push_back(each.name + ":" + each.kind);
         return result;
     };
-    CHECK(kinds("audio.volume") == std::vector<std::string>{"voice:voice"});
+    // UX-12a, decision 2: the table's entry -- a target, or the voice edge.
+    CHECK(kinds("audio.volume") == std::vector<std::string>{"target:string"});
+    CHECK(h.client.model.requiredParametersFor("audio.volume").front().edge_alternatives ==
+          std::vector<std::string>{"voice"});
     CHECK(kinds("value.curve").empty());
     CHECK(kinds("render.scalar") == std::vector<std::string>{"target:buffer"});
     CHECK(kinds("value.input") == std::vector<std::string>{"name:input"});

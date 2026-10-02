@@ -112,6 +112,9 @@ add_library(pelican_studio_view STATIC
     # UX-10: a pose.clip_sample's rig, clip, speed and loop.
     graphcanvasposefields.cpp
     graphcanvasposefields.hpp
+    # UX-12a: a node's parameters as fields made from the catalog's table.
+    graphcanvasparameterfields.cpp
+    graphcanvasparameterfields.hpp
     viewselectfield.cpp
     viewselectfield.hpp
     playcontrols.cpp
