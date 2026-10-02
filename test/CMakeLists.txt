@@ -3634,6 +3634,25 @@ if(PELICAN_WITH_CANVAS)
     pelican_gpu_test_properties(canvas_text_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
     set_tests_properties(canvas_text_headless_player PROPERTIES
         SKIP_REGULAR_EXPRESSION PELICAN_CANVAS_TEXT_SKIP_NO_FONT)
+    # CV-6a: canvas.place and layer depths -- the lowering and the placement's
+    # arithmetic, then a stack placed in a 3D scene, its frames held against
+    # where the arithmetic puts the items.
+    pelican_define_test(canvas_place_test pelican_project)
+    add_executable(pelican_test_canvas_place_probe canvas_place_probe.cpp)
+    set_target_properties(pelican_test_canvas_place_probe PROPERTIES CXX_STANDARD 20)
+    target_link_libraries(pelican_test_canvas_place_probe PRIVATE stb pelican_project nlohmann_json)
+    add_test(
+        NAME canvas_place_headless_player
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+            -DCLI=$<TARGET_FILE:pelican_cli>
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DPROBE=$<TARGET_FILE:pelican_test_canvas_place_probe>
+            -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_material_pass_authoring
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/canvas_place_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_canvas_place_headless.cmake
+    )
+    pelican_gpu_test_properties(canvas_place_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 endif()
 
 set(PELICAN_TEST_PROJECTS_DIR "" CACHE PATH

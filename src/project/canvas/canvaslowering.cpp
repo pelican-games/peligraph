@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -174,6 +175,15 @@ struct Flattening {
     CanvasOutput *output = nullptr;
     // CV-4: the fonts shape.text reads.
     CanvasFontLibrary *fonts = nullptr;
+    // CV-6a. Walking for a canvas.place: the layers' depths count. `flat`
+    // inside a list composited on its own, whose layers' depths are ignored.
+    bool placed = false;
+    bool flat = false;
+    double depth = 0.0;
+    std::optional<CanvasParameter> depth_edge;
+    Json depth_layer;
+    // Where the depth diagnostics go.
+    Json *diagnostics = nullptr;
 };
 
 // The context a list starts from when it is composited on its own: no
@@ -184,11 +194,28 @@ Flattening freshFlattening(const Flattening &outer) {
     fresh.srgb = outer.srgb;
     fresh.output = outer.output;
     fresh.fonts = outer.fonts;
+    // CV-6a: the list is one picture, placed at the depth of the layer it is.
+    fresh.placed = outer.placed;
+    fresh.flat = outer.placed;
+    fresh.diagnostics = outer.diagnostics;
     return fresh;
+}
+
+// CV-6a: adds `flattening`'s depth to an item's.
+void addDepth(CanvasItem &item, const Flattening &flattening) {
+    item.depth += flattening.depth;
+    if (flattening.depth_edge) {
+        if (item.depth_edge)
+            throw std::invalid_argument("canvas.place adds at most one edge-driven layer depth to an item: " +
+                                        flattening.depth_edge->edge->node + " and " + item.depth_edge->edge->node);
+        item.depth_edge = flattening.depth_edge;
+    }
+    if (item.depth_layer.is_null()) item.depth_layer = flattening.depth_layer;
 }
 
 // Lifts an item made under a fresh context into `flattening`'s list.
 void applyFlattening(CanvasItem &item, const Flattening &flattening) {
+    addDepth(item, flattening);
     item.opacity *= flattening.opacity;
     item.opacity_edges.insert(item.opacity_edges.end(), flattening.opacity_edges.begin(),
                               flattening.opacity_edges.end());
@@ -229,6 +256,7 @@ void placePaintItem(CanvasItem &item, const std::string &paint, const std::strin
     item.affine = flattening.affine;
     item.nodes = {paint, shape};
     item.nodes.insert(item.nodes.end(), flattening.stacks.begin(), flattening.stacks.end());
+    addDepth(item, flattening);
 }
 
 void appendText(const Scope &scope, const Json &paint, const Json &text, bool stroke, const Flattening &flattening,
@@ -587,7 +615,8 @@ struct StackLayer {
 
 // The context one layer's items join their list with.
 Flattening layerFlattening(const Scope &scope, const Json &stack, const StackLayer &layer,
-                           const Flattening &flattening, CanvasIr &ir, bool with_opacity, bool with_mask) {
+                           const Flattening &flattening, CanvasIr &ir, bool with_opacity, bool with_mask,
+                           bool with_depth = true) {
     (void)ir;
     const auto id = nodeId(stack);
     const auto &inputs = objectMember(stack, "inputs");
@@ -595,6 +624,31 @@ Flattening layerFlattening(const Scope &scope, const Json &stack, const StackLay
     inner.stacks.insert(inner.stacks.begin(), id);
     inner.pass_through = layer.pass_through;
     inner.own_opacity = false;
+    // CV-6a: the layer's depth, under a canvas.place.
+    if (with_depth && flattening.placed) {
+        const auto depth_port = canvasStackDepthPort(layer.input);
+        const auto edge = inputs.find(depth_port);
+        const auto authored = layer.entry->find("depth");
+        double value = 0.0;
+        if (authored != layer.entry->end()) value = number(*authored, "canvas.stack layer depth: " + id);
+        const Json where{{"node", id}, {"layer", layerName(*layer.entry, layer.index)}};
+        if (flattening.flat) {
+            if (edge != inputs.end() || value != 0.0)
+                flattening.diagnostics->push_back(
+                    {{"code", "canvas.depth_flattened"}, {"node", id}, {"layer", where.at("layer")}});
+        } else {
+            // The innermost layer an item is in names it in canvas.depth_order.
+            inner.depth_layer = where;
+            if (edge != inputs.end()) {
+                if (inner.depth_edge)
+                    throw std::invalid_argument("canvas.place adds at most one edge-driven layer depth to an item: " +
+                                                id + "." + depth_port);
+                inner.depth_edge = CanvasParameter{value, valueSource(scope, stack, depth_port, *edge)};
+            } else {
+                inner.depth += value;
+            }
+        }
+    }
     if (with_opacity) {
         const auto opacity_port = canvasStackOpacityPort(layer.input);
         if (const auto opacity_edge = inputs.find(opacity_port); opacity_edge != inputs.end()) {
@@ -657,7 +711,7 @@ void appendClipUnit(const Scope &scope, const Json &stack, const StackLayer &bas
     auto inner = freshFlattening(flattening);
     std::vector<CanvasItem> unit;
     const auto base_item =
-        singleItem(scope, *base.edge, layerFlattening(scope, stack, base, inner, ir, false, true), active, ir);
+        singleItem(scope, *base.edge, layerFlattening(scope, stack, base, inner, ir, false, true, false), active, ir);
     if (!base_item) return;
     unit.push_back(*base_item);
     for (const auto *clip : shown) {
@@ -687,7 +741,7 @@ void appendStackLayers(const Scope &scope, const Json &stack, const Flattening &
         for (const auto &[key, value] : layer.items()) {
             (void)value;
             if (key != "input" && key != "name" && key != "visible" && key != "opacity" && key != "blend" &&
-                key != "mask" && key != "clip" && key != "pass_through")
+                key != "mask" && key != "clip" && key != "pass_through" && key != "depth")
                 throw std::invalid_argument("canvas.stack layer does not take " + key + ": " + id);
         }
         const auto input = layer.find("input");
@@ -874,6 +928,124 @@ CanvasOutput buildOutput(const Scope &scope, const Json &node, CanvasIr &ir, Can
     return output;
 }
 
+// --- CV-6a: canvas.place ----------------------------------------------------
+
+bool placeFlag(const Json &node, const char *key, bool fallback) {
+    const auto &parameters = objectMember(node, "parameters");
+    const auto found = parameters.find(key);
+    if (found == parameters.end()) return fallback;
+    if (!found->is_boolean())
+        throw std::invalid_argument(std::string{"canvas.place "} + key + " must be a boolean: " + nodeId(node));
+    return found->get<bool>();
+}
+
+// The image edge a canvas.place draws onto or tests against.
+CanvasValueSource placeImageEdge(const Scope &scope, const Json &node, const std::string &port, const Json &edge) {
+    if (const auto *from = producer(scope, edge); from == nullptr)
+        throw std::invalid_argument("canvas.place " + port + " edge names no node of its scope: " + nodeId(node));
+    return valueSource(scope, node, port, edge);
+}
+
+CanvasOutput buildPlace(const Scope &scope, const Json &node, CanvasIr &ir, CanvasFontLibrary &fonts) {
+    const auto id = nodeId(node);
+    onlyKeys(node, {"position", "rotation", "scale", "pixels_per_unit", "anchor", "depth_test", "depth_write",
+                    "double_sided"});
+    const auto &parameters = objectMember(node, "parameters");
+    const auto &inputs = objectMember(node, "inputs");
+    for (const auto *port : {"layer", "color"})
+        if (!inputs.contains(port)) throw GraphRegistryError("canvas.place_unconnected@1", {{"node", id}, {"port", port}});
+    CanvasPlacement placement;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        const char *const components[3] = {"x", "y", "z"};
+        placement.position[axis] = parameter(scope, node, "position", 3, axis,
+                                             std::string{"position."} + components[axis], 0.0);
+        placement.rotation[axis] = parameter(scope, node, "rotation", 3, axis,
+                                             std::string{"rotation."} + components[axis], 0.0);
+    }
+    placement.scale = parameter(scope, node, "scale", std::nullopt, 0, "scale", 1.0);
+    if (const auto found = parameters.find("pixels_per_unit"); found != parameters.end()) {
+        placement.pixels_per_unit = number(*found, "canvas.place pixels_per_unit: " + id);
+        if (!(placement.pixels_per_unit > 0.0))
+            throw std::invalid_argument("canvas.place pixels_per_unit must be positive: " + id);
+    }
+    if (const auto found = parameters.find("anchor"); found != parameters.end()) {
+        if (!found->is_array() || found->size() != 2)
+            throw std::invalid_argument("canvas.place anchor must be [x, y]: " + id);
+        placement.anchor = {number(found->at(0), "canvas.place anchor: " + id),
+                            number(found->at(1), "canvas.place anchor: " + id)};
+    }
+    placement.depth_test = placeFlag(node, "depth_test", true);
+    placement.depth_write = placeFlag(node, "depth_write", false);
+    placement.double_sided = placeFlag(node, "double_sided", true);
+    placement.color = placeImageEdge(scope, node, "color", inputs.at("color"));
+    if (const auto depth = inputs.find("depth"); depth != inputs.end())
+        placement.depth = placeImageEdge(scope, node, "depth", *depth);
+    else if (placement.depth_write)
+        throw std::invalid_argument("canvas.place depth_write writes the depth edge, which it does not have: " + id);
+
+    const auto *from = producer(scope, inputs.at("layer"));
+    if (from == nullptr) throw GraphRegistryError("canvas.place_unconnected@1", {{"node", id}, {"port", "layer"}});
+    if (nodeOp(*from) != "canvas.stack")
+        throw std::invalid_argument("canvas.place reads a canvas.stack, whose size is the canvas: " + id);
+    const auto size = positiveSize(objectMember(*from, "parameters"), "canvas.stack " + nodeId(*from));
+    if (!size) throw std::invalid_argument("canvas.stack read by a canvas.place requires a size: " + nodeId(*from));
+
+    CanvasOutput output;
+    output.id = id;
+    output.scope = scope.name;
+    output.size = *size;
+    output.fit = CanvasFit::stretch;
+    // A group is an image of one pixel per stack unit.
+    output.image_size = std::array<std::uint32_t, 2>{static_cast<std::uint32_t>(std::ceil((*size)[0])),
+                                                     static_cast<std::uint32_t>(std::ceil((*size)[1]))};
+    output.format = default_canvas_format;
+    output.placement = std::move(placement);
+
+    auto diagnostics = Json::array();
+    std::vector<std::string> active;
+    Flattening top;
+    top.pass_through = true;
+    top.output = &output;
+    top.fonts = &fonts;
+    top.placed = true;
+    top.diagnostics = &diagnostics;
+    appendLayer(scope, inputs.at("layer"), top, active, ir, output.items);
+
+    // CV-2b: what is below a layer drawn straight into the scene is the scene
+    // and the layers at other depths, not an image a blend could read. A
+    // nested stack is composited first, so its blends are drawn there.
+    for (const auto &item : output.items) {
+        if (!canvasItemReadsBackdrop(item)) continue;
+        const auto &where = item.depth_layer;
+        throw GraphRegistryError("canvas.place_backdrop_unsupported@1",
+                                 {{"node", where.is_null() ? Json(id) : where.at("node")},
+                                  {"layer", where.is_null() ? Json(nullptr) : where.at("layer")}});
+    }
+
+    // Back to front: by depth, then the stack's order. A layer that moves
+    // before one above it in the stack is reported.
+    const auto total = [](const CanvasItem &item) {
+        return item.depth + (item.depth_edge ? item.depth_edge->value : 0.0);
+    };
+    double deepest = -std::numeric_limits<double>::infinity();
+    for (const auto &item : output.items) {
+        if (item.clip_base) throw std::logic_error("canvas.place: a clip layer outside its group");
+        if (total(item) < deepest) {
+            const auto &where = item.depth_layer;
+            diagnostics.push_back({{"code", "canvas.depth_order"},
+                                   {"node", where.is_null() ? Json(id) : where.at("node")},
+                                   {"layer", where.is_null() ? Json(nullptr) : where.at("layer")}});
+        }
+        deepest = std::max(deepest, total(item));
+    }
+    std::stable_sort(output.items.begin(), output.items.end(),
+                     [&](const CanvasItem &a, const CanvasItem &b) { return total(a) < total(b); });
+    std::set<std::string> seen;
+    for (auto &diagnostic : diagnostics)
+        if (seen.insert(diagnostic.dump()).second) ir.diagnostics.push_back(std::move(diagnostic));
+    return output;
+}
+
 // graph.loop branch bodies, by definition name.
 std::set<std::string> loopBodies(const Json &document) {
     std::set<std::string> bodies;
@@ -912,7 +1084,7 @@ void checkScope(const std::string &name, const Json &holder, const std::set<std:
             throw GraphRegistryError("canvas.op_unsupported@1", {{"node", nodeId(node)}, {"op", nodeOp(node)}});
         if (!isCanvasGraphOperation(nodeOp(node))) continue;
         if (bodies.contains(name)) throw GraphRegistryError("canvas.in_loop_body@1", {{"node", nodeId(node)}});
-        if (nodeOp(node) == "canvas.output") outputs.push_back(nodeId(node));
+        if (nodeOp(node) == "canvas.output" || nodeOp(node) == "canvas.place") outputs.push_back(nodeId(node));
     }
     for (const auto &node : *nodes) {
         const auto id = nodeId(node);
@@ -933,7 +1105,8 @@ bool isCanvasDefinition(const Json &body) {
     for (const auto &[port, endpoint] : objectMember(body, "outputs").items()) {
         (void)port;
         if (const auto *from = producer(scope, endpoint);
-            from != nullptr && isCanvasGraphOperation(nodeOp(*from)) && nodeOp(*from) != "canvas.output")
+            from != nullptr && isCanvasGraphOperation(nodeOp(*from)) && nodeOp(*from) != "canvas.output" &&
+            nodeOp(*from) != "canvas.place")
             return true;
     }
     for (const auto &node : *nodes) {
@@ -1203,6 +1376,9 @@ struct DrawShape {
     std::vector<std::pair<CanvasBlend, std::vector<CanvasFilterKind>>> styles;
     bool atop = false;
     std::optional<std::size_t> backdrop_slot;
+    // CV-6a: parameters each item carries past its kind's own (a placed
+    // item's depth), before its filter numbers.
+    std::size_t extra_parameters = 0;
 };
 
 // CV-2b: the kind's parameter count, where an item's filter numbers start.
@@ -1255,7 +1431,8 @@ vec4 canvasBackdrop() {
     text += canvasFilterGlsl(filters);
     text += "uint canvasParamCount(uint kind) {\n    switch (kind) {\n";
     for (const auto kind : draw.kinds)
-        text += "    case " + std::to_string(kind) + "u: return " + std::to_string(kindParameterCount(kind)) + "u;\n";
+        text += "    case " + std::to_string(kind) + "u: return " +
+                std::to_string(kindParameterCount(kind) + draw.extra_parameters) + "u;\n";
     text += "    default: return 0u;\n    }\n}\n\n";
     text += "vec4 canvasStyle(mat4 it, vec4 color) {\n";
     text += "    uint kind = uint(it[0].x + 0.5);\n";
@@ -1318,33 +1495,10 @@ std::string fitFunctions(const CanvasOutput &output) {
     return text;
 }
 
-std::string vertexShader(const CanvasOutput &output, const std::string &raster, const DrawShape &draw) {
-    std::string text = shader_header;
-    text += generatedBanner(output, raster);
-    text += "// One instance draws one item: 6 vertices, the item's bounding quad, no vertex buffer.\n";
-    text += parameter_layout_comment;
-    text += shader_includes;
-    text += R"glsl(
-layout(location = 0) out vec2 vCanvas;
-layout(location = 1) flat out uint vItem;
-
-)glsl";
-    text += fitFunctions(output);
-    text += "\n";
-    text += parameterFunctions(draw.frame);
-    text += R"glsl(
-float canvasStrokeOutset(float width, float align) {
-    return align > 1.5 ? abs(width) : (align > 0.5 ? 0.0 : 0.5 * abs(width));
-}
-
-void main() {
-    mat4 it = pelican_load_items(uint(gl_InstanceIndex));
-)glsl";
-    text += kindLine(draw);
-    text += R"glsl(    vec2 center = vec2(0.0);
-    vec2 bound = vec2(0.0);
-    switch (kind) {
-)glsl";
+// The cases of the vertex shader's switch on an item's kind: its `center` and
+// the half extent `bound` of its rectangle in its own stack.
+std::string itemBoundsCases(const DrawShape &draw) {
+    std::string text;
     for (const auto kind : draw.kinds) {
         text += "    case " + std::to_string(kind) + "u: { // " + std::string{canvasItemKindName(kind)} + "\n";
         if (kind == canvas_kind_image) {
@@ -1386,6 +1540,37 @@ void main() {
                     "u), canvasParam(it, " + std::to_string(parameterIndex(shape, 5)) + "u));\n";
         text += "        break;\n    }\n";
     }
+    return text;
+}
+
+std::string vertexShader(const CanvasOutput &output, const std::string &raster, const DrawShape &draw) {
+    std::string text = shader_header;
+    text += generatedBanner(output, raster);
+    text += "// One instance draws one item: 6 vertices, the item's bounding quad, no vertex buffer.\n";
+    text += parameter_layout_comment;
+    text += shader_includes;
+    text += R"glsl(
+layout(location = 0) out vec2 vCanvas;
+layout(location = 1) flat out uint vItem;
+
+)glsl";
+    text += fitFunctions(output);
+    text += "\n";
+    text += parameterFunctions(draw.frame);
+    text += R"glsl(
+float canvasStrokeOutset(float width, float align) {
+    return align > 1.5 ? abs(width) : (align > 0.5 ? 0.0 : 0.5 * abs(width));
+}
+
+void main() {
+    mat4 it = pelican_load_items(uint(gl_InstanceIndex));
+)glsl";
+    text += kindLine(draw);
+    text += R"glsl(    vec2 center = vec2(0.0);
+    vec2 bound = vec2(0.0);
+    switch (kind) {
+)glsl";
+    text += itemBoundsCases(draw);
     text += R"glsl(    default:
         break;
     }
@@ -2026,6 +2211,373 @@ void lowerComposite(const CanvasOutput &output, const std::vector<CanvasItem> &a
     }
 }
 
+// --- CV-6a: canvas.place, the stack's items drawn in 3D ---------------------
+
+// What a canvas.place's vertex shader reads past an ordinary draw's.
+struct PlaceDraw {
+    // Per kind, the item parameter its depth starts at: the constant part,
+    // then the edge-driven one.
+    std::map<std::uint32_t, std::size_t> depth_index;
+    // The placement's seven numbers in the bake table (position.xyz,
+    // rotation.xyz, scale), and the sources of the ones an edge drives.
+    std::size_t place_offset = 0;
+    std::optional<std::size_t> place_source;
+};
+
+Json depthType() {
+    return {{"semantic", "pelican.render.depth@1"}, {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+}
+
+std::string placeVertexShader(const CanvasOutput &output, const std::string &raster, const DrawShape &draw,
+                              const PlaceDraw &place) {
+    const auto &placement = *output.placement;
+    std::string text = shader_header;
+    text += generatedBanner(output, raster);
+    text += "// One instance draws one item: 6 vertices, the item's bounding quad, no vertex buffer,\n"
+            "// placed in the world by canvas.place and seen by the frame's camera.\n";
+    text += parameter_layout_comment;
+    text += "// After an item's own parameters, its depth: a constant and an edge-driven part.\n"
+            "// The placement: position.xyz rotation.xyz (degrees) scale, at PLACE_OFFSET.\n";
+    text += shader_includes;
+    text += R"glsl(
+layout(location = 0) out vec2 vCanvas;
+layout(location = 1) flat out uint vItem;
+
+)glsl";
+    text += "const vec2 CANVAS_SIZE = vec2(" + glslNumber(output.size[0]) + ", " + glslNumber(output.size[1]) + ");\n";
+    text += "// The anchor in stack units, and stack units per world unit.\n";
+    text += "const vec2 PLACE_ANCHOR = vec2(" + glslNumber(placement.anchor[0] * output.size[0]) + ", " +
+            glslNumber(placement.anchor[1] * output.size[1]) + ");\n";
+    text += "const float PLACE_UNITS = " + glslNumber(placement.pixels_per_unit) + ";\n";
+    text += "const uint PLACE_OFFSET = " + std::to_string(place.place_offset) + "u;\n\n";
+    text += parameterFunctions(draw.frame);
+    text += "\nfloat canvasPlaceParam(uint i) {\n";
+    if (draw.frame && place.place_source)
+        text += "    uint source = uint(pelican_load_bake(" + std::to_string(*place.place_source) +
+                "u + i) + 0.5);\n    if (source != 0u) return pelican_load_frame(source - 1u);\n";
+    text += "    return pelican_load_bake(PLACE_OFFSET + i);\n}\n\n";
+    text += "float canvasItemDepth(mat4 it, uint kind) {\n    switch (kind) {\n";
+    for (const auto &[kind, index] : place.depth_index)
+        text += "    case " + std::to_string(kind) + "u: return canvasParam(it, " + std::to_string(index) +
+                "u) + canvasParam(it, " + std::to_string(index + 1) + "u);\n";
+    text += "    default: return 0.0;\n    }\n}\n";
+    text += R"glsl(
+float canvasStrokeOutset(float width, float align) {
+    return align > 1.5 ? abs(width) : (align > 0.5 ? 0.0 : 0.5 * abs(width));
+}
+
+// Degrees, X first, then Y, then Z: Rz Ry Rx.
+mat3 canvasPlaceRotation(vec3 degrees) {
+    vec3 r = radians(degrees);
+    float cx = cos(r.x), sx = sin(r.x), cy = cos(r.y), sy = sin(r.y), cz = cos(r.z), sz = sin(r.z);
+    mat3 rx = mat3(1.0, 0.0, 0.0, 0.0, cx, sx, 0.0, -sx, cx);
+    mat3 ry = mat3(cy, 0.0, -sy, 0.0, 1.0, 0.0, sy, 0.0, cy);
+    mat3 rz = mat3(cz, sz, 0.0, -sz, cz, 0.0, 0.0, 0.0, 1.0);
+    return rz * ry * rx;
+}
+
+// A point of the stack (+y down) at a depth (toward the viewer) in the world.
+vec3 canvasPlaceWorld(vec2 canvas, float depth, vec3 position, mat3 rotation, float scale) {
+    vec3 local = vec3(canvas.x - PLACE_ANCHOR.x, PLACE_ANCHOR.y - canvas.y, depth) / PLACE_UNITS;
+    return position + rotation * (scale * local);
+}
+
+void main() {
+    mat4 it = pelican_load_items(uint(gl_InstanceIndex));
+)glsl";
+    // CV-2b: past 256 the kind carries a style (a filtered item's).
+    text += kindLine(draw);
+    text += R"glsl(    vec2 center = vec2(0.0);
+    vec2 bound = vec2(0.0);
+    switch (kind) {
+)glsl";
+    text += itemBoundsCases(draw);
+    text += R"glsl(    default:
+        break;
+    }
+    vec3 position = vec3(canvasPlaceParam(0u), canvasPlaceParam(1u), canvasPlaceParam(2u));
+    mat3 rotation = canvasPlaceRotation(vec3(canvasPlaceParam(3u), canvasPlaceParam(4u), canvasPlaceParam(5u)));
+    float scale = canvasPlaceParam(6u);
+    float depth = canvasItemDepth(it, kind);
+    mat2 affine = mat2(it[2].xy, it[2].zw);
+    mat4 view_projection = pelicanFrame.projection * pelicanFrame.view;
+    // Two pixels of room for the antialiased edge, in stack units: the
+    // pixels one stack unit covers at the item's centre, the shorter way.
+    vec2 middle = affine * center + it[3].xy;
+    vec4 c0 = view_projection * vec4(canvasPlaceWorld(middle, depth, position, rotation, scale), 1.0);
+    vec4 cx = view_projection * vec4(canvasPlaceWorld(middle + vec2(1.0, 0.0), depth, position, rotation, scale), 1.0);
+    vec4 cy = view_projection * vec4(canvasPlaceWorld(middle + vec2(0.0, 1.0), depth, position, rotation, scale), 1.0);
+    float margin = 0.0;
+    if (c0.w > 0.0 && cx.w > 0.0 && cy.w > 0.0) {
+        vec2 half_resolution = 0.5 * pelicanFrame.resolution.xy;
+        vec2 p0 = c0.xy / c0.w * half_resolution;
+        float pixels = min(length(cx.xy / cx.w * half_resolution - p0), length(cy.xy / cy.w * half_resolution - p0));
+        margin = min(2.0 / max(pixels, 1e-4), max(CANVAS_SIZE.x, CANVAS_SIZE.y));
+    }
+    const vec2 corners[6] = vec2[6](vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
+                                    vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
+    vec2 local = corners[gl_VertexIndex] * (bound + margin);
+    vec2 canvas = affine * (center + local) + it[3].xy;
+    gl_Position = view_projection * vec4(canvasPlaceWorld(canvas, depth, position, rotation, scale), 1.0);
+)glsl";
+    if (!placement.double_sided)
+        text += R"glsl(    // One side only: the one the stack's normal points to (a collapsed quad otherwise).
+    vec3 normal = mat3(pelicanFrame.view) * (rotation * vec3(0.0, 0.0, scale));
+    vec3 eye = (pelicanFrame.view * vec4(canvasPlaceWorld(middle, depth, position, rotation, scale), 1.0)).xyz;
+    bool facing = pelicanFrame.projection[3][3] > 0.5 ? normal.z > 0.0 : dot(normal, eye) < 0.0;
+    if (!facing) gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+)glsl";
+    text += R"glsl(    vCanvas = canvas;
+    vItem = uint(gl_InstanceIndex);
+}
+)glsl";
+    return text;
+}
+
+// A canvas.place's items: one draw per CV-2a split onto the colour image it
+// reads (depth-tested against its depth image), then with depth_write the
+// same draws again writing only the depth of the pixels at least half
+// covered. The last raster keeps the place's id; its `color` is the result.
+void lowerPlace(const CanvasOutput &output, const std::function<Json(const CanvasTexture &)> &texture_source,
+                const CanvasLoweringOptions &options, LoweredOutput &lowered) {
+    const auto &id = output.id;
+    const auto &placement = *output.placement;
+    const auto prefix = reservedPrefix(id);
+    auto items = output.items;
+    // An empty stack still draws one item (fully transparent), as an output does.
+    const bool empty = items.empty();
+    if (empty) {
+        CanvasItem none;
+        none.parameters.assign(canvasShapeParameterCount(CanvasShape::rect) +
+                                   canvasPaintParameterCount(CanvasPaint::fill), CanvasParameter{});
+        none.opacity = 0.0;
+        items.push_back(std::move(none));
+    }
+    std::map<std::uint32_t, std::size_t> depth_index;
+    for (auto &item : items) {
+        depth_index.emplace(canvasItemKind(item), item.parameters.size());
+        item.parameters.push_back(constantParameter(item.depth));
+        item.parameters.push_back(item.depth_edge ? *item.depth_edge : constantParameter(0.0));
+    }
+    std::size_t splits = 0;
+    const auto draws = planDraws(items, id, splits);
+    if (splits > 0)
+        lowered.diagnostics.push_back(
+            {{"code", "canvas.draw_split"}, {"output", id}, {"reason", "image_limit"}, {"count", splits + 1}});
+    const bool depth = placement.depth.has_value();
+    const std::size_t phases = placement.depth_write ? 2 : 1;
+    const auto raster_count = draws.size() * phases;
+
+    struct Tables {
+        DrawShape shape;
+        PlaceDraw place;
+        Json ports;
+        Json inputs;
+    };
+    std::vector<Tables> tables;
+    for (std::size_t draw_index = 0; draw_index < draws.size(); ++draw_index) {
+        const auto &draw = draws[draw_index];
+        const bool last = draw_index + 1 == draws.size();
+        const auto names = last ? prefix : prefix + "draw" + std::to_string(draw_index) + "_";
+        std::vector<double> item_table, bake, frame_initial;
+        std::vector<CanvasValueSource> frame_sources;
+        std::map<CanvasValueSource, std::size_t> frame_index;
+        const auto frameEntry = [&](const CanvasValueSource &source, double initial) {
+            const auto [found, inserted] = frame_index.emplace(source, frame_sources.size());
+            if (inserted) {
+                frame_sources.push_back(source);
+                frame_initial.push_back(initial);
+            }
+            return found->second;
+        };
+        const auto slotOf = [&](const CanvasTexture &texture) {
+            return static_cast<double>(std::find(draw.slots.begin(), draw.slots.end(), texture) - draw.slots.begin());
+        };
+        Tables table;
+        table.shape.slots = draw.slots.size();
+        // The depth's two parameters sit between the kind's own and the
+        // filter numbers.
+        table.shape.extra_parameters = 2;
+        for (std::size_t instance = 0; instance < draw.items.size(); ++instance) {
+            const auto &item = items[draw.items[instance]];
+            auto kind = canvasItemKind(item);
+            table.shape.kinds.insert(kind);
+            table.place.depth_index.emplace(kind, depth_index.at(kind));
+            // CV-2b: the item's filters, numbered by first use in the draw
+            // (buildPlace refused a blend that reads the backdrop).
+            if (item.blend != CanvasBlend::normal || !item.filters.empty()) {
+                std::pair<CanvasBlend, std::vector<CanvasFilterKind>> style{item.blend, {}};
+                for (const auto &filter : item.filters) style.second.push_back(filter.kind);
+                auto found = std::find(table.shape.styles.begin(), table.shape.styles.end(), style);
+                if (found == table.shape.styles.end())
+                    found = table.shape.styles.insert(table.shape.styles.end(), std::move(style));
+                kind += canvas_kind_style_stride * static_cast<std::uint32_t>(found - table.shape.styles.begin() + 1);
+            }
+            const auto bake_offset = static_cast<double>(bake.size());
+            for (const auto &parameter : item.parameters) bake.push_back(parameter.value);
+            for (const auto &filter : item.filters) bake.insert(bake.end(), filter.constants.begin(), filter.constants.end());
+            double source_offset = -1.0;
+            if (std::any_of(item.parameters.begin(), item.parameters.end(),
+                            [](const CanvasParameter &parameter) { return parameter.edge.has_value(); })) {
+                source_offset = static_cast<double>(bake.size());
+                for (const auto &parameter : item.parameters)
+                    bake.push_back(parameter.edge ? static_cast<double>(frameEntry(*parameter.edge, parameter.value) + 1)
+                                                  : 0.0);
+            }
+            double opacity_offset = -1.0;
+            if (!item.opacity_edges.empty()) {
+                opacity_offset = static_cast<double>(bake.size());
+                for (const auto &edge : item.opacity_edges) bake.push_back(static_cast<double>(frameEntry(edge, 1.0)));
+            }
+            double mask_offset = -1.0;
+            if (!item.masks.empty()) {
+                table.shape.masks = true;
+                mask_offset = static_cast<double>(bake.size());
+                for (const auto &mask : item.masks) {
+                    bake.push_back(slotOf(mask.texture));
+                    bake.push_back(mask.luminance ? 1.0 : 0.0);
+                    bake.push_back(mask.outside);
+                    bake.insert(bake.end(), mask.rect.begin(), mask.rect.end());
+                    bake.insert(bake.end(), mask.affine.begin(), mask.affine.end());
+                }
+            }
+            const bool sampled = item.source == CanvasItemSource::image || item.source == CanvasItemSource::group ||
+                                 item.source == CanvasItemSource::glyph;
+            const double row[16] = {static_cast<double>(kind), bake_offset, source_offset, item.opacity,
+                                    opacity_offset, static_cast<double>(item.opacity_edges.size()), mask_offset,
+                                    static_cast<double>(item.masks.size()),
+                                    item.affine[0], item.affine[1], item.affine[2], item.affine[3],
+                                    item.affine[4], item.affine[5], sampled ? slotOf(item.texture) : -1.0, -1.0};
+            item_table.insert(item_table.end(), std::begin(row), std::end(row));
+            if (!empty) {
+                auto nodes = Json::array();
+                for (const auto &node : item.nodes) nodes.push_back(node);
+                Json entry{{"output", id}, {"instance", instance},
+                           {"kind", std::string{canvasItemKindName(kind % canvas_kind_style_stride)}},
+                           {"nodes", std::move(nodes)}};
+                if (draws.size() > 1) entry["draw"] = draw_index;
+                if (!item.filters.empty()) {
+                    entry["filters"] = Json::array();
+                    for (const auto &filter : item.filters)
+                        entry["filters"].push_back({{"node", filter.node},
+                                                    {"op", std::string{canvasFilterOperation(filter.kind)}}});
+                }
+                lowered.items.push_back(std::move(entry));
+            }
+        }
+        // The placement, after the items.
+        table.place.place_offset = bake.size();
+        std::vector<const CanvasParameter *> numbers;
+        for (const auto &component : placement.position) numbers.push_back(&component);
+        for (const auto &component : placement.rotation) numbers.push_back(&component);
+        numbers.push_back(&placement.scale);
+        for (const auto *number : numbers) bake.push_back(number->value);
+        if (std::any_of(numbers.begin(), numbers.end(),
+                        [](const CanvasParameter *number) { return number->edge.has_value(); })) {
+            table.place.place_source = bake.size();
+            for (const auto *number : numbers)
+                bake.push_back(number->edge ? static_cast<double>(frameEntry(*number->edge, number->value) + 1) : 0.0);
+        }
+        table.shape.frame = !frame_sources.empty();
+
+        const auto items_id = names + "items";
+        const auto bake_id = names + "bake";
+        const auto frame_id = names + "frame";
+        lowered.nodes.push_back({{"id", items_id}, {"op", "render.attribute"},
+                                 {"parameters", {{"element", "mat4"}, {"domain", "instance"}, {"count", draw.items.size()},
+                                                 {"host_source", "runtime_f32"}, {"initial_f32", floatArray(item_table)}}},
+                                 {"inputs", Json::object()}, {"outputs", Json::array({"resource"})}});
+        lowered.nodes.push_back({{"id", bake_id}, {"op", "render.buffer"},
+                                 {"parameters", {{"element", "float"}, {"size", bake.size() * sizeof(float)},
+                                                 {"host_source", "runtime_f32"}, {"initial_f32", floatArray(bake)}}},
+                                 {"inputs", Json::object()}, {"outputs", Json::array({"resource"})}});
+        table.ports = {{"items", {{"kind", "buffer"}, {"element", "mat4"}, {"domain", "instance"}, {"access", "read"}}},
+                       {"bake", {{"kind", "buffer"}, {"element", "float"}, {"access", "read"}}},
+                       {"color", {{"kind", "image"}, {"type", colorType()}, {"access", "write"}, {"attachment", "color"},
+                                  {"location", 0}}}};
+        table.inputs = {{"items", endpoint(items_id, "resource")}, {"bake", endpoint(bake_id, "resource")}};
+        if (table.shape.frame) {
+            lowered.nodes.push_back({{"id", frame_id}, {"op", "render.buffer"},
+                                     {"parameters", {{"element", "float"}, {"size", frame_initial.size() * sizeof(float)},
+                                                     {"host_source", "runtime_f32"},
+                                                     {"initial_f32", floatArray(frame_initial)}}},
+                                     {"inputs", Json::object()}, {"outputs", Json::array({"resource"})}});
+            // One float per value edge, tiling the frame table from byte 0 (RS-15).
+            for (std::size_t index = 0; index < frame_sources.size(); ++index)
+                lowered.nodes.push_back({{"id", names + "set_" + std::to_string(index)}, {"op", "render.scalar"},
+                                         {"parameters", {{"target", frame_id}, {"offset", index * sizeof(float)}}},
+                                         {"inputs", {{"value", endpoint(frame_sources[index].node,
+                                                                        frame_sources[index].port)}}},
+                                         {"outputs", Json::array()}});
+            table.ports["frame"] = {{"kind", "buffer"}, {"element", "float"}, {"access", "read"}};
+            table.inputs["frame"] = endpoint(frame_id, "resource");
+        }
+        if (depth)
+            table.ports["depth"] = {{"kind", "image"}, {"type", depthType()}, {"access", "write"}, {"attachment", "depth"}};
+        for (std::size_t slot = 0; slot < draw.slots.size(); ++slot) {
+            const auto port = "t" + std::to_string(slot);
+            table.ports[port] = {{"kind", "image"}, {"type", colorType()}, {"access", "read"},
+                                 {"sampling", {{"filter", draw.slots[slot].nearest ? "nearest" : "linear"},
+                                               {"address", "clamp_to_edge"}}}};
+            table.inputs[port] = texture_source(draw.slots[slot]);
+        }
+        tables.push_back(std::move(table));
+    }
+
+    std::string previous;
+    for (std::size_t raster = 0; raster < raster_count; ++raster) {
+        const auto phase = raster / draws.size();
+        const auto draw_index = raster % draws.size();
+        const auto &table = tables[draw_index];
+        const auto name =
+            raster + 1 == raster_count ? id : prefix + (phase == 0 ? "draw" : "depth") + std::to_string(draw_index);
+        const auto vertex = placeVertexShader(output, name, table.shape, table.place);
+        auto fragment = fragmentShader(output, name, table.shape);
+        if (phase == 1) {
+            // Depth only: the pixels the item covers at least half.
+            const std::string from = "    if (color.a <= 0.0) discard;\n";
+            const auto at = fragment.find(from);
+            if (at == std::string::npos) throw std::logic_error("canvas.place: the fragment shader has no discard");
+            fragment.replace(at, from.size(), "    if (color.a < 0.5) discard;\n");
+        }
+        const auto digest = picosha2::hash256_hex_string(vertex + std::string(1, '\0') + fragment);
+        const auto stem = "canvas_" + fileStem(name) + "_" + digest.substr(0, 8);
+        const auto directory = options.shader_directory + (options.directory_per_stem ? "/" + stem : std::string{});
+        lowered.sources.push_back({stem, "vert", vertex, {}, id, directory + "/" + stem + ".vert"});
+        lowered.sources.push_back({stem, "frag", fragment, {}, id, directory + "/" + stem + ".frag"});
+
+        auto inputs = table.inputs;
+        inputs["color"] = raster == 0 ? endpoint(placement.color.node, placement.color.port) : endpoint(previous, "color");
+        if (depth)
+            inputs["depth"] =
+                raster == 0 ? endpoint(placement.depth->node, placement.depth->port) : endpoint(previous, "depth");
+        // Premultiplied over onto the scene's linear colour; the depth pass
+        // writes no colour.
+        const Json premultiplied{{"color", {{"src", "one"}, {"dst", "one_minus_src_alpha"}, {"op", "add"}}},
+                                 {"alpha", {{"src", "one"}, {"dst", "one_minus_src_alpha"}, {"op", "add"}}}};
+        const Json attachment =
+            phase == 0 ? Json{{"blend", premultiplied}, {"write_mask", "rgba"}} : Json{{"write_mask", "none"}};
+        Json state{{"topology", "triangle_list"}, {"cull", "none"}, {"depth_test", depth && placement.depth_test},
+                   {"depth_write", phase == 1}, {"color_attachments", Json::array({attachment})}};
+        if (depth) state["depth_compare"] = "less_equal";
+        const auto shader = "project://" + directory + "/" + stem;
+        Json parameters{{"shader", {{"vertex", shader}, {"fragment", shader}}},
+                        {"draw", {{"vertex_count", 6}, {"instance_source", "items"}}},
+                        {"raster_state", std::move(state)},
+                        {"ports", table.ports},
+                        {"color_load_op", "load"}};
+        if (depth) parameters["depth_load_op"] = "load";
+        auto outputs = Json::array({"color"});
+        if (depth) outputs.push_back("depth");
+        lowered.nodes.push_back({{"id", name},
+                                 {"op", "render.raster"},
+                                 {"parameters", std::move(parameters)},
+                                 {"inputs", std::move(inputs)},
+                                 {"outputs", std::move(outputs)}});
+        previous = name;
+    }
+}
+
 LoweredOutput lowerOutput(const CanvasOutput &output, const CanvasLoweringOptions &options) {
     LoweredOutput lowered;
     const auto &id = output.id;
@@ -2058,7 +2610,8 @@ LoweredOutput lowerOutput(const CanvasOutput &output, const CanvasLoweringOption
     for (std::size_t group = 0; group < output.groups.size(); ++group)
         lowerComposite(output, output.groups[group].items, output.groups[group].srgb, group, texture_source, options,
                        lowered);
-    lowerComposite(output, output.items, false, std::nullopt, texture_source, options, lowered);
+    if (output.placement) lowerPlace(output, texture_source, options, lowered);
+    else lowerComposite(output, output.items, false, std::nullopt, texture_source, options, lowered);
     return lowered;
 }
 
@@ -2069,6 +2622,8 @@ void checkSurvivingEdges(const Json &nodes, const Scope &scope, const Json *outp
         const auto *from = producer(scope, endpoint);
         if (from == nullptr || !isCanvasGraphOperation(nodeOp(*from))) return;
         if (nodeOp(*from) == "canvas.output" && endpoint.value("port", std::string{}) == "image") return;
+        // CV-6a: the last raster of a canvas.place keeps its id and `color`.
+        if (nodeOp(*from) == "canvas.place" && endpoint.value("port", std::string{}) == "color") return;
         throw std::invalid_argument("only a canvas.output's image leaves the canvas; " + consumer + " reads " +
                                     nodeId(*from));
     };
@@ -2235,8 +2790,9 @@ CanvasIr buildCanvasIr(const nlohmann::json &authored, const CanvasAssetReader &
         if (nodes == holder.end() || !nodes->is_array()) return;
         const auto scope = indexScope(name, *nodes);
         for (const auto &node : *nodes)
-            if (nodeOp(node) == "canvas.output") {
-                ir.outputs.push_back(buildOutput(scope, node, ir, fonts));
+            if (nodeOp(node) == "canvas.output" || nodeOp(node) == "canvas.place") {
+                ir.outputs.push_back(nodeOp(node) == "canvas.output" ? buildOutput(scope, node, ir, fonts)
+                                                                     : buildPlace(scope, node, ir, fonts));
                 bakeGlyphAtlases(ir.outputs.back(), fonts, options, ir.diagnostics);
             }
     });
@@ -2271,7 +2827,7 @@ CanvasLowering lowerCanvasNodes(const nlohmann::json &document, const CanvasLowe
                 lowered.push_back(node);
                 continue;
             }
-            if (op != "canvas.output") continue;
+            if (op != "canvas.output" && op != "canvas.place") continue;
             auto output = lowerOutput(*outputs.at({name, nodeId(node)}), options);
             for (auto &added : output.nodes) lowered.push_back(std::move(added));
             for (auto &source : output.sources) {
@@ -2291,7 +2847,7 @@ CanvasLowering lowerCanvasNodes(const nlohmann::json &document, const CanvasLowe
     lowerScope(std::string{}, result.document);
     std::set<std::string> root_outputs;
     for (const auto &output : result.ir.outputs)
-        if (output.scope.empty()) root_outputs.insert(output.id);
+        if (output.scope.empty() && !output.placement) root_outputs.insert(output.id);
     rewriteRenderingInputs(result.document, std::move(root_outputs));
     if (auto definitions = result.document.find("definitions");
         definitions != result.document.end() && definitions->is_object())

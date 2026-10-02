@@ -53,6 +53,15 @@ namespace Pelican {
 // canvasColorFilterOperations() (blur, ...); canvasblend.hpp names the
 // filters' own refusals. The diagnostic canvas.backdrop_copies {output,
 // count[, group]} counts the copies one image's draws read their backdrop from.
+// CV-6a adds:
+//   canvas.place_unconnected@1     {node, port}               a canvas.place without its `layer` or `color` edge
+//   canvas.place_backdrop_unsupported@1 {node, layer}         a layer drawn straight into the 3D scene that
+//                                                             reads its backdrop (a blend other than normal, a
+//                                                             canvas.backdrop); `node` is its stack. Inside a
+//                                                             nested stack (composited first) it is drawn.
+// and the diagnostics canvas.depth_order {node, layer} (a layer drawn out of
+// its stack's order because of its depth) and canvas.depth_flattened {node,
+// layer} (a layer's depth ignored: it is composited into a group first).
 // `layer` names the layer by its `name`, or by its index when it has none.
 // Wrong types and unknown ports are the graph's own checks.
 
@@ -208,6 +217,14 @@ struct CanvasItem {
     // colour filters on its colour, innermost first.
     CanvasBlend blend = CanvasBlend::normal;
     std::vector<CanvasFilter> filters;
+    // CV-6a, under a canvas.place: the distance along the stack's normal
+    // (stack units, positive toward the viewer), the sum of the layers'
+    // depths it sits under: the constant ones here, at most one edge-driven
+    // one (whose `value` is its frame table's first value). `depth_layer` is
+    // the innermost layer that gave it a depth ({node, layer}), or null.
+    double depth = 0.0;
+    std::optional<CanvasParameter> depth_edge;
+    nlohmann::json depth_layer;
 };
 
 // CV-2b: the item reads what is below it in its list (a blend other than
@@ -250,6 +267,26 @@ struct CanvasAtlas {
     std::shared_ptr<const CanvasAtlasPixels> pixels;
 };
 
+// CV-6a: where a canvas.place puts its stack in the world. The stack's
+// rectangle, from `anchor` (0..1 of its size), is divided by
+// `pixels_per_unit` (+x right, +y up -- the stack's +y down flipped -- and +z
+// the normal, toward the viewer, which a layer's depth moves along), scaled,
+// rotated (degrees; X first, then Y, then Z: R = Rz Ry Rx, as the Studio's
+// transform Euler angles) and moved to `position`.
+struct CanvasPlacement {
+    std::array<CanvasParameter, 3> position{};
+    std::array<CanvasParameter, 3> rotation{};
+    CanvasParameter scale{1.0, std::nullopt};
+    double pixels_per_unit = 100.0;
+    std::array<double, 2> anchor{0.5, 0.5};
+    bool depth_test = true;
+    bool depth_write = false;
+    bool double_sided = true;
+    // The colour image drawn onto, and the depth image tested (when there is one).
+    CanvasValueSource color;
+    std::optional<CanvasValueSource> depth;
+};
+
 struct CanvasOutput {
     std::string id;
     // "" for the root; otherwise the definition the output lives in.
@@ -270,6 +307,10 @@ struct CanvasOutput {
     std::vector<CanvasGroup> groups;
     // CV-4: one per font face its glyph items read, in first-use order.
     std::vector<CanvasAtlas> atlases;
+    // CV-6a: set for a canvas.place, whose items are drawn in 3D in this
+    // order (by depth, then the stack's order); its groups are images of the
+    // stack's size (one pixel per stack unit).
+    std::optional<CanvasPlacement> placement;
 };
 
 struct CanvasIr {
@@ -348,6 +389,12 @@ std::string canvasFrameSinkNodeId(const std::string &output, std::size_t index);
 std::string canvasGroupImageNodeId(const std::string &output, std::size_t group);
 std::string canvasGroupRasterNodeId(const std::string &output, std::size_t group);
 std::string canvasAssetNodeId(const std::string &output, std::size_t index);
+// CV-6a: a canvas.place `<id>` lowers the same way, with the reserved names
+// `<id>$canvas_...`: its groups' images and rasters as above, its tables
+// `<id>$canvas_items` / `_bake` / `_frame` / `_set_<k>` (a split draw's
+// `<id>$canvas_draw<k>_items`, ...). Its rasters draw onto the `color` edge in
+// turn -- `<id>$canvas_draw<k>`, then with depth_write `<id>$canvas_depth<k>`
+// -- and the last keeps `<id>` itself, its written ports `color` (and `depth`).
 
 // CV-2a: copies each graph.instance of a canvas definition (one whose output is
 // produced by a canvas op, or whose graph.input feeds a layer or geometry

@@ -21,6 +21,9 @@ namespace Pelican {
 //                              canvas.transform, and a stack layer's `mask` names a layer port
 //                              (a canvas.image) beside its `input`.
 // canvas.from_image reads an image edge (`image`) of a render pass or render.image.
+// CV-6a: canvas.place reads a layer, a colour image (`color`) and optionally a
+// depth image (`depth`), and gives the colour image back with the stack drawn
+// on it in 3D.
 //
 // A vector parameter a value edge may drive is split into one scalar port per
 // component: `size.x`, `size.y`, `center.x`, `center.y`, `color.r` .. `color.a`.
@@ -37,5 +40,8 @@ bool isCanvasGraphOperation(std::string_view op);
 // The scalar ports a canvas.stack node exposes beside its layer ports, one
 // `<input>.opacity` per layer. Shared by the contract and the lowering.
 std::string canvasStackOpacityPort(const std::string &input);
+// CV-6a: `<input>.depth`, the scalar that may drive a layer's depth (read when
+// the stack is placed by canvas.place, ignored by canvas.output).
+std::string canvasStackDepthPort(const std::string &input);
 
 } // namespace Pelican

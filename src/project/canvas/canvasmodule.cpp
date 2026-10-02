@@ -27,10 +27,10 @@ std::vector<SemanticTypeSchema> builtinCanvasTypeSchemas() {
 
 const std::vector<std::string> &canvasGraphOperations() {
     static const std::vector<std::string> operations{
-        "canvas.backdrop", "canvas.color", "canvas.from_image", "canvas.image", "canvas.output", "canvas.stack",
-        "canvas.transform", "filter.brightness_contrast", "filter.color_overlay", "filter.gradient_map",
-        "filter.hue_saturation", "filter.invert", "filter.levels", "shape.ellipse", "shape.fill", "shape.rect",
-        "shape.stroke", "shape.text"};
+        "canvas.backdrop", "canvas.color", "canvas.from_image", "canvas.image", "canvas.output", "canvas.place",
+        "canvas.stack", "canvas.transform", "filter.brightness_contrast", "filter.color_overlay",
+        "filter.gradient_map", "filter.hue_saturation", "filter.invert", "filter.levels", "shape.ellipse",
+        "shape.fill", "shape.rect", "shape.stroke", "shape.text"};
     return operations;
 }
 
@@ -40,6 +40,8 @@ bool isCanvasGraphOperation(std::string_view op) {
 }
 
 std::string canvasStackOpacityPort(const std::string &input) { return input + ".opacity"; }
+
+std::string canvasStackDepthPort(const std::string &input) { return input + ".depth"; }
 
 void registerCanvasGraphModule(GraphModuleRegistry &registry) {
     // The contracts own canonical types, so the factory keeps the registry it
@@ -107,6 +109,8 @@ void registerCanvasGraphModule(GraphModuleRegistry &registry) {
             if (!contract.inputs.emplace(name, layer_input).second)
                 throw std::invalid_argument("canvas.stack names a layer input twice: " + id + "." + name);
             contract.inputs.emplace(canvasStackOpacityPort(name), value);
+            // CV-6a: the layer's depth when the stack is placed in 3D.
+            contract.inputs.emplace(canvasStackDepthPort(name), value);
         }
         // CV-2a: a layer's `mask` names one more layer port (several layers
         // may share one mask, a mask is never also a layer).
@@ -160,6 +164,21 @@ void registerCanvasGraphModule(GraphModuleRegistry &registry) {
     transform_inputs.emplace("layer", layer_input);
     auto transform = declared(transform_inputs, {{"layer", layer}}, GraphParameterChange::value);
 
+    // CV-6a: a stack placed in 3D, drawn onto a pass's colour image (and
+    // tested against its depth). The placement's numbers are values; the
+    // rest rebuilds.
+    auto place_inputs = ports({"position.x", "position.y", "position.z", "rotation.x", "rotation.y", "rotation.z",
+                               "scale"});
+    place_inputs.emplace("layer", layer_input);
+    place_inputs.emplace("color", GraphInputContract{exactLogicalTypePattern(*types, image)});
+    place_inputs.emplace("depth", GraphInputContract{exactLogicalTypePattern(*types, deviceDepthV1(*types)), false});
+    auto place = declared(place_inputs, {{"color", image}}, GraphParameterChange::value);
+    place.contract.parameter_changes = {{"pixels_per_unit", GraphParameterChange::rebuild},
+                                        {"anchor", GraphParameterChange::rebuild},
+                                        {"depth_test", GraphParameterChange::rebuild},
+                                        {"depth_write", GraphParameterChange::rebuild},
+                                        {"double_sided", GraphParameterChange::rebuild}};
+
     // CV-2b: the backdrop and the colour filters. A filter's numbers are
     // declared as values; the lowering takes them as authored and refuses an
     // edge into one by name (canvas.filter_edge_unsupported@1).
@@ -200,6 +219,7 @@ void registerCanvasGraphModule(GraphModuleRegistry &registry) {
             {"canvas.color", std::move(color)},
             {"canvas.transform", std::move(transform)},
             {"shape.text", std::move(text)},
+            {"canvas.place", std::move(place)},
             {"canvas.backdrop", std::move(backdrop)},
             {"filter.invert", std::move(invert)},
             {"filter.brightness_contrast", std::move(brightness_contrast)},
