@@ -1896,6 +1896,159 @@ TEST_CASE("T-1 rotation angles and the stored quaternion round trip",
     CHECK(near(negated[3], 0.92387953251128674));
 }
 
+TEST_CASE("UX-10 a light's direction reads as azimuth and elevation, its colour as a swatch, "
+          "and a sprite's texture is picked from the textures list_assets reports",
+          "[devstudio][inspector][ux10]") {
+    using PelicanStudio::directionAnglesDegrees;
+    using PelicanStudio::directionFromAnglesDegrees;
+    const auto near = [](double a, double b, double tolerance = 1.0e-9) {
+        return std::abs(a - b) <= tolerance;
+    };
+    // Which fields: by name and by type, not by component.
+    InspectorWidgetDescriptor field;
+    field.component_slot = "light";
+    field.field_name = "direction";
+    field.json_pointer = "/direction";
+    field.kind = InspectorWidgetKind::VectorDrag;
+    field.columns = 3;
+    CHECK(PelicanStudio::isDirectionField(field));
+    CHECK_FALSE(PelicanStudio::isColorField(field));
+    field.field_name = "color";
+    CHECK(PelicanStudio::isColorField(field));
+    CHECK_FALSE(PelicanStudio::isDirectionField(field));
+    field.columns = 4;
+    CHECK(PelicanStudio::isColorField(field));
+    field.field_name = "position";
+    field.columns = 3;
+    CHECK_FALSE(PelicanStudio::isColorField(field));
+    CHECK_FALSE(PelicanStudio::isDirectionField(field));
+    field.field_name = "direction";
+    field.kind = InspectorWidgetKind::StringInput;
+    CHECK_FALSE(PelicanStudio::isDirectionField(field));
+
+    // The light's default (0, -1, 0) is straight down: elevation -90, and the
+    // angles give it back exactly.
+    const auto down = directionAnglesDegrees({0.0, -1.0, 0.0});
+    CHECK(down[0] == 0.0);
+    CHECK(near(down[1], -90.0));
+    CHECK(directionFromAnglesDegrees({0.0, -90.0}) == std::array<double, 3>{0.0, -1.0, 0.0});
+    // +Z is azimuth 0, +X azimuth 90, on the horizon.
+    CHECK(directionFromAnglesDegrees({0.0, 0.0}) == std::array<double, 3>{0.0, 0.0, 1.0});
+    CHECK(directionFromAnglesDegrees({90.0, 0.0}) == std::array<double, 3>{1.0, 0.0, 0.0});
+    // A vector that is not unit reads as its direction; zero as (0, 0).
+    const auto slanted = directionAnglesDegrees({2.0, -2.0, 0.0});
+    CHECK(near(slanted[0], 90.0));
+    CHECK(near(slanted[1], -45.0));
+    CHECK(directionAnglesDegrees({0.0, 0.0, 0.0}) == std::array<double, 2>{0.0, 0.0});
+    // Angles -> vector -> angles round trip over what the fields show.
+    for (const double azimuth : {-179.0, -90.0, -30.5, 0.0, 45.0, 135.0, 180.0})
+        for (const double elevation : {-89.0, -45.0, 0.0, 10.25, 89.0}) {
+            const auto vector = directionFromAnglesDegrees({azimuth, elevation});
+            CHECK(near(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2], 1.0));
+            const auto back = directionAnglesDegrees(vector);
+            INFO(azimuth << ", " << elevation << " -> " << back[0] << ", " << back[1]);
+            CHECK(near(back[0], azimuth, 1.0e-7));
+            CHECK(near(back[1], elevation, 1.0e-7));
+        }
+
+    // UX-10 decision 5: sprite_view.texture is a choice, from list_assets'
+    // textures, the authored frame kept.
+    InspectorWidgetDescriptor texture;
+    texture.component_slot = "sprite_view";
+    texture.field_name = "texture";
+    texture.json_pointer = "/texture";
+    texture.kind = InspectorWidgetKind::StringInput;
+    CHECK(PelicanStudio::isTextureReferenceField(texture));
+    texture.component_slot = "simplemodelview";
+    CHECK_FALSE(PelicanStudio::isTextureReferenceField(texture));
+    const Json listed{{"assets",
+                       Json::array({{{"id", "engine://primitives/cube"}, {"kind", "model"}},
+                                    {{"id", "demo_atlas"}, {"kind", "texture"}},
+                                    {{"id", "grass"}, {"kind", "texture"}}})}};
+    const auto textures = PelicanStudio::assetIdsOfKind(listed, "texture");
+    CHECK(textures == std::vector<std::string>{"demo_atlas", "grass"});
+    CHECK(PelicanStudio::modelAssetIds(listed) == std::vector<std::string>{"engine://primitives/cube"});
+    CHECK(PelicanStudio::textureReferenceChoices("demo_atlas#sprite/full", textures) ==
+          std::vector<std::string>{"demo_atlas", "grass", "demo_atlas#sprite/full"});
+    CHECK(PelicanStudio::textureReferenceChoices("grass", textures) ==
+          std::vector<std::string>{"demo_atlas", "grass"});
+}
+
+TEST_CASE("UX-10 decision 6: camera.controller's values are shown for the controller.type that "
+          "reads them, a value it requires and lacks is marked, and yaw and pitch read in degrees",
+          "[devstudio][inspector][ux10]") {
+    // SC-1's wire, written by hand (the engine this worktree builds has not
+    // got it yet).
+    const auto value = [](const char *name, const char *type, Json applies, Json required) {
+        return Json{{"name", name},
+                    {"type", type},
+                    {"discriminant", "controller.type"},
+                    {"applies_to", std::move(applies)},
+                    {"required_for", std::move(required)}};
+    };
+    Json component{
+        {"name", "camera"},
+        {"component_index", 0},
+        {"authored_json", {{"controller", {{"type", "follow"}}}}},
+        {"schema",
+         {{"state", "available"},
+          {"fields",
+           Json::array({{{"name", "controller.type"},
+                         {"type", "enum"},
+                         {"enum", Json::array({"orbit", "follow", "fly"})},
+                         {"default", "orbit"}},
+                        value("controller.target", "string", {"orbit", "follow"}, {"follow"}),
+                        value("controller.distance", "f32", {"orbit", "follow"}, Json::array()),
+                        value("controller.yaw", "f32", {"orbit", "fly"}, Json::array()),
+                        value("controller.speed", "f32", {"fly"}, Json::array()),
+                        {{"name", "znear"}, {"type", "f32"}}})}}},
+    };
+    const auto shown = [](const std::vector<InspectorWidgetDescriptor> &plan) {
+        std::vector<std::string> names;
+        for (const auto &field : plan)
+            if (PelicanStudio::inspectorFieldShown(field, plan)) names.push_back(field.field_name);
+        return names;
+    };
+    const auto find = [](const std::vector<InspectorWidgetDescriptor> &plan, std::string_view name)
+        -> const InspectorWidgetDescriptor & {
+        const auto found = std::ranges::find(plan, name, &InspectorWidgetDescriptor::field_name);
+        REQUIRE(found != plan.end());
+        return *found;
+    };
+
+    auto plan = PelicanStudio::makeInspectorWidgetPlan(component, 7);
+    REQUIRE(plan.size() == 6);
+    CHECK(find(plan, "controller.target").discriminant == "controller.type");
+    CHECK(find(plan, "controller.target").required_for == std::vector<std::string>{"follow"});
+    // follow: its target (required, not given: marked) and its distance.
+    CHECK(shown(plan) == std::vector<std::string>{"controller.type", "controller.target",
+                                                  "controller.distance", "znear"});
+    CHECK(PelicanStudio::inspectorFieldRequiredMissing(find(plan, "controller.target"), plan));
+    CHECK_FALSE(PelicanStudio::inspectorFieldRequiredMissing(find(plan, "controller.distance"), plan));
+    component["authored_json"]["controller"]["target"] = "Player";
+    plan = PelicanStudio::makeInspectorWidgetPlan(component, 7);
+    CHECK_FALSE(PelicanStudio::inspectorFieldRequiredMissing(find(plan, "controller.target"), plan));
+    component["authored_json"]["controller"]["target"] = "";
+    plan = PelicanStudio::makeInspectorWidgetPlan(component, 7);
+    CHECK(PelicanStudio::inspectorFieldRequiredMissing(find(plan, "controller.target"), plan));
+
+    // fly: its yaw and speed; nothing of follow's.
+    component["authored_json"]["controller"] = {{"type", "fly"}};
+    plan = PelicanStudio::makeInspectorWidgetPlan(component, 7);
+    CHECK(shown(plan) == std::vector<std::string>{"controller.type", "controller.yaw",
+                                                  "controller.speed", "znear"});
+    // No type written: the schema's default (orbit) decides.
+    component["authored_json"] = Json::object();
+    plan = PelicanStudio::makeInspectorWidgetPlan(component, 7);
+    CHECK(shown(plan) == std::vector<std::string>{"controller.type", "controller.target",
+                                                  "controller.distance", "controller.yaw", "znear"});
+    // The yaw is stored in radians and read in degrees; another number is not.
+    CHECK(std::abs(PelicanStudio::inspectorDisplayScale(find(plan, "controller.yaw")) -
+                   57.295779513082320876798154814105) < 1e-12);
+    CHECK(PelicanStudio::inspectorDisplayScale(find(plan, "controller.speed")) == 1.0);
+    CHECK(PelicanStudio::inspectorDisplayScale(find(plan, "znear")) == 1.0);
+}
+
 TEST_CASE("Q-7 Add object during an edit waits for it and spawns once",
           "[devstudio][inspector][add-object][q7][negative-contrast]") {
     using PelicanStudio::AddObjectKind;

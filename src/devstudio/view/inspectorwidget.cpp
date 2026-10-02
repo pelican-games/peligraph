@@ -11,6 +11,8 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QColor>
+#include <QColorDialog>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QDialog>
@@ -101,6 +103,12 @@ struct InspectorWidget::Impl {
         // T-1: three angles in degrees standing for a quaternion field. The
         // value that travels is still the quaternion.
         bool euler = false;
+        // UX-10, decision 2: an azimuth and an elevation in degrees standing
+        // for a direction vec3. The value that travels is still the vector.
+        bool direction = false;
+        // UX-10, decision 6: shown = stored x scale (an angle in radians is
+        // shown in degrees). The value that travels is the stored one.
+        double scale = 1.0;
     };
 
     struct TextBinding {
@@ -186,7 +194,13 @@ struct InspectorWidget::Impl {
         QComboBox *choices = nullptr;
         std::string field_key;
         std::string current;
+        // UX-10, decision 5: sprite_view.texture, from the textures.
+        bool texture = false;
     };
+    // UX-10, decision 2: whether a direction's raw vec3 is unfolded (kept
+    // across a rebuild), and the colour swatches with the field they show.
+    bool direction_raw_shown = false;
+    std::vector<std::pair<QPushButton *, std::string>> color_swatches;
     std::vector<ModelChoice> model_choices;
     // Q-7: what a new snapshot may change without the panel being built
     // again. The last structure drawn, the editors whose value alone is
@@ -693,6 +707,23 @@ struct InspectorWidget::Impl {
         return result;
     }
 
+    static std::optional<std::array<double, 3>> vector3Of(const Json &value) {
+        if (!value.is_array() || value.size() != 3) return std::nullopt;
+        std::array<double, 3> result{};
+        for (std::size_t index = 0; index < 3; ++index) {
+            if (!value[index].is_number()) return std::nullopt;
+            result[index] = value[index].get<double>();
+        }
+        return result;
+    }
+
+    // UX-10: what the azimuth and elevation say, as the vector.
+    static Json directionValue(const NumericBinding &binding) {
+        const auto vector = directionFromAnglesDegrees(
+            {binding.editors[0]->value(), binding.editors[1]->value()});
+        return Json::array({vector[0], vector[1], vector[2]});
+    }
+
     // T-1: what the angle fields say, as the quaternion they stand for.
     static Json eulerValue(const NumericBinding &binding) {
         const auto quaternion = quaternionFromEulerDegrees(
@@ -713,8 +744,23 @@ struct InspectorWidget::Impl {
                    editor->textFromValue(editor->value()) ==
                        editor->textFromValue(component.get<double>());
         };
+        if (binding.direction) {
+            const auto vector = vector3Of(value);
+            if (!vector) return false;
+            const auto angles = directionAnglesDegrees(*vector);
+            const QDoubleSpinBox *azimuth = binding.editors[0];
+            const QDoubleSpinBox *elevation = binding.editors[1];
+            // Straight up or down has no azimuth: whichever is shown is it.
+            const bool vertical = std::abs(std::abs(angles[1]) - 90.0) < 1.0e-9;
+            return elevation->textFromValue(elevation->value()) ==
+                       elevation->textFromValue(angles[1]) &&
+                   (vertical ||
+                    azimuth->textFromValue(azimuth->value()) == azimuth->textFromValue(angles[0]));
+        }
         if (!binding.euler) {
-            if (binding.editors.size() == 1) return shown(binding.editors.front(), value);
+            if (binding.editors.size() == 1)
+                return value.is_number() &&
+                       shown(binding.editors.front(), Json(value.get<double>() * binding.scale));
             if (!value.is_array() || value.size() != binding.editors.size()) return false;
             for (std::size_t index = 0; index < value.size(); ++index)
                 if (!shown(binding.editors[index], value[index])) return false;
@@ -733,6 +779,17 @@ struct InspectorWidget::Impl {
     }
 
     void setNumericEditors(NumericBinding &binding, const Json &value) {
+        if (binding.direction) {
+            const auto vector = vector3Of(value);
+            if (!vector || showsValue(binding, value)) return;
+            const auto angles = directionAnglesDegrees(*vector);
+            const bool vertical = std::abs(std::abs(angles[1]) - 90.0) < 1.0e-9;
+            for (std::size_t index = vertical ? 1 : 0; index < 2; ++index) {
+                const QSignalBlocker blocker{binding.editors[index]};
+                binding.editors[index]->setValue(angles[index]);
+            }
+            return;
+        }
         if (binding.euler) {
             const auto quaternion = quaternionOf(value);
             if (!quaternion || showsValue(binding, value)) return;
@@ -745,7 +802,7 @@ struct InspectorWidget::Impl {
         }
         if (binding.editors.size() == 1 && value.is_number()) {
             const QSignalBlocker blocker{binding.editors.front()};
-            binding.editors.front()->setValue(value.get<double>());
+            binding.editors.front()->setValue(value.get<double>() * binding.scale);
         } else if (value.is_array() && value.size() == binding.editors.size()) {
             for (std::size_t index = 0; index < value.size(); ++index) {
                 if (!value[index].is_number()) return;
@@ -796,7 +853,11 @@ struct InspectorWidget::Impl {
                            {"unit", widget.unit},
                            {"enum", widget.enum_values},
                            {"min", widget.range_min ? Json(*widget.range_min) : Json{}},
-                           {"max", widget.range_max ? Json(*widget.range_max) : Json{}}};
+                           {"max", widget.range_max ? Json(*widget.range_max) : Json{}},
+                           // UX-10, decision 6: a controller.type picked
+                           // shows other fields.
+                           {"shown", inspectorFieldShown(widget, component.widgets)},
+                           {"missing", inspectorFieldRequiredMissing(widget, component.widgets)}};
                 // A field that is not an editor shows its state, not a value
                 // that can be replaced in place.
                 if (!widget.authored || !widget.value_matches_schema) field["value"] = widget.value;
@@ -849,8 +910,10 @@ struct InspectorWidget::Impl {
             const auto *descriptor = descriptorFor(choice.field_key);
             if (descriptor == nullptr || !descriptor->value.is_string()) continue;
             choice.current = descriptor->value.get<std::string>();
-            fillModelChoice(*choice.choices, choice.current);
+            fillChoice(choice);
         }
+        for (const auto &[swatch, key] : color_swatches)
+            if (const auto *descriptor = descriptorFor(key)) showSwatch(*swatch, descriptor->value);
         if (const auto &snapshot = model.snapshot()) {
             for (const auto &row : runtime_rows) {
                 for (const auto &component : snapshot->components) {
@@ -1449,8 +1512,7 @@ struct InspectorWidget::Impl {
         }
         if (shown_model_assets_revision != model.modelAssetsRevision()) {
             shown_model_assets_revision = model.modelAssetsRevision();
-            for (const auto &entry : model_choices)
-                fillModelChoice(*entry.choices, entry.current);
+            for (const auto &entry : model_choices) fillChoice(entry);
         }
     }
 
@@ -1464,6 +1526,7 @@ struct InspectorWidget::Impl {
         numeric_bindings.clear();
         text_bindings.clear();
         model_choices.clear();
+        color_swatches.clear();
         direct_values.clear();
         runtime_rows.clear();
     }
@@ -1595,7 +1658,20 @@ struct InspectorWidget::Impl {
             form->addRow(remove);
         }
         for (const InspectorWidgetDescriptor &descriptor : component.widgets) {
+            // UX-10, decision 6: only the fields the discriminant's value
+            // reads; one it requires and that is not given is marked.
+            if (!inspectorFieldShown(descriptor, component.widgets)) continue;
             addField(*form, group, descriptor);
+            if (inspectorFieldRequiredMissing(descriptor, component.widgets) && form->rowCount() > 0)
+                if (auto *item = form->itemAt(form->rowCount() - 1, QFormLayout::LabelRole))
+                    if (auto *label = qobject_cast<QLabel *>(item->widget())) {
+                        label->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+                        label->setToolTip(owner.tr("Required for this %1")
+                                              .arg(QString::fromStdString(descriptor.discriminant)));
+                        label->setObjectName(QStringLiteral("pelican.inspectorRequired.%1.%2")
+                                                 .arg(QString::fromStdString(descriptor.component_slot),
+                                                      QString::fromStdString(descriptor.field_name)));
+                    }
         }
         for (const auto &list : component.lists) {
             addList(*form, group, list);
@@ -1836,6 +1912,10 @@ struct InspectorWidget::Impl {
                             makeModelChoice(parent, descriptor));
                 break;
             }
+            if (isTextureReferenceField(descriptor)) {
+                form.addRow(fieldLabel(descriptor), makeModelChoice(parent, descriptor, true));
+                break;
+            }
             auto binding = std::make_unique<TextBinding>();
             binding->field_key = descriptor.field_key;
             binding->editor = new QLineEdit(
@@ -1896,14 +1976,38 @@ struct InspectorWidget::Impl {
             choices.findData(QString::fromStdString(current)));
     }
 
+    // UX-10, decision 5: a texture is picked the same way, from the textures
+    // list_assets reports; the authored value (an atlas frame) stays listed.
+    void fillTextureChoice(QComboBox &choices, const std::string &current) {
+        const QSignalBlocker blocker{&choices};
+        choices.clear();
+        const auto &assets = model.textureAssets();
+        for (const auto &choice : textureReferenceChoices(
+                 current, assets ? *assets : std::vector<std::string>{}))
+            choices.addItem(QString::fromStdString(choice), QString::fromStdString(choice));
+        choices.setCurrentIndex(choices.findData(QString::fromStdString(current)));
+    }
+
+    void fillChoice(const ModelChoice &choice) {
+        if (choice.texture)
+            fillTextureChoice(*choice.choices, choice.current);
+        else
+            fillModelChoice(*choice.choices, choice.current);
+    }
+
     QWidget *makeModelChoice(QWidget *parent,
-                             const InspectorWidgetDescriptor &descriptor) {
+                             const InspectorWidgetDescriptor &descriptor,
+                             bool texture = false) {
         auto *choices = new QComboBox(parent);
-        choices->setObjectName(QStringLiteral("pelican.inspectorModelChoice"));
+        choices->setObjectName(texture ? QStringLiteral("pelican.inspectorTextureChoice")
+                                       : QStringLiteral("pelican.inspectorModelChoice"));
         const auto current = descriptor.value.get<std::string>();
-        fillModelChoice(*choices, current);
+        if (texture)
+            fillTextureChoice(*choices, current);
+        else
+            fillModelChoice(*choices, current);
         direct_editors.push_back(choices);
-        model_choices.push_back({choices, descriptor.field_key, current});
+        model_choices.push_back({choices, descriptor.field_key, current, texture});
         QObject::connect(
             choices, &QComboBox::currentIndexChanged, &owner,
             [this, choices, key = descriptor.field_key](int index) {
@@ -1970,7 +2074,15 @@ struct InspectorWidget::Impl {
         auto *editor = new QDoubleSpinBox(parent);
         editor->setObjectName(fieldObjectName("pelican.inspectorNumeric", descriptor));
         configureNumeric(*editor, descriptor, false);
-        editor->setValue(descriptor.value.get<double>());
+        // UX-10, decision 6: an angle stored in radians is shown in degrees.
+        binding->scale = inspectorDisplayScale(descriptor);
+        if (binding->scale != 1.0) {
+            editor->setRange(editor->minimum() * binding->scale, editor->maximum() * binding->scale);
+            editor->setDecimals(2);
+            editor->setSingleStep(1.0);
+            editor->setSuffix(QString{QChar{0x00B0}});
+        }
+        editor->setValue(descriptor.value.get<double>() * binding->scale);
         binding->editors.push_back(editor);
         NumericBinding *binding_pointer = binding.get();
         numeric_bindings.push_back(std::move(binding));
@@ -2065,11 +2177,137 @@ struct InspectorWidget::Impl {
         return container;
     }
 
+    // UX-10, decision 2: a direction is typed as an azimuth and an
+    // elevation. Its vec3 stays, folded under "Raw", for a value the angles
+    // cannot say exactly or a person who wants the numbers.
+    QWidget *makeDirectionEditor(QWidget *parent, const InspectorWidgetDescriptor &descriptor) {
+        auto *container = new QWidget(parent);
+        auto *column = new QVBoxLayout(container);
+        column->setContentsMargins(0, 0, 0, 0);
+        column->setSpacing(2);
+        auto *angles = new QWidget(container);
+        auto *row = new QHBoxLayout(angles);
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(3);
+        auto binding = std::make_unique<NumericBinding>();
+        binding->field_key = descriptor.field_key;
+        binding->kind = descriptor.kind;
+        binding->direction = true;
+        const auto vector = vector3Of(descriptor.value);
+        const auto degrees = vector ? directionAnglesDegrees(*vector) : std::array<double, 2>{};
+        struct Angle {
+            const char *name;
+            double low;
+            double high;
+            QString tip;
+        };
+        const std::array<Angle, 2> fields{
+            Angle{"azimuth", -180.0, 180.0,
+                  owner.tr("Azimuth: the turn about +Y from +Z towards +X, in degrees")},
+            Angle{"elevation", -90.0, 90.0,
+                  owner.tr("Elevation: degrees above the horizon (negative points down)")}};
+        for (std::size_t index = 0; index < 2; ++index) {
+            auto *editor = new QDoubleSpinBox(angles);
+            editor->setObjectName(fieldObjectName("pelican.inspectorDirection", descriptor) +
+                                  QStringLiteral(".") + QLatin1String{fields[index].name});
+            editor->setRange(fields[index].low, fields[index].high);
+            editor->setWrapping(index == 0);
+            editor->setDecimals(2);
+            editor->setSingleStep(1.0);
+            editor->setAccelerated(true);
+            editor->setKeyboardTracking(true);
+            editor->setSuffix(QString{QChar{0x00B0}});
+            editor->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+            editor->setToolTip(fields[index].tip);
+            editor->setValue(degrees[index]);
+            binding->editors.push_back(editor);
+            row->addWidget(editor, 1);
+        }
+        NumericBinding *binding_pointer = binding.get();
+        numeric_bindings.push_back(std::move(binding));
+        connectNumericBinding(binding_pointer);
+        auto *raw_button = new QPushButton(owner.tr("Raw"), container);
+        raw_button->setObjectName(fieldObjectName("pelican.inspectorDirectionRaw", descriptor));
+        raw_button->setCheckable(true);
+        raw_button->setFlat(true);
+        raw_button->setToolTip(owner.tr("Show the stored vector x, y, z"));
+        row->addWidget(raw_button);
+        column->addWidget(angles);
+        QWidget *raw = makeVectorEditor(container, descriptor, false);
+        raw->setVisible(direction_raw_shown);
+        raw_button->setChecked(direction_raw_shown);
+        column->addWidget(raw);
+        QObject::connect(raw_button, &QPushButton::toggled, &owner, [this, raw](bool shown) {
+            direction_raw_shown = shown;
+            raw->setVisible(shown);
+        });
+        return container;
+    }
+
+    static void showSwatch(QPushButton &swatch, const Json &value) {
+        const auto channel = [&](std::size_t index, double fallback) {
+            return value.is_array() && index < value.size() && value[index].is_number()
+                       ? std::clamp(value[index].get<double>(), 0.0, 1.0)
+                       : fallback;
+        };
+        const auto colour = QColor::fromRgbF(static_cast<float>(channel(0, 1.0)),
+                                             static_cast<float>(channel(1, 1.0)),
+                                             static_cast<float>(channel(2, 1.0)));
+        swatch.setStyleSheet(
+            QStringLiteral("background-color: %1; border: 1px solid #808080;").arg(colour.name()));
+    }
+
+    // UX-10, decision 2: a colour is a swatch that opens the colour picker,
+    // beside its numbers. The picked components are stored as picked
+    // (linear); an HDR light keeps its strength in intensity.
+    QWidget *makeColorEditor(QWidget *parent, const InspectorWidgetDescriptor &descriptor) {
+        auto *container = new QWidget(parent);
+        auto *row = new QHBoxLayout(container);
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(3);
+        auto *swatch = new QPushButton(container);
+        swatch->setObjectName(fieldObjectName("pelican.inspectorColor", descriptor));
+        swatch->setFixedSize(36, 20);
+        swatch->setToolTip(owner.tr("Pick a colour"));
+        showSwatch(*swatch, descriptor.value);
+        row->addWidget(swatch);
+        row->addWidget(makeVectorEditor(container, descriptor, false), 1);
+        color_swatches.emplace_back(swatch, descriptor.field_key);
+        QObject::connect(swatch, &QPushButton::clicked, &owner,
+                         [this, key = descriptor.field_key] { pickColor(key); });
+        return container;
+    }
+
+    void pickColor(const std::string &field_key) {
+        const auto *descriptor = descriptorFor(field_key);
+        if (descriptor == nullptr || !descriptor->value.is_array()) return;
+        const Json before = descriptor->value;
+        const auto channel = [&](std::size_t index) {
+            return index < before.size() && before[index].is_number()
+                       ? std::clamp(before[index].get<double>(), 0.0, 1.0)
+                       : 1.0;
+        };
+        const bool alpha = before.size() > 3;
+        const auto picked = QColorDialog::getColor(
+            QColor::fromRgbF(static_cast<float>(channel(0)), static_cast<float>(channel(1)),
+                             static_cast<float>(channel(2)), static_cast<float>(channel(3))),
+            &owner, QString::fromStdString(descriptor->component_slot + "." + descriptor->field_name),
+            alpha ? QColorDialog::ShowAlphaChannel : QColorDialog::ColorDialogOptions{});
+        if (!picked.isValid()) return;
+        Json value = Json::array({picked.redF(), picked.greenF(), picked.blueF()});
+        if (alpha) value.push_back(picked.alphaF());
+        commitHeldValue(field_key, std::move(value));
+    }
+
     QWidget *makeVectorEditor(QWidget *parent,
                               const InspectorWidgetDescriptor &descriptor,
                               bool angles_for_rotation = true) {
         if (angles_for_rotation && isEulerRotationField(descriptor))
             return makeRotationEditor(parent, descriptor);
+        if (angles_for_rotation && isDirectionField(descriptor))
+            return makeDirectionEditor(parent, descriptor);
+        if (angles_for_rotation && isColorField(descriptor))
+            return makeColorEditor(parent, descriptor);
         auto binding = std::make_unique<NumericBinding>();
         binding->field_key = descriptor.field_key;
         binding->kind = descriptor.kind;
@@ -2113,6 +2351,7 @@ struct InspectorWidget::Impl {
 
     Json numericValue(const NumericBinding &binding) const {
         if (binding.euler) return eulerValue(binding);
+        if (binding.direction) return directionValue(binding);
         if (binding.editors.size() > 1) {
             Json result = Json::array();
             for (const QDoubleSpinBox *editor : binding.editors) {
@@ -2120,7 +2359,7 @@ struct InspectorWidget::Impl {
             }
             return result;
         }
-        const double value = binding.editors.front()->value();
+        const double value = binding.editors.front()->value() / binding.scale;
         if (binding.kind == InspectorWidgetKind::SignedIntegerDrag) {
             return static_cast<std::int64_t>(std::llround(value));
         }

@@ -977,6 +977,16 @@ encode（[list の枝](../../src/core/userpublic/details/schema/structfieldjson.
 
 なお `ComponentCodec::fieldSchema()` が返す平坦な列は **rootの直下の子だけ**を写します（[その実装](../../src/core/loader/componentcodec.cpp#L2153)）。`List` の行schemaはそこに現れないので、平坦な列を消費する側（schema駆動のinspectorなど）は再帰schemaを完全には表現できません。
 
+### 別の field の値で読まれる field —— `ComponentCodecFieldCondition`（SC-1）✅実装済み
+
+`StructFieldSchema` には「この field は別の field がこの値のときだけ読まれる」という条件の欄がありません。✅SC-1（`14e10b19`）は camera の controller をその形で schema に載せるため、条件を schema の外の表に置き、editor の wire で field の隣に付けます。
+
+- **宣言**: [`camera_schema` の controller の部分](../../src/core/loader/componentcodec.cpp#L156) は、`controller.type` を `enumValues("orbit", "follow", "fly")` の `required` にし、`target` / `distance` / `yaw` / `pitch`（unit `rad`）/ `sensitivity` / `offset` / `speed` / `damping` を足しました。どれかの type で省ける field は `defaulted`（値は省いたときに読まれる値）、読む type の全部で必須の field は `required` になっています（宣言の並びの読み）。並べた値は [`decodeController()`](../../src/core/loader/componentcodec.cpp#L841) が読む鍵から取っています。`yaw_degrees` / `pitch_degrees`（`yaw` / `pitch` の別名）と `up`（受けるが読まない）は入れていません。
+- **条件の表**: [`componentCodecFieldConditions()`](../../src/core/loader/componentcodec.cpp#L2302) が codec 名から [`ComponentCodecFieldCondition`](../../src/core/loader/componentcodec.hpp#L406) `{field, discriminant, applies_to, required_for, default_value}` の列を返します。camera 以外は空です。`default_value` は宣言の `Defaulted` の node から `schemaDefaultJson()` で取ります。`decodeController()` の既定値（`sensitivity` の 1、`yaw` / `pitch` の 0 など）は別に書かれていて、両者が一致することは下の codec の test が確かめます。`damping` は codec がどの type でも読みますが、動かすときに読むのは orbit と follow だけ（`cameracontrollersystem.cpp`）なので、`applies_to` は orbit / follow です。
+- **wire**: [`codecSchemaFieldJson()`](../../src/core/communication/editorcommandservice.cpp#L100) が `schemaFieldJson()` の結果に `default`・`discriminant`・`applies_to`・`required_for`（空でなければ）を足します。呼ぶのは component の query（`get_components` / `scene_tree` の `schema.fields`。[query の側](../../src/core/communication/editorcommandservice.cpp#L1741)）と [`getComponentAddCandidates()` の `schema_fields`](../../src/core/communication/editorcommandservice.cpp#L869) の 2 か所です。wire の形は [manual 第13章](../manual/13_editor.md) §13.5。
+- **prefab**: prefab の bindable descriptor は [`componentCodecs()` の `fieldSchema()` を回る所](../../src/core/loader/prefabprovider.cpp#L292) で、json pointer が一致する descriptor の型・範囲・enum を codec の schema から受けます。camera の `/controller/*` の descriptor は SC-1 の前から [`builtinPrefabBindableDescriptors()`](../../src/project/prefab.cpp#L720) の表にあり（type ごとの条件は `BindableDiscriminant` でその表が自分で持つ）、SC-1 で codec の schema に controller の field が入ったので、`/controller/type` などの型・範囲・enum がこの上書きで codec の値になります（コードの読み。prefab の側の test は確かめていません）。`componentCodecFieldConditions()` の表は descriptor には使われません。
+- test: `componentcodec_test` の [「SC-1 camera controller schema states each type and the fields it reads」](../../test/componentcodec_test.cpp#L593)（条件の表を `decodeAuthored` / 正準化で突き合わせる。表が codec の読みとずれれば落ちる）、`editorcommandservice_test` の [「SC-1 get_components describes the camera controller by type」](../../test/editorcommandservice_test.cpp#L259)。wire の fixture `test/fixtures/wp360/get_components.parent.ndjson` も新しい field に合わせて書き換わっています。
+
 ## 3.12 AuthoringSceneDocument ✅実装済み
 
 §3.2 で触れたsceneのdocument化の中身です。宣言は [`authoringscenedocument.hpp`](../../src/core/loader/authoringscenedocument.hpp#L95) です。

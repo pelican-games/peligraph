@@ -1,4 +1,5 @@
 #include "renderfeatureswidget.hpp"
+#include "featureparameterform.hpp"
 #include "frameplanedit.hpp"
 #include "panelhelp.hpp"
 #include "renderconfigdigest.hpp"
@@ -2164,6 +2165,10 @@ struct RenderFeaturesWidget::Impl {
         Result,
         // LP-4f2: get_graph_templates, which features have a loop version.
         Templates,
+        // UX-10, decision 1: what the open parameters' target and shader
+        // rows pick from.
+        Context,
+        Shaders,
     };
 
     struct PendingRequest {
@@ -2222,6 +2227,21 @@ struct RenderFeaturesWidget::Impl {
     bool notice_sticky = false;
     QHash<qint64, PendingRequest> pending;
     quint64 refresh_generation = 0;
+    // --- UX-10, decision 1: the open parameters dialog, and the change it
+    // gathered that is not sent yet.
+    struct LiveParameters {
+        QPointer<QDialog> dialog;
+        FeatureParameterForm *form = nullptr;
+        QString reference;
+        int index = -1;
+        QString scope;
+        QJsonObject parameters;
+        bool waiting = false;
+    };
+    LiveParameters live;
+    QTimer *live_timer = nullptr;
+    QStringList render_target_names;
+    std::vector<std::pair<QString, QString>> engine_shaders;
     QString source_digest;
     QString active_ticket;
     std::optional<StagedOperation> staged;
@@ -2437,6 +2457,9 @@ struct RenderFeaturesWidget::Impl {
 
         result_poll = new QTimer(&owner);
         result_poll->setInterval(40);
+        live_timer = new QTimer(&owner);
+        live_timer->setSingleShot(true);
+        QObject::connect(live_timer, &QTimer::timeout, &owner, [this] { flushLiveParameters(); });
 
         QObject::connect(
             refresh, &QPushButton::clicked, &owner,
@@ -2647,104 +2670,154 @@ struct RenderFeaturesWidget::Impl {
         updateControls();
     }
 
+    // UX-10, decision 1: the feature's parameters as fields made from its
+    // schema (FeatureParameterForm). A change is sent at once, as one
+    // set_parameters -- the render edit history's, so Undo takes it back --
+    // and while a spin or a slider moves the changes are gathered for 150 ms
+    // and sent once the edit before them has landed. The dialog stays open
+    // (open, not exec) so the panel and a scenario keep going under it.
     void editParameters() {
         const auto *item = current->currentItem();
         if (!item) return;
         const auto instance = item->data(InstanceRole).toJsonObject();
-        const auto display_name = item->text();
-        const auto base_digest = source_digest;
         if (!instance.value("editable").toBool()) {
             showInformation(instance.value("reason").toString());
             return;
         }
-        QDialog dialog(&owner);
-        dialog.setWindowTitle(owner.tr("Feature parameters: %1").arg(item->text()));
-        dialog.setObjectName("pelican.featureParameters");
-        dialog.resize(560, 480);
-        auto *layout = new QVBoxLayout(&dialog);
-        auto *hint = new QLabel(owner.tr("Overrides"), &dialog);
-        hint->setToolTip(owner.tr("Enable an override to change its value. Uncheck it to use the feature default. Apply in Render features to save."));
-        hint->setWordWrap(true);
-        layout->addWidget(hint);
-        auto *scroll = new QScrollArea(&dialog);
-        scroll->setWidgetResizable(true);
-        auto *body = new QWidget(scroll);
-        auto *form = new QFormLayout(body);
-        scroll->setWidget(body);
-        layout->addWidget(scroll);
-        struct Field { QString name, type; QCheckBox *override_value; QWidget *value; QJsonArray range; };
-        std::vector<Field> fields;
-        const auto schema = instance.value("parameter_schema").toObject();
-        const auto authored = staged && staged->op == "set_parameters" && staged->base_digest == base_digest &&
-            staged->scope == instance.value("scope").toString("root") &&
-            staged->preset_digest == instance.value("source_digest").toObject().value("hex").toString() &&
-            staged->index == instance.value("index").toInt(-1) ? staged->parameters : instance.value("parameters").toObject();
-        for (const auto *category : {"scalars", "render_targets", "shader_assets"}) {
-            for (const auto &encoded : schema.value(category).toArray()) {
-                const auto declaration = encoded.toObject();
-                const auto name = declaration.value("name").toString();
-                const auto type = QString::fromLatin1(category) == "scalars" ? declaration.value("type").toString() : QStringLiteral("string");
-                const auto value = authored.contains(name) ? authored.value(name) : declaration.value("default");
-                auto *enabled = new QCheckBox(name, &dialog);
-                enabled->setChecked(authored.contains(name));
-                QWidget *editor;
-                if (type == "bool") {
-                    auto *check = new QCheckBox(&dialog);
-                    check->setChecked(value.toBool());
-                    editor = check;
-                } else {
-                    auto *line = new QLineEdit(&dialog);
-                    if (value.isString()) line->setText(value.toString());
-                    else if (value.isDouble()) line->setText(QString::number(value.toDouble(), 'g', 17));
-                    line->setPlaceholderText(type == "string" ? owner.tr("Target name or shader reference") : type);
-                    editor = line;
-                }
-                const auto range = declaration.value("range").toArray();
-                editor->setToolTip(range.size() == 2 ? owner.tr("Range: %1 to %2").arg(range[0].toDouble()).arg(range[1].toDouble()) : declaration.value("stage").toString());
-                editor->setObjectName("pelican.featureParameters." + name);
-                editor->setEnabled(enabled->isChecked());
-                QObject::connect(enabled, &QCheckBox::toggled, editor, &QWidget::setEnabled);
-                form->addRow(enabled, editor);
-                fields.push_back({name, type, enabled, editor, range});
-            }
-        }
-        auto *error = new QLabel(&dialog);
-        error->setWordWrap(true);
-        layout->addWidget(error);
-        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
-        layout->addWidget(buttons);
-        QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-        QJsonObject edited;
-        QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
-            edited = authored;
-            for (const auto &field : fields) {
-                if (!field.override_value->isChecked()) { edited.remove(field.name); continue; }
-                if (field.type == "bool") edited[field.name] = static_cast<QCheckBox *>(field.value)->isChecked();
-                else {
-                    const auto text = static_cast<QLineEdit *>(field.value)->text().trimmed();
-                    if (field.type == "string") { edited[field.name] = text; continue; }
-                    bool valid = false;
-                    const double value = text.toDouble(&valid);
-                    if (!valid || !std::isfinite(value) || (field.type == "int" && std::trunc(value) != value) ||
-                        (field.range.size() == 2 && (value < field.range[0].toDouble() || value > field.range[1].toDouble()))) {
-                        error->setText(owner.tr("Enter a valid %1 value for %2 within its declared range.").arg(field.type, field.name));
-                        return;
-                    }
-                    edited[field.name] = value;
-                }
-            }
-            dialog.accept();
-        });
-        if (dialog.exec() != QDialog::Accepted) return;
-        if (source_digest != base_digest || !can_edit) {
-            showError(owner.tr("The feature list changed while editing. Reopen its parameters."));
+        if (staged) {
+            showInformation(owner.tr("Apply the pending edit first."));
             return;
         }
-        staged = StagedOperation{.op = "set_parameters", .reference = instance.value("reference").toString(),
-            .display_name = display_name, .index = instance.value("index").toInt(-1), .parameters = edited, .base_digest = base_digest,
-            .scope = instance.value("scope").toString("root"), .preset_digest = instance.value("source_digest").toObject().value("hex").toString()};
-        showInformation(owner.tr("Pending parameter changes: %1").arg(display_name));
-        updateControls();
+        if (live.dialog) {
+            if (live.index == instance.value("index").toInt(-1) &&
+                live.scope == instance.value("scope").toString("root")) {
+                live.dialog->raise();
+                live.dialog->activateWindow();
+                return;
+            }
+            flushLiveParameters(true);
+            live.dialog->close();
+        }
+        live = LiveParameters{};
+        live.reference = instance.value("reference").toString();
+        live.index = instance.value("index").toInt(-1);
+        live.scope = instance.value("scope").toString("root");
+        live.parameters = instance.value("parameters").toObject();
+        auto *dialog = new QDialog(&owner);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setWindowTitle(owner.tr("Feature parameters: %1").arg(item->text()));
+        dialog->setObjectName("pelican.featureParameters");
+        dialog->resize(560, 480);
+        auto *layout = new QVBoxLayout(dialog);
+        auto *hint = new QLabel(owner.tr("A change is applied at once; Undo takes it back."), dialog);
+        hint->setToolTip(owner.tr("Reset puts a value back to the feature's default."));
+        hint->setWordWrap(true);
+        layout->addWidget(hint);
+        auto *scroll = new QScrollArea(dialog);
+        scroll->setWidgetResizable(true);
+        auto *form = new FeatureParameterForm(instance.value("parameter_schema").toObject(),
+                                              live.parameters,
+                                              instance.value("bound_parameters").toObject(), scroll);
+        scroll->setWidget(form);
+        layout->addWidget(scroll);
+        form->setShaders(shaderChoices());
+        form->setRenderTargets(render_target_names);
+        form->setEditedCallback([this, form](bool continuous) {
+            live.parameters = form->authored();
+            live.waiting = true;
+            live_timer->start(continuous ? 150 : 0);
+        });
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+        buttons->button(QDialogButtonBox::Close)->setObjectName("pelican.featureParameters.close");
+        // Return in a field gives its value; it does not close the dialog.
+        buttons->button(QDialogButtonBox::Close)->setAutoDefault(false);
+        buttons->button(QDialogButtonBox::Close)->setDefault(false);
+        layout->addWidget(buttons);
+        QObject::connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
+        // A change still gathering when the dialog closes is sent all the same.
+        QObject::connect(dialog, &QObject::destroyed, &owner, [this, form] {
+            // Another feature's parameters may be open by now.
+            if (live.form != form) return;
+            live.form = nullptr;
+            if (live_timer->isActive()) {
+                live_timer->stop();
+                flushLiveParameters(true);
+            }
+        });
+        live.dialog = dialog;
+        live.form = form;
+        adoptHistoryActions(dialog);
+        // The lists the target and shader rows pick from.
+        (void)request(RequestKind::Context, QStringLiteral("get_render_authoring_context"), {});
+        (void)request(RequestKind::Shaders, QStringLiteral("get_engine_shaders"), {});
+        dialog->show();
+    }
+
+    std::vector<std::pair<QString, QString>> shaderChoices() const {
+        auto shaders = projectShaderReferences(viewport.projectRoot().toStdWString());
+        shaders.insert(shaders.end(), engine_shaders.begin(), engine_shaders.end());
+        return shaders;
+    }
+
+    // Nothing of this panel in flight: an edit sent now is built on the
+    // revision the panel holds.
+    bool liveIdle() const {
+        if (!active_ticket.isEmpty() || retry_pending) return false;
+        for (auto it = pending.cbegin(); it != pending.cend(); ++it)
+            if (it->kind == RequestKind::Submit || it->kind == RequestKind::Current ||
+                it->kind == RequestKind::CanEdit || it->kind == RequestKind::Result)
+                return false;
+        return true;
+    }
+
+    // Sends the gathered change once the timer has run out (or `now`) and
+    // the panel is idle; otherwise it waits for receiveSuccess / Failure.
+    void flushLiveParameters(bool now = false) {
+        if (!live.waiting || (!now && live_timer->isActive())) return;
+        if (!can_edit || !have_current || !liveIdle()) return;
+        if (staged && staged->op != QStringLiteral("set_parameters")) {
+            showInformation(owner.tr("Apply the pending edit first."));
+            return;
+        }
+        QJsonObject instance;
+        for (int row = 0; row < current->count(); ++row) {
+            const auto candidate = current->item(row)->data(InstanceRole).toJsonObject();
+            if (candidate.value("index").toInt(-1) == live.index &&
+                candidate.value("scope").toString("root") == live.scope &&
+                candidate.value("reference").toString() == live.reference) {
+                instance = candidate;
+                break;
+            }
+        }
+        live.waiting = false;
+        if (instance.isEmpty()) {
+            showError(owner.tr("The feature list changed. Open the feature's parameters again."));
+            return;
+        }
+        if (instance.value("parameters").toObject() == live.parameters) return;
+        staged = StagedOperation{.op = "set_parameters", .reference = live.reference,
+            .display_name = current->currentItem() ? current->currentItem()->text() : live.reference,
+            .index = live.index, .parameters = live.parameters, .base_digest = source_digest,
+            .scope = live.scope,
+            .preset_digest = instance.value("source_digest").toObject().value("hex").toString()};
+        submit();
+    }
+
+    // The list was read again (a commit, another panel's, an Undo): the open
+    // parameters show what the document holds, unless a change waits.
+    void followLiveParameters() {
+        if (!live.form || live.waiting || live_timer->isActive() || !liveIdle()) return;
+        for (int row = 0; row < current->count(); ++row) {
+            const auto candidate = current->item(row)->data(InstanceRole).toJsonObject();
+            if (candidate.value("index").toInt(-1) != live.index ||
+                candidate.value("scope").toString("root") != live.scope ||
+                candidate.value("reference").toString() != live.reference)
+                continue;
+            const auto parameters = candidate.value("parameters").toObject();
+            if (parameters != live.form->authored()) live.form->setAuthored(parameters);
+            live.parameters = parameters;
+            return;
+        }
     }
 
     void stageRemove() {
@@ -2844,6 +2917,10 @@ struct RenderFeaturesWidget::Impl {
             updateControls();
             return;
         }
+        if (request.kind == RequestKind::Context || request.kind == RequestKind::Shaders) {
+            consumeChoices(request.kind, *decoded);
+            return;
+        }
         switch (request.kind) {
         case RequestKind::CanEdit:
             consumeCanEdit(*decoded);
@@ -2861,10 +2938,39 @@ struct RenderFeaturesWidget::Impl {
             consumeResult(*decoded);
             break;
         case RequestKind::Templates:
+        case RequestKind::Context:
+        case RequestKind::Shaders:
             break;
         }
         followWhenIdle();
         updateControls();
+        flushLiveParameters();
+        followLiveParameters();
+    }
+
+    // UX-10, decision 1: the authoring context's render targets and the
+    // engine's shaders, for the open parameters' combos.
+    void consumeChoices(RequestKind kind, const QJsonObject &response) {
+        if (kind == RequestKind::Context) {
+            render_target_names.clear();
+            for (const auto &value : response.value("render_targets").toArray()) {
+                const auto name = value.toObject().value("name").toString();
+                if (!name.isEmpty() && !render_target_names.contains(name))
+                    render_target_names << name;
+            }
+            if (live.form) live.form->setRenderTargets(render_target_names);
+            return;
+        }
+        engine_shaders.clear();
+        const auto list = response.contains("shaders") ? response.value("shaders").toArray()
+                                                       : response.value("engine_shaders").toArray();
+        for (const auto &value : list) {
+            const auto shader = value.toObject();
+            const auto reference = shader.value("reference").toString();
+            if (!reference.isEmpty())
+                engine_shaders.emplace_back(reference, shader.value("stage").toString());
+        }
+        if (live.form) live.form->setShaders(shaderChoices());
     }
 
     void receiveFailure(qint64 request_id,
@@ -2881,12 +2987,15 @@ struct RenderFeaturesWidget::Impl {
             updateControls();
             return;
         }
+        // UX-10: without the lists the combos offer what is written.
+        if (kind == RequestKind::Context || kind == RequestKind::Shaders) return;
         if (kind == RequestKind::Result) {
             result_poll->stop();
             active_ticket.clear();
         }
         showError(message);
         updateControls();
+        flushLiveParameters();
     }
 
     void consumeCanEdit(const QJsonObject &response) {
@@ -2926,6 +3035,7 @@ struct RenderFeaturesWidget::Impl {
         have_current = true;
         if (have_catalog) applyCatalogNamesToCurrent();
         resumeRetry();
+        followLiveParameters();
     }
 
     void receiveCatalogResult(const QByteArray &result_json) {
@@ -3072,7 +3182,9 @@ struct RenderFeaturesWidget::Impl {
             const bool graph_template = submittingGraphTemplate();
             submitted_staged.reset();
             // It was sent at once, not staged for Apply: nothing stays pending.
-            if (graph_template) staged.reset();
+            // UX-10: nor does a parameter change, which is sent at once too.
+            if (graph_template || (staged && staged->op == QStringLiteral("set_parameters")))
+                staged.reset();
             showError(graph_template ? graphTemplateError(response) : responseError(response));
             return;
         }

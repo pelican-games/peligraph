@@ -48,7 +48,30 @@ struct InspectorWidgetDescriptor {
     bool value_matches_schema = false;
     bool default_available = false;
     std::optional<std::uint64_t> behavior_attachment_handle;
+    // UX-10, decision 6 (engine SC-1): a field whose meaning depends on
+    // another field's value -- camera.controller's values on controller.type.
+    // `discriminant` names that field, `applies_to` the values it is read
+    // for, `required_for` the values it must be given for; `schema_default`
+    // is the wire's `default`, when it gives one.
+    std::string discriminant;
+    std::vector<std::string> applies_to;
+    std::vector<std::string> required_for;
+    nlohmann::json schema_default;
 };
+
+// UX-10, decision 6. Whether a field is shown among its component's fields:
+// one without a discriminant always is; one with one only while the
+// discriminant's value (authored, else its default) is in applies_to (an
+// empty applies_to: always).
+[[nodiscard]] bool inspectorFieldShown(const InspectorWidgetDescriptor &field,
+                                       const std::vector<InspectorWidgetDescriptor> &fields);
+// Shown, required for the discriminant's value, and not given (not
+// authored, or an empty string): the field is marked red.
+[[nodiscard]] bool inspectorFieldRequiredMissing(
+    const InspectorWidgetDescriptor &field, const std::vector<InspectorWidgetDescriptor> &fields);
+// An angle stored in radians (unit rad / radian, or a controller's yaw and
+// pitch) is shown in degrees: the factor from stored to shown, else 1.
+[[nodiscard]] double inspectorDisplayScale(const InspectorWidgetDescriptor &field);
 
 struct InspectorListDescriptor {
     std::string key;
@@ -161,6 +184,19 @@ quaternionFromEulerDegrees(const std::array<double, 3> &degrees);
 // True for the field whose value is shown as angles: transform.rotation.
 [[nodiscard]] bool isEulerRotationField(const InspectorWidgetDescriptor &descriptor);
 
+// UX-10, decision 2. A component's vec3 named `direction` (light.direction)
+// is shown as two angles in degrees, and its vec3 stays reachable as Raw:
+// the azimuth turns about +Y from +Z towards +X, in (-180, 180]; the
+// elevation is above the horizon, in [-90, 90] (negative points down). A
+// direction straight up or down has azimuth 0; a zero vector reads as
+// (0, 0). The vector made from angles is unit length.
+[[nodiscard]] bool isDirectionField(const InspectorWidgetDescriptor &descriptor);
+[[nodiscard]] std::array<double, 2> directionAnglesDegrees(const std::array<double, 3> &direction);
+[[nodiscard]] std::array<double, 3> directionFromAnglesDegrees(const std::array<double, 2> &angles);
+// And a vec3 (or vec4) named `color` (light.color, sprite_view.color) is a
+// swatch that opens the colour picker, beside its numbers.
+[[nodiscard]] bool isColorField(const InspectorWidgetDescriptor &descriptor);
+
 // How a built-in model reads in a list: "Cube (built-in)". Empty for a
 // reference that is not under engine://primitives/.
 [[nodiscard]] std::string builtinModelLabel(std::string_view reference);
@@ -183,6 +219,17 @@ modelReferenceChoices(std::string_view current,
 
 // The model ids of a list_assets result, in its order.
 [[nodiscard]] std::vector<std::string> modelAssetIds(const nlohmann::json &list_assets_result);
+
+// UX-10, decision 5: sprite_view.texture is picked from the textures
+// list_assets reports, as simplemodelview.model is from its models.
+[[nodiscard]] bool isTextureReferenceField(const InspectorWidgetDescriptor &descriptor);
+// The ids of one kind in a list_assets result, in its order.
+[[nodiscard]] std::vector<std::string> assetIdsOfKind(const nlohmann::json &list_assets_result,
+                                                      std::string_view kind);
+// What the texture field offers: the reported textures, then the authored
+// value when it is none of them (an atlas frame, "atlas#frame", stays).
+[[nodiscard]] std::vector<std::string> textureReferenceChoices(
+    std::string_view current, const std::vector<std::string> &engine_textures);
 
 // Q-6: a component the engine lists but this build (or this scene) cannot
 // take. get_component_add_candidates names why with a code
@@ -392,6 +439,9 @@ class InspectorModel {
     // with a simplemodelview is loaded); the revision moves with each answer.
     const std::optional<std::vector<std::string>> &modelAssets() const noexcept;
     std::uint64_t modelAssetsRevision() const noexcept;
+    // UX-10: the texture ids of the same answer (asked when an object with a
+    // sprite_view is loaded too); they move with the same revision.
+    const std::optional<std::vector<std::string>> &textureAssets() const noexcept;
     bool addComponent(std::string_view key);
     bool addComponent(std::string_view key, const nlohmann::json &declaration);
     // G-2: one `edit` carrying one `spawn` op, on the scene revision last

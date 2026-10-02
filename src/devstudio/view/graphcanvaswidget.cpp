@@ -6,6 +6,7 @@
 #include "graphcanvasmaterialfields.hpp"
 #include "graphcanvasrenderfields.hpp"
 #include "graphcanvasvaluefields.hpp"
+#include "graphcanvasposefields.hpp"
 #include "fullscreenshadertemplate.hpp"
 
 #include "inlineediteventfilter.hpp"
@@ -4857,6 +4858,8 @@ struct GraphCanvasWidget::Impl {
     // UX-8: a curve's keys, a playback's map, a scalar's numbers, a
     // pass's buffers.
     GraphCanvasValueFields *value_fields = nullptr;
+    // UX-10, decision 5: a pose.clip_sample's rig, clip, speed and loop.
+    GraphCanvasPoseFields *pose_fields = nullptr;
     QComboBox *loop_branch = nullptr;
     QLabel *shared_mark = nullptr;
     // GL-1, decision 5: Show: one box per domain the root canvas can draw.
@@ -5575,6 +5578,8 @@ struct GraphCanvasWidget::Impl {
         value_fields = new GraphCanvasValueFields(model, sent, side);
         value_fields->setPendingChanged([this] { showNotice(); });
         side_layout->addWidget(value_fields);
+        pose_fields = new GraphCanvasPoseFields(model, sent, side);
+        side_layout->addWidget(pose_fields);
         details = new QTreeWidget(side);
         details->setObjectName(QStringLiteral("pelican.graphCanvasDetails"));
         details->setColumnCount(2);
@@ -7545,6 +7550,7 @@ struct GraphCanvasWidget::Impl {
             compute_fields->showNode(nullptr, {});
             place_fields->showNode(nullptr, {});
             value_fields->showNode(nullptr, {});
+            pose_fields->showNode(nullptr, {});
             return;
         }
         // LP-4d1: the node is looked for in the scope it was picked in -- a
@@ -7565,6 +7571,7 @@ struct GraphCanvasWidget::Impl {
             compute_fields->showNode(nullptr, {});
             place_fields->showNode(nullptr, {});
             value_fields->showNode(nullptr, {});
+            pose_fields->showNode(nullptr, {});
             return;
         }
         label_edit->setText(qtext(found->label));
@@ -7589,6 +7596,8 @@ struct GraphCanvasWidget::Impl {
         // UX-8: a curve's keys, a playback's map, a scalar's numbers, a
         // pass's buffers.
         value_fields->showNode(&*found, scope);
+        // UX-10: a pose.clip_sample's rig and clip from the project.
+        pose_fields->showNode(&*found, scope);
         const auto row = [this](const QString &field, const QString &value) {
             auto *item = new QTreeWidgetItem(details);
             item->setText(0, field);
@@ -7836,6 +7845,7 @@ struct GraphCanvasWidget::Impl {
         if (compute_fields != nullptr) compute_fields->followEditable();
         if (place_fields != nullptr) place_fields->followEditable();
         if (value_fields != nullptr) value_fields->followEditable();
+        if (pose_fields != nullptr) pose_fields->followEditable();
         // GL-4a, decision 2: a node of a group being verified takes no edit
         // from the side fields until the verify finishes.
         if (folds)
@@ -8275,6 +8285,7 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
     impl_->pass_fields->setProjectRoot(project_root);
     impl_->value_fields->setProjectRoot(project_root);
     impl_->image_fields->setProjectRoot(project_root);
+    impl_->pose_fields->setProjectRoot(project_root);
     impl_->publishShaderSources();
     impl_->published_initial_assets.reset();
     impl_->publishInitialAssets();

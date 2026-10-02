@@ -318,6 +318,8 @@ GP-4 の [`rayThroughPixel()`](../../src/core/renderer/camera.cpp#L433) は、fr
 
 controllerは名前bindingからtarget transformを毎回resolveし、scene遷移・entity削除を検知できます。
 
+controller の鍵を読むのは camera codec の `decodeController()` で、どの type がどの鍵を読み、どれが必須かは ✅SC-1 から component の schema にも載ります(§3.11 の「別の field の値で読まれる field」、manual [第4章](../manual/04_scene_ecs.md) §4.2 の camera の項)。damping は codec がどの type でも読みますが、system が使うのは orbit と follow だけです。
+
 > 🧩 **難所 — +Z 前方と project up から基底を作る**([`rotationFromPose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L175))
 >
 > **何をする所か**: controller が作った `CameraPose`(pos / dir / up)を、scene object の transform へ書き戻すための四元数へ変換します。直交化してから `glm::quat_cast`(回転行列から四元数を復元する glm の関数)へ渡す 4 行です。

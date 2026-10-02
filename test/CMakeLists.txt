@@ -587,6 +587,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/materialsettingsform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasvaluefields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascomputefields.cpp
+    # UX-10: a pose.clip_sample's fields.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasposefields.cpp
     # GL-3a: the fold groups the Graph tab draws and writes.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
@@ -638,6 +640,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/materialsettingsform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasvaluefields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascomputefields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasposefields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp

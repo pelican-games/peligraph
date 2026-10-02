@@ -106,6 +106,12 @@ add_library(pelican_studio_view STATIC
     # RSX: the rendering section's own keys (EL-3).
     renderingsettingswidget.cpp
     renderingsettingswidget.hpp
+    # UX-10: a feature's parameters as fields made from its schema.
+    featureparameterform.cpp
+    featureparameterform.hpp
+    # UX-10: a pose.clip_sample's rig, clip, speed and loop.
+    graphcanvasposefields.cpp
+    graphcanvasposefields.hpp
     viewselectfield.cpp
     viewselectfield.hpp
     playcontrols.cpp

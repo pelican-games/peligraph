@@ -13,6 +13,7 @@
 // remove for the engine's default), switches off what a preset root refuses,
 // and its edits are the render edit history's.
 
+#include "featureparameterform.hpp"
 #include "renderconfigdigest.hpp"
 #include "rendereditcompletion.hpp"
 #include "renderedithistory.hpp"
@@ -29,7 +30,12 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QDialog>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
+#include <QJsonDocument>
+#include <QSlider>
+#include <QToolButton>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -421,6 +427,364 @@ TEST_CASE("RSX decision 3: Rendering settings shows the root's rendering keys, s
                  {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}});
     CHECK_FALSE(xr.isEnabled());
     CHECK(xr.toolTip() == QStringLiteral("test_reason: not here"));
+}
+
+// --- UX-10, decision 1.
+const std::string SkyFeature = "engine://features/sky_ambient.json";
+
+Json uxSchema() {
+    const auto scalar = [](const char *name, const char *type, Json range, Json fallback) {
+        Json declaration{{"name", name}, {"type", type}, {"default", fallback}};
+        if (!range.is_null()) declaration["range"] = range;
+        return declaration;
+    };
+    return {{"schema", "pelican.render_feature_parameters"},
+            {"version", 1},
+            {"scalars",
+             Json::array({scalar("color_r", "float", {0.0, 64.0}, 0.12),
+                          scalar("color_g", "float", {0.0, 64.0}, 0.16),
+                          scalar("color_b", "float", {0.0, 64.0}, 0.24),
+                          scalar("sky_intensity", "float", {0.0, 64.0}, 1.0),
+                          scalar("cascade_count", "int", {1, 8}, 1),
+                          scalar("plane_offset", "float", {-10.0, 10.0}, 0.0),
+                          scalar("plane_x", "float", {-10.0, 10.0}, 0.0),
+                          scalar("plane_y", "float", {-10.0, 10.0}, 1.0),
+                          scalar("plane_z", "float", {-10.0, 10.0}, 0.0),
+                          scalar("stabilize", "bool", nullptr, true)})},
+            {"shader_assets",
+             Json::array({{{"name", "prefilter_shader"},
+                           {"stage", "compute"},
+                           {"default", "engine://prefilter"}}})}};
+}
+
+void uxFeaturesRead(Transport &engine, const std::string &digest, const Json &parameters) {
+    const auto can_edit = engine.next("can_edit");
+    REQUIRE(can_edit);
+    engine.answer(*can_edit, {{"can_edit", true}});
+    const auto current = engine.next("get_render_features");
+    REQUIRE(current);
+    engine.answer(*current, {{"source_reference", "passes/main.json"},
+                             {"source_digest", {{"hex", digest}}},
+                             {"feature_instances",
+                              Json::array({{{"index", 0},
+                                            {"reference", SkyFeature},
+                                            {"parameters", parameters},
+                                            {"parameter_schema", uxSchema()},
+                                            {"editable", true},
+                                            {"removable", true},
+                                            {"scope", "root"},
+                                            {"source_reference", "passes/main.json"},
+                                            {"source_digest", {{"hex", digest}}}}})}});
+}
+
+// The parameter edit the panel sent, accepted; and the poll for its result.
+std::pair<Json, Json> uxSent(Transport &engine, const std::string &digest) {
+    const auto sent = engine.next("edit_render_features", 3000);
+    REQUIRE(sent);
+    const auto &params = sent->at("params");
+    CHECK(params.at("base_source_digest") == digest);
+    const auto &operation = params.at("operations").at(0);
+    CHECK(operation.at("op") == "set_parameters");
+    CHECK(operation.at("index") == 0);
+    CHECK(operation.at("scope") == "root");
+    engine.answer(*sent, {{"status", "accepted"}, {"ticket", "render-config-edit-ux10"}});
+    const auto poll = engine.next("get_edit_result");
+    REQUIRE(poll);
+    return {operation.at("parameters"), *poll};
+}
+
+template <typename Widget> Widget &dialogChild(QDialog &dialog, const char *name) {
+    auto *found = dialog.findChild<Widget *>(QString::fromLatin1(name));
+    REQUIRE(found != nullptr);
+    return *found;
+}
+
+TEST_CASE("UX-10 decision 1: a feature's parameters are fields made from its schema -- a colour, "
+          "a vector, a slider -- and a change is sent at once, gathered while it moves",
+          "[devstudio][ux10][render-features][widget]") {
+    // The rows: r/g/b one colour, x/y/z/offset one vector, wherever they sit.
+    const auto rows = featureParameterRows(
+        QJsonDocument::fromJson(QByteArray::fromStdString(uxSchema().dump())).object());
+    REQUIRE(rows.size() == 6);
+    using Kind = FeatureParameterRow::Kind;
+    CHECK(rows[0].kind == Kind::Color);
+    CHECK(rows[0].label == QStringLiteral("color"));
+    CHECK(rows[0].names == QStringList{"color_r", "color_g", "color_b"});
+    CHECK(rows[1].kind == Kind::Number);
+    CHECK(rows[2].type == QStringLiteral("int"));
+    CHECK(rows[3].kind == Kind::Vector);
+    CHECK(rows[3].names == QStringList{"plane_x", "plane_y", "plane_z", "plane_offset"});
+    CHECK(rows[4].kind == Kind::Boolean);
+    CHECK(rows[5].kind == Kind::ShaderAsset);
+    CHECK(rows[5].stage == QStringLiteral("compute"));
+
+    // SC-1: a materialized feature's schema says the engine's own default
+    // beside the value it was cut with; Reset goes back to the engine's.
+    (void)application();
+    {
+        const auto schema = QJsonDocument::fromJson(R"({"scalars": [
+            {"name": "color_r", "type": "float", "range": [0, 64], "default": 0.7, "engine_default": 0.12},
+            {"name": "color_g", "type": "float", "range": [0, 64], "default": 0.16, "engine_default": 0.16},
+            {"name": "color_b", "type": "float", "range": [0, 64], "default": 0.24, "engine_default": 0.24},
+            {"name": "sky_intensity", "type": "float", "range": [0, 64], "default": 1.0}]})")
+                                .object();
+        FeatureParameterForm form{schema, QJsonObject{}, QJsonObject{{"color_r", 0.7}}};
+        int edits = 0;
+        form.setEditedCallback([&](bool) { ++edits; });
+        form.show();
+        auto *colour_reset = form.findChild<QToolButton *>(QStringLiteral("pelican.featureParameters.color.reset"));
+        REQUIRE(colour_reset != nullptr);
+        // 0.7 is shown, and it is not the engine's 0.12: Reset is offered.
+        CHECK(form.findChild<QDoubleSpinBox *>(QStringLiteral("pelican.featureParameters.color_r"))->value() == 0.7);
+        CHECK(colour_reset->isVisibleTo(&form));
+        CHECK(colour_reset->toolTip().contains(QStringLiteral("0.12")));
+        CHECK_FALSE(form.findChild<QToolButton *>(QStringLiteral("pelican.featureParameters.sky_intensity.reset"))
+                        ->isVisibleTo(&form));
+        colour_reset->click();
+        CHECK(edits == 1);
+        CHECK(form.authored().value(QStringLiteral("color_r")).toDouble() == 0.12);
+        CHECK_FALSE(colour_reset->isVisibleTo(&form));
+    }
+
+    Transport engine;
+    auto digest = std::make_shared<RenderConfigDigest>();
+    RenderFeaturesWidget features{&engine.viewport};
+    features.setRenderConfigDigest(digest);
+    uxFeaturesRead(engine, RootA, Json::object());
+    auto &list = required<QListWidget>(features, "pelican.renderFeatures.current");
+    REQUIRE(list.count() == 1);
+    list.setCurrentRow(0);
+    QApplication::processEvents();
+    auto &open = required<QPushButton>(features, "pelican.renderFeatures.parameters");
+    REQUIRE(open.isEnabled());
+    open.click();
+    QApplication::processEvents();
+    auto *dialog = features.findChild<QDialog *>(QStringLiteral("pelican.featureParameters"));
+    REQUIRE(dialog != nullptr);
+    CHECK(dialog->isVisible());
+    // Opened, not run: the panel goes on under it.
+    CHECK_FALSE(dialog->isModal());
+    // Return in a field gives the value; it does not close the dialog.
+    QTest::keyClick(dialog->findChild<QDoubleSpinBox *>(QStringLiteral("pelican.featureParameters.color_r")),
+                    Qt::Key_Return);
+    QApplication::processEvents();
+    REQUIRE(dialog->isVisible());
+    // The typed rows: an int without decimals, a vector's fourth, the
+    // shader's default offered by name.
+    CHECK(dialogChild<QDoubleSpinBox>(*dialog, "pelican.featureParameters.cascade_count").decimals() ==
+          0);
+    (void)dialogChild<QDoubleSpinBox>(*dialog, "pelican.featureParameters.plane_offset");
+    auto &shader = dialogChild<QComboBox>(*dialog, "pelican.featureParameters.prefilter_shader");
+    CHECK(shader.currentData().toString() == QStringLiteral("engine://prefilter"));
+
+    // The colour: its numbers under the swatch, and its strength (the range
+    // goes past 1). A number typed goes at once, with the colour it is part of.
+    auto &red = dialogChild<QDoubleSpinBox>(*dialog, "pelican.featureParameters.color_r");
+    CHECK(red.value() == 0.12);
+    CHECK(dialogChild<QDoubleSpinBox>(*dialog, "pelican.featureParameters.color.strength").value() ==
+          1.0);
+    (void)dialogChild<QPushButton>(*dialog, "pelican.featureParameters.color.swatch");
+    red.setValue(0.5);
+    auto [parameters, poll] = uxSent(engine, RootA);
+    const Json coloured{{"color_r", 0.5}, {"color_g", 0.16}, {"color_b", 0.24}};
+    CHECK(parameters == coloured);
+    engine.answer(poll, liveCommit(RootB));
+    CHECK(digest->current() == RootB);
+    uxFeaturesRead(engine, RootB, coloured);
+
+    // A slider moved three times within 150 ms is one edit, with where it
+    // stopped.
+    auto &slider = dialogChild<QSlider>(*dialog, "pelican.featureParameters.sky_intensity.slider");
+    auto &intensity = dialogChild<QDoubleSpinBox>(*dialog, "pelican.featureParameters.sky_intensity");
+    slider.setValue(100);
+    QTest::qWait(30);
+    slider.setValue(200);
+    QTest::qWait(30);
+    slider.setValue(300);
+    CHECK(intensity.value() == 19.2);
+    std::tie(parameters, poll) = uxSent(engine, RootB);
+    auto brighter = coloured;
+    brighter["sky_intensity"] = 19.2;
+    CHECK(parameters == brighter);
+    engine.answer(poll, liveCommit(RootC));
+    uxFeaturesRead(engine, RootC, brighter);
+
+    // Reset: offered on the changed row only, and back to the default.
+    auto &reset = dialogChild<QToolButton>(*dialog, "pelican.featureParameters.sky_intensity.reset");
+    CHECK(reset.isVisibleTo(dialog));
+    CHECK_FALSE(dialogChild<QToolButton>(*dialog, "pelican.featureParameters.plane.reset")
+                    .isVisibleTo(dialog));
+    reset.click();
+    std::tie(parameters, poll) = uxSent(engine, RootC);
+    CHECK(parameters == coloured);
+    CHECK(intensity.value() == 1.0);
+    const std::string RootD(64, 'd');
+    engine.answer(poll, liveCommit(RootD));
+    uxFeaturesRead(engine, RootD, coloured);
+
+    // An Undo (another revision of the document): the fields show it.
+    const std::string RootE(64, 'e');
+    digest->publish(RootE);
+    uxFeaturesRead(engine, RootE, Json::object());
+    CHECK(red.value() == 0.12);
+    CHECK_FALSE(dialogChild<QToolButton>(*dialog, "pelican.featureParameters.color.reset")
+                    .isVisibleTo(dialog));
+    // Nothing more was sent.
+    CHECK_FALSE(engine.next("edit_render_features", 300));
+}
+
+TEST_CASE("UX-10 decision 3: Rendering settings picks material_route_default from Auto / "
+          "Forward and sends set_material_route_default; the restart it needs is asked for",
+          "[devstudio][ux10][rendering-settings][widget]") {
+    CHECK(RenderEditHistory::recordsMethod("set_material_route_default"));
+    Transport engine;
+    auto digest = std::make_shared<RenderConfigDigest>();
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.setRenderConfigDigest(digest);
+    QStringList restarts;
+    settings.setEngineRestartAction([&](const QString &reason) { restarts << reason; });
+    settings.show();
+    QApplication::processEvents();
+    auto &route = required<QComboBox>(settings, "pelican.renderingSettings.material_route_default");
+    settingsRead(engine, RootA, Json::object());
+    // Not written: the engine's default.
+    CHECK(route.currentText() == QStringLiteral("Auto (engine default)"));
+    CHECK(route.isEnabled());
+    route.setCurrentIndex(route.findData(QStringLiteral("forward")));
+    auto sent = engine.next("set_material_route_default");
+    REQUIRE(sent);
+    CHECK(sent->at("params") ==
+          Json{{"base_source_digest", RootA}, {"material_route_default", "forward"}});
+    engine.answer(*sent, {{"status", "accepted"}, {"ticket", "render-route-1"}});
+    auto poll = engine.next("get_edit_result");
+    REQUIRE(poll);
+    engine.answer(*poll, restartCommit(RootB));
+    CHECK(restarts == QStringList{RestartLine});
+    // The engine that comes back reads the root: Forward is what it holds.
+    settings.engineRestartDeclined(QStringLiteral("not restarted"));
+    settingsRead(engine, RootB, {{"material_route_default", "forward"}});
+    CHECK(route.currentText() == QStringLiteral("Forward"));
+    // Back to Auto is written as "auto" (the engine reads it at start).
+    route.setCurrentIndex(0);
+    sent = engine.next("set_material_route_default");
+    REQUIRE(sent);
+    CHECK(sent->at("params").at("material_route_default") == "auto");
+}
+
+TEST_CASE("UX-10 decision 7: draw_sort and render_strategy are picked from the providers the "
+          "engine registered (a game's marked); an engine without the list keeps the fixed entries",
+          "[devstudio][ux10][rendering-settings][widget]") {
+    Transport engine;
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.show();
+    QApplication::processEvents();
+    auto &draw_sort = required<QComboBox>(settings, "pelican.renderingSettings.draw_sort");
+    auto &strategy = required<QComboBox>(settings, "pelican.renderingSettings.render_strategy");
+    settingsRead(engine, RootA, {{"render_strategy", {{"provider", "builtin.authored_config_v1"},
+                                                      {"name", "main"}}}});
+    // EL-6's answer, written by hand.
+    auto asked = engine.next("get_registered_providers");
+    REQUIRE(asked);
+    CHECK(asked->at("params") == Json::object());
+    engine.answer(*asked,
+                  {{"draw_sort", Json::array({{{"name", "back_to_front_v1"}, {"source", "engine"}, {"provider_version", 1}},
+                                              {{"name", "my_sort"}, {"source", "game"}, {"provider_version", 1}}})},
+                   {"pass_implementation", Json::array()},
+                   {"region_replacements", Json::array()},
+                   {"graph_transforms", Json::array()},
+                   {"render_strategy",
+                    Json::array({{{"name", "builtin.authored_config_v1"}, {"source", "engine"}, {"provider_version", 1}},
+                                 {{"name", "my_strategy"}, {"source", "game"}, {"provider_version", 1}}})}});
+    QStringList sorts;
+    for (int index = 0; index < draw_sort.count(); ++index) sorts << draw_sort.itemText(index);
+    CHECK(sorts == QStringList{"Engine default", "back_to_front_v1 / back_to_front_v1",
+                               "back_to_front_v1 / my_sort (game)", "my_sort (game) / back_to_front_v1",
+                               "my_sort (game) / my_sort (game)"});
+    // The provider the root names is the one shown; picking another keeps
+    // the name it reads.
+    CHECK(strategy.currentText() == QStringLiteral("builtin.authored_config_v1"));
+    strategy.setCurrentIndex(strategy.findText(QStringLiteral("my_strategy (game)")));
+    auto sent = engine.next("edit_rendering_keys");
+    REQUIRE(sent);
+    CHECK(sent->at("params") ==
+          Json{{"base_source_digest", RootA},
+               {"set", {{"render_strategy", {{"provider", "my_strategy"}, {"name", "main"}}}}}});
+    engine.answer(*sent, {{"status", "accepted"}, {"ticket", "render-keys-7"}});
+    auto poll = engine.next("get_edit_result");
+    REQUIRE(poll);
+    engine.answer(*poll, liveCommit(RootB));
+    // Read again: the list is asked again (a game reload changes it); this
+    // engine has no such method, and the fixed entries come back.
+    settingsRead(engine, RootB, Json::object());
+    asked = engine.next("get_registered_providers");
+    REQUIRE(asked);
+    emit engine.viewport.inspectorRpcFailed(asked->at("id").get<qint64>(),
+                                            QStringLiteral("RPC -32601: method not found"));
+    QApplication::processEvents();
+    CHECK(draw_sort.count() == 3);
+    CHECK(draw_sort.itemText(1) == QStringLiteral("State batched / back to front"));
+    CHECK(strategy.count() == 1);
+}
+
+TEST_CASE("UX-10 decision 4: Snapshots are rows -- + adds one after the opaque pass, x takes it "
+          "away -- and XR's view execution is a combo, the whole xr JSON under Advanced",
+          "[devstudio][ux10][rendering-settings][widget]") {
+    Transport engine;
+    auto digest = std::make_shared<RenderConfigDigest>();
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.setRenderConfigDigest(digest);
+    settings.show();
+    QApplication::processEvents();
+    settingsRead(engine, RootA, Json::object());
+    auto &add = required<QPushButton>(settings, "pelican.renderingSettings.snapshots.add");
+    CHECK(add.isEnabled());
+    CHECK(settings.findChild<QLineEdit *>(QStringLiteral("pelican.renderingSettings.snapshots.row0.name")) ==
+          nullptr);
+    // +: one row, named and placed without typing.
+    add.click();
+    auto sent = engine.next("edit_rendering_keys");
+    REQUIRE(sent);
+    const Json one = Json::array({{{"name", "opaque_snapshot"}, {"after", "post_ldr"}}});
+    CHECK(sent->at("params") == Json{{"base_source_digest", RootA}, {"set", {{"snapshots", one}}}});
+    engine.answer(*sent, {{"status", "accepted"}, {"ticket", "render-keys-1"}});
+    auto poll = engine.next("get_edit_result");
+    REQUIRE(poll);
+    engine.answer(*poll, liveCommit(RootB));
+    settingsRead(engine, RootB, {{"snapshots", one}});
+    QApplication::processEvents();
+    auto &name = required<QLineEdit>(settings, "pelican.renderingSettings.snapshots.row0.name");
+    CHECK(name.text() == QStringLiteral("opaque_snapshot"));
+    auto &after = required<QComboBox>(settings, "pelican.renderingSettings.snapshots.row0.after");
+    CHECK(after.count() == 1);
+    CHECK(after.currentData().toString() == QStringLiteral("post_ldr"));
+    // v1 takes one snapshot: + is off while there is one.
+    CHECK_FALSE(add.isEnabled());
+    // x: the key is removed.
+    required<QPushButton>(settings, "pelican.renderingSettings.snapshots.row0.remove").click();
+    sent = engine.next("edit_rendering_keys");
+    REQUIRE(sent);
+    CHECK(sent->at("params") ==
+          Json{{"base_source_digest", RootB}, {"remove", Json::array({"snapshots"})}});
+    engine.answer(*sent, {{"status", "accepted"}, {"ticket", "render-keys-2"}});
+    poll = engine.next("get_edit_result");
+    REQUIRE(poll);
+    engine.answer(*poll, liveCommit(RootC));
+    // XR: view_execution picked; the rest of xr (its profiles) kept as it is.
+    const Json profiles{{"multiview_auto", {{"min_views", 2}}}};
+    settingsRead(engine, RootC, {{"xr", profiles}});
+    auto &execution = required<QComboBox>(settings, "pelican.renderingSettings.xr.viewExecution");
+    CHECK(execution.currentText() == QStringLiteral("Auto (engine default)"));
+    auto &advanced = required<QPushButton>(settings, "pelican.renderingSettings.xr.advanced");
+    auto &xr = required<QPlainTextEdit>(settings, "pelican.renderingSettings.xr");
+    CHECK_FALSE(xr.isVisibleTo(&settings));
+    advanced.click();
+    CHECK(xr.isVisibleTo(&settings));
+    execution.setCurrentIndex(execution.findData(QStringLiteral("multiview")));
+    sent = engine.next("edit_rendering_keys");
+    REQUIRE(sent);
+    auto multiview = profiles;
+    multiview["view_execution"] = "multiview";
+    CHECK(sent->at("params") == Json{{"base_source_digest", RootC}, {"set", {{"xr", multiview}}}});
 }
 
 } // namespace PelicanStudio

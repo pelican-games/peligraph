@@ -1,6 +1,7 @@
 #include "fullscreenshadertemplate.hpp"
 #include "graphcanvascomputefields.hpp"
 #include "graphcanvasloopfields.hpp"
+#include "graphcanvasposefields.hpp"
 #include "graphcanvasrenderfields.hpp"
 #include "graphcanvasvaluefields.hpp"
 #include "graphcanvaswidget.hpp"
@@ -10579,4 +10580,109 @@ TEST_CASE("UX-11 decisions 1 and 4: a material pass's Tags, outputs, bindings an
         QStringLiteral("2 draw")));
     Q_EMIT drawn->itemClicked(drawn->topLevelItem(1), 0);
     CHECK(materials_for == QStringLiteral("mp"));
+}
+
+// UX-10, decision 5: no engine RPC lists a rig's clips, and the engine finds a
+// clip by the name its glTF gives it, so the fields read the project's files.
+TEST_CASE("UX-10 decision 5: a pose.clip_sample's rig is picked from the project's glTF files "
+          "and its clip from the animations the rig's file holds; speed and loop are fields, "
+          "each change one edit",
+          "[devstudio][graph-canvas][scene][ux10]") {
+    (void)application();
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_ux10_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "assets");
+    std::filesystem::create_directories(root / ".pelican");
+    std::ofstream{root / "assets" / "hero.gltf"}
+        << R"({"asset":{"version":"2.0"},"animations":[{"name":"Walk"},{"name":"Run"}]})";
+    std::ofstream{root / ".pelican" / "cached.gltf"} << R"({"animations":[{"name":"No"}]})";
+    {
+        // A binary glTF: the header, then its JSON chunk (padded to 4 bytes).
+        std::string json = R"({"asset":{"version":"2.0"},"animations":[{"name":"Idle"}]})";
+        while (json.size() % 4 != 0) json.push_back(' ');
+        const auto word = [](std::uint32_t value) {
+            return std::string{reinterpret_cast<const char *>(&value), 4};
+        };
+        std::ofstream glb{root / "assets" / "crowd.glb", std::ios::binary};
+        glb << "glTF" << word(2) << word(static_cast<std::uint32_t>(20 + json.size()))
+            << word(static_cast<std::uint32_t>(json.size())) << word(0x4E4F534Au) << json;
+    }
+    CHECK(PelicanStudio::projectRigReferences(root) ==
+          std::vector<std::string>{"project://assets/crowd.glb", "project://assets/hero.gltf"});
+    CHECK(PelicanStudio::gltfAnimationNames(root / "assets" / "hero.gltf") ==
+          std::vector<std::string>{"Walk", "Run"});
+    CHECK(PelicanStudio::gltfAnimationNames(root / "assets" / "crowd.glb") ==
+          std::vector<std::string>{"Idle"});
+    {
+        Ux2Tab tab{false};
+        tab.widget->setProjectRoot(root);
+        auto parameters = Json{{"rig", "project://assets/hero.gltf"}, {"clip", "Walk"}};
+        const auto document = [&] {
+            return Json{{"schema", "pelican.graph"},
+                        {"version", 1},
+                        {"definitions", Json::object()},
+                        {"nodes", Json::array({{{"id", "walk"},
+                                                {"op", "pose.clip_sample"},
+                                                {"parameters", parameters},
+                                                {"outputs", Json::array({"pose"})}}})}};
+        };
+        tab.read(document(), "ux10-0");
+        tab.answer("get_graph_catalog", ux2Catalog());
+        tab.widget->scene().selectNode("walk");
+        QCoreApplication::processEvents();
+        REQUIRE(tab.field<QWidget>("pelican.graphCanvasPose")->isVisible());
+        auto *rig = tab.field<QComboBox>("pelican.graphCanvasPose.rig");
+        CHECK(ux2Items(*rig) ==
+              QStringList{"project://assets/crowd.glb", "project://assets/hero.gltf"});
+        CHECK(rig->currentText() == QStringLiteral("project://assets/hero.gltf"));
+        auto *clip = tab.field<QComboBox>("pelican.graphCanvasPose.clip");
+        CHECK(ux2Items(*clip) == QStringList{"Walk", "Run"});
+        CHECK(clip->currentText() == QStringLiteral("Walk"));
+        // Unwritten: the engine's defaults.
+        CHECK(tab.field<QDoubleSpinBox>("pelican.graphCanvasPose.speed")->value() == 1.0);
+        CHECK(tab.field<QCheckBox>("pelican.graphCanvasPose.loop")->isChecked());
+
+        tab.pick(clip, QStringLiteral("Run"));
+        auto op = tab.sent(1);
+        CHECK(op.at("node") == "walk");
+        parameters["clip"] = "Run";
+        CHECK(op.at("parameters") == parameters);
+        tab.commit(document(), "ux10-1");
+        // The test's catalog does not know pose.*: the node is picked again
+        // after each read.
+        const auto pickWalk = [&] {
+            tab.widget->scene().selectNode("walk");
+            QCoreApplication::processEvents();
+        };
+        pickWalk();
+        CHECK(tab.field<QDoubleSpinBox>("pelican.graphCanvasPose.speed")->isEnabled());
+
+        tab.field<QDoubleSpinBox>("pelican.graphCanvasPose.speed")->setValue(2.0);
+        QCoreApplication::processEvents();
+        op = tab.sent(2);
+        parameters["speed"] = 2.0;
+        CHECK(op.at("parameters") == parameters);
+        tab.commit(document(), "ux10-2");
+        pickWalk();
+
+        tab.field<QCheckBox>("pelican.graphCanvasPose.loop")->setChecked(false);
+        QCoreApplication::processEvents();
+        op = tab.sent(3);
+        parameters["loop"] = false;
+        CHECK(op.at("parameters") == parameters);
+        tab.commit(document(), "ux10-3");
+        pickWalk();
+
+        // Another rig lists its own clips; the clip it names stays shown, marked.
+        tab.pick(rig, QStringLiteral("project://assets/crowd.glb"));
+        op = tab.sent(4);
+        CHECK(op.at("parameters").at("rig") == "project://assets/crowd.glb");
+        CHECK(ux2Items(*clip) == QStringList{"Run", "Idle"});
+        CHECK(tab.field<QLabel>("pelican.graphCanvasPose.note")
+                  ->text()
+                  .contains(QStringLiteral("Run is not an animation of")));
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
 }

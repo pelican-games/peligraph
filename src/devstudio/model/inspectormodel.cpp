@@ -396,6 +396,21 @@ makeInspectorWidgetPlan(const Json &component,
             declaration.range);
         descriptor.unit = declaration.unit;
         descriptor.enum_values = declaration.enum_values;
+        // UX-10, decision 6: what SC-1 adds beside a declaration.
+        const auto strings = [&field](const char *key) {
+            std::vector<std::string> values;
+            if (const auto found = field.find(key); found != field.end() && found->is_array())
+                for (const auto &value : *found)
+                    if (value.is_string()) values.push_back(value.get<std::string>());
+            return values;
+        };
+        if (const auto found = field.find("discriminant");
+            found != field.end() && found->is_string())
+            descriptor.discriminant = found->get<std::string>();
+        descriptor.applies_to = strings("applies_to");
+        descriptor.required_for = strings("required_for");
+        if (const auto found = field.find("default"); found != field.end())
+            descriptor.schema_default = *found;
 
         try {
             descriptor.value =
@@ -526,6 +541,102 @@ bool isEulerRotationField(const InspectorWidgetDescriptor &descriptor) {
     return descriptor.component_slot == "transform" &&
            descriptor.field_name == "rotation" && descriptor.columns == 4 &&
            descriptor.kind == InspectorWidgetKind::QuaternionDrag;
+}
+
+namespace {
+// The value the discriminant a field names holds now: authored, else its
+// schema default; empty when there is none.
+std::optional<std::string> discriminantValue(const InspectorWidgetDescriptor &field,
+                                             const std::vector<InspectorWidgetDescriptor> &fields) {
+    if (field.discriminant.empty()) return std::nullopt;
+    for (const auto &candidate : fields) {
+        if (candidate.field_name != field.discriminant) continue;
+        if (candidate.authored && candidate.value.is_string())
+            return candidate.value.get<std::string>();
+        if (candidate.schema_default.is_string()) return candidate.schema_default.get<std::string>();
+        return std::string{};
+    }
+    return std::string{};
+}
+
+bool listed(const std::vector<std::string> &values, const std::string &value) {
+    return std::ranges::find(values, value) != values.end();
+}
+} // namespace
+
+bool inspectorFieldShown(const InspectorWidgetDescriptor &field,
+                         const std::vector<InspectorWidgetDescriptor> &fields) {
+    const auto value = discriminantValue(field, fields);
+    if (!value || field.applies_to.empty()) return true;
+    return listed(field.applies_to, *value);
+}
+
+bool inspectorFieldRequiredMissing(const InspectorWidgetDescriptor &field,
+                                   const std::vector<InspectorWidgetDescriptor> &fields) {
+    const auto value = discriminantValue(field, fields);
+    if (!value || !listed(field.required_for, *value) || !inspectorFieldShown(field, fields))
+        return false;
+    return !field.authored || field.value.is_null() ||
+           (field.value.is_string() && field.value.get<std::string>().empty());
+}
+
+double inspectorDisplayScale(const InspectorWidgetDescriptor &field) {
+    const bool radians = field.unit == "rad" || field.unit == "radian" || field.unit == "radians" ||
+                         (field.component_slot == "camera" &&
+                          (field.field_name == "controller.yaw" ||
+                           field.field_name == "controller.pitch"));
+    const bool scalar = field.kind == InspectorWidgetKind::FloatingPointDrag;
+    return radians && scalar ? DegreesPerRadian : 1.0;
+}
+
+bool isDirectionField(const InspectorWidgetDescriptor &descriptor) {
+    return descriptor.field_name == "direction" && descriptor.columns == 3 &&
+           descriptor.kind == InspectorWidgetKind::VectorDrag;
+}
+
+std::array<double, 2> directionAnglesDegrees(const std::array<double, 3> &direction) {
+    const double length = std::sqrt(direction[0] * direction[0] + direction[1] * direction[1] +
+                                    direction[2] * direction[2]);
+    if (!(length > 0.0) || !std::isfinite(length)) return {0.0, 0.0};
+    const double x = direction[0] / length;
+    const double y = std::clamp(direction[1] / length, -1.0, 1.0);
+    const double z = direction[2] / length;
+    const double elevation = std::asin(y) * DegreesPerRadian;
+    if (std::abs(x) < 1.0e-12 && std::abs(z) < 1.0e-12) return {0.0, elevation};
+    return {wrapDegrees(std::atan2(x, z) * DegreesPerRadian), elevation};
+}
+
+std::array<double, 3> directionFromAnglesDegrees(const std::array<double, 2> &angles) {
+    const double azimuth = angles[0] / DegreesPerRadian;
+    const double elevation = angles[1] / DegreesPerRadian;
+    std::array<double, 3> result{std::cos(elevation) * std::sin(azimuth), std::sin(elevation),
+                                 std::cos(elevation) * std::cos(azimuth)};
+    // Straight down is (0, -1, 0), not a rounding away from it.
+    for (double &component : result)
+        if (std::abs(component) < 1.0e-12) component = 0.0;
+    return result;
+}
+
+bool isColorField(const InspectorWidgetDescriptor &descriptor) {
+    return descriptor.field_name == "color" &&
+           (descriptor.columns == 3 || descriptor.columns == 4) &&
+           descriptor.kind == InspectorWidgetKind::VectorDrag;
+}
+
+bool isTextureReferenceField(const InspectorWidgetDescriptor &descriptor) {
+    return descriptor.component_slot == "sprite_view" && descriptor.json_pointer == "/texture" &&
+           descriptor.kind == InspectorWidgetKind::StringInput;
+}
+
+std::vector<std::string> textureReferenceChoices(std::string_view current,
+                                                 const std::vector<std::string> &engine_textures) {
+    std::vector<std::string> choices;
+    for (const auto &texture : engine_textures)
+        if (!texture.empty() && std::ranges::find(choices, texture) == choices.end())
+            choices.push_back(texture);
+    if (!current.empty() && std::ranges::find(choices, current) == choices.end())
+        choices.emplace_back(current);
+    return choices;
 }
 
 bool isModelReferenceField(const InspectorWidgetDescriptor &descriptor) {
@@ -1398,11 +1509,15 @@ std::vector<ComponentAddRow> componentAddRows(const Json &catalog) {
 }
 
 std::vector<std::string> modelAssetIds(const Json &list_assets_result) {
+    return assetIdsOfKind(list_assets_result, "model");
+}
+
+std::vector<std::string> assetIdsOfKind(const Json &list_assets_result, std::string_view kind) {
     const auto &assets = requiredField(list_assets_result, "assets", "list_assets result");
     if (!assets.is_array()) throw std::runtime_error("list_assets assets must be an array");
     std::vector<std::string> ids;
     for (const auto &asset : assets) {
-        if (!asset.is_object() || asset.value("kind", std::string{}) != "model") continue;
+        if (!asset.is_object() || asset.value("kind", std::string{}) != kind) continue;
         const auto id = asset.find("id");
         if (id != asset.end() && id->is_string() && !id->get_ref<const std::string &>().empty())
             ids.push_back(id->get<std::string>());
@@ -1493,6 +1608,8 @@ struct InspectorModel::Impl {
     std::optional<Json> component_add_candidates;
     // G-2: the model ids list_assets reported, for the model field.
     std::optional<std::vector<std::string>> model_assets;
+    // UX-10: the texture ids of the same answer, for sprite_view.texture.
+    std::optional<std::vector<std::string>> texture_assets;
     std::uint64_t model_assets_revision = 0;
     std::optional<Json> ray_occurrences;
     std::uint64_t ray_catalog_epoch = 0;
@@ -2486,7 +2603,8 @@ struct InspectorModel::Impl {
         const bool has_model_view = std::any_of(
             snapshot->components.begin(), snapshot->components.end(),
             [](const InspectorComponentSnapshot &component) {
-                return component.name == "simplemodelview" && !component.generated;
+                return (component.name == "simplemodelview" || component.name == "sprite_view") &&
+                       !component.generated;
             });
         if (!has_model_view) return;
         if (std::any_of(requests.begin(), requests.end(), [](const auto &request) {
@@ -2500,6 +2618,7 @@ struct InspectorModel::Impl {
     void resetModelAssets() {
         if (!model_assets) return;
         model_assets.reset();
+        texture_assets.reset();
         ++model_assets_revision;
     }
 
@@ -2650,6 +2769,7 @@ struct InspectorModel::Impl {
             break;
         case RequestPurpose::ModelAssets:
             model_assets = modelAssetIds(result);
+            texture_assets = assetIdsOfKind(result, "texture");
             ++model_assets_revision;
             break;
         case RequestPurpose::RayOccurrences:
@@ -3337,6 +3457,10 @@ const std::optional<std::vector<std::string>> &InspectorModel::modelAssets() con
 
 std::uint64_t InspectorModel::modelAssetsRevision() const noexcept {
     return impl_->model_assets_revision;
+}
+
+const std::optional<std::vector<std::string>> &InspectorModel::textureAssets() const noexcept {
+    return impl_->texture_assets;
 }
 
 bool InspectorModel::addComponent(std::string_view key) {
