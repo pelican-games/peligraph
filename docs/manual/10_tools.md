@@ -645,7 +645,7 @@ pelican_cli graph-catalog
 [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake#L24)(ctest 名 `devcli_graph_catalog`)が
 固定しています。出力はモジュール名・操作名・型・sink のどれも**名前順**です([catalog()](../../src/project/graphmodule.cpp#L698) が名前を鍵にした `std::map` を走り、型と sink は明示的に sort します)。登録順に依存しません。
 
-### `pelican_cli intro-link bake|serve`(✅IL-1 / IL-2。v1 向け、`develop_v1`)
+### `pelican_cli intro-link bake|serve`(✅IL-1〜IL-3。v1 向け、`develop_v1`)
 
 ```sh
 pelican_cli intro-link serve <project> [--port N] [--shaders <dir>] [--glslc <path>] [--exit-after-client]
@@ -658,8 +658,9 @@ pelican_cli intro-link bake  <project> --out <header> [--shaders <dir>] [--glslc
 1 行目に `port <N>` を出して、file が変わった曲線とシェーダを送り直します。stdin で `play` / `pause` / `seek <秒>` / `quit`
 を受けます。**`bake`** は同じものを C header 1 本に焼きます(提出の形)。作品は単一 header
 `tools/intro_link/pelican_intro_link.h` を使い、開発中は socket、提出時は焼いた表を同じ関数で引きます。
-シェーダは glslc を子 process で呼んで compile します(serve と bake で同じ引数。`pelican_cli` に shaderc は入りません)。
-失敗は stderr に `intro_link.*@1` の 1 行で終了コード 1 です(この節の冒頭の -1 の例外。[振り分け](../../src/devcli/introlinkcommand.cpp#L98))。
+シェーダは glslc を子 process で呼んで compile します(`pelican_cli` に shaderc は入りません)。glslc の隣に spirv-opt があれば、`-Os` と inline しない組の両方を作って小さい方を使います(serve と bake で同じ規則)。
+`bake` は stdout に track と shader ごとの byte 数を、`serve` は compile のたびに stderr に shader の byte 数を出します。
+失敗は stderr に `intro_link.*@1` の 1 行で終了コード 1 です(この節の冒頭の -1 の例外。[振り分け](../../src/devcli/introlinkcommand.cpp#L112))。
 `PELICAN_WITH_INTRO_LINK=OFF` の build では `build_feature_disabled@1` を出して 1 で終わり、`dist-config` の配布 preset は常に OFF を書きます。
 通信の形、header の API、パージ、実例 program と大きさの実測は [design_intro_link.md](../design_intro_link.md) が正です。
 
