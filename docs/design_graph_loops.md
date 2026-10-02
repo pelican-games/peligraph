@@ -814,6 +814,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `graph.target_ref_unknown@1` | 組み直し | `{node, name}` |
 | `graph.input_index_invalid@1` | 編集・読み込み | `{node, input_index, reason: missing｜duplicate, ports}`(LP-1d) |
 | `graph.render_node_parameters_missing@1` | 編集・読み込み | `{node, op, missing}`(render の node の `parameters` に op が要るものが無い。`missing` は欠けた名前を表の順に。`parameters` が無い・null の node は空として扱う。op ごとの表は [`renderNodeRequiredParameters()`](../src/project/graphmodule.cpp#L259)。RS-9。RS-15 から `render.scalar` / `value.*` / `audio.*` / `ui.*` にも広げ、検査は `resolveOperation()` の 1 か所、名前は同名の入力 edge でも満たせる。CT-1 から同じ表を catalog の `required_parameters` が出す) |
+| `graph.render_node_parameter_invalid@1` | 編集・読み込み | `{node, op, parameter, expected, reason: type｜enum｜range}`、`enum` では `allowed`、`range` では `min` / `max`(node の parameter の値が、catalog の `parameters` の kind・enum・範囲に合わない。`parameter` は入れ子なら道筋で `keys[0].interpolation`。`null`・`$expr` / `$format`・表に無い鍵は断らない。表は [`graphparameterschema.cpp`](../src/project/graphparameterschema.cpp#L211) の 1 つで、RS-9 の必須もここから作る。検査は `resolveOperation()` の RS-9 の直後。CT-3、`0d215a68`) |
 | `graph.target_ref_type_mismatch@1` | 組み直し | `{node, name, field, declared, actual}`(field: `kind` / `topology`。LP-0a) |
 | `graph.history_write@1` | 編集・読み込み・組み直し | `{node, port}`(`X@history` へ書く port。LP-0a) |
 | `graph.history_unavailable@1` | 組み直し | `{node, port, target}`(history を持たない target の `@history` を読む。LP-0a) |
