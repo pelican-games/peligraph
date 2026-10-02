@@ -50,4 +50,25 @@ struct GraphCanvasPsdOutput {
 [[nodiscard]] std::string copyCanvasPsdOutput(const std::filesystem::path &project_root,
                                               const GraphCanvasPsdOutput &output, bool replace);
 
+// SG-3: the fonts a project holds, as a shape.text's `font` names them
+// ("project://assets/fonts/Inter.ttf"): the .ttf and .otf files under its
+// folder, dot folders skipped. Sorted; `error` says why none could be read.
+struct GraphCanvasFontsRead {
+    std::vector<std::string> fonts;
+    std::string error;
+};
+[[nodiscard]] GraphCanvasFontsRead readCanvasProjectFonts(const std::filesystem::path &project_root);
+// Whether a path names a font + Text takes (by its extension).
+[[nodiscard]] bool isCanvasFontFile(const std::filesystem::path &file);
+// Import font: the file copied into the project's assets/fonts under its own
+// name, `_2`, `_3`... when that name is taken (the pictures' rule). `error`
+// says why it was not.
+struct GraphCanvasFontImport {
+    std::string reference;
+    std::filesystem::path copy;
+    std::string error;
+};
+[[nodiscard]] GraphCanvasFontImport importCanvasFont(const std::filesystem::path &project_root,
+                                                     const std::filesystem::path &file);
+
 } // namespace PelicanStudio
