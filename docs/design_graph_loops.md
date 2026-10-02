@@ -286,6 +286,7 @@ carry の型が合わなければ、`graph.loop_carry_type_mismatch@1` で断る
   - `range.count`
   - `when` / `where` の比較値
   - 回ごとの入力の `element`
+  - body の `render.image` の `width` / `height` / `layers` / `mip_levels`(整数。RS-15 `7b16e9c8` で追加。結果の整数は書いた数と同じく render target を読む所で検査し、小数は `not_integer`)
 - 許可リストの外に書くと、`graph.loop_expression_invalid@1` で断る。
 
 **変数**
@@ -302,7 +303,8 @@ carry の型が合わなければ、`graph.loop_carry_type_mismatch@1` で断る
 
 **文法**(実装で BNF に固定する)
 
-- 使えるもの:整数と実数のリテラル、`+ - * / %`、比較、`&& || !`、括弧、`min` / `max`、`pow2(n)`。
+- 使えるもの:整数と実数のリテラル、`+ - * / %`、比較、`&& || !`、括弧、`min` / `max`、`pow2(n)`、`log2(n)`。
+  - `log2(n)` は RS-15(`7b16e9c8`)で追加。正の整数 n の 2 を底とする対数を切り捨てた整数(`log2(256)` は 8、`log2(255)` は 7)。n が整数でない・1 未満なら `not_integer`。
 - 整数を要求する場所では、整数だけで計算する(`/` は切り捨て)。
 - 実数の `pow` は持たない。有理数で計算し、最後に 1 回だけ実数にする(浮動小数の丸めを platform に依存させない)。
 - 0 除算・overflow・長さの超過(256 字)・入れ子の超過(16 段)は、`graph.loop_expression_invalid@1` で断る。
@@ -320,6 +322,27 @@ carry の型が合わなければ、`graph.loop_carry_type_mismatch@1` で断る
 - `mip_levels_of("<target>")`、`layers_of("<target>")` など。
 - 実行時に伸ばされる target(影の target)は定数として使えない。使うと `graph.loop_expression_invalid@1`(`not_static`)。
 - 例:planar の連鎖は `"count": {"$expr": "mip_levels_of(\"planar_reflection_color\") - 1"}`。
+- `mip_levels: "full"`(mip の段が大きさに従う)の target は、LP-1b では `not_static` だった。RS-15(`7b16e9c8`)から、`width` と `height` が正の整数で書かれ `format_class` が `display` でない target なら、`mip_levels_of` は `floor(log2(max(width, height))) + 1` を定数として返す(256×256 で 9)。大きさが画面に従う target は今も `not_static`。
+
+### 回の番号を shader に渡す(LC-1、`158abae9`、2026-10-02)
+
+GB-3(Blank から GUI で FFT の海を組む試験)で、body の shader に回の番号を渡す口が無く、16 本の分岐で凌いでいた。回ごとの define(`$format`)は回の数だけ compile が増える。そこで回の番号は push constant で渡す。**回の番号を shader に渡す正式な道はこちら**で、回ごとの define は compile の時の選択(分岐)として残る。書き方の正は manual 第6章 §6.18「回の番号を shader に渡す」。
+
+**契約**
+
+- engine の include `pelican_loop.glsl` が `uint pelican_loop_element()`(0 始まり)と `uint pelican_loop_count()` を出す。値は push constant の offset 112 から 8 byte(`PELICAN_PUSH_LOOP_OFFSET = 112`、`PELICAN_PUSH_LOOP_BYTES = 8`。`pelican_sets.glsl` と `pelican_sets.hpp`)。engine の先頭 64 byte の後、保証される 128 byte の中。
+- 既定では include が block `PelicanLoopPush` を自分で宣言する。自分の push constant を持つ shader は、include の前に `#define PELICAN_LOOP_CUSTOM_PUSH`、自分の block の最後に `PELICAN_LOOP_PUSH_FIELDS`、block の後に `PELICAN_LOOP_FUNCTIONS(<instance 名>)` を書く。
+- element は展開の `element`(集合の値。`index` は渡さない)、count は展開後の回数。ループの外の pass と task は element 0・count 1。
+- engine は fullscreen / raster の pass と compute task で、range が `[112, 120)` を丸ごと含む stage を集め、その stage flags の OR で 1 回 push する。raster で vertex と fragment の両方が include すれば両方に同じ値。どの stage も宣言していなければ push しない。
+- pipeline は pass ごとに作るが、回ごとの compile は増えない(回の番号は値なので、同じ shader と同じ設定の回は同じ cache key を共有する)。
+- `get_frame_plan` の node と `get_engine_shaders` の項目に `reads_loop_index: true`(どれかの stage が `[112, 120)` を宣言しているとき)。
+- range が `[112, 120)` に一部だけ重なる宣言は、graphics と compute の pipeline を作るときに `shader.loop_push_overlap@1` `{shader, stage, range: {offset, size}}` で断る(§10)。
+
+**制限と既知の穴**
+
+- material の shader では使えない(engine は material pass に push しない)。draw_loop は対象外。
+- ray tracing の pipeline は重なりを検査しない。
+- fullscreen pass の `push_constants: "camera_position"` / `"projection_view"` は宣言だけで、engine は値を push していない(LC-1 の前からの状態。`PELICAN_LOOP_CUSTOM_PUSH` で `projection_view` と並べる形は compile と反映の test でだけ確かめた)。
 
 ## 3. 実行の段(engine が決めるもの)
 
@@ -776,7 +799,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `graph.output_referenced@1`(`set_outputs` で消した出力) | 編集(列の最後) | `{definition, output, node}` に `{consumer, port}` / `{scope_output}` / `{field: outputs｜carry}` のどれか(DO-1) |
 | `graph.target_ref_unknown@1` | 組み直し | `{node, name}` |
 | `graph.input_index_invalid@1` | 編集・読み込み | `{node, input_index, reason: missing｜duplicate, ports}`(LP-1d) |
-| `graph.render_node_parameters_missing@1` | 編集・読み込み | `{node, op, missing}`(render の node の `parameters` に op が要るものが無い。`missing` は欠けた名前を表の順に。`parameters` が無い・null の node は空として扱う。op ごとの表は [`renderNodeRequiredParameters()`](../src/project/graphmodule.cpp#L226)。RS-9) |
+| `graph.render_node_parameters_missing@1` | 編集・読み込み | `{node, op, missing}`(render の node の `parameters` に op が要るものが無い。`missing` は欠けた名前を表の順に。`parameters` が無い・null の node は空として扱う。op ごとの表は [`renderNodeRequiredParameters()`](../src/project/graphmodule.cpp#L259)。RS-9。RS-15 から `render.scalar` / `value.*` / `audio.*` / `ui.*` にも広げ、検査は `resolveOperation()` の 1 か所、名前は同名の入力 edge でも満たせる。CT-1 から同じ表を catalog の `required_parameters` が出す) |
 | `graph.target_ref_type_mismatch@1` | 組み直し | `{node, name, field, declared, actual}`(field: `kind` / `topology`。LP-0a) |
 | `graph.history_write@1` | 編集・読み込み・組み直し | `{node, port}`(`X@history` へ書く port。LP-0a) |
 | `graph.history_unavailable@1` | 組み直し | `{node, port, target}`(history を持たない target の `@history` を読む。LP-0a) |
@@ -791,6 +814,7 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `view_axis` の拒否(LP-Vb) | 組み直し / 編集 | 実行時の軸は `graph.loop_tier_unsupported@1 {node, reason: set_unsupported}`、無い軸は `graph.view_select_axis_unknown@1 {pass: <loop id>, family, axis}`、body に value node があれば `graph.loop_expression_invalid@1 {reason: not_static}` |
 | `render_feature.pass_replacement_unknown@1` | 組み直し | `{feature, pass}` |
 | `graph.node_missing@1`(置き換え先) | 組み直し | `{node, feature, pass}`(LP-0d) |
+| `shader.loop_push_overlap@1` | 組み直し(graphics / compute の pipeline を作る時) | `{shader, stage, range: {offset, size}}`(push constant の range が回の番号の `[112, 120)` に一部だけ重なる。編集の結果には code のまま fields が並ぶ。LC-1) |
 
 **既存の code に寄せるもの**
 
@@ -836,6 +860,8 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | RS-6 | graph の compute task が書く image を読む rendering 節の最初の pass に `after: <task>`。task が待つ置き場所の無い graph の pass の塊もその前へ(§6 の表の下) | RS-3 | `257cdef0` |
 | RS-6b | RS-6 の規則を feature と integration の compute task にも。読み手が `input` で読む feature の render target に `SAMPLED` を足し、frame plan の `resources[]` に `added_usage`(§6 の表の下) | RS-6 | `b8015064` |
 | RS-9 | render の node の `parameters` の欠落を `graph.render_node_parameters_missing@1` で名前付きに(§10) | — | `5d065436` |
+| RS-15 | body の `render.image` の `width` / `height` / `layers` / `mip_levels` に整数の式、式の `log2`、`mip_levels_of` が大きさの決まった `"full"` の target で定数(決定 5)。ほかに必須の表の拡張・raster の passthrough・`render.scalar` の vec と offset(manual 第6章) | LP-1b、RS-9 | `7b16e9c8` |
+| LC-1 | 回の番号を push constant で shader に渡す `pelican_loop.glsl`(決定 5 の後の「回の番号を shader に渡す」)、`shader.loop_push_overlap@1`(§10) | LP-1a | `158abae9` |
 
 **docs**:各 WP で次を更新する。
 

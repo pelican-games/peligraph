@@ -207,7 +207,7 @@ engine は RPC の `set_play_state` で一時停止でき、`advance_frames` で
 
 > **この 3 本は「アニメーションの API」ですが、対象が 2 つに分かれていて互いに委譲しません(✅AG-1b 決定 5)。ファサード分割もその線を引き直しただけで、行き先は変わっていません。** `render().setValueGraphParameter` が触るのは **pass 文書の `graph.instance`** の入力ポート、`animation().setParameter` / `animation().forceState` が触るのは **シーンの `animation` コンポーネント**が持つ評価器です(前者は [gamecontext.cpp:406](../../src/core/userpublic/gamecontext.cpp#L630) で `SceneLoader` へ、後者は [:319](../../src/core/userpublic/gamecontext.cpp#L535) / [:329](../../src/core/userpublic/gamecontext.cpp#L545) で `AnimationSystem` へ行きます)。**姿勢の装着様式が 2 つある**(§8.13)ことがそのまま API に出ています。同じ owner に両方は付かないので、「どちらを呼ぶか」は装着の仕方で決まります。
 >
-> 同じ `graph.instance` 側には `render().emitValueGraphEvent(object, input, command)` もあります。`input` は **`event.playback` ノードの(展開後の)id** で、そこから `value.event_clock` / `audio.playback` の `events` ポートへ再生制御イベントが流れます([valuegraph.cpp:302](../../src/core/userpublic/valuegraph.cpp#L469))。
+> 同じ `graph.instance` 側には `render().emitValueGraphEvent(object, input, command)` もあります。`input` は **`event.playback` ノードの(展開後の)id** で、そこから `value.event_clock` / `audio.playback` の `events` ポートへ再生制御イベントが流れます([valuegraph.cpp:302](../../src/core/userpublic/valuegraph.cpp#L517))。
 >
 > 一方、**姿勢の評価器そのものは `GameContext` に載っていません** — 評価器を載せると標準の評価器だけが特権を持ってしまい、「評価器ごと自作できる」という設計が空文になるためです([../design_animation_graph.md](../design_animation_graph.md))。自作評価器は凍結 C-ABI 経由です(§8.13)。
 
@@ -221,7 +221,7 @@ engine は RPC の `set_play_state` で一時停止でき、`advance_frames` で
 | 同上を `onInit` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | `playSound` / `stopSound` / `setBusVolume` / `busVolume` / `isPlaying` は同じ例外を投げる。`setSoundVolume` / `setSoundPitch` / `setSoundPaused` は build を見る前に `false` を返す(ロード中は ON の build でも `false`) |
 | 同上を `onDestroy` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | 9 本とも例外にならず、空で答える: 無効な `SoundHandle` / `false` / `0.0` / `soundState` は `nullopt`(✅PG-2b。[`soundState` の包み](../../src/core/userpublic/gamecontext.cpp#L673))。拒否は記録に残る: scene のロード/破棄トランザクションの中ではロード結果の `effect_errors` に `build_feature_disabled@1`(`phase` は `destroy`)、トランザクションの無い `onDestroy`(プレイ中の object 削除、ゲーム DLL の解放、`deactivateAll`)では engine log に `build_feature_disabled@1 in a destruction callback: …`。トランザクションの中の `setSoundVolume` / `setSoundPitch` / `setSoundPaused` は、ON の build と同じく build を見る前に `false` を返すので何も記録されない |
 | `ctx.physics()` の 5 本を `onDestroy` の中で呼ぶ | `PELICAN_WITH_PHYSICS=OFF`、または provider が 0 本 | 例外にならず、空で答える: `raycastAll` / `overlapAll` / `shapeCastAll` は空の配列、`raycastClosest` / `shapeCastClosest` は `nullopt`(✅PG-2b)。これは「何にも当たらなかった」と同じ答えで、見分けられるのは記録だけです。記録は audio と同じ場所(トランザクションの中なら `effect_errors`、無ければ engine log)に、`build_feature_disabled@1` か `physics.provider_unavailable@1` で残る |
-| `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=OFF` | `BuildFeatureCallDisabledError`。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_PHYSICS"`。rpc の `raycast` は JSON-RPC の error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b。[受け口](../../src/core/communication/rpcserver.cpp#L1256)) |
+| `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=OFF` | `BuildFeatureCallDisabledError`。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_PHYSICS"`。rpc の `raycast` は JSON-RPC の error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b。[受け口](../../src/core/communication/rpcserver.cpp#L1235)) |
 | `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=ON` で provider が 0 本(`PELICAN_WITH_BUILTIN_PHYSICS` と `PELICAN_WITH_JOLT_PHYSICS` が両方 OFF) | ゲーム DLL がそのクエリの provider を登録していなければ [`phys::ProviderUnavailableError`](../../src/core/phys/physquery.hpp#L102) を投げる。`code()` = `physics.provider_unavailable@1`。空の結果(「何にも当たらなかった」)は返さない。rpc の `raycast` も同じ場合は JSON-RPC の error(code `-32000`、message はこの例外の `what()`)を返す |
 | `ctx.animation().setParameter` / `forceState` | `PELICAN_WITH_ANIMATION=OFF` | 例外ではなく `Animation::Status::not_found`。シーンのロード/破棄トランザクションの中では、ON の build と同じく `phase_order_error` |
 
@@ -763,7 +763,7 @@ if (auto hit = ctx.physics().shapeCastClosest(player, {0, -4, 0})) {
 - **プロバイダの選択はビルド時**です: `PELICAN_WITH_BUILTIN_PHYSICS`(既定 ON)/ `PELICAN_WITH_JOLT_PHYSICS`(既定 OFF。両方 ON なら Jolt が勝つ)。project.json や実行時の切替はありません。クエリ契約(順序・タイブレーク)はプロバイダによらずエンジン側が所有するため、通常は意識不要です。ゲーム DLL から capability 単位で provider をオーバーレイする上級拡張点(`physics/abi_v2.hpp` — raycast だけ独自実装し残りはフォールバック、等)もあります。
 - transform 追従は現行では毎フレーム再収集(BVH = bounding volume hierarchy、形状を包む箱を木に組んで判定候補を絞る加速構造。それを持たないという意味 — 計測してから見直す方針)。capsule の軸はローカル Y、box は OBB(回転対応)です。
 - `debug_draw` feature を rendering config で参照していると collider のワイヤフレームが描画されます([第6章](06_rendering.md))。
-- rpc の query は `raycast`([受け口](../../src/core/communication/rpcserver.cpp#L1256)。`origin` / `direction` / `max_distance` を受けて最近傍 1 件を返す)だけです。provider が 0 本のビルドと `PELICAN_WITH_PHYSICS=OFF` のビルド(✅PG-2b)では、この `raycast` も「当たらなかった」ではなく JSON-RPC の error を返します(§8.4「機能を外した build」)。
+- rpc の query は `raycast`([受け口](../../src/core/communication/rpcserver.cpp#L1235)。`origin` / `direction` / `max_distance` を受けて最近傍 1 件を返す)だけです。provider が 0 本のビルドと `PELICAN_WITH_PHYSICS=OFF` のビルド(✅PG-2b)では、この `raycast` も「当たらなかった」ではなく JSON-RPC の error を返します(§8.4「機能を外した build」)。
 - 📐未実装: rpc の overlap / shapeCast、メッシュコライダ/BVH、剛体シミュレーション。
 
 ### 8.7.1 side-scroller controller(WP109)
@@ -872,20 +872,27 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 - **Studio の埋め込み player は Studio の環境を継承します**(QProcess)。Studio を `PELICAN_AUDIO_BACKEND=null` で起動すれば、埋め込み player は音を出しません。Studio の scenario driver(`tools/studio_drive.py`)は、呼び出し側が値を決めていない(未設定か空)ときに `null` を渡します([該当箇所](../../tools/studio_drive.py#L1293)、`d616e35a`)。
 - **`PELICAN_WITH_AUDIO=OFF` の build** では `--audio-backend null` だけを受け付けます。`offline` / `device` は `This binary was built with PELICAN_WITH_AUDIO=OFF: --audio-backend <値> is unavailable` で起動を止めます(未知の値は、その前に `audio.backend_unknown@1`)。**環境変数は読みません**(継承した値で OFF の player が止まらないように)。
 
-どれになったかは rpc の **`get_status` の `audio`** で読めます([`audioStatusJson()`](../../src/core/communication/rpcserver.cpp#L193))。
+どれになったかは rpc の **`get_status` の `audio`** で読めます([`audioStatusJson()`](../../src/core/communication/audiostatus.cpp#L37))。
 
 ```json
-"audio": {"available": true, "backend": "device"}
-"audio": {"available": true, "backend": "null", "fallback_reason": "device: <開けなかった理由>"}
+"audio": {"available": true, "backend": "device", "voices": []}
+"audio": {"available": true, "backend": "null", "fallback_reason": "device: <開けなかった理由>", "voices": []}
 "audio": {"available": false}
 ```
 
 - `backend` は `device` / `offline` / `null` のどれかで、**実際に使っているもの**です(起動で名指ししたかどうかを示す欄はありません。AU-3 でも形は同じ)。`fallback_reason` は null へ退避したときだけ出て、「目指したバックエンド名: 理由」の形です。名指しの `null` には付きません。
 - `available: false` は `PELICAN_WITH_AUDIO=OFF` の build です。Audio module を作っていない host では `backend` が JSON の `null` になります。
+- **`voices`(✅CT-1、`ac8d836b`)** は、frame が駆動している graph の `audio.playback` の node ごとに 1 件の `{node, state, position_seconds}` です。`node` は graph の node id(instance の中の node は instance の path 付き)、`state` は `"idle"` / `"playing"` / `"paused"`、`position_seconds` は graph が最後にその voice を置いた音源の秒で、`idle` のときは 0 です([組む所](../../src/core/communication/audiostatus.cpp#L16)、[node ごとの状態](../../src/core/loader/scenegraphruntime.cpp#L321))。
+  - 値は mixer ではなく、直前の frame が各 voice に求めたことから読みます。なので **null backend でも同じ値**です。
+  - `idle` は voice が無いとき(まだ始まっていない・reset された・scene の commit で止まった)、`paused` は voice が止められているとき(voice 自身の pause、時計や `position` が止まっている、`delay` に届いていない)です。
+  - 編集モード(`get_status.play.state` が `edit`)の間は何も鳴らないので、全部 `idle` で 0 です。game を一時停止している間は mix 全体が止まるので、鳴るはずの voice は `paused` になります。
+  - `get_graph_node_values` で読める `audio.playback` の node の値(lowering の後の op は `audio_playback`)は、その node の `time` 入力の秒で、`position_seconds`(音源の秒)とは意味が違います([評価する所](../../src/core/userpublic/valuegraph.cpp#L801))。
+  - 例(Play → 数 frame): `"voices": [{"node": "voice", "state": "playing", "position_seconds": <進んだ秒>}]`(test の、`time` に `scene_time` を繋いだ voice では、0 から frame ごとに 1 frame の秒ずつ進む)。Pause の後は `paused` になり、Stop の後は `{"node": "voice", "state": "idle", "position_seconds": 0.0}` です。test: `audio_test` の [「CT-1 get_status lists each graph voice's state and position, the same on the null backend」](../../test/audio_test.cpp#L907)(null backend の headless)。
+  - ⚠ Studio のシナリオ `graph_read` は `audio` の鍵が 2 つ(`available` と `backend`)であることを見ています(`audio.$len` が 2。[第13章](13_editor.md) の「シナリオは無音です」)。CT-1 から `voices` が常に付くので、この step は鍵の数が合わないはずです(この docs の更新の時点で、シナリオは直していません。走らせては確かめていません)。
 
 ### グラフで鳴らす — `audio.playback`(✅AU-1)
 
-`audio.playback` は 1 ノードで 1 つの voice です。catalog の入力と parameter は次のとおりです([登録](../../src/project/graphmodule.cpp#L679))。
+`audio.playback` は 1 ノードで 1 つの voice です。catalog の入力と parameter は次のとおりです([登録](../../src/project/graphmodule.cpp#L793))。
 
 | 種類 | 名前 | 意味 |
 |---|---|---|
@@ -908,10 +915,10 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 **一体版でも `events` は任意です**(✅AU-3。AU-2 までは必須で、無いと `unconnected graph input: <node>.events` で拒否されていました)。
 
-- `events` も `position` も無いノードは、**owner の最初のフレームで鳴り始め**、そのフレームから `time` 入力の時計で経過時間(写像の elapsed)を数えます([開始](../../src/core/userpublic/valuegraph.cpp#L875))。分解版の「`events` が無ければ owner の最初のフレーム」と同じ規則です。
+- `events` も `position` も無いノードは、**owner の最初のフレームで鳴り始め**、そのフレームから `time` 入力の時計で経過時間(写像の elapsed)を数えます([開始](../../src/core/userpublic/valuegraph.cpp#L964))。分解版の「`events` が無ければ owner の最初のフレーム」と同じ規則です。
 - `events` が無いときの `time` は、どの時計から来てもかまいません(`time` でも `scene_time` でも、時計の無い定数でも拒否されない)。
 - `time` は必須のままです。`events` を繋ぐなら `time` は `scene_time` だけから、の検査(`audio.clock_mismatch@1`、下の「状態と拒否」)も変わりません。
-- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L3264)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。
+- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L3273)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。
 
 下の例は `events` で鳴らす形です。
 
@@ -939,7 +946,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 (`rendering` など pass 文書の他のキーは省略しています。)ゲームコードからは `ctx.render().emitValueGraphEvent(object, "car_hum/cue", Animation::CurvePlaybackCommand::start)` で鳴らします(§8.4。`pause` / `resume` / `reset` も同じ口)。
 
-- `wrap` が `once` / `repeat` で、`speed` / 範囲 / `delay` が**固定値**かつ `speed > 0` のとき、voice は miniaudio のループ点で **sample 精度のネイティブループ**になります([判定](../../src/core/userpublic/valuegraph.cpp#L391))。voice は自分の時計で進み、フレームと mixer の普通のずれでは seek しません。**グラフの時刻と 0.25 s 以上離れたとき**(`set_time` で時刻が飛んだ、engine の時計がフレームを丸めた、など)だけ seek してグラフの時刻へ戻します([`nativeResyncSeconds`](../../src/core/loader/scenegraphruntime.cpp#L19))。
+- `wrap` が `once` / `repeat` で、`speed` / 範囲 / `delay` が**固定値**かつ `speed > 0` のとき、voice は miniaudio のループ点で **sample 精度のネイティブループ**になります([判定](../../src/core/userpublic/valuegraph.cpp#L439))。voice は自分の時計で進み、フレームと mixer の普通のずれでは seek しません。**グラフの時刻と 0.25 s 以上離れたとき**(`set_time` で時刻が飛んだ、engine の時計がフレームを丸めた、など)だけ seek してグラフの時刻へ戻します([`nativeResyncSeconds`](../../src/core/loader/scenegraphruntime.cpp#L19))。
 - それ以外(`ping_pong`、負の `speed`、写像のどれかを edge で駆動)は、下の分解版と同じ追従で鳴ります。
 - `delay` の間と、`once` で範囲の終わりを過ぎた後は止まっています。
 
@@ -960,7 +967,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
  "outputs": ["voice"]}
 ```
 
-- voice は毎フレーム `position` に追従します。音源の長さを法として自分のカーソルと比べ、**`dt + 10 ms` を超えてずれたら seek** します([許容幅](../../src/core/loader/scenegraphruntime.cpp#L191))。`set_time` で時刻が飛べば 1 回 seek して付いていきます。
+- voice は毎フレーム `position` に追従します。音源の長さを法として自分のカーソルと比べ、**`dt + 10 ms` を超えてずれたら seek** します([許容幅](../../src/core/loader/scenegraphruntime.cpp#L193))。`set_time` で時刻が飛べば 1 回 seek して付いていきます。
 - **`position` が前のフレームから動かないフレームでは voice は止まります**(時計を pause すれば音も止まる)。
 - `position` を繋いだノードでは **`events` は任意**です。`events` が無ければ、owner の最初のフレームで鳴り始めます。
 - `events` もあるときは、**voice 自身の pause イベントが `position` より優先**します(`position` が進み続けていても止まる)。resume すると、その時点の `position` へ 1 回 seek します。
@@ -1032,7 +1039,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
  "outputs": []}
 ```
 
-`audio.volume` の値は **そのフレームの長さ(dt)をかけて直線で寄せます**([`rampSoundVolume`](../../src/core/loader/scenegraphruntime.cpp#L262))。フレーム境界で段が付かず、曲線を折れ線でなぞる音量になります。最初のフレームはその値から始まります(上の例なら無音から)。`audio.pitch` は寄せずにその値を設定します。
+`audio.volume` の値は **そのフレームの長さ(dt)をかけて直線で寄せます**([`rampSoundVolume`](../../src/core/loader/scenegraphruntime.cpp#L268))。フレーム境界で段が付かず、曲線を折れ線でなぞる音量になります。最初のフレームはその値から始まります(上の例なら無音から)。`audio.pitch` は寄せずにその値を設定します。
 
 ### 長い音の streaming(✅AU-2)
 
@@ -1055,7 +1062,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 ### 残した穴(AU-3 の時点)
 
-- **`events` の無い voice は、owner がいったん不活性になって戻ると頭から鳴り直します。** 不活性の間はノードの状態を捨て([該当箇所](../../src/core/userpublic/valuegraph.cpp#L837))、戻ったフレームで改めて開始する(一体版は経過時間をそのフレームから数え直す)ためです。
+- **`events` の無い voice は、owner がいったん不活性になって戻ると頭から鳴り直します。** 不活性の間はノードの状態を捨て([該当箇所](../../src/core/userpublic/valuegraph.cpp#L926))、戻ったフレームで改めて開始する(一体版は経過時間をそのフレームから数え直す)ためです。
 - **`wrap: once`(既定)で `events` が無いと、owner の最初のフレームから 1 回だけ鳴って止まります。** 好きな時に鳴らしたいなら `events` を繋ぎます(ループさせたいなら `wrap: repeat`)。
 
 ## 8.12 永続化(✅WP65)

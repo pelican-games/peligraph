@@ -1091,7 +1091,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 - mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L170)）
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L177)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3771)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3773)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 
@@ -1115,7 +1115,7 @@ opの契約はprojectの層に置かれます（[`registerPoseGraphModule()`](..
 - **`pelican.pose@1` は意図的に不透明です。** ポートが運ぶのは `PoseStageHandle` と、それが作られた PoseLayout の世代・frame revision であって**バイト列ではありません**。だからレイアウト世代の違う2つの姿勢は、memcpyで混ざる代わりに `pose.layout_mismatch@1` という名前で区別できます（[`posegraphmodule.hpp` 冒頭のコメント](../../src/project/posegraphmodule.hpp#L11)が規範）。
 - **再生パラメータは契約の検証もバックエンドの読み出しも同じ関数を通ります**。ただし**既定値そのものを持っているのは 2 関数**で、[`poseClipSampleLoop()`](../../src/project/posegraphmodule.hpp#L35) の `true` と [`poseClipSampleExtractsRootMotion()`](../../src/project/posegraphmodule.hpp#L45) の `false` だけです。[`poseClipSampleNumber()`](../../src/project/posegraphmodule.hpp#L33) は `fallback` を引数で受けるため、`speed = 1` / `start_time = 0`（animation component が持つのと同じ値）のリテラルは[契約側](../../src/project/posegraphmodule.cpp#L166)と[評価側](../../src/core/animation/posegraph.cpp#L107)の呼び出しに書かれています。ノードが「catalogにとっての意味」と「評価器にとっての意味」を持てないようにする作りです。
 - **エラーの使い分けに規則があります。** `root_motion` に `none` / `extract` 以外を書いたような「その場で分かる」不正は素の `invalid_argument`、rig と clip とオブジェクトが揃って初めて分かるものだけが名前付き（`pose.root_node_unknown@1` など）です（[`poseClipSampleExtractsRootMotion()` のコメント](../../src/project/posegraphmodule.hpp#L36)）。
-- **AG-2の副作用**: root motion を抽出する `pose.clip_sample` は前フレームの変位を覚えるので、素のサンプラより1段強い `replay` になります。契約の分類は「モジュールが宣言した値と、ノードごとに解決した値の**強い方**」で決まり（[`graphmodule.cpp` の `max()`](../../src/project/graphmodule.cpp#L571)）、factoryは引き上げられても緩められません。catalog とノードが食い違わないための片側制約です。
+- **AG-2の副作用**: root motion を抽出する `pose.clip_sample` は前フレームの変位を覚えるので、素のサンプラより1段強い `replay` になります。契約の分類は「モジュールが宣言した値と、ノードごとに解決した値の**強い方**」で決まり（[`graphmodule.cpp` の `max()`](../../src/project/graphmodule.cpp#L685)）、factoryは引き上げられても緩められません。catalog とノードが食い違わないための片側制約です。
 
 ### コンパイル: `PoseGraph`（`src/core/animation/posegraph.hpp`）
 
