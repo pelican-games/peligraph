@@ -323,12 +323,13 @@ item {
 | **EN-2** | 画像 asset を graph の pass で読む口(`render.image` の `source {asset, color_space, alpha, mips}`)、未知の key の拒否(`graph.image_parameter_unknown@1`) | ✅ `a3fd7e99` |
 | **CV-1b** | engine が文書を読む点で登録済みの lowering を通す汎用の hook(`src/project/authoringlowering`。登録点と editor の compose の道で呼ぶ。core は canvas の名前を知らない)。生成 shader は `.pelican/generated/canvas/<stem>/`。rendering 節の pass の入力に `canvas.output` の id を書ける。`get_authoring_lowering` | ✅ `b5f399fc` |
 | **CV-P** | PSD の取り込み(`pelican-import-tools` の `psd-canvas`。psd-tools)→ 画像 + mask + canvas の definition + `reference.png`(§10) | ✅ import tool の `feature/canvas-psd`(`13310e1`、`d1577a8`) |
-| CV-2a | `canvas.image` / `canvas.from_image` / `canvas.color`、`canvas.transform`、mask・clip(PSD の意味)、pass through でない group、`blend_space`。blend は normal まで。PSD の往復が `reference.png` と一致 | 実装中(`<作業ディレクトリ>/en2`) |
+| CV-2a | `canvas.image` / `canvas.from_image` / `canvas.color`、`canvas.transform`(定数)、mask(画像だけ)・clip(土台 + clip 群を 1 枚にして ATOP)、pass through でない group、`blend_space`、definition の展開。blend は normal まで | ✅ `c8185793`。PSD の往復は全画素が `reference.png` と 1/255 以内 |
 | CV-2b | blend mode と調整 layer(backdrop の写し) | |
 | CV-3 | filter: 色(融合)、座標(融合)、近傍(blur・影) | |
-| DF-1 | 距離場の内製 library(輪郭 → MSDF + 真の距離、画像の alpha → SDF)と font の読み込み(`stb_truetype`)。engine の build の外で作って測る | 実装中(`<作業ディレクトリ>/v2d_work/df1/`) |
-| CV-4 | 文字: `pelican_cli font-import`、`pelican.font`、MSDF の atlas、`shape.text`(DF-1 を `src/project/canvas/` に入れる) | 利用者の指定で次の優先 |
-| SG-1 | Studio: 領域 `canvas`、palette の Canvas、stack のソケット、Layers パネル(行・+ Rect / + Ellipse / + Group・目・不透明度・並べ替え・欄) | 実装中(`<作業ディレクトリ>/cv1`) |
+| DF-1 の結果 | 画像 → SDF: 縁の位置を 2D の点で持ち 3×3 で測り直す版が平均誤差 0.028 画素(素朴な種 0.137、2 値化 0.217)。MTSDF: Arial 32² の被覆率の MSE 4.80e-5(1 channel は 8.30e-4)。日本語は 48²、画数の多い字は 64² | ✅(`<作業ディレクトリ>/v2d_work/df1/run_full.log`) |
+| CV-4 | 文字: project の ttf を lowering が直接読む(中間の font 形式は作らない)、MSDF の atlas、`shape.text`(DF-1 を `src/project/canvas/` に入れる)、lowering の context(file を読む口) | 実装中(`<作業ディレクトリ>/en2`) |
+| SG-1 | Studio: 領域 `canvas`、palette の Canvas、stack のソケット、Canvas layers パネル(行・+ Rect / + Ellipse / + Group / + Stroke・目・不透明度・並べ替え・欄)。scenario `canvas_layers_from_blank` | ✅ `cbd95519` |
+| SG-2 | Studio: Layers を独立の dock に、+ Image、clip / mask / pass through の欄、変換、PSD の取り込み結果の読み込み | 実装中(`<作業ディレクトリ>/cv1`) |
 | CV-5 | `ship` 方針: 定数の畳み込み、動かない layer を畳む、`dist-bake` の段 1、OFF の build の player で同じ絵 | |
 | CV-6 | 3D: `canvas.place`、depth、厚み、owner の transform(EN-4) | |
 | CV-7 | path(折れ線・ベジエ)、`shape.trim`、`shape.path_sample`、`element` の段(`shape.repeat`、1 文字ずつ動く文字) | |
