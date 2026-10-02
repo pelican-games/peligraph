@@ -1249,6 +1249,8 @@ TEST_CASE("CT-3 the catalog lists each op's parameters with their kinds and a wr
         {"value.parameter", Json::array({Json{{"name", "name"}}, Json{{"name", "default"}}})},
         {"value.morph_weight", Json::array({Json{{"name", "node"}}, Json{{"name", "target"}}})},
         {"value.curve", Json::array({Json{{"name", "keys"}}})},
+        // AB-1, after CT-3.
+        {"value.sample_table", Json::array({Json{{"name", "asset"}}, Json{{"name", "row"}}})},
         {"audio.playback", Json::array({Json{{"name", "asset"}}})},
         {"audio.volume", Json::array({Json{{"one_of", Json::array({"target", "voice"})}}})},
         {"audio.pitch", Json::array({Json{{"one_of", Json::array({"target", "voice"})}}})},

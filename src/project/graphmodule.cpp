@@ -779,6 +779,15 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
             {"value.add", value({{"a", required}, {"b", required}}, value_output)},
             {"value.multiply", value({{"a", required}, {"b", required}}, value_output)},
             {"value.curve", value({{"time", required}}, value_output)},
+            // AB-1: a row of a baked table (bake_audio_analysis) at `time`,
+            // scene_time when no edge brings one. The table is read when the
+            // graph is built, so another asset or row rebuilds it.
+            {"value.sample_table", [&] {
+                auto registration = value({{"time", optional}}, value_output, GraphOperationEvaluation::baked);
+                registration.contract.parameter_changes = {{"asset", GraphParameterChange::rebuild},
+                                                           {"row", GraphParameterChange::rebuild}};
+                return registration;
+            }()},
             {"value.playback", value({{"elapsed", required}, {"source_begin", optional},
                 {"source_end", optional}, {"duration", optional}, {"speed", optional},
                 {"delay", optional}, {"sample_interval", optional}}, value_output)},

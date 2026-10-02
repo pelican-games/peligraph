@@ -1416,6 +1416,17 @@ OrderedJson EditorCommandService::verifyFold(const Json &params) {
     return render_config_editor_->verifyFold(params);
 }
 
+// AB-1.
+OrderedJson EditorCommandService::bakeAudioAnalysis(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->bakeAudioAnalysis(params);
+}
+
+OrderedJson EditorCommandService::listDerivedAssets(const Json &params) const {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->listDerivedAssets(params);
+}
+
 OrderedJson EditorCommandService::getGraphInstances(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->getGraphInstances(params);
@@ -2463,6 +2474,15 @@ OrderedJson EditorCommandRpcAdapter::foldNodes(const Json &params) const {
 OrderedJson EditorCommandRpcAdapter::verifyFold(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
     return mutable_service_->verifyFold(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::bakeAudioAnalysis(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
+    return mutable_service_->bakeAudioAnalysis(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::listDerivedAssets(const Json &params) const {
+    return service_.listDerivedAssets(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getGraphInstances(const Json &params) const {

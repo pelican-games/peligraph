@@ -3095,6 +3095,16 @@ target_sources(pelican_test_ia1_ktx2_cli_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devcli/imagecommand.cpp
 )
 
+# AB-1: `pelican_cli audio analyze` (its source compiled in, as IA-1's is),
+# value.sample_table, and bake_audio_analysis / list_derived_assets on the
+# render config editor.
+if(PELICAN_WITH_AUDIO)
+pelican_define_test(ab1_audio_analysis_test pelican_core argparse)
+target_sources(pelican_test_ab1_audio_analysis_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devcli/audiocommand.cpp
+)
+endif()
+
 # MG-1: the document migration registry, the raw-envelope gate, plan/apply on
 # the project document transaction, and `project migrate` itself (its source is
 # compiled in so the test-only step reaches it). The step lives in

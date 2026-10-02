@@ -231,6 +231,12 @@ Table makeTable() {
                            .field(number("out_tangent").fallback(0.0)))
              .required()
              .describe("The curve's keys.")});
+    // AB-1 (valuegraph.cpp; audioanalysisformat.hpp).
+    add(table, "value.sample_table", true,
+        {asset("asset").required().describe("The baked table (a KTX2 with its .import.json beside it, e.g. "
+                                            "bake_audio_analysis's)."),
+         json("row").required().describe("The feature row: its index, or its name (\"rms\", \"peak\", "
+                                         "\"band:3\").")});
     add(table, "value.playback", true,
         {mapping("source_begin", 0.0), mapping("source_end", 1.0), mapping("duration", 1.0), mapping("speed", 1.0),
          mapping("delay", 0.0), mapping("sample_interval", 0.0), wrap()});

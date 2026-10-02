@@ -924,6 +924,10 @@ RenderConfigEditorService::~RenderConfigEditorService() {
     for (auto &task : fold_verifies_)
         if (task.runs.valid()) task.runs.wait();
     fold_verifies_.clear();
+    // AB-1: a bake finishes what it writes.
+    for (auto &task : audio_bakes_)
+        if (task.outcome.valid()) task.outcome.wait();
+    audio_bakes_.clear();
     lifetime_.reset();
 }
 
@@ -6363,6 +6367,9 @@ void RenderConfigEditorService::completeCommitTransaction(
 }
 
 void RenderConfigEditorService::commitPending() noexcept {
+    // AB-1: a finished bake writes no render document, so it ends whatever
+    // ticket is in flight.
+    harvestAudioBakes();
     if (inflight_ticket_) return;
     // FG-2: a verify that passed queues its mark ahead of the queue below.
     harvestFoldVerifies();

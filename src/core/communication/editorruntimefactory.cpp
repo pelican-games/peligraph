@@ -2346,6 +2346,10 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                             return "executable_unknown";
                         return std::nullopt;
                     },
+                    // AB-1: list_derived_assets walks the asset stores.
+                    .asset_stores = [runtime] {
+                        return runtime->modules.path_resolver.stores();
+                    },
                 });
         }
     }

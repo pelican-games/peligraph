@@ -204,6 +204,18 @@ struct RenderConfigEditorDependencies {
     // FG-2: why this launch may not start the children now (headless,
     // replay, golden ...), asked on every verify_fold; nullopt: it may.
     std::function<std::optional<std::string>()> verify_fold_unavailable;
+    // AB-1: the project's asset stores, which list_derived_assets walks for
+    // `*.import.json`. Unset: the project root.
+    std::function<std::vector<AssetStoreStatus>()> asset_stores;
+};
+
+// AB-1: what a bake_audio_analysis worker hands back to the engine's thread:
+// the committed fields, or a refusal's code, message and fields.
+struct AudioAnalysisBakeOutcome {
+    bool committed = false;
+    nlohmann::ordered_json fields = nlohmann::ordered_json::object();
+    std::string code;
+    std::string message;
 };
 
 // Engine-owned render-authoring document/ticket service. Feature toggles edit
@@ -270,6 +282,14 @@ class RenderConfigEditorService {
         std::future<FoldVerifyRuns> runs;
     };
 
+    // AB-1: one bake_audio_analysis between its acceptance and the frame
+    // boundary that reads its outcome (harvestAudioBakes).
+    struct AudioBakeTask {
+        std::string ticket;
+        std::filesystem::path out;
+        std::future<AudioAnalysisBakeOutcome> outcome;
+    };
+
     // RD-1: one render document the current composition can write -- the
     // root, the forked (project) preset, or a project feature document.
     struct WritableRenderDocument {
@@ -326,6 +346,9 @@ class RenderConfigEditorService {
     std::vector<FoldVerifyTask> fold_verifies_;
     std::shared_ptr<std::atomic<bool>> fold_verify_cancelled_ =
         std::make_shared<std::atomic<bool>>(false);
+    // AB-1: the running bake_audio_analysis workers.
+    std::vector<AudioBakeTask> audio_bakes_;
+    void harvestAudioBakes() noexcept;
 
     struct GateSnapshot {
         bool can_edit = true;
@@ -539,6 +562,24 @@ class RenderConfigEditorService {
     // meanwhile). Refused at once: fold_verify_unavailable {reason},
     // fold_verify_busy {group, ticket}, gate_closed, external_modification.
     nlohmann::ordered_json verifyFold(const nlohmann::json &params);
+    // AB-1: bake_audio_analysis {asset, out, settings?} -> {ticket, status:
+    // "accepted", asset, out}. A worker decodes `asset` (AU-2's decoders),
+    // analyzes it and writes `out` (a .ktx2) and `<out>.import.json`
+    // (audioanalysis.hpp); the ticket is "running" until a frame boundary
+    // after that, then committed {operation: "bake_audio_analysis", asset,
+    // out, manifest, layout} or rejected (audio.format_unsupported@1,
+    // audio.analysis_failed@1). Refused at once:
+    // audio.analysis_settings_invalid@1 {field, reason, value?},
+    // audio.analysis_busy@1 {out, ticket} while a bake writes the same out,
+    // audio.analysis_unavailable@1 {reason: "built_without_audio"}.
+    // Nothing runs on import: only this (or `pelican_cli audio analyze`)
+    // bakes.
+    nlohmann::ordered_json bakeAudioAnalysis(const nlohmann::json &params);
+    // AB-1: list_derived_assets {} -> [{asset, manifest, tool: {name,
+    // version}, source, derived_from: {source, tool}, stale, stale_reasons}]:
+    // every readable `*.import.json` in the asset stores, in path order
+    // (audioanalysisformat.hpp's DerivedAssetStatus). Reads only.
+    nlohmann::ordered_json listDerivedAssets(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params);
     nlohmann::ordered_json editGraphDocument(const nlohmann::json &params);
     // LP-3b: a one-piece material pass of the rendering section or of a

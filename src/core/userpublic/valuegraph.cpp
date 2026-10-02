@@ -2,6 +2,9 @@
 #include "gamecontext.hpp"
 #include "../../project/graphmodule.hpp"
 #include "../../project/graphpartition.hpp"
+#include "../container.hpp"
+#include "../loader/pathresolver.hpp"
+#include "../loader/sampletable.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -31,6 +34,14 @@ double number(const Json &value) {
     if (!value.is_number() || !std::isfinite(value.get<double>()))
         throw std::invalid_argument("value graph values must be finite numbers");
     return value.get<double>();
+}
+
+// AB-1: value.sample_table's asset as the project resolves it; a graph built
+// where no project is set up (a tool, a test) names a file.
+std::filesystem::path sampleTableFile(const std::string &asset) {
+    if (const auto *resolver = FastModuleContainer::tryGet<PathResolver>(); resolver != nullptr && resolver->isSetup())
+        return resolver->resolveExistingFile(asset);
+    return std::filesystem::path{asset};
 }
 
 bool active(const ScopeDependencies &dependencies, std::string_view name, const InactiveScopes &inactive) {
@@ -200,6 +211,28 @@ Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
         if (op == "event.playback") {
             keys(parameters, {});
             result["nodes"].push_back({{"id", node.at("id")}, {"op", "event_input"}});
+            continue;
+        }
+        if (op == "value.sample_table") {
+            // AB-1. Without a time edge it reads scene_time, the clock
+            // audio.playback's events are stamped on, through a value.input
+            // the lowering adds.
+            keys(parameters, {"asset", "row"});
+            const auto id = name(node.at("id"));
+            if (!parameters.contains("asset") || !parameters.contains("row"))
+                throw std::invalid_argument("value.sample_table requires an asset and a row: " + id);
+            Json lowered{{"id", id}, {"op", "sample_table"}, {"asset", name(parameters.at("asset"))},
+                         {"row", parameters.at("row")}};
+            if (inputs.contains("time")) {
+                lowered["time"] = source(inputs.at("time"));
+            } else {
+                const auto clock = id + "/$scene_time";
+                if (expanded_nodes.contains(clock)) throw std::invalid_argument("reserved graph node: " + clock);
+                result["nodes"].push_back({{"id", clock}, {"op", "input"}, {"name", "scene_time"}});
+                node_scopes[clock] = node_scopes.at(id);
+                lowered["time"] = clock;
+            }
+            result["nodes"].push_back(std::move(lowered));
             continue;
         }
         if (op == "audio.playback") {
@@ -438,6 +471,24 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
             // changes while the voice plays and it never runs backwards.
             node.audio_native = !node.audio_position && literal && node.playback.speed > 0.0 &&
                                 node.playback.wrap != Animation::CurveWrap::ping_pong;
+        } else if (op == "sample_table") {
+            // AB-1: the table is read once, here; evaluating reads memory.
+            keys(authored, {"id", "op", "asset", "row", "time"});
+            node.op = Op::sample_table;
+            node.dependencies = {resolve(authored.at("time"))};
+            const auto asset = name(authored.at("asset"));
+            try {
+                node.table = loadSampleTable(sampleTableFile(asset));
+            } catch (const std::exception &error) {
+                throw GraphRegistryError(std::string{sampleTableUnreadableCode},
+                    {{"node", node.id}, {"asset", asset}, {"reason", error.what()}});
+            }
+            const auto row = sampleTableRow(node.table->layout, authored.at("row"));
+            if (!row)
+                throw GraphRegistryError(std::string{sampleTableRowUnknownCode},
+                    {{"node", node.id}, {"asset", asset}, {"row", authored.at("row")},
+                     {"rows", node.table->layout.features}});
+            node.table_row = *row;
         } else if (op == "trigger_clock") {
             keys(authored, {"id", "op", "time", "trigger", "paused", "reset"});
             node.op = Op::trigger_clock;
@@ -797,6 +848,7 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
         case Op::add: value = values[node.dependencies[0]] + values[node.dependencies[1]]; break;
         case Op::multiply: value = values[node.dependencies[0]] * values[node.dependencies[1]]; break;
         case Op::curve: value = node.curve->sample(values[node.dependencies[0]]); break;
+        case Op::sample_table: value = node.table->sample(node.table_row, values[node.dependencies[0]]); break;
         case Op::event_input: break;
         case Op::audio_playback:
             if (!state) throw statelessEvaluationRejected("audio.playback", node.id);

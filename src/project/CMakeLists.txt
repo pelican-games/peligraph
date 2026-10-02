@@ -1,5 +1,6 @@
 add_library(pelican_project
     assetdataformat.cpp
+    audioanalysisformat.cpp
     assetsmanifest.cpp
     executionplan.cpp
     executionplanwire.cpp

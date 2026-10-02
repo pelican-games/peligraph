@@ -168,6 +168,7 @@ build から外した unit の op(`audio.*` / `pose.*`)だけが欠けてよい�
 | `value.multiply` | pelican.value | values | direct | value | — | declared | `a`, `b` | `value`: pelican.value.scalar@1 |
 | `value.parameter` | pelican.value | values | direct | value | — | declared | — | `value`: pelican.value.scalar@1 |
 | `value.playback` | pelican.value | values | direct | value | — | declared | `delay`?, `duration`?, `elapsed`, `sample_interval`?, `source_begin`?, `source_end`?, `speed`? | `value`: pelican.value.scalar@1 |
+| `value.sample_table` | pelican.value | values | baked | value(`asset` / `row` は rebuild) | — | declared | `time`? | `value`: pelican.value.scalar@1 |
 | `value.trigger_clock` | pelican.value | values | replay | value | — | declared | `paused`?, `reset`?, `time`, `trigger` | `value`: pelican.value.scalar@1 |
 <!-- graph-op-table:end -->
 

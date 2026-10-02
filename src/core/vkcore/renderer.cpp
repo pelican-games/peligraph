@@ -56,6 +56,7 @@
 #include "../shader/raygrouplayout.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../appflow/enginetime.hpp"
+#include "../../project/audioanalysisformat.hpp"
 #include "../../project/frameresolutionwire.hpp"
 #include "../../project/vulkanviewplanning.hpp"
 #include "deletionqueue.hpp"
@@ -4742,6 +4743,19 @@ nlohmann::json Renderer::currentFramePlanJson() const {
                     {"asset", found->second->asset},
                     {"sha256", found->second->sha256 ? nlohmann::json(*found->second->sha256)
                                                      : nlohmann::json(nullptr)}};
+                // AB-1: an asset some tool derived (its .import.json beside
+                // it) says from what, and whether that source or the
+                // settings moved on since.
+                if (const auto derived = derivedAssetStatusOf(found->second->file)) {
+                    const auto *resolver = FastModuleContainer::tryGet<PathResolver>();
+                    const auto listed = derivedAssetJson(
+                        *derived, resolver != nullptr && resolver->isSetup() ? resolver->projectRoot()
+                                                                             : std::filesystem::path{});
+                    auto &initial = resource["initial_asset"];
+                    initial["derived_from"] = listed.at("derived_from");
+                    initial["stale"] = derived->stale;
+                    initial["stale_reasons"] = derived->stale_reasons;
+                }
             }
     }
     return result;

@@ -253,6 +253,14 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("verify_fold", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.verifyFold(params); });
     });
+    // AB-1: bake a sound's analysis into a table (a ticket), and list the
+    // assets an .import.json says were derived, stale or not.
+    server.setHandler("bake_audio_analysis", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.bakeAudioAnalysis(params); });
+    });
+    server.setHandler("list_derived_assets", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.listDerivedAssets(params); });
+    });
     server.setHandler("get_graph_instances", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getGraphInstances(params); });
     });

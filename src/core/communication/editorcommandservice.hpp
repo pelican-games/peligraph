@@ -348,6 +348,9 @@ class EditorCommandService {
     nlohmann::ordered_json getFoldGroups(const nlohmann::json &params) const;
     nlohmann::ordered_json foldNodes(const nlohmann::json &params);
     nlohmann::ordered_json verifyFold(const nlohmann::json &params);
+    // AB-1 (renderconfigeditor.hpp).
+    nlohmann::ordered_json bakeAudioAnalysis(const nlohmann::json &params);
+    nlohmann::ordered_json listDerivedAssets(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params);
     nlohmann::ordered_json editGraphDocument(const nlohmann::json &params);
@@ -457,6 +460,8 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json getFoldGroups(const nlohmann::json &params) const;
     nlohmann::ordered_json foldNodes(const nlohmann::json &params) const;
     nlohmann::ordered_json verifyFold(const nlohmann::json &params) const;
+    nlohmann::ordered_json bakeAudioAnalysis(const nlohmann::json &params) const;
+    nlohmann::ordered_json listDerivedAssets(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphDocument(const nlohmann::json &params) const;
