@@ -8,7 +8,7 @@ Pelican2のコードは、最初から個々のクラスを読むより、次の
 
 | 領域 | 役割 | 主な入口 |
 |---|---|---|
-| 実行ファイル | 引数を読み、ライブラリを起動する | [`src/player/main.cpp`](../../src/player/main.cpp#L703)、[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L14)、[`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5)、[`src/spvlink/main.cpp`](../../src/spvlink/main.cpp#L1)（オフラインSPIR-VリンカCLI、[`spvlink.hpp`](../../src/core/shader/spvlink.hpp)を使用） |
+| 実行ファイル | 引数を読み、ライブラリを起動する | [`src/player/main.cpp`](../../src/player/main.cpp#L703)、[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L15)、[`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5)、[`src/spvlink/main.cpp`](../../src/spvlink/main.cpp#L1)（オフラインSPIR-VリンカCLI、[`spvlink.hpp`](../../src/core/shader/spvlink.hpp)を使用） |
 | 純粋ロジック | JSONやテキスト形式のパース・検証・合成。Vulkan不要 | [`src/project/CMakeLists.txt`](../../src/project/CMakeLists.txt#L1) |
 | エンジン本体 | ECS、入力、scene、描画、音声、物理、保存、RPC | [`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt) |
 | ゲーム/検証 | プロジェクト固有コード、fixture、単体・結合・golden test | [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L1)、[`test/CMakeLists.txt`](../../test/CMakeLists.txt#L61) |
@@ -95,7 +95,7 @@ package は「エンジンのツリーの外で書かれ、プロジェクトへ
 
 ### `pelican_cli`
 
-[`src/devcli/CMakeLists.txt`](../../src/devcli/CMakeLists.txt#L1) が作る配布支援CLIです。サブコマンドは `assets`、`bake-camera`、`import`、`dist-config`、`package`(X-1: install / list / inspect)、`project`、`dump-lowered-material`、`vrm`、`graph-catalog`(共通グラフの module / op / 型の一覧、AG-0) の**9系統**です（[`src/devcli/main.cpp` の分岐](../../src/devcli/main.cpp#L15) と [usage文字列](../../src/devcli/main.cpp#L43)。`main()` は9本の `if` を上から並べるだけで、どれにも一致しなければ usage を出して `-1` を返します）。Vulkan実行時全体ではなく `pelican_project` と必要な純粋処理を中心にリンクします。
+[`src/devcli/CMakeLists.txt`](../../src/devcli/CMakeLists.txt#L1) が作る配布支援CLIです。サブコマンドは `assets`、`bake-camera`、`import`、`dist-config`、`package`(X-1: install / list / inspect)、`project`、`dump-lowered-material`、`vrm`、`graph-catalog`(共通グラフの module / op / 型の一覧、AG-0) の**9系統**です（[`src/devcli/main.cpp` の分岐](../../src/devcli/main.cpp#L16) と [usage文字列](../../src/devcli/main.cpp#L47)。`main()` は9本の `if` を上から並べるだけで、どれにも一致しなければ usage を出して `-1` を返します）。Vulkan実行時全体ではなく `pelican_project` と必要な純粋処理を中心にリンクします。
 
 `project init` が書き出す雛形は、[`templateFiles()`](../../src/project/projecttemplate.cpp#L351) が返すファイル名と文字列定数の対で全量が決まります。「新規プロジェクトの既定形」を知りたいときはここだけ読めば足ります。F-2 でこのファイルは `pelican_cli` から `pelican_project` へ移り（[`src/project/projecttemplate.hpp`](../../src/project/projecttemplate.hpp)）、`pelican_cli` の [`projectinit.cpp`](../../src/devcli/projectinit.cpp#L30) は `--template standard|blank` を読んで `initializeProjectTemplate()` を呼ぶだけになりました。Studio の File > New Project... も同じ関数を呼ぶので、「新しいプロジェクトが何を持つか」の答えは1箇所です。`templateFiles()` は `ProjectTemplate` を引数に取り、`passes/main_rendering_config.json` の中身だけを切り替えます。ファイルの組はどちらも同じ 16 エントリです（VI-2 までは `Blank` のときだけ `shaders/present.frag` を足していましたが、blank の `present` が engine の `engine://passthrough` で描くようになって外れました）。以下は既定の `standard` の説明です。
 
@@ -234,7 +234,7 @@ v0（共通グラフ・姿勢グラフ・package）で増えた入口は次の�
                       project（純粋パース・検証）
 ```
 
-実装上は、`GET_MODULE()` を使うサービスロケータが多いため、C++のコンストラクタ引数だけを見ても依存が全部は分かりません。サービスロケータとは、**必要な相手を引数で渡してもらう（DI）のではなく、共通の取得口から自分で引いてくる**方式のことです。Pelicanの取得口は `GET_MODULE(T)` ひとつで、鍵は文字列名ではなく型 `T`、実体は型ごとの `static std::optional<T>` を初回アクセス時に構築するだけの薄い機構です（[第9章 §9.1](09_black_magic_and_gotchas.md)）。DIコンテナのような登録表・スコープ・差し替え機構は持ちません。たとえば [`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L3169) は一行ですが、そこから設定、Vulkan、render target、shader、pipelineなどが遅延生成されます。
+実装上は、`GET_MODULE()` を使うサービスロケータが多いため、C++のコンストラクタ引数だけを見ても依存が全部は分かりません。サービスロケータとは、**必要な相手を引数で渡してもらう（DI）のではなく、共通の取得口から自分で引いてくる**方式のことです。Pelicanの取得口は `GET_MODULE(T)` ひとつで、鍵は文字列名ではなく型 `T`、実体は型ごとの `static std::optional<T>` を初回アクセス時に構築するだけの薄い機構です（[第9章 §9.1](09_black_magic_and_gotchas.md)）。DIコンテナのような登録表・スコープ・差し替え機構は持ちません。たとえば [`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L3175) は一行ですが、そこから設定、Vulkan、render target、shader、pipelineなどが遅延生成されます。
 
 新しい描画コードでは依存を明示する `XxxDependencies` 構造体が増えています。例は [`RenderPassExecutorDependencies`](../../src/core/vkcore/render_pass_executor.hpp#L16)、[`RenderPassDispatchDependencies`](../../src/core/vkcore/render_pass_dispatch.hpp#L29)、[`RenderingPassConfigRegistrationDependencies`](../../src/core/renderingpass/renderingpassconfigregistration.hpp#L65) です。これはグローバル取得を局所化し、純粋テストをしやすくする境界です。
 
@@ -244,7 +244,7 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 
 | 形式 | 例 | 目的 |
 |---|---|---|
-| 仮想基底 | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L103) | windowed/headless/XRの実装差し替え |
+| 仮想基底 | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L104) | windowed/headless/XRの実装差し替え |
 | 依存構造体 | [`MaterialRendererDependencies`](../../src/core/renderer/materialrender.hpp#L26) | 呼び出しに必要な協力オブジェクトを明示 |
 | Concept/duck typing | [`HasBatchProcess`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L77)、[`HasGameSystemUpdate`](../../src/core/userpublic/details/system/registerer.hpp#L38) | メソッド形だけをcompile時に要求 |
 | `std::variant` | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L326)、[`phys::Shape`](../../src/core/phys/physquery.hpp#L43) | 閉じた型集合を安全に分岐 |

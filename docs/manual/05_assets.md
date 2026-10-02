@@ -87,7 +87,12 @@
 `rect` は [left, top, right, bottom] px。個々のスプライトは `"demo_atlas#sprite/left"` の形で `sprite_view` / UI から参照します(この `#sprite/` は atlas 側の解釈で、glb フラグメントとは別系統)。
 
 - 画像デコーダ: PNG/JPG = stb_image、`.exr` = tinyexr(✅WP26。single-part・scanline・half/float 限定)、**`.ktx2` = 自前パーサ(✅WP92)**。
-- KTX2 の対応範囲(制限サブセット): **RGBA8 UNORM/SRGB・BC7・BC5** の 2D テクスチャ、全ミップ必須。supercompression(Basis/zstd)・cubemap/array は名指しで拒否。glb 内蔵の `KHR_texture_basisu` は対象外です。専用ビルドフラグはなく常時有効。
+- KTX2 の対応範囲(制限サブセット): **RGBA8 UNORM/SRGB・BC7・BC5** の 2D テクスチャ。supercompression(Basis/zstd)・cubemap/array は名指しで拒否。glb 内蔵の `KHR_texture_basisu` は対象外です。専用ビルドフラグはなく常時有効。
+  - ✅IA-1(`c6690eba`)から、非圧縮の float の 6 つも読みます: `R16_SFLOAT` / `R16G16_SFLOAT` / `R16G16B16A16_SFLOAT` / `R32_SFLOAT` / `R32G32_SFLOAT` / `R32G32B32A32_SFLOAT`(VkFormat の番号は 76 / 83 / 97 / 100 / 103 / 109。[IA-1 で広げた KTX2 の format の表](../../src/core/loader/ktx2.cpp#L71))。KTX2 の `typeSize` は 16 bit の format で 2、32 bit で 4 でなければ断ります。
+  - **mip は 1 段か全段**です。IA-1 の前は全段が必須でしたが、IA-1 から 1 段だけの file も受けます(RGBA8 / BC の 1 段も)。途中までの段は今も `incomplete mip chain: expected 1 or <全段の数> levels ...` で断ります([段の数を見る所](../../src/core/loader/ktx2.cpp#L260))。
+  - KTX2 は format で色空間(sRGB か UNORM か)を宣言する扱いで、PNG / JPG は宣言しない扱いです(`LoadedImage::color_space_declared`)。これを使うのは graph の `render.image` の `initial` の照合だけです([第6章](06_rendering.md) §6.18「persistent の image を画像資産から始める」)。
+  - float の KTX2 を作る道具として `pelican_cli image ktx2`(raw の bytes か `.hdr` から書く。[第10章](10_tools.md) §10.4)と、engine の関数 [`writeKtx2()`](../../src/core/loader/ktx2.cpp#L393) があります。
+  - float の KTX2 を IA-1 の test が通しているのは、`render.image` の `initial` と、読み込み・書き出しの道だけです。material の texture として使えるかは確かめていません(未確認)。
 
 ### プロジェクトマテリアル(`materials` セクション ✅WP240c)
 
@@ -297,7 +302,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 | `.vrma`(VRM Animation / glb alias) | ヒューマノイドのモーション単体コンテナ | 🚧 decode + typed チャネル ✅WP176 / retarget profile v1 ✅WP177 / AnimationSource + anim_graph 統合 ✅WP178。**ただし `asset_data.json`・CLI・ファイル監視からは未接続**(エンジン内部の C++ API のみ — §5.2) |
 | PNG / JPG | テクスチャ・UI 画像 | ✅ |
 | EXR(限定スコープ) | HDR テクスチャ | ✅ WP26(`PELICAN_WITH_EXR`) |
-| KTX2(制限サブセット) | 圧縮テクスチャ(RGBA8/BC7/BC5) | ✅ WP92 |
+| KTX2(制限サブセット) | 圧縮テクスチャ(RGBA8/BC7/BC5)、float のデータ(R16 / R32 SFLOAT の 1・2・4 成分。graph の image の初期内容) | ✅ WP92 / IA-1 |
 | WAV(PCM / IEEE float) | 音(SE・BGM。[第8章](08_gameplay.md) §8.11) | ✅ WP51(`PELICAN_WITH_AUDIO`) |
 | Ogg Vorbis | 音(SE・BGM。[第8章](08_gameplay.md) §8.11) | ✅ AU-2(`PELICAN_WITH_AUDIO`)。Opus / FLAC を入れた Ogg は不可。判定は下の「音声形式」 |
 | pelican.atlas | スプライト/UI のアトラス | ✅ WP103 |

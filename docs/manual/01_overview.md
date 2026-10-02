@@ -43,7 +43,7 @@ Pelican2 は **C++20 / Vulkan(vulkan.hpp)/ Windows(MSVC)** のゲームエンジ
 | 実行物 | 役割 |
 |---|---|
 | `pelican_player` | ゲームランタイム。ウィンドウ / ヘッドレス / JSON-RPC 駆動([第2章](02_getting_started.md)・[第10章](10_tools.md))。JSON-RPC はヘッドレス(blocking)とウィンドウ(フレーム境界処理)の両方で使えます ✅WP156 |
-| `pelican_cli` | 開発 CLI。9 サブコマンド系統(`assets` / `bake-camera` / `import` / `dist-config` / `package` / `project` / `dump-lowered-material` / `vrm` / `graph-catalog` — [main.cpp](../../src/devcli/main.cpp#L43))。エンジン本体にリンクしない |
+| `pelican_cli` | 開発 CLI。9 サブコマンド系統(`assets` / `bake-camera` / `import` / `dist-config` / `package` / `project` / `dump-lowered-material` / `vrm` / `graph-catalog` — [main.cpp](../../src/devcli/main.cpp#L47))。エンジン本体にリンクしない |
 | `pelican_studio` | Qt6 製エディタ 🚧。別 process の player を埋め込み、**その JSON-RPC を実際に呼びます** —— Outliner 選択、Inspector、gizmo、保存、Frame Plan(= フレームグラフを解決した実行計画。[用語集](14_glossary.md))、そして `features[]` の編集と再起動なしの反映([第2章](02_getting_started.md) §2.7・[第10章](10_tools.md) §10.7・[第13章](13_editor.md)) |
 | `pelican-spv-link` | `PELICAN_WITH_SPIRV_LINK=ON`時だけ作るexperimental SPIR-V リンカ CLI([spvlink/main.cpp](../../src/spvlink/main.cpp)・[第10章](10_tools.md)) 🚧 |
 | web ビューア | 別リポジトリ `my_webpage` の WebGPU「Shader Dock」。**同じプロジェクトファイルをブラウザで開く**([第9章](09_web.md)) |

@@ -830,6 +830,9 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `graph.node_missing@1`(置き換え先) | 組み直し | `{node, feature, pass}`(LP-0d) |
 | `graph.once_writes_transient@1` | 組み直し(graph の lowering。`render.target_ref` の先は解決の段) | `{node, resource}`(`schedule: "once"` の node の書く port が、`lifetime` を書かない・`transient` の `render.image`、`transient` の buffer、persistent でない target に届く。`resource` は resource の node の id、`render.target_ref` なら target 名。PS-1。決定 5 の後の「body の once」) |
 | `graph.once_reads_per_frame@1` | 組み直し(graph の lowering。`render.target_ref` の先は解決の段) | `{node, input}`(once の node の読む port が、per_frame の pass の出力・`history: true`・transient の resource・once でない node が書く resource・`time` / `delta_time` / `scene_time` 由来の value graph の buffer に届く。`input` は port 名。PS-1) |
+| `graph.image_initial_requires_persistent@1` | 組み直し(graph の lowering と、asset を読む段) | `{node}`(`render.image` の `initial: {asset}` を、`lifetime` を書かない・`transient` の image に書いた。IA-1) |
+| `graph.image_initial_extent_conflict@1` | 組み直し(graph の lowering と、asset を読む段) | `{node}`(`width` / `height` を省いて asset の大きさを採る image に `extent_scale` を書いた。IA-1) |
+| `graph.image_initial_mismatch@1` | 組み直し(asset を読む段。公開の前) | `{node, asset, what: extent｜format｜color_space, expected: {width, height, format}, actual: {width, height, format}}`(拡大縮小・format の変換はしない。`format` は sRGB を UNORM と同じに見た形の違い、`color_space` は形が同じで KTX2 の sRGB / UNORM が image と食い違う。PNG は色空間を宣言しない扱いで `color_space` にならない。IA-1) |
 | `shader.loop_push_overlap@1` | 組み直し(graphics / compute の pipeline を作る時) | `{shader, stage, range: {offset, size}}`(push constant の range が回の番号の `[112, 120)` に一部だけ重なる。編集の結果には code のまま fields が並ぶ。LC-1) |
 
 **既存の code に寄せるもの**
@@ -846,6 +849,8 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 
 - 組み直しで、ループの回ごとの node(`<loop>/<element>/<node>`)が名前付きで断られたときは、error_fields に `loop_origin: {loop, element, node}` が付く(LP-1b)。`graph.loop_expression_invalid@1` の `pointer` は常に authoring 文書の JSON pointer。
 - 各 code の JSON pointer と message の形は、実装の WP の報告で表にし、manual に載せる。
+- `graph.` で始まる code の拒否の全部に、node を書いた文書 `document`(`project://<path>`)と、definition の body の node なら `definition`(その definition の名前)が付く(CT-2、`51d1c2d8`)。既存の field はそのままで、同じ名前の field を code がもう持つときはその値を残す。分からない field は出さない(null にしない)。載る所は起動時の致命の行、編集の ticket の rejected の error、`reload_render_documents` の message。`edit_graph_instances` の `invalid_graph_attachment`、scene の読み直しでの graph の拒否、`pelican_cli` の出力には付かない。`get_frame_plan` の `origin.graph`(GL-2a)は `project://` の付かない形のままで、書き方が揃っていない。
+- **graph の node を持つのは rendering の root 文書だけ**。preset と authored pass は pass だけを持つ feature で、graph の template は root に写される。なので `document` はいつも root 文書([`graphcomposition.hpp` の CT-2 の注記](../src/project/graphcomposition.hpp#L38))。
 
 ## 11. WP の分け方
 

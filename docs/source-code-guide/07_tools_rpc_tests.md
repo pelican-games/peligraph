@@ -10,13 +10,14 @@
 
 ## 7.1 `pelican_cli` の全体像
 
-[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L15) は第1引数を見て9系統へそのまま dispatch します。dispatch の順が
-[usage 行](../../src/devcli/main.cpp#L43)の順です。
+[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L16) は第1引数を見て10系統へそのまま dispatch します。dispatch の順が
+[usage 行](../../src/devcli/main.cpp#L47)の順です。
 
 ```text
 pelican_cli
 ├─ assets <manifest|verify|status>
 ├─ bake-camera ...                       # replayからcameraパスをbake
+├─ image ktx2 --out <file> --format <VK名> (--raw <file> --width W --height H | --hdr <file>)   # IA-1: 非圧縮のKTX2を書く
 ├─ import <delivery_dir> --project <dir|project.json>   # --rulesサブモード付き
 ├─ dist-config <project> [--with rpc,seqplayer] [--out file]
 ├─ package <install|list|inspect>        # X-1: packageのvendoringと検査(§7.5b)
@@ -26,12 +27,13 @@ pelican_cli
 └─ graph-catalog                         # 登録済みgraph moduleのcatalogをJSONで(§7.5c)
 ```
 
-執筆時点から5系統増えました。
+執筆時点から6系統増えました。
 
 - `bake-camera`([`bakecameracommand.cpp`](../../src/devcli/bakecameracommand.cpp))は入力 replay から camera パスを bake します(player の `--bake-camera-output` と対。テスト: [`run_devcli_bake_camera.cmake`](../../test/run_devcli_bake_camera.cmake))。
+- `image`(✅IA-1。[`imagecommand.cpp` の `runImageCommand()`](../../src/devcli/imagecommand.cpp#L118))は今は `ktx2` だけで、raw の texel か Radiance の `.hdr`(stb_image の `stbi_loadf_from_memory` で RGBA32F)から、engine の [`writeKtx2()`](../../src/core/loader/ktx2.cpp#L393) で非圧縮・mip 1 段の KTX2 を書きます(第6章「persistent の image の初期内容と KTX2 の float」。使い方は manual 第10章 §10.4)。このために `pelican_cli` は `src/core/loader/ktx2.cpp` を自分の source に加え、`stb` を link します。テスト: `ia1_ktx2_cli_test` の [「IA-1 pelican_cli image ktx2 writes --raw and --hdr files the loader reads」](../../test/ia1_ktx2_cli_test.cpp#L97)。
 - `dump-lowered-material`([`materialcommand.cpp`](../../src/devcli/materialcommand.cpp))は material lowering 結果をダンプします(テスト: [`run_dump_lowered_material.cmake`](../../test/run_dump_lowered_material.cmake))。
 - `vrm`([`vrmcommand.cpp`](../../src/devcli/vrmcommand.cpp))は VRM semantic のダンプ/検査です(テスト: [`run_devcli_vrm_dump.cmake`](../../test/run_devcli_vrm_dump.cmake))。
-- `package`([`packagecommand.cpp`](../../src/devcli/packagecommand.cpp#L193))は package ディレクトリを project へ vendoring し、install 済みの digest を照合し、install せずに manifest を読みます(§7.5b。テスト: `package_install_smoke` —— [`package_install_smoke` の登録は `if(PELICAN_WITH_RPC)` の中](../../test/CMakeLists.txt#L3365)で登録され、GPU lease と 300 秒の intrinsic timeout が付きます —— と ctest 未登録の [`run_package_template_smoke.cmake`](../../test/run_package_template_smoke.cmake))。
+- `package`([`packagecommand.cpp`](../../src/devcli/packagecommand.cpp#L193))は package ディレクトリを project へ vendoring し、install 済みの digest を照合し、install せずに manifest を読みます(§7.5b。テスト: `package_install_smoke` —— [`package_install_smoke` の登録は `if(PELICAN_WITH_RPC)` の中](../../test/CMakeLists.txt#L3373)で登録され、GPU lease と 300 秒の intrinsic timeout が付きます —— と ctest 未登録の [`run_package_template_smoke.cmake`](../../test/run_package_template_smoke.cmake))。
 - `graph-catalog`([`graphcatalogcommand.cpp`](../../src/devcli/graphcatalogcommand.cpp#L10))は `builtinGraphModuleRegistry().catalog()` をそのまま印字します(§7.5c。テスト: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake))。
 - 既存の `import` には `--rules` サブモード(ルールベース import、[`rulesimport.cpp`](../../src/devcli/rulesimport.cpp) + [`importrules.hpp`](../../src/project/importrules.hpp)、テスト: [`run_devcli_rules_import.cmake`](../../test/run_devcli_rules_import.cmake))と glTF scene 抽出([`gltfsceneextract.cpp`](../../src/devcli/gltfsceneextract.cpp)、テスト: [`run_devcli_gltf_extract.cmake`](../../test/run_devcli_gltf_extract.cmake))が加わりました。
 
@@ -352,7 +354,7 @@ process 終了時も pending request を失敗にするため、入力 pipe や 
 到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L112) が view 表示なしで検査します。
 
 読む前に、応答の階層だけ掴んでおきます。`get_frame_plan` の 1 応答の中に、名前の層と物理の層が入れ子で
-入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L4118))。
+入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L4124))。
 
 ```text
 get_frame_plan 応答 = pelican.frame_plan v1
@@ -363,11 +365,11 @@ get_frame_plan 応答 = pelican.frame_plan v1
 2 つの層は互いに引けます(✅GL-2a)。名前の層の node の出所の鍵(`source` / `provider_*` / `authored_name` / `loop_origin` と、GL-2a の
 `origin` / `replaces`、✅RS-6 の `added_after`)は、`framePlanToJson()` が compiled pipeline の `RenderPassProvenance` から写します
 ([写す所](../../src/core/renderingpass/frameplanner.cpp#L1995))。resource の側の ✅RS-6b の `added_usage`(engine が宣言の `usage` に足した `SAMPLED`)も、`RenderResourceProvenance` から `resources[]` へ写します([`added_usage` を写す所](../../src/core/renderingpass/frameplanner.cpp#L2159))。`origin` の `graph`(rendering root 文書の参照)は raw の planner が知らないので、
-renderer が `framePlanToJson()` に渡します。✅PS-1 の once の node は、`framePlanToJson()` が `FramePlanNode::once` から `schedule: "once"` を書き([書く所](../../src/core/renderingpass/frameplanner.cpp#L2082))、`currentFramePlanJson()` がその node にだけ `Renderer::once_runs` の記録から `last_run_generation` / `last_run_frame`(無ければ `null`)を足します([足す所](../../src/core/vkcore/renderer.cpp#L4170))。物理の層は、`physical_target_plan` を足した直後に renderer が
+renderer が `framePlanToJson()` に渡します。✅PS-1 の once の node は、`framePlanToJson()` が `FramePlanNode::once` から `schedule: "once"` を書き([書く所](../../src/core/renderingpass/frameplanner.cpp#L2082))、`currentFramePlanJson()` がその node にだけ `Renderer::once_runs` の記録から `last_run_generation` / `last_run_frame`(無ければ `null`)を足します([足す所](../../src/core/vkcore/renderer.cpp#L4176))。✅IA-1 の `initial_asset: {asset, sha256}` も `currentFramePlanJson()` が最後に、`physical_target_plan.resources[]` の `logical_resource` を世代の `image_initial_assets` で引いて足します([IA-1 の `initial_asset` を足す所](../../src/core/vkcore/renderer.cpp#L4696))。物理の層は、`physical_target_plan` を足した直後に renderer が
 [`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L2307) を呼び
-([呼ぶ所](../../src/core/vkcore/renderer.cpp#L4407))、resources / alias_groups / decisions / backend の候補に、関わる node 名の
+([呼ぶ所](../../src/core/vkcore/renderer.cpp#L4413))、resources / alias_groups / decisions / backend の候補に、関わる node 名の
 `from_nodes[]` を書き込みます。物理の要素 → node 名 → `origin` → graph の文書、の順に辿れます(形は manual 第13章「`get_frame_plan` に足されたもの」)。
-✅FG-1 から、`framePlanToJson()` は compiled pipeline の `fold_planning` のうちその frame graph の分を最上位の `fold_decisions` に出し([出す所](../../src/core/renderingpass/frameplanner.cpp#L2211))、`appendFramePlanPhysicalNodeReferences()` がその 1 件ごとに `decisions[]` へ `pelican.plan.fold_decision_applied@1` の要素を足して、`from_nodes` を付けた後に `from_fold` を書きます([足す所](../../src/core/renderingpass/frameplanner.cpp#L2427))。✅PO-1 から、`framePlanToJson()` は compiled pipeline の resource の宣言の usage で [`findFramePlanUnreadOutputs()`](../../src/core/renderingpass/frameplanner.cpp#L1689) を回して `unread_output` を、renderer は `currentFramePlanJson()` の中で fullscreen / raster の pass ごとに [`appendUnusedBindingDiagnostics()`](../../src/core/vkcore/renderer.cpp#L4029) を回して `unused_binding` を `diagnostics` に足します。後者が見るのは reflection の [`ReflectedBinding::accessed`](../../src/core/shader/shaderreflection.hpp#L48)(spirv-reflect の静的な使用。stage を merge するときは OR)です。
+✅FG-1 から、`framePlanToJson()` は compiled pipeline の `fold_planning` のうちその frame graph の分を最上位の `fold_decisions` に出し([出す所](../../src/core/renderingpass/frameplanner.cpp#L2211))、`appendFramePlanPhysicalNodeReferences()` がその 1 件ごとに `decisions[]` へ `pelican.plan.fold_decision_applied@1` の要素を足して、`from_nodes` を付けた後に `from_fold` を書きます([足す所](../../src/core/renderingpass/frameplanner.cpp#L2427))。✅PO-1 から、`framePlanToJson()` は compiled pipeline の resource の宣言の usage で [`findFramePlanUnreadOutputs()`](../../src/core/renderingpass/frameplanner.cpp#L1689) を回して `unread_output` を、renderer は `currentFramePlanJson()` の中で fullscreen / raster の pass ごとに [`appendUnusedBindingDiagnostics()`](../../src/core/vkcore/renderer.cpp#L4035) を回して `unused_binding` を `diagnostics` に足します。後者が見るのは reflection の [`ReflectedBinding::accessed`](../../src/core/shader/shaderreflection.hpp#L48)(spirv-reflect の静的な使用。stage を merge するときは OR)です。
 
 Graph タブが読む応答も同じ読み方をします。1 応答に「今の版」と「文書の 2 つの層」が入っています
 ([組み立ては `getGraphInstances()`](../../src/core/communication/renderconfigeditor.cpp#L2437))。
@@ -429,17 +431,17 @@ attachment ops、resource use、material filter、前後 barrier は折りたた
 
 ### 共通グラフの 3 層(N-1 / N-1b / N-2)
 
-[`GraphCanvasModel`](../../src/devstudio/model/graphcanvasmodel.hpp#L911) は **Qt に依存しません**。
+[`GraphCanvasModel`](../../src/devstudio/model/graphcanvasmodel.hpp#L928) は **Qt に依存しません**。
 `GraphAttachmentModel` と同じ「request / read の 2 slot」形で、呼び手が `takeRpcRequests()` を drain し、
 好きな transport で送り、`receiveRpcResult()` / `receiveRpcFailure()` で答えを戻します。slot が 2 つあるのは、
 **値の問い合わせが次の文書再取得を待たせないため**で、遅れて届いた古い答えは捨てられます。
 提供するのは scope 一覧(`root` + definition 名)、scope ごとの node と edge、root scope の `graph.instance` へ
 重ねる値の overlay、そして `contentRevision()` / `reportRevision()` の 2 つの世代です
-([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L1583))。編集側は 6 つの操作
+([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L1619))。編集側は 6 つの操作
 (`connectInput` / `disconnectInput` / `setNodeParameter` / `removeNode` / `setNodeLabel` / `addNode`)で、
-**どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L2267))。
+**どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L2288))。
 `addNodeOps()` だけは複数 op を返します —— 必須の scalar 入力を持つ操作は、未接続のままでは engine が受け取らないので、
-**同じ ops 列で `value.constant` を先に足して**そこへ繋ぎます([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L2984))。
+**同じ ops 列で `value.constant` を先に足して**そこへ繋ぎます([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L3005))。
 種の定数は後で本物の producer を繋いでも自動では消えません(記録された穴)。
 
 [`view/nodegraphics.{hpp,cpp}`](../../src/devstudio/view/nodegraphics.hpp#L36) は
@@ -473,7 +475,7 @@ heading_text, dim_text, pill_bg}, domain_tint, source_tint}` で、描画側は�
 (`pelican.studio.themes` v1、`light` / `dark` の 2 preset で既定は `dark`)なので、3 つ目のテーマを足すのに
 C++ は要りません。切り替えの通知は Qt signal ではなく**素の関数リスト**
 ([理由はヘッダのコメント](../../src/devstudio/view/studiotheme.hpp#L110)) —— scene test が view の `.cpp` を
-moc 無しで compile するためで、`GraphCanvasWidget` は [repopulate](../../src/devstudio/view/graphcanvaswidget.cpp#L1450)、
+moc 無しで compile するためで、`GraphCanvasWidget` は [repopulate](../../src/devstudio/view/graphcanvaswidget.cpp#L1463)、
 Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphics.cpp#L2300) で追随します
 (item は作られた時の色を抱えるので、描き直す以外に追随する道がありません)。**ソケットの型別の fill だけは
 テーマから引きません** —— 型の識別色は `graph_socket_styles.json` のままで、テーマが決めるのは縁と
@@ -481,7 +483,7 @@ Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphic
 
 [`GraphCanvasWidget`](../../src/devstudio/view/graphcanvaswidget.hpp) と `GraphCanvasScene` が view です。
 上段は `Scope:` の combo とパンくず、`Values from:` の combo、`Refresh`
-([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L4974))、本体は左がキャンバス、右が
+([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L4989))、本体は左がキャンバス、右が
 `Field` / `Value` の詳細表です。node は見出し帯 + 出力欄 + 入力欄の 3 段で、見出しの三角はソケット欄を
 折り畳みます(折り畳むと辺は見出し帯の左右中央 1 点へ集まります)。編集はすべて**即時**で Apply ボタンがなく、
 ソケット間ドラッグ = `set_input`、辺の `Delete` = `set_input{null}`、値の帯のその場編集 =
@@ -491,7 +493,7 @@ node の `Delete` = `remove_node` です。位置と折り畳みは `(scope, nod
 engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view/graphcanvasreadcapability.hpp#L34) が
 名前で持つ 5 つ(`get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` /
 `get_edit_result`)だけで、それ以外は `The graph canvas cannot issue %1.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L6112))。規範は struct の宣言そのもの
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L6152))。規範は struct の宣言そのもの
 ([メンバ 5 本](../../src/devstudio/view/graphcanvasreadcapability.hpp#L43))で、その上の宣言コメントは
 **読みを 3 つと数えたまま**です —— メンバは `requestGraphInstances` / `requestGraphCatalog` /
 `requestGraphValues` / `requestEditResult` の 4 読み + `requestEditGraphDocument` の 1 編集なので、
@@ -673,7 +675,7 @@ Studio の target を必要としません)。
 | `devstudio_graphattachment_test` | 装着・instance 入力の mode・4 導線が作る op 列 |
 | `devstudio_graphcanvas_test`(139 assertion) | `GraphCanvasModel`。**対照**は「reply から `definitions` を落とす」「catalog を返さない」「値の overlay を撤去する」の 3 変異 |
 | `devstudio_graphcanvas_scene_test`(62 assertion、`QT_OFFSCREEN`) | `GraphCanvasScene`。**対照**は「column を固定にする」「位置保持を撤去」「消えた node の位置を prune しない」「double-click を撤去」。N-2 で 8 case が加わり、その対照は「`canConnect` を常に true」「折り畳みを無効化」「parameters の全 key を送る」 |
-| `devstudio_engine_failure_test`(`GPU` + `GOLDEN` フラグ。ctest の label は `gpu` **だけ**で、`GOLDEN` が足すのは [`RESOURCE_LOCK pelican_gpu`](../../test/CMakeLists.txt#L177) です) | **失敗経路で実 `pelican_player` を起動する Studio テスト**。sandbox に複製した `projects/example` を壊して起動し、fatal 行が Studio に届くこと・RPC の stdout が枠を保つことを見ます。**実 player を起こす唯一のテストではありません** —— Q-1 のシナリオ群のほか、`if(NOT SKIP_DEVSTUDIO)` の中で Studio の引数 probe と実 player を回す [`vulkan_validation_runtime_player`](../../test/CMakeLists.txt#L3406) が Q-1 以前からいます |
+| `devstudio_engine_failure_test`(`GPU` + `GOLDEN` フラグ。ctest の label は `gpu` **だけ**で、`GOLDEN` が足すのは [`RESOURCE_LOCK pelican_gpu`](../../test/CMakeLists.txt#L177) です) | **失敗経路で実 `pelican_player` を起動する Studio テスト**。sandbox に複製した `projects/example` を壊して起動し、fatal 行が Studio に届くこと・RPC の stdout が枠を保つことを見ます。**実 player を起こす唯一のテストではありません** —— Q-1 のシナリオ群のほか、`if(NOT SKIP_DEVSTUDIO)` の中で Studio の引数 probe と実 player を回す [`vulkan_validation_runtime_player`](../../test/CMakeLists.txt#L3414) が Q-1 以前からいます |
 | `devstudio_d0_boundary_negative` | link boundary(下記) |
 | `studio_scenario_*`(`gpu`、Q-1 / Q-1b / N-5。**10 本**: `graph_read` / `graph_edit_roundtrip` / `canvas_zoom_pan` / `menu_actions` / `graph_canvas_zoom_pan` / `theme_switch` / `graph_auto_layout` / `graph_reroute_tie` / `graph_observe_roundtrip` / `frameplan_edit_roundtrip`) | **実物の窓 + 実物の engine の e2e**。`--automation` 無しで socket が無いこと、`list` が objectName を返すこと、無い名前が `automation.widget_missing@1` になること、キャンバスが描いたものと `get_graph_instances` の一致、値の帯の click → type → Enter が engine に届き、**ディスク経由で再読込しても残る**こと。**対照**は「期待するノード数を 1 ずらす」と「`setNodeParameter` を止める」(後者は `wait_timeout`)。Q-1b の 3 本は gesture(wheel / 押したままの move / 中ボタン drag)を `view_state` の数値の**向き**で、メニューを `menu_list` / `action` で確かめます。N-5 の `theme_switch` は View ▸ Theme で light / dark を切り替えて両方を撮ります |
 
@@ -691,7 +693,7 @@ Studio の target を必要としません)。
   click → type → Enter して engine に届かせ、別 project へ切り替えて戻る(= engine がディスクから読み直す)ところまで
   1 本で通します。**それ以外の authoring 側 Studio テストは今も canned reply のハーネスと mock の往復**で、
   装着(Inspector)側の e2e はまだありません。
-- **シナリオは GPU lane に登録します。**[scenario の登録条件](../../test/CMakeLists.txt#L3480)は
+- **シナリオは GPU lane に登録します。**[scenario の登録条件](../../test/CMakeLists.txt#L3488)は
   Studio target と `PELICAN_PYTHON_TESTS=ON`、またはPython 3.11以上が見つかった `AUTO` です。
   `uv` は不要です。`test/studio_scenarios/*.json` から CTest を作り、完全な `run_gpu_gate.py` は
   全scenarioの正確な名前を必須にします。未登録・未実行・skipを成功とは扱いません。
@@ -793,7 +795,7 @@ engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/commu
 | `render_frame` | [再描画](../../src/core/communication/rpcserver.cpp#L2345) | time/frame を進めず、pending flush → seq update → render |
 | `capture_gpu` | [GPU 捕捉](../../src/core/communication/rpcserver.cpp) | `render_frame` と同型の1回描画を明示 Start/End で capture し、新規 index の `.rdc` path を返す |
 | `get_frame_plan` | [plan 取得](../../src/core/communication/rpcserver.cpp#L2345) | planner の JSON を返す |
-| `rerun_once` | [once の走り直し](../../src/core/communication/rpcserver.cpp#L2370) | ✅PS-1。`{node?}` → `{scheduled: [...]}`。[`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4075) が今の program の frame plan から、名前がその node か、出所の `loop_origin.loop` がその node の once の plan node を集め、`Renderer::once_rerun_requests` に入れる(次の frame の [`planOnceRuns()`](../../src/core/renderingpass/oncescheduler.cpp#L5) が `requested` で走らせ、走った frame の publish の後に消す)。`node` の無い呼び出しは全部の once。plan にも `graph_loops` にも無い名前は `std::invalid_argument` で、handler が `-32602` と `data: {code: "node_unknown", node}` にする |
+| `rerun_once` | [once の走り直し](../../src/core/communication/rpcserver.cpp#L2370) | ✅PS-1。`{node?}` → `{scheduled: [...]}`。[`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4081) が今の program の frame plan から、名前がその node か、出所の `loop_origin.loop` がその node の once の plan node を集め、`Renderer::once_rerun_requests` に入れる(次の frame の [`planOnceRuns()`](../../src/core/renderingpass/oncescheduler.cpp#L5) が `requested` で走らせ、走った frame の publish の後に消す)。`node` の無い呼び出しは全部の once。plan にも `graph_loops` にも無い名前は `std::invalid_argument` で、handler が `-32602` と `data: {code: "node_unknown", node}` にする |
 | `pick_object` | [ID 読み出し](../../src/core/communication/rpcserver.cpp) | feature が作った `picking_id` の左上原点座標を同期読み出しし、同一フレーム token を WP258 の宣言 identity へ解決 |
 | `set_gizmo` | [表示要求](../../src/core/communication/rpcserver.cpp) | 宣言または runtime object のタグ付き selection と mode をギズモ表示へ設定。`selection:null` で解除 |
 | `query_gizmo_drag_basis` | [ドラッグ基底](../../src/core/communication/rpcserver.cpp#L2467) | selection / mode / axis から、軸または view-plane の論理 pixel 当たりドラッグ基底を状態変更なしで返す |
@@ -1112,7 +1114,7 @@ cmake_parse_arguments(PELICAN_TEST
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L3755) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L3763) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 
@@ -1151,7 +1153,7 @@ cmake_parse_arguments(PELICAN_TEST
 | 物理 | [`run_physics_trigger_behavior.ps1`](../../test/run_physics_trigger_behavior.ps1)(`physics_trigger_behavior_e2e`、GPU ラベル) |
 | CLI | `processrunner_test` / [`run_devcli_import_process.cmake`](../../test/run_devcli_import_process.cmake) / [`run_preset_project_headless.cmake`](../../test/run_preset_project_headless.cmake)(§7.2) / [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(§7.5c。catalog と `docs/v0_freeze.md` の表の照合を含む) |
 | package(X-1) | `packagemanifest_test`(manifest の純粋 parser と digest)/ `package_install_smoke`(**`PELICAN_WITH_RPC` のときだけ登録**。GPU lease + 300 秒。install → catalog → `edit_render_features` → 描画 → uninstall を実 player で)/ ctest 未登録の [`run_package_template_smoke.cmake`](../../test/run_package_template_smoke.cmake)(package の code を含む一時 project を configure から build。`-DPELICAN_PACKAGE_TEMPLATE_SMOKE_DEPS=<primary>/build/_deps` で primary の依存ソースを借ります) |
-| project corpus | ctest 名 [`project_catalog_headless_smoke`](../../test/CMakeLists.txt#L3577)、実装は [`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(登録は `if(TARGET pelican_test_studio_player_arguments)` の中 = **`SKIP_DEVSTUDIO=ON` では存在しません**。`PELICAN_TEST_PROJECTS_DIR` が空なら skip。出荷 project の走査。`project.json` の `requires` を満たせない project は**名前を出して skip** し、player の中で落ちません) |
+| project corpus | ctest 名 [`project_catalog_headless_smoke`](../../test/CMakeLists.txt#L3585)、実装は [`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(登録は `if(TARGET pelican_test_studio_player_arguments)` の中 = **`SKIP_DEVSTUDIO=ON` では存在しません**。`PELICAN_TEST_PROJECTS_DIR` が空なら skip。出荷 project の走査。`project.json` の `requires` を満たせない project は**名前を出して skip** し、player の中で落ちません) |
 | RPC | [`test/pelican_rpc_smoke.py`](../../test/pelican_rpc_smoke.py) / [`run_rpc_scene_flow_normalization_fixtures.cmake`](../../test/run_rpc_scene_flow_normalization_fixtures.cmake) + `test/fixtures/rpc_scene_flow/*.ndjson` |
 | 契約 gate | [`test/contract_boundary_gate.py`](../../test/contract_boundary_gate.py) + [`test/ci/test_contract_boundary_gate.py`](../../test/ci/test_contract_boundary_gate.py)(fixture: `test/fixtures/contract0/*.json`) |
 | CI gate 自体 | [`test/ci/test_skip_policy.py`](../../test/ci/test_skip_policy.py)(CTest 名 `ci_skip_policy_unit`)/ [`test/ci/test_golden_inventory.py`](../../test/ci/test_golden_inventory.py)(同 `golden_inventory_negative_fixtures`)。§7.9 の gate 自身を検査する |
@@ -1177,7 +1179,7 @@ cmake_parse_arguments(PELICAN_TEST
 | frame graph の順序/異常系 | [`frameplanner_test.cpp`](../../test/frameplanner_test.cpp#L279) |
 | rendering JSON | [`renderingpass_helpers_test.cpp`](../../test/renderingpass_helpers_test.cpp#L21) |
 | shader compile/reflection/reload | [`shader_compiler_reflection_test.cpp`](../../test/shader_compiler_reflection_test.cpp#L34)、[`shader_library_test.cpp`](../../test/shader_library_test.cpp#L94) |
-| feature composition | [`featurecompose_test.cpp`](../../test/featurecompose_test.cpp#L370) |
+| feature composition | [`featurecompose_test.cpp`](../../test/featurecompose_test.cpp#L372) |
 | persistence の atomic save/path | [`persistence_test.cpp`](../../test/persistence_test.cpp#L81) |
 
 ### Golden image test
@@ -1412,7 +1414,7 @@ return !config.headless && !config.rpc && !config.input_replay && !config.golden
        !config.xr_active;
 ```
 
-つまり **`--rpc` を付けた windowed セッションでは ImGui UI(したがって inspector)は動きません**。排他の実体は「リクエストを処理する間だけ UI を止める」「stdin 読み取りでブロックする」といった実行時の調停ではなく、**config を見るだけの一枚のゲート**です。同じ述語は frame graph の合成時にも通るため([`renderingpassconfigregistration.cpp` 内](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L213))、`--rpc` のセッションには `imgui_pass` がそもそも合成グラフに入りません。実行時も [`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L80) が毎フレーム同じ述語を評価し、偽なら `ImGuiSystem` を frame state に載せないので、パネルの callback は一度も呼ばれません。ヘッダのコメント「Deterministic drivers therefore skip callbacks, instead of running an invisible ImGui frame.」がこの並び(headless / rpc / replay / golden)の意図です。ゲートが**実行中に**閉じうるのは XR activation と replay 開始で、そのとき開始済みの ImGui フレームは `endFrameIfStarted()` で閉じられます。XR を除外している理由だけは別で、実装側のコメントにあるとおり「XR グラフに ImGui pass が無いので、開始した ImGui フレームに対応する Render/EndFrame が無くなる」ためです。
+つまり **`--rpc` を付けた windowed セッションでは ImGui UI(したがって inspector)は動きません**。排他の実体は「リクエストを処理する間だけ UI を止める」「stdin 読み取りでブロックする」といった実行時の調停ではなく、**config を見るだけの一枚のゲート**です。同じ述語は frame graph の合成時にも通るため([`renderingpassconfigregistration.cpp` 内](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L250))、`--rpc` のセッションには `imgui_pass` がそもそも合成グラフに入りません。実行時も [`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L80) が毎フレーム同じ述語を評価し、偽なら `ImGuiSystem` を frame state に載せないので、パネルの callback は一度も呼ばれません。ヘッダのコメント「Deterministic drivers therefore skip callbacks, instead of running an invisible ImGui frame.」がこの並び(headless / rpc / replay / golden)の意図です。ゲートが**実行中に**閉じうるのは XR activation と replay 開始で、そのとき開始済みの ImGui フレームは `endFrameIfStarted()` で閉じられます。XR を除外している理由だけは別で、実装側のコメントにあるとおり「XR グラフに ImGui pass が無いので、開始した ImGui フレームに対応する Render/EndFrame が無くなる」ためです。
 
 テストは [`test/assetbrowser_test.cpp`](../../test/assetbrowser_test.cpp) と [`test/inspector_test.cpp`](../../test/inspector_test.cpp) です。
 
