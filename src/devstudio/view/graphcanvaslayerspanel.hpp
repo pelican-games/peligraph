@@ -17,7 +17,10 @@ class QDragEnterEvent;
 class QDropEvent;
 class QLabel;
 class QLineEdit;
+class QMenu;
+class QPlainTextEdit;
 class QPushButton;
+class QStackedWidget;
 class QSpinBox;
 class QToolButton;
 class QVBoxLayout;
@@ -60,6 +63,24 @@ class GraphCanvasModel;
 // `stackSize.x`, `blendSpace`), `.note`, `.refusal`, `.imports` and
 // `.importList`. The file dialogs are `pelican.canvasImageDialog` and
 // `pelican.canvasPsdOutputDialog` (their name fields `.fileName`).
+//
+// SG-3: the blend combo offers every blend the engine draws, grouped as
+// Photoshop's menu groups them; a row whose blend is not normal says it
+// beside its name (`.row<n>.blend`), and a row with a filter shows `f`
+// (`.row<n>.filters`). + Text… (`.addText`) opens `pelican.canvasTextDialog`
+// (`.text`, `.font`, `.importFont`, `.size`, `.ok`; Import font… opens
+// `pelican.canvasFontDialog`); + Adjustment (`.addAdjustment`) is a menu of
+// the colour filters (`.addAdjustment.<kind>`, kind the op without
+// `filter.`), put just above the picked row. A picked text row has
+// `.field.text`, `.field.font`, `.field.importFont`, `.field.textSize`,
+// `.field.textAlign`, `.field.lineHeight`, `.field.tracking`,
+// `.field.boxWidth` and `.field.textStroke`; every picked row has its filters
+// (`.field.filter`, `.field.addFilter` with `.addFilter.<kind>`,
+// `.field.removeFilter`) and the picked filter's parameters
+// (`.field.filter.<parameter>`, `.field.filter.colorPick`). With no row
+// picked: `.placeTarget` and `.placeInScene` (enabled only when the document
+// has a material pass), and for a stack placed in 3D its canvas.place's
+// fields (`.field.place.<parameter>[.<component>]`).
 class GraphCanvasLayersPanel final : public QWidget {
   public:
     GraphCanvasLayersPanel(GraphCanvasModel &model, std::function<void()> submitted,
@@ -85,6 +106,8 @@ class GraphCanvasLayersPanel final : public QWidget {
   protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
+    // SG-3: the text field is sent when it loses the keyboard.
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
   private:
     struct RowWidgets {
@@ -95,6 +118,9 @@ class GraphCanvasLayersPanel final : public QWidget {
         QLabel *mask = nullptr;
         QLineEdit *name = nullptr;
         QToolButton *pass_through = nullptr;
+        // SG-3: the blend when not normal, and `f` for a filtered layer.
+        QLabel *blend = nullptr;
+        QLabel *filters = nullptr;
         QSpinBox *opacity = nullptr;
     };
     // Where Open group came from, to go Back to.
@@ -121,6 +147,19 @@ class GraphCanvasLayersPanel final : public QWidget {
     void importPsd(const std::filesystem::path &psd);
     // The stack to show when none is picked: the first output's of the root.
     void settleStack();
+    // SG-3.
+    void buildSg3Fields(QVBoxLayout *body);
+    void loadSg3Fields(const std::optional<GraphCanvasStackRow> &row);
+    void openTextDialog();
+    void chooseFont(QWidget *over, std::function<void(const std::string &reference)> imported);
+    void reloadFonts();
+    void fillFontCombo(QComboBox *combo, const std::string &current);
+    [[nodiscard]] std::string pickedFilter() const;
+    void commitFilterNumber(const char *key, double value);
+    void commitFilterJson(const char *key, QLineEdit *field);
+    void commitPlace(const char *key, const nlohmann::json &value);
+    [[nodiscard]] std::string shownPlace() const;
+    QMenu *filterMenu(const char *prefix, std::function<void(const std::string &op)> chosen);
 
     GraphCanvasModel &model_;
     std::function<void()> submitted_;
@@ -202,6 +241,56 @@ class GraphCanvasLayersPanel final : public QWidget {
     QLabel *refusal_ = nullptr;
     QPushButton *imports_ = nullptr;
     QLabel *import_list_ = nullptr;
+
+    // SG-3.
+    std::vector<std::string> fonts_;
+    std::string place_;
+    std::string filter_row_;
+    QPushButton *add_text_ = nullptr;
+    QToolButton *add_adjustment_ = nullptr;
+    QWidget *text_fields_ = nullptr;
+    QPlainTextEdit *text_ = nullptr;
+    QComboBox *font_ = nullptr;
+    QPushButton *import_font_ = nullptr;
+    QComboBox *text_size_ = nullptr;
+    QComboBox *text_align_ = nullptr;
+    QDoubleSpinBox *line_height_ = nullptr;
+    QDoubleSpinBox *tracking_ = nullptr;
+    QDoubleSpinBox *box_width_ = nullptr;
+    QCheckBox *text_stroke_ = nullptr;
+    QWidget *filter_fields_ = nullptr;
+    QComboBox *filter_ = nullptr;
+    QToolButton *add_filter_ = nullptr;
+    QPushButton *remove_filter_ = nullptr;
+    QStackedWidget *filter_pages_ = nullptr;
+    QDoubleSpinBox *brightness_ = nullptr;
+    QDoubleSpinBox *contrast_ = nullptr;
+    QDoubleSpinBox *input_floor_ = nullptr;
+    QDoubleSpinBox *input_ceiling_ = nullptr;
+    QDoubleSpinBox *gamma_ = nullptr;
+    QDoubleSpinBox *output_floor_ = nullptr;
+    QDoubleSpinBox *output_ceiling_ = nullptr;
+    QLineEdit *channels_ = nullptr;
+    QDoubleSpinBox *hue_ = nullptr;
+    QDoubleSpinBox *saturation_ = nullptr;
+    QDoubleSpinBox *lightness_ = nullptr;
+    QLineEdit *colorize_ = nullptr;
+    QLineEdit *stops_ = nullptr;
+    QCheckBox *reversed_ = nullptr;
+    QPushButton *overlay_pick_ = nullptr;
+    QWidget *place_row_ = nullptr;
+    QComboBox *place_target_ = nullptr;
+    QPushButton *place_in_scene_ = nullptr;
+    QWidget *place_fields_ = nullptr;
+    QLabel *place_caption_ = nullptr;
+    QDoubleSpinBox *position_[3] = {};
+    QDoubleSpinBox *place_rotation_[3] = {};
+    QDoubleSpinBox *place_scale_ = nullptr;
+    QDoubleSpinBox *pixels_per_unit_ = nullptr;
+    QDoubleSpinBox *anchor_[2] = {};
+    QCheckBox *depth_test_ = nullptr;
+    QCheckBox *depth_write_ = nullptr;
+    QCheckBox *double_sided_ = nullptr;
 };
 
 } // namespace PelicanStudio

@@ -3628,6 +3628,8 @@ if(PELICAN_WITH_CANVAS)
     pelican_define_test(canvas_text_test pelican_project)
     # CV-2b: blend modes, canvas.backdrop and the colour filters.
     pelican_define_test(canvas_blend_test pelican_project)
+    # CV-5: the ship policy -- static runs folded into images, constants into the shader.
+    pelican_define_test(canvas_ship_test pelican_project)
     add_executable(pelican_test_canvas_png_compare canvas_png_compare.cpp)
     set_target_properties(pelican_test_canvas_png_compare PROPERTIES CXX_STANDARD 20)
     target_link_libraries(pelican_test_canvas_png_compare PRIVATE stb pelican_project nlohmann_json)
@@ -3717,6 +3719,31 @@ if(PELICAN_WITH_CANVAS)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_canvas_place_headless.cmake
     )
     pelican_gpu_test_properties(canvas_place_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+    # CV-5: canvas-lower --policy ship without a player (no GPU): the report,
+    # the folded constants, no canvas op left, the font not shipped.
+    add_test(
+        NAME canvas_ship_cli
+        COMMAND ${CMAKE_COMMAND}
+            -DCLI=$<TARGET_FILE:pelican_cli>
+            -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/canvas_psd
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/canvas_ship_cli
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_canvas_ship_cli.cmake
+    )
+    # CV-5: the PSD fixture with a moving disc in its middle, lowered edit and
+    # ship (its static runs folded into images by the player), drawn at two
+    # times and held against each other.
+    add_test(
+        NAME canvas_ship_headless_player
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+            -DCLI=$<TARGET_FILE:pelican_cli>
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DCOMPARE=$<TARGET_FILE:pelican_test_canvas_png_compare>
+            -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/canvas_psd
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/canvas_ship_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_canvas_ship_headless.cmake
+    )
+    pelican_gpu_test_properties(canvas_ship_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 endif()
 # CC-1a: the 3D screen is the world as seen, not its mirror
 # (docs/design_coordinate_convention.md section 5).

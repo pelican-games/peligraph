@@ -395,21 +395,34 @@ bool luminanceChannel(const Json &node) {
 }
 
 void appendImage(const Scope &scope, const Json &node, const Flattening &flattening, std::vector<CanvasItem> &items) {
-    onlyKeys(node, {"asset", "offset", "size", "channel", "outside", "sampler"});
+    onlyKeys(node, {"asset", "offset", "size", "channel", "outside", "sampler", "alpha"});
     if (luminanceChannel(node))
         throw std::invalid_argument("canvas.image channel luminance is read as a mask, not drawn: " + nodeId(node));
+    // CV-5: a premultiplied file is a frame the player wrote (a static run
+    // the ship policy folded): premultiplied linear colour, sRGB-encoded.
+    bool premultiplied = false;
+    if (const auto found = objectMember(node, "parameters").find("alpha");
+        found != objectMember(node, "parameters").end()) {
+        if (*found == "premultiplied") premultiplied = true;
+        else if (*found != "straight")
+            throw std::invalid_argument("canvas.image alpha must be straight or premultiplied: " + nodeId(node));
+    }
     CanvasItem item;
     item.source = CanvasItemSource::image;
     // A linear stack reads the file through the sRGB decode; an sRGB stack
-    // reads its bytes as they are and composites those.
-    item.texture = {CanvasTexture::Origin::file, imageAsset(node), flattening.srgb, std::nullopt, {}, 0,
-                    nearestSampler(node)};
+    // reads its bytes as they are and composites those. A premultiplied file
+    // is always decoded (its bytes encode linear values), and an sRGB stack
+    // encodes the colour back after the alpha is divided out.
+    item.texture = {CanvasTexture::Origin::file, imageAsset(node), flattening.srgb && !premultiplied, std::nullopt, {},
+                    0, nearestSampler(node)};
     appendVector(item.parameters, scope, node, "offset", {"x", "y"}, 0.0);
     const auto size = requiredSize(node);
     item.parameters.push_back(constantParameter(size[0]));
     item.parameters.push_back(constantParameter(size[1]));
-    item.parameters.push_back(constantParameter(static_cast<double>(CanvasAlpha::straight)));
-    item.parameters.push_back(constantParameter(static_cast<double>(CanvasEncode::none)));
+    item.parameters.push_back(
+        constantParameter(static_cast<double>(premultiplied ? CanvasAlpha::premultiplied : CanvasAlpha::straight)));
+    item.parameters.push_back(constantParameter(static_cast<double>(
+        premultiplied && flattening.srgb ? CanvasEncode::linear_to_srgb : CanvasEncode::none)));
     item.nodes = {nodeId(node)};
     item.nodes.insert(item.nodes.end(), flattening.stacks.begin(), flattening.stacks.end());
     applyFlattening(item, flattening);
@@ -741,9 +754,12 @@ void appendStackLayers(const Scope &scope, const Json &stack, const Flattening &
         for (const auto &[key, value] : layer.items()) {
             (void)value;
             if (key != "input" && key != "name" && key != "visible" && key != "opacity" && key != "blend" &&
-                key != "mask" && key != "clip" && key != "pass_through" && key != "depth")
+                key != "mask" && key != "clip" && key != "pass_through" && key != "depth" && key != "bake")
                 throw std::invalid_argument("canvas.stack layer does not take " + key + ": " + id);
         }
+        // CV-5: read by the ship policy (canvasship.hpp) alone.
+        if (const auto bake = layer.find("bake"); bake != layer.end() && *bake != "texture")
+            throw std::invalid_argument("canvas.stack layer bake must be \"texture\": " + id);
         const auto input = layer.find("input");
         if (input == layer.end() || !input->is_string() || input->get_ref<const std::string &>().empty())
             throw std::invalid_argument("canvas.stack layer requires an input name: " + id);
@@ -804,9 +820,13 @@ void appendStack(const Scope &scope, const Json &stack, const Flattening &flatte
         cycle.push_back(id);
         throw GraphRegistryError("canvas.stack_cycle@1", {{"node", id}, {"cycle", std::move(cycle)}});
     }
-    onlyKeys(stack, {"size", "layers", "blend_space"});
+    onlyKeys(stack, {"size", "layers", "blend_space", "bake_scale"});
     const auto &parameters = objectMember(stack, "parameters");
     (void)positiveSize(parameters, "canvas.stack " + id);
+    // CV-5: read by the ship policy (canvasship.hpp) alone.
+    if (const auto scale = parameters.find("bake_scale");
+        scale != parameters.end() && !(number(*scale, "canvas.stack bake_scale: " + id) > 0.0))
+        throw std::invalid_argument("canvas.stack bake_scale must be positive: " + id);
     const auto layers = parameters.find("layers");
     if (layers == parameters.end() || !layers->is_array())
         throw std::invalid_argument("canvas.stack requires a layers array: " + id);
@@ -1379,7 +1399,39 @@ struct DrawShape {
     // CV-6a: parameters each item carries past its kind's own (a placed
     // item's depth), before its filter numbers.
     std::size_t extra_parameters = 0;
+    // CV-5, the ship policy: per kind (less its style), the parameters every
+    // item of the kind in the draw holds as one constant. The shader reads
+    // those as literals; the tables keep the rest, in order.
+    std::map<std::uint32_t, std::vector<std::optional<double>>> constants;
 };
+
+// CV-5: a folded number as the table would hold it (a float), in GLSL.
+std::string glslLiteral(double value) {
+    const auto text = glslNumber(static_cast<double>(static_cast<float>(value)));
+    return text.starts_with('-') ? "(" + text + ")" : text;
+}
+
+// Parameter `index` of an item of `kind` (less its style) in the shader: a
+// literal when the draw folded it, else its read from the tables, numbered
+// among the parameters the tables keep.
+std::string parameterRead(const DrawShape &draw, std::uint32_t kind, std::size_t index) {
+    const auto found = draw.constants.find(kind);
+    if (found == draw.constants.end()) return "canvasParam(it, " + std::to_string(index) + "u)";
+    if (found->second.at(index)) return glslLiteral(*found->second.at(index));
+    const auto kept = std::count_if(found->second.begin(), found->second.begin() + static_cast<std::ptrdiff_t>(index),
+                                    [](const std::optional<double> &value) { return !value.has_value(); });
+    return "canvasParam(it, " + std::to_string(kept) + "u)";
+}
+
+// The parameters of `kind` the draw's tables keep.
+std::size_t keptParameterCount(const DrawShape &draw, std::uint32_t kind, std::size_t count) {
+    const auto found = draw.constants.find(kind);
+    if (found == draw.constants.end()) return count;
+    return count - static_cast<std::size_t>(std::count_if(found->second.begin(), found->second.end(),
+                                                          [](const std::optional<double> &value) {
+                                                              return value.has_value();
+                                                          }));
+}
 
 // CV-2b: the kind's parameter count, where an item's filter numbers start.
 std::size_t kindParameterCount(std::uint32_t kind) {
@@ -1432,7 +1484,8 @@ vec4 canvasBackdrop() {
     text += "uint canvasParamCount(uint kind) {\n    switch (kind) {\n";
     for (const auto kind : draw.kinds)
         text += "    case " + std::to_string(kind) + "u: return " +
-                std::to_string(kindParameterCount(kind) + draw.extra_parameters) + "u;\n";
+                std::to_string(keptParameterCount(draw, kind, kindParameterCount(kind)) + draw.extra_parameters) +
+                "u;\n";
     text += "    default: return 0u;\n    }\n}\n\n";
     text += "vec4 canvasStyle(mat4 it, vec4 color) {\n";
     text += "    uint kind = uint(it[0].x + 0.5);\n";
@@ -1500,19 +1553,20 @@ std::string fitFunctions(const CanvasOutput &output) {
 std::string itemBoundsCases(const DrawShape &draw) {
     std::string text;
     for (const auto kind : draw.kinds) {
+        const auto p = [&](std::size_t index) { return parameterRead(draw, kind, index); };
         text += "    case " + std::to_string(kind) + "u: { // " + std::string{canvasItemKindName(kind)} + "\n";
         if (kind == canvas_kind_image) {
-            text += "        vec2 size = vec2(canvasParam(it, 2u), canvasParam(it, 3u));\n";
-            text += "        center = vec2(canvasParam(it, 0u), canvasParam(it, 1u)) + 0.5 * size;\n";
+            text += "        vec2 size = vec2(" + p(2) + ", " + p(3) + ");\n";
+            text += "        center = vec2(" + p(0) + ", " + p(1) + ") + 0.5 * size;\n";
             text += "        bound = 0.5 * abs(size);\n";
             text += "        break;\n    }\n";
             continue;
         }
         if (kind == canvas_kind_glyph_fill || kind == canvas_kind_glyph_stroke) {
-            text += "        float s = canvasParam(it, 2u);\n";
-            text += "        vec2 cell_size = s * vec2(canvasParam(it, 5u), canvasParam(it, 6u));\n";
-            text += "        center = vec2(canvasParam(it, 0u), canvasParam(it, 1u)) +\n";
-            text += "                 s * vec2(canvasParam(it, 3u), canvasParam(it, 4u)) + 0.5 * cell_size;\n";
+            text += "        float s = " + p(2) + ";\n";
+            text += "        vec2 cell_size = s * vec2(" + p(5) + ", " + p(6) + ");\n";
+            text += "        center = vec2(" + p(0) + ", " + p(1) + ") +\n";
+            text += "                 s * vec2(" + p(3) + ", " + p(4) + ") + 0.5 * cell_size;\n";
             text += "        bound = 0.5 * abs(cell_size);\n";
             text += "        break;\n    }\n";
             continue;
@@ -1526,9 +1580,9 @@ std::string itemBoundsCases(const DrawShape &draw) {
         const auto shape = kind < 2 ? CanvasShape::rect : CanvasShape::ellipse;
         const bool stroke = kind % 2 == 1;
         const auto rotation = shape == CanvasShape::rect ? 5 : 4;
-        text += "        vec2 half_size = 0.5 * abs(vec2(canvasParam(it, 0u), canvasParam(it, 1u)));\n";
-        text += "        center = vec2(canvasParam(it, 2u), canvasParam(it, 3u));\n";
-        text += "        float rotation = radians(canvasParam(it, " + std::to_string(rotation) + "u));\n";
+        text += "        vec2 half_size = 0.5 * abs(vec2(" + p(0) + ", " + p(1) + "));\n";
+        text += "        center = vec2(" + p(2) + ", " + p(3) + ");\n";
+        text += "        float rotation = radians(" + p(rotation) + ");\n";
         text += "        float c = abs(cos(rotation)), s = abs(sin(rotation));\n";
         if (shape == CanvasShape::rect)
             text += "        bound = vec2(c * half_size.x + s * half_size.y, s * half_size.x + c * half_size.y);\n";
@@ -1536,8 +1590,8 @@ std::string itemBoundsCases(const DrawShape &draw) {
             text += "        bound = vec2(length(vec2(half_size.x * c, half_size.y * s)),\n"
                     "                     length(vec2(half_size.x * s, half_size.y * c)));\n";
         if (stroke)
-            text += "        bound += canvasStrokeOutset(canvasParam(it, " + std::to_string(parameterIndex(shape, 4)) +
-                    "u), canvasParam(it, " + std::to_string(parameterIndex(shape, 5)) + "u));\n";
+            text += "        bound += canvasStrokeOutset(" + p(parameterIndex(shape, 4)) + ", " +
+                    p(parameterIndex(shape, 5)) + ");\n";
         text += "        break;\n    }\n";
     }
     return text;
@@ -1730,8 +1784,8 @@ float canvasGlyphStroke(float d, float width, float align) {
     vec4 color = vec4(0.0);
     switch (kind) {
 )glsl";
-    const auto param = [](std::size_t index) { return "canvasParam(it, " + std::to_string(index) + "u)"; };
     for (const auto kind : draw.kinds) {
+        const auto param = [&](std::size_t index) { return parameterRead(draw, kind, index); };
         text += "    case " + std::to_string(kind) + "u: { // " + std::string{canvasItemKindName(kind)} + "\n";
         if (kind == canvas_kind_image) {
             text += "        vec2 uv = (q - vec2(" + param(0) + ", " + param(1) + ")) / vec2(" + param(2) + ", " +
@@ -1840,6 +1894,8 @@ struct LoweredOutput {
     std::vector<CanvasGeneratedSource> sources;
     Json items = Json::array();
     Json diagnostics = Json::array();
+    // CV-5: the parameters the ship policy made literals.
+    std::size_t folded_constants = 0;
 };
 
 // The images an item samples, in the order a slot is given: its own, then its masks'.
@@ -2062,12 +2118,39 @@ void lowerComposite(const CanvasOutput &output, const std::vector<CanvasItem> &a
                 slotOf(CanvasTexture{CanvasTexture::Origin::graph, {}, false, copy, "image", 0, true}));
             lowerBackdropCopy(output, copy, previous, options, lowered);
         }
+        if (options.policy == CanvasLoweringPolicy::ship) {
+            // CV-5: a parameter no edge drives, the same number in every item
+            // of its kind, becomes a literal of the shader.
+            for (const auto index : draw.items) {
+                const auto &item = items[index];
+                auto [found, first] = shape.constants.try_emplace(canvasItemKind(item));
+                auto &constants = found->second;
+                if (first) constants.resize(item.parameters.size());
+                if (constants.size() != item.parameters.size())
+                    throw std::logic_error("canvas lowering: items of one kind differ in their parameters");
+                for (std::size_t at = 0; at < constants.size(); ++at) {
+                    const auto &parameter = item.parameters[at];
+                    if (first && !parameter.edge) constants[at] = parameter.value;
+                    else if (parameter.edge || (constants[at] && *constants[at] != parameter.value))
+                        constants[at].reset();
+                }
+            }
+            for (const auto &[kind, constants] : shape.constants)
+                lowered.folded_constants += static_cast<std::size_t>(
+                    std::count_if(constants.begin(), constants.end(),
+                                  [](const std::optional<double> &value) { return value.has_value(); }));
+        }
         for (const auto index : draw.items) {
             const auto instance = local.size();
             local.emplace(index, instance);
             const auto &item = items[index];
             auto kind = canvasItemKind(item);
             shape.kinds.insert(kind);
+            // CV-5: the parameters the tables keep (all of them but under ship).
+            const auto folded = shape.constants.find(kind);
+            const auto kept = [&](std::size_t at) {
+                return folded == shape.constants.end() || !folded->second[at].has_value();
+            };
             // CV-2b: the item's style, numbered by first use in the draw.
             if (item.blend != CanvasBlend::normal || !item.filters.empty()) {
                 std::pair<CanvasBlend, std::vector<CanvasFilterKind>> style{item.blend, {}};
@@ -2077,15 +2160,19 @@ void lowerComposite(const CanvasOutput &output, const std::vector<CanvasItem> &a
                 kind += canvas_kind_style_stride * static_cast<std::uint32_t>(found - shape.styles.begin() + 1);
             }
             const auto bake_offset = static_cast<double>(bake.size());
-            for (const auto &parameter : item.parameters) bake.push_back(parameter.value);
+            for (std::size_t at = 0; at < item.parameters.size(); ++at)
+                if (kept(at)) bake.push_back(item.parameters[at].value);
             for (const auto &filter : item.filters) bake.insert(bake.end(), filter.constants.begin(), filter.constants.end());
             double source_offset = -1.0;
             if (std::any_of(item.parameters.begin(), item.parameters.end(),
                             [](const CanvasParameter &parameter) { return parameter.edge.has_value(); })) {
                 source_offset = static_cast<double>(bake.size());
-                for (const auto &parameter : item.parameters)
+                for (std::size_t at = 0; at < item.parameters.size(); ++at) {
+                    if (!kept(at)) continue;
+                    const auto &parameter = item.parameters[at];
                     bake.push_back(parameter.edge ? static_cast<double>(frameEntry(*parameter.edge, parameter.value) + 1)
                                                   : 0.0);
+                }
             }
             double opacity_offset = -1.0;
             if (!item.opacity_edges.empty()) {
@@ -2835,6 +2922,7 @@ CanvasLowering lowerCanvasNodes(const nlohmann::json &document, const CanvasLowe
                 result.generated_sources.push_back(std::move(source));
             }
             for (auto &diagnostic : output.diagnostics) result.diagnostics.push_back(std::move(diagnostic));
+            result.folded_constants += output.folded_constants;
             for (auto &item : output.items) {
                 if (!name.empty()) item["scope"] = name;
                 result.items.push_back(std::move(item));

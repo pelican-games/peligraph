@@ -182,4 +182,83 @@ std::string copyCanvasPsdOutput(const std::filesystem::path &project_root, const
     return {};
 }
 
+// --- SG-3.
+
+bool isCanvasFontFile(const std::filesystem::path &file) {
+    const auto extension = lowered(file.extension().string());
+    return extension == ".ttf" || extension == ".otf";
+}
+
+GraphCanvasFontsRead readCanvasProjectFonts(const std::filesystem::path &project_root) {
+    GraphCanvasFontsRead read;
+    if (project_root.empty()) {
+        read.error = "No project is open.";
+        return read;
+    }
+    std::error_code error;
+    std::filesystem::recursive_directory_iterator walk{
+        project_root, std::filesystem::directory_options::skip_permission_denied, error};
+    if (error) {
+        read.error = "The project folder could not be read: " + error.message();
+        return read;
+    }
+    try {
+        for (auto end = std::filesystem::recursive_directory_iterator{}; walk != end; walk.increment(error)) {
+            if (error) break;
+            const auto &entry = *walk;
+            std::error_code kind;
+            if (entry.is_directory(kind)) {
+                const auto name = entry.path().filename().u8string();
+                if (!name.empty() && name.front() == u8'.') walk.disable_recursion_pending();
+                continue;
+            }
+            if (!isCanvasFontFile(entry.path())) continue;
+            const auto relative = utf8(entry.path().lexically_relative(project_root));
+            if (relative.empty() || relative.starts_with("..")) continue;
+            read.fonts.push_back("project://" + relative);
+        }
+    } catch (const std::exception &caught) {
+        read.error = std::string{"The project folder could not be read: "} + caught.what();
+    }
+    std::ranges::sort(read.fonts);
+    return read;
+}
+
+GraphCanvasFontImport importCanvasFont(const std::filesystem::path &project_root, const std::filesystem::path &file) {
+    GraphCanvasFontImport result;
+    if (project_root.empty()) {
+        result.error = "No project is open.";
+        return result;
+    }
+    if (!isCanvasFontFile(file)) {
+        result.error = utf8(file.filename()) + " is not a .ttf or .otf file.";
+        return result;
+    }
+    const auto folder = project_root / "assets" / "fonts";
+    std::error_code error;
+    std::filesystem::create_directories(folder, error);
+    if (error) {
+        result.error = "Could not make " + utf8(folder) + ": " + error.message();
+        return result;
+    }
+    const auto stem = utf8(file.stem());
+    const auto extension = utf8(file.extension());
+    auto name = stem + extension;
+    for (int suffix = 2; std::filesystem::exists(folder / std::filesystem::u8path(name)) && suffix < 10000; ++suffix)
+        name = stem + "_" + std::to_string(suffix) + extension;
+    const auto target = folder / std::filesystem::u8path(name);
+    if (std::filesystem::exists(target)) {
+        result.error = "No free name for " + utf8(file.filename()) + ".";
+        return result;
+    }
+    std::filesystem::copy_file(file, target, std::filesystem::copy_options::none, error);
+    if (error) {
+        result.error = "Could not copy " + utf8(file.filename()) + ": " + error.message();
+        return result;
+    }
+    result.reference = "project://assets/fonts/" + name;
+    result.copy = target;
+    return result;
+}
+
 } // namespace PelicanStudio

@@ -54,8 +54,9 @@ struct GraphCanvasStackRow {
     // A value line drives `<input>.opacity`: the field shows the stored one.
     bool opacity_driven = false;
     // "rect", "ellipse", "group" (a canvas.stack), "image" (a canvas.image),
-    // "color", "import" (an instance of a canvas definition: a PSD's) or
-    // "layer" (anything else, or nothing connected).
+    // "color", "import" (an instance of a canvas definition: a PSD's), SG-3's
+    // "text" (a paint of a shape.text) and "adjustment" (a canvas.backdrop
+    // under its filters), or "layer" (anything else, or nothing connected).
     std::string kind = "layer";
     // "fill" or "stroke" for a paint, else empty.
     std::string paint;
@@ -65,6 +66,10 @@ struct GraphCanvasStackRow {
     std::string shape;
     // SG-2: the canvas.transform between the layer's input and `source`.
     std::string transform;
+    // SG-3: the filter.* nodes between the layer's input and `source` (and
+    // its transform), in the order they apply: the first reads the source
+    // (or the transform), the stack reads the last.
+    std::vector<std::string> filters;
     // SG-2 (CV-2a): clipped to the layer below; a group composited with the
     // stack it is in; the input its mask is read from, and that mask's
     // canvas.image; the blend (`normal` when it says none).
@@ -83,12 +88,14 @@ struct GraphCanvasStackRow {
 // `stack` is no canvas.stack of `nodes`.
 [[nodiscard]] std::vector<GraphCanvasStackRow> graphCanvasLayerRows(
     const std::vector<GraphCanvasNode> &nodes, std::string_view stack);
-// "Rect", "Ellipse", "Group", "Layer"; a stroke's is "<shape> stroke".
+// "Rect", "Ellipse", "Group", "Text", "Adjustment", "Layer"; a stroke's is
+// "<shape> stroke".
 [[nodiscard]] std::string graphCanvasLayerKindText(const GraphCanvasStackRow &row);
 
 // The stack the Layers panel shows for a node picked in the Graph: the stack
-// itself, the stack a canvas.output reads, or the stack that holds a picked
-// paint or shape (a nested one before its parent). Empty for anything else.
+// itself, the stack a canvas.output or (SG-3) a canvas.place reads, or the
+// stack that holds a picked paint, shape, filter or backdrop (a nested one
+// before its parent). Empty for anything else.
 [[nodiscard]] std::string graphCanvasStackFor(const std::vector<GraphCanvasNode> &nodes,
                                               std::string_view node);
 // The row a picked node stands for in `stack` (its paint, or its shape), or
@@ -266,5 +273,105 @@ struct GraphCanvasSwatch {
     std::array<double, 4> color{};
 };
 [[nodiscard]] const std::vector<GraphCanvasSwatch> &graphCanvasSwatches();
+
+// --- SG-3: blend modes, text, adjustment layers and filters, 3D.
+
+// One entry of the blend combo: an engine name (Pelican::canvasBlendNames()),
+// the words it shows (Photoshop's) and its group as Photoshop's menu
+// separates them: 0 normal, 1 darken, 2 lighten, 3 contrast, 4 inversion,
+// 5 component. The groups in that order, each in the engine's order; a name
+// the table does not know is shown as it is, in a group of its own (6) at the
+// end, not left out.
+struct GraphCanvasBlendChoice {
+    std::string name;
+    std::string label;
+    int group = 0;
+
+    bool operator==(const GraphCanvasBlendChoice &) const = default;
+};
+[[nodiscard]] const std::vector<GraphCanvasBlendChoice> &graphCanvasBlendChoices();
+
+// + Text: a shape.text of `text` in `font` (a project:// reference) at
+// `size`, centred on the stack's middle (`origin` there, align center), its
+// white fill, and a layer on top named after the text's first line. One list.
+[[nodiscard]] nlohmann::json graphCanvasAddTextLayerOps(const std::vector<GraphCanvasNode> &nodes,
+                                                        std::string_view scope, std::string_view stack,
+                                                        const std::string &text, const std::string &font,
+                                                        double size);
+// One parameter of a shape.text, the rest as they are; the engine's default
+// (align left, line_height 1.2, tracking 0, box_width 0) is written by leaving
+// the parameter out.
+[[nodiscard]] nlohmann::json graphCanvasSetTextParameterOps(const std::vector<GraphCanvasNode> &nodes,
+                                                            std::string_view scope, std::string_view node,
+                                                            std::string_view key, const nlohmann::json &value);
+// The sizes the text size combos offer, in the stack's pixels (48 first is
+// not implied: the list is ascending).
+[[nodiscard]] const std::vector<double> &graphCanvasTextSizes();
+inline constexpr double graphCanvasDefaultTextSize = 48.0;
+// The stroke row that outlines the same shape as the row at `index` (a text's
+// Stroke box), or nothing.
+[[nodiscard]] std::optional<std::size_t> graphCanvasStrokeRowOf(const std::vector<GraphCanvasNode> &nodes,
+                                                                std::string_view stack, std::size_t index);
+
+// One colour filter the + Adjustment and + Filter menus offer: its op
+// (Pelican::canvasColorFilterOperations(), in that order) and its words.
+struct GraphCanvasFilterChoice {
+    std::string op;
+    std::string label;
+
+    bool operator==(const GraphCanvasFilterChoice &) const = default;
+};
+[[nodiscard]] const std::vector<GraphCanvasFilterChoice> &graphCanvasFilterChoices();
+// The words for a filter op ("Invert"), the op itself for one not offered.
+[[nodiscard]] std::string graphCanvasFilterLabel(std::string_view op);
+// What a new filter.<kind> starts with: nothing changed where it can (an
+// overlay and a map bring colours of their own). Null for an op no menu
+// offers.
+[[nodiscard]] nlohmann::json graphCanvasFilterDefaults(std::string_view op);
+// + Adjustment: a canvas.backdrop, `op` reading it and a layer reading that,
+// just above the layer at `above` (on top without one), named `<Filter> <n>`.
+// One list.
+[[nodiscard]] nlohmann::json graphCanvasAddAdjustmentLayerOps(const std::vector<GraphCanvasNode> &nodes,
+                                                              std::string_view scope, std::string_view stack,
+                                                              std::optional<std::size_t> above,
+                                                              std::string_view op);
+// + Filter: `op` put between the layer and the stack, above the filters the
+// layer has and its transform. One list.
+[[nodiscard]] nlohmann::json graphCanvasAddFilterOps(const std::vector<GraphCanvasNode> &nodes,
+                                                     std::string_view scope, std::string_view stack,
+                                                     std::size_t index, std::string_view op);
+// Remove filter: what read `filter` reads what it read, and it goes. Empty
+// for a filter the row does not have, and for an adjustment's last one
+// (Delete takes that layer).
+[[nodiscard]] nlohmann::json graphCanvasRemoveFilterOps(const std::vector<GraphCanvasNode> &nodes,
+                                                        std::string_view scope, std::string_view stack,
+                                                        std::size_t index, std::string_view filter);
+
+// A 3D pass a stack can be placed in: a render.material_pass of the scope, a
+// colour attachment of it (an output of its) and its depth output when the
+// pass draws with a depth image (empty when not).
+struct GraphCanvasScenePass {
+    std::string node;
+    std::string color;
+    std::string depth;
+
+    bool operator==(const GraphCanvasScenePass &) const = default;
+};
+// Every material pass's colour attachments, in document order.
+[[nodiscard]] std::vector<GraphCanvasScenePass> graphCanvasScenePasses(const std::vector<GraphCanvasNode> &nodes);
+// The canvas.place nodes that read `stack`, in document order.
+[[nodiscard]] std::vector<std::string> graphCanvasPlacesOf(const std::vector<GraphCanvasNode> &nodes,
+                                                           std::string_view stack);
+// Place in 3D scene: a canvas.place of `stack` at the origin, unturned, scale
+// 1 and two units wide (pixels_per_unit half the stack's width), drawn onto
+// `pass`'s colour and tested against its depth. The canvas.output stays.
+[[nodiscard]] nlohmann::json graphCanvasPlaceOps(const std::vector<GraphCanvasNode> &nodes, std::string_view scope,
+                                                 std::string_view stack, const GraphCanvasScenePass &pass);
+// One parameter of a canvas.place, the rest as they are; the engine's
+// default (rotation [0, 0, 0], scale 1, anchor [0.5, 0.5], depth_test true,
+// depth_write false, double_sided true) is written by leaving it out.
+[[nodiscard]] nlohmann::json graphCanvasSetPlaceParameterOps(const std::vector<GraphCanvasNode> &nodes,
+                                                             std::string_view scope, std::string_view place,
+                                                             std::string_view key, const nlohmann::json &value);
 
 } // namespace PelicanStudio

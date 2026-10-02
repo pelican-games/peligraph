@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <vector>
@@ -393,4 +394,279 @@ TEST_CASE("SG-2: a Transform is a canvas.transform between the layer and the sta
                                       {"parameters", Json::object()}});
     CHECK(imported[2]["parameters"]["layers"][4] == Json{{"input", "psd_card"}, {"name", "PSD: card"}});
     CHECK(imported[3]["source"] == Json{{"node", "psd_card"}, {"port", "layer"}});
+}
+
+namespace {
+
+// `nodes` after `ops`, as the canvas reads them: enough of an edit for the
+// next gesture to be built on it (a stack's ports follow its layers).
+void applyOps(std::vector<GraphCanvasNode> &nodes, const Json &ops) {
+    const auto wire = [](GraphCanvasNode &to, const std::string &port, const Json &source) {
+        auto found = std::ranges::find(to.inputs, port, &GraphCanvasPort::port);
+        if (found == to.inputs.end()) {
+            GraphCanvasPort made;
+            made.port = port;
+            to.inputs.push_back(made);
+            found = std::prev(to.inputs.end());
+        }
+        found->connected = source.is_object();
+        found->source_node = source.is_object() ? source.value("node", std::string{}) : std::string{};
+        found->source_port = source.is_object() ? source.value("port", std::string{}) : std::string{};
+    };
+    const auto restack = [](GraphCanvasNode &made) {
+        if (made.op != "canvas.stack") return;
+        auto ports = graphCanvasStackPorts(made.parameters);
+        for (auto &port : ports)
+            if (const auto old = std::ranges::find(made.inputs, port.port, &GraphCanvasPort::port);
+                old != made.inputs.end() && old->connected)
+                port = *old;
+        made.inputs = std::move(ports);
+    };
+    for (const auto &op : ops) {
+        const auto kind = op.value("op", std::string{});
+        if (kind == "add_node") {
+            const auto &json = op.at("node");
+            auto made = node(json.value("id", std::string{}), json.value("op", std::string{}),
+                             json.value("parameters", Json::object()));
+            restack(made);
+            const auto inputs = json.value("inputs", Json::object());
+            for (const auto &[port, source] : inputs.items()) wire(made, port, source);
+            nodes.push_back(std::move(made));
+        } else if (kind == "set_node_parameters") {
+            for (auto &each : nodes)
+                if (each.id == op.value("node", std::string{})) {
+                    each.parameters = op.at("parameters");
+                    restack(each);
+                }
+        } else if (kind == "set_input") {
+            for (auto &each : nodes)
+                if (each.id == op.value("node", std::string{})) wire(each, op.value("port", std::string{}), op.at("source"));
+        } else if (kind == "remove_node") {
+            std::erase_if(nodes, [&](const GraphCanvasNode &each) { return each.id == op.value("node", std::string{}); });
+        }
+    }
+}
+
+} // namespace
+
+TEST_CASE("SG-3: the blend combo is the engine's 26 blends in Photoshop's groups; a blend is written, "
+          "normal is left out",
+          "[studio][canvas][sg3]") {
+    const auto &choices = graphCanvasBlendChoices();
+    REQUIRE(choices.size() == 26);
+    // Every engine name once, none the table had to guess.
+    std::vector<std::string> names;
+    for (const auto &choice : choices) {
+        names.push_back(choice.name);
+        CHECK(choice.group < 6);
+    }
+    auto sorted = names;
+    std::ranges::sort(sorted);
+    CHECK(std::ranges::adjacent_find(sorted) == sorted.end());
+    CHECK(std::ranges::is_sorted(choices, std::less<>{}, &GraphCanvasBlendChoice::group));
+    CHECK(choices.front() == GraphCanvasBlendChoice{"normal", "Normal", 0});
+    // The darken group in the engine's order: multiply before darken.
+    CHECK(choices[1] == GraphCanvasBlendChoice{"multiply", "Multiply", 1});
+    CHECK(choices[2].name == "darken");
+    CHECK(choices.back() == GraphCanvasBlendChoice{"luminosity", "Luminosity", 5});
+
+    auto nodes = document();
+    const auto multiply = graphCanvasSetLayerFlagOps(nodes, "", "hud", 0, "blend", "multiply");
+    REQUIRE(multiply.size() == 1);
+    CHECK(multiply[0]["parameters"]["layers"][0] == Json{{"input", "rect_1"}, {"name", "Card"}, {"blend", "multiply"}});
+    applyOps(nodes, multiply);
+    CHECK(graphCanvasLayerRows(nodes, "hud")[3].blend == "multiply");
+    const auto normal = graphCanvasSetLayerFlagOps(nodes, "", "hud", 0, "blend", "normal");
+    REQUIRE(normal.size() == 1);
+    CHECK(normal[0]["parameters"]["layers"][0] == Json{{"input", "rect_1"}, {"name", "Card"}});
+
+    // The refusals SG-3 adds, as one sentence.
+    CHECK(graphCanvasRefusalSentence(R"(canvas.place_backdrop_unsupported@1 {"layer":"card","node":"board"})")
+              .starts_with("Layer \"card\" is drawn straight into the 3D scene"));
+    for (const auto *code : {"canvas.method_unavailable@1", "canvas.range_unbounded@1", "graph.image_source_conflict@1",
+                             "canvas.filter_parameter_unsupported@1"})
+        CHECK_FALSE(graphCanvasRefusalSentence(code).empty());
+}
+
+TEST_CASE("SG-3: + Text is the text, its white fill and a layer on top, in one list; its fields leave the "
+          "engine's defaults out",
+          "[studio][canvas][sg3]") {
+    auto nodes = document();
+    const auto ops = graphCanvasAddTextLayerOps(nodes, "", "hud", "Hi", "project://assets/fonts/arial.ttf", 48.0);
+    const Json expected = Json::array({
+        {{"op", "add_node"}, {"scope", "root"},
+         {"node", {{"id", "text_1"}, {"op", "shape.text"},
+                   {"parameters", {{"font", "project://assets/fonts/arial.ttf"}, {"text", "Hi"}, {"size", 48.0},
+                                   {"origin", {640.0, 360.0}}, {"align", "center"}}},
+                   {"outputs", {"geometry"}}}}},
+        {{"op", "add_node"}, {"scope", "root"},
+         {"node", {{"id", "text_1_fill"}, {"op", "shape.fill"},
+                   {"parameters", {{"color", {1.0, 1.0, 1.0, 1.0}}}},
+                   {"inputs", {{"geometry", {{"node", "text_1"}, {"port", "geometry"}}}}},
+                   {"outputs", {"layer"}}}}},
+    });
+    REQUIRE(ops.size() == 4);
+    CHECK(ops[0] == expected[0]);
+    CHECK(ops[1] == expected[1]);
+    CHECK(ops[2]["parameters"]["layers"][4] == Json{{"input", "text_1"}, {"name", "Hi"}});
+    CHECK(ops[3] == Json{{"op", "set_input"}, {"scope", "root"}, {"node", "hud"}, {"port", "text_1"},
+                         {"source", {{"node", "text_1_fill"}, {"port", "layer"}}}});
+    // No font, no size: nothing.
+    CHECK(graphCanvasAddTextLayerOps(nodes, "", "hud", "Hi", "", 48.0).empty());
+    CHECK(graphCanvasAddTextLayerOps(nodes, "", "hud", "Hi", "project://f.ttf", 0.0).empty());
+
+    applyOps(nodes, ops);
+    const auto rows = graphCanvasLayerRows(nodes, "hud");
+    REQUIRE(rows[0].input == "text_1");
+    CHECK(rows[0].kind == "text");
+    CHECK(rows[0].paint == "fill");
+    CHECK(rows[0].shape == "text_1");
+    CHECK(graphCanvasLayerKindText(rows[0]) == "Text");
+    CHECK(graphCanvasStackFor(nodes, "text_1") == "hud");
+    CHECK_FALSE(graphCanvasStrokeRowOf(nodes, "hud", 4));
+
+    // Align left and a line height of 1.2 are the engine's: left out.
+    const auto left = graphCanvasSetTextParameterOps(nodes, "", "text_1", "align", "left");
+    REQUIRE(left.size() == 1);
+    CHECK_FALSE(left[0]["parameters"].contains("align"));
+    CHECK(graphCanvasSetTextParameterOps(nodes, "", "text_1", "line_height", 1.2).empty());
+    CHECK(graphCanvasSetTextParameterOps(nodes, "", "text_1", "box_width", 300.0)[0]["parameters"]["box_width"] == 300.0);
+    CHECK(graphCanvasSetTextParameterOps(nodes, "", "text_1", "align", "middle").empty());
+    CHECK(graphCanvasSetTextParameterOps(nodes, "", "rect_1", "text", "x").empty());
+
+    // The Stroke box: + Stroke of the text, found again as its stroke row.
+    applyOps(nodes, graphCanvasAddStrokeLayerOps(nodes, "", "hud", 4));
+    CHECK(graphCanvasStrokeRowOf(nodes, "hud", 4) == std::optional<std::size_t>{5});
+}
+
+TEST_CASE("SG-3: + Adjustment is a backdrop under a filter as a layer above the picked one; + Filter goes "
+          "between a layer and the stack, over its transform and its filters, and comes off again",
+          "[studio][canvas][sg3]") {
+    auto nodes = document();
+    const auto &filters = graphCanvasFilterChoices();
+    REQUIRE(filters.size() == 6);
+    CHECK(filters.front() == GraphCanvasFilterChoice{"filter.invert", "Invert"});
+    CHECK(graphCanvasFilterDefaults("filter.blur").is_null());
+
+    // Above the card (index 0): at index 1.
+    const auto adjustment = graphCanvasAddAdjustmentLayerOps(nodes, "", "hud", 0, "filter.invert");
+    REQUIRE(adjustment.size() == 4);
+    CHECK(adjustment[0]["node"] == Json{{"id", "invert_1_backdrop"}, {"op", "canvas.backdrop"},
+                                        {"parameters", Json::object()}, {"outputs", {"layer"}}});
+    CHECK(adjustment[1]["node"] == Json{{"id", "invert_1"}, {"op", "filter.invert"}, {"parameters", Json::object()},
+                                        {"inputs", {{"layer", {{"node", "invert_1_backdrop"}, {"port", "layer"}}}}},
+                                        {"outputs", {"layer"}}});
+    CHECK(adjustment[2]["parameters"]["layers"][1] == Json{{"input", "invert_1"}, {"name", "Invert 1"}});
+    CHECK(adjustment[3]["source"] == Json{{"node", "invert_1"}, {"port", "layer"}});
+    // Nothing picked: on top.
+    const auto levels = graphCanvasAddAdjustmentLayerOps(nodes, "", "hud", std::nullopt, "filter.levels");
+    CHECK(levels[1]["node"]["parameters"] == Json{{"input_floor", 0.0}, {"input_ceiling", 255.0}, {"gamma", 1.0},
+                                                  {"output_floor", 0.0}, {"output_ceiling", 255.0}});
+    CHECK(levels[2]["parameters"]["layers"][4]["name"] == "Levels 1");
+    applyOps(nodes, adjustment);
+    auto rows = graphCanvasLayerRows(nodes, "hud");
+    const auto adjusted = std::ranges::find(rows, std::string{"invert_1"}, &GraphCanvasStackRow::input);
+    REQUIRE(adjusted != rows.end());
+    CHECK(adjusted->kind == "adjustment");
+    CHECK(adjusted->source == "invert_1_backdrop");
+    CHECK(adjusted->filters == std::vector<std::string>{"invert_1"});
+    CHECK(graphCanvasStackFor(nodes, "invert_1_backdrop") == "hud");
+    // Its one filter is the adjustment: Delete takes it, not Remove filter.
+    CHECK(graphCanvasRemoveFilterOps(nodes, "", "hud", 1, "invert_1").empty());
+    const auto deleted = graphCanvasDeleteLayerOps(nodes, "", "hud", 1);
+    CHECK(std::ranges::count_if(deleted, [](const Json &op) { return op["op"] == "remove_node"; }) == 2);
+
+    // The ellipse (index 3 now) moved, then filtered: transform -> filter -> stack.
+    GraphCanvasTransformValues moved;
+    moved.translate = {8.0, 0.0};
+    applyOps(nodes, graphCanvasSetTransformOps(nodes, "", "hud", 3, moved));
+    const auto first = graphCanvasAddFilterOps(nodes, "", "hud", 3, "filter.hue_saturation");
+    REQUIRE(first.size() == 2);
+    CHECK(first[0]["node"]["id"] == "ellipse_1_hue_saturation");
+    CHECK(first[0]["node"]["inputs"]["layer"] == Json{{"node", "ellipse_1_transform"}, {"port", "layer"}});
+    CHECK(first[1] == Json{{"op", "set_input"}, {"scope", "root"}, {"node", "hud"}, {"port", "ellipse_1"},
+                           {"source", {{"node", "ellipse_1_hue_saturation"}, {"port", "layer"}}}});
+    applyOps(nodes, first);
+    // A second one goes over the first.
+    const auto second = graphCanvasAddFilterOps(nodes, "", "hud", 3, "filter.color_overlay");
+    CHECK(second[0]["node"]["inputs"]["layer"]["node"] == "ellipse_1_hue_saturation");
+    CHECK(second[0]["node"]["parameters"] == Json{{"color", {0.9, 0.2, 0.2, 1.0}}});
+    applyOps(nodes, second);
+    rows = graphCanvasLayerRows(nodes, "hud");
+    const auto ellipse = std::ranges::find(rows, std::string{"ellipse_1"}, &GraphCanvasStackRow::input);
+    REQUIRE(ellipse != rows.end());
+    CHECK(ellipse->kind == "ellipse");
+    CHECK(ellipse->source == "ellipse_1_fill");
+    CHECK(ellipse->transform == "ellipse_1_transform");
+    CHECK(ellipse->filters == std::vector<std::string>{"ellipse_1_hue_saturation", "ellipse_1_color_overlay"});
+    CHECK(graphCanvasRowFor(nodes, "hud", "ellipse_1_color_overlay") == std::optional<std::size_t>{3});
+    CHECK(graphCanvasStackFor(nodes, "ellipse_1_hue_saturation") == "hud");
+
+    // Taking the lower one off: the upper reads the transform.
+    const auto off = graphCanvasRemoveFilterOps(nodes, "", "hud", 3, "ellipse_1_hue_saturation");
+    REQUIRE(off.size() == 2);
+    CHECK(off[0] == Json{{"op", "set_input"}, {"scope", "root"}, {"node", "ellipse_1_color_overlay"}, {"port", "layer"},
+                         {"source", {{"node", "ellipse_1_transform"}, {"port", "layer"}}}});
+    CHECK(off[1] == Json{{"op", "remove_node"}, {"scope", "root"}, {"node", "ellipse_1_hue_saturation"}});
+    // Back at the defaults the transform goes; the lowest filter reads the fill.
+    const auto unmoved = graphCanvasSetTransformOps(nodes, "", "hud", 3, GraphCanvasTransformValues{});
+    REQUIRE(unmoved.size() == 2);
+    CHECK(unmoved[0] == Json{{"op", "set_input"}, {"scope", "root"}, {"node", "ellipse_1_hue_saturation"},
+                             {"port", "layer"}, {"source", {{"node", "ellipse_1_fill"}, {"port", "layer"}}}});
+    applyOps(nodes, unmoved);
+    // A transform added to a filtered layer goes under its filters.
+    const auto again = graphCanvasSetTransformOps(nodes, "", "hud", 3, moved);
+    REQUIRE(again.size() == 2);
+    CHECK(again[0]["node"]["inputs"]["layer"] == Json{{"node", "ellipse_1_fill"}, {"port", "layer"}});
+    CHECK(again[1]["node"] == "ellipse_1_hue_saturation");
+    CHECK(again[1]["port"] == "layer");
+}
+
+TEST_CASE("SG-3: Place in 3D scene is a canvas.place of the stack on a material pass's colour and depth, "
+          "two units wide; only a document with a material pass has somewhere to place it",
+          "[studio][canvas][sg3]") {
+    auto nodes = document();
+    CHECK(graphCanvasScenePasses(nodes).empty());
+    auto pass = node("fwd", "render.material_pass", Json{{"material_contract", "forward_opaque_v1"}});
+    connect(pass, "color", "scene_color", "resource");
+    connect(pass, "depth", "scene_depth", "resource");
+    pass.outputs = {GraphCanvasOutput{"color", "pelican.render.color_signal@1"},
+                    GraphCanvasOutput{"depth", "pelican.render.depth@1"}};
+    nodes.push_back(pass);
+    const auto passes = graphCanvasScenePasses(nodes);
+    REQUIRE(passes == std::vector<GraphCanvasScenePass>{{"fwd", "color", "depth"}});
+
+    const auto ops = graphCanvasPlaceOps(nodes, "", "hud", passes.front());
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0] == Json{{"op", "add_node"}, {"scope", "root"},
+                         {"node", {{"id", "hud_place"}, {"op", "canvas.place"},
+                                   {"parameters", {{"position", {0.0, 0.0, 0.0}}, {"rotation", {0.0, 0.0, 0.0}},
+                                                   {"scale", 1.0}, {"pixels_per_unit", 640.0}}},
+                                   {"inputs", {{"layer", {{"node", "hud"}, {"port", "layer"}}},
+                                               {"color", {{"node", "fwd"}, {"port", "color"}}},
+                                               {"depth", {{"node", "fwd"}, {"port", "depth"}}}}},
+                                   {"outputs", {"color"}}}}});
+    // Without a depth image it is drawn without one.
+    auto flat = nodes;
+    std::erase_if(flat.back().inputs, [](const GraphCanvasPort &port) { return port.port == "depth"; });
+    CHECK(graphCanvasScenePasses(flat).front().depth.empty());
+    CHECK_FALSE(graphCanvasPlaceOps(flat, "", "hud", graphCanvasScenePasses(flat).front())[0]["node"]["inputs"].contains("depth"));
+
+    applyOps(nodes, ops);
+    CHECK(graphCanvasPlacesOf(nodes, "hud") == std::vector<std::string>{"hud_place"});
+    CHECK(graphCanvasStackFor(nodes, "hud_place") == "hud");
+    // The canvas.output stays.
+    CHECK(graphCanvasOutputStacks(nodes) == std::vector<GraphCanvasOutputStack>{{"screen", "hud"}});
+    // Its fields: the engine's defaults are left out, position always written.
+    const auto turned = graphCanvasSetPlaceParameterOps(nodes, "", "hud_place", "rotation", Json::array({0, 30, 0}));
+    REQUIRE(turned.size() == 1);
+    CHECK(turned[0]["parameters"]["rotation"] == Json::array({0, 30, 0}));
+    const auto unturned = graphCanvasSetPlaceParameterOps(nodes, "", "hud_place", "rotation", Json::array({0, 0, 0}));
+    REQUIRE(unturned.size() == 1);
+    CHECK_FALSE(unturned[0]["parameters"].contains("rotation"));
+    CHECK(graphCanvasSetPlaceParameterOps(nodes, "", "hud_place", "depth_write", true)[0]["parameters"]["depth_write"] ==
+          true);
+    CHECK(graphCanvasSetPlaceParameterOps(nodes, "", "hud_place", "pixels_per_unit", 0.0).empty());
+    CHECK(graphCanvasSetPlaceParameterOps(nodes, "", "hud_place", "position", Json::array({1, 2, 3}))[0]["parameters"]
+              ["position"] == Json::array({1, 2, 3}));
 }

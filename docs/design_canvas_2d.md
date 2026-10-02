@@ -276,12 +276,15 @@ item {
 
 | 場合 | 焼き方 |
 |---|---|
-| 動かない layer が下から続く | 1 枚の image に畳む(blend mode も調整 layer も含めて) |
+| 動かない layer が下から続く | 1 枚の image に畳む。**CV-5 の実装**: backdrop を読む layer(normal 以外の blend、調整 layer)では連なりを切る。stack が丸ごと静的なときだけ blend 込みで 1 枚(`static_unit`) |
 | 動く layer の上に、blend が normal の動かない layer が続く | 1 枚の premultiplied の image に畳む(over は結合的) |
-| 動く layer の上の、backdrop を読む動かない layer | 中身(filter を掛けた結果)だけを 1 枚に焼き、合成は実行時に残す |
+| 動く layer の上の、backdrop を読む動かない layer | 中身(filter を掛けた結果)だけを 1 枚に焼き、合成は実行時に残す(**未実装**。CV-5 は切るだけ) |
 | 図形・文字だけの連なり | 畳まない(式のまま描くほうが安く、3D で寄っても鋭い)。作者が `bake: "texture"` で固定できる |
 
-- 畳む解像度は stack の `size` × `bake_scale`(既定 1)
+- 畳む解像度は `ceil(stack.size × bake_scale)`(既定 1)。畳むときの描画は CPU の参照ではなく、**連なりだけの文書を `edit` で下げて player(`--headless --frames 2 --render-out`)で描く**。得た PNG は `<out>/canvas_baked/<digest>.png`(premultiplied の linear を sRGB で encode した 8 bit RGBA。読み側は `canvas.image` の `alpha: "premultiplied"`)。digest は連なりの文書 + 画素数 + 読む file の sha256。同じ project から同じ byte
+- `ship` は定数も畳む: 1 つの draw の中で全 item が線なしで同じ値を持つ parameter は shader の literal にし、bake 表には残りだけを書く(`canvas.place` の draw は対象外)。出力のどの JSON にも名前が残らない画像と font の file は出力から削る
+- 畳まない所: 図形・文字だけの連なり(`bake: "texture"` があれば畳む)、既に 1 枚の `canvas.image` の連なり、`canvas.place` された stack(`canvas.flatten_skipped {reason: "placed"}`)、pass through の下の stack の中(group の不透明度の近似が一致しない)。`--player` が無ければ `canvas.flatten_skipped {reason: "no_player"}`。player が描けなければ `canvas.flatten_failed@1`、16384 画素幅を超えると `canvas.flatten_size_exceeded@1`
+- 畳むと変わる絵: stack の `size` の外に出る item は切れる、1 を超える値は 8 bit で clamp される
 - 畳んだ結果と理由は diagnostics と L1 の詳細欄に出す(「この 7 枚は 1 枚になった」)
 - 検査は L6(a): `edit` の絵と `ship` の絵を比べる
 
@@ -326,7 +329,9 @@ item {
 | (c) OFF の cli の `canvas-lower` | `build_feature_disabled@1` |
 | OFF の `graph-catalog` | `pelican.canvas` が無い |
 
-残り: `requires` を書いていない文書での `graph.operation_unregistered@1`、Studio(`src/devstudio` の Layers パネルは `#if` を持たない)の OFF、(a) `edit` と `ship` の一致(`ship` 方針が未実装)。
+残り: `requires` を書いていない文書での `graph.operation_unregistered@1`、Studio(`src/devstudio` の Layers パネルは `#if` を持たない)の OFF。(a) `edit` と `ship` の一致は CV-5 の `canvas_ship_headless_player` が見る(OFF の player で `ship` の出力を描く確認は `off_check.sh` で手動)。
+
+既知の不具合(CV-5 で見つけた。未修正): `canvas.output` に `size` を書くと `render.image` に width / height だけが出て `extent_scale` が無く、engine が拒否する。`canvas.place` の group の image も同じ経路。engine 側の穴(SG-3 で見えた): filter の数値は value の線を受けない(`canvas.filter_edge_unsupported@1`)、`ranges` / `opacity_stops` / `dithered` / `legacy` は未対応。
 
 ## 9. 段(WP の順)
 
@@ -341,19 +346,19 @@ item {
 | CV-2b | blend mode 26 種(W3C の 16 + Photoshop だけの 10)、調整 layer(`canvas.backdrop`)、色の filter 6 種。backdrop を読む item 1 個につき写し 1 回(`<prefix>back<k>`。共有は未実装) | ✅ `20132b0f`。blend 8 種と調整 layer 3 種の PSD が `reference.png` と全画素 1/255 以内。soft_light と hard_mix は psd-tools と定義が違い、CPU の参照で確認 |
 | CV-6a | 3D に置く: `canvas.place`(position / rotation / scale は value)と layer の `depth`。四隅を計算する関数 `canvasplace`。箱に隠れる・視差(計算との差 1.2 px 以内)・曲線で動く、を GPU で確認 | ✅ `70e1d184`。最初は正面の文字が左右反転して出たが、原因は engine の 3D の画面が world の鏡像だったこと(canvas の bug ではない)。engine 側を v0 で直し(develop `c8367b87` CC-1、`1501685a` CC-2。[design_coordinate_convention.md](design_coordinate_convention.md))、CVM-1 で取り込んだ後は「Placed」が正しく読める |
 | CVM-1 | develop(座標の規約 CC-1 / CC-2、IA-1、PS-1、CT-5 ほか)の取り込み。`canvas.place` の test を新しい規約(camera は −Z 前方、回転なしで z = 3 から見る)に書き直し。EN-2 の `source` と IA-1 の `initial` / PS-1 の `lifetime` を同じ `render.image` に書くと `graph.image_source_conflict@1`(file の image は中身を自分で持つ) | ✅ merge `2fa65483` + `635225ce`。非 GPU 193、GPU 12(canvas 7 + 鏡像の検査 + CC-2 + IA-1 + EN-2 ×2)、Studio の unit test 8(SG-1 / SG-2)と scenario 4(canvas の 2 本は仮想モニタで。hidden desktop では viewport の画素が黒で赤になる)が緑。Studio では IA-1s と SG-2 の struct 名が衝突し、canvas 側を `GraphCanvasPictureImport` に改名 |
-| CV-5 | `ship` 方針: 静的な layer を 1 枚に畳む、定数を shader に畳む、font を出力から除く | 指示書 `<作業ディレクトリ>/cv5_spec.md` |
+| CV-5 | `ship` 方針: `pelican_cli canvas-lower --policy ship --player <exe>`。静的な連なりを player で 1 枚に焼いて `canvas.image` に置き換え、定数を shader の literal に、参照の無くなった画像と font を出力から除く。report に `flattened` / `folded_constants` / `removed_assets` | ✅ `a5399a71`。PSD の fixture + 動く円で、`edit` と `ship` の絵が 2 つの時刻とも全画素 1/255 以内。instance 10 → 4、raster pass 5 → 2、定数 15 個 |
 | CV-3 | filter: 色(融合)、座標(融合)、近傍(blur・影) | |
 | DF-1 の結果 | 画像 → SDF: 縁の位置を 2D の点で持ち 3×3 で測り直す版が平均誤差 0.028 画素(素朴な種 0.137、2 値化 0.217)。MTSDF: Arial 32² の被覆率の MSE 4.80e-5(1 channel は 8.30e-4)。日本語は 48²、画数の多い字は 64² | ✅(`<作業ディレクトリ>/v2d_work/df1/run_full.log`) |
 | CV-4 | 文字: project の ttf を lowering が直接読む(中間の font 形式は作らない)、MSDF の atlas、`shape.text`(kerning・改行・揃え・折り返し)、lowering の context(file を読む口)、生成物に binary(atlas の PNG) | ✅ `b1c9e591`。GPU と参照描画の一致 99.987 %(8/255 以内)。「鬱」は `atlas_cell` 64 が要る |
 | SG-1 | Studio: 領域 `canvas`、palette の Canvas、stack のソケット、Canvas layers パネル(行・+ Rect / + Ellipse / + Group / + Stroke・目・不透明度・並べ替え・欄)。scenario `canvas_layers_from_blank` | ✅ `cbd95519` |
 | SG-2 | Studio: Layers を独立の dock に、+ Image、clip / mask / pass through の欄、変換、PSD の取り込み結果の読み込み | ✅ `c57ed285` |
-| CV-5 | `ship` 方針: 定数の畳み込み、動かない layer を畳む、`dist-bake` の段 1、OFF の build の player で同じ絵 | |
+| SG-3 | Studio: blend の combo(26 種、Photoshop の group 順)、+ Text(project の ttf、Import font…)、+ Adjustment / + Filter(transform → filter → stack の順)、Place in 3D scene(`render.material_pass` の color に `canvas.place`)、拒否 5 種の文、行の印。scenario `canvas_text_blend_from_blank`(OS の Arial を prepare で写す。repo に font は無い) | ✅ `4cc6dc26` |
 | CV-6 | 3D: `canvas.place`、depth、厚み、owner の transform(EN-4) | |
 | CV-7 | path(折れ線・ベジエ)、`shape.trim`、`shape.path_sample`、`element` の段(`shape.repeat`、1 文字ずつ動く文字) | |
 | CV-8 | 点が動く複雑な path(GPU で距離場を描く。§12) | |
 | EN-v | 「値だけの編集」の RPC(canvas に限らない) | |
 | EN-spv | port を持つ pass を事前 compile した SPIR-V で動かす(shader compiler を外した配布) | |
-| SG-n(Studio。GUI session) | stack の node を layer パネルとして開く、中の node を隠す、viewport の上の gizmo、文字の編集 | |
+| SG-n(Studio) | viewport の上の gizmo(「値だけの編集」の後)、`ship` の Export、stops の色の Pick、Place の scenario | |
 
 ## 10. PSD、動的な物、UI
 

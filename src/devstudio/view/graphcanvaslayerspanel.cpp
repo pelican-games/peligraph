@@ -9,10 +9,13 @@
 #include <QColorDialog>
 #include <QComboBox>
 #include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -20,14 +23,16 @@
 #include <QImageReader>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
 #include <QMimeData>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QProcess>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
-#include <QStandardItemModel>
+#include <QStackedWidget>
 #include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -189,8 +194,6 @@ std::string rootStack(const std::vector<GraphCanvasNode> &nodes) {
     return {};
 }
 
-constexpr const char *kBlends[] = {"normal", "multiply", "screen", "overlay", "add"};
-
 } // namespace
 
 GraphCanvasLayersPanel::GraphCanvasLayersPanel(GraphCanvasModel &model, std::function<void()> submitted,
@@ -265,6 +268,27 @@ GraphCanvasLayersPanel::GraphCanvasLayersPanel(GraphCanvasModel &model, std::fun
     for (auto *each : {add_image_, import_output_, import_psd_}) files->addWidget(each);
     files->addStretch(1);
     body->addLayout(files);
+    // SG-3: text and adjustment layers.
+    auto *more = new QHBoxLayout;
+    more->setContentsMargins(0, 0, 0, 0);
+    add_text_ = button(body_, tr("+ Text\xE2\x80\xA6"), "addText",
+                       tr("Text in a font of the project's, white, at the middle of the canvas, on top"));
+    more->addWidget(add_text_);
+    add_adjustment_ = new QToolButton(body_);
+    add_adjustment_->setObjectName(named("addAdjustment"));
+    add_adjustment_->setText(tr("+ Adjustment"));
+    add_adjustment_->setToolTip(tr("A colour filter over everything under it (a canvas.backdrop and the filter), "
+                                   "just above the picked layer"));
+    add_adjustment_->setPopupMode(QToolButton::InstantPopup);
+    add_adjustment_->setMenu(filterMenu("addAdjustment", [this](const std::string &op) {
+        const auto row = pickedRow();
+        commit(graphCanvasAddAdjustmentLayerOps(model_.nodes(scope_), scope_, stack_,
+                                                row ? std::optional<std::size_t>{row->index} : std::nullopt, op));
+    }));
+    more->addWidget(add_adjustment_);
+    more->addStretch(1);
+    body->addLayout(more);
+    connect(add_text_, &QPushButton::clicked, this, [this] { openTextDialog(); });
     auto *moves = new QHBoxLayout;
     moves->setContentsMargins(0, 0, 0, 0);
     delete_ = button(body_, tr("Delete"), "delete",
@@ -532,14 +556,17 @@ GraphCanvasLayersPanel::GraphCanvasLayersPanel(GraphCanvasModel &model, std::fun
     layer_form->setContentsMargins(0, 4, 0, 0);
     blend_ = new QComboBox(layer_fields_);
     blend_->setObjectName(named("field.blend"));
-    for (const auto *choice : kBlends) blend_->addItem(QLatin1String{choice}, QLatin1String{choice});
-    // Listed, not chosen: the engine refuses them (canvas.blend_unsupported@1).
-    if (auto *items = qobject_cast<QStandardItemModel *>(blend_->model()))
-        for (int index = 1; index < items->rowCount(); ++index) {
-            items->item(index)->setEnabled(false);
-            items->item(index)->setToolTip(tr("The engine does not draw this blend yet"));
+    // SG-3 (CV-2b): every blend the engine draws, in Photoshop's groups.
+    {
+        int group = -1;
+        for (const auto &choice : graphCanvasBlendChoices()) {
+            if (group >= 0 && choice.group != group) blend_->insertSeparator(blend_->count());
+            group = choice.group;
+            blend_->addItem(qtext(choice.label), qtext(choice.name));
         }
-    blend_->setToolTip(tr("How the layer mixes with what is under it (only normal is drawn yet)"));
+    }
+    blend_->setMaxVisibleItems(32);
+    blend_->setToolTip(tr("How the layer mixes with what is under it"));
     layer_form->addRow(caption(tr("Blend"), layer_fields_), blend_);
     auto *mask_row = new QWidget(layer_fields_);
     auto *mask_layout = new QHBoxLayout(mask_row);
@@ -610,6 +637,7 @@ GraphCanvasLayersPanel::GraphCanvasLayersPanel(GraphCanvasModel &model, std::fun
     for (const auto *choice : {"linear", "srgb"}) blend_space_->addItem(QLatin1String{choice}, QLatin1String{choice});
     stack_form->addRow(caption(tr("Blend space"), stack_fields_), blend_space_);
     body->addWidget(stack_fields_);
+    buildSg3Fields(body);
     for (auto *spin : {stack_w_, stack_h_})
         connect(spin, &QDoubleSpinBox::valueChanged, this, [this] {
             if (loading_) return;
@@ -707,6 +735,11 @@ void GraphCanvasLayersPanel::showSelection(const std::string &scope,
             if (const auto index = graphCanvasRowFor(nodes, stack_, *node))
                 for (const auto &each : graphCanvasLayerRows(nodes, stack_))
                     if (each.index == *index) picked_ = each.input;
+            // SG-3: a canvas.place shows its stack's fields, its own among them.
+            if (const auto *picked = findNode(nodes, *node); picked != nullptr && picked->op == "canvas.place") {
+                place_ = *node;
+                picked_.clear();
+            }
         }
     }
     reload(false);
@@ -824,6 +857,31 @@ void GraphCanvasLayersPanel::rebuildRows() {
         widgets.name->setObjectName(prefix + QStringLiteral(".name"));
         widgets.name->setToolTip(tr("The layer's name (its input is %1)").arg(qtext(row.input)));
         line->addWidget(widgets.name, 1);
+        // SG-3: a blend other than normal, faintly; `f` for a filtered layer.
+        widgets.blend = new QLabel(widgets.row);
+        widgets.blend->setObjectName(prefix + QStringLiteral(".blend"));
+        widgets.blend->setFont(studioSmallFont());
+        widgets.blend->setStyleSheet(QStringLiteral("color: #8a8f98;"));
+        if (row.blend != "normal") {
+            const auto &choices = graphCanvasBlendChoices();
+            const auto choice = std::ranges::find(choices, row.blend, &GraphCanvasBlendChoice::name);
+            widgets.blend->setText(choice != choices.end() ? qtext(choice->label) : qtext(row.blend));
+        }
+        widgets.blend->setVisible(row.blend != "normal");
+        line->addWidget(widgets.blend);
+        widgets.filters = new QLabel(widgets.row);
+        widgets.filters->setObjectName(prefix + QStringLiteral(".filters"));
+        widgets.filters->setStyleSheet(QStringLiteral("font-style: italic; font-weight: bold;"));
+        const bool filtered = row.kind != "adjustment" && !row.filters.empty();
+        if (filtered) {
+            QStringList names;
+            for (const auto &filter : row.filters)
+                if (const auto *node = findNode(nodes, filter)) names.push_back(qtext(graphCanvasFilterLabel(node->op)));
+            widgets.filters->setText(QStringLiteral("f"));
+            widgets.filters->setToolTip(tr("Filtered: %1").arg(names.join(QStringLiteral(", "))));
+        }
+        widgets.filters->setVisible(filtered);
+        line->addWidget(widgets.filters);
         if (row.kind == "group" || row.kind == "import") {
             widgets.pass_through = new QToolButton(widgets.row);
             widgets.pass_through->setObjectName(prefix + QStringLiteral(".passThrough"));
@@ -899,7 +957,7 @@ void GraphCanvasLayersPanel::loadFields() {
     loading_ = true;
     const auto row = pickedRow();
     const auto nodes = model_.nodes(scope_);
-    const auto *shape = row && !row->shape.empty() ? findNode(nodes, row->shape) : nullptr;
+    const auto *shape = row && !row->shape.empty() && row->kind != "text" ? findNode(nodes, row->shape) : nullptr;
     const auto *paint = row && !row->paint.empty() ? findNode(nodes, row->source) : nullptr;
     const auto *image = row && row->kind == "image" ? findNode(nodes, row->source) : nullptr;
     shape_fields_->setVisible(shape != nullptr);
@@ -984,7 +1042,9 @@ void GraphCanvasLayersPanel::loadFields() {
         }
         const QSignalBlocker block_toggle{transform_toggle_};
         transform_toggle_->setChecked(transform_open_);
-        transform_fields_->setVisible(transform_open_);
+        // SG-3: an adjustment covers the whole canvas; nothing to move.
+        transform_toggle_->setVisible(row->kind != "adjustment");
+        transform_fields_->setVisible(transform_open_ && row->kind != "adjustment");
         const auto values = graphCanvasLayerTransform(nodes, *row);
         for (auto [spin, value] : {std::pair{translate_x_, values.translate[0]}, std::pair{translate_y_, values.translate[1]},
                                    std::pair{rotate_, values.rotate}, std::pair{scale_x_, values.scale[0]},
@@ -1007,6 +1067,7 @@ void GraphCanvasLayersPanel::loadFields() {
             std::max(0, blend_space_->findData(qtext(space.is_string() ? space.get<std::string>() : "linear"))));
     }
     open_group_->setVisible(row && (row->kind == "group" || row->kind == "import"));
+    loadSg3Fields(row);
     loading_ = false;
 }
 
@@ -1046,6 +1107,28 @@ void GraphCanvasLayersPanel::followEditable() {
         field->setEnabled(editable);
     add_mask_->setEnabled(editable && row && row->mask.empty());
     remove_mask_->setEnabled(editable && row && !row->mask.empty());
+    // SG-3.
+    add_text_->setEnabled(editable);
+    add_adjustment_->setEnabled(editable);
+    for (QWidget *field : std::initializer_list<QWidget *>{
+             text_, font_, import_font_, text_size_, text_align_, line_height_, tracking_, box_width_, text_stroke_,
+             filter_, add_filter_, brightness_, contrast_, input_floor_, input_ceiling_, gamma_, output_floor_,
+             output_ceiling_, channels_, hue_, saturation_, lightness_, colorize_, stops_, reversed_, overlay_pick_,
+             place_target_, place_scale_, pixels_per_unit_, depth_test_, depth_write_, double_sided_})
+        field->setEnabled(editable);
+    for (auto *spin : {position_[0], position_[1], position_[2], place_rotation_[0], place_rotation_[1],
+                       place_rotation_[2], anchor_[0], anchor_[1]})
+        spin->setEnabled(editable);
+    const auto filter = pickedFilter();
+    remove_filter_->setEnabled(editable && row && !filter.empty() &&
+                               !(row->kind == "adjustment" && row->filters.size() == 1));
+    const bool scene = !graphCanvasScenePasses(nodes).empty();
+    place_in_scene_->setEnabled(editable && scene);
+    place_in_scene_->setToolTip(scene ? tr("Draw this canvas in the 3D scene as well: a canvas.place on the "
+                                           "pass's colour, tested against its depth, two units wide at the "
+                                           "origin (the 2D output stays)")
+                                      : tr("Needs a 3D pass: the document has no render.material_pass to draw "
+                                           "the canvas into"));
     // CV-2a's refusals, as the sentence the dock has for them.
     const auto &notice = model_.editNotice();
     const auto sentence = notice.kind == InspectorNoticeKind::Error ? graphCanvasRefusalSentence(notice.message)
@@ -1293,6 +1376,682 @@ void GraphCanvasLayersPanel::dropEvent(QDropEvent *event) {
     if (files.empty()) return QWidget::dropEvent(event);
     event->acceptProposedAction();
     addImages(files);
+}
+
+// --- SG-3: text, adjustment layers and filters, 3D.
+
+namespace {
+
+std::string scopeToken(const std::string &scope) { return scope.empty() ? std::string{"root"} : scope; }
+
+// The words a size combo shows for a size: a whole number without a point.
+QString sizeText(double size) {
+    return std::abs(size - std::round(size)) < 1e-9 ? QString::number(static_cast<long long>(std::llround(size)))
+                                                    : QString::number(size, 'g', 6);
+}
+
+QComboBox *sizeCombo(QWidget *parent, const QString &name) {
+    auto *combo = new QComboBox(parent);
+    combo->setObjectName(name);
+    combo->setEditable(true);
+    combo->setInsertPolicy(QComboBox::NoInsert);
+    for (const auto size : graphCanvasTextSizes()) combo->addItem(sizeText(size));
+    combo->setToolTip(QObject::tr("The text's size: one em, in the canvas's pixels"));
+    return combo;
+}
+
+std::optional<double> sizeOf(const QComboBox &combo) {
+    bool ok = false;
+    const auto value = combo.currentText().trimmed().toDouble(&ok);
+    if (!ok || !(value > 0.0)) return std::nullopt;
+    return value;
+}
+
+// A font reference as the combos show it: its path in the project.
+QString fontText(const std::string &reference) {
+    constexpr std::string_view prefix = "project://";
+    return QString::fromStdString(reference.starts_with(prefix) ? reference.substr(prefix.size()) : reference);
+}
+
+QDoubleSpinBox *placeSpin(QWidget *parent, const QString &name, double low, double high, int decimals, double step) {
+    auto *spin = numberSpin(parent, name, low, high);
+    spin->setDecimals(decimals);
+    spin->setSingleStep(step);
+    return spin;
+}
+
+} // namespace
+
+QMenu *GraphCanvasLayersPanel::filterMenu(const char *prefix, std::function<void(const std::string &op)> chosen) {
+    auto *menu = new QMenu(this);
+    menu->setObjectName(named(prefix) + QStringLiteral(".menu"));
+    for (const auto &choice : graphCanvasFilterChoices()) {
+        auto *action = menu->addAction(qtext(choice.label));
+        action->setObjectName(named(prefix) + QLatin1Char('.') + qtext(choice.op.substr(choice.op.find('.') + 1)));
+        connect(action, &QAction::triggered, this, [chosen, op = choice.op] { chosen(op); });
+    }
+    return menu;
+}
+
+void GraphCanvasLayersPanel::buildSg3Fields(QVBoxLayout *body) {
+    // The picked text row's text and type; its colour is the paint's field.
+    text_fields_ = new QWidget(body_);
+    text_fields_->setObjectName(named("text"));
+    auto *text_form = new QFormLayout(text_fields_);
+    text_form->setContentsMargins(0, 4, 0, 0);
+    text_ = new QPlainTextEdit(text_fields_);
+    text_->setObjectName(named("field.text"));
+    text_->setToolTip(tr("The text; a new line starts a line. Sent when the field loses the keyboard."));
+    text_->setTabChangesFocus(true);
+    text_->setMaximumHeight(64);
+    text_->installEventFilter(this);
+    text_form->addRow(caption(tr("Text"), text_fields_), text_);
+    auto *font_row = new QWidget(text_fields_);
+    auto *font_layout = new QHBoxLayout(font_row);
+    font_layout->setContentsMargins(0, 0, 0, 0);
+    font_ = new QComboBox(font_row);
+    font_->setObjectName(named("field.font"));
+    font_->setToolTip(tr("A font file of the project's (.ttf, .otf)"));
+    font_layout->addWidget(font_, 1);
+    import_font_ = new QPushButton(tr("Import font\xE2\x80\xA6"), font_row);
+    import_font_->setObjectName(named("field.importFont"));
+    import_font_->setToolTip(tr("A .ttf or .otf copied into the project's assets/fonts"));
+    font_layout->addWidget(import_font_);
+    text_form->addRow(caption(tr("Font"), text_fields_), font_row);
+    text_size_ = sizeCombo(text_fields_, named("field.textSize"));
+    text_form->addRow(caption(tr("Size"), text_fields_), text_size_);
+    text_align_ = new QComboBox(text_fields_);
+    text_align_->setObjectName(named("field.textAlign"));
+    text_align_->setToolTip(tr("Each line against the origin (or within the box when it wraps)"));
+    for (const auto *choice : {"left", "center", "right"}) text_align_->addItem(QLatin1String{choice}, QLatin1String{choice});
+    text_form->addRow(caption(tr("Align"), text_fields_), text_align_);
+    line_height_ = placeSpin(text_fields_, named("field.lineHeight"), 0.1, 10.0, 2, 0.1);
+    line_height_->setToolTip(tr("From one line to the next, in em"));
+    text_form->addRow(caption(tr("Line height"), text_fields_), line_height_);
+    tracking_ = placeSpin(text_fields_, named("field.tracking"), -1000.0, 1000.0, 0, 10.0);
+    tracking_->setSuffix(tr(" /1000 em"));
+    tracking_->setToolTip(tr("Added after each character but the last of a line"));
+    text_form->addRow(caption(tr("Tracking"), text_fields_), tracking_);
+    box_width_ = placeSpin(text_fields_, named("field.boxWidth"), 0.0, 1.0e6, 0, 10.0);
+    box_width_->setSpecialValueText(tr("no wrap"));
+    box_width_->setToolTip(tr("Wrap the lines at this width (the canvas's pixels); 0 does not wrap"));
+    text_form->addRow(caption(tr("Box width"), text_fields_), box_width_);
+    text_stroke_ = new QCheckBox(tr("Stroke"), text_fields_);
+    text_stroke_->setObjectName(named("field.textStroke"));
+    text_stroke_->setToolTip(tr("An outline of the text, as a layer just above it"));
+    text_form->addRow(text_stroke_);
+    body->insertWidget(body->indexOf(paint_fields_), text_fields_);
+
+    const auto textRow = [this]() -> std::optional<GraphCanvasStackRow> {
+        const auto row = pickedRow();
+        return row && row->kind == "text" ? row : std::nullopt;
+    };
+    const auto commitText = [this, textRow](const char *key, const Json &value) {
+        if (loading_) return;
+        if (const auto row = textRow())
+            commit(graphCanvasSetTextParameterOps(model_.nodes(scope_), scope_, row->shape, key, value));
+    };
+    connect(font_, &QComboBox::currentIndexChanged, this, [this, commitText](int index) {
+        if (index >= 0) commitText("font", font_->itemData(index).toString().toStdString());
+    });
+    connect(import_font_, &QPushButton::clicked, this, [this, commitText] {
+        chooseFont(this, [commitText](const std::string &reference) { commitText("font", reference); });
+    });
+    const auto commitSize = [this, commitText] {
+        if (const auto size = sizeOf(*text_size_)) commitText("size", *size);
+    };
+    connect(text_size_, &QComboBox::currentIndexChanged, this, commitSize);
+    connect(text_size_->lineEdit(), &QLineEdit::editingFinished, this, commitSize);
+    connect(text_align_, &QComboBox::currentIndexChanged, this, [this, commitText](int index) {
+        if (index >= 0) commitText("align", text_align_->itemData(index).toString().toStdString());
+    });
+    connect(line_height_, &QDoubleSpinBox::valueChanged, this, [commitText](double value) { commitText("line_height", value); });
+    connect(tracking_, &QDoubleSpinBox::valueChanged, this, [commitText](double value) { commitText("tracking", value); });
+    connect(box_width_, &QDoubleSpinBox::valueChanged, this, [commitText](double value) { commitText("box_width", value); });
+    connect(text_stroke_, &QCheckBox::toggled, this, [this, textRow](bool on) {
+        if (loading_) return;
+        const auto row = textRow();
+        if (!row) return;
+        const auto nodes = model_.nodes(scope_);
+        const auto stroke = graphCanvasStrokeRowOf(nodes, stack_, row->index);
+        // The text row stays picked: the box is one of its fields.
+        const auto keep = picked_;
+        if (on && !stroke) commit(graphCanvasAddStrokeLayerOps(nodes, scope_, stack_, row->index));
+        else if (!on && stroke) commit(graphCanvasDeleteLayerOps(nodes, scope_, stack_, *stroke));
+        picked_ = keep;
+    });
+
+    // Every picked row's filters, and the picked filter's parameters.
+    filter_fields_ = new QWidget(body_);
+    filter_fields_->setObjectName(named("filterFields"));
+    auto *filter_form = new QFormLayout(filter_fields_);
+    filter_form->setContentsMargins(0, 4, 0, 0);
+    auto *filter_row = new QWidget(filter_fields_);
+    auto *filter_layout = new QHBoxLayout(filter_row);
+    filter_layout->setContentsMargins(0, 0, 0, 0);
+    filter_ = new QComboBox(filter_row);
+    filter_->setObjectName(named("field.filter"));
+    filter_->setToolTip(tr("The layer's filters, in the order they apply"));
+    filter_layout->addWidget(filter_, 1);
+    add_filter_ = new QToolButton(filter_row);
+    add_filter_->setObjectName(named("field.addFilter"));
+    add_filter_->setText(tr("+ Filter"));
+    add_filter_->setToolTip(tr("A colour filter on this layer alone, over the ones it has"));
+    add_filter_->setPopupMode(QToolButton::InstantPopup);
+    add_filter_->setMenu(filterMenu("addFilter", [this](const std::string &op) {
+        const auto row = pickedRow();
+        if (!row) return;
+        auto ops = graphCanvasAddFilterOps(model_.nodes(scope_), scope_, stack_, row->index, op);
+        if (ops.empty()) return;
+        filter_row_ = ops.front()["node"].value("id", std::string{});
+        commit(std::move(ops));
+    }));
+    filter_layout->addWidget(add_filter_);
+    remove_filter_ = new QPushButton(tr("Remove filter"), filter_row);
+    remove_filter_->setObjectName(named("field.removeFilter"));
+    remove_filter_->setToolTip(tr("Take the shown filter off the layer"));
+    filter_layout->addWidget(remove_filter_);
+    filter_form->addRow(caption(tr("Filters"), filter_fields_), filter_row);
+    filter_pages_ = new QStackedWidget(filter_fields_);
+    const auto page = [this](QFormLayout *&form) {
+        auto *made = new QWidget(filter_pages_);
+        form = new QFormLayout(made);
+        form->setContentsMargins(0, 0, 0, 0);
+        filter_pages_->addWidget(made);
+        return made;
+    };
+    const auto spin = [](QWidget *parent, const char *key, double low, double high, int decimals, double step) {
+        return placeSpin(parent, named("field.filter.") + QLatin1String{key}, low, high, decimals, step);
+    };
+    QFormLayout *form = nullptr;
+    auto *none = page(form);
+    form->addRow(caption(tr("Nothing to set."), none));
+    auto *bc = page(form);
+    brightness_ = spin(bc, "brightness", -150.0, 150.0, 0, 1.0);
+    contrast_ = spin(bc, "contrast", -50.0, 100.0, 0, 1.0);
+    form->addRow(caption(tr("Brightness"), bc), brightness_);
+    form->addRow(caption(tr("Contrast"), bc), contrast_);
+    auto *levels = page(form);
+    input_floor_ = spin(levels, "input_floor", 0.0, 255.0, 0, 1.0);
+    input_ceiling_ = spin(levels, "input_ceiling", 0.0, 255.0, 0, 1.0);
+    gamma_ = spin(levels, "gamma", 0.01, 9.99, 2, 0.05);
+    output_floor_ = spin(levels, "output_floor", 0.0, 255.0, 0, 1.0);
+    output_ceiling_ = spin(levels, "output_ceiling", 0.0, 255.0, 0, 1.0);
+    form->addRow(caption(tr("Input black"), levels), input_floor_);
+    form->addRow(caption(tr("Input white"), levels), input_ceiling_);
+    form->addRow(caption(tr("Gamma"), levels), gamma_);
+    form->addRow(caption(tr("Output black"), levels), output_floor_);
+    form->addRow(caption(tr("Output white"), levels), output_ceiling_);
+    channels_ = new QLineEdit(levels);
+    channels_->setObjectName(named("field.filter.channels"));
+    channels_->setPlaceholderText(QStringLiteral("{\"red\": {\"gamma\": 1.2}}"));
+    channels_->setToolTip(tr("Per channel (red, green, blue), the same five numbers, as JSON; empty for none"));
+    form->addRow(caption(tr("Channels"), levels), channels_);
+    auto *hs = page(form);
+    hue_ = spin(hs, "hue", -180.0, 180.0, 0, 1.0);
+    saturation_ = spin(hs, "saturation", -100.0, 100.0, 0, 1.0);
+    lightness_ = spin(hs, "lightness", -100.0, 100.0, 0, 1.0);
+    form->addRow(caption(tr("Hue"), hs), hue_);
+    form->addRow(caption(tr("Saturation"), hs), saturation_);
+    form->addRow(caption(tr("Lightness"), hs), lightness_);
+    colorize_ = new QLineEdit(hs);
+    colorize_->setObjectName(named("field.filter.colorize"));
+    colorize_->setPlaceholderText(QStringLiteral("{\"hue\": 200, \"saturation\": 50, \"lightness\": 0}"));
+    colorize_->setToolTip(tr("Colorize instead (hue, saturation, lightness), as JSON; empty for none"));
+    form->addRow(caption(tr("Colorize"), hs), colorize_);
+    auto *map = page(form);
+    stops_ = new QLineEdit(map);
+    stops_->setObjectName(named("field.filter.stops"));
+    stops_->setToolTip(tr("The gradient: [{\"position\": 0..1, \"color\": [r, g, b]}, ...] (sRGB), up to 16"));
+    form->addRow(caption(tr("Stops"), map), stops_);
+    reversed_ = new QCheckBox(tr("Reversed"), map);
+    reversed_->setObjectName(named("field.filter.reversed"));
+    form->addRow(reversed_);
+    auto *overlay = page(form);
+    overlay_pick_ = new QPushButton(tr("Pick\xE2\x80\xA6"), overlay);
+    overlay_pick_->setObjectName(named("field.filter.colorPick"));
+    overlay_pick_->setToolTip(tr("The colour laid over the layer; its alpha is how much"));
+    form->addRow(caption(tr("Color"), overlay), overlay_pick_);
+    filter_form->addRow(filter_pages_);
+    body->insertWidget(body->indexOf(layer_fields_) + 1, filter_fields_);
+
+    connect(filter_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (loading_ || index < 0) return;
+        filter_row_ = filter_->itemData(index).toString().toStdString();
+        loadFields();
+        followEditable();
+    });
+    connect(remove_filter_, &QPushButton::clicked, this, [this] {
+        const auto row = pickedRow();
+        const auto filter = pickedFilter();
+        if (row && !filter.empty())
+            commit(graphCanvasRemoveFilterOps(model_.nodes(scope_), scope_, stack_, row->index, filter));
+    });
+    for (auto [field, key] : {std::pair{brightness_, "brightness"}, std::pair{contrast_, "contrast"},
+                              std::pair{input_floor_, "input_floor"}, std::pair{input_ceiling_, "input_ceiling"},
+                              std::pair{gamma_, "gamma"}, std::pair{output_floor_, "output_floor"},
+                              std::pair{output_ceiling_, "output_ceiling"}, std::pair{hue_, "hue"},
+                              std::pair{saturation_, "saturation"}, std::pair{lightness_, "lightness"}})
+        connect(field, &QDoubleSpinBox::valueChanged, this,
+                [this, key](double value) { commitFilterNumber(key, value); });
+    connect(channels_, &QLineEdit::editingFinished, this, [this] { commitFilterJson("channels", channels_); });
+    connect(colorize_, &QLineEdit::editingFinished, this, [this] { commitFilterJson("colorize", colorize_); });
+    connect(stops_, &QLineEdit::editingFinished, this, [this] { commitFilterJson("stops", stops_); });
+    connect(reversed_, &QCheckBox::toggled, this, [this](bool on) {
+        if (loading_) return;
+        const auto nodes = model_.nodes(scope_);
+        const auto *filter = findNode(nodes, pickedFilter());
+        if (filter == nullptr) return;
+        auto parameters = filter->parameters;
+        if (on) parameters["reversed"] = true;
+        else parameters.erase("reversed");
+        if (parameters != filter->parameters)
+            commit(Json::array({Json{{"op", "set_node_parameters"}, {"scope", scopeToken(scope_)},
+                                     {"node", filter->id}, {"parameters", std::move(parameters)}}}));
+    });
+    connect(overlay_pick_, &QPushButton::clicked, this, [this] {
+        const auto nodes = model_.nodes(scope_);
+        const auto *filter = findNode(nodes, pickedFilter());
+        if (filter == nullptr || filter->op != "filter.color_overlay") return;
+        const auto &parameters = filter->parameters;
+        const QColor current = QColor::fromRgbF(
+            static_cast<float>(number(parameters, "color", 0, 1.0)), static_cast<float>(number(parameters, "color", 1, 1.0)),
+            static_cast<float>(number(parameters, "color", 2, 1.0)), static_cast<float>(number(parameters, "color", 3, 1.0)));
+        const QColor chosen = QColorDialog::getColor(current, this, tr("Overlay colour"), QColorDialog::ShowAlphaChannel);
+        if (!chosen.isValid()) return;
+        commit(graphCanvasSetParameterOps(nodes, scope_, filter->id, "color",
+                                          Json::array({chosen.redF(), chosen.greenF(), chosen.blueF(), chosen.alphaF()})));
+    });
+
+    // No row picked: the stack in the 3D scene.
+    auto *stack_form = qobject_cast<QFormLayout *>(stack_fields_->layout());
+    place_row_ = new QWidget(stack_fields_);
+    auto *place_layout = new QHBoxLayout(place_row_);
+    place_layout->setContentsMargins(0, 0, 0, 0);
+    place_target_ = new QComboBox(place_row_);
+    place_target_->setObjectName(named("placeTarget"));
+    place_target_->setToolTip(tr("The 3D pass, and its colour attachment, the canvas is drawn onto"));
+    place_layout->addWidget(place_target_, 1);
+    place_in_scene_ = new QPushButton(tr("Place in 3D scene\xE2\x80\xA6"), place_row_);
+    place_in_scene_->setObjectName(named("placeInScene"));
+    place_layout->addWidget(place_in_scene_);
+    stack_form->addRow(caption(tr("3D"), stack_fields_), place_row_);
+    place_fields_ = new QWidget(stack_fields_);
+    place_fields_->setObjectName(named("place"));
+    auto *place_form = new QFormLayout(place_fields_);
+    place_form->setContentsMargins(0, 0, 0, 0);
+    place_caption_ = caption({}, place_fields_);
+    place_caption_->setStyleSheet(QStringLiteral("font-weight: bold;"));
+    place_form->addRow(place_caption_);
+    const auto triple = [&](const char *key, QDoubleSpinBox *(&spins)[3], double low, double high, int decimals,
+                            double step) {
+        auto *row = new QWidget(place_fields_);
+        auto *row_layout = new QHBoxLayout(row);
+        row_layout->setContentsMargins(0, 0, 0, 0);
+        const char *components[] = {".x", ".y", ".z"};
+        for (int axis = 0; axis < 3; ++axis) {
+            spins[axis] = placeSpin(row, named("field.place.") + QLatin1String{key} + QLatin1String{components[axis]},
+                                    low, high, decimals, step);
+            row_layout->addWidget(spins[axis], 1);
+        }
+        return row;
+    };
+    place_form->addRow(caption(tr("Position"), place_fields_), triple("position", position_, -1.0e5, 1.0e5, 3, 0.1));
+    place_form->addRow(caption(tr("Rotation"), place_fields_),
+                       triple("rotation", place_rotation_, -360.0, 360.0, 1, 5.0));
+    for (auto *each : place_rotation_) each->setSuffix(QStringLiteral("\xC2\xB0"));
+    place_scale_ = placeSpin(place_fields_, named("field.place.scale"), -1.0e3, 1.0e3, 3, 0.1);
+    place_form->addRow(caption(tr("Scale"), place_fields_), place_scale_);
+    pixels_per_unit_ = placeSpin(place_fields_, named("field.place.pixels_per_unit"), 0.001, 1.0e6, 1, 10.0);
+    pixels_per_unit_->setToolTip(tr("The canvas's pixels in one world unit"));
+    place_form->addRow(caption(tr("Pixels per unit"), place_fields_), pixels_per_unit_);
+    auto *anchor = new QWidget(place_fields_);
+    auto *anchor_layout = new QHBoxLayout(anchor);
+    anchor_layout->setContentsMargins(0, 0, 0, 0);
+    for (int axis = 0; axis < 2; ++axis) {
+        anchor_[axis] = placeSpin(anchor, named("field.place.anchor") + QLatin1String{axis == 0 ? ".x" : ".y"}, -10.0,
+                                  10.0, 3, 0.05);
+        anchor_layout->addWidget(anchor_[axis], 1);
+    }
+    anchor->setToolTip(tr("The point of the canvas at the position: 0 0 its top left, 0.5 0.5 its middle"));
+    place_form->addRow(caption(tr("Anchor"), place_fields_), anchor);
+    depth_test_ = new QCheckBox(tr("Depth test"), place_fields_);
+    depth_test_->setObjectName(named("field.place.depth_test"));
+    depth_write_ = new QCheckBox(tr("Depth write"), place_fields_);
+    depth_write_->setObjectName(named("field.place.depth_write"));
+    double_sided_ = new QCheckBox(tr("Double sided"), place_fields_);
+    double_sided_->setObjectName(named("field.place.double_sided"));
+    auto *flags = new QWidget(place_fields_);
+    auto *flags_layout = new QHBoxLayout(flags);
+    flags_layout->setContentsMargins(0, 0, 0, 0);
+    for (auto *each : {depth_test_, depth_write_, double_sided_}) flags_layout->addWidget(each);
+    place_form->addRow(flags);
+    stack_form->addRow(place_fields_);
+
+    connect(place_in_scene_, &QPushButton::clicked, this, [this] {
+        const auto nodes = model_.nodes(scope_);
+        const auto passes = graphCanvasScenePasses(nodes);
+        const int at = place_target_->currentIndex();
+        if (at < 0 || static_cast<std::size_t>(at) >= passes.size()) return;
+        auto ops = graphCanvasPlaceOps(nodes, scope_, stack_, passes[static_cast<std::size_t>(at)]);
+        if (ops.empty()) return;
+        place_ = ops.front()["node"].value("id", std::string{});
+        commit(std::move(ops));
+    });
+    for (auto *spins : {position_, place_rotation_})
+        for (int axis = 0; axis < 3; ++axis)
+            connect(spins[axis], &QDoubleSpinBox::valueChanged, this, [this, spins] {
+                commitPlace(spins == position_ ? "position" : "rotation",
+                            Json::array({spins[0]->value(), spins[1]->value(), spins[2]->value()}));
+            });
+    connect(place_scale_, &QDoubleSpinBox::valueChanged, this, [this](double value) { commitPlace("scale", value); });
+    connect(pixels_per_unit_, &QDoubleSpinBox::valueChanged, this,
+            [this](double value) { commitPlace("pixels_per_unit", value); });
+    for (auto *component : anchor_)
+        connect(component, &QDoubleSpinBox::valueChanged, this,
+                [this] { commitPlace("anchor", Json::array({anchor_[0]->value(), anchor_[1]->value()})); });
+    connect(depth_test_, &QCheckBox::toggled, this, [this](bool on) { commitPlace("depth_test", on); });
+    connect(depth_write_, &QCheckBox::toggled, this, [this](bool on) { commitPlace("depth_write", on); });
+    connect(double_sided_, &QCheckBox::toggled, this, [this](bool on) { commitPlace("double_sided", on); });
+}
+
+std::string GraphCanvasLayersPanel::pickedFilter() const {
+    const auto row = pickedRow();
+    if (!row || row->filters.empty()) return {};
+    if (std::ranges::find(row->filters, filter_row_) != row->filters.end()) return filter_row_;
+    return row->filters.back();
+}
+
+std::string GraphCanvasLayersPanel::shownPlace() const {
+    const auto places = graphCanvasPlacesOf(model_.nodes(scope_), stack_);
+    if (std::ranges::find(places, place_) != places.end()) return place_;
+    return places.empty() ? std::string{} : places.front();
+}
+
+void GraphCanvasLayersPanel::loadSg3Fields(const std::optional<GraphCanvasStackRow> &row) {
+    const auto nodes = model_.nodes(scope_);
+    // Text.
+    const auto *text = row && row->kind == "text" ? findNode(nodes, row->shape) : nullptr;
+    text_fields_->setVisible(text != nullptr);
+    if (text != nullptr) {
+        const auto &parameters = text->parameters;
+        if (!text_->hasFocus()) {
+            const QSignalBlocker block{text_};
+            const auto current = qtext(parameters.value("text", std::string{}));
+            if (text_->toPlainText() != current) text_->setPlainText(current);
+        }
+        // The project's fonts, read again when another text row is picked.
+        if (font_->property("pelicanFontsFor").toString() != qtext(row->input)) {
+            font_->setProperty("pelicanFontsFor", qtext(row->input));
+            reloadFonts();
+        }
+        fillFontCombo(font_, parameters.value("font", std::string{}));
+        {
+            const QSignalBlocker block{text_size_};
+            if (!text_size_->lineEdit()->hasFocus()) {
+                const auto size = number(parameters, "size", 0, graphCanvasDefaultTextSize);
+                const int at = text_size_->findText(sizeText(size));
+                if (at >= 0) text_size_->setCurrentIndex(at);
+                text_size_->setEditText(sizeText(size));
+            }
+        }
+        {
+            const QSignalBlocker block{text_align_};
+            const auto align = parameters.value("align", Json("left"));
+            text_align_->setCurrentIndex(
+                std::max(0, text_align_->findData(qtext(align.is_string() ? align.get<std::string>() : "left"))));
+        }
+        for (auto [spin, key, fallback] : {std::tuple{line_height_, "line_height", 1.2},
+                                           std::tuple{tracking_, "tracking", 0.0},
+                                           std::tuple{box_width_, "box_width", 0.0}}) {
+            const QSignalBlocker block{spin};
+            if (!spin->hasFocus()) spin->setValue(number(parameters, key, 0, fallback));
+        }
+        const QSignalBlocker block{text_stroke_};
+        text_stroke_->setChecked(graphCanvasStrokeRowOf(nodes, stack_, row->index).has_value());
+    }
+
+    // Filters.
+    filter_fields_->setVisible(row.has_value());
+    if (row) {
+        const auto picked = pickedFilter();
+        {
+            const QSignalBlocker block{filter_};
+            filter_->clear();
+            for (const auto &id : row->filters) {
+                const auto *node = findNode(nodes, id);
+                filter_->addItem(qtext(node != nullptr ? graphCanvasFilterLabel(node->op) + "  (" + id + ")" : id),
+                                 qtext(id));
+            }
+            filter_->setCurrentIndex(filter_->findData(qtext(picked)));
+        }
+        filter_->setVisible(!row->filters.empty());
+        remove_filter_->setVisible(!row->filters.empty());
+        const auto *filter = picked.empty() ? nullptr : findNode(nodes, picked);
+        filter_pages_->setVisible(filter != nullptr);
+        if (filter != nullptr) {
+            const auto &parameters = filter->parameters;
+            const auto &choices = graphCanvasFilterChoices();
+            const auto at = std::ranges::find(choices, filter->op, &GraphCanvasFilterChoice::op);
+            filter_pages_->setCurrentIndex(at == choices.end() ? 0 : static_cast<int>(at - choices.begin()));
+            const auto load = [&](QDoubleSpinBox *spin, const char *key, double fallback) {
+                const QSignalBlocker block{spin};
+                if (!spin->hasFocus()) spin->setValue(number(parameters, key, 0, fallback));
+            };
+            load(brightness_, "brightness", 0.0);
+            load(contrast_, "contrast", 0.0);
+            load(input_floor_, "input_floor", 0.0);
+            load(input_ceiling_, "input_ceiling", 255.0);
+            load(gamma_, "gamma", 1.0);
+            load(output_floor_, "output_floor", 0.0);
+            load(output_ceiling_, "output_ceiling", 255.0);
+            load(hue_, "hue", 0.0);
+            load(saturation_, "saturation", 0.0);
+            load(lightness_, "lightness", 0.0);
+            for (auto [field, key] : {std::pair{channels_, "channels"}, std::pair{colorize_, "colorize"},
+                                      std::pair{stops_, "stops"}}) {
+                if (field->hasFocus()) continue;
+                const auto found = parameters.find(key);
+                field->setText(found == parameters.end() ? QString{} : qtext(found->dump()));
+            }
+            const QSignalBlocker block{reversed_};
+            reversed_->setChecked(parameters.value("reversed", false) == true);
+            overlay_pick_->setIcon(QIcon{swatchIcon({number(parameters, "color", 0, 1.0), number(parameters, "color", 1, 1.0),
+                                                     number(parameters, "color", 2, 1.0), 1.0})});
+        }
+    }
+
+    // 3D.
+    if (!row) {
+        const auto passes = graphCanvasScenePasses(nodes);
+        {
+            const QSignalBlocker block{place_target_};
+            const int keep = place_target_->currentIndex();
+            place_target_->clear();
+            for (const auto &pass : passes) place_target_->addItem(qtext(pass.node + " \xC2\xB7 " + pass.color));
+            place_target_->setCurrentIndex(keep >= 0 && keep < place_target_->count() ? keep : 0);
+        }
+        place_target_->setVisible(passes.size() > 1);
+        const auto place = shownPlace();
+        const auto *placed = place.empty() ? nullptr : findNode(nodes, place);
+        place_fields_->setVisible(placed != nullptr);
+        if (placed != nullptr) {
+            const auto &parameters = placed->parameters;
+            place_caption_->setText(tr("Placed in 3D: %1").arg(qtext(placed->heading())));
+            for (int axis = 0; axis < 3; ++axis)
+                for (auto [spins, key, fallback] : {std::tuple{position_, "position", 0.0},
+                                                    std::tuple{place_rotation_, "rotation", 0.0}}) {
+                    const QSignalBlocker block{spins[axis]};
+                    if (!spins[axis]->hasFocus())
+                        spins[axis]->setValue(number(parameters, key, static_cast<std::size_t>(axis), fallback));
+                }
+            for (int axis = 0; axis < 2; ++axis) {
+                const QSignalBlocker block{anchor_[axis]};
+                if (!anchor_[axis]->hasFocus())
+                    anchor_[axis]->setValue(number(parameters, "anchor", static_cast<std::size_t>(axis), 0.5));
+            }
+            for (auto [spin, key, fallback] : {std::tuple{place_scale_, "scale", 1.0},
+                                               std::tuple{pixels_per_unit_, "pixels_per_unit", 100.0}}) {
+                const QSignalBlocker block{spin};
+                if (!spin->hasFocus()) spin->setValue(number(parameters, key, 0, fallback));
+            }
+            for (auto [box, key, fallback] : {std::tuple{depth_test_, "depth_test", true},
+                                              std::tuple{depth_write_, "depth_write", false},
+                                              std::tuple{double_sided_, "double_sided", true}}) {
+                const QSignalBlocker block{box};
+                const auto found = parameters.find(key);
+                box->setChecked(found != parameters.end() && found->is_boolean() ? found->get<bool>() : fallback);
+            }
+        }
+    }
+}
+
+void GraphCanvasLayersPanel::commitFilterNumber(const char *key, double value) {
+    if (loading_) return;
+    const auto filter = pickedFilter();
+    if (!filter.empty()) commit(graphCanvasSetParameterOps(model_.nodes(scope_), scope_, filter, key, value));
+}
+
+void GraphCanvasLayersPanel::commitFilterJson(const char *key, QLineEdit *field) {
+    if (loading_) return;
+    const auto nodes = model_.nodes(scope_);
+    const auto *filter = findNode(nodes, pickedFilter());
+    if (filter == nullptr) return;
+    auto parameters = filter->parameters;
+    const auto text = field->text().trimmed().toStdString();
+    if (text.empty()) {
+        parameters.erase(key);
+    } else {
+        try {
+            parameters[key] = Json::parse(text);
+        } catch (const std::exception &failure) {
+            say(tr("%1 is not JSON: %2").arg(QLatin1String{key}, QString::fromUtf8(failure.what())));
+            return;
+        }
+    }
+    if (parameters == filter->parameters) return;
+    commit(Json::array({Json{{"op", "set_node_parameters"}, {"scope", scopeToken(scope_)}, {"node", filter->id},
+                             {"parameters", std::move(parameters)}}}));
+}
+
+void GraphCanvasLayersPanel::commitPlace(const char *key, const Json &value) {
+    if (loading_) return;
+    const auto place = shownPlace();
+    if (!place.empty()) commit(graphCanvasSetPlaceParameterOps(model_.nodes(scope_), scope_, place, key, value));
+}
+
+void GraphCanvasLayersPanel::reloadFonts() {
+    const auto read = readCanvasProjectFonts(projectRoot ? projectRoot() : std::filesystem::path{});
+    fonts_ = read.fonts;
+}
+
+void GraphCanvasLayersPanel::fillFontCombo(QComboBox *combo, const std::string &current) {
+    const QSignalBlocker block{combo};
+    combo->clear();
+    for (const auto &font : fonts_) combo->addItem(fontText(font), qtext(font));
+    if (!current.empty() && std::ranges::find(fonts_, current) == fonts_.end())
+        combo->addItem(fontText(current), qtext(current));
+    combo->setCurrentIndex(current.empty() ? (combo->count() > 0 ? 0 : -1) : combo->findData(qtext(current)));
+}
+
+void GraphCanvasLayersPanel::chooseFont(QWidget *over, std::function<void(const std::string &reference)> imported) {
+    if (!projectRoot || projectRoot().empty()) {
+        say(tr("Open a project to add fonts to."));
+        return;
+    }
+    // Qt's own dialog, as the pictures' (chooseFile), over the window that asked.
+    auto *dialog = new QFileDialog{over, tr("Import font")};
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName(QStringLiteral("pelican.canvasFontDialog"));
+    dialog->setOption(QFileDialog::DontUseNativeDialog, true);
+    dialog->setFileMode(QFileDialog::ExistingFile);
+    dialog->setNameFilter(tr("Fonts (*.ttf *.otf *.TTF *.OTF)"));
+    if (auto *field = dialog->findChild<QLineEdit *>(QStringLiteral("fileNameEdit")))
+        field->setObjectName(QStringLiteral("pelican.canvasFontDialog.fileName"));
+    connect(dialog, &QFileDialog::filesSelected, this, [this, imported = std::move(imported)](const QStringList &picked) {
+        if (picked.isEmpty()) return;
+        const auto copied = importCanvasFont(projectRoot(), localPath(picked.front()));
+        if (!copied.error.empty()) {
+            say(qtext(copied.error));
+            return;
+        }
+        reloadFonts();
+        say(tr("Copied %1 into the project.").arg(qtext(copied.reference)));
+        imported(copied.reference);
+    });
+    dialog->open();
+}
+
+void GraphCanvasLayersPanel::openTextDialog() {
+    if (stack_.empty()) return;
+    if (!projectRoot || projectRoot().empty()) {
+        say(tr("Open a project to add text to."));
+        return;
+    }
+    reloadFonts();
+    auto *dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName(QStringLiteral("pelican.canvasTextDialog"));
+    dialog->setWindowTitle(tr("Add text"));
+    const auto name = [](const char *suffix) { return QStringLiteral("pelican.canvasTextDialog.") + QLatin1String{suffix}; };
+    auto *form = new QFormLayout(dialog);
+    auto *text = new QLineEdit(dialog);
+    text->setObjectName(name("text"));
+    text->setPlaceholderText(tr("The text"));
+    form->addRow(tr("Text"), text);
+    auto *font_row = new QWidget(dialog);
+    auto *font_layout = new QHBoxLayout(font_row);
+    font_layout->setContentsMargins(0, 0, 0, 0);
+    auto *font = new QComboBox(font_row);
+    font->setObjectName(name("font"));
+    font->setToolTip(tr("A font file of the project's (.ttf, .otf)"));
+    font_layout->addWidget(font, 1);
+    auto *import = new QPushButton(tr("Import font\xE2\x80\xA6"), font_row);
+    import->setObjectName(name("importFont"));
+    import->setToolTip(tr("A .ttf or .otf copied into the project's assets/fonts"));
+    font_layout->addWidget(import);
+    form->addRow(tr("Font"), font_row);
+    auto *size = sizeCombo(dialog, name("size"));
+    size->setCurrentIndex(size->findText(sizeText(graphCanvasDefaultTextSize)));
+    form->addRow(tr("Size"), size);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
+    auto *ok = buttons->button(QDialogButtonBox::Ok);
+    ok->setObjectName(name("ok"));
+    buttons->button(QDialogButtonBox::Cancel)->setObjectName(name("cancel"));
+    form->addRow(buttons);
+    fillFontCombo(font, {});
+    const auto settle = [text, font, size, ok] {
+        ok->setEnabled(!text->text().isEmpty() && font->currentIndex() >= 0 && sizeOf(*size).has_value());
+    };
+    settle();
+    connect(text, &QLineEdit::textChanged, dialog, settle);
+    connect(font, &QComboBox::currentIndexChanged, dialog, settle);
+    connect(size, &QComboBox::currentTextChanged, dialog, settle);
+    connect(import, &QPushButton::clicked, dialog, [this, dialog, font, settle] {
+        chooseFont(dialog, [this, font, settle](const std::string &reference) {
+            fillFontCombo(font, reference);
+            settle();
+        });
+    });
+    connect(buttons, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    connect(dialog, &QDialog::accepted, this, [this, text, font, size] {
+        const auto chosen = sizeOf(*size);
+        if (!chosen || font->currentIndex() < 0) return;
+        commit(graphCanvasAddTextLayerOps(model_.nodes(scope_), scope_, stack_, text->text().toStdString(),
+                                          font->currentData().toString().toStdString(), *chosen));
+    });
+    dialog->open();
+}
+
+bool GraphCanvasLayersPanel::eventFilter(QObject *watched, QEvent *event) {
+    if (watched == text_ && event->type() == QEvent::FocusOut && !loading_) {
+        const auto row = pickedRow();
+        if (row && row->kind == "text")
+            commit(graphCanvasSetTextParameterOps(model_.nodes(scope_), scope_, row->shape, "text",
+                                                  text_->toPlainText().toStdString()));
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 } // namespace PelicanStudio

@@ -88,6 +88,8 @@ target_sources(pelican_project PRIVATE
     canvas/canvasmodule.cpp
     canvas/canvaslowering.cpp
     canvas/canvasreference.cpp
+    # CV-5: the ship policy's static runs, folded into images.
+    canvas/canvasship.cpp
     # CV-2b: blend modes and colour filters, shared by the shader and the reference.
     canvas/canvasblend.cpp
     # CV-6a: a placed stack's corners on the screen.
