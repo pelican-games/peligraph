@@ -434,14 +434,14 @@ TEST_CASE("CV-2a canvas lowering refuses by name", "[canvas][cv2a]") {
     };
     REQUIRE(refusal([&] {
                 auto authored = base();
-                authored.at("nodes").push_back({{"id", "bd"}, {"op", "canvas.backdrop"}, {"outputs", Json::array({"layer"})}});
+                authored.at("nodes").push_back({{"id", "bd"}, {"op", "filter.blur"}, {"outputs", Json::array({"layer"})}});
                 (void)Pelican::lowerCanvasNodes(authored);
-            }) == R"(canvas.op_unsupported@1 {"node":"bd","op":"canvas.backdrop"})");
+            }) == R"(canvas.op_unsupported@1 {"node":"bd","op":"filter.blur"})");
     REQUIRE(refusal([&] {
                 auto authored = base();
-                authored.at("nodes").push_back({{"id", "inv"}, {"op", "filter.invert"}, {"outputs", Json::array({"layer"})}});
+                authored.at("nodes").push_back({{"id", "inv"}, {"op", "filter.unsharp_mask"}, {"outputs", Json::array({"layer"})}});
                 (void)Pelican::lowerCanvasNodes(authored);
-            }) == R"(canvas.op_unsupported@1 {"node":"inv","op":"filter.invert"})");
+            }) == R"(canvas.op_unsupported@1 {"node":"inv","op":"filter.unsharp_mask"})");
     REQUIRE(refusal([&] {
                 auto authored = base();
                 auto &root = authored.at("nodes").at(2);
@@ -451,9 +451,9 @@ TEST_CASE("CV-2a canvas lowering refuses by name", "[canvas][cv2a]") {
             }) == R"(canvas.mask_unsupported@1 {"layer":"A","node":"root","op":"canvas.color"})");
     REQUIRE(refusal([&] {
                 auto authored = base();
-                authored.at("nodes").at(2).at("parameters").at("layers").at(0)["blend"] = "screen";
+                authored.at("nodes").at(2).at("parameters").at("layers").at(0)["blend"] = "dissolve";
                 (void)Pelican::lowerCanvasNodes(authored);
-            }) == R"(canvas.blend_unsupported@1 {"blend":"screen","layer":"A","node":"root"})");
+            }) == R"(canvas.blend_unsupported@1 {"blend":"dissolve","layer":"A","node":"root"})");
     // A luminance image is a mask, not a layer; pass_through belongs to a stack.
     auto luminance = base();
     luminance.at("nodes").at(0).at("parameters")["channel"] = "luminance";

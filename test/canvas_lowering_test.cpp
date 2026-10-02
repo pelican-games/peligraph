@@ -240,8 +240,8 @@ TEST_CASE("CV-1 canvas nodes lower to the core render vocabulary", "[canvas][cv1
 
 TEST_CASE("CV-1 canvas lowering refuses by name", "[canvas][cv1]") {
     REQUIRE(refusal([](Json &document) {
-                mutableNode(document, "root").at("parameters").at("layers").at(1)["blend"] = "multiply";
-            }) == R"(canvas.blend_unsupported@1 {"blend":"multiply","layer":"dot","node":"root"})");
+                mutableNode(document, "root").at("parameters").at("layers").at(1)["blend"] = "dissolve";
+            }) == R"(canvas.blend_unsupported@1 {"blend":"dissolve","layer":"dot","node":"root"})");
     REQUIRE(refusal([](Json &document) { mutableNode(document, "root").at("inputs").erase("ring"); }) ==
             R"(canvas.layer_input_missing@1 {"input":"ring","layer":"ring","node":"root"})");
     REQUIRE(refusal([](Json &document) { mutableNode(document, "out").at("inputs").erase("layer"); }) ==
@@ -330,7 +330,7 @@ TEST_CASE("CV-1b the authoring hook lowers in place, idempotently, and names the
 
     // A named failure reaches the caller as it is.
     auto refused = authored;
-    mutableNode(refused, "root").at("parameters").at("layers").at(0)["blend"] = "screen";
+    mutableNode(refused, "root").at("parameters").at("layers").at(0)["blend"] = "dissolve";
     CHECK_THROWS_AS(Pelican::lowerAuthoringDocument(refused), Pelican::GraphRegistryError);
 
     // Written once; the same text is left alone.

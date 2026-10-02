@@ -1,5 +1,7 @@
 #pragma once
 
+#include "canvasblend.hpp"
+
 #include <array>
 #include <compare>
 #include <cstddef>
@@ -46,6 +48,11 @@ namespace Pelican {
 // and the diagnostic canvas.glyph_range_exceeded {node, width, range, limit}:
 // a shape.stroke of a shape.text wider than the atlas's distances reach,
 // cut to `limit` (stack units).
+// CV-2b: canvas.blend_unsupported@1 is now a blend name outside
+// canvasBlendNames() (dissolve), canvas.op_unsupported@1 a filter.* outside
+// canvasColorFilterOperations() (blur, ...); canvasblend.hpp names the
+// filters' own refusals. The diagnostic canvas.backdrop_copies {output,
+// count[, group]} counts the copies one image's draws read their backdrop from.
 // `layer` names the layer by its `name`, or by its index when it has none.
 // Wrong types and unknown ports are the graph's own checks.
 
@@ -58,7 +65,9 @@ enum class CanvasFit : std::uint8_t { contain, stretch };
 // fills the canvas (canvas.color); a group is the image a nested stack was
 // composited into, read back over the whole canvas. CV-4: a glyph is one
 // character of a shape.text, read from its output's atlas.
-enum class CanvasItemSource : std::uint8_t { shape, image, color, group, glyph };
+// CV-2b: a backdrop is canvas.backdrop, what its stack composited below it
+// (an adjustment layer is a backdrop under colour filters).
+enum class CanvasItemSource : std::uint8_t { shape, image, color, group, glyph, backdrop };
 
 // CV-4: reads a project file by its reference (project://...): the same
 // buffer while the file is unchanged, nullptr when there is none. The canvas
@@ -145,6 +154,14 @@ inline constexpr std::uint32_t canvas_kind_group = 6;
 inline constexpr std::uint32_t canvas_kind_glyph_fill = 7;
 inline constexpr std::uint32_t canvas_kind_glyph_stroke = 8;
 inline constexpr std::size_t canvas_glyph_parameter_count = 12;
+// CV-2b, canvas.backdrop over the canvas: no parameters.
+//   9 backdrop
+// An item with a blend other than normal or with colour filters adds
+// 256 * style to its kind in the item table; the style (1, 2, ...) numbers
+// the draw's (blend, filter list) pairs in first-use order, and the item's
+// filter numbers (canvasblend.hpp) follow its parameters in the bake table.
+inline constexpr std::uint32_t canvas_kind_backdrop = 9;
+inline constexpr std::uint32_t canvas_kind_style_stride = 256;
 
 // The images one draw may read; past it the items are split across draws of
 // the same image. The engine sizes a pass's descriptor budget by the same
@@ -187,7 +204,15 @@ struct CanvasItem {
     // CV-4: a glyph item's character (its cell, uv and texture are filled in
     // when the output's atlas is baked).
     std::optional<CanvasGlyph> glyph;
+    // CV-2b: how it composites over what its list drew below it, and the
+    // colour filters on its colour, innermost first.
+    CanvasBlend blend = CanvasBlend::normal;
+    std::vector<CanvasFilter> filters;
 };
+
+// CV-2b: the item reads what is below it in its list (a blend other than
+// normal, or a canvas.backdrop).
+bool canvasItemReadsBackdrop(const CanvasItem &item);
 
 std::uint32_t canvasItemKind(const CanvasItem &item);
 

@@ -142,7 +142,7 @@ def check(player: Path, project: Path, frames: Path) -> None:
         # An edit the lowering refuses by name changes nothing.
         saved = (project / DOCUMENT).read_bytes()
         blended = edit(client, [{"op": "set_node_parameters", "node": "root", "parameters": {
-            "size": [256, 256], "layers": [{"input": "card", "name": "card", "blend": "multiply"}]}}])
+            "size": [256, 256], "layers": [{"input": "card", "name": "card", "blend": "dissolve"}]}}])
         code = (blended.get("error") or {}).get("code")
         if blended.get("status") == "committed" or code != "canvas.blend_unsupported@1":
             raise AssertionError(f"the blend edit was not refused by name: {blended!r}")

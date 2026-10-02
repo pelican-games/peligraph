@@ -21,6 +21,9 @@
 // CV-4: --project names the project the document is in, whose files
 // (project://...) the lowering reads: a shape.text's font. The reference draws
 // the glyphs from the atlas the lowering bakes.
+//
+// CV-2b: --write-expected <file> writes the expected bytes (RGBA, row-major) to
+// a raw file, to look at where a frame differs.
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
@@ -66,6 +69,7 @@ int main(int argc, char *argv[]) {
         Pelican::CanvasReferenceImages images;
         std::string against;
         std::string project;
+        std::string expected_out;
         const auto keyed = [](const std::string &argument) {
             const auto equals = argument.find('=');
             if (equals == std::string::npos) throw std::invalid_argument("expected key=value: " + argument);
@@ -93,6 +97,8 @@ int main(int argc, char *argv[]) {
                 images[key] = std::move(image);
             } else if (argument == "--project" && i + 1 < argc) {
                 project = argv[++i];
+            } else if (argument == "--write-expected" && i + 1 < argc) {
+                expected_out = argv[++i];
             } else if (argument == "--against" && i + 1 < argc) {
                 against = argv[++i];
             } else if (argument == "--tolerance" && i + 1 < argc) {
@@ -149,6 +155,10 @@ int main(int argc, char *argv[]) {
                 expected[at] = at % 4 == 3 ? static_cast<int>(std::lround(std::clamp(value, 0.0, 1.0) * 255.0))
                                            : encode(value);
             }
+        }
+        if (!expected_out.empty()) {
+            std::ofstream out(expected_out, std::ios::binary);
+            for (const auto value : expected) out.put(static_cast<char>(value));
         }
         std::size_t within = 0;
         int max_difference = 0;

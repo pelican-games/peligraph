@@ -514,6 +514,36 @@ std::optional<CanvasItem> singleItem(const Scope &scope, const Json &endpoint, c
     return groupItem(std::move(items), flattening.srgb, from == nullptr ? std::string{} : nodeId(*from), flattening);
 }
 
+// --- CV-2b: the backdrop and colour filters -------------------------------
+
+void appendBackdrop(const Json &node, const Flattening &flattening, std::vector<CanvasItem> &items) {
+    onlyKeys(node, {});
+    if (!objectMember(node, "inputs").empty())
+        throw std::invalid_argument("canvas.backdrop takes no edge: " + nodeId(node));
+    CanvasItem item;
+    item.source = CanvasItemSource::backdrop;
+    item.nodes = {nodeId(node)};
+    item.nodes.insert(item.nodes.end(), flattening.stacks.begin(), flattening.stacks.end());
+    applyFlattening(item, flattening);
+    items.push_back(std::move(item));
+}
+
+// A filter works on one item's colour: its layer drawn as one (a group when
+// it draws several items), the filter added after the ones it already has.
+void appendFilter(const Scope &scope, const Json &node, const Flattening &flattening,
+                  std::vector<std::string> &active, CanvasIr &ir, std::vector<CanvasItem> &items) {
+    auto filter = parseCanvasFilter(node);
+    const auto &inputs = objectMember(node, "inputs");
+    const auto layer = inputs.find("layer");
+    if (layer == inputs.end()) throw std::invalid_argument(nodeOp(node) + " requires a layer edge: " + nodeId(node));
+    auto inner = flattening;
+    inner.stacks.insert(inner.stacks.begin(), nodeId(node));
+    auto item = singleItem(scope, *layer, inner, active, ir);
+    if (!item) return;
+    item->filters.push_back(std::move(filter));
+    items.push_back(std::move(*item));
+}
+
 CanvasMask parseMask(const Json &image, const Flattening &flattening) {
     onlyKeys(image, {"asset", "offset", "size", "channel", "outside", "sampler"});
     const auto id = nodeId(image);
@@ -551,6 +581,8 @@ struct StackLayer {
     bool visible = true;
     bool clip = false;
     bool pass_through = false;
+    // CV-2b.
+    CanvasBlend blend = CanvasBlend::normal;
 };
 
 // The context one layer's items join their list with.
@@ -604,6 +636,15 @@ void appendClipUnit(const Scope &scope, const Json &stack, const StackLayer &bas
     std::vector<const StackLayer *> shown;
     for (const auto *clip : clips)
         if (clip->visible) shown.push_back(clip);
+    // CV-2b: a layer that blends is one item, its layers composited first.
+    if (shown.empty() && base.blend != CanvasBlend::normal) {
+        auto item = singleItem(scope, *base.edge, layerFlattening(scope, stack, base, flattening, ir, true, true),
+                               active, ir);
+        if (!item) return;
+        item->blend = base.blend;
+        items.push_back(std::move(*item));
+        return;
+    }
     if (shown.empty())
         return appendLayer(scope, *base.edge, layerFlattening(scope, stack, base, flattening, ir, true, true), active,
                            ir, items);
@@ -623,11 +664,14 @@ void appendClipUnit(const Scope &scope, const Json &stack, const StackLayer &bas
         auto item = singleItem(scope, *clip->edge, layerFlattening(scope, stack, *clip, inner, ir, true, true), active, ir);
         if (!item) continue;
         item->clip_base = 0;
+        item->blend = clip->blend;
         unit.push_back(std::move(*item));
     }
     auto outer = layerFlattening(scope, stack, base, flattening, ir, true, false);
     outer.pass_through = false;
     items.push_back(groupItem(std::move(unit), flattening.srgb, nodeId(*producer(scope, *base.edge)), outer));
+    // The base's blend composites the base and its clip layers as one.
+    items.back().blend = base.blend;
 }
 
 // A stack's layers, bottom to top, into `items` under `flattening`.
@@ -650,9 +694,14 @@ void appendStackLayers(const Scope &scope, const Json &stack, const Flattening &
         if (input == layer.end() || !input->is_string() || input->get_ref<const std::string &>().empty())
             throw std::invalid_argument("canvas.stack layer requires an input name: " + id);
         const auto name = input->get<std::string>();
-        if (const auto blend = layer.find("blend"); blend != layer.end() && *blend != "normal")
-            throw GraphRegistryError("canvas.blend_unsupported@1",
-                                     {{"node", id}, {"layer", layerName(layer, index)}, {"blend", *blend}});
+        auto blend = CanvasBlend::normal;
+        if (const auto found = layer.find("blend"); found != layer.end()) {
+            const auto parsed = found->is_string() ? canvasBlendFromName(found->get<std::string>()) : std::nullopt;
+            if (!parsed)
+                throw GraphRegistryError("canvas.blend_unsupported@1",
+                                         {{"node", id}, {"layer", layerName(layer, index)}, {"blend", *found}});
+            blend = *parsed;
+        }
         const auto edge = inputs.find(name);
         if (edge == inputs.end())
             throw GraphRegistryError("canvas.layer_input_missing@1",
@@ -668,6 +717,10 @@ void appendStackLayers(const Scope &scope, const Json &stack, const Flattening &
         entry.visible = !layer.contains("visible") || flag("visible");
         entry.clip = flag("clip");
         entry.pass_through = flag("pass_through");
+        entry.blend = blend;
+        // A pass-through group composites its layers into the stack itself.
+        if (entry.pass_through && blend != CanvasBlend::normal)
+            throw std::invalid_argument("canvas.stack layer takes pass_through or a blend, not both: " + id);
         if (const auto mask = layer.find("mask");
             mask != layer.end() && (!mask->is_string() || mask->get_ref<const std::string &>().empty()))
             throw std::invalid_argument("canvas.stack layer mask must be an input name: " + id);
@@ -728,7 +781,9 @@ void appendStack(const Scope &scope, const Json &stack, const Flattening &flatte
         std::vector<CanvasItem> group;
         appendStackLayers(scope, stack, fresh, active, ir, group);
         const bool plain = flattening.opacity == 1.0 && flattening.opacity_edges.empty() && flattening.masks.empty();
-        if (srgb == flattening.srgb && (group.size() <= 1 || plain)) {
+        // CV-2b: an item that reads its backdrop reads this stack's alone.
+        const bool isolated = std::any_of(group.begin(), group.end(), canvasItemReadsBackdrop);
+        if (srgb == flattening.srgb && !isolated && (group.size() <= 1 || plain)) {
             if (flattening.own_opacity && !group.empty())
                 ir.diagnostics.push_back({{"code", "canvas.group_opacity_flattened"}, {"node", id}});
             const auto first = items.size();
@@ -749,7 +804,7 @@ void appendLayer(const Scope &scope, const Json &endpoint, const Flattening &fla
     const auto *from = producer(scope, endpoint);
     if (from == nullptr) throw std::invalid_argument("canvas layer edge names no node of its scope");
     const auto op = nodeOp(*from);
-    if (op == "canvas.backdrop" || op.starts_with("filter."))
+    if (op.starts_with("filter.") && !isCanvasColorFilter(op))
         throw GraphRegistryError("canvas.op_unsupported@1", {{"node", nodeId(*from)}, {"op", op}});
     if (op == "canvas.stack") return appendStack(scope, *from, flattening, active, ir, items);
     if (op == "canvas.transform") return appendTransform(scope, *from, flattening, active, ir, items);
@@ -759,8 +814,11 @@ void appendLayer(const Scope &scope, const Json &endpoint, const Flattening &fla
     if (op == "canvas.image") return appendImage(scope, *from, flattening, items);
     if (op == "canvas.from_image") return appendFromImage(scope, *from, flattening, items);
     if (op == "canvas.color") return appendColor(scope, *from, flattening, items);
+    if (op == "canvas.backdrop") return appendBackdrop(*from, flattening, items);
+    if (isCanvasColorFilter(op)) return appendFilter(scope, *from, flattening, active, ir, items);
     throw std::invalid_argument("a canvas layer comes from shape.fill, shape.stroke, canvas.image, "
-                                "canvas.from_image, canvas.color, canvas.transform or canvas.stack, not " +
+                                "canvas.from_image, canvas.color, canvas.backdrop, filter.*, canvas.transform "
+                                "or canvas.stack, not " +
                                 op + ": " + nodeId(*from));
 }
 
@@ -849,8 +907,8 @@ void checkScope(const std::string &name, const Json &holder, const std::set<std:
     if (nodes == holder.end() || !nodes->is_array()) return;
     std::vector<std::string> outputs;
     for (const auto &node : *nodes) {
-        // CV-2b's: they read the backdrop.
-        if (nodeOp(node) == "canvas.backdrop" || nodeOp(node).starts_with("filter."))
+        // The neighbourhood filters (blur, ...) are not lowered yet.
+        if (nodeOp(node).starts_with("filter.") && !isCanvasColorFilter(nodeOp(node)))
             throw GraphRegistryError("canvas.op_unsupported@1", {{"node", nodeId(node)}, {"op", nodeOp(node)}});
         if (!isCanvasGraphOperation(nodeOp(node))) continue;
         if (bodies.contains(name)) throw GraphRegistryError("canvas.in_loop_body@1", {{"node", nodeId(node)}});
@@ -1140,7 +1198,97 @@ struct DrawShape {
     bool srgb = false;
     std::size_t slots = 0;
     bool masks = false;
+    // CV-2b: the (blend, filters) of style 1, 2, ...; whether the draw goes
+    // atop (clip layers, backdrops); the slot of the backdrop's copy.
+    std::vector<std::pair<CanvasBlend, std::vector<CanvasFilterKind>>> styles;
+    bool atop = false;
+    std::optional<std::size_t> backdrop_slot;
 };
+
+// CV-2b: the kind's parameter count, where an item's filter numbers start.
+std::size_t kindParameterCount(std::uint32_t kind) {
+    switch (kind) {
+    case canvas_kind_image: return 6;
+    case canvas_kind_color: return 4;
+    case canvas_kind_group: return 1;
+    case canvas_kind_glyph_fill: return canvas_glyph_parameter_count + canvasPaintParameterCount(CanvasPaint::fill);
+    case canvas_kind_glyph_stroke: return canvas_glyph_parameter_count + canvasPaintParameterCount(CanvasPaint::stroke);
+    case canvas_kind_backdrop: return 0;
+    default: break;
+    }
+    return canvasShapeParameterCount(kind < 2 ? CanvasShape::rect : CanvasShape::ellipse) +
+           canvasPaintParameterCount(kind % 2 == 1 ? CanvasPaint::stroke : CanvasPaint::fill);
+}
+
+// The line that reads an item's kind: past 256 it carries a style.
+std::string kindLine(const DrawShape &draw) {
+    return std::string{"    uint kind = uint(it[0].x + 0.5)"} + (draw.styles.empty() ? "" : " % 256u") + ";\n";
+}
+
+// CV-2b: the blends and filters of the draw's styles, the backdrop read, and
+// canvasStyle -- an item's colour through its filters and over its backdrop.
+std::string styleFunctions(const DrawShape &draw) {
+    std::string text;
+    if (draw.backdrop_slot) {
+        text += "const uint CANVAS_BACKDROP_SLOT = " + std::to_string(*draw.backdrop_slot) + "u;\n\n";
+        text += R"glsl(// What the image held under this draw's first item (its copy), premultiplied.
+vec4 canvasBackdrop() {
+    return canvasSample(CANVAS_BACKDROP_SLOT, gl_FragCoord.xy / canvasTargetSize());
+}
+
+)glsl";
+    }
+    if (draw.styles.empty() && !draw.backdrop_slot) return text;
+    text += R"glsl(vec3 canvasStraight(vec4 c) {
+    return c.a > 0.0 ? clamp(c.rgb / c.a, 0.0, 1.0) : vec3(0.0);
+}
+
+)glsl";
+    if (draw.styles.empty()) return text;
+    std::set<CanvasBlend> blends;
+    std::set<CanvasFilterKind> filters;
+    for (const auto &[blend, list] : draw.styles) {
+        if (blend != CanvasBlend::normal) blends.insert(blend);
+        filters.insert(list.begin(), list.end());
+    }
+    text += canvasBlendGlsl(blends);
+    text += canvasFilterGlsl(filters);
+    text += "uint canvasParamCount(uint kind) {\n    switch (kind) {\n";
+    for (const auto kind : draw.kinds)
+        text += "    case " + std::to_string(kind) + "u: return " + std::to_string(kindParameterCount(kind)) + "u;\n";
+    text += "    default: return 0u;\n    }\n}\n\n";
+    text += "vec4 canvasStyle(mat4 it, vec4 color) {\n";
+    text += "    uint kind = uint(it[0].x + 0.5);\n";
+    text += "    uint r = uint(it[0].y + 0.5) + canvasParamCount(kind % 256u);\n";
+    text += "    vec3 c = canvasStraight(color);\n";
+    text += "    switch (kind / 256u) {\n";
+    for (std::size_t style = 0; style < draw.styles.size(); ++style) {
+        const auto &[blend, list] = draw.styles[style];
+        text += "    case " + std::to_string(style + 1) + "u: // " + std::string{canvasBlendName(blend)};
+        for (const auto kind : list) text += ", " + std::string{canvasFilterOperation(kind)};
+        text += "\n";
+        for (const auto kind : list) {
+            text += "        c = canvasFilter" + std::to_string(static_cast<int>(kind)) + "(c, r);\n";
+            if (canvasFilterConstantCount(kind) > 0)
+                text += "        r += " + std::to_string(canvasFilterConstantCount(kind)) + "u;\n";
+        }
+        if (blend != CanvasBlend::normal) {
+            text += "        {\n            vec4 back = canvasBackdrop();\n";
+            text += "            vec3 mixed = canvasBlend" + std::to_string(static_cast<int>(blend)) +
+                    "(canvasStraight(back), c);\n";
+            // Atop the backdrop counts as opaque (its alpha is kept); over
+            // it, Cs (1 - ab) + ab B(Cb, Cs), premultiplied.
+            text += draw.atop ? "            return vec4(mixed * color.a, color.a);\n"
+                              : "            return vec4(c * color.a * (1.0 - back.a) + mixed * color.a * back.a, "
+                                "color.a);\n";
+            text += "        }\n";
+        } else {
+            text += "        return vec4(c * color.a, color.a);\n";
+        }
+    }
+    text += "    default:\n        return color;\n    }\n}\n\n";
+    return text;
+}
 
 std::string generatedBanner(const CanvasOutput &output, const std::string &raster) {
     std::string text = "// Generated by the pelican.canvas lowering for canvas.output \"" + output.id + "\"";
@@ -1191,8 +1339,9 @@ float canvasStrokeOutset(float width, float align) {
 
 void main() {
     mat4 it = pelican_load_items(uint(gl_InstanceIndex));
-    uint kind = uint(it[0].x + 0.5);
-    vec2 center = vec2(0.0);
+)glsl";
+    text += kindLine(draw);
+    text += R"glsl(    vec2 center = vec2(0.0);
     vec2 bound = vec2(0.0);
     switch (kind) {
 )glsl";
@@ -1214,7 +1363,7 @@ void main() {
             text += "        break;\n    }\n";
             continue;
         }
-        if (kind == canvas_kind_color || kind == canvas_kind_group) {
+        if (kind == canvas_kind_color || kind == canvas_kind_group || kind == canvas_kind_backdrop) {
             text += "        center = 0.5 * CANVAS_SIZE;\n";
             text += "        bound = 0.5 * CANVAS_SIZE;\n";
             text += "        break;\n    }\n";
@@ -1364,6 +1513,7 @@ float canvasGlyphStroke(float d, float width, float align) {
 
 )glsl";
     }
+    text += styleFunctions(draw);
     if (draw.masks)
         text += R"glsl(float canvasMask(mat4 it, vec2 p) {
     float m = 1.0;
@@ -1389,9 +1539,9 @@ float canvasGlyphStroke(float d, float width, float align) {
 }
 
 )glsl";
-    text += R"glsl(vec4 canvasPaint(mat4 it, vec2 p) {
-    uint kind = uint(it[0].x + 0.5);
-    vec2 q = canvasItemPoint(it, p);
+    text += "vec4 canvasPaint(mat4 it, vec2 p) {\n";
+    text += kindLine(draw);
+    text += R"glsl(    vec2 q = canvasItemPoint(it, p);
     vec4 color = vec4(0.0);
     switch (kind) {
 )glsl";
@@ -1439,6 +1589,13 @@ float canvasGlyphStroke(float d, float width, float align) {
             text += "        }\n        break;\n    }\n";
             continue;
         }
+        if (kind == canvas_kind_backdrop) {
+            // Its colour, opaque: drawn atop, the alpha below stays.
+            text += "        if (canvasInside(q / CANVAS_SIZE))\n";
+            text += "            color = vec4(canvasStraight(canvasBackdrop()), 1.0);\n";
+            text += "        break;\n    }\n";
+            continue;
+        }
         if (kind == canvas_kind_group) {
             text += "        vec2 scale, offset;\n        canvasFit(scale, offset);\n";
             text += "        color = canvasTexel(canvasSample(uint(it[3].z + 0.5), (offset + q * scale) / "
@@ -1471,8 +1628,9 @@ float canvasGlyphStroke(float d, float width, float align) {
     text += "    return color;\n}\n\nvoid main() {\n";
     text += "    mat4 it = pelican_load_items(vItem);\n";
     text += "    vec4 color = canvasPaint(it, vCanvas);\n";
-    text += R"glsl(    color *= canvasOpacity(it);
-    if (color.a <= 0.0) discard;
+    text += "    color *= canvasOpacity(it);\n";
+    if (!draw.styles.empty()) text += "    color = canvasStyle(it, color);\n";
+    text += R"glsl(    if (color.a <= 0.0) discard;
     outColor = color;
 }
 )glsl";
@@ -1515,32 +1673,43 @@ struct CanvasDraw {
     std::vector<CanvasTexture> slots;
     // Clip layers, drawn atop what the draws before drew (their base).
     bool atop = false;
+    // CV-2b: the draw's first item reads its backdrop from copy k of the
+    // image (`backdrop_prefix` back<k>), one of the draw's slots.
+    std::optional<std::size_t> backdrop;
 };
 
 // Items in order, cut where clip layers start or end, and where the next item
 // would take the draw past canvas_draw_image_limit images (`splits` counts
-// those cuts).
+// those cuts). CV-2b: cut before each item that reads its backdrop, which
+// then reads a copy of the image as the draws before it left it (the first
+// item of the list has none to read: the lowering lets it blend normal).
 std::vector<CanvasDraw> planDraws(const std::vector<CanvasItem> &items, const std::string &output,
-                                  std::size_t &splits) {
+                                  std::size_t &splits, const std::string &backdrop_prefix = {}) {
     std::vector<CanvasDraw> draws(1);
     splits = 0;
+    std::size_t copies = 0;
     for (std::size_t index = 0; index < items.size(); ++index) {
         std::vector<CanvasTexture> textures;
+        const bool reads = index > 0 && canvasItemReadsBackdrop(items[index]);
+        if (reads)
+            textures.push_back({CanvasTexture::Origin::graph, {}, false, backdrop_prefix + "back" + std::to_string(copies),
+                                "image", 0, true});
         itemTextures(items[index], textures);
         if (textures.size() > canvas_draw_image_limit)
             throw GraphRegistryError("canvas.draw_images_exceeded@1", {{"output", output},
                                                                         {"count", textures.size()},
                                                                         {"limit", canvas_draw_image_limit}});
-        const bool atop = items[index].clip_base.has_value();
+        const bool atop = items[index].clip_base.has_value() || items[index].source == CanvasItemSource::backdrop;
         auto merged = draws.back().slots;
         for (const auto &texture : textures)
             if (std::find(merged.begin(), merged.end(), texture) == merged.end()) merged.push_back(texture);
         const bool full = merged.size() > canvas_draw_image_limit;
-        if (!draws.back().items.empty() && (full || atop != draws.back().atop)) {
-            if (full) ++splits;
+        if (!draws.back().items.empty() && (full || reads || atop != draws.back().atop)) {
+            if (full && !reads) ++splits;
             draws.emplace_back();
             merged = textures;
         }
+        if (reads) draws.back().backdrop = copies++;
         draws.back().atop = atop;
         draws.back().slots = std::move(merged);
         draws.back().items.push_back(index);
@@ -1560,6 +1729,59 @@ Json canvasImageParameters(const CanvasOutput &output) {
     return parameters;
 }
 
+// CV-2b: `<copy>` writes what the draw `previous` left in its image into
+// `<copy>_image`, texel for texel: one triangle over the image.
+void lowerBackdropCopy(const CanvasOutput &output, const std::string &copy, const std::string &previous,
+                       const CanvasLoweringOptions &options, LoweredOutput &lowered) {
+    const auto &id = output.id;
+    std::string vertex = shader_header;
+    vertex += generatedBanner(output, copy);
+    vertex += "// The backdrop copy: one triangle over the whole image.\n";
+    vertex += shader_includes;
+    vertex += R"glsl(
+void main() {
+    vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+)glsl";
+    std::string fragment = shader_header;
+    fragment += generatedBanner(output, copy);
+    fragment += "// The backdrop copy: each pixel of the image as the draw before left it.\n";
+    fragment += shader_includes;
+    fragment += "\nlayout(location = 0) out vec4 outColor;\n\n";
+    fragment += fitFunctions(output);
+    fragment += R"glsl(
+void main() {
+    outColor = pelican_sample_lod_t0(gl_FragCoord.xy / canvasTargetSize(), 0.0);
+}
+)glsl";
+    const auto digest = picosha2::hash256_hex_string(vertex + std::string(1, '\0') + fragment);
+    const auto stem = "canvas_" + fileStem(copy) + "_" + digest.substr(0, 8);
+    const auto directory = options.shader_directory + (options.directory_per_stem ? "/" + stem : std::string{});
+    lowered.sources.push_back({stem, "vert", vertex, {}, id, directory + "/" + stem + ".vert"});
+    lowered.sources.push_back({stem, "frag", fragment, {}, id, directory + "/" + stem + ".frag"});
+    const auto image = copy + "_image";
+    lowered.nodes.push_back({{"id", image}, {"op", "render.image"}, {"parameters", canvasImageParameters(output)},
+                             {"inputs", Json::object()}, {"outputs", Json::array({"resource"})}});
+    const auto shader = "project://" + directory + "/" + stem;
+    Json ports{{"t0", {{"kind", "image"}, {"type", colorType()}, {"access", "read"},
+                       {"sampling", {{"filter", "nearest"}, {"address", "clamp_to_edge"}}}}},
+               {"image", {{"kind", "image"}, {"type", colorType()}, {"access", "write"}, {"attachment", "color"},
+                          {"location", 0}}}};
+    Json parameters{{"shader", {{"vertex", shader}, {"fragment", shader}}},
+                    {"draw", {{"vertex_count", 3}}},
+                    {"raster_state",
+                     {{"topology", "triangle_list"}, {"cull", "none"}, {"depth_test", false}, {"depth_write", false},
+                      {"color_attachments", Json::array({{{"write_mask", "rgba"}}})}}},
+                    {"ports", std::move(ports)},
+                    {"clear_color", Json::array({0.0, 0.0, 0.0, 0.0})}};
+    lowered.nodes.push_back({{"id", copy},
+                             {"op", "render.raster"},
+                             {"parameters", std::move(parameters)},
+                             {"inputs", {{"t0", endpoint(previous, "image")}, {"image", endpoint(image, "resource")}}},
+                             {"outputs", Json::array({"image"})}});
+}
+
 // One image of an output (the output's own, or a group's): its render.image
 // and the draws that fill it, the last of which carries `raster`.
 void lowerComposite(const CanvasOutput &output, const std::vector<CanvasItem> &authored, bool srgb,
@@ -1570,6 +1792,29 @@ void lowerComposite(const CanvasOutput &output, const std::vector<CanvasItem> &a
     const auto raster = group ? canvasGroupRasterNodeId(id, *group) : id;
     const auto image = group ? canvasGroupImageNodeId(id, *group) : canvasImageNodeId(id);
     auto items = authored;
+    // CV-2b: the first item has nothing below it to read. A blend there is
+    // normal; a backdrop draws nothing (and goes, unless clip layers sit on it).
+    if (!items.empty() && canvasItemReadsBackdrop(items.front())) {
+        auto &first = items.front();
+        first.blend = CanvasBlend::normal;
+        if (first.source == CanvasItemSource::backdrop) {
+            const bool based = std::any_of(items.begin(), items.end(),
+                                           [](const CanvasItem &item) { return item.clip_base == std::size_t{0}; });
+            if (based) {
+                first.source = CanvasItemSource::shape;
+                first.parameters.assign(canvasShapeParameterCount(CanvasShape::rect) +
+                                            canvasPaintParameterCount(CanvasPaint::fill), CanvasParameter{});
+                first.opacity = 0.0;
+                first.opacity_edges.clear();
+                first.masks.clear();
+                first.filters.clear();
+            } else {
+                items.erase(items.begin());
+                for (auto &item : items)
+                    if (item.clip_base) --*item.clip_base;
+            }
+        }
+    }
     // An empty canvas still draws one item (fully transparent), so the item
     // table and the pass keep their shape.
     const bool empty = items.empty();
@@ -1581,7 +1826,14 @@ void lowerComposite(const CanvasOutput &output, const std::vector<CanvasItem> &a
         items.push_back(std::move(none));
     }
     std::size_t splits = 0;
-    const auto draws = planDraws(items, id, splits);
+    const auto draws = planDraws(items, id, splits, prefix);
+    if (const auto copies = std::count_if(draws.begin(), draws.end(),
+                                          [](const CanvasDraw &draw) { return draw.backdrop.has_value(); });
+        copies > 0) {
+        Json diagnostic{{"code", "canvas.backdrop_copies"}, {"output", id}, {"count", copies}};
+        if (group) diagnostic["group"] = *group;
+        lowered.diagnostics.push_back(std::move(diagnostic));
+    }
     if (splits > 0) {
         Json diagnostic{{"code", "canvas.draw_split"}, {"output", id}, {"reason", "image_limit"},
                         {"count", splits + 1}};
@@ -1615,14 +1867,33 @@ void lowerComposite(const CanvasOutput &output, const std::vector<CanvasItem> &a
         DrawShape shape;
         shape.srgb = srgb;
         shape.slots = draw.slots.size();
+        shape.atop = draw.atop;
+        if (draw.backdrop) {
+            // CV-2b: the copy the draw reads its backdrop from: a raster
+            // that writes the image, as the draw before left it, into one of
+            // its own (a pass cannot read the image it draws into).
+            const auto copy = prefix + "back" + std::to_string(*draw.backdrop);
+            shape.backdrop_slot = static_cast<std::size_t>(
+                slotOf(CanvasTexture{CanvasTexture::Origin::graph, {}, false, copy, "image", 0, true}));
+            lowerBackdropCopy(output, copy, previous, options, lowered);
+        }
         for (const auto index : draw.items) {
             const auto instance = local.size();
             local.emplace(index, instance);
             const auto &item = items[index];
-            const auto kind = canvasItemKind(item);
+            auto kind = canvasItemKind(item);
             shape.kinds.insert(kind);
+            // CV-2b: the item's style, numbered by first use in the draw.
+            if (item.blend != CanvasBlend::normal || !item.filters.empty()) {
+                std::pair<CanvasBlend, std::vector<CanvasFilterKind>> style{item.blend, {}};
+                for (const auto &filter : item.filters) style.second.push_back(filter.kind);
+                auto found = std::find(shape.styles.begin(), shape.styles.end(), style);
+                if (found == shape.styles.end()) found = shape.styles.insert(shape.styles.end(), std::move(style));
+                kind += canvas_kind_style_stride * static_cast<std::uint32_t>(found - shape.styles.begin() + 1);
+            }
             const auto bake_offset = static_cast<double>(bake.size());
             for (const auto &parameter : item.parameters) bake.push_back(parameter.value);
+            for (const auto &filter : item.filters) bake.insert(bake.end(), filter.constants.begin(), filter.constants.end());
             double source_offset = -1.0;
             if (std::any_of(item.parameters.begin(), item.parameters.end(),
                             [](const CanvasParameter &parameter) { return parameter.edge.has_value(); })) {
@@ -1661,9 +1932,17 @@ void lowerComposite(const CanvasOutput &output, const std::vector<CanvasItem> &a
                 auto nodes = Json::array();
                 for (const auto &node : item.nodes) nodes.push_back(node);
                 Json entry{{"output", id}, {"instance", instance},
-                           {"kind", std::string{canvasItemKindName(kind)}}, {"nodes", std::move(nodes)}};
+                           {"kind", std::string{canvasItemKindName(kind % canvas_kind_style_stride)}},
+                           {"nodes", std::move(nodes)}};
                 if (group) entry["group"] = *group;
                 if (draws.size() > 1) entry["draw"] = draw_index;
+                if (item.blend != CanvasBlend::normal) entry["blend"] = std::string{canvasBlendName(item.blend)};
+                if (!item.filters.empty()) {
+                    entry["filters"] = Json::array();
+                    for (const auto &filter : item.filters)
+                        entry["filters"].push_back({{"node", filter.node},
+                                                    {"op", std::string{canvasFilterOperation(filter.kind)}}});
+                }
                 lowered.items.push_back(std::move(entry));
             }
         }
@@ -1865,8 +2144,13 @@ std::string_view canvasItemKindName(std::uint32_t kind) {
     case canvas_kind_group: return "group";
     case canvas_kind_glyph_fill: return "glyph_fill";
     case canvas_kind_glyph_stroke: return "glyph_stroke";
+    case canvas_kind_backdrop: return "backdrop";
     default: throw std::invalid_argument("unknown canvas item kind: " + std::to_string(kind));
     }
+}
+
+bool canvasItemReadsBackdrop(const CanvasItem &item) {
+    return item.blend != CanvasBlend::normal || item.source == CanvasItemSource::backdrop;
 }
 
 std::uint32_t canvasItemKind(const CanvasItem &item) {
@@ -1877,6 +2161,7 @@ std::uint32_t canvasItemKind(const CanvasItem &item) {
     case CanvasItemSource::group: return canvas_kind_group;
     case CanvasItemSource::glyph:
         return item.paint == CanvasPaint::fill ? canvas_kind_glyph_fill : canvas_kind_glyph_stroke;
+    case CanvasItemSource::backdrop: return canvas_kind_backdrop;
     }
     throw std::invalid_argument("unknown canvas item source");
 }

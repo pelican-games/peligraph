@@ -1,0 +1,1925 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [
+    {
+      "id": "background",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/layers/0000_Background.png",
+        "offset": [
+          0,
+          -12
+        ],
+        "size": [
+          128,
+          64
+        ],
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m00_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          0,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m00",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.95,
+          0.2375,
+          0.2375,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m01_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          4,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m01",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.95,
+          0.4019,
+          0.2375,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m02_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          8,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m02",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.95,
+          0.5663,
+          0.2375,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m03_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          12,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m03",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.95,
+          0.7308,
+          0.2375,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m04_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          16,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m04",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.95,
+          0.8952,
+          0.2375,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m05_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          20,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m05",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.8404,
+          0.95,
+          0.2375,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m06_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          24,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m06",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.676,
+          0.95,
+          0.2375,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m07_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          28,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m07",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.5115,
+          0.95,
+          0.2375,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m08_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          32,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m08",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.3471,
+          0.95,
+          0.2375,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m09_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          36,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m09",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.2375,
+          0.95,
+          0.2923,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m10_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          40,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m10",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.2375,
+          0.95,
+          0.4567,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m11_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          44,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m11",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.2375,
+          0.95,
+          0.6212,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m12_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          48,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m12",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.2375,
+          0.95,
+          0.7856,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m13_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          52,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m13",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.2375,
+          0.95,
+          0.95,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m14_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          56,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m14",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.2375,
+          0.7856,
+          0.95,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m15_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          60,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m15",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.2375,
+          0.6212,
+          0.95,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m16_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          64,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m16",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.2375,
+          0.4567,
+          0.95,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m17_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          68,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m17",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.2375,
+          0.2923,
+          0.95,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m18_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          72,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m18",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.3471,
+          0.2375,
+          0.95,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m19_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          76,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m19",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.5115,
+          0.2375,
+          0.95,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m20_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          80,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m20",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.676,
+          0.2375,
+          0.95,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m21_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          84,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m21",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.8404,
+          0.2375,
+          0.95,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m22_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          88,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m22",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.95,
+          0.2375,
+          0.8952,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m23_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          92,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m23",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.95,
+          0.2375,
+          0.7308,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m24_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          96,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m24",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.95,
+          0.2375,
+          0.5663,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m25_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          100,
+          2
+        ],
+        "size": [
+          4,
+          14
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "m25",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.95,
+          0.2375,
+          0.4019,
+          0.8
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "invert_backdrop",
+      "op": "canvas.backdrop",
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "invert_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          0,
+          20
+        ],
+        "size": [
+          16,
+          15
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "invert",
+      "op": "filter.invert",
+      "inputs": {
+        "layer": {
+          "node": "invert_backdrop",
+          "port": "layer"
+        }
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "brightness_contrast_backdrop",
+      "op": "canvas.backdrop",
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "brightness_contrast_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          16,
+          20
+        ],
+        "size": [
+          16,
+          15
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "brightness_contrast",
+      "op": "filter.brightness_contrast",
+      "inputs": {
+        "layer": {
+          "node": "brightness_contrast_backdrop",
+          "port": "layer"
+        }
+      },
+      "outputs": [
+        "layer"
+      ],
+      "parameters": {
+        "brightness": 40,
+        "contrast": 35
+      }
+    },
+    {
+      "id": "levels_backdrop",
+      "op": "canvas.backdrop",
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "levels_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          32,
+          20
+        ],
+        "size": [
+          16,
+          15
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "levels",
+      "op": "filter.levels",
+      "inputs": {
+        "layer": {
+          "node": "levels_backdrop",
+          "port": "layer"
+        }
+      },
+      "outputs": [
+        "layer"
+      ],
+      "parameters": {
+        "input_floor": 15,
+        "input_ceiling": 220,
+        "gamma": 0.8,
+        "output_floor": 20,
+        "output_ceiling": 240,
+        "channels": {
+          "blue": {
+            "input_floor": 30,
+            "input_ceiling": 255,
+            "gamma": 1.6,
+            "output_floor": 0,
+            "output_ceiling": 255
+          }
+        }
+      }
+    },
+    {
+      "id": "hue_saturation_backdrop",
+      "op": "canvas.backdrop",
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "hue_saturation_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          48,
+          20
+        ],
+        "size": [
+          16,
+          15
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "hue_saturation",
+      "op": "filter.hue_saturation",
+      "inputs": {
+        "layer": {
+          "node": "hue_saturation_backdrop",
+          "port": "layer"
+        }
+      },
+      "outputs": [
+        "layer"
+      ],
+      "parameters": {
+        "hue": 0,
+        "saturation": 0,
+        "lightness": 0,
+        "colorize": {
+          "hue": 200,
+          "saturation": 60,
+          "lightness": -10
+        }
+      }
+    },
+    {
+      "id": "gradient_map_backdrop",
+      "op": "canvas.backdrop",
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "gradient_map_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          64,
+          20
+        ],
+        "size": [
+          16,
+          15
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "gradient_map",
+      "op": "filter.gradient_map",
+      "inputs": {
+        "layer": {
+          "node": "gradient_map_backdrop",
+          "port": "layer"
+        }
+      },
+      "outputs": [
+        "layer"
+      ],
+      "parameters": {
+        "stops": [
+          {
+            "position": 0.0,
+            "color": [
+              0.1,
+              0.0,
+              0.3
+            ]
+          },
+          {
+            "position": 0.5,
+            "color": [
+              0.9,
+              0.3,
+              0.2
+            ]
+          },
+          {
+            "position": 1.0,
+            "color": [
+              1.0,
+              1.0,
+              0.6
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "color_overlay_backdrop",
+      "op": "canvas.backdrop",
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "color_overlay_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          80,
+          20
+        ],
+        "size": [
+          16,
+          15
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "color_overlay",
+      "op": "filter.color_overlay",
+      "inputs": {
+        "layer": {
+          "node": "color_overlay_backdrop",
+          "port": "layer"
+        }
+      },
+      "outputs": [
+        "layer"
+      ],
+      "parameters": {
+        "color": [
+          0.2,
+          0.8,
+          0.4,
+          0.6
+        ]
+      }
+    },
+    {
+      "id": "base_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          96,
+          20
+        ],
+        "size": [
+          8,
+          10
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "base",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.9,
+          0.7,
+          0.2,
+          0.9
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "clipped_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          96,
+          24
+        ],
+        "size": [
+          8,
+          10
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "clipped",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.3,
+          0.5,
+          0.9,
+          1.0
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "tinted_color",
+      "op": "canvas.color",
+      "parameters": {
+        "color": [
+          0.8,
+          0.2,
+          0.2,
+          1.0
+        ]
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "tinted_mask",
+      "op": "canvas.image",
+      "parameters": {
+        "asset": "project://imports/psd_blend/masks/0009_Invert.png",
+        "channel": "luminance",
+        "offset": [
+          96,
+          34
+        ],
+        "size": [
+          8,
+          6
+        ],
+        "outside": 0.0,
+        "sampler": "nearest"
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "tinted",
+      "op": "filter.hue_saturation",
+      "parameters": {
+        "hue": 120,
+        "saturation": 20
+      },
+      "inputs": {
+        "layer": {
+          "node": "tinted_color",
+          "port": "layer"
+        }
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "root",
+      "op": "canvas.stack",
+      "parameters": {
+        "size": [
+          104,
+          40
+        ],
+        "blend_space": "srgb",
+        "layers": [
+          {
+            "input": "background"
+          },
+          {
+            "input": "m00",
+            "mask": "m00_mask",
+            "name": "normal"
+          },
+          {
+            "input": "m01",
+            "mask": "m01_mask",
+            "name": "multiply",
+            "blend": "multiply"
+          },
+          {
+            "input": "m02",
+            "mask": "m02_mask",
+            "name": "screen",
+            "blend": "screen"
+          },
+          {
+            "input": "m03",
+            "mask": "m03_mask",
+            "name": "overlay",
+            "blend": "overlay"
+          },
+          {
+            "input": "m04",
+            "mask": "m04_mask",
+            "name": "darken",
+            "blend": "darken"
+          },
+          {
+            "input": "m05",
+            "mask": "m05_mask",
+            "name": "lighten",
+            "blend": "lighten"
+          },
+          {
+            "input": "m06",
+            "mask": "m06_mask",
+            "name": "color_dodge",
+            "blend": "color_dodge"
+          },
+          {
+            "input": "m07",
+            "mask": "m07_mask",
+            "name": "color_burn",
+            "blend": "color_burn"
+          },
+          {
+            "input": "m08",
+            "mask": "m08_mask",
+            "name": "hard_light",
+            "blend": "hard_light"
+          },
+          {
+            "input": "m09",
+            "mask": "m09_mask",
+            "name": "soft_light",
+            "blend": "soft_light"
+          },
+          {
+            "input": "m10",
+            "mask": "m10_mask",
+            "name": "difference",
+            "blend": "difference"
+          },
+          {
+            "input": "m11",
+            "mask": "m11_mask",
+            "name": "exclusion",
+            "blend": "exclusion"
+          },
+          {
+            "input": "m12",
+            "mask": "m12_mask",
+            "name": "hue",
+            "blend": "hue"
+          },
+          {
+            "input": "m13",
+            "mask": "m13_mask",
+            "name": "saturation",
+            "blend": "saturation"
+          },
+          {
+            "input": "m14",
+            "mask": "m14_mask",
+            "name": "color",
+            "blend": "color"
+          },
+          {
+            "input": "m15",
+            "mask": "m15_mask",
+            "name": "luminosity",
+            "blend": "luminosity"
+          },
+          {
+            "input": "m16",
+            "mask": "m16_mask",
+            "name": "linear_dodge",
+            "blend": "linear_dodge"
+          },
+          {
+            "input": "m17",
+            "mask": "m17_mask",
+            "name": "linear_burn",
+            "blend": "linear_burn"
+          },
+          {
+            "input": "m18",
+            "mask": "m18_mask",
+            "name": "subtract",
+            "blend": "subtract"
+          },
+          {
+            "input": "m19",
+            "mask": "m19_mask",
+            "name": "divide",
+            "blend": "divide"
+          },
+          {
+            "input": "m20",
+            "mask": "m20_mask",
+            "name": "vivid_light",
+            "blend": "vivid_light"
+          },
+          {
+            "input": "m21",
+            "mask": "m21_mask",
+            "name": "linear_light",
+            "blend": "linear_light"
+          },
+          {
+            "input": "m22",
+            "mask": "m22_mask",
+            "name": "pin_light",
+            "blend": "pin_light"
+          },
+          {
+            "input": "m23",
+            "mask": "m23_mask",
+            "name": "hard_mix",
+            "blend": "hard_mix"
+          },
+          {
+            "input": "m24",
+            "mask": "m24_mask",
+            "name": "darker_color",
+            "blend": "darker_color"
+          },
+          {
+            "input": "m25",
+            "mask": "m25_mask",
+            "name": "lighter_color",
+            "blend": "lighter_color"
+          },
+          {
+            "input": "invert",
+            "name": "invert",
+            "mask": "invert_mask",
+            "opacity": 0.7
+          },
+          {
+            "input": "brightness_contrast",
+            "name": "brightness_contrast",
+            "mask": "brightness_contrast_mask"
+          },
+          {
+            "input": "levels",
+            "name": "levels",
+            "mask": "levels_mask"
+          },
+          {
+            "input": "hue_saturation",
+            "name": "hue_saturation",
+            "mask": "hue_saturation_mask",
+            "blend": "overlay"
+          },
+          {
+            "input": "gradient_map",
+            "name": "gradient_map",
+            "mask": "gradient_map_mask"
+          },
+          {
+            "input": "color_overlay",
+            "name": "color_overlay",
+            "mask": "color_overlay_mask"
+          },
+          {
+            "input": "base",
+            "mask": "base_mask",
+            "name": "base"
+          },
+          {
+            "input": "clipped",
+            "mask": "clipped_mask",
+            "name": "clipped",
+            "clip": true,
+            "blend": "multiply"
+          },
+          {
+            "input": "tinted",
+            "name": "tinted",
+            "mask": "tinted_mask"
+          }
+        ]
+      },
+      "inputs": {
+        "background": {
+          "node": "background",
+          "port": "layer"
+        },
+        "m00": {
+          "node": "m00",
+          "port": "layer"
+        },
+        "m00_mask": {
+          "node": "m00_mask",
+          "port": "layer"
+        },
+        "m01": {
+          "node": "m01",
+          "port": "layer"
+        },
+        "m01_mask": {
+          "node": "m01_mask",
+          "port": "layer"
+        },
+        "m02": {
+          "node": "m02",
+          "port": "layer"
+        },
+        "m02_mask": {
+          "node": "m02_mask",
+          "port": "layer"
+        },
+        "m03": {
+          "node": "m03",
+          "port": "layer"
+        },
+        "m03_mask": {
+          "node": "m03_mask",
+          "port": "layer"
+        },
+        "m04": {
+          "node": "m04",
+          "port": "layer"
+        },
+        "m04_mask": {
+          "node": "m04_mask",
+          "port": "layer"
+        },
+        "m05": {
+          "node": "m05",
+          "port": "layer"
+        },
+        "m05_mask": {
+          "node": "m05_mask",
+          "port": "layer"
+        },
+        "m06": {
+          "node": "m06",
+          "port": "layer"
+        },
+        "m06_mask": {
+          "node": "m06_mask",
+          "port": "layer"
+        },
+        "m07": {
+          "node": "m07",
+          "port": "layer"
+        },
+        "m07_mask": {
+          "node": "m07_mask",
+          "port": "layer"
+        },
+        "m08": {
+          "node": "m08",
+          "port": "layer"
+        },
+        "m08_mask": {
+          "node": "m08_mask",
+          "port": "layer"
+        },
+        "m09": {
+          "node": "m09",
+          "port": "layer"
+        },
+        "m09_mask": {
+          "node": "m09_mask",
+          "port": "layer"
+        },
+        "m10": {
+          "node": "m10",
+          "port": "layer"
+        },
+        "m10_mask": {
+          "node": "m10_mask",
+          "port": "layer"
+        },
+        "m11": {
+          "node": "m11",
+          "port": "layer"
+        },
+        "m11_mask": {
+          "node": "m11_mask",
+          "port": "layer"
+        },
+        "m12": {
+          "node": "m12",
+          "port": "layer"
+        },
+        "m12_mask": {
+          "node": "m12_mask",
+          "port": "layer"
+        },
+        "m13": {
+          "node": "m13",
+          "port": "layer"
+        },
+        "m13_mask": {
+          "node": "m13_mask",
+          "port": "layer"
+        },
+        "m14": {
+          "node": "m14",
+          "port": "layer"
+        },
+        "m14_mask": {
+          "node": "m14_mask",
+          "port": "layer"
+        },
+        "m15": {
+          "node": "m15",
+          "port": "layer"
+        },
+        "m15_mask": {
+          "node": "m15_mask",
+          "port": "layer"
+        },
+        "m16": {
+          "node": "m16",
+          "port": "layer"
+        },
+        "m16_mask": {
+          "node": "m16_mask",
+          "port": "layer"
+        },
+        "m17": {
+          "node": "m17",
+          "port": "layer"
+        },
+        "m17_mask": {
+          "node": "m17_mask",
+          "port": "layer"
+        },
+        "m18": {
+          "node": "m18",
+          "port": "layer"
+        },
+        "m18_mask": {
+          "node": "m18_mask",
+          "port": "layer"
+        },
+        "m19": {
+          "node": "m19",
+          "port": "layer"
+        },
+        "m19_mask": {
+          "node": "m19_mask",
+          "port": "layer"
+        },
+        "m20": {
+          "node": "m20",
+          "port": "layer"
+        },
+        "m20_mask": {
+          "node": "m20_mask",
+          "port": "layer"
+        },
+        "m21": {
+          "node": "m21",
+          "port": "layer"
+        },
+        "m21_mask": {
+          "node": "m21_mask",
+          "port": "layer"
+        },
+        "m22": {
+          "node": "m22",
+          "port": "layer"
+        },
+        "m22_mask": {
+          "node": "m22_mask",
+          "port": "layer"
+        },
+        "m23": {
+          "node": "m23",
+          "port": "layer"
+        },
+        "m23_mask": {
+          "node": "m23_mask",
+          "port": "layer"
+        },
+        "m24": {
+          "node": "m24",
+          "port": "layer"
+        },
+        "m24_mask": {
+          "node": "m24_mask",
+          "port": "layer"
+        },
+        "m25": {
+          "node": "m25",
+          "port": "layer"
+        },
+        "m25_mask": {
+          "node": "m25_mask",
+          "port": "layer"
+        },
+        "invert": {
+          "node": "invert",
+          "port": "layer"
+        },
+        "invert_mask": {
+          "node": "invert_mask",
+          "port": "layer"
+        },
+        "brightness_contrast": {
+          "node": "brightness_contrast",
+          "port": "layer"
+        },
+        "brightness_contrast_mask": {
+          "node": "brightness_contrast_mask",
+          "port": "layer"
+        },
+        "levels": {
+          "node": "levels",
+          "port": "layer"
+        },
+        "levels_mask": {
+          "node": "levels_mask",
+          "port": "layer"
+        },
+        "hue_saturation": {
+          "node": "hue_saturation",
+          "port": "layer"
+        },
+        "hue_saturation_mask": {
+          "node": "hue_saturation_mask",
+          "port": "layer"
+        },
+        "gradient_map": {
+          "node": "gradient_map",
+          "port": "layer"
+        },
+        "gradient_map_mask": {
+          "node": "gradient_map_mask",
+          "port": "layer"
+        },
+        "color_overlay": {
+          "node": "color_overlay",
+          "port": "layer"
+        },
+        "color_overlay_mask": {
+          "node": "color_overlay_mask",
+          "port": "layer"
+        },
+        "base": {
+          "node": "base",
+          "port": "layer"
+        },
+        "base_mask": {
+          "node": "base_mask",
+          "port": "layer"
+        },
+        "clipped": {
+          "node": "clipped",
+          "port": "layer"
+        },
+        "clipped_mask": {
+          "node": "clipped_mask",
+          "port": "layer"
+        },
+        "tinted": {
+          "node": "tinted",
+          "port": "layer"
+        },
+        "tinted_mask": {
+          "node": "tinted_mask",
+          "port": "layer"
+        }
+      },
+      "outputs": [
+        "layer"
+      ]
+    },
+    {
+      "id": "out",
+      "op": "canvas.output",
+      "parameters": {
+        "fit": "stretch"
+      },
+      "inputs": {
+        "layer": {
+          "node": "root",
+          "port": "layer"
+        }
+      },
+      "outputs": [
+        "image"
+      ]
+    }
+  ],
+  "outputs": {}
+}

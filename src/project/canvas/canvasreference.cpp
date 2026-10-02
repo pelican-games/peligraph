@@ -331,8 +331,32 @@ class Reference {
                      shape_color(param(item, base + 2)) * a, a};
             break;
         }
+        case CanvasItemSource::backdrop:
+            // CV-2b: read from the image being drawn (composite does).
+            break;
         }
         return color.scaled(mask(item, p));
+    }
+
+    static CanvasRgb straight(const Rgba &c) {
+        if (!(c.a > 0.0)) return {0.0, 0.0, 0.0};
+        return {std::clamp(c.r / c.a, 0.0, 1.0), std::clamp(c.g / c.a, 0.0, 1.0), std::clamp(c.b / c.a, 0.0, 1.0)};
+    }
+
+    // CV-2b: canvasStyle -- the item's colour through its filters, then over
+    // `back` (what the list drew below it) by its blend; atop, the backdrop
+    // counts as opaque.
+    static Rgba style(const CanvasItem &item, const Rgba &color, const Rgba &back, bool srgb, bool atop) {
+        if (item.filters.empty() && item.blend == CanvasBlend::normal) return color;
+        auto c = straight(color);
+        for (const auto &filter : item.filters) c = applyCanvasFilter(filter, c, srgb);
+        const auto a = color.a;
+        if (item.blend == CanvasBlend::normal) return {c[0] * a, c[1] * a, c[2] * a, a};
+        const auto mixed = canvasBlendColor(item.blend, straight(back), c);
+        if (atop) return {mixed[0] * a, mixed[1] * a, mixed[2] * a, a};
+        const auto keep = 1.0 - back.a;
+        return {c[0] * a * keep + mixed[0] * a * back.a, c[1] * a * keep + mixed[1] * a * back.a,
+                c[2] * a * keep + mixed[2] * a * back.a, a};
     }
 
     double opacity(const CanvasItem &item) const {
@@ -365,7 +389,8 @@ class Reference {
                     {0.5 * std::abs(size.x), 0.5 * std::abs(size.y)}};
         }
         case CanvasItemSource::color:
-        case CanvasItemSource::group: break;
+        case CanvasItemSource::group:
+        case CanvasItemSource::backdrop: break;
         }
         const Vec2 half{0.5 * output_.size[0], 0.5 * output_.size[1]};
         return {half, half};
@@ -389,14 +414,28 @@ class Reference {
             const auto first_y = static_cast<std::int64_t>(std::max(0.0, std::ceil(y0 - 0.5)));
             const auto last_y = static_cast<std::int64_t>(std::min<double>(height_, std::ceil(y1 - 0.5)));
             const auto item_opacity = opacity(item);
+            const bool atop = item.clip_base.has_value() || item.source == CanvasItemSource::backdrop;
             for (auto y = first_y; y < last_y; ++y) {
                 for (auto x = first_x; x < last_x; ++x) {
                     const auto px = x + 0.5, py = y + 0.5;
-                    auto color = paint(item, px, py, srgb).scaled(item_opacity);
-                    if (color.a <= 0.0) continue;
                     auto *pixel = &pixels[(static_cast<std::size_t>(y) * width_ + static_cast<std::size_t>(x)) * 4];
+                    // What the list drew below the item: its backdrop.
+                    const Rgba back{pixel[0], pixel[1], pixel[2], pixel[3]};
+                    Rgba color;
+                    if (item.source == CanvasItemSource::backdrop) {
+                        const auto p = canvasPoint(px, py);
+                        const auto q = itemPoint(item.affine, p);
+                        if (inside({q.x / output_.size[0], q.y / output_.size[1]})) {
+                            const auto c = straight(back);
+                            color = Rgba{c[0], c[1], c[2], 1.0}.scaled(mask(item, p));
+                        }
+                    } else {
+                        color = paint(item, px, py, srgb);
+                    }
+                    color = style(item, color.scaled(item_opacity), back, srgb, atop);
+                    if (color.a <= 0.0) continue;
                     const auto keep = 1.0f - static_cast<float>(color.a);
-                    if (item.clip_base) {
+                    if (atop) {
                         // Atop: weighted by the alpha below, which it keeps.
                         const auto below = static_cast<double>(pixel[3]);
                         pixel[0] = static_cast<float>(color.r * below) + pixel[0] * keep;

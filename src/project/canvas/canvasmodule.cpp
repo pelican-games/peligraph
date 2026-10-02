@@ -26,10 +26,11 @@ std::vector<SemanticTypeSchema> builtinCanvasTypeSchemas() {
 }
 
 const std::vector<std::string> &canvasGraphOperations() {
-    static const std::vector<std::string> operations{"canvas.color", "canvas.from_image", "canvas.image",
-                                                     "canvas.output", "canvas.stack", "canvas.transform",
-                                                     "shape.ellipse", "shape.fill", "shape.rect", "shape.stroke",
-                                                     "shape.text"};
+    static const std::vector<std::string> operations{
+        "canvas.backdrop", "canvas.color", "canvas.from_image", "canvas.image", "canvas.output", "canvas.stack",
+        "canvas.transform", "filter.brightness_contrast", "filter.color_overlay", "filter.gradient_map",
+        "filter.hue_saturation", "filter.invert", "filter.levels", "shape.ellipse", "shape.fill", "shape.rect",
+        "shape.stroke", "shape.text"};
     return operations;
 }
 
@@ -159,6 +160,30 @@ void registerCanvasGraphModule(GraphModuleRegistry &registry) {
     transform_inputs.emplace("layer", layer_input);
     auto transform = declared(transform_inputs, {{"layer", layer}}, GraphParameterChange::value);
 
+    // CV-2b: the backdrop and the colour filters. A filter's numbers are
+    // declared as values; the lowering takes them as authored and refuses an
+    // edge into one by name (canvas.filter_edge_unsupported@1).
+    auto backdrop = declared({}, {{"layer", layer}}, GraphParameterChange::rebuild);
+    const auto filter = [&](std::initializer_list<const char *> numbers,
+                            std::map<std::string, GraphParameterChange> rebuilds) {
+        auto inputs = ports(numbers);
+        inputs.emplace("layer", layer_input);
+        auto registration = declared(inputs, {{"layer", layer}}, GraphParameterChange::value);
+        registration.contract.parameter_changes = std::move(rebuilds);
+        return registration;
+    };
+    auto invert = filter({}, {});
+    auto brightness_contrast = filter({"brightness", "contrast"}, {{"legacy", GraphParameterChange::rebuild}});
+    auto levels = filter({"input_floor", "input_ceiling", "gamma", "output_floor", "output_ceiling"},
+                         {{"channels", GraphParameterChange::rebuild}});
+    auto hue_saturation = filter({"hue", "saturation", "lightness"}, {{"colorize", GraphParameterChange::rebuild},
+                                                                      {"ranges", GraphParameterChange::rebuild}});
+    auto gradient_map = filter({}, {{"stops", GraphParameterChange::rebuild},
+                                    {"opacity_stops", GraphParameterChange::rebuild},
+                                    {"reversed", GraphParameterChange::rebuild},
+                                    {"dithered", GraphParameterChange::rebuild}});
+    auto color_overlay = filter({"color.r", "color.g", "color.b", "color.a"}, {});
+
     registry.registerModule(GraphModuleManifest{
         "pelican.canvas", 1,
         "2D shapes, paints and layer stacks, lowered to render nodes and a generated shader.",
@@ -175,6 +200,13 @@ void registerCanvasGraphModule(GraphModuleRegistry &registry) {
             {"canvas.color", std::move(color)},
             {"canvas.transform", std::move(transform)},
             {"shape.text", std::move(text)},
+            {"canvas.backdrop", std::move(backdrop)},
+            {"filter.invert", std::move(invert)},
+            {"filter.brightness_contrast", std::move(brightness_contrast)},
+            {"filter.levels", std::move(levels)},
+            {"filter.hue_saturation", std::move(hue_saturation)},
+            {"filter.gradient_map", std::move(gradient_map)},
+            {"filter.color_overlay", std::move(color_overlay)},
         },
         {}});
 }

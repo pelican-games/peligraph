@@ -84,6 +84,8 @@ target_sources(pelican_project PRIVATE
     canvas/canvasmodule.cpp
     canvas/canvaslowering.cpp
     canvas/canvasreference.cpp
+    # CV-2b: blend modes and colour filters, shared by the shader and the reference.
+    canvas/canvasblend.cpp
     # CV-4: shape.text -- the font file, the distance fields and the atlas.
     canvas/canvastext.cpp
     canvas/distancefield.cpp
