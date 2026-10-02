@@ -1726,4 +1726,103 @@ TEST_CASE("RS-14 a graph numbered input takes a named port's sampling and subres
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+namespace {
+
+// RS-15: a raster vertex shader that reads the pass's input 0 itself (as an
+// ocean's displacement does) and covers the frame only where that input is
+// red; with any other input the triangle collapses and nothing is drawn.
+constexpr std::string_view rs15_lift_vert = R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_sets.glsl"
+
+layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform sampler2D rs15_lift;
+layout(location = 0) out vec2 outUV;
+
+void main() {
+    outUV = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+    gl_Position = vec4(outUV * 2.0 - 1.0, 0.0, 1.0);
+    if (textureLod(rs15_lift, vec2(0.5), 0.0).r < 0.5) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+}
+)glsl";
+
+} // namespace
+
+// RS-15: the vertex shader's fixed input 0 and engine://passthrough's
+// variadic group (bindings 0-7) are one descriptor. Merged, the binding kept
+// the vertex shader's name, so the group read as bindings 1-7 of a group
+// starting at 0 and was refused as malformed; the merge keeps the group's
+// name. A fragment with a fixed input there merges as before.
+TEST_CASE("RS-15 a raster vertex shader's fixed input and engine://passthrough's variadic group merge into one layout",
+          "[vi1][rs15]") {
+    ShaderCompiler compiler;
+    const auto compile = [&](std::string_view source, vk::ShaderStageFlagBits stage, std::string_view name) {
+        const auto result = compiler.compileSource(source, stage, name, ShaderCompileOptions{});
+        INFO(name << ": " << result.log);
+        REQUIRE(result.ok);
+        return reflect(result.spirv);
+    };
+    const auto vertex = compile(rs15_lift_vert, vk::ShaderStageFlagBits::eVertex, "project://shaders/rs15_lift.vert");
+    const auto passthrough = compile(engineResourceOrThrow("passthrough.frag"), vk::ShaderStageFlagBits::eFragment,
+                                     "engine://passthrough.frag");
+    const std::array stages{vertex, passthrough};
+    const auto layout = readPassInputLayout(merge(stages));
+    REQUIRE(layout.variadic.has_value());
+    CHECK(*layout.variadic == PassVariadicInputRange{.first = 0, .max = 8});
+    CHECK(layout.declarations.front().name == "pelican_variadic_input_0");
+    CHECK(layout.declarations.front().variadic);
+
+    const auto fixed = compile(declares_one_default_frag, vk::ShaderStageFlagBits::eFragment,
+                               "project://shaders/declares_one_default.frag");
+    const std::array fixed_stages{vertex, fixed};
+    const auto fixed_layout = readPassInputLayout(merge(fixed_stages));
+    CHECK_FALSE(fixed_layout.variadic.has_value());
+    REQUIRE(fixed_layout.declarations.size() == 1);
+    CHECK(fixed_layout.declarations.front().name == "rs15_lift");
+}
+
+// RS-15 on the device, as a graph writes it: a render.raster whose vertex
+// shader is the project's own (rs15_lift, reading input 0) and whose fragment
+// is still engine://passthrough draws the red input over the blue target.
+TEST_CASE("RS-15 a graph raster pass with its own vertex shader and engine://passthrough draws",
+          "[vi1][rs15][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("rs15_raster");
+    const auto root = dir.root / "project";
+    writeProject(root, {{"vi_red", red}, {"rs15_out", blue}},
+                 Json{{"input", Json::array({"rs15_out"})}, {"shader", passthroughShader()}});
+    writeFile(root / "shaders/rs15_lift.vert", rs15_lift_vert);
+    const auto config_path = root / "passes/main_rendering_config.json";
+    auto document = Json::parse(readFile(config_path));
+    const Json type{{"semantic", "pelican.render.color_signal@1"},
+                    {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    const auto ref = [&](const std::string &name) {
+        return Json{{"id", name + "_ref"}, {"op", "render.target_ref"},
+                    {"parameters", {{"name", name}, {"type", type}}}, {"outputs", {"resource"}}};
+    };
+    const auto endpoint = [](const std::string &node) { return Json{{"node", node}, {"port", "resource"}}; };
+    document["nodes"] = Json::array({ref("vi_red"), ref("rs15_out"),
+        {{"id", "lift"}, {"op", "render.raster"},
+         {"parameters",
+          {{"pass_set", "main_render"}, {"insert", {{"before", "present"}}},
+           {"shader", {{"vertex", "project://shaders/rs15_lift"}, {"fragment", "engine://passthrough"}}},
+           {"draw", {{"vertex_count", 3}}},
+           {"ports",
+            {{"source", {{"kind", "image"}, {"type", type}, {"access", "read"}, {"binding", "input"},
+                         {"input_index", 0}}},
+             {"color", {{"kind", "image"}, {"type", type}, {"access", "write"}, {"attachment", "color"},
+                        {"location", 0}}}}}}},
+         {"inputs", {{"source", endpoint("vi_red_ref")}, {"color", endpoint("rs15_out_ref")}}},
+         {"outputs", {"color"}}}});
+    writeFile(config_path, document.dump(2));
+    const auto capture = dir.root / "capture.png";
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    CHECK(every(rpc.frame(capture), red));
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
 } // namespace Pelican

@@ -1,5 +1,6 @@
 #include "shaderreflection.hpp"
 #include "pelican_sets.hpp"
+#include "../fullscreenpass/passinputlayout.hpp"
 #include <algorithm>
 #include <map>
 #include <limits>
@@ -362,7 +363,16 @@ ShaderReflection merge(std::span<const ShaderReflection> stages) {
             }
             existing.stages |= binding.stages;
             existing.accessed = existing.accessed || binding.accessed;
-            if (existing.name.empty()) {
+            // RS-15: one stage may read a pass input as a fixed input (a
+            // raster vertex shader's PELICAN_DECLARE_INPUT_0) that another
+            // declares in its variadic group (engine://passthrough). It is one
+            // descriptor; the merge keeps the group's name so the pass-input
+            // layout reads the group whole rather than with a hole.
+            const auto variadic = [](const std::string &name) {
+                return name.starts_with(passVariadicInputNamePrefix);
+            };
+            if (existing.name.empty() ||
+                (binding.set == PELICAN_SET_PASS_INPUT && variadic(binding.name) && !variadic(existing.name))) {
                 existing.name = binding.name;
             }
         }

@@ -189,6 +189,8 @@ class PELICAN_API Graph {
         std::size_t element_count;
     };
     // Static output shape; inspecting bindings does not evaluate live inputs.
+    // One entry per buffer: the sinks that share it (RS-15) count together,
+    // since they fill it from byte 0 without a gap.
     std::vector<RenderBufferBinding> renderBufferBindings() const;
     std::set<std::string> inputNames() const;
     bool nodeActive(std::string_view node, const InactiveScopes &inactive) const;
@@ -303,6 +305,8 @@ class PELICAN_API Graph {
         std::string kind;
         Target type{};
         bool voice{};
+        // render_buffer: where the values land in the buffer, in bytes (RS-15).
+        std::size_t offset{};
     };
     std::vector<Binding> bindings_;
 };

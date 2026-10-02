@@ -165,6 +165,9 @@ Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
             result["outputs"][output] = Json::array({source(endpoint)});
     std::map<std::string, const Json *, std::less<>> expanded_nodes;
     for (const auto &node : expanded.nodes) expanded_nodes.emplace(name(node.at("id")), &node);
+    // The graph's own buffers, which a render.scalar may name (RS-15).
+    std::map<std::string, const Json *, std::less<>> rendering_nodes;
+    for (const auto &node : partitions.rendering.nodes) rendering_nodes.emplace(name(node.at("id")), &node);
     // The engine clocks an edge reads, however far upstream: the names of the
     // value.input nodes it reaches among time and scene_time.
     const auto clockSources = [&](const Json &endpoint) {
@@ -210,18 +213,63 @@ Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
             if (!contract.required && parameters.contains(port))
                 (void)number(parameters.at(port)); // References belong in typed input edges.
         if (op == "render.scalar" || op == "audio.volume" || op == "audio.pitch") {
-            keys(parameters, {"target"});
+            if (op == "render.scalar") keys(parameters, {"target", "value", "offset"});
+            else keys(parameters, {"target"});
+            const auto id = name(node.at("id"));
             const bool voice = inputs.contains("voice");
             if (voice && parameters.contains("target"))
                 throw std::invalid_argument("audio binding cannot specify both voice and target");
-            const auto output = "$binding/" + name(node.at("id"));
+            const auto output = "$binding/" + id;
             if (result["outputs"].contains(output)) throw std::invalid_argument("reserved graph output: " + output);
-            result["outputs"][output] = Json::array({source(inputs.at("value"))});
-            output_scopes[output] = node_scopes.at(name(node.at("id")));
-            result["bindings"].push_back({{"output", output},
+            Json binding{{"output", output},
                 {"kind", op == "render.scalar" ? "render_buffer" : op == "audio.volume" ? "sound_volume" : "sound_pitch"},
                 {"target", voice ? name(inputs.at("voice").at("node")) : name(parameters.at("target"))},
-                {"voice", voice}});
+                {"voice", voice}};
+            if (op == "render.scalar" && parameters.contains("value")) {
+                // RS-15: a vec2 .. vec4 written as numbers; each component is
+                // a constant the binding publishes in order.
+                const auto &value = parameters.at("value");
+                if (!value.is_array() || value.size() < 2 || value.size() > 4)
+                    throw std::invalid_argument("render.scalar value is a vec2, vec3 or vec4 written as 2 to 4 "
+                                                "numbers (a scalar comes in on the value edge): " + id);
+                auto references = Json::array();
+                for (std::size_t component = 0; component < value.size(); ++component) {
+                    const auto constant = output + "/" + std::to_string(component);
+                    if (expanded_nodes.contains(constant))
+                        throw std::invalid_argument("reserved graph node: " + constant);
+                    result["nodes"].push_back({{"id", constant}, {"op", "constant"},
+                                               {"value", number(value.at(component))}});
+                    node_scopes[constant] = node_scopes.at(id);
+                    references.push_back(constant);
+                }
+                result["outputs"][output] = std::move(references);
+            } else {
+                result["outputs"][output] = Json::array({source(inputs.at("value"))});
+            }
+            if (op == "render.scalar") {
+                if (const auto offset = parameters.find("offset"); offset != parameters.end()) {
+                    // RS-15: where in the buffer the values land, in bytes.
+                    if (!offset->is_number_integer() || offset->get<std::int64_t>() < 0 ||
+                        offset->get<std::uint64_t>() % sizeof(float) != 0)
+                        throw std::invalid_argument("render.scalar offset is a byte count, a multiple of 4: " + id);
+                    binding["offset"] = *offset;
+                }
+                // RS-15: the values are float32. A buffer of the graph whose
+                // elements are integers cannot take them.
+                if (const auto found = rendering_nodes.find(binding.at("target").get<std::string>());
+                    found != rendering_nodes.end()) {
+                    const auto &target_node = *found->second;
+                    const auto element = target_node.value("parameters", Json::object()).value("element", std::string{});
+                    static const std::set<std::string, std::less<>> floats{"float", "vec2", "vec3", "vec4", "mat4"};
+                    if ((target_node.at("op") == "render.buffer" || target_node.at("op") == "render.attribute") &&
+                        !element.empty() && !floats.contains(element))
+                        throw GraphRegistryError("graph.render_scalar_type_mismatch@1",
+                            {{"node", id}, {"target", binding.at("target")}, {"element", element},
+                             {"components", result["outputs"][output].size()}});
+                }
+            }
+            output_scopes[output] = node_scopes.at(id);
+            result["bindings"].push_back(std::move(binding));
             continue;
         }
         if (op == "ui.value" || op == "ui.visible") {
@@ -497,7 +545,7 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
         if (!bindings->is_array()) throw std::invalid_argument("value graph bindings must be an array");
         std::map<std::pair<std::string, std::string>, std::string> targets;
         for (const auto &binding : *bindings) {
-            keys(binding, {"output", "kind", "target", "voice"});
+            keys(binding, {"output", "kind", "target", "voice", "offset"});
             Binding decoded;
             decoded.output = name(binding.at("output"));
             decoded.target = name(binding.at("target"));
@@ -520,6 +568,21 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
             if (decoded.type != Target::render_buffer && output->second.size() != 1)
                 throw std::invalid_argument(ui ? "ui binding requires one scalar output"
                                                : "audio binding requires one scalar output");
+            if (const auto offset = binding.find("offset"); offset != binding.end()) {
+                if (decoded.type != Target::render_buffer)
+                    throw std::invalid_argument("only a render_buffer binding takes an offset: " + decoded.output);
+                if (!offset->is_number_integer() || offset->get<std::int64_t>() < 0 ||
+                    offset->get<std::uint64_t>() % sizeof(float) != 0)
+                    throw std::invalid_argument("render_buffer offset is a byte count, a multiple of 4: " +
+                                                decoded.output);
+                decoded.offset = offset->get<std::size_t>();
+            }
+            // RS-15: several render.scalar sinks share one buffer; their
+            // layout is checked below, once every binding is read.
+            if (decoded.type == Target::render_buffer) {
+                bindings_.push_back(std::move(decoded));
+                continue;
+            }
             if (const auto [claimed, inserted] = targets.emplace(std::pair{decoded.kind, decoded.target}, sink_node);
                 !inserted) {
                 // One writer per (document, path, property): v0 has one UI
@@ -535,6 +598,27 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
                 ui_sinks_.push_back({sink_node, decoded.target,
                     decoded.type == Target::ui_value ? UiSinkProperty::value : UiSinkProperty::visible});
             bindings_.push_back(std::move(decoded));
+        }
+        // RS-15: the sinks writing one buffer tile it from byte 0, each at
+        // its offset, without a gap or an overlap: publish stages the buffer
+        // whole, in offset order, as one write.
+        std::map<std::string, std::vector<const Binding *>, std::less<>> by_target;
+        for (const auto &binding : bindings_)
+            if (binding.type == Target::render_buffer) by_target[binding.target].push_back(&binding);
+        for (auto &[target, sinks] : by_target) {
+            std::stable_sort(sinks.begin(), sinks.end(),
+                             [](const Binding *a, const Binding *b) { return a->offset < b->offset; });
+            std::size_t expected = 0;
+            for (const auto *sink : sinks) {
+                if (sink->offset != expected) {
+                    const auto sink_node = sink->output.starts_with("$binding/")
+                        ? sink->output.substr(std::string_view{"$binding/"}.size()) : sink->output;
+                    throw GraphRegistryError("graph.render_scalar_layout_invalid@1",
+                        {{"target", target}, {"node", sink_node}, {"offset", sink->offset},
+                         {"expected_offset", expected}, {"reason", sink->offset < expected ? "overlap" : "gap"}});
+                }
+                expected += outputs_.at(sink->output).size() * sizeof(float);
+            }
         }
     }
     for (const auto index : audio_nodes_) {
@@ -781,9 +865,14 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
 
 std::vector<Graph::RenderBufferBinding> Graph::renderBufferBindings() const {
     std::vector<RenderBufferBinding> result;
-    for (const auto &binding : bindings_)
-        if (binding.type == Target::render_buffer)
-            result.push_back({binding.target, outputs_.at(binding.output).size()});
+    for (const auto &binding : bindings_) {
+        if (binding.type != Target::render_buffer) continue;
+        const auto count = outputs_.at(binding.output).size();
+        const auto shared = std::find_if(result.begin(), result.end(),
+                                         [&](const RenderBufferBinding &entry) { return entry.target == binding.target; });
+        if (shared != result.end()) shared->element_count += count;
+        else result.push_back({binding.target, count});
+    }
     return result;
 }
 
@@ -901,14 +990,42 @@ PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
         if (!voice_writer ? directive.phase != Phase::idle : !voice_writer(node.id, directive))
             result.unavailable.push_back("audio.playback:" + node.id);
     }
+    std::set<std::string_view> staged_buffers;
     for (std::size_t i = 0; i < bindings_.size(); ++i) {
-        if (prepared[i].empty()) continue;
         const auto &binding = bindings_[i];
+        if (binding.type == Target::render_buffer) {
+            // RS-15: the sinks sharing a buffer tile it (checked when the
+            // graph was read), so they stage it as one write, in offset order.
+            if (!staged_buffers.insert(binding.target).second) continue;
+            std::vector<std::size_t> sinks;
+            for (std::size_t j = i; j < bindings_.size(); ++j)
+                if (bindings_[j].type == Target::render_buffer && bindings_[j].target == binding.target)
+                    sinks.push_back(j);
+            const auto evaluated = static_cast<std::size_t>(std::count_if(
+                sinks.begin(), sinks.end(), [&](std::size_t j) { return !prepared[j].empty(); }));
+            if (evaluated == 0) continue;
+            if (evaluated != sinks.size()) {
+                // Part of the buffer has no value this frame (an inactive
+                // owner's sink); a partial write cannot be staged.
+                result.unavailable.push_back(binding.kind + ":" + binding.target);
+                continue;
+            }
+            std::stable_sort(sinks.begin(), sinks.end(),
+                             [&](std::size_t a, std::size_t b) { return bindings_[a].offset < bindings_[b].offset; });
+            std::vector<float> joined;
+            if (sinks.size() > 1)
+                for (const auto j : sinks) joined.insert(joined.end(), prepared[j].begin(), prepared[j].end());
+            const std::span<const float> values = sinks.size() > 1 ? std::span<const float>{joined}
+                                                                    : std::span<const float>{prepared[i]};
+            const bool applied = render_writer ? render_writer(binding.target, values)
+                                               : context.render().setRenderValues(binding.target, values);
+            if (applied) result.applied += sinks.size();
+            else result.unavailable.push_back(binding.kind + ":" + binding.target);
+            continue;
+        }
+        if (prepared[i].empty()) continue;
         bool applied = false;
-        if (binding.type == Target::render_buffer)
-            applied = render_writer ? render_writer(binding.target, prepared[i])
-                                    : context.render().setRenderValues(binding.target, prepared[i]);
-        else if (binding.type == Target::ui_value || binding.type == Target::ui_visible)
+        if (binding.type == Target::ui_value || binding.type == Target::ui_visible)
             // Only the caller holds the UI; without a writer the sink is
             // reported unavailable rather than dropped.
             applied = ui_writer && ui_writer(binding.target,

@@ -1,5 +1,6 @@
 #include "graphloopexpression.hpp"
 
+#include <bit>
 #include <cctype>
 #include <limits>
 #include <numeric>
@@ -247,6 +248,18 @@ class Parser {
             if (magnitude > 62) fail(graphLoopExpressionOverflow, "pow2 past 2^62");
             const Int power = Int{1} << magnitude;
             return exponent.n < 0 ? Rational{1, power} : integerValue(power);
+        }
+        if (name == "log2") {
+            // RS-15: the integer base-2 logarithm, rounded down (log2(255) is
+            // 7), as floor(log2(n)) + 1 counts a mip chain. n is a positive
+            // integer.
+            open();
+            const auto argument = expression(live);
+            close();
+            if (!live) return {};
+            if (!argument.integer()) fail(graphLoopExpressionNotInteger, "log2 takes an integer");
+            if (argument.n < 1) fail(graphLoopExpressionNotInteger, "log2 of a number below 1");
+            return integerValue(static_cast<Int>(std::bit_width(static_cast<std::uint64_t>(argument.n))) - 1);
         }
         if (name == "mip_levels_of" || name == "layers_of") {
             open();

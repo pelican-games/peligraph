@@ -29,7 +29,7 @@ namespace Pelican {
 //   unary      := ( "-" | "+" | "!" ) unary | primary
 //   primary    := number | variable | call | "(" expression ")"
 //   call       := ( "min" | "max" ) "(" expression { "," expression } ")"
-//               | "pow2" "(" expression ")"
+//               | ( "pow2" | "log2" ) "(" expression ")"
 //               | ( "mip_levels_of" | "layers_of" ) "(" string ")"
 //   number     := digit { digit } [ "." digit { digit } ]
 //   variable   := "element" | "index" | "count"
@@ -42,10 +42,14 @@ namespace Pelican {
 // is required (`extent_scale`), the value is an exact fraction of two 64-bit
 // integers and becomes a double once, at the end, so no platform rounding
 // enters it. `%` takes integers in both. `pow2(n)` is 2 to the n; n is an
-// integer, negative only where a real is required. `mip_levels_of("<target>")`
+// integer, negative only where a real is required. `log2(n)` (RS-15) is the
+// base-2 logarithm of a positive integer n, rounded down (log2(255) is 7); n
+// below 1 is not_integer. `mip_levels_of("<target>")`
 // and `layers_of("<target>")` are the composed target's mip_levels and
 // layers, known when the graph is recompiled; a target the runtime widens (a
-// shadow map) or whose mip chain follows its extent is not_static.
+// shadow map) or whose mip chain follows its extent is not_static. A "full"
+// mip chain of a target with a fixed width and height (and not the display's
+// size) is floor(log2(max(width, height))) + 1 (RS-15).
 // A `$format` placeholder is an integer expression.
 
 // graph.loop_expression_invalid@1 reasons.

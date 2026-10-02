@@ -223,6 +223,12 @@ void checkDrawStepParameters(const std::string &op, const Json &parameters, cons
 // (render.shadow_depth draws with engine://shadow_depth into its depth socket)
 // takes absent parameters as empty ones: set_node_parameters stores empty
 // parameters as none.
+// RS-15: the value, publication and audio ops the scalar backend reads with
+// at() are in the table too, so a node placed from the palette with nothing
+// set is refused by name rather than by the JSON library. An alternative may
+// also be an input edge of that name: an audio.volume writes the voice its
+// `voice` edge brings, or the sound its `target` names; a render.attribute
+// takes its count from `count` or from its `source`.
 std::vector<std::vector<std::string_view>> renderNodeRequiredParameters(std::string_view op) {
     if (op == "render.fullscreen") return {{"ports"}, {"shader"}};
     if (op == "render.raster") return {{"ports"}, {"shader"}, {"draw"}};
@@ -232,18 +238,38 @@ std::vector<std::vector<std::string_view>> renderNodeRequiredParameters(std::str
     if (op == "render.target_ref") return {{"name"}, {"type"}};
     if (op == "render.image") return {{"type"}};
     if (op == "render.buffer") return {{"element"}};
-    if (op == "render.attribute") return {{"element"}, {"domain"}};
+    if (op == "render.attribute") return {{"element"}, {"domain"}, {"count", "source"}};
+    if (op == "render.scalar") return {{"target"}};
+    if (op == "value.input") return {{"name"}};
+    if (op == "value.constant") return {{"value"}};
+    if (op == "value.parameter") return {{"name"}, {"default"}};
+    if (op == "value.morph_weight") return {{"node"}, {"target"}};
+    if (op == "value.curve") return {{"keys"}};
+    if (op == "audio.playback") return {{"asset"}};
+    if (op == "audio.volume" || op == "audio.pitch") return {{"target", "voice"}};
+    if (op == "ui.value" || op == "ui.visible") return {{"node"}};
     return {};
 }
 
 // RS-9: graph.render_node_parameters_missing@1 {node, op, missing} when the
-// parameters lack what the op requires. Absent parameters are empty ones.
-void checkRenderNodeRequiredParameters(const std::string &op, const Json &parameters, const Json &node) {
+// parameters lack what the op requires. Absent parameters are empty ones;
+// parameters that are not an object are left to the op's own check.
+void checkRenderNodeRequiredParameters(const std::string &op, const Json &node) {
+    const auto required = renderNodeRequiredParameters(op);
+    if (required.empty()) return;
+    static const Json no_parameters = Json::object();
+    const auto found_parameters = node.find("parameters");
+    const auto &parameters =
+        found_parameters != node.end() && !found_parameters->is_null() ? *found_parameters : no_parameters;
+    if (!parameters.is_object()) return;
+    const auto found_inputs = node.find("inputs");
+    const bool has_inputs = found_inputs != node.end() && found_inputs->is_object();
     auto missing = Json::array();
-    for (const auto &alternatives : renderNodeRequiredParameters(op)) {
+    for (const auto &alternatives : required) {
         const bool given = std::any_of(alternatives.begin(), alternatives.end(), [&](std::string_view name) {
             const auto found = parameters.find(std::string{name});
-            return found != parameters.end() && !found->is_null();
+            return (found != parameters.end() && !found->is_null()) ||
+                   (has_inputs && found_inputs->contains(std::string{name}));
         });
         if (!given) missing.push_back(std::string{alternatives.front()});
     }
@@ -266,10 +292,9 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
     static const std::set<std::string, std::less<>> render_ops{"render.fullscreen", "render.raster",
         "render.compute", "render.material_pass", "render.snapshot_copy", "render.shadow_depth",
         "render.target_ref", "render.image", "render.buffer", "render.attribute"};
-    if (render_ops.contains(op)) {
-        if (!parameters.is_object()) throw std::invalid_argument("render node parameters must be an object");
-        checkRenderNodeRequiredParameters(op, parameters, node);
-    }
+    // What the op requires was checked before the factory ran (resolveOperation).
+    if (render_ops.contains(op) && !parameters.is_object())
+        throw std::invalid_argument("render node parameters must be an object");
     GraphOperationContract contract;
     const auto draw_stream = registry.canonicalize(parseSemanticTypeId("pelican.render.draw_stream@1"));
     if (op == "draw.material" || op == "draw.variant" || op == "draw.override") {
@@ -556,6 +581,9 @@ GraphOperationContract GraphModuleRegistry::resolveOperation(const nlohmann::jso
         throw GraphRegistryError("graph.operation_unregistered@1",
                                  {{"node", nodeId(node)}, {"op", op}});
     const auto &registration = modules_.at(owner->second).operations.at(op);
+    // RS-9 / RS-15: what the op cannot do without, for a declared contract
+    // and a factory alike.
+    checkRenderNodeRequiredParameters(op, node);
     auto contract = registration.factory ? registration.factory(node) : registration.contract;
     if (registration.factory) {
         // The module declares the classification once; a factory supplies ports.
@@ -726,14 +754,25 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
         entry.second.contract.outputs.emplace("draws", draw_stream);
         return entry;
     };
+    // The publication sink runs where the value it uploads is evaluated.
+    // RS-15: a vec2 .. vec4 it writes as numbers (`value: [x, y, ...]`) comes
+    // in on no edge, so that node has no `value` input; the catalog still
+    // lists the edge, the form a scalar takes.
+    auto scalar_sink = declared({{"value", required}}, {}, GraphExecutionDomain::values,
+                                GraphOperationEvaluation::direct, GraphParameterChange::rebuild);
+    scalar_sink.factory = [contract = scalar_sink.contract](const nlohmann::json &node) {
+        auto result = contract;
+        const auto parameters = node.find("parameters");
+        if (parameters != node.end() && parameters->is_object() && parameters->contains("value"))
+            result.inputs.erase("value");
+        return result;
+    };
     registry.registerModule(GraphModuleManifest{
         "pelican.render", 1,
         "GPU buffers, attributes, images, passes and the scalar publication sink.",
         builtinRenderTypeSchemas(),
         {
-            // The publication sink runs where the value it uploads is evaluated.
-            {"render.scalar", declared({{"value", required}}, {}, GraphExecutionDomain::values,
-                GraphOperationEvaluation::direct, GraphParameterChange::rebuild)},
+            {"render.scalar", std::move(scalar_sink)},
             pass_kind("render.shadow_depth"), pass_kind("render.snapshot_copy"),
             render("render.buffer"), render("render.attribute"), render("render.image"),
             render("render.target_ref"),

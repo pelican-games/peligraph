@@ -185,6 +185,74 @@ TEST_CASE("graph binding shapes are available without live input evaluation", "[
     REQUIRE(lowered[0].element_count == 1);
 }
 
+// RS-15: render.scalar writes a vec2 .. vec4 given as numbers, at a byte
+// offset, and several sinks share one buffer by tiling it from byte 0. The
+// sinks of one buffer stage it as one write in offset order; a scalar sink
+// without an offset writes as before.
+TEST_CASE("RS-15 render.scalar writes a vec4 and a float into one buffer at their offsets",
+          "[curve][graph-composition][valuegraph][rs15]") {
+    using Json = nlohmann::json;
+    const auto document = [](const Json &color_offset, const Json &gain_offset, const std::string &element) {
+        return Json{{"schema", "pelican.graph"}, {"version", 1},
+            {"nodes", Json::array({
+                {{"id", "packed"}, {"op", "render.buffer"},
+                 {"parameters", {{"element", element}, {"size", 20}, {"host_source", "runtime_f32"}}},
+                 {"outputs", {"resource"}}},
+                {{"id", "two"}, {"op", "value.constant"}, {"parameters", {{"value", 2.0}}}, {"outputs", {"value"}}},
+                {{"id", "color"}, {"op", "render.scalar"},
+                 {"parameters", {{"target", "packed"}, {"value", {0.25, 0.5, 0.75, 1.0}}, {"offset", color_offset}}},
+                 {"outputs", Json::array()}},
+                {{"id", "gain"}, {"op", "render.scalar"},
+                 {"parameters", {{"target", "packed"}, {"offset", gain_offset}}},
+                 {"inputs", {{"value", {{"node", "two"}, {"port", "value"}}}}}, {"outputs", Json::array()}}})},
+            {"outputs", Json::object()}};
+    };
+    const Pelican::ValueGraph::Graph graph{document(0, 16, "float").dump()};
+    const auto bindings = graph.renderBufferBindings();
+    REQUIRE(bindings.size() == 1);
+    CHECK(bindings[0].target == "packed");
+    CHECK(bindings[0].element_count == 5);
+    std::vector<std::pair<std::string, std::vector<float>>> writes;
+    const auto published = graph.publish(Pelican::GameContext{}, {}, {},
+        [&](std::string_view target, std::span<const float> values) {
+            writes.emplace_back(std::string{target}, std::vector<float>(values.begin(), values.end()));
+            return true;
+        });
+    CHECK(published.unavailable.empty());
+    CHECK(published.applied == 2);
+    REQUIRE(writes.size() == 1);
+    CHECK(writes[0].first == "packed");
+    CHECK(writes[0].second == std::vector<float>{0.25f, 0.5f, 0.75f, 1.0f, 2.0f});
+
+    const auto refusal = [](const Json &authored) {
+        try {
+            (void)Pelican::ValueGraph::Graph{authored.dump()};
+        } catch (const Pelican::GraphRegistryError &error) {
+            return std::pair{std::string{error.code()}, error.detail()};
+        }
+        FAIL("the graph was not refused by name");
+        return std::pair{std::string{}, Json{}};
+    };
+    // The float written over the vec4's last component.
+    auto [code, fields] = refusal(document(0, 12, "float"));
+    CHECK(code == "graph.render_scalar_layout_invalid@1");
+    CHECK(fields == Json{{"target", "packed"}, {"node", "gain"}, {"offset", 12}, {"expected_offset", 16},
+                         {"reason", "overlap"}});
+    // A hole between them.
+    std::tie(code, fields) = refusal(document(0, 20, "float"));
+    CHECK(code == "graph.render_scalar_layout_invalid@1");
+    CHECK(fields.at("reason") == "gap");
+    // An integer buffer cannot take float32 values.
+    std::tie(code, fields) = refusal(document(0, 16, "uint"));
+    CHECK(code == "graph.render_scalar_type_mismatch@1");
+    CHECK(fields == Json{{"node", "color"}, {"target", "packed"}, {"element", "uint"}, {"components", 4}});
+    // A vector is 2 to 4 numbers, and an offset a multiple of 4 bytes.
+    auto five = document(0, 16, "float");
+    five["nodes"][2]["parameters"]["value"] = {1, 2, 3, 4, 5};
+    CHECK_THROWS_AS(Pelican::ValueGraph::Graph{five.dump()}, std::invalid_argument);
+    CHECK_THROWS_AS(Pelican::ValueGraph::Graph{document(2, 18, "float").dump()}, std::invalid_argument);
+}
+
 TEST_CASE("typed playback events queue independently for consumers and preserve timestamp order", "[curve][graph-composition]") {
     auto document = nlohmann::json::parse(R"({"schema":"pelican.graph","version":1,
       "nodes":[{"id":"commands","op":"event.playback","outputs":["events"]},

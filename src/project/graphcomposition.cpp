@@ -574,6 +574,12 @@ void scopeLocalOrder(Json &node, const std::map<std::string, const Json *> &loca
 std::optional<GraphLoopExpressionKind> bodyExpressionPlace(const std::string &op, const std::vector<std::string> &path) {
     if (!op.starts_with("render.") || path.size() < 2 || path[0] != "parameters") return std::nullopt;
     if (path.size() == 2 && path[1] == "extent_scale") return GraphLoopExpressionKind::real;
+    // RS-15: a body image's fixed size, layer count and mip count. The
+    // evaluated integers are checked where the render target is read, as an
+    // authored number is.
+    if (op == "render.image" && path.size() == 2 &&
+        (path[1] == "width" || path[1] == "height" || path[1] == "layers" || path[1] == "mip_levels"))
+        return GraphLoopExpressionKind::integer;
     if (path.size() == 3 && path[1] == "view_select") return GraphLoopExpressionKind::integer;
     if (path.size() == 4 && path[1] == "shader" && path[2] == "defines") return GraphLoopExpressionKind::format;
     if (path.size() == 5 && path[1] == "ports" && path[3] == "subresource" && (path[4] == "mip" || path[4] == "layer"))

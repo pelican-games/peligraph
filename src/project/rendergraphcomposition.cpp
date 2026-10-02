@@ -4,6 +4,7 @@
 #include "graphloopexpression.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -1659,6 +1660,18 @@ GraphLoopConstants composedConstants(const Json &composed) {
         const auto value = found->find(mips ? "mip_levels" : "layers");
         if (value == found->end())
             return mips ? 1 : (found->value("dimension", std::string{"2d"}) == "cube" ? 6 : 1);
+        // RS-15: a full chain of a fixed size is known here. A display
+        // target takes the frame's size whatever it declares.
+        if (mips && *value == "full" && found->value("format_class", std::string{}) != "display") {
+            const auto width = found->find("width");
+            const auto height = found->find("height");
+            // A size written in a document is unsigned; one an edit or a
+            // feature parameter binds may be a signed integer (as layers).
+            if (width != found->end() && height != found->end() && width->is_number_integer() &&
+                height->is_number_integer() && width->get<std::int64_t>() > 0 && height->get<std::int64_t>() > 0)
+                return static_cast<std::int64_t>(std::bit_width(static_cast<std::uint64_t>(
+                    (std::max)(width->get<std::int64_t>(), height->get<std::int64_t>()))));
+        }
         if (!value->is_number_integer())
             throw GraphLoopExpressionError(graphLoopExpressionNotStatic,
                                            target + "'s " + std::string{function} + " follows its extent");

@@ -6052,6 +6052,80 @@ TEST_CASE("LP-1b expression refusals are named with the node, the pointer and th
     }
 }
 
+// RS-15: a body image's fixed width and height take an expression, as its
+// extent_scale does, and each element's copy gets its own integers.
+TEST_CASE("RS-15 a loop body image takes its width and height from an expression",
+          "[render-feature][graph-composition][lp1b][rs15]") {
+    using Json = nlohmann::json;
+    auto body = lp1bChainBody();
+    auto &image = body["nodes"][1]["parameters"];
+    REQUIRE(body["nodes"][1]["op"] == "render.image");
+    image["width"] = {{"$expr", "64 + element"}};
+    image["height"] = {{"$expr", "32 * (element + 1)"}};
+    const auto composed = lp0aCompose(lp1bChainGraph(lp1bChainLoop(3), {{"chain_body", body}}));
+    for (int element = 0; element < 3; ++element) {
+        const auto &target = lp1bTarget(composed.config, "chain/" + std::to_string(element) + "/image");
+        INFO(target.dump());
+        CHECK(target.at("width") == 64 + element);
+        CHECK(target.at("height") == 32 * (element + 1));
+    }
+    CHECK(composed.config.dump().find("$expr") == std::string::npos);
+    // The integers are read as an authored size is: the plan sizes them.
+    const auto plan = lp1aPlanJson(composed);
+    REQUIRE(lp1aPlanNode(plan, "chain/2/step") != nullptr);
+
+    // An integer place: a fraction is refused where the copy is made.
+    image["width"] = {{"$expr", "64 / 3.0"}};
+    const auto [code, fields] = lp1aEditRefusal(lp1bChainGraph(lp1bChainLoop(3), {{"chain_body", body}}));
+    CHECK(code == "graph.loop_expression_invalid@1");
+    CHECK(fields == Json{{"node", "image"}, {"pointer", "/definitions/chain_body/nodes/1/parameters/width"},
+                         {"reason", "not_integer"}});
+}
+
+// RS-15: log2 in an expression, and mip_levels_of a "full" chain whose size
+// is fixed.
+TEST_CASE("RS-15 log2 rounds down, and mip_levels_of a fixed-size full chain is static",
+          "[render-feature][graph-composition][lp1b][rs15]") {
+    using Json = nlohmann::json;
+    const auto counted = [](const Json &count, const Json &targets = Json::array()) {
+        auto loop = lp1bChainLoop(0);
+        loop["parameters"]["over"]["range"]["count"] = count;
+        auto document = lp1bChainGraph(loop, {{"chain_body", lp1bChainBody()}});
+        if (!targets.empty()) document["rendering"]["render_targets"] = targets;
+        return document;
+    };
+    const auto elements = [&](const Json &count, const Json &targets = Json::array()) {
+        return lp1aNamesUnder(lp0aCompose(counted(count, targets)).config, "chain/").size();
+    };
+    CHECK(elements({{"$expr", "log2(256)"}}) == 8);
+    CHECK(elements({{"$expr", "log2(255)"}}) == 7);
+    CHECK(elements({{"$expr", "log2(1) + 1"}}) == 1);
+    const auto [code, fields] = lp1aEditRefusal(counted({{"$expr", "log2(2.5)"}}));
+    CHECK(code == "graph.loop_expression_invalid@1");
+    CHECK(fields.at("reason") == "not_integer");
+    const auto [zero_code, zero_fields] = lp0aRefusal(counted({{"$expr", "log2(0)"}}));
+    CHECK(zero_code == "graph.loop_expression_invalid@1");
+    CHECK(zero_fields.at("reason") == "not_integer");
+
+    const auto target = [](const std::string &name, Json size) {
+        Json result{{"name", name}, {"extent_scale", 1.0}, {"format", "R16G16B16A16_SFLOAT"},
+                    {"format_class", "explicit(R16G16B16A16_SFLOAT)"}, {"usage", {"STORAGE", "SAMPLED"}},
+                    {"mip_levels", "full"}};
+        result.update(size);
+        return result;
+    };
+    // 256 x 256: 256, 128, ..., 1 is nine levels; 256 x 100 the same.
+    CHECK(elements({{"$expr", "mip_levels_of(\"fixed_chain\")"}},
+                   Json::array({target("fixed_chain", {{"width", 256}, {"height", 256}})})) == 9);
+    CHECK(elements({{"$expr", "mip_levels_of(\"fixed_chain\")"}},
+                   Json::array({target("fixed_chain", {{"width", 100}, {"height", 256}})})) == 9);
+    // A chain that follows the frame's size is still not known here.
+    const auto [full_code, full_fields] = lp0aRefusal(counted({{"$expr", "mip_levels_of(\"screen_chain\")"}},
+                                                              Json::array({target("screen_chain", Json::object())})));
+    CHECK(full_code == "graph.loop_expression_invalid@1");
+    CHECK(full_fields.at("reason") == "not_static");
+}
+
 TEST_CASE("LP-1b carry hands each element's output to the next element's input",
           "[render-feature][graph-composition][lp1b]") {
     using Json = nlohmann::json;
@@ -9100,6 +9174,44 @@ TEST_CASE("RS-9 a render node without the parameters its op requires is refused 
     CHECK(cast.at("type") == "shadow_depth");
     CHECK(cast.at("output").at("depth") == "cast_depth");
     REQUIRE_NOTHROW(compileComposition(composed));
+}
+
+// RS-15: the value and publication ops the palette places with nothing set
+// are refused the way RS-9 refuses a render op, rather than by the JSON
+// library's "key not found" when the scalar backend reads them.
+TEST_CASE("RS-15 render.scalar, value.constant and value.input without their parameters are refused by name",
+          "[render-feature][graph-composition][rs9][rs15]") {
+    using Json = nlohmann::json;
+    const auto refusal = [](const std::string &op, std::optional<Json> parameters, Json inputs = Json::object()) {
+        auto document = lp0bGraph({}, Json::object());
+        document["nodes"].push_back({{"id", "source"}, {"op", "value.input"}, {"parameters", {{"name", "time"}}},
+                                     {"outputs", {"value"}}});
+        Json node{{"id", "it"}, {"op", op}, {"inputs", std::move(inputs)},
+                  {"outputs", op.starts_with("value.") ? Json::array({"value"}) : Json::array()}};
+        if (parameters) node["parameters"] = *parameters;
+        document["nodes"].push_back(std::move(node));
+        return lp0bEditRefusal(document);
+    };
+    const Json time{{"value", {{"node", "source"}, {"port", "value"}}}};
+    for (const auto &parameters : {std::optional<Json>{}, std::optional<Json>{Json::object()}}) {
+        INFO((parameters ? "empty parameters" : "no parameters"));
+        auto [code, fields] = refusal("render.scalar", parameters, time);
+        CHECK(code == "graph.render_node_parameters_missing@1");
+        CHECK(fields == Json{{"node", "it"}, {"op", "render.scalar"}, {"missing", Json::array({"target"})}});
+        std::tie(code, fields) = refusal("value.constant", parameters);
+        CHECK(code == "graph.render_node_parameters_missing@1");
+        CHECK(fields == Json{{"node", "it"}, {"op", "value.constant"}, {"missing", Json::array({"value"})}});
+        std::tie(code, fields) = refusal("value.input", parameters);
+        CHECK(code == "graph.render_node_parameters_missing@1");
+        CHECK(fields == Json{{"node", "it"}, {"op", "value.input"}, {"missing", Json::array({"name"})}});
+    }
+    // Set, they pass the check (and lower as before).
+    REQUIRE_NOTHROW(partitionGraphDocument([&] {
+        auto document = lp0bGraph({}, Json::object());
+        document["nodes"].push_back({{"id", "it"}, {"op", "value.constant"}, {"parameters", {{"value", 1.0}}},
+                                     {"outputs", {"value"}}});
+        return document;
+    }()));
 }
 
 // RS-10: shadow_directional over a deferred-only pipeline whose lighting is
