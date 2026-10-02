@@ -43,7 +43,10 @@ PassId ShadowDepthPassContainer::registerShadowDepthPass(
     desc.depth_write = true;
     desc.depth_compare = vk::CompareOp::eLessOrEqual;
     desc.cull_mode = vk::CullModeFlagBits::eBack;
-    desc.front_face = vk::FrontFace::eClockwise;
+    // CC-1a: counter-clockwise is the front; set per view at record time
+    // (point lights draw cube faces, which are mirrored: clockwise).
+    desc.front_face = vk::FrontFace::eCounterClockwise;
+    desc.dynamic_front_face = true;
     desc.rasterization_samples = samples;
 
     const auto regular = GET_MODULE(PipelineFactory).create(desc);

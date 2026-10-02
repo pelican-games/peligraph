@@ -241,35 +241,17 @@ void validateBasicCameraCrossField(const CameraProjectionSpec &projection) {
     }
 }
 
-glm::vec3 parseBasicCameraUp(const JsonLoader &loader) {
-    const auto value = loader.getVal("basic_config/camera/up");
-    if (!value.is_array() || value.size() != 3) {
-        throw std::runtime_error(
-            "basic_config.camera.up must be an array of exactly 3 numbers");
-    }
-
-    glm::vec3 result{};
-    for (std::size_t i = 0; i < 3; ++i) {
-        const auto &component = value.at(i);
-        if (!component.is_number()) {
-            throw std::runtime_error(
-                "basic_config.camera.up must be an array of exactly 3 numbers");
+// CC-1b: basic_config.camera.up was removed when the camera convention
+// changed. project.json refuses it in its own parser; a config given another
+// way is refused here, by the same name.
+void rejectRemovedCameraUp(const JsonLoader &loader) {
+    const JsonHelper *sources[] = {&loader.cli_json, &loader.project_json, &loader.default_json};
+    for (const auto *source : sources) {
+        if (source->getVal(cameraPath("up"))) {
+            throw std::runtime_error(std::string{projectCameraUpRemovedCode} + ": " +
+                                     std::string{projectCameraUpRemovedMessage});
         }
-        const auto decoded = component.get<double>();
-        if (!std::isfinite(decoded) ||
-            std::abs(decoded) > std::numeric_limits<float>::max()) {
-            throw std::runtime_error(
-                "basic_config.camera.up components must be finite float values");
-        }
-        result[static_cast<glm::vec3::length_type>(i)] =
-            static_cast<float>(decoded);
     }
-    if (std::hypot(static_cast<double>(result.x),
-                   static_cast<double>(result.y),
-                   static_cast<double>(result.z)) == 0.0) {
-        throw std::runtime_error("basic_config.camera.up must be non-zero");
-    }
-    return result;
 }
 
 CameraProjectionSpec parseBasicCameraProjection(const JsonLoader &loader) {
@@ -682,7 +664,10 @@ ProjectBasicConfig::ProjectBasicConfig() {
 
     camera_prop.projection = parseBasicCameraProjection(loader);
     camera_prop.sprite = parseBasicCameraSpritePolicy(loader);
-    camera_prop.up = parseBasicCameraUp(loader);
+    rejectRemovedCameraUp(loader);
+    // Kept for the frozen userpublic copies that still read it; nothing in
+    // the engine does.
+    camera_prop.up = glm::vec3{0.0f, 1.0f, 0.0f};
 
     default_scene_id = loader.getVal("basic_config/default_scene_id");
     rendering_config_json_ref = loader.getVal("basic_config/rendering_config_json");

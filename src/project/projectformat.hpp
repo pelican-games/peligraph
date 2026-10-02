@@ -18,6 +18,17 @@ inline constexpr std::string_view pelicanEngineVersion = "0.1.0";
 // `engine_min_version` names a version newer than this engine.
 inline constexpr std::string_view projectEngineTooOldCode =
     "project.engine_too_old@1";
+// CC-1b: basic_config.camera.up, removed when the camera convention changed
+// (docs/design_coordinate_convention.md): a camera looks along -Z of its
+// rotation, its up is the rotation's +Y, and the world's up is +Y.
+inline constexpr std::string_view projectCameraUpRemovedCode =
+    "project.camera_up_removed@1";
+inline constexpr std::string_view projectCameraUpRemovedMessage =
+    "basic_config.camera.up was removed: the camera convention changed (a "
+    "camera looks along -Z of its rotation, its up is the rotation's +Y and "
+    "the world's up is +Y). Convert the project with "
+    "`uv run tools/convert_camera_convention.py <project dir>`, which removes "
+    "the key and turns its cameras to look the way they did";
 
 // HW-1: project.json's `hot_reload` is not an array of distinct
 // project-relative paths (not an array, an entry that is not a string, an

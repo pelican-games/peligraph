@@ -82,13 +82,13 @@
     {
      "path": "projects/animgraph_demo/project.json",
      "eol": "lf",
-     "blob_sha256": "f1a5bc51650d3a2569518ffa058fd398e882a36cfb0888a3af700451622b53f2",
-     "blob_bytes": 835
+     "blob_sha256": "1d3d94eff78925535c9a929cef5a438b626f5a47f4b5e6b30507568062cf6cd9",
+     "blob_bytes": 812
     },
     {
      "path": "projects/animgraph_demo/scene.json",
      "eol": "lf",
-     "blob_sha256": "055d73fb85da8cdeb9b4dab2cee8bf24544166a9d553e292aa7838e63b47e9cb",
+     "blob_sha256": "dc352a57ac6c507de6f317af762d88bc7f0ec80df43712accfd0d26917452b09",
      "blob_bytes": 469
     },
     {
@@ -153,8 +153,8 @@
     {
      "path": "projects/example/code/playercontrol.cpp",
      "eol": "lf",
-     "blob_sha256": "d446d8621f7020b1b04dec160eb7584726e624bd340284456233773089960d2a",
-     "blob_bytes": 7301
+     "blob_sha256": "ccb3d79265ac112ecb6508b970822d61072baea09ef0d16d49cd2c9ee6de8608",
+     "blob_bytes": 7459
     },
     {
      "path": "projects/example/input/actions.json",
@@ -225,14 +225,14 @@
     {
      "path": "projects/example/project.json",
      "eol": "lf",
-     "blob_sha256": "7e20874063190d9e28d290ac6f6094ecf223b5cddec66b4e40b7df06ef206014",
-     "blob_bytes": 1141
+     "blob_sha256": "81b80e4f97c42cab32b42c9add746ce27c08176b3df206e88ad4d603f964423e",
+     "blob_bytes": 1111
     },
     {
      "path": "projects/example/scenes/main.scene.json",
      "eol": "lf",
-     "blob_sha256": "0929e9b27d897213268c35a9b48e7669964ee041382c8f6b4294301d951a134d",
-     "blob_bytes": 26278
+     "blob_sha256": "c210aa44518992a40901fcf6b894402dc6181c746a26fcf3e011812374ae7ceb",
+     "blob_bytes": 26280
     },
     {
      "path": "projects/example/shaders/depth_fade.surface",
@@ -326,14 +326,14 @@
     {
      "path": "projects/sprite_demo/project.json",
      "eol": "lf",
-     "blob_sha256": "9ddea2e228bb977a7ae5a62422e7fca8f3f3ded2e2a3a6b7fa9eafb4ea89cd42",
-     "blob_bytes": 989
+     "blob_sha256": "923d0d8acb3f0c69ce1d1786c48c5769253f711cc71f91639d6be8d7eb7fe86b",
+     "blob_bytes": 966
     },
     {
      "path": "projects/sprite_demo/scene.json",
      "eol": "lf",
-     "blob_sha256": "bf07e2d65ffe42ed788f2e7db32fe83abe2de76152306c20ab5eacbeebddc729",
-     "blob_bytes": 2293
+     "blob_sha256": "5ef58a8320a1aa0396a5a0d8693bcd4fc2e7ee1cfbe175e8fbdeecdbe40c1aa8",
+     "blob_bytes": 2292
     },
     {
      "path": "projects/sprite_demo/shaders/fullscreen.vert",
@@ -397,8 +397,8 @@
     {
      "path": "projects/vrm_xr_demo/code/vrmxrdemo.cpp",
      "eol": "lf",
-     "blob_sha256": "d73dee752243c92a48b8b354b33becd69181450e38fa8d1329f32045e5ee9fa5",
-     "blob_bytes": 8921
+     "blob_sha256": "5c9d879a27c2502602b0c8d778defdddb429e367fa81c5df041041ffb3a2dbf8",
+     "blob_bytes": 9122
     },
     {
      "path": "projects/vrm_xr_demo/input/actions.json",
@@ -439,14 +439,14 @@
     {
      "path": "projects/vrm_xr_demo/project.json",
      "eol": "lf",
-     "blob_sha256": "aeb3cd4dc9f4f288941ca46a6bd85925693f8ae276ea44a2ad49f577bb50dc2c",
-     "blob_bytes": 887
+     "blob_sha256": "56df6dfe09ad1610e2955446fee8d334e2dd9ed7c4f5566c578ae1e280e15712",
+     "blob_bytes": 864
     },
     {
      "path": "projects/vrm_xr_demo/scene.json",
      "eol": "lf",
-     "blob_sha256": "a3e03369df5197e8c5b24aa10a98a5c942914d3c980d4333dbcefe1e5498e7fb",
-     "blob_bytes": 895
+     "blob_sha256": "2656a6c7c34ec462552a53f872b130779e2270a994200d82180a68778e2f7821",
+     "blob_bytes": 897
     },
     {
      "path": "projects/vrm_xr_demo/screenshot.png",

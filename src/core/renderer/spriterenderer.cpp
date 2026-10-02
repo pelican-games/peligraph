@@ -74,15 +74,18 @@ SpriteDrawData buildSpriteDrawData(const sprite::SpriteFrame &frame) {
             result.runs.back().index_count += 6;
             for (std::size_t vertex = 0; vertex < 4; ++vertex) {
                 sprite::GpuVertex gpu;
+                // CC-1a: corners and the pivot are in image space (y down
+                // from the top-left); the sprite's local +y is up, so the
+                // image's top row lands above the pivot.
                 gpu.corner = {corners[vertex][0] - command.pivot[0],
-                              corners[vertex][1] - command.pivot[1]};
+                              command.pivot[1] - corners[vertex][1]};
                 const bool right = vertex == 1 || vertex == 2;
                 const bool bottom = vertex >= 2;
                 gpu.uv = {command.uv_rect[right ? 2 : 0], command.uv_rect[bottom ? 3 : 1]};
                 gpu.world = command.world_transform;
                 gpu.color = command.color;
                 gpu.billboard = static_cast<std::uint32_t>(command.billboard);
-                gpu.snap_anchor = {-command.pivot[0], -command.pivot[1]};
+                gpu.snap_anchor = {-command.pivot[0], command.pivot[1]};
                 gpu.pixel_snap = command.pixel_snap == sprite::PixelSnapReason::eligible ? 1u : 0u;
                 result.vertices.push_back(gpu);
             }

@@ -27,6 +27,17 @@ bool isOutsideMaterialRange(uint32_t material_index, const MaterialRange &range)
     return material_index < range.start || material_index - range.start >= range.count;
 }
 
+// CC-1a: the mesh pipelines (material, shadow depth, velocity) take their
+// front face from the view: counter-clockwise, or clockwise on a mirrored
+// view. Set after binding, since a pipeline without the dynamic state in
+// between (fullscreen, UI) leaves it undefined.
+void setViewFrontFace(vk::CommandBuffer cmd_buf,
+                      const MaterialRendererDependencies &dependencies) {
+    cmd_buf.setFrontFace(dependencies.mirrored_view
+                             ? vk::FrontFace::eClockwise
+                             : vk::FrontFace::eCounterClockwise);
+}
+
 // Where one pass reads its indirect commands from, and which compiled draw
 // queue goes with them. Every pass renderer below asks the same question: a
 // secondary view of a family that prepared its own per-view region reads that
@@ -292,6 +303,9 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         const auto binding = material_container.bindMaterialDraw(
             cmd_buf, pass, effective_material, pipeline, bound,
             invocation);
+        if (binding.pipeline_bound) {
+            setViewFrontFace(cmd_buf, dependencies);
+        }
         if (drawn != nullptr) {
             drawn->add(effective_material.value, draw_call.draw_count);
         }
@@ -475,6 +489,7 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
     for (const auto &draw_call : draw_calls) {
         const auto pipeline_layout = shadow_depth_pass_container.pipelineLayout(pass_id, draw_call.skinned);
         shadow_depth_pass_container.bind(cmd_buf, pass_id, draw_call.skinned);
+        setViewFrontFace(cmd_buf, dependencies);
         vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
         dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout,
             shadow_depth_pass_container.accelerationStructure(pass_id));
@@ -505,6 +520,7 @@ void renderVelocityDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
     for (const auto &draw_call : draw_calls) {
         const auto layout = velocity_pass_container.pipelineLayout(pass_id, draw_call.skinned);
         velocity_pass_container.bind(cmd_buf, pass_id, draw_call.skinned);
+        setViewFrontFace(cmd_buf, dependencies);
         dependencies.vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
         dependencies.frame_resources.bindGraphics(cmd_buf, layout,
             velocity_pass_container.accelerationStructure(pass_id));

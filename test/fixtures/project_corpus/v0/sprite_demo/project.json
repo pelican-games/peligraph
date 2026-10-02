@@ -16,7 +16,6 @@
       "ymag": 1.6875,
       "znear": 0.1,
       "zfar": 100.0,
-      "up": [0, 1, 0],
       "sprite": {"pixel_perfect": "strict", "sort": "declaration"}
     },
     "default_scene_id": "default_scene",

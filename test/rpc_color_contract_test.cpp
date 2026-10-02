@@ -322,7 +322,7 @@ TEST_CASE("picking feature readback maps a pixel to the WP258 declaration identi
   "schema":"pelican.scene","version":2,
   "scenes":{"default_scene":{"objects":[
     {"name":"PickCamera","components":[
-      {"name":"transform","pos":[0,0,-2],"rotation":[0,0,0,1],"scale":[1,1,1]},
+      {"name":"transform","pos":[0,0,-2],"rotation":[0,1,0,0],"scale":[1,1,1]},
       {"name":"camera"}
     ]},
     {"components":[
@@ -360,8 +360,7 @@ TEST_CASE("picking feature readback maps a pixel to the WP258 declaration identi
           {"camera",
            {{"yfov", 0.7853981633974483},
             {"znear", 0.1},
-            {"zfar", 100.0},
-            {"up", {0, 1, 0}}}},
+            {"zfar", 100.0}}},
           {"default_scene_id", "default_scene"},
           {"scene_data_json", "scene.json"},
           {"asset_data_json", "assets.json"},
@@ -454,7 +453,7 @@ TEST_CASE("gizmo feature draws and exposes stateless handle queries",
   "schema":"pelican.scene","version":2,
   "scenes":{"default_scene":{"objects":[
     {"name":"GizmoCamera","components":[
-      {"name":"transform","pos":[0,0,-2],"rotation":[0,0,0,1],"scale":[1,1,1]},
+      {"name":"transform","pos":[0,0,-2],"rotation":[0,1,0,0],"scale":[1,1,1]},
       {"name":"camera"}
     ]},
     {"name":"GizmoTarget","components":[
@@ -491,8 +490,7 @@ TEST_CASE("gizmo feature draws and exposes stateless handle queries",
           {"camera",
            {{"yfov", 0.7853981633974483},
             {"znear", 0.1},
-            {"zfar", 100.0},
-            {"up", {0, 1, 0}}}},
+            {"zfar", 100.0}}},
           {"default_scene_id", "default_scene"},
           {"scene_data_json", "scene.json"},
           {"asset_data_json", "assets.json"},
@@ -641,7 +639,7 @@ TEST_CASE("gizmo targets an undeclared runtime object with strict identity error
   "schema":"pelican.scene","version":2,
   "scenes":{"default_scene":{"objects":[
     {"name":"GizmoCamera","components":[
-      {"name":"transform","pos":[0,0,-2],"rotation":[0,0,0,1],"scale":[1,1,1]},
+      {"name":"transform","pos":[0,0,-2],"rotation":[0,1,0,0],"scale":[1,1,1]},
       {"name":"camera"}
     ]}
   ]}}
@@ -675,8 +673,7 @@ TEST_CASE("gizmo targets an undeclared runtime object with strict identity error
           {"camera",
            {{"yfov", 0.7853981633974483},
             {"znear", 0.1},
-            {"zfar", 100.0},
-            {"up", {0, 1, 0}}}},
+            {"zfar", 100.0}}},
           {"default_scene_id", "default_scene"},
           {"scene_data_json", "scene.json"},
           {"asset_data_json", "assets.json"},

@@ -839,10 +839,12 @@ const Json *findCameraNumber(const Json &json, const Json *nested, std::string_v
 }
 
 CameraControllerCodecData decodeController(const Json &controller) {
+    // CC-1b: `up` was removed with the camera convention (the world's up is
+    // +Y); a document that still has it is refused as an unknown field.
     requireClosed(controller, "camera.controller",
-                  std::array<std::string_view, 12>{"type", "target", "offset", "distance", "yaw", "pitch",
+                  std::array<std::string_view, 11>{"type", "target", "offset", "distance", "yaw", "pitch",
                                                    "yaw_degrees", "pitch_degrees", "damping", "speed",
-                                                   "sensitivity", "up"});
+                                                   "sensitivity"});
     const auto type = readString(requireField(controller, "camera.controller", "type"),
                                  "camera.controller.type", true);
     CameraControllerCodecData result;

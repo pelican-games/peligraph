@@ -438,7 +438,10 @@ static GraphicsPipelineDesc makeMaterialPipelineDesc(
     desc.depth_write = info.render_state.depth_write;
     desc.depth_compare = toVkCompare(info.render_state.depth_compare);
     desc.cull_mode = toVkCull(info.render_state.cull);
-    desc.front_face = vk::FrontFace::eClockwise;
+    // CC-1a: counter-clockwise is the front (glTF), and a mirrored view (a
+    // cube face) flips it at record time (materialrender.cpp).
+    desc.front_face = vk::FrontFace::eCounterClockwise;
+    desc.dynamic_front_face = true;
     desc.rasterization_samples =
         rendering.rasterization_samples;
     desc.local_read = rendering.local_read;

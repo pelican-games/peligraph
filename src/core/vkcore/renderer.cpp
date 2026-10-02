@@ -3,6 +3,7 @@
 #include "../renderingpass/graphinputs.hpp"
 #include "../userpublic/gamecontext.hpp"
 #include "../renderer/camera.hpp"
+#include "../renderer/clipspace.hpp"
 #include "accelerationstructure.hpp"
 #include "../renderer/fullscreenpassrenderer.hpp"
 #include "../renderer/frameresources.hpp"
@@ -2643,6 +2644,9 @@ void executeRenderingPasses(
         request.material_draw_loops;
     material_renderer_dependencies.drawn_materials =
         request.drawn_materials;
+    material_renderer_dependencies.mirrored_view = viewIsMirrored(
+        views[request.view_index].projection,
+        views[request.view_index].view);
     const FullscreenPassRendererDependencies fullscreen_pass_renderer_dependencies{request.modules.fullscreen_pass_container,
                                                                                   request.modules.frame_resources};
     std::optional<UiRendererDependencies> ui_renderer_dependencies;
@@ -2727,6 +2731,11 @@ void executeRenderingPasses(
                     .first_person_view =
                     family_view
                         .first_person_view;
+                material_renderer_dependencies
+                    .mirrored_view =
+                    viewIsMirrored(
+                        family_view.projection,
+                        family_view.view);
                 material_renderer_dependencies
                     .draw_sort_view_index =
                     per_view_sort &&

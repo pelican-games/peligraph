@@ -87,8 +87,8 @@
   "representative_golden_sha256": {
     "fullscreen/expected.png": "ece423cfb0c254fe92924addd82f0ad164dad240f6e0d02778a430d5987eb2ee",
     "feature_compose/expected.png": "2f9f0b104a4bc31f5ed3651534058f345028258ecc59dfbf96bfbf1335d9ea72",
-    "skeletal_toon/expected.png": "67bc6d0c1de3a98e43de0b5a0556e3e8a492f28e63abb26bc4b0ce52ed3c4dec",
-    "sprite_pixel_zoom3_policy/expected.png": "c3266e1edb4c074eff4eeaf867851cf52890facd4a746ba1525762d544458f62",
+    "skeletal_toon/expected.png": "f30e9d438f141ef554898209ffaae3a478b46b892793b99b4616d4312983f3ec",
+    "sprite_pixel_zoom3_policy/expected.png": "7e76fc2d535a2298d711bf223b5846c30d2d391fc4cbd52a1ccb5f0ca9766dd8",
     "vrm_xr_demo/expected.png": "de081f54806e06ee3567341b297095420d38a8fc446a47ccfc670c372dd52988"
   }
 }

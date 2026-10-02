@@ -8,7 +8,7 @@ file(MAKE_DIRECTORY "${OUT_DIR}/project/assets" "${OUT_DIR}/project/scenes"
 file(WRITE "${OUT_DIR}/project/project.json" [=[
 {"schema":"pelican.project","version":1,"name":"ui_u2_rpc","engine_min_version":"0.1.0",
  "basic_config":{"window_title":"UI U2 RPC","window_size":{"width":160,"height":90},
- "fullscreen":false,"framerate":30,"camera":{"yfov":0.7853981633974483,"znear":0.1,"zfar":1000.0,"up":[0.0,1.0,0.0]},
+ "fullscreen":false,"framerate":30,"camera":{"yfov":0.7853981633974483,"znear":0.1,"zfar":1000.0},
  "default_scene_id":"default_scene","scene_data_json":"scenes/main.scene.json",
  "asset_data_json":"assets/asset_data.json","rendering_config_json":"passes/main_rendering_config.json",
  "default_rendering_pass":"main_render","ui_config_json":"ui/ui_overlay.json"}}
@@ -16,7 +16,7 @@ file(WRITE "${OUT_DIR}/project/project.json" [=[
 file(WRITE "${OUT_DIR}/project/assets/asset_data.json" "{\"schema\":\"pelican.asset_data\",\"version\":2,\"models\":[]}\n")
 file(WRITE "${OUT_DIR}/project/scenes/main.scene.json" [=[
 {"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[
- {"name":"Camera","components":[{"name":"transform","pos":[0.0,0.0,-4.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[1.0,1.0,1.0]},{"name":"camera","type":"perspective","yfov":0.78539816339,"znear":0.1,"zfar":1000.0}]}
+ {"name":"Camera","components":[{"name":"transform","pos":[0.0,0.0,-4.0],"rotation":[0.0,1.0,0.0,0.0],"scale":[1.0,1.0,1.0]},{"name":"camera","type":"perspective","yfov":0.78539816339,"znear":0.1,"zfar":1000.0}]}
 ]}}}
 ]=])
 file(WRITE "${OUT_DIR}/project/ui/ui_overlay.json" [=[

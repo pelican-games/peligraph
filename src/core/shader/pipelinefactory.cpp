@@ -612,7 +612,12 @@ vk::UniquePipeline PipelineFactory::createGraphicsPipeline(const GraphicsPipelin
     blend.logicOpEnable = false;
     blend.setAttachments(blend_attachments);
 
-    const auto dynamic_states = {vk::DynamicState::eViewport, vk::DynamicState::eScissor};
+    std::vector<vk::DynamicState> dynamic_states{vk::DynamicState::eViewport,
+                                                 vk::DynamicState::eScissor};
+    // CC-1a: core in Vulkan 1.3; the recorder sets it per view.
+    if (desc.dynamic_front_face) {
+        dynamic_states.push_back(vk::DynamicState::eFrontFace);
+    }
     vk::PipelineDynamicStateCreateInfo dynamic_state_info;
     dynamic_state_info.setDynamicStates(dynamic_states);
 

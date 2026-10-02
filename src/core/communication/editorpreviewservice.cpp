@@ -1,5 +1,6 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include "editorpreviewservice.hpp"
+#include "../renderer/clipspace.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -313,7 +314,8 @@ void resolveCamera(const Json &camera, const PreparedProjection &prepared,
         if (yfov <= 0 || yfov >= 3.14159265f || near_value <= 0 || far_value <= near_value) {
             error(code, "capture/camera/projection", "invalid perspective projection range");
         }
-        request.projection = glm::perspectiveRH_ZO(
+        // CC-1a: the engine's projection (clip y flipped, clipspace.hpp).
+        request.projection = vulkanPerspective(
             yfov, static_cast<float>(request.width) / request.height,
             near_value, far_value);
     } else if (kind == "orthographic") {
@@ -329,8 +331,8 @@ void resolveCamera(const Json &camera, const PreparedProjection &prepared,
         if (xmag <= 0 || ymag <= 0 || far_value <= near_value) {
             error(code, "capture/camera/projection", "invalid orthographic projection range");
         }
-        request.projection = glm::orthoRH_ZO(-xmag, xmag, -ymag, ymag,
-                                             near_value, far_value);
+        request.projection = vulkanOrtho(-xmag, xmag, -ymag, ymag,
+                                         near_value, far_value);
     } else {
         error(code, "capture/camera/projection/kind", "projection kind must be perspective or orthographic");
     }

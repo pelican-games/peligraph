@@ -5,6 +5,7 @@
 #include "../renderer/camera.hpp"
 
 #include <glm/glm.hpp>
+#include <cmath>
 #include <stdexcept>
 
 namespace Pelican {
@@ -24,8 +25,14 @@ void applyLaunchCameraOverride() {
         throw std::runtime_error("--camera position and target must not be identical");
     }
 
+    // CC-1a: look at the target with the world's +Y up (+Z when looking
+    // straight up or down), through the same basis a transform gives.
+    const auto forward = glm::normalize(dir);
+    const glm::vec3 up = std::abs(forward.y) > 0.999f
+                             ? glm::vec3{0.0f, 0.0f, forward.y > 0.0f ? 1.0f : -1.0f}
+                             : glm::vec3{0.0f, 1.0f, 0.0f};
     camera.setPos(position);
-    camera.setDir(glm::normalize(dir));
+    camera.setRotation(cameraRotation(forward, up));
     camera.setNearFar(override.fov_y, 0.01f, 1000.0f);
 }
 

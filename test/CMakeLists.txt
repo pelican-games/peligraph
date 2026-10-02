@@ -3594,6 +3594,22 @@ add_executable(pelican_test_png_nonuniform_check png_nonuniform_check.cpp)
 set_target_properties(pelican_test_png_nonuniform_check PROPERTIES CXX_STANDARD 20)
 target_link_libraries(pelican_test_png_nonuniform_check PRIVATE stb)
 
+# CC-1a: the 3D screen is the world as seen, not its mirror
+# (docs/design_coordinate_convention.md section 5).
+add_executable(pelican_test_coordinate_mirror_check coordinate_mirror_check.cpp)
+set_target_properties(pelican_test_coordinate_mirror_check PROPERTIES CXX_STANDARD 20)
+target_link_libraries(pelican_test_coordinate_mirror_check PRIVATE stb nlohmann_json)
+add_test(
+    NAME coordinate_mirror_headless
+    COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DMIRROR_CHECK=$<TARGET_FILE:pelican_test_coordinate_mirror_check>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/coordinate_mirror
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_coordinate_mirror_headless.cmake
+)
+pelican_gpu_test_properties(coordinate_mirror_headless ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+
 set(PELICAN_TEST_PROJECTS_DIR "" CACHE PATH
     "Project corpus scanned by project_catalog_headless_smoke; empty skips the test")
 
@@ -3865,6 +3881,12 @@ if(PELICAN_PYTHON_TESTS_AVAILABLE)
     pelican_define_python_test(
         studio_drive_shutdown_unit
         ${CMAKE_CURRENT_SOURCE_DIR}/ci/test_studio_drive.py
+    )
+    # CC-1b: tools/convert_camera_convention.py, the conversion of a project
+    # written before the camera convention changed.
+    pelican_define_python_test(
+        convert_camera_convention_unit
+        ${CMAKE_CURRENT_SOURCE_DIR}/ci/test_convert_camera_convention.py
     )
     pelican_define_python_test(
         gpu_lease_inventory

@@ -241,6 +241,17 @@ parseProjectEnvelopeJson(const nlohmann::json &project,
     if (project.at("version").get<int>() != supported_project_version) {
         throw std::runtime_error("project.json version must be exactly 1");
     }
+    // CC-1b: the key every project written before the camera convention
+    // changed has (it was required), so such a project stops here by name
+    // instead of opening with its cameras turned around.
+    if (const auto basic = project.find("basic_config");
+        basic != project.end() && basic->is_object()) {
+        if (const auto camera = basic->find("camera");
+            camera != basic->end() && camera->is_object() && camera->contains("up")) {
+            throw std::runtime_error(std::string{projectCameraUpRemovedCode} + ": project.json " +
+                                     std::string{projectCameraUpRemovedMessage});
+        }
+    }
 
     ProjectEnvelopeParseResult result;
     result.envelope.name = optionalNonEmptyString(project, "name");

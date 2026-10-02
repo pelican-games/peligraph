@@ -72,6 +72,10 @@ struct MaterialRendererDependencies {
     // MP-1: where the frame's material passes count what they drew; null
     // counts nothing.
     MaterialPassDrawTally *drawn_materials = nullptr;
+    // CC-1a: the view draws the world's mirror image (a cube face;
+    // clipspace.hpp viewIsMirrored), so mesh draws take clockwise as the
+    // front face instead of counter-clockwise.
+    bool mirrored_view = false;
 };
 
 // LP-2: one indirect draw a material pass issued, with what was bound for

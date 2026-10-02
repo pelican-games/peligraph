@@ -48,7 +48,7 @@ file(WRITE "${OUT_DIR}/project/project.json" [=[
     "fullscreen": false,
     "framerate": 30,
     "seed": 1234,
-    "camera": {"yfov": 0.7853981633974483, "znear": 0.1, "zfar": 1000.0, "up": [0.0, 1.0, 0.0]},
+    "camera": {"yfov": 0.7853981633974483, "znear": 0.1, "zfar": 1000.0},
     "default_scene_id": "default_scene",
     "scene_data_json": "scenes/main.scene.json",
     "asset_data_json": "assets/asset_data.json",
@@ -98,10 +98,10 @@ file(WRITE "${script_path}"
 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"get_status\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"set_time\",\"params\":{\"t\":1.25}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"load_gltf\",\"params\":{\"path\":\"assets/ground.glb\",\"name\":\"movable\"}}\n"
-"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"movable\"],\"transforms\":[{\"pos\":[3.0,0.0,-0.75],\"rotation\":[0.0,0.0,0.0,1.0],\"scale\":[0.6,0.6,0.6]}]}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"movable\"],\"transforms\":[{\"pos\":[-0.75,0.0,-3.0],\"rotation\":[0.0,0.0,0.0,1.0],\"scale\":[0.6,0.6,0.6]}]}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"step_frame\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"capture\",\"params\":{\"path\":\"${capture_left_path}\"}}\n"
-"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"movable\"],\"transforms\":[{\"pos\":[3.0,0.0,0.75],\"rotation\":[0.0,0.0,0.0,1.0],\"scale\":[0.6,0.6,0.6]}]}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"movable\"],\"transforms\":[{\"pos\":[0.75,0.0,-3.0],\"rotation\":[0.0,0.0,0.0,1.0],\"scale\":[0.6,0.6,0.6]}]}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"render_frame\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"capture\",\"params\":{\"path\":\"${capture_right_path}\"}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"get_status\",\"params\":{}}\n"

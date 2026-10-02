@@ -1,3 +1,4 @@
+#include "../src/core/renderer/clipspace.hpp"
 #include "../src/core/renderer/gizmo.hpp"
 #include "../src/core/renderer/modaltransform.hpp"
 
@@ -14,17 +15,16 @@
 namespace Pelican {
 namespace {
 
+// CC-1a: the engine's camera projection (clip y flipped, clipspace.hpp).
 glm::mat4 testViewProjection() {
-    return glm::perspectiveRH_ZO(0.7853981633974483f, 1.0f, 0.1f,
-                                 100.0f) *
+    return vulkanPerspective(0.7853981633974483f, 1.0f, 0.1f, 100.0f) *
            glm::lookAtRH(glm::vec3{0.0f, 0.0f, -2.0f},
                          glm::vec3{0.0f}, glm::vec3{0.0f, 1.0f, 0.0f});
 }
 
 glm::mat4 cameraViewProjection(glm::vec3 eye, glm::vec3 target,
                                glm::vec3 up) {
-    return glm::perspectiveRH_ZO(0.7853981633974483f, 1.0f, 0.1f,
-                                 100.0f) *
+    return vulkanPerspective(0.7853981633974483f, 1.0f, 0.1f, 100.0f) *
            glm::lookAtRH(eye, target, up);
 }
 
@@ -219,11 +219,33 @@ TEST_CASE("gizmo drag projection follows three camera poses and drawn axes",
         REQUIRE(scalar > 0.0f);
 
         if (index == 0) {
+            // Seen from behind (looking along +Z), +X is on the left.
             REQUIRE(drawn_direction.x < 0.0f);
         } else if (index == 1) {
-            REQUIRE(drawn_direction.y < 0.0f);
+            // CC-1a: up is -Y, so +Y points down the screen (pixel +y).
+            REQUIRE(drawn_direction.y > 0.0f);
         }
     }
+}
+
+TEST_CASE("gizmo translate_x reaches the screen's right from a front camera",
+          "[gizmo][drag][projection][headless][clipspace]") {
+    // CC-1a: a camera at +Z looking down -Z with +Y up (no rotation) sees
+    // +X on the right and +Y at the top, as glTF does.
+    constexpr vk::Extent2D extent{640, 640};
+    const auto geometry = buildGizmoGeometry(
+        GizmoMode::translate, {0.0f, 0.0f, 0.0f},
+        cameraViewProjection({0.0f, 0.0f, 4.0f}, {0.0f, 0.0f, 0.0f},
+                             {0.0f, 1.0f, 0.0f}),
+        extent, 1.0f);
+    const auto &x_axis = longestSegment(geometry, GizmoHandle::translate_x);
+    const auto x_direction =
+        glm::normalize(x_axis.to.pixel - x_axis.from.pixel);
+    REQUIRE(x_direction.x > 0.99f);
+    const auto &y_axis = longestSegment(geometry, GizmoHandle::translate_y);
+    const auto y_direction =
+        glm::normalize(y_axis.to.pixel - y_axis.from.pixel);
+    REQUIRE(y_direction.y < -0.99f);
 }
 
 TEST_CASE("gizmo translation magnitude grows with camera distance",

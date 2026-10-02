@@ -37,7 +37,7 @@ file(WRITE "${OUT_DIR}/project/project.json" [=[
     "window_size": {"width": 64, "height": 64},
     "fullscreen": false,
     "framerate": 60,
-    "camera": {"yfov": 0.7853981633974483, "znear": 0.1, "zfar": 100.0, "up": [0, 1, 0]},
+    "camera": {"yfov": 0.7853981633974483, "znear": 0.1, "zfar": 100.0},
     "default_scene_id": "default_scene",
     "scene_data_json": "scene.json",
     "asset_data_json": "assets.json",

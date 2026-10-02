@@ -55,9 +55,9 @@ void main() {
 
     // The camera is the engine's: unproject the pixel through the frame UBO's
     // projection and view so perspective and orthographic cameras both work.
-    // Pixel rows count down from the top; the engine's projection keeps +y up.
+    // Pixel rows and NDC y both count down from the top (the engine's
+    // projection flips y), so the pixel maps to NDC as it is.
     vec2 ndc = (vec2(pixel) + jitter) / size * 2.0 - 1.0;
-    ndc.y = -ndc.y;
     mat4 inverseProjection = inverse(pelicanFrame.projection);
     mat4 inverseView = inverse(pelicanFrame.view);
     vec4 nearView = inverseProjection * vec4(ndc, 0.0, 1.0);

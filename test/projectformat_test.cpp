@@ -71,6 +71,18 @@ TEST_CASE("pelican.project envelope validation is engine independent",
         parseProjectEnvelopeJson(invalid),
         Catch::Matchers::ContainsSubstring("exactly 1"));
 
+    // CC-1b: basic_config.camera.up was removed with the camera convention;
+    // a project that still writes it (every project written before did) is
+    // refused by name and pointed at the conversion script.
+    invalid = valid;
+    invalid["basic_config"]["camera"] = {{"yfov", 0.8}, {"up", {0.0, -1.0, 0.0}}};
+    REQUIRE_THROWS_WITH(
+        parseProjectEnvelopeJson(invalid),
+        Catch::Matchers::StartsWith("project.camera_up_removed@1: ") &&
+            Catch::Matchers::ContainsSubstring("tools/convert_camera_convention.py"));
+    invalid["basic_config"]["camera"].erase("up");
+    REQUIRE_NOTHROW(parseProjectEnvelopeJson(invalid));
+
     invalid = valid;
     invalid["engine_min_version"] = "999.0.0";
     // MG-1: the refusal has a name.

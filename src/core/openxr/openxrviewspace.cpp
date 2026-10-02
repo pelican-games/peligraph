@@ -1,4 +1,5 @@
 #include "openxrviewspace.hpp"
+#include "../renderer/clipspace.hpp"
 
 #include <algorithm>
 #include <array>
@@ -97,17 +98,12 @@ glm::mat4 asymmetricProjectionRhZo(const XrFovf &fov, float z_near,
         throw std::runtime_error("OpenXR projection FOV has an invalid tangent extent");
     }
 
-    glm::mat4 projection{0.0f};
-    projection[0][0] = 2.0f / tangent_width;
-    // Pelican records a positive-height Vulkan viewport. Flip clip-space Y so
-    // angleUp reaches the top (NDC -1) and angleDown reaches the bottom (+1).
-    projection[1][1] = -2.0f / tangent_height;
-    projection[2][0] = (tangent_right + tangent_left) / tangent_width;
-    projection[2][1] = -(tangent_up + tangent_down) / tangent_height;
-    projection[2][2] = -z_far / (z_far - z_near);
-    projection[2][3] = -1.0f;
-    projection[3][2] = -(z_far * z_near) / (z_far - z_near);
-    return projection;
+    // CC-1a: the shared camera projection. Pelican records a positive-height
+    // Vulkan viewport and the projection flips clip-space y, so angleUp
+    // reaches the top (NDC -1) and angleDown the bottom (+1), as for the flat
+    // camera.
+    return vulkanAsymmetric(tangent_left, tangent_right, tangent_down,
+                            tangent_up, z_near, z_far);
 }
 
 RenderViewParameters buildRenderViewParameters(

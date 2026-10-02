@@ -131,7 +131,7 @@
       "source": "src/core/communication/editorpreviewservice.cpp",
       "consumer": "editor_preview",
       "role": "preview capture projection producer",
-      "needles": ["request.projection = matrix(", "request.projection = glm::perspectiveRH_ZO(", "request.projection = glm::orthoRH_ZO("]
+      "needles": ["request.projection = matrix(", "request.projection = vulkanPerspective(", "request.projection = vulkanOrtho("]
     },
     {
       "source": "src/core/light/light.hpp",
@@ -191,7 +191,7 @@
       "source": "src/core/renderer/camera.cpp",
       "consumer": "culling_rpc_rays",
       "role": "stable non-jittered camera view-projection producer",
-      "needles": ["glm::mat4 Camera::getVPMatrix() const { return projection_matrix * glm::lookAt(pos, pos + dir, up); }"]
+      "needles": ["glm::mat4 Camera::getVPMatrix() const { return projection_matrix * getViewMatrix(); }"]
     },
     {
       "source": "src/core/renderer/camera.hpp",
@@ -419,7 +419,7 @@
       "source": "src/core/render_algorithms/punctual_shadow/punctualshadowview.cpp",
       "consumer": "shadow",
       "role": "Point and spot light-space shadow view-family provider",
-      "needles": ["RenderViewFamily buildPointShadowViewFamily(", "RenderViewFamily buildSpotShadowViewFamily(", "buildCubeCaptureViewFamily({lights[index].position, near_distance, far_distance})", ".projection = glm::perspectiveRH_ZO("]
+      "needles": ["RenderViewFamily buildPointShadowViewFamily(", "RenderViewFamily buildSpotShadowViewFamily(", "buildCubeCaptureViewFamily({lights[index].position, near_distance, far_distance})", ".projection = vulkanPerspective("]
     },
     {
       "source": "src/core/renderer/directionalshadowcascade.cpp",

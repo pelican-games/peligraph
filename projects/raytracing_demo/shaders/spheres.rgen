@@ -14,9 +14,11 @@ void main() {
     vec2 size = vec2(gl_LaunchSizeEXT.xy);
     vec2 screen = (vec2(gl_LaunchIDEXT.xy) + 0.5) / size * 2.0 - 1.0;
     screen.x *= size.x / size.y;
-    // Fixed teaching camera at the origin, looking along +Z; world +Y is up.
+    // Fixed teaching camera at the origin, looking along -Z like an engine
+    // camera with no rotation: world +X is right, +Y is up. Pixel rows count
+    // down, so screen y is negated.
     float imagePlaneScale = tan(radians(verticalFieldOfViewDegrees) * 0.5);
-    vec3 direction = normalize(vec3(screen.x * imagePlaneScale, -screen.y * imagePlaneScale, 1.0));
+    vec3 direction = normalize(vec3(screen.x * imagePlaneScale, -screen.y * imagePlaneScale, -1.0));
     color = vec3(0.0);
     traceRayEXT(pelicanRayTracingScene, gl_RayFlagsOpaqueEXT, 0xffu,
                 0u, pelican_ray_type_count, 0u,

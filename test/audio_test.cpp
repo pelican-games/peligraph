@@ -829,7 +829,7 @@ TEST_CASE("AU-1 a scene change stops the graph's voices and a time-clocked BGM c
     GET_MODULE(ProjectSource).setProjectData(nlohmann::json{{"schema", "pelican.project"}, {"version", 1},
         {"name", "au1-scene"}, {"engine_min_version", "0.1.0"},
         {"basic_config", {{"window_size", {{"width", 64}, {"height", 64}}},
-            {"camera", {{"yfov", 0.5}, {"znear", 0.1}, {"zfar", 100.0}, {"up", {0.0, 1.0, 0.0}}}},
+            {"camera", {{"yfov", 0.5}, {"znear", 0.1}, {"zfar", 100.0}}},
             {"default_scene_id", "first"}, {"scene_data_json", "scene.json"}}}}.dump());
     GET_MODULE(ECSPredefinedRegistration).reg();
     auto &scene = rig.scene();
@@ -918,7 +918,7 @@ TEST_CASE("CT-1 get_status lists each graph voice's state and position, the same
     GET_MODULE(ProjectSource).setProjectData(nlohmann::json{{"schema", "pelican.project"}, {"version", 1},
         {"name", "ct1-voices"}, {"engine_min_version", "0.1.0"},
         {"basic_config", {{"window_size", {{"width", 64}, {"height", 64}}},
-            {"camera", {{"yfov", 0.5}, {"znear", 0.1}, {"zfar", 100.0}, {"up", {0.0, 1.0, 0.0}}}},
+            {"camera", {{"yfov", 0.5}, {"znear", 0.1}, {"zfar", 100.0}}},
             {"default_scene_id", "first"}, {"scene_data_json", "scene.json"}}}}.dump());
     GET_MODULE(ECSPredefinedRegistration).reg();
     auto &scene = rig.scene();

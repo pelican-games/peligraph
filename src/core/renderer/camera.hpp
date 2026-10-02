@@ -2,6 +2,7 @@
 
 #include "../cameradefinition.hpp"
 #include "../container.hpp"
+#include "clipspace.hpp"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <nlohmann/json_fwd.hpp>
@@ -37,12 +38,15 @@ DECLARE_MODULE(Camera) {
         float sensitivity = 0.0f;
     };
 
+    // CC-1a: dir and up are the camera's basis (clipspace.hpp cameraBasis):
+    // dir = R * (0, 0, -1), up = R * (0, 1, 0). Without a rotation the camera
+    // looks down -Z with +Y up.
     struct SceneCamera {
         std::string name;
         CameraProjectionSpec projection;
         CameraSpritePolicySpec sprite;
         glm::vec3 pos{0.0f, 0.0f, 0.0f};
-        glm::vec3 dir{0.0f, 0.0f, 1.0f};
+        glm::vec3 dir{0.0f, 0.0f, -1.0f};
         glm::vec3 up{0.0f, 1.0f, 0.0f};
         std::optional<SceneCameraController> controller;
     };
@@ -62,7 +66,7 @@ DECLARE_MODULE(Camera) {
     struct ParkedView {
         bool valid = false;
         glm::vec3 pos{0.0f, 0.0f, 0.0f};
-        glm::vec3 dir{1.0f, 0.0f, 0.0f};
+        glm::vec3 dir{0.0f, 0.0f, -1.0f};
         glm::vec3 up{0.0f, 1.0f, 0.0f};
         CameraProjectionSpec projection;
         CameraSpritePolicySpec sprite_policy;
@@ -72,7 +76,7 @@ DECLARE_MODULE(Camera) {
 
     struct PreparedSceneState {
         glm::vec3 pos{0.0f, 0.0f, 0.0f};
-        glm::vec3 dir{1.0f, 0.0f, 0.0f};
+        glm::vec3 dir{0.0f, 0.0f, -1.0f};
         glm::vec3 up{0.0f, 1.0f, 0.0f};
         float viewport_aspect = 1.0f;
         uint32_t viewport_width = 1;
@@ -128,6 +132,9 @@ DECLARE_MODULE(Camera) {
     glm::vec3 getPos() const { return pos; }
     void setDir(glm::vec3 new_dir);
     glm::vec3 getDir() const { return dir; }
+    // CC-1a: dir and up from a transform's rotation (cameraBasis). Ignored
+    // while a scene camera is locked active, like setDir.
+    void setRotation(const glm::quat &rotation);
     void setUp(glm::vec3 new_up) { up = new_up; }
     glm::vec3 getUp() const { return up; }
     void setScreenSize(uint32_t width, uint32_t height);
@@ -167,7 +174,7 @@ DECLARE_MODULE(Camera) {
     uint32_t viewportHeight() const { return viewport_height; }
     glm::mat4 getVPMatrix() const;
     glm::mat4 getProjectionMatrix() const { return projection_matrix; }
-    glm::mat4 getViewMatrix() const { return glm::lookAt(pos, pos + dir, up); }
+    glm::mat4 getViewMatrix() const { return viewFromBasis(pos, dir, up); }
 
     // GP-4: the world ray through a framebuffer pixel position, by the inverse
     // of the projection and the view this camera draws the frame with. Pixel

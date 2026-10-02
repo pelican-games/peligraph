@@ -1,4 +1,5 @@
 #include "directionalshadowcascade.hpp"
+#include "clipspace.hpp"
 
 #include <algorithm>
 #include <array>
@@ -110,31 +111,6 @@ SourceFrustum sourceFrustum(
         .near_distance = near_distance,
         .far_distance = far_distance,
     };
-}
-
-glm::mat4 vulkanOrtho(
-    float left, float right,
-    float bottom, float top,
-    float near_distance,
-    float far_distance) {
-    glm::mat4 result{1.0f};
-    result[0][0] =
-        2.0f / (right - left);
-    result[1][1] =
-        2.0f / (top - bottom);
-    result[2][2] =
-        1.0f /
-        (near_distance - far_distance);
-    result[3][0] =
-        -(right + left) /
-        (right - left);
-    result[3][1] =
-        -(top + bottom) /
-        (top - bottom);
-    result[3][2] =
-        near_distance /
-        (near_distance - far_distance);
-    return result;
 }
 
 std::vector<float> cascadeSplits(
