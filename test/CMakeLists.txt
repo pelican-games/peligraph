@@ -2164,6 +2164,9 @@ endif()
 pelican_define_test(engine_primitives_test MIXED_GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
 target_include_directories(pelican_test_engine_primitives_test PRIVATE ${stb_SOURCE_DIR})
 target_link_libraries(pelican_test_engine_primitives_test PRIVATE pelican_shaderc)
+# FR-3: the Blank-built deferred pipeline under test/fixtures/fr3_blank_graph.
+target_compile_definitions(pelican_test_engine_primitives_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 if(COMMAND pelican_copy_shaderc_runtime)
     pelican_copy_test_shaderc_runtime(pelican_test_engine_primitives_test)
 endif()

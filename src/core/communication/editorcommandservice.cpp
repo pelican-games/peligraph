@@ -1548,6 +1548,12 @@ OrderedJson EditorCommandService::editRenderTargets(const Json &params) {
     return render_config_editor_->editRenderTargets(params);
 }
 
+// FR-3.
+OrderedJson EditorCommandService::editBatch(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->editBatch(params);
+}
+
 // RD-1.
 OrderedJson EditorCommandService::getRenderDocuments(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
@@ -2600,6 +2606,11 @@ OrderedJson EditorCommandRpcAdapter::editRenderTargets(
             "edit_render_targets requires a mutable editor service");
     }
     return mutable_service_->editRenderTargets(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::editBatch(const Json &params) const {
+    if (mutable_service_ == nullptr) throw std::logic_error("edit_batch requires a mutable editor service");
+    return mutable_service_->editBatch(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getRenderDocuments(const Json &params) const {

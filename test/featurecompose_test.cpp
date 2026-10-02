@@ -9958,6 +9958,15 @@ TEST_CASE("FR-1 a feature names the targets it leaves to the pipeline and is ref
     fixed["nodes"].push_back({{"id", "scene_depth_ref"}, {"op", "render.target_ref"},
                               {"parameters", {{"name", "scene_depth"}, {"type", fields.at("type")}}},
                               {"outputs", Json::array({"resource"})}});
+    // FR-3: declared is not drawn. Nothing in this pipeline writes a depth
+    // sky_background could read, so nothing is offered to write it.
+    const auto [unwritten_code, unwritten] = lp0aRefusal(fixed);
+    CHECK(unwritten_code == "feature.required_target_unwritten@1");
+    CHECK(unwritten == Json{{"feature", "sky_ambient"}, {"target", "scene_depth"}, {"type", fr1DeviceDepth()},
+                            {"writer_candidates", Json::array()},
+                            {"document", "engine://features/sky_ambient.json"}});
+    // A pass that draws it before sky_background.
+    fixed["rendering"]["rendering_passes"][0]["passes"][0]["output"]["depth"] = "scene_depth";
     const auto composed = lp0aCompose(fixed);
     CHECK(passByName(composed.config, "sky_background").at("input") == Json::array({"scene_depth"}));
     std::size_t depth_targets = 0;
@@ -10051,6 +10060,9 @@ nlohmann::json fr2GraphWithoutDeferredLighting() {
                                  {"parameters", {{"name", "scene_depth"}, {"type", fr1DeviceDepth()}}},
                                  {"outputs", nlohmann::json::array({"resource"})}});
     document["rendering"]["rendering_passes"][0]["passes"][0]["name"] = "lighting_pass";
+    // FR-3: and drawn, by the lighting pass, so what composes here is what the
+    // frame planner takes too.
+    document["rendering"]["rendering_passes"][0]["passes"][0]["output"]["depth"] = "scene_depth";
     document["rendering"]["features"] = nlohmann::json::array({"engine://features/sky_ambient.json"});
     return document;
 }

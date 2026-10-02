@@ -393,6 +393,21 @@ class RenderConfigEditorService {
     // refused as render_pipeline_preflight_failed like a composition error.
     using AuthoredCandidateCheck =
         std::function<void(const ResolvedRenderConfigAuthoringContext &)>;
+    // FR-3: while edit_batch applies its edits, each to what the ones before
+    // it made. document_ and managed_documents_ hold the batch's candidate
+    // (restored when the batch returns); `documents` are the other documents
+    // its edits wrote (a forked preset, a materialized feature), which
+    // currentDocumentSet() carries too. No edit is preflighted on its own:
+    // `checks` are the G-1 checks add_authored_pass asked for, and `composes`
+    // says an edit's own preflight would have composed its candidate; the
+    // batch runs both once on the last candidate. The disk is compared with
+    // what the editor holds once, before the first edit.
+    struct BatchOverlay {
+        std::vector<RenderConfigCandidateDocument> documents;
+        std::vector<AuthoredCandidateCheck> checks;
+        bool composes = false;
+    };
+    std::optional<BatchOverlay> batch_;
     nlohmann::ordered_json enqueueAuthoredPassTicket(
         std::string operation, const GateSnapshot &gate,
         const std::string &base_digest, AuthoredRenderConfigDocument root,
@@ -717,6 +732,25 @@ class RenderConfigEditorService {
     // current composition writes, the documents the restored root (and its
     // preset) name may be created or deleted; a deletion is limited to what
     // the current or the restored composition names.
+    // FR-3: edit_batch {base_source_digest, edits: [{method, params}...]}:
+    // the document-writing edits of editBatchMethods(), applied in order to
+    // one candidate, each to what the ones before it made, then composed and
+    // preflighted once (with the graph variants) and published as one ticket
+    // -- one RD-1 `documents` set, one restore. An edit's params carry no
+    // base_source_digest (the batch's is the only one); a method outside the
+    // list, a malformed entry or an edit's own invalid params are invalid
+    // params. An edit that cannot be applied refuses the batch with its own
+    // refusal and `batch_index`; a refusal of the composed candidate has no
+    // batch_index. Accepted: {ticket, status: "accepted",
+    // base_source_digest, methods}; the committed result carries
+    // operation "edit_batch" and `methods`.
+    nlohmann::ordered_json editBatch(const nlohmann::json &params);
+    // FR-3: the methods edit_batch takes, in the order it lists them. Left
+    // out: those that write nothing through a ticket of their own, the
+    // asynchronous ones, restore / reload, and edit_compute_task /
+    // remove_compute_task / edit_preset_pass, which read the document they
+    // rewrite from the disk.
+    static std::vector<std::string> editBatchMethods();
     nlohmann::ordered_json restoreRenderDocuments(
         const nlohmann::json &params);
     // RL-1: reload_render_documents {}: the render documents (the root and

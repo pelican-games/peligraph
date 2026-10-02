@@ -143,7 +143,32 @@ void insertRenderPassRunAtAnchor(nlohmann::json &passes,
 // for (COLOR_ATTACHMENT / DEPTH_STENCIL_ATTACHMENT / SAMPLED, and the override's
 // and the parameter's usage). Never throws on a malformed document; the
 // composer refuses that.
-nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature);
+// FR-3: `with_needs_writer` adds `needs_writer` to each entry: true when a
+// pass of the feature reads the target this frame (an input that is not an
+// `@history` read) and none of its passes writes it (a color or depth
+// output) -- a target the pipeline has to have drawn by someone else
+// (feature.required_target_unwritten@1 otherwise).
+nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature, bool with_needs_writer = false);
+
+// FR-3: a feature reads a target (renderFeatureRequiredTargets'
+// needs_writer) that no pass or compute task of the composed pipeline
+// writes: no declaration names it except as something it reads, and it has
+// no initial contents. Fields: {feature, target, type, writer_candidates:
+// [{node?, pass, port, resource}], document} -- `type` as
+// renderFeatureRequiredTargets gives it, and `writer_candidates` the outputs
+// that, in the family of the feature's pass that reads it and before that
+// pass, write a target of the same kind (depth for a pelican.render.depth@1
+// type, color otherwise; judged by the target's format) -- a pass that draws
+// another view (`view_family`, a shadow map's) and a feature's own pass are
+// not among them: `pass` the frame
+// pass, `resource` the target it writes now, `port` the graph port that
+// writes it when a root node of the rendering graph made the pass (`node`
+// is then that node's id), else "depth" or "color" (with `.<index>` past the
+// first color output). Writing the required target from one of them (for a
+// graph node: connecting that port to a render.target_ref of the target)
+// lets the feature compose. Raised as GraphRegistryError.
+inline constexpr std::string_view featureRequiredTargetUnwrittenCode =
+    "feature.required_target_unwritten@1";
 
 // FR-1: a feature composed into a pipeline that declares none of a target it
 // needs. Fields: {feature, target, type, document} -- the feature's name, the

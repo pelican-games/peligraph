@@ -11418,7 +11418,9 @@ TEST_CASE("FR-1 the catalog gives each feature's required targets and adding one
     REQUIRE(required.size() == 2);
     CHECK(required.at(0).at("name") == "lit_color");
     CHECK(required.at(1) == nlohmann::ordered_json::parse(
-        Json{{"name", "scene_depth"}, {"type", depth}, {"usage", Json::array({"SAMPLED"})}}.dump()));
+        Json{{"name", "scene_depth"}, {"type", depth}, {"usage", Json::array({"SAMPLED"})},
+             // FR-3: sky_ambient only reads it.
+             {"needs_writer", true}}.dump()));
     // A feature that declares every target it touches needs none.
     for (const auto &feature : catalog.at("features"))
         if (feature.at("name") == "shadow_directional") CHECK(feature.at("required_targets").empty());
@@ -11514,6 +11516,322 @@ TEST_CASE("FR-2 the catalog gives each feature's insertion points and adding one
     CHECK(std::ranges::find(candidates, "present") != candidates.end());
     CHECK(std::ranges::find(candidates, "deferred_lighting") == candidates.end());
     CHECK(readBytes(project.render_config) == before);
+}
+
+namespace {
+
+// FR-3: the deferred pipeline the GUI session built from File > New Project >
+// Blank on the Graph tab (gui_settings_choose's project, its second lighting
+// pass left out): a render.material_pass of deferred_geometry_v1 drawing its
+// G-buffer and its depth into render.image nodes of its own, the Deferred
+// lighting template's fullscreen pass reading them and shadow_directional's
+// shadow_map through shadow_map_ref, and present. The edits go through the
+// editor's tickets, preflighted by the engine's own variant preflight and
+// published through a runtime that compiles the candidate as the running
+// renderer does (vf1CompileAsRenderer: the production Vulkan program, no
+// device) -- where "Pass input target is not produced as an earlier output"
+// and the graph type checks are raised. The root is kept as
+// main_rendering_config.graph, not .json: the frame planner tests read every
+// .json under test/fixtures that has rendering_passes as a flat config.
+struct Fr3Harness {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    ActualCpuRenderRuntime runtime;
+    std::unique_ptr<RenderConfigEditorService> service;
+
+    Fr3Harness() {
+        const auto fixtures =
+            std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" / "fr3_blank_graph";
+        writeBytes(project.render_config, readBytes(fixtures / "main_rendering_config.graph"));
+        std::filesystem::create_directories(project.root / "shaders");
+        writeBytes(project.root / "shaders" / "deferred_lighting.frag",
+                   readBytes(fixtures / "deferred_lighting.frag"));
+        resolver.setup(project.root, false);
+        service = makeProjectService(project, resolver, runtime, g6ProductionPreflight(resolver, false));
+        runtime.validate_candidate = [this](const RenderConfigCandidateDocumentSet &documents) {
+            vf1CompileAsRenderer(documents, resolver);
+        };
+    }
+
+    std::string digest() const { return service->documentForTesting().sourceDigest(); }
+
+    // The final answer: a refusal when the edit is asked for, or the ticket's
+    // result once the runtime judged it.
+    nlohmann::ordered_json settle(const nlohmann::ordered_json &answer) {
+        INFO(answer.dump());
+        if (answer.value("status", std::string{}) != "accepted") return answer;
+        service->commitPending();
+        return service->getResult({{"ticket", answer.at("ticket")}});
+    }
+
+    // One edit as edit_batch takes it, sent alone.
+    nlohmann::ordered_json single(const Json &edit) {
+        auto params = edit.at("params");
+        params["base_source_digest"] = digest();
+        const auto &method = edit.at("method");
+        if (method == "edit_render_features") return settle(service->editRenderFeatures(params));
+        if (method == "edit_graph_document") return settle(service->editGraphDocument(params));
+        if (method == "edit_render_targets") return settle(service->editRenderTargets(params));
+        FAIL("fr3 single: " << method);
+        return {};
+    }
+
+    nlohmann::ordered_json batch(const Json &edits) {
+        return settle(service->editBatch({{"base_source_digest", digest()}, {"edits", edits}}));
+    }
+};
+
+const Json &fr3Depth() {
+    static const Json type{{"semantic", "pelican.render.depth@1"},
+                           {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+    return type;
+}
+
+const Json &fr3ArrayDepth() {
+    static const Json type{{"semantic", "pelican.render.depth@1"},
+                           {"arguments", {{"representation", "device"}, {"space", "projection"},
+                                          {"topology", "two_d_array"}}}};
+    return type;
+}
+
+// What Studio's "Add with targets" sends for sky_ambient (UX-12b): the two
+// targets the catalog says the pipeline lacks, and a render.target_ref of each.
+Json fr3TargetsEdit() {
+    return {{"method", "edit_render_targets"},
+            {"params", {{"ops", Json::array({
+                {{"op", "add"}, {"target", {{"name", "lit_color"}, {"extent_scale", 1.0},
+                                            {"format", "R16G16B16A16_SFLOAT"}, {"format_class", "scene"},
+                                            {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}}}},
+                {{"op", "add"}, {"target", {{"name", "scene_depth"}, {"extent_scale", 1.0},
+                                            {"format", "D32_SFLOAT"}, {"format_class", "data"},
+                                            {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"})}}}},
+            })}}}};
+}
+
+Json fr3RefsEdit() {
+    const auto ref = [](const char *id, const char *name, const Json &type) {
+        return Json{{"op", "add_node"},
+                    {"node", {{"id", id}, {"op", "render.target_ref"}, {"outputs", Json::array({"resource"})},
+                              {"parameters", {{"name", name}, {"type", type}}}}}};
+    };
+    return {{"method", "edit_graph_document"},
+            {"params", {{"ops", Json::array({
+                ref("scene_depth_ref", "scene_depth", fr3Depth()),
+                ref("lit_color_ref", "lit_color",
+                    Json{{"semantic", "pelican.render.legacy_opaque_image@1"}, {"arguments", Json::object()}}),
+            })}}}};
+}
+
+Json fr3SkyEdit() {
+    return {{"method", "edit_render_features"},
+            {"params", {{"operations", Json::array({{{"op", "add"},
+                                                     {"feature", "engine://features/sky_ambient.json"}}})}}}};
+}
+
+// shadow_directional's parameters as the fixture has them, cascade_count 3.
+Json fr3CascadeEdit() {
+    return {{"method", "edit_render_features"},
+            {"params", {{"operations", Json::array({{{"op", "set_parameters"}, {"index", 0},
+                {"parameters", {{"pcf_radius", 2}, {"strength", 1}, {"cascade_count", 3}}}}})}}}};
+}
+
+Json fr3RefArrayOp() {
+    return {{"op", "set_node_parameters"}, {"node", "shadow_map_ref"},
+            {"parameters", {{"name", "shadow_map"}, {"type", fr3ArrayDepth()}}}};
+}
+
+// The lighting pass's parameters with its shadow_map port read as a 2D array
+// depth. Its shader (the Deferred lighting template) samples the shadow map
+// with a layer, and its input binding is declared a sampler2DArray when the
+// image it is bound to has layers (PELICAN_INPUT_5_LAYERED).
+Json fr3PortArrayOp() {
+    const auto fixture = Json::parse(readBytes(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+                                               "fixtures" / "fr3_blank_graph" / "main_rendering_config.graph"));
+    Json parameters;
+    for (const auto &node : fixture.at("nodes"))
+        if (node.at("id") == "deferred_lighting") parameters = node.at("parameters");
+    REQUIRE(parameters.is_object());
+    parameters["ports"]["shadow_map"]["type"] = fr3ArrayDepth();
+    return {{"op", "set_node_parameters"}, {"node", "deferred_lighting"}, {"parameters", parameters}};
+}
+
+Json fr3GraphEdit(Json ops) { return {{"method", "edit_graph_document"}, {"params", {{"ops", std::move(ops)}}}}; }
+
+const Json *fr3PlanNode(const Json &plan, std::string_view name) {
+    for (const auto &node : plan.at("nodes"))
+        if (node.at("name").get<std::string>() == name) return &node;
+    return nullptr;
+}
+
+bool fr3Lists(const Json &list, std::string_view name) {
+    return std::find(list.begin(), list.end(), Json(name)) != list.end();
+}
+
+} // namespace
+
+// FR-3 (UX-12b's report): on the Blank-built deferred pipeline, sky_ambient
+// with the targets and target_refs it asked for was refused only by the
+// frame planner's text ("Pass input target is not produced as an earlier
+// output: scene_depth in pass: sky_background") -- scene_depth was declared
+// and drawn by nobody; the material pass draws its depth into an image of its
+// own. The catalog now says which required targets need a writer, the edit
+// is refused by name with the outputs that could write it, and connecting
+// the material pass's depth port to scene_depth_ref -- one edit -- lets the
+// feature compose and publish.
+TEST_CASE("FR-3 a feature's target that no pass writes is refused with the passes that could write it, and "
+          "connecting one composes",
+          "[render-config-editor][fr3][render-feature]") {
+    Fr3Harness harness;
+
+    const auto catalog = harness.service->listRenderFeatures(Json::object());
+    const auto sky = std::ranges::find_if(catalog.at("features"), [](const auto &feature) {
+        return feature.at("name") == "sky_ambient";
+    });
+    REQUIRE(sky != catalog.at("features").end());
+    const auto required = Json(sky->at("required_targets"));
+    INFO(required.dump());
+    REQUIRE(required.size() == 2);
+    CHECK(required.at(0).at("name") == "lit_color");
+    CHECK(required.at(0).at("needs_writer") == false); // sky_background draws into it
+    CHECK(required.at(1).at("name") == "scene_depth");
+    CHECK(required.at(1).at("needs_writer") == true); // it only reads it
+
+    // The targets and their target_refs, as Studio adds them: one ticket.
+    const auto declared = harness.batch(Json::array({fr3TargetsEdit(), fr3RefsEdit()}));
+    INFO(declared.dump());
+    REQUIRE(declared.at("status") == "committed");
+
+    const auto before = readBytes(harness.project.render_config);
+    const auto refused = harness.single(fr3SkyEdit());
+    INFO(refused.dump());
+    REQUIRE(refused.at("status") == "rejected");
+    const auto error = Json(refused.at("error"));
+    CHECK(error.at("code") == "feature.required_target_unwritten@1");
+    CHECK(error.at("feature") == "sky_ambient");
+    CHECK(error.at("target") == "scene_depth");
+    CHECK(error.at("type") == fr3Depth());
+    CHECK(error.at("document") == "engine://features/sky_ambient.json");
+    // The material pass's depth, by its graph node and port; shadow_depth
+    // (another view, and the feature's) is no candidate.
+    CHECK(error.at("writer_candidates") == Json::parse(R"([{"node": "render_material_pass",
+        "pass": "render_material_pass", "port": "depth", "resource": "render_material_pass__depth"}])"));
+    CHECK(readBytes(harness.project.render_config) == before);
+
+    // Studio's fix, one edit: the candidate's port writes scene_depth instead.
+    const auto &candidate = error.at("writer_candidates").at(0);
+    const auto connected = harness.single(fr3GraphEdit(Json::array({{{"op", "set_input"},
+        {"node", candidate.at("node")}, {"port", candidate.at("port")},
+        {"source", {{"node", "scene_depth_ref"}, {"port", "resource"}}}}})));
+    INFO(connected.dump());
+    REQUIRE(connected.at("status") == "committed");
+
+    const auto added = harness.single(fr3SkyEdit());
+    INFO(added.dump());
+    REQUIRE(added.at("status") == "committed");
+    const auto &plan = harness.runtime.frame_plan;
+    INFO(plan.dump());
+    const auto *material = fr3PlanNode(plan, "render_material_pass");
+    const auto *background = fr3PlanNode(plan, "sky_background");
+    REQUIRE(material != nullptr);
+    REQUIRE(background != nullptr);
+    CHECK(fr3Lists(material->at("writes"), "scene_depth"));
+    CHECK(fr3Lists(background->at("reads"), "scene_depth"));
+}
+
+// FR-3 (UX-12b's report): cascade_count 3 makes shadow_map a 3-layer array,
+// which the shadow_map_ref (2D) contradicts; a 2D-array shadow_map_ref
+// contradicts the cascade-1 map and the lighting pass's 2D depth port. No
+// single edit, in either order, composes. edit_batch applies them in order to
+// one candidate, composes it once and publishes one ticket; what is still
+// refused is named with the edit that raised it.
+TEST_CASE("FR-3 edit_batch applies edits in order to one candidate as one ticket, names the edit it refuses, "
+          "and RD-1 undoes it",
+          "[render-config-editor][fr3][edit-batch]") {
+    Fr3Harness harness;
+    const auto before = readBytes(harness.project.render_config);
+
+    // Alone, each is refused (the engine judges the type against the
+    // shadow map as it is).
+    const auto cascade_alone = harness.single(fr3CascadeEdit());
+    INFO(cascade_alone.dump());
+    REQUIRE(cascade_alone.at("status") == "rejected");
+    CHECK(cascade_alone.at("error").at("code") == "graph.target_ref_type_mismatch@1");
+    const auto graph_alone = harness.single(fr3GraphEdit(Json::array({fr3RefArrayOp(), fr3PortArrayOp()})));
+    INFO(graph_alone.dump());
+    REQUIRE(graph_alone.at("status") == "rejected");
+    CHECK(graph_alone.at("error").at("code") == "graph.target_ref_type_mismatch@1");
+
+    // cascade_count and the target_ref's type together: what is left is the
+    // lighting pass's own declaration (a 2D depth input), named with the
+    // index of the edit that met it.
+    const auto calls = harness.runtime.apply_calls;
+    const auto lighting_left = harness.batch(Json::array({fr3CascadeEdit(), fr3GraphEdit(Json::array({fr3RefArrayOp()}))}));
+    INFO(lighting_left.dump());
+    REQUIRE(lighting_left.at("status") == "rejected");
+    CHECK(lighting_left.at("error").at("batch_index") == 1);
+    CHECK(lighting_left.at("error").at("code") == "invalid_graph_document");
+    CHECK_THAT(lighting_left.at("error").at("message").get<std::string>(),
+               Catch::Matchers::ContainsSubstring("graph type mismatch at deferred_lighting.shadow_map from "
+                                                  "shadow_map_ref.resource"));
+    harness.service->commitPending();
+    CHECK(harness.runtime.apply_calls == calls);
+    CHECK(readBytes(harness.project.render_config) == before);
+
+    // And the lighting pass's port in the same graph edit: one ticket, one
+    // publish, one RD-1 document set.
+    const auto read = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+    const auto accepted = harness.service->editBatch(
+        {{"base_source_digest", harness.digest()},
+         {"edits", Json::array({fr3CascadeEdit(), fr3GraphEdit(Json::array({fr3RefArrayOp(), fr3PortArrayOp()}))})}});
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    CHECK(accepted.at("methods") == nlohmann::ordered_json::array({"edit_render_features", "edit_graph_document"}));
+    const auto committed = harness.settle(accepted);
+    INFO(committed.dump());
+    REQUIRE(committed.at("status") == "committed");
+    CHECK(committed.at("operation") == "edit_batch");
+    CHECK(harness.runtime.apply_calls == calls + 1);
+    CHECK(Json(committed.at("documents")) ==
+          Json{{"passes/main.json", renderConfigSourceDigest(readBytes(harness.project.render_config))}});
+    const auto written = Json::parse(readBytes(harness.project.render_config));
+    CHECK(written.at("rendering").at("features").at(0).at("parameters").at("cascade_count") == 3);
+    for (const auto &node : written.at("nodes")) {
+        if (node.at("id") == "shadow_map_ref") CHECK(node.at("parameters").at("type") == fr3ArrayDepth());
+        if (node.at("id") == "deferred_lighting")
+            CHECK(node.at("parameters").at("ports").at("shadow_map").at("type") == fr3ArrayDepth());
+    }
+
+    // RD-1: the batch is one undo.
+    const auto restored = harness.settle(harness.service->restoreRenderDocuments(
+        {{"documents", Json::array({rd1Restore(read.at("passes/main.json"),
+                                               Json(committed.at("documents").at("passes/main.json")))})}}));
+    INFO(restored.dump());
+    REQUIRE(restored.at("status") == "committed");
+    CHECK(readBytes(harness.project.render_config) == before);
+
+    // The request's own shape.
+    const auto methods = RenderConfigEditorService::editBatchMethods();
+    CHECK(std::ranges::find(methods, "edit_render_features") != methods.end());
+    CHECK(std::ranges::find(methods, "edit_graph_document") != methods.end());
+    CHECK(std::ranges::find(methods, "edit_render_targets") != methods.end());
+    CHECK(std::ranges::find(methods, "edit_target_planning") != methods.end());
+    for (const auto *left_out : {"restore_render_documents", "reload_render_documents", "verify_fold",
+                                 "edit_preset_pass", "edit_compute_task", "edit_batch"})
+        CHECK(std::ranges::find(methods, left_out) == methods.end());
+    const auto invalid = [&](Json edits) {
+        return harness.service->editBatch({{"base_source_digest", harness.digest()}, {"edits", std::move(edits)}});
+    };
+    CHECK_THROWS_AS(invalid(Json::array({{{"method", "verify_fold"}, {"params", Json::object()}}})),
+                    std::invalid_argument);
+    auto carries_digest = fr3CascadeEdit();
+    carries_digest["params"]["base_source_digest"] = harness.digest();
+    CHECK_THROWS_AS(invalid(Json::array({carries_digest})), std::invalid_argument);
+    CHECK_THROWS_AS(invalid(Json::array()), std::invalid_argument);
+    // An edit's own invalid params are the batch's.
+    CHECK_THROWS_AS(invalid(Json::array({fr3CascadeEdit(), {{"method", "edit_render_features"},
+                                                             {"params", {{"operations", "add"}}}}})),
+                    std::invalid_argument);
+    CHECK(readBytes(harness.project.render_config) == before);
 }
 
 } // namespace Pelican

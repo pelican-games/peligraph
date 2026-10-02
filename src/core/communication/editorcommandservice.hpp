@@ -373,6 +373,8 @@ class EditorCommandService {
     nlohmann::ordered_json addAuthoredPass(const nlohmann::json &params);
     nlohmann::ordered_json removeAuthoredPass(const nlohmann::json &params);
     nlohmann::ordered_json editRenderTargets(const nlohmann::json &params);
+    // FR-3.
+    nlohmann::ordered_json editBatch(const nlohmann::json &params);
     nlohmann::ordered_json getRenderDocuments(const nlohmann::json &params) const;
     nlohmann::ordered_json restoreRenderDocuments(const nlohmann::json &params);
     nlohmann::ordered_json reloadRenderDocuments(const nlohmann::json &params);
@@ -486,6 +488,8 @@ class EditorCommandRpcAdapter {
         const nlohmann::json &params) const;
     nlohmann::ordered_json editRenderTargets(
         const nlohmann::json &params) const;
+    // FR-3.
+    nlohmann::ordered_json editBatch(const nlohmann::json &params) const;
     nlohmann::ordered_json getRenderDocuments(
         const nlohmann::json &params) const;
     nlohmann::ordered_json restoreRenderDocuments(

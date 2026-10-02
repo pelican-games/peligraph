@@ -335,6 +335,11 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("edit_render_targets", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editRenderTargets(params); });
     });
+    // FR-3: several document edits applied in order to one candidate,
+    // composed once, one ticket.
+    server.setHandler("edit_batch", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.editBatch(params); });
+    });
     // RD-1: read the render documents whole, and write them back under CAS
     // (Studio's undo of render edits).
     server.setHandler("get_render_documents", [&editor_rpc](const nlohmann::json &params) {

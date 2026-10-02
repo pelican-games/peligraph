@@ -2831,4 +2831,248 @@ TEST_CASE("IA-2 reload_render_documents takes in an initial asset rewritten on d
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+namespace {
+
+// FR-3: the deferred pipeline the GUI session built from File > New Project >
+// Blank on the Graph tab (gui_settings_choose's project, its second lighting
+// pass left out): a deferred_geometry_v1 render.material_pass drawing its
+// G-buffer and depth into render.image nodes of its own, the Deferred
+// lighting template's fullscreen pass reading them and shadow_directional's
+// shadow_map through shadow_map_ref, and present.
+std::filesystem::path fr3BlankDeferredProject(const std::filesystem::path &dir) {
+    const auto root = dir / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    const auto fixtures = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" / "fr3_blank_graph";
+    writeFile(root / "passes/main_rendering_config.json", readFile(fixtures / "main_rendering_config.graph"));
+    writeFile(root / "shaders/deferred_lighting.frag", readFile(fixtures / "deferred_lighting.frag"));
+    return root;
+}
+
+// The engine with that project open, answering RPC, a frame drawn.
+struct Fr3Engine {
+    FastModuleContainer modules;
+    // The endpoint reads the configured project: configured first.
+    bool configured;
+    Rpc rpc;
+
+    explicit Fr3Engine(const std::filesystem::path &root) : configured{(configureHeadless(root), true)} {
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        GET_MODULE(Renderer).prepareRuntimeModules();
+        (void)rpc.result("step_frame");
+        (void)rpc.result("render_frame");
+    }
+    ~Fr3Engine() { GET_MODULE(VulkanManageCore).waitIdle(); }
+
+    std::string digest() {
+        return rpc.result("get_render_authoring_context").at("source_digest").at("hex").get<std::string>();
+    }
+    // The final answer: a refusal when it is asked for, or the ticket's
+    // result once the running renderer judged it.
+    Json settle(const Json &accepted) {
+        INFO(accepted.dump(2));
+        if (accepted.value("status", std::string{}) != "accepted") return accepted;
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            (void)rpc.result("step_frame");
+            auto result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+            if (result.value("status", std::string{}) != "pending") return result;
+        }
+        FAIL("the ticket stayed pending");
+        return Json{};
+    }
+    Json send(std::string_view method, Json params) {
+        params["base_source_digest"] = digest();
+        return settle(rpc.result(method, std::move(params)));
+    }
+    Json batch(Json edits) { return send("edit_batch", {{"edits", std::move(edits)}}); }
+};
+
+const Json fr3Depth{{"semantic", "pelican.render.depth@1"},
+                    {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+const Json fr3ArrayDepth{{"semantic", "pelican.render.depth@1"},
+                         {"arguments", {{"representation", "device"}, {"space", "projection"},
+                                        {"topology", "two_d_array"}}}};
+
+Json fr3SkyParams() {
+    return {{"operations", Json::array({{{"op", "add"}, {"feature", "engine://features/sky_ambient.json"}}})}};
+}
+
+Json fr3CascadeParams() {
+    return {{"operations", Json::array({{{"op", "set_parameters"}, {"index", 0},
+                                         {"parameters", {{"pcf_radius", 2}, {"strength", 1}, {"cascade_count", 3}}}}})}};
+}
+
+const Json *fr3PlanNode(const Json &plan, std::string_view name) {
+    for (const auto &node : plan.at("nodes"))
+        if (node.at("name").get<std::string>() == name) return &node;
+    return nullptr;
+}
+
+bool fr3Lists(const Json &list, std::string_view name) {
+    return std::find(list.begin(), list.end(), Json(name)) != list.end();
+}
+
+} // namespace
+
+// FR-3 (UX-12b): sky_ambient on that pipeline, with the targets and
+// target_refs Studio adds for it, was refused only by the frame planner's text
+// ("Pass input target is not produced as an earlier output: scene_depth in
+// pass: sky_background"). Over RPC, through the running renderer: the catalog
+// says scene_depth needs a writer, the edit is refused by name with the
+// material pass's depth port as the writer, and the one edit Studio makes of
+// it -- that port connected to scene_depth_ref -- lets sky_ambient publish.
+TEST_CASE("FR-3 sky_ambient on the Blank-built deferred pipeline names the material pass's depth as its writer, "
+          "and connecting it publishes, through the running renderer",
+          "[fr3][primitives][render-feature][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("fr3_unwritten");
+    const auto root = fr3BlankDeferredProject(dir.root);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    Fr3Engine engine{root};
+
+    const auto catalog = engine.rpc.result("list_render_features").at("features");
+    const auto sky = std::find_if(catalog.begin(), catalog.end(),
+                                  [](const Json &feature) { return feature.at("name") == "sky_ambient"; });
+    REQUIRE(sky != catalog.end());
+    INFO(sky->dump(2));
+    REQUIRE(sky->at("required_targets").size() == 2);
+    CHECK(sky->at("required_targets").at(0).at("needs_writer") == false);
+    CHECK(sky->at("required_targets").at(1).at("name") == "scene_depth");
+    CHECK(sky->at("required_targets").at(1).at("needs_writer") == true);
+
+    // What Studio's "Add with targets" adds (UX-12b), in one edit_batch.
+    const auto declared = engine.batch(Json::array({
+        {{"method", "edit_render_targets"},
+         {"params", {{"ops", Json::array({
+             {{"op", "add"}, {"target", {{"name", "lit_color"}, {"extent_scale", 1.0},
+                                         {"format", "R16G16B16A16_SFLOAT"}, {"format_class", "scene"},
+                                         {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}}}},
+             {{"op", "add"}, {"target", {{"name", "scene_depth"}, {"extent_scale", 1.0},
+                                         {"format", "D32_SFLOAT"}, {"format_class", "data"},
+                                         {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"})}}}}})}}}},
+        {{"method", "edit_graph_document"},
+         {"params", {{"ops", Json::array({
+             {{"op", "add_node"}, {"node", {{"id", "scene_depth_ref"}, {"op", "render.target_ref"},
+                                            {"outputs", Json::array({"resource"})},
+                                            {"parameters", {{"name", "scene_depth"}, {"type", fr3Depth}}}}}},
+             {{"op", "add_node"}, {"node", {{"id", "lit_color_ref"}, {"op", "render.target_ref"},
+                                            {"outputs", Json::array({"resource"})},
+                                            {"parameters", {{"name", "lit_color"},
+                                                            {"type", {{"semantic", "pelican.render.legacy_opaque_image@1"},
+                                                                      {"arguments", Json::object()}}}}}}}}})}}}}}));
+    INFO(declared.dump(2));
+    REQUIRE(declared.at("status") == "committed");
+    CHECK(declared.at("operation") == "edit_batch");
+
+    const auto before = readFile(rendering_path);
+    const auto refused = engine.send("edit_render_features", fr3SkyParams());
+    INFO(refused.dump(2));
+    REQUIRE(refused.at("status") == "rejected");
+    const auto &error = refused.at("error");
+    CHECK(error.at("code") == "feature.required_target_unwritten@1");
+    CHECK(error.at("feature") == "sky_ambient");
+    CHECK(error.at("target") == "scene_depth");
+    CHECK(error.at("type") == fr3Depth);
+    CHECK(error.at("document") == "engine://features/sky_ambient.json");
+    CHECK(error.at("writer_candidates") == Json::parse(R"([{"node": "render_material_pass",
+        "pass": "render_material_pass", "port": "depth", "resource": "render_material_pass__depth"}])"));
+    CHECK(readFile(rendering_path) == before);
+
+    const auto &candidate = error.at("writer_candidates").at(0);
+    const auto connected = engine.send(
+        "edit_graph_document",
+        {{"ops", Json::array({{{"op", "set_input"}, {"node", candidate.at("node")}, {"port", candidate.at("port")},
+                               {"source", {{"node", "scene_depth_ref"}, {"port", "resource"}}}}})}});
+    INFO(connected.dump(2));
+    REQUIRE(connected.at("status") == "committed");
+    const auto added = engine.send("edit_render_features", fr3SkyParams());
+    INFO(added.dump(2));
+    REQUIRE(added.at("status") == "committed");
+
+    (void)engine.rpc.result("render_frame");
+    const auto plan = engine.rpc.result("get_frame_plan");
+    const auto *material = fr3PlanNode(plan, "render_material_pass");
+    const auto *background = fr3PlanNode(plan, "sky_background");
+    INFO(plan.dump());
+    REQUIRE(material != nullptr);
+    REQUIRE(background != nullptr);
+    CHECK(fr3Lists(material->at("writes"), "scene_depth"));
+    CHECK(fr3Lists(background->at("reads"), "scene_depth"));
+}
+
+// FR-3 (UX-12b): cascade_count 3 and the 2D-array shadow_map_ref were each
+// refused alone, in either order. Over RPC, through the running renderer:
+// with the two in one edit_batch, what is left is the lighting pass's 2D
+// depth port, named with its edit's index; with the port in the same graph
+// edit the batch publishes as one ticket, and RD-1 takes it back whole.
+TEST_CASE("FR-3 edit_batch takes cascade_count 3 with the 2D array shadow map types in one ticket, through the "
+          "running renderer",
+          "[fr3][primitives][edit-batch][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("fr3_batch");
+    const auto root = fr3BlankDeferredProject(dir.root);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    Fr3Engine engine{root};
+    const auto before = readFile(rendering_path);
+
+    const Json cascade{{"method", "edit_render_features"}, {"params", fr3CascadeParams()}};
+    const Json ref_op{{"op", "set_node_parameters"}, {"node", "shadow_map_ref"},
+                      {"parameters", {{"name", "shadow_map"}, {"type", fr3ArrayDepth}}}};
+    Json lighting;
+    const auto authored = Json::parse(before);
+    for (const auto &node : authored.at("nodes"))
+        if (node.at("id") == "deferred_lighting") lighting = node.at("parameters");
+    REQUIRE(lighting.is_object());
+    lighting["ports"]["shadow_map"]["type"] = fr3ArrayDepth;
+    const Json port_op{{"op", "set_node_parameters"}, {"node", "deferred_lighting"}, {"parameters", lighting}};
+
+    const auto alone = engine.send("edit_render_features", fr3CascadeParams());
+    INFO(alone.dump(2));
+    REQUIRE(alone.at("status") == "rejected");
+    CHECK(alone.at("error").at("code") == "graph.target_ref_type_mismatch@1");
+
+    const auto left = engine.batch(Json::array(
+        {cascade, {{"method", "edit_graph_document"}, {"params", {{"ops", Json::array({ref_op})}}}}}));
+    INFO(left.dump(2));
+    REQUIRE(left.at("status") == "rejected");
+    CHECK(left.at("error").at("batch_index") == 1);
+    CHECK_THAT(left.at("error").at("message").get<std::string>(),
+               Catch::Matchers::ContainsSubstring("deferred_lighting.shadow_map from shadow_map_ref.resource"));
+    CHECK(readFile(rendering_path) == before);
+
+    const auto documents = engine.rpc.result("get_render_documents").at("documents");
+    REQUIRE(documents.size() == 1);
+    const auto committed = engine.batch(Json::array(
+        {cascade, {{"method", "edit_graph_document"}, {"params", {{"ops", Json::array({ref_op, port_op})}}}}}));
+    INFO(committed.dump(2));
+    REQUIRE(committed.at("status") == "committed");
+    CHECK(committed.at("operation") == "edit_batch");
+    CHECK(committed.at("methods") == Json::array({"edit_render_features", "edit_graph_document"}));
+    REQUIRE(committed.at("documents").size() == 1);
+    (void)engine.rpc.result("render_frame");
+    const auto plan = engine.rpc.result("get_frame_plan");
+    INFO(plan.dump());
+    const auto *shadow = fr3PlanNode(plan, "shadow_depth");
+    const auto *lighting_node = fr3PlanNode(plan, "deferred_lighting");
+    REQUIRE(shadow != nullptr);
+    REQUIRE(lighting_node != nullptr);
+    CHECK(fr3Lists(lighting_node->at("reads"), "shadow_map"));
+
+    const auto restored = engine.settle(engine.rpc.result(
+        "restore_render_documents",
+        {{"documents", Json::array({{{"reference", documents.at(0).at("reference")},
+                                     {"base_digest", committed.at("documents").begin().value()},
+                                     {"content", documents.at(0).at("content")}}})}}));
+    INFO(restored.dump(2));
+    REQUIRE(restored.at("status") == "committed");
+    CHECK(readFile(rendering_path) == before);
+
+    // A method edit_batch does not take is the caller's error.
+    const auto outside = engine.rpc.call(
+        "edit_batch", {{"base_source_digest", engine.digest()},
+                       {"edits", Json::array({{{"method", "verify_fold"}, {"params", Json::object()}}})}});
+    INFO(outside.dump(2));
+    REQUIRE(outside.contains("error"));
+    CHECK(outside.at("error").at("code") == -32602);
+}
+
 } // namespace Pelican
