@@ -267,6 +267,16 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
             throw std::runtime_error("Render target history must be a boolean: " + name);
         }
         const bool history = rt_json.value("history", false);
+        // PS-1: a graph render.image's lifetime (absent: transient).
+        bool persistent = false;
+        if (const auto lifetime = rt_json.find("lifetime"); lifetime != rt_json.end()) {
+            if (!lifetime->is_string() ||
+                (*lifetime != "persistent" && *lifetime != "transient")) {
+                throw std::runtime_error(
+                    "Render target lifetime must be persistent or transient: " + name);
+            }
+            persistent = *lifetime == "persistent";
+        }
         const auto history_clear_color = parseHistoryClearColor(rt_json, name);
         const auto format =
             stringToFormat(format_str);
@@ -318,6 +328,7 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
             .mip_levels = mip_levels,
             .array_layers = array_layers,
             .dimension = dimension,
+            .persistent = persistent,
         });
     }
 

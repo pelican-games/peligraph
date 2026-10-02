@@ -1148,7 +1148,15 @@ TEST_CASE(
         parseComputeTaskDefinitionsFromConfigJson(
             invalid),
         Catch::Matchers::ContainsSubstring(
-            "per_frame or per_view"));
+            "per_frame, per_view or once"));
+
+    // PS-1: once is a third schedule.
+    auto once = config;
+    once["compute_tasks"][1]["schedule"] = "once";
+    const auto once_tasks =
+        parseComputeTaskDefinitionsFromConfigJson(once);
+    REQUIRE(std::string{computeTaskScheduleName(
+                once_tasks[1].schedule)} == "once");
 }
 
 TEST_CASE(

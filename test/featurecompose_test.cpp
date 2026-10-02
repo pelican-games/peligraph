@@ -9482,4 +9482,232 @@ TEST_CASE("RS-13 the rendering section reads a loop's output as <loop>.<output>"
     }
 }
 
+namespace {
+// PS-1: over the hybrid preset, `h0` (once) writes h0_image from the buffer
+// `level`, `twiddle` (once) reads h0's output into twiddle_image, and `show`
+// (every frame) reads twiddle's into show_image.
+nlohmann::json ps1Edge(const char *node, const char *port) {
+    return nlohmann::json{{"node", node}, {"port", port}};
+}
+
+nlohmann::json ps1Image(const std::string &id, bool persistent) {
+    nlohmann::json parameters{{"type", lp0aSceneColorType()}, {"format", "R8G8B8A8_UNORM"},
+                              {"extent_scale", 1.0}, {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}};
+    if (persistent) parameters["lifetime"] = "persistent";
+    return {{"id", id}, {"op", "render.image"}, {"parameters", std::move(parameters)}, {"outputs", {"resource"}}};
+}
+
+nlohmann::json ps1Pass(const std::string &id, const nlohmann::json &ports, const nlohmann::json &inputs, bool once) {
+    nlohmann::json parameters{{"pass_set", "main_render"},
+                              {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
+                              {"ports", ports}};
+    if (once) parameters["schedule"] = "once";
+    return {{"id", id}, {"op", "render.fullscreen"}, {"parameters", std::move(parameters)},
+            {"inputs", inputs}, {"outputs", {"color"}}};
+}
+
+nlohmann::json ps1ColorPort() {
+    return {{"kind", "image"}, {"type", lp0aSceneColorType()}, {"access", "write"},
+            {"attachment", "color"}, {"location", 0}};
+}
+
+nlohmann::json ps1Graph() {
+    using Json = nlohmann::json;
+    const Json read{{"kind", "image"}, {"type", lp0aSceneColorType()}, {"access", "read"}};
+    const Json level{{"kind", "buffer"}, {"element", "float"}, {"access", "read"}};
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", Json::object()},
+        {"nodes", Json::array({
+            {{"id", "level_value"}, {"op", "value.constant"}, {"parameters", {{"value", 0.25}}}, {"outputs", {"value"}}},
+            {{"id", "level"}, {"op", "render.buffer"}, {"parameters", {{"element", "float"}}},
+             {"inputs", {{"value", ps1Edge("level_value", "value")}}}, {"outputs", {"resource"}}},
+            ps1Image("h0_image", true),
+            ps1Pass("h0", {{"level", level}, {"color", ps1ColorPort()}},
+                    {{"level", ps1Edge("level", "resource")}, {"color", ps1Edge("h0_image", "resource")}}, true),
+            ps1Image("twiddle_image", true),
+            ps1Pass("twiddle", {{"source", read}, {"color", ps1ColorPort()}},
+                    {{"source", ps1Edge("h0", "color")}, {"color", ps1Edge("twiddle_image", "resource")}}, true),
+            ps1Image("show_image", false),
+            ps1Pass("show", {{"source", read}, {"color", ps1ColorPort()}},
+                    {{"source", ps1Edge("twiddle", "color")}, {"color", ps1Edge("show_image", "resource")}}, false)})},
+        {"outputs", Json::object()},
+        {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}}}};
+}
+
+nlohmann::json &ps1Node(nlohmann::json &document, std::string_view id) {
+    for (auto &node : document.at("nodes"))
+        if (node.at("id") == std::string{id}) return node;
+    FAIL("no node " << id);
+    return document;
+}
+
+const nlohmann::json &ps1Target(const nlohmann::json &config, std::string_view name) {
+    for (const auto &target : config.at("render_targets"))
+        if (target.at("name") == std::string{name}) return target;
+    FAIL("no render target " << name);
+    return config;
+}
+} // namespace
+
+TEST_CASE("PS-1 schedule and lifetime reach the passes, the targets and the frame plan",
+          "[render-feature][graph-composition][ps1]") {
+    using Json = nlohmann::json;
+    const auto composed = lp0aCompose(ps1Graph());
+    CHECK(passByName(composed.config, "h0").at("schedule") == "once");
+    CHECK(passByName(composed.config, "twiddle").at("schedule") == "once");
+    CHECK_FALSE(passByName(composed.config, "show").contains("schedule"));
+    CHECK(ps1Target(composed.config, "h0_image").at("lifetime") == "persistent");
+    CHECK(ps1Target(composed.config, "twiddle_image").at("lifetime") == "persistent");
+    CHECK_FALSE(ps1Target(composed.config, "show_image").contains("lifetime"));
+    REQUIRE_NOTHROW(compileComposition(composed));
+
+    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    const auto graph = std::find_if(graphs.begin(), graphs.end(),
+        [](const auto &candidate) { return candidate.name == "main_render"; });
+    REQUIRE(graph != graphs.end());
+    std::set<std::string> once;
+    for (const auto &node : graph->nodes)
+        if (node.once) once.insert(node.name);
+    CHECK(once == std::set<std::string>{"h0", "twiddle"});
+    const auto plan = framePlanToJson(planFrameGraph(*graph));
+    for (const auto &node : plan.at("nodes")) {
+        INFO(node.at("name"));
+        if (once.contains(node.at("name").get<std::string>())) CHECK(node.at("schedule") == "once");
+        else CHECK_FALSE(node.contains("schedule"));
+    }
+
+    SECTION("a compute task takes once beside per_frame and per_view") {
+        auto document = ps1Graph();
+        auto &h0 = ps1Node(document, "h0");
+        h0["op"] = "render.compute";
+        h0["parameters"] = {{"shader", "engine://ray_deform"}, {"schedule", "once"},
+                            {"ports", {{"level", {{"kind", "buffer"}, {"element", "float"}, {"access", "read"}}},
+                                       {"color", {{"kind", "image"}, {"type", lp0aSceneColorType()},
+                                                  {"access", "write"}}}}}};
+        const auto with_task = lp0aCompose(document);
+        const auto &tasks = with_task.config.at("compute_tasks");
+        const auto task = std::find_if(tasks.begin(), tasks.end(),
+            [](const Json &entry) { return entry.at("name") == "h0"; });
+        REQUIRE(task != tasks.end());
+        CHECK(task->at("schedule") == "once");
+    }
+    SECTION("a loop body's once pass is once in every copy") {
+        Json document{{"schema", "pelican.graph"}, {"version", 1},
+            {"definitions", {{"ps1_body", {{"nodes", Json::array({
+                ps1Image("seed_image", true),
+                ps1Pass("seed", {{"color", ps1ColorPort()}}, {{"color", ps1Edge("seed_image", "resource")}}, true)})},
+                {"outputs", {{"seed", ps1Edge("seed", "color")}}}}}}},
+            {"nodes", Json::array({{{"id", "steps"}, {"op", "graph.loop"},
+                {"parameters", {{"over", {{"range", {{"count", 2}}}}},
+                                {"branches", Json::array({{{"body", "ps1_body"}}})}}},
+                {"outputs", Json::array()}}})},
+            {"outputs", Json::object()},
+            {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}}}};
+        const auto looped = lp0aCompose(document);
+        for (const auto *name : {"steps/0/seed", "steps/1/seed"}) {
+            INFO(name);
+            CHECK(passByName(looped.config, name).at("schedule") == "once");
+        }
+        CHECK(ps1Target(looped.config, "steps/0/seed_image").at("lifetime") == "persistent");
+    }
+}
+
+TEST_CASE("PS-1 a once node that writes a transient resource or reads one that changes every frame is refused by name",
+          "[render-feature][graph-composition][ps1]") {
+    using Json = nlohmann::json;
+    SECTION("a once pass writes a transient image") {
+        auto document = ps1Graph();
+        ps1Node(document, "h0_image")["parameters"].erase("lifetime");
+        const auto [code, fields] = lp0aRefusal(document);
+        CHECK(code == "graph.once_writes_transient@1");
+        CHECK(fields == Json{{"node", "h0"}, {"resource", "h0_image"}});
+        // So does an explicitly transient one.
+        ps1Node(document, "h0_image")["parameters"]["lifetime"] = "transient";
+        CHECK(lp0aRefusal(document).first == "graph.once_writes_transient@1");
+    }
+    SECTION("a once pass writes a target declared outside the graph that is not persistent") {
+        auto document = ps1Graph();
+        document["nodes"].push_back({{"id", "lit"}, {"op", "render.target_ref"},
+                                     {"parameters", {{"name", "lit_color"}, {"type", lp0aSceneColorType()}}},
+                                     {"outputs", {"resource"}}});
+        ps1Node(document, "h0")["inputs"]["color"] = ps1Edge("lit", "resource");
+        const auto [code, fields] = lp0aRefusal(document);
+        CHECK(code == "graph.once_writes_transient@1");
+        CHECK(fields == Json{{"node", "h0"}, {"resource", "lit_color"}});
+    }
+    SECTION("a once pass reads the output of a pass that runs every frame") {
+        auto document = ps1Graph();
+        document["nodes"].push_back(ps1Image("pre_image", false));
+        document["nodes"].push_back(
+            ps1Pass("pre", {{"color", ps1ColorPort()}}, {{"color", ps1Edge("pre_image", "resource")}}, false));
+        ps1Node(document, "twiddle")["inputs"]["source"] = ps1Edge("pre", "color");
+        auto [code, fields] = lp0aRefusal(document);
+        CHECK(code == "graph.once_reads_per_frame@1");
+        CHECK(fields == Json{{"node", "twiddle"}, {"input", "source"}});
+        // Read from the image node: transient, it changes every frame.
+        ps1Node(document, "twiddle")["inputs"]["source"] = ps1Edge("pre_image", "resource");
+        std::tie(code, fields) = lp0aRefusal(document);
+        CHECK(code == "graph.once_reads_per_frame@1");
+        CHECK(fields == Json{{"node", "twiddle"}, {"input", "source"}});
+        // Persistent, but a pass that runs every frame writes it.
+        ps1Node(document, "pre_image")["parameters"]["lifetime"] = "persistent";
+        std::tie(code, fields) = lp0aRefusal(document);
+        CHECK(code == "graph.once_reads_per_frame@1");
+        CHECK(fields == Json{{"node", "twiddle"}, {"input", "source"}});
+        // Control: written by a once pass, it may be read.
+        ps1Node(document, "pre")["parameters"]["schedule"] = "once";
+        CHECK_NOTHROW(lp0aCompose(document));
+    }
+    SECTION("a once pass reads a buffer the value graph derives from time") {
+        auto document = ps1Graph();
+        auto &value = ps1Node(document, "level_value");
+        value["op"] = "value.input";
+        value["parameters"] = {{"name", "time"}};
+        const auto [code, fields] = lp0aRefusal(document);
+        CHECK(code == "graph.once_reads_per_frame@1");
+        CHECK(fields == Json{{"node", "h0"}, {"input", "level"}});
+    }
+    SECTION("a schedule or lifetime the engine does not know is refused when edited") {
+        auto document = ps1Graph();
+        ps1Node(document, "h0")["parameters"]["schedule"] = "sometimes";
+        CHECK_THROWS_WITH(partitionGraphDocument(document),
+                          Catch::Matchers::ContainsSubstring("schedule must be per_frame or once"));
+        document = ps1Graph();
+        ps1Node(document, "h0")["parameters"]["schedule"] = "per_view";
+        CHECK_THROWS(partitionGraphDocument(document));
+        document = ps1Graph();
+        ps1Node(document, "h0_image")["parameters"]["lifetime"] = "forever";
+        CHECK_THROWS_WITH(partitionGraphDocument(document),
+                          Catch::Matchers::ContainsSubstring("lifetime must be persistent or transient"));
+    }
+}
+
+// A render.snapshot_copy gives the render.image nodes it copies between the
+// usages a copy needs: the palette's raster / fullscreen image declares no
+// TRANSFER_SRC (UX-6a: so that it may alias), and copying it after its pass
+// was refused at registration (Snapshot copy usage mismatch).
+TEST_CASE("a snapshot copy of a pass's own image gives the images the usages the copy needs",
+          "[render-feature][graph-composition][ps1]") {
+    using Json = nlohmann::json;
+    auto document = ps1Graph();
+    auto copy_image = ps1Image("copy_image", false);
+    copy_image["parameters"]["usage"] = Json::array({"TRANSFER_DST"});
+    document["nodes"].push_back(copy_image);
+    document["nodes"].push_back({{"id", "copy"}, {"op", "render.snapshot_copy"},
+                                 {"parameters", {{"snapshot_after", "show"}}},
+                                 {"inputs", {{"source", ps1Edge("show", "color")},
+                                             {"destination", ps1Edge("copy_image", "resource")}}},
+                                 {"outputs", {"destination"}}});
+    const auto composed = lp0aCompose(document);
+    const auto usage = [&](std::string_view name) {
+        std::set<std::string> result;
+        for (const auto &entry : ps1Target(composed.config, name).at("usage")) result.insert(entry.get<std::string>());
+        return result;
+    };
+    CHECK(usage("show_image") == std::set<std::string>{"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"});
+    CHECK(usage("copy_image") == std::set<std::string>{"TRANSFER_DST", "SAMPLED"});
+    // An image nothing copies keeps what it declared.
+    CHECK(usage("h0_image") == std::set<std::string>{"COLOR_ATTACHMENT", "SAMPLED"});
+    CHECK(passByName(composed.config, "copy").at("source") == "show_image");
+}
+
 } // namespace Pelican

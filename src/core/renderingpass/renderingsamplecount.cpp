@@ -57,6 +57,7 @@ bool isTransientAttachmentCandidate(
         vk::ImageUsageFlagBits::
             eDepthStencilAttachment;
     return !definition.history &&
+           !definition.persistent &&
            bool(definition.usage &
                 attachment_usage) &&
            !bool(
@@ -76,6 +77,7 @@ bool isTileLocalAttachmentCandidate(
         vk::ImageUsageFlagBits::eSampled |
         vk::ImageUsageFlagBits::eInputAttachment;
     return !definition.history &&
+           !definition.persistent &&
            bool(definition.usage &
                 attachment_usage) &&
            !bool(
@@ -92,6 +94,7 @@ vk::ImageUsageFlags runtimeAliasSafeUsage() {
 bool isRuntimeAliasCandidate(
     const RenderTargetDefinition &definition) {
     return !definition.history &&
+           !definition.persistent &&
            definition.format_class != "display" &&
            definition.storage_mode ==
                RenderTargetStorageMode::materialized &&
@@ -117,6 +120,10 @@ std::string runtimeAliasExclusion(
     if (definition.history) {
         causes.push_back(
             "history target keeps its contents for the next frame");
+    }
+    // PS-1: what a once pass wrote stays for the frames it does not run.
+    if (definition.persistent) {
+        causes.push_back("persistent lifetime");
     }
     if (definition.format_class == "display") {
         causes.push_back("display-format target is not aliased");
@@ -144,6 +151,30 @@ std::string runtimeAliasExclusion(
         result += cause;
     }
     return result;
+}
+
+// PS-1: a frame that skips a once node records nothing for it, so the node
+// must not share a physical scope (begun, cleared, fused) with a node that
+// runs. Every once node of the graph is isolated, on top of what the authored
+// target_planning says of it.
+std::vector<PlanningNodeConstraint> onceIsolatedNodeConstraints(
+    const FrameGraphDefinition &definition,
+    std::vector<PlanningNodeConstraint> constraints) {
+    for (const auto &node : definition.nodes) {
+        if (!node.once) continue;
+        const auto found = std::find_if(
+            constraints.begin(), constraints.end(),
+            [&](const PlanningNodeConstraint &constraint) {
+                return constraint.node == node.name;
+            });
+        if (found != constraints.end()) {
+            found->isolate = true;
+        } else {
+            constraints.push_back(PlanningNodeConstraint{
+                .node = node.name, .serial = false, .isolate = true});
+        }
+    }
+    return constraints;
 }
 
 vk::ImageUsageFlags tileLocalImageUsage(
@@ -1921,9 +1952,11 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                             tile_local_formats),
                     .profile = target_planning.profile,
                     .node_constraints =
-                        graph_constraints == nullptr
-                            ? std::vector<PlanningNodeConstraint>{}
-                            : graph_constraints->nodes,
+                        onceIsolatedNodeConstraints(
+                            definition,
+                            graph_constraints == nullptr
+                                ? std::vector<PlanningNodeConstraint>{}
+                                : graph_constraints->nodes),
                     .resource_constraints =
                         graph_constraints == nullptr
                             ? std::vector<

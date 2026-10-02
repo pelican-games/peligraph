@@ -1079,6 +1079,8 @@ std::string_view computeTaskScheduleName(
         return "per_frame";
     case ComputeTaskSchedule::per_view:
         return "per_view";
+    case ComputeTaskSchedule::once:
+        return "once";
     }
     throw std::runtime_error(
         "unknown compute task schedule");
@@ -1439,10 +1441,13 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(
             } else if (schedule == "per_view") {
                 definition.schedule =
                     ComputeTaskSchedule::per_view;
+            } else if (schedule == "once") {
+                definition.schedule =
+                    ComputeTaskSchedule::once;
             } else {
                 throw std::runtime_error(
-                    "compute task schedule supports per_frame or "
-                    "per_view: " +
+                    "compute task schedule supports per_frame, "
+                    "per_view or once: " +
                     definition.name);
             }
         }

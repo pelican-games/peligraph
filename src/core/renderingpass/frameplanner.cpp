@@ -690,6 +690,7 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     node.region_tags =
         parseOptionalRegionTags(
             pass_json, "Frame graph pass '" + node.name + "'");
+    node.once = parsePassSchedule(pass_json, node.name);
 
     const auto type = validateAuthoredPassShape(
         defaultPassShapePolicy(), pass_json,
@@ -915,6 +916,11 @@ FrameGraphNodeDefinition parseComputeNodeFromJson(const nlohmann::json &task_jso
         parseOptionalRegionTags(
             task_json,
             "Frame graph compute task '" + node.name + "'");
+    // PS-1: the task's schedule is validated by the compute task parser.
+    if (const auto schedule = task_json.find("schedule");
+        schedule != task_json.end() && *schedule == "once") {
+        node.once = true;
+    }
     return node;
 }
 
@@ -1205,6 +1211,7 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     node.view_family =
         pass.view_family;
     node.view_select = pass.view_select;
+    node.once = pass.once;
     if (pass.isGenericRaster()) {
         node.semantic_dialect =
             "pelican.logical.raster@1";
@@ -1885,6 +1892,7 @@ FramePlan planFrameGraph(const FrameGraphDefinition &definition) {
             node_def.material_variant,
             node_def.view_family,
             node_def.view_select,
+            node_def.once,
         });
     }
 
@@ -2070,6 +2078,12 @@ nlohmann::json framePlanToJson(
         if (!node.view_select.empty()) {
             node_json["view_select"] =
                 node.view_select;
+        }
+        // PS-1: a once node. The renderer's get_frame_plan adds when it last
+        // ran (last_run_generation, last_run_frame). Absent on a node that
+        // runs every frame.
+        if (node.once) {
+            node_json["schedule"] = "once";
         }
         // LP-Va2: the axes of the node's family, so Studio builds the
         // view_select field from the engine's table. `[]` for `$main` and a

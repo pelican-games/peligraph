@@ -138,6 +138,8 @@ void RenderTargetLayoutTracker::transition(
     const RenderTargetRead read{.previous = history_read};
     const auto surface = rt_container.surfaceIndex(rt_id, read);
     const auto key = layoutKey(rt_id, surface, image_kind);
+    forgetRecreatedPersistentImage(rt_container, rt_id, key, image_kind, history_read);
+    notePersistentImage(rt_container, rt_id, key, image_kind, history_read);
     if (const auto alias_group =
             rt_container.aliasGroup(rt_id)) {
         const auto pending =
@@ -212,6 +214,7 @@ void RenderTargetLayoutTracker::memoryDependency(
     const auto dependency = [&](RenderTargetImageKind kind,
                                 bool require_preceding_access) {
         const auto key = layoutKey(rt_id, surface, kind);
+        forgetRecreatedPersistentImage(rt_container, rt_id, key, kind, history_read);
         auto it = layouts.find(key);
         if (it == layouts.end()) {
             const auto initial_layout = rt_container.initialLayout(
@@ -223,6 +226,7 @@ void RenderTargetLayoutTracker::memoryDependency(
             it = layouts.emplace(key, initial_layout).first;
         }
         const auto layout = it->second;
+        notePersistentImage(rt_container, rt_id, key, kind, history_read);
         if (layout == vk::ImageLayout::eUndefined) {
             if (!require_preceding_access) return;
             throw std::logic_error(
@@ -273,7 +277,19 @@ vk::ImageLayout RenderTargetLayoutTracker::currentLayout(
             : 0u;
     const auto key = layoutKey(rt_id, surface, image_kind);
     if (auto it = layouts.find(key); it != layouts.end()) {
-        return it->second;
+        // PS-1: a persistent target made anew since it was tracked.
+        const auto persistent = persistent_images.find(key);
+        if (rt_container == nullptr || persistent == persistent_images.end() ||
+            persistent->second ==
+                static_cast<VkImage>(
+                    (image_kind == RenderTargetImageKind::attachment
+                         ? rt_container->getAttachmentImage(
+                               rt_id, RenderTargetRead{.previous = history_read})
+                         : rt_container->getImage(
+                               rt_id, RenderTargetRead{.previous = history_read}))
+                        .image.get())) {
+            return it->second;
+        }
     }
     return rt_container != nullptr
                ? rt_container->initialLayout(
@@ -298,6 +314,8 @@ void RenderTargetLayoutTracker::assumeLayout(
             rt_id, RenderTargetRead{.previous = history_read});
     const auto key =
         layoutKey(rt_id, surface, image_kind);
+    forgetRecreatedPersistentImage(rt_container, rt_id, key, image_kind, history_read);
+    notePersistentImage(rt_container, rt_id, key, image_kind, history_read);
     if (const auto alias_group =
             rt_container.aliasGroup(rt_id)) {
         alias_groups_requiring_dependency.erase(
@@ -323,10 +341,54 @@ void RenderTargetLayoutTracker::reset() {
         alias_groups_requiring_dependency.insert(group);
     }
     active_alias_resources.clear();
-    layouts.clear();
-    shader_access_stages.clear();
+    // PS-1: a persistent target keeps its contents through a reset (a
+    // generation commit, a history reset, a view-family change). Its layout
+    // stays known; a target made anew is caught by its image on next use.
+    std::unordered_map<std::uint64_t, vk::ImageLayout> kept_layouts;
+    std::unordered_map<std::uint64_t, vk::PipelineStageFlags> kept_stages;
+    for (const auto &[key, image] : persistent_images) {
+        (void)image;
+        if (const auto found = layouts.find(key); found != layouts.end())
+            kept_layouts.emplace(key, found->second);
+        if (const auto found = shader_access_stages.find(key);
+            found != shader_access_stages.end())
+            kept_stages.emplace(key, found->second);
+    }
+    layouts = std::move(kept_layouts);
+    shader_access_stages = std::move(kept_stages);
     memory_dependency_count = 0;
     alias_dependency_count = 0;
+}
+
+void RenderTargetLayoutTracker::forgetRecreatedPersistentImage(
+    const RenderTargetContainer &rt_container,
+    GlobalRenderTargetId rt_id, std::uint64_t key,
+    RenderTargetImageKind image_kind, bool history_read) {
+    const auto found = persistent_images.find(key);
+    if (found == persistent_images.end()) return;
+    const RenderTargetRead read{.previous = history_read};
+    const auto image = static_cast<VkImage>(
+        (image_kind == RenderTargetImageKind::attachment
+             ? rt_container.getAttachmentImage(rt_id, read)
+             : rt_container.getImage(rt_id, read))
+            .image.get());
+    if (found->second == image) return;
+    persistent_images.erase(found);
+    layouts.erase(key);
+    shader_access_stages.erase(key);
+}
+
+void RenderTargetLayoutTracker::notePersistentImage(
+    const RenderTargetContainer &rt_container,
+    GlobalRenderTargetId rt_id, std::uint64_t key,
+    RenderTargetImageKind image_kind, bool history_read) {
+    if (!rt_container.persistent(rt_id)) return;
+    const RenderTargetRead read{.previous = history_read};
+    persistent_images[key] = static_cast<VkImage>(
+        (image_kind == RenderTargetImageKind::attachment
+             ? rt_container.getAttachmentImage(rt_id, read)
+             : rt_container.getImage(rt_id, read))
+            .image.get());
 }
 
 } // namespace Pelican

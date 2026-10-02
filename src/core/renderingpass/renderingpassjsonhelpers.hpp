@@ -67,6 +67,11 @@ std::string parseRenderViewFamilyId(
 RenderViewSelect parseRenderViewSelect(
     const nlohmann::json &json,
     const std::string &context);
+// PS-1: a pass's optional `schedule`, "per_frame" (the default) or "once".
+// True for "once". Which pass types may carry it is the field ownership
+// table's (fullscreen, raster).
+bool parsePassSchedule(const nlohmann::json &json,
+                       const std::string &pass_name);
 uint32_t parseUint32Field(const nlohmann::json &json, const std::string &field_name,
                           const std::string &context);
 std::array<double, 4>

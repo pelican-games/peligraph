@@ -507,6 +507,18 @@ RenderViewSelect parseRenderViewSelect(
     return result;
 }
 
+bool parsePassSchedule(const nlohmann::json &json,
+                       const std::string &pass_name) {
+    const auto found = json.find("schedule");
+    if (found == json.end()) return false;
+    if (!found->is_string() ||
+        (*found != "per_frame" && *found != "once")) {
+        throw std::runtime_error(
+            "Pass schedule must be per_frame or once: " + pass_name);
+    }
+    return *found == "once";
+}
+
 uint32_t parseUint32Field(const nlohmann::json &json, const std::string &field_name,
                           const std::string &context) {
     if (!json.contains(field_name) || !json.at(field_name).is_number_integer()) {

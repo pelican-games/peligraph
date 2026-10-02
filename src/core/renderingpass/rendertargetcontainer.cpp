@@ -690,6 +690,12 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
                 "Render target re-registration changed its physical contract: " +
                 name + " (" + changed + ")");
         }
+        // PS-1: a lifetime is not part of the image. Once some registration
+        // keeps the contents, the layout tracker keeps tracking them: that
+        // is harmless for a transient user and survives a rolled-back
+        // candidate, so the flag only ever turns on.
+        if (definition.persistent)
+            render_targets.get(it->second).persistent = true;
         return it->second;
     }
 
@@ -812,6 +818,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
         .storage_mode = storage_mode,
         .alias_group = alias_group,
         .alias_group_token = alias_group_token,
+        .persistent = definition.persistent,
         .resources =
             std::make_unique<RenderTargetResourceSet>(
                 RenderTargetResourceSet{
@@ -1485,6 +1492,11 @@ vk::ImageLayout RenderTargetContainer::initialLayout(
     }
     return rt.history ? vk::ImageLayout::eShaderReadOnlyOptimal
                       : vk::ImageLayout::eUndefined;
+}
+
+bool RenderTargetContainer::persistent(
+    GlobalRenderTargetId id) const {
+    return render_targets.get(id).persistent;
 }
 
 std::optional<std::uint64_t>

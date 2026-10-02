@@ -2,6 +2,7 @@
 
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
+#include "../renderingpass/oncescheduler.hpp"
 #include "../renderingpass/previewgraph.hpp"
 #include "../renderer/viewfamily.hpp"
 #include "render_target_layout_tracker.hpp"
@@ -204,6 +205,13 @@ DECLARE_MODULE(Renderer) {
     RenderingPassId last_no_selected_view_rendering_pass_id =
         invalidRenderingPassId();
     std::uint64_t last_no_selected_view_runtime_generation = 0;
+    // PS-1: what each `schedule: "once"` node last ran with, by program
+    // (RenderingPassId value) and node name, and the names rerun_once asked
+    // to run on the next frame. A record is written when the frame that ran
+    // the node is published.
+    std::map<int, std::map<std::string, OnceRunRecord, std::less<>>>
+        once_runs;
+    std::set<std::string, std::less<>> once_rerun_requests;
     std::uint64_t next_ray_scene_generation = 1;
 
     TemporalViewFamilyHistory &activeTemporalHistory();
@@ -234,6 +242,13 @@ DECLARE_MODULE(Renderer) {
              RenderingPassId rendering_pass_id);
     ~Renderer();
     nlohmann::json currentFramePlanJson() const;
+    // PS-1: rerun_once. Asks the next frame to run the once nodes `node`
+    // made (a pass or task's graph node; a graph.loop runs all its copies'),
+    // or every once node when `node` is empty. Returns the names asked for,
+    // in plan order. std::invalid_argument when the current frame plan has
+    // no node of that name.
+    std::vector<std::string> requestOnceRerun(
+        const std::optional<std::string> &node);
     bool hasPendingRenderPipelinePublication() const noexcept;
     // Logical frames this renderer has published since it was created. The
     // engine answers RPC before its first frame; a client that needs a drawn

@@ -116,8 +116,10 @@ targetViewExecutionRequest(
         }
     }
     for (const auto &task : compute_tasks) {
+        // PS-1: a once task, when it runs, runs as a per_frame one.
         if (task.schedule ==
-            ComputeTaskSchedule::per_frame) {
+                ComputeTaskSchedule::per_frame ||
+            task.schedule == ComputeTaskSchedule::once) {
             independent_candidates.insert(task.name);
         }
     }

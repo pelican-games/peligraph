@@ -2082,4 +2082,118 @@ TEST_CASE("runtime depth export stays disabled when the device format cannot be 
         vk::ImageUsageFlagBits::eTransferSrc);
 }
 
+// PS-1: a persistent target keeps its contents across frames, so it is never
+// an alias candidate, and the plan's reason says why. A target that is a
+// candidate without it is one again when it is transient.
+TEST_CASE(
+    "PS-1 a persistent target is kept out of runtime aliasing with persistent lifetime as the reason",
+    "[target-planning][alias][runtime][ps1]") {
+    auto display =
+        target("display",
+               vk::Format::eR8G8B8A8Unorm);
+    display.format_class = "display";
+    const auto compile = [&](bool persistent) {
+        auto temporary_b =
+            target("temporary_b",
+                   vk::Format::eR8G8B8A8Unorm);
+        temporary_b.persistent = persistent;
+        const std::vector targets{
+            target("temporary_a",
+                   vk::Format::eR8G8B8A8Unorm),
+            temporary_b,
+            display,
+        };
+        return compileRenderingTargetPlans(
+            parseFrameGraphDefinitionsFromConfigJson(
+                aliasLifetimeConfig()),
+            targets, SampleCountPolicy{},
+            vk::Format::eB8G8R8A8Unorm,
+            RenderingTargetPlanDeviceFacts{
+                .query_attachment_samples =
+                    [](const auto &) {
+                        return std::vector<
+                            std::uint32_t>{1};
+                    },
+            });
+    };
+    const auto kept = compile(true);
+    const auto &plan = *kept.plans.front();
+    CHECK(plan.alias_groups.empty());
+    CHECK(physicalResource(plan, "temporary_b").reason ==
+          "logical materialization requirement is required: "
+          "persistent lifetime");
+    CHECK_FALSE(physicalResource(plan, "temporary_b").aliasable);
+    // Control: transient, the same two targets share one allocation.
+    const auto shared = compile(false);
+    REQUIRE(shared.plans.front()->alias_groups.size() == 1);
+    CHECK(physicalResource(*shared.plans.front(), "temporary_b").reason ==
+          "arbitrary read requires a materialized resource");
+
+    // The JSON form: lifetime is persistent or transient, nothing else.
+    const auto parsed = parseRenderTargetDefinitionsFromJson(nlohmann::json{
+        {"render_targets",
+         nlohmann::json::array(
+             {{{"name", "kept"}, {"format", "R8G8B8A8_UNORM"}, {"extent_scale", 1.0},
+               {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}, {"lifetime", "persistent"}},
+              {{"name", "frame"}, {"format", "R8G8B8A8_UNORM"}, {"extent_scale", 1.0},
+               {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}, {"lifetime", "transient"}},
+              {{"name", "plain"}, {"format", "R8G8B8A8_UNORM"}, {"extent_scale", 1.0},
+               {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}}})}});
+    REQUIRE(parsed.size() == 3);
+    CHECK(parsed[0].persistent);
+    CHECK_FALSE(parsed[1].persistent);
+    CHECK_FALSE(parsed[2].persistent);
+    CHECK_THROWS_WITH(
+        parseRenderTargetDefinitionsFromJson(nlohmann::json{
+            {"render_targets",
+             nlohmann::json::array(
+                 {{{"name", "kept"}, {"format", "R8G8B8A8_UNORM"}, {"extent_scale", 1.0},
+                   {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}, {"lifetime", "forever"}}})}}),
+        Catch::Matchers::ContainsSubstring("lifetime must be persistent or transient"));
+}
+
+// PS-1: a frame that skips a once node records nothing for it, so target
+// planning gives it a physical scope of its own, whatever the authored
+// target_planning says.
+TEST_CASE(
+    "PS-1 a once pass is isolated in its own physical scope",
+    "[target-planning][runtime][ps1]") {
+    const auto compile = [](bool once) {
+        auto config = localReadAttachmentConfig();
+        if (once) {
+            config["rendering_passes"][0]["passes"][1]["schedule"] = "once";
+        }
+        const auto graphs =
+            parseFrameGraphDefinitionsFromConfigJson(config);
+        REQUIRE(graphs.size() == 1);
+        for (const auto &node : graphs.front().nodes)
+            CHECK(node.once == (once && node.name == "lighting"));
+        return compileRenderingTargetPlans(
+            graphs, parseRenderTargetDefinitionsFromJson(config),
+            SampleCountPolicy{},
+            vk::Format::eB8G8R8A8Unorm,
+            localReadDeviceFacts());
+    };
+    const auto scopeOf = [](const VulkanTargetPlan &plan, std::string_view node) {
+        const auto found = std::find_if(
+            plan.scopes.begin(), plan.scopes.end(),
+            [&](const auto &scope) {
+                return std::find(scope.nodes.begin(), scope.nodes.end(), node) != scope.nodes.end();
+            });
+        REQUIRE(found != plan.scopes.end());
+        return found->nodes;
+    };
+    // Control: every frame, the geometry and its same-pixel reader share a
+    // tile-local scope.
+    const auto fused = compile(false);
+    CHECK(scopeOf(*fused.plans.front(), "lighting") ==
+          std::vector<std::string>{"geometry", "lighting"});
+    // Once, the reader is alone: a frame that skips it begins nothing.
+    const auto separate = compile(true);
+    CHECK(scopeOf(*separate.plans.front(), "lighting") ==
+          std::vector<std::string>{"lighting"});
+    CHECK(scopeOf(*separate.plans.front(), "geometry") ==
+          std::vector<std::string>{"geometry"});
+}
+
 } // namespace Pelican

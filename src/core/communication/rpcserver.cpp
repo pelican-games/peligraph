@@ -2362,6 +2362,40 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         return plan;
     });
 
+    // PS-1: run `schedule: "once"` nodes again on the next frame.
+    //   {node?: <graph node id>} -> {scheduled: [<pass / task name>, ...]}
+    // Without node, every once node of the current frame plan; with a
+    // graph.loop's id, the once nodes of all its copies. A node the frame
+    // plan does not have is invalid params.
+    server.setHandler("rerun_once", [&modules](const nlohmann::json &params) {
+        constexpr auto method = "rerun_once";
+        const auto &object = requireObjectParams(params, method);
+        for (const auto &[key, value] : object.items()) {
+            (void)value;
+            if (key != "node") {
+                throw JsonRpcHandlerError(
+                    JsonRpcErrorCodes::invalidParams,
+                    "rerun_once accepts only the optional string field 'node'");
+            }
+        }
+        std::optional<std::string> node;
+        if (const auto found = object.find("node"); found != object.end()) {
+            if (!found->is_string() || found->get_ref<const std::string &>().empty()) {
+                throw JsonRpcHandlerError(
+                    JsonRpcErrorCodes::invalidParams,
+                    "rerun_once node must be a non-empty string");
+            }
+            node = found->get<std::string>();
+        }
+        try {
+            return nlohmann::json{{"scheduled", modules.renderer.requestOnceRerun(node)}};
+        } catch (const std::invalid_argument &error) {
+            throw JsonRpcHandlerError{
+                JsonRpcErrorCodes::invalidParams, error.what(),
+                {{"code", "node_unknown"}, {"node", *node}}};
+        }
+    });
+
     internal::configurePhysicsRpcHandlers(server, modules.physics);
 
     server.setHandler("pick_object", [&modules](const nlohmann::json &params) {

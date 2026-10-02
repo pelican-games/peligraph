@@ -128,6 +128,7 @@ void FrameGraphResourceContainer::copyBufferState(
         next.runtime_values = old.runtime_values;
         next.runtime_values_dirty = old.runtime_values_dirty;
         next.host_population = old.host_population;
+        next.host_write_digest = old.host_write_digest;
     }
     GET_MODULE(VulkanUtils).executeOneTimeCmd([&](vk::CommandBuffer command) {
         const vk::MemoryBarrier before{vk::AccessFlagBits::eMemoryWrite,
@@ -299,6 +300,16 @@ void FrameGraphResourceContainer::writeHostBuffer(
             record.buffer, bytes.data(), 0,
             static_cast<vk::DeviceSize>(
                 bytes.size()));
+    // PS-1: what a once node that reads this buffer compares, frame to
+    // frame (FNV-1a 64 of the bytes and their count).
+    std::uint64_t digest = 14695981039346656037ull;
+    for (const auto byte : bytes) {
+        digest ^= static_cast<std::uint8_t>(byte);
+        digest *= 1099511628211ull;
+    }
+    digest ^= static_cast<std::uint64_t>(bytes.size());
+    digest *= 1099511628211ull;
+    record.host_write_digest = digest;
     if (population &&
         record.host_population != population) {
         const auto dropped =
@@ -330,6 +341,15 @@ FrameGraphResourceContainer::hostBufferPopulation(
         return std::nullopt;
     }
     return buffers.get(id).host_population;
+}
+
+std::optional<std::uint64_t>
+FrameGraphResourceContainer::hostWriteDigest(
+    FrameGraphBufferId id) const {
+    if (!isValidFrameGraphBufferId(id) || !buffers.contains(id)) {
+        return std::nullopt;
+    }
+    return buffers.get(id).host_write_digest;
 }
 
 FrameGraphResourceContainer::RegistrationCheckpoint

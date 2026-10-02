@@ -39,6 +39,11 @@ struct RenderTargetDefinition {
     // Filled by physical-plan compilation. Targets with the same value may
     // share one allocation when their compiled lifetimes do not overlap.
     std::optional<std::string> alias_group;
+    // PS-1: `lifetime: "persistent"`. The contents are kept from one frame
+    // to the next: never an alias, transient or tile-local candidate, and
+    // the layout tracker resumes from its last layout instead of discarding.
+    // Undefined again once the image is made anew (extent, format, rebuild).
+    bool persistent = false;
 };
 
 // Resolves the authored clear value against the target's format. Lives with

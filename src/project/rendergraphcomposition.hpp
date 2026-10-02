@@ -184,6 +184,17 @@ struct RenderGraphLoopOutputReference {
     std::string reason;
 };
 
+// PS-1: a `schedule: "once"` node's port on a render.target_ref. Whether the
+// target keeps its contents is known only after composition; a write into a
+// target that is not persistent is graph.once_writes_transient@1
+// {node, resource}, a read of one graph.once_reads_per_frame@1 {node, input}.
+struct RenderGraphOnceTargetUse {
+    std::string node;
+    std::string port;
+    std::string target;
+    bool write = false;
+};
+
 // What the lowering leaves for the stage that runs after composition. The
 // config is the one lowerRenderGraphDocument returns.
 struct LoweredRenderGraphDocument {
@@ -218,6 +229,8 @@ struct LoweredRenderGraphDocument {
     // name may be a target or buffer (a feature's `bloom.intensity`); the
     // resolution stage refuses one that the composed config does not declare.
     std::vector<RenderGraphLoopOutputReference> unknown_loop_output_references;
+    // PS-1: once nodes' ports on render.target_ref nodes.
+    std::vector<RenderGraphOnceTargetUse> once_target_refs;
 };
 
 // LP-0d: one entry of a feature instance's `pass_replacements`

@@ -403,6 +403,11 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
         contract.outputs.emplace("resource", bufferType(registry, parameters, parameterFieldMissing(op, node)));
         contract.inputs.emplace("value", GraphInputContract{exactLogicalTypePattern(registry, scalar), false});
     } else if (op == "render.image") {
+        // PS-1: persistent keeps its contents from frame to frame.
+        if (const auto lifetime = parameters.find("lifetime");
+            lifetime != parameters.end() &&
+            (!lifetime->is_string() || (*lifetime != "persistent" && *lifetime != "transient")))
+            throw std::invalid_argument("render.image lifetime must be persistent or transient: " + nodeId(node));
         auto declaration = parameters;
         declaration["kind"] = "image";
         contract.outputs.emplace("resource", resourceType(registry, declaration, parameterFieldMissing(op, node)));
@@ -487,6 +492,17 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
                     throw GraphRegistryError("graph.history_write@1", {{"node", nodeId(node)}, {"port", port}});
             }
             if (access != "read") contract.outputs.emplace(port, type);
+        }
+        // PS-1: when the pass or task runs. A compute task also keeps its
+        // per_view (one dispatch per logical view).
+        if (const auto schedule = parameters.find("schedule"); schedule != parameters.end()) {
+            const bool known = schedule->is_string() &&
+                (*schedule == "per_frame" || *schedule == "once" ||
+                 (op == "render.compute" && *schedule == "per_view"));
+            if (!known)
+                throw std::invalid_argument(op == "render.compute"
+                    ? "render.compute schedule must be per_frame, per_view or once: " + nodeId(node)
+                    : op + " schedule must be per_frame or once: " + nodeId(node));
         }
         checkRenderPlacement(op, parameters, node);
     } else {

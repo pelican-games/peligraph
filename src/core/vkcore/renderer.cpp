@@ -1581,6 +1581,9 @@ struct FrameGraphExecutionRequest {
     nlohmann::json *trace_out = nullptr;
     // LP-2: the draw-step table of the generation this frame records.
     const MaterialDrawLoopTable *material_draw_loops = nullptr;
+    // PS-1: by frame graph node index, 1 for a once node this frame skips.
+    // Empty: every node runs.
+    std::span<const std::uint8_t> once_skipped{};
 };
 
 void executePlannedFrameGraph(
@@ -1732,6 +1735,32 @@ void executePlannedFrameGraph(
             throw std::runtime_error(
                 "logical-frame schedule view family does not match node '" +
                 execution_node.name + "'");
+        }
+        if (node_index < request.once_skipped.size() &&
+            request.once_skipped[node_index] != 0) {
+            // PS-1: a once node with nothing new to do this frame. What it
+            // wrote is in its persistent outputs; it records nothing, no
+            // scope begins (target planning isolates it), and it counts as
+            // completed without recording, as a view_select that matched
+            // no view does.
+            if (request.modules.render_timing != nullptr) {
+                for (const auto range : {GpuTimingSubrange::barriers, GpuTimingSubrange::body}) {
+                    if (begins_recorded_node)
+                        request.modules.render_timing->writeNodeSubrangeStart(request.render_ctx.cmd_buf,
+                            static_cast<std::uint32_t>(timing_query_index), range);
+                    if (ends_recorded_node)
+                        request.modules.render_timing->writeNodeSubrangeEnd(request.render_ctx.cmd_buf,
+                            static_cast<std::uint32_t>(timing_query_index), range);
+                }
+            }
+            if (request.trace_out != nullptr)
+                request.trace_out->push_back({{"name", execution_node.name},
+                    {"kind", framePlanNodeKindName(execution_node.kind)}, {"order", node_index},
+                    {"recorded", false}, {"once_skipped", true},
+                    {"view_index", scheduled.view_index},
+                    {"logical_view_count", scheduled.logical_view_count}});
+            completed_nodes[node_index] = completedWithoutRecording;
+            continue;
         }
         if (scheduled.no_selected_view) {
             // LP-Va: a view_select that matches none of this frame's views
@@ -4043,6 +4072,49 @@ void appendUnusedBindingDiagnostics(
 
 } // namespace
 
+std::vector<std::string> Renderer::requestOnceRerun(
+    const std::optional<std::string> &node) {
+    const auto *frame_graph_runtime = FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
+    const auto generation =
+        frame_graph_runtime != nullptr ? frame_graph_runtime->snapshot() : nullptr;
+    const auto *program =
+        generation != nullptr ? generation->find(current_rendering_pass_id) : nullptr;
+    if (program == nullptr) {
+        throw std::runtime_error("Current frame plan is not registered");
+    }
+    const auto &frame_graph = program->frame_graph;
+    std::map<std::string, const RenderPassProvenance *, std::less<>> provenance;
+    if (frame_graph.render_pipeline != nullptr)
+        for (const auto &entry : frame_graph.render_pipeline->pass_provenance)
+            provenance.emplace(entry.name, &entry);
+    // A plan node is the node's when it is named so (a root or instance
+    // node's expanded id) or a copy of a graph.loop of that id.
+    const auto made_by = [&](const FramePlanNode &planned) {
+        if (planned.name == *node) return true;
+        const auto found = provenance.find(planned.name);
+        return found != provenance.end() && found->second->loop_origin &&
+               found->second->loop_origin->loop == *node;
+    };
+    bool known = !node.has_value();
+    std::vector<std::string> scheduled;
+    for (const auto &planned : frame_graph.plan.nodes) {
+        if (node && !made_by(planned)) continue;
+        known = true;
+        if (planned.once) scheduled.push_back(planned.name);
+    }
+    if (!known && frame_graph.render_pipeline != nullptr) {
+        // A loop that expanded nothing is still a node of the graph.
+        const auto &loops = frame_graph.render_pipeline->graph_loops;
+        known = std::any_of(loops.begin(), loops.end(),
+                            [&](const auto &loop) { return loop.node == *node; });
+    }
+    if (!known) {
+        throw std::invalid_argument("rerun_once node names no node of the frame plan: " + *node);
+    }
+    once_rerun_requests.insert(scheduled.begin(), scheduled.end());
+    return scheduled;
+}
+
 nlohmann::json Renderer::currentFramePlanJson() const {
     const auto *frame_graph_runtime = FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
     const auto generation =
@@ -4093,6 +4165,23 @@ nlohmann::json Renderer::currentFramePlanJson() const {
                 last_no_selected_view_nodes.end()) {
                 node["no_selected_view"] = true;
             }
+        }
+    }
+    // PS-1: when each once node last ran (the runtime generation and the
+    // logical frame of the published frame that ran it), null before it has.
+    {
+        const auto runs = once_runs.find(current_rendering_pass_id.value);
+        for (auto &node : result["nodes"]) {
+            if (node.value("schedule", std::string{}) != "once") continue;
+            const OnceRunRecord *record = nullptr;
+            if (runs != once_runs.end()) {
+                const auto found = runs->second.find(node.value("name", std::string{}));
+                if (found != runs->second.end()) record = &found->second;
+            }
+            node["last_run_generation"] =
+                record != nullptr ? nlohmann::json(record->generation) : nlohmann::json(nullptr);
+            node["last_run_frame"] =
+                record != nullptr ? nlohmann::json(record->frame) : nlohmann::json(nullptr);
         }
     }
     // CPU-side runtime settings at query time, not a completed GPU submission.
@@ -5055,12 +5144,14 @@ class Renderer::LogicalFrameRecorder {
     void publishFrameValueGraph();
     void stagePoseAttributesAndLights();
     void buildDrawSortViews();
+    void planOnceNodes();
     void planLogicalFrameSchedule();
     void configureExternalDepthExport();
     void beginLogicalFrameTarget();
     void recordExecutions();
     void submitFrame();
     void publishFrame();
+    void retainOnceRuns();
     void retainNoSelectedViewNodes();
     void retainPickingSnapshot();
     void publishExecutionTrace();
@@ -5164,6 +5255,13 @@ class Renderer::LogicalFrameRecorder {
     // Valid from buildDrawSortViews.
     bool per_view_sort = false;
     std::vector<DrawQueueSortView> sort_views;
+
+    // Valid from planOnceNodes. By frame graph node index, 1 for a once node
+    // this frame skips; and the once nodes it runs, which retainOnceRuns
+    // records once the frame is published.
+    std::vector<std::uint8_t> once_skipped;
+    std::vector<OnceScheduleNode> once_ran;
+    OnceResourceFacts once_facts;
 
     // Valid from prepareViewFamilyStates, which recordOneExecution runs on the
     // first view only.
@@ -6269,6 +6367,7 @@ void Renderer::LogicalFrameRecorder::recordOneExecution(
                 runtime_generation != nullptr
                     ? runtime_generation->material_draw_loops.get()
                     : nullptr,
+            .once_skipped = once_skipped,
         },
         view_family_states, per_view_sort);
     if (external_depth_submission_active) {
@@ -6344,6 +6443,80 @@ void Renderer::LogicalFrameRecorder::publishFrame() {
     target.publishLogicalFrame();
     frame_abort_guard->complete();
     ++renderer.published_logical_frames;
+}
+
+namespace {
+// PS-1: a Vulkan handle as the number a once node's run record keeps.
+template <typename Handle>
+std::uint64_t onceHandleValue(Handle handle) {
+    static_assert(sizeof(Handle) <= sizeof(std::uint64_t));
+    std::uint64_t value = 0;
+    std::memcpy(&value, &handle, sizeof(handle));
+    return value;
+}
+} // namespace
+
+// PS-1: which once nodes this frame records (oncescheduler.hpp). Planned
+// after the frame's host writes (value graph sinks, lights) are staged, so a
+// read buffer's digest is this frame's.
+void Renderer::LogicalFrameRecorder::planOnceNodes() {
+    once_skipped.assign(frame_graph.nodes.size(), 0);
+    once_ran.clear();
+    once_facts.identity = [this](std::string_view resource) -> std::optional<std::uint64_t> {
+        const auto name = std::string{resource};
+        if (const auto target = frame_graph.render_target_bindings.find(name);
+            target != frame_graph.render_target_bindings.end() && isConcreteRenderTarget(target->second)) {
+            return onceHandleValue(static_cast<VkImage>(
+                modules.render_target_container.getImage(target->second).image.get()));
+        }
+        if (const auto buffer = frame_graph.buffer_bindings.find(name);
+            buffer != frame_graph.buffer_bindings.end() &&
+            modules.frame_graph_resources.hasBuffer(buffer->second)) {
+            return onceHandleValue(static_cast<VkBuffer>(
+                modules.frame_graph_resources.buffer(buffer->second).buffer.get()));
+        }
+        return std::nullopt;
+    };
+    once_facts.host_digest = [this](std::string_view resource) -> std::optional<std::uint64_t> {
+        const auto buffer = frame_graph.buffer_bindings.find(std::string{resource});
+        if (buffer == frame_graph.buffer_bindings.end()) return std::nullopt;
+        return modules.frame_graph_resources.hostWriteDigest(buffer->second);
+    };
+    std::vector<OnceScheduleNode> nodes;
+    std::vector<std::size_t> indices;
+    for (std::size_t index = 0; index < frame_graph.nodes.size(); ++index) {
+        if (!frame_graph.nodes[index].once) continue;
+        const auto &planned = frame_graph.plan.nodes.at(index);
+        // An inactive owner's node records nothing this frame; it has not run.
+        if (frame_graph.value_graph &&
+            !frame_graph.value_graph->nodeActive(planned.name, inactive_graph_scopes))
+            continue;
+        nodes.push_back(OnceScheduleNode{planned.name, planned.reads, planned.writes});
+        indices.push_back(index);
+    }
+    if (nodes.empty()) return;
+    static const std::map<std::string, OnceRunRecord, std::less<>> no_runs;
+    const auto runs = renderer.once_runs.find(renderer.current_rendering_pass_id.value);
+    const auto plan = planOnceRuns(nodes, runs != renderer.once_runs.end() ? runs->second : no_runs,
+                                   runtime_generation->generation, once_facts, renderer.once_rerun_requests);
+    for (std::size_t position = 0; position < nodes.size(); ++position) {
+        if (plan.runs(position)) {
+            once_ran.push_back(std::move(nodes[position]));
+        } else {
+            once_skipped[indices[position]] = 1;
+        }
+    }
+}
+
+// PS-1: the once nodes this published frame ran, and what they ran with.
+void Renderer::LogicalFrameRecorder::retainOnceRuns() {
+    if (once_ran.empty()) return;
+    auto &runs = renderer.once_runs[renderer.current_rendering_pass_id.value];
+    for (const auto &node : once_ran) {
+        runs[node.name] = onceRunRecord(node, runtime_generation->generation,
+                                        engine_time.evaluationIndex(), once_facts);
+        renderer.once_rerun_requests.erase(node.name);
+    }
 }
 
 // LP-Va2: which nodes this published frame skipped because their view_select
@@ -6468,12 +6641,14 @@ void Renderer::renderLogicalFrame(
     recorder.publishFrameValueGraph();
     recorder.stagePoseAttributesAndLights();
     recorder.buildDrawSortViews();
+    recorder.planOnceNodes();
     recorder.planLogicalFrameSchedule();
     recorder.configureExternalDepthExport();
     recorder.beginLogicalFrameTarget();
     recorder.recordExecutions();
     recorder.submitFrame();
     recorder.publishFrame();
+    recorder.retainOnceRuns();
     recorder.retainNoSelectedViewNodes();
     recorder.retainPickingSnapshot();
     recorder.publishExecutionTrace();

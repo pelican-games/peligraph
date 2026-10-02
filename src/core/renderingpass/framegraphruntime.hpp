@@ -53,6 +53,8 @@ struct FrameGraphExecutionNode {
     std::string view_family{
         mainRenderViewFamilyId};
     RenderViewSelect view_select;
+    // PS-1: FramePlanNode::once.
+    bool once = false;
 };
 
 struct CompiledMaterialRouteBinding {

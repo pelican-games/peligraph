@@ -211,6 +211,7 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
             pass_json,
             "Pass '" + pass_def.name + "'");
     parsePassImplementationProvider(pass_def, pass_json);
+    pass_def.once = parsePassSchedule(pass_json, pass_def.name);
 
     const std::vector<std::string> non_image_inputs{
         buffer_names.begin(), buffer_names.end()};

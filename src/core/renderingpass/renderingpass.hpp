@@ -543,6 +543,9 @@ struct PassDefinition {
     // LC-1: runtime-only. Set from the compiled pipeline's provenance when
     // the pass is registered; never parsed from JSON.
     PassLoopIndex loop_index;
+    // PS-1: `schedule: "once"` (fullscreen and raster passes; absent or
+    // "per_frame" is false). See ComputeTaskSchedule::once.
+    bool once = false;
 
     bool isMaterial() const { return std::holds_alternative<MaterialPassInfo>(pass_info); }
     bool isFullscreen() const { return std::holds_alternative<FullscreenPassInfo>(pass_info); }
@@ -785,6 +788,11 @@ enum class ComputeTaskSchedule : std::uint8_t {
     // Executes once for each logical view. Physical lowering may keep these
     // invocations sequential while other scopes use Vulkan multiview.
     per_view,
+    // PS-1: dispatched as per_frame, but only on a frame where its inputs
+    // or outputs changed (a new runtime generation, a recreated persistent
+    // output, different host bytes read, an upstream once node that ran,
+    // rerun_once). The frame plan node carries FrameGraphNodeDefinition::once.
+    once,
 };
 
 std::string_view computeTaskScheduleName(

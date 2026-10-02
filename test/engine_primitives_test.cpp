@@ -23,12 +23,14 @@
 #include "../src/project/renderconfigsection.hpp"
 #include "lp3a_decompose_support.hpp"
 #include "render_graph_root_test_support.hpp"
+#include "renderer_testaccess.hpp"
 #include "vulkan_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -36,8 +38,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stb_image.h>
 #include <string>
@@ -2240,6 +2244,253 @@ TEST_CASE("RL-1 reload_render_documents takes in a root rewritten on disk, and r
         REQUIRE(result.at("status") == "committed");
         CHECK(aliased(physical()));
     }
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+namespace {
+// PS-1: h0 (once) writes (level, 0.25, 0.5) into the persistent h0_image,
+// twiddle (once) doubles its green into the persistent twiddle_image, and
+// show (every frame) copies that into show_image, which the test reads back.
+constexpr std::string_view ps1_h0_frag =
+    "#version 460\n#extension GL_GOOGLE_include_directive : require\n"
+    "#include \"pelican_sets.glsl\"\n#include \"pelican_frame.glsl\"\n"
+    "#include \"pelican_resource_ports.glsl\"\n\n"
+    "layout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n\n"
+    "void main() {\n"
+    "    outColor = vec4(pelican_load_level(0u), 0.25, 0.5, 1.0);\n"
+    "}\n";
+
+constexpr std::string_view ps1_twiddle_frag =
+    "#version 460\n#extension GL_GOOGLE_include_directive : require\n"
+    "#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\n"
+    "layout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n"
+    "PELICAN_DECLARE_INPUT_0(h0);\n\n"
+    "void main() {\n"
+    "    vec4 value = PELICAN_TEXTURE_2D_0(h0, inUV);\n"
+    "    outColor = vec4(value.r, value.g * 2.0, value.b, 1.0);\n"
+    "}\n";
+
+constexpr std::string_view ps1_show_frag =
+    "#version 460\n#extension GL_GOOGLE_include_directive : require\n"
+    "#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\n"
+    "layout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n"
+    "PELICAN_DECLARE_INPUT_0(field);\n\n"
+    "void main() {\n"
+    "    outColor = vec4(PELICAN_TEXTURE_2D_0(field, inUV).rgb, 1.0);\n"
+    "}\n";
+
+Json ps1RenderingRoot(const Json &blank_root, double level) {
+    const Json type{{"semantic", "pelican.render.color_signal@1"},
+                    {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    const Json color{{"kind", "image"}, {"type", type}, {"access", "write"}, {"attachment", "color"},
+                     {"location", 0}};
+    const Json input{{"kind", "image"}, {"type", type}, {"access", "read"}, {"binding", "input"},
+                     {"input_index", 0}};
+    const auto edge = [](const char *node, const char *port) { return Json{{"node", node}, {"port", port}}; };
+    const auto image = [&](const char *id, bool persistent, bool read_back) {
+        Json usage = Json::array({"COLOR_ATTACHMENT", "SAMPLED"});
+        if (read_back) usage.push_back("TRANSFER_SRC");
+        Json parameters{{"type", type}, {"format", "R8G8B8A8_UNORM"}, {"extent_scale", 1.0}, {"usage", usage}};
+        if (persistent) parameters["lifetime"] = "persistent";
+        return Json{{"id", id}, {"op", "render.image"}, {"parameters", parameters}, {"outputs", {"resource"}}};
+    };
+    const auto pass = [&](const char *id, const char *fragment, Json ports, Json inputs, bool once) {
+        Json parameters{{"pass_set", "main_render"},
+                        {"shader", {{"vertex", "engine://fullscreen"},
+                                    {"fragment", std::string{"project://shaders/"} + fragment}}},
+                        {"ports", std::move(ports)}};
+        if (once) parameters["schedule"] = "once";
+        return Json{{"id", id}, {"op", "render.fullscreen"}, {"parameters", parameters},
+                    {"inputs", std::move(inputs)}, {"outputs", {"color"}}};
+    };
+    auto root = blank_root;
+    root["nodes"] = Json::array({
+        {{"id", "level_value"}, {"op", "value.constant"}, {"parameters", {{"value", level}}},
+         {"outputs", {"value"}}},
+        {{"id", "level"}, {"op", "render.buffer"}, {"parameters", {{"element", "float"}}},
+         {"inputs", {{"value", edge("level_value", "value")}}}, {"outputs", {"resource"}}},
+        image("h0_image", true, false),
+        pass("h0", "ps1_h0", {{"level", {{"kind", "buffer"}, {"element", "float"}, {"access", "read"}}},
+                              {"color", color}},
+             {{"level", edge("level", "resource")}, {"color", edge("h0_image", "resource")}}, true),
+        image("twiddle_image", true, false),
+        pass("twiddle", "ps1_twiddle", {{"source", input}, {"color", color}},
+             {{"source", edge("h0", "color")}, {"color", edge("twiddle_image", "resource")}}, true),
+        image("show_image", false, true),
+        pass("show", "ps1_show", {{"source", input}, {"color", color}},
+             {{"source", edge("twiddle", "color")}, {"color", edge("show_image", "resource")}}, false),
+    });
+    return root;
+}
+} // namespace
+
+// PS-1 acceptance 1-3 and Play / Stop, through the running renderer.
+TEST_CASE("PS-1 once passes run on the first frame and again only when asked, edited or upstream ran",
+          "[ps1][frame-plan][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("ps1_once");
+    const auto root = dir.root / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    const auto blank_root = Json::parse(readFile(rendering_path));
+    writeFile(rendering_path, ps1RenderingRoot(blank_root, 0.25).dump(2));
+    writeFile(root / "shaders/ps1_h0.frag", ps1_h0_frag);
+    writeFile(root / "shaders/ps1_twiddle.frag", ps1_twiddle_frag);
+    writeFile(root / "shaders/ps1_show.frag", ps1_show_frag);
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    auto &renderer = GET_MODULE(Renderer);
+    test_support::RendererTestAccess::setExecutionTracing(renderer, true);
+
+    // The one value every texel of show_image holds.
+    const auto shown = [&] {
+        GET_MODULE(VulkanManageCore).waitIdle();
+        const auto read =
+            test_support::RendererTestAccess::readRenderTarget(renderer, "show_image", ImageSubresourceRange{});
+        REQUIRE(read.format == vk::Format::eR8G8B8A8Unorm);
+        std::set<std::array<std::uint8_t, 4>> values;
+        for (std::size_t offset = 0; offset + 4 <= read.bytes.size(); offset += 4)
+            values.insert({read.bytes.at(offset), read.bytes.at(offset + 1), read.bytes.at(offset + 2),
+                           read.bytes.at(offset + 3)});
+        REQUIRE(values.size() == 1);
+        return *values.begin();
+    };
+    // The frame plan's once nodes: name -> {last_run_generation, last_run_frame}.
+    const auto runs = [&] {
+        const auto plan = rpc.result("get_frame_plan");
+        std::map<std::string, std::pair<Json, Json>> result;
+        for (const auto &node : plan.at("nodes")) {
+            if (node.value("schedule", std::string{}) != "once") continue;
+            result.emplace(node.at("name").get<std::string>(),
+                           std::pair{node.at("last_run_generation"), node.at("last_run_frame")});
+        }
+        return std::pair{result, plan.at("runtime_generation")};
+    };
+    // Whether the last frame recorded each node (the execution trace).
+    const auto recorded = [&](const std::string &name) {
+        const auto &trace = test_support::RendererTestAccess::lastExecutionTrace(renderer);
+        for (const auto &node : trace.at("nodes"))
+            if (node.at("name") == name) return node.value("recorded", true);
+        FAIL("no trace entry for " << name);
+        return false;
+    };
+    const auto frame = [&] { (void)rpc.result("step_frame"); };
+
+    // 1. Frame 1 runs both once passes; frames 2-5 record neither, and the
+    // pattern stays.
+    frame();
+    CHECK(recorded("h0"));
+    CHECK(recorded("twiddle"));
+    CHECK(recorded("show"));
+    const auto [first, generation] = runs();
+    REQUIRE(first.size() == 2);
+    CHECK(first.at("h0").first == generation);
+    CHECK(first.at("twiddle").first == generation);
+    REQUIRE(first.at("h0").second.is_number_unsigned());
+    {
+        // Acceptance 5 in the running frame plan: the persistent images are
+        // stored and never alias candidates, and the reason says why.
+        const auto plan = rpc.result("get_frame_plan");
+        REQUIRE(plan.contains("physical_target_plan"));
+        std::set<std::string> seen;
+        for (const auto &resource : plan.at("physical_target_plan").at("resources")) {
+            const auto name = resource.at("logical_resource").get<std::string>();
+            if (name != "h0_image" && name != "twiddle_image") continue;
+            INFO(resource.dump(2));
+            seen.insert(name);
+            CHECK(resource.at("aliasable") == false);
+            CHECK(resource.at("stored") == true);
+            CHECK_THAT(resource.at("reason").get<std::string>(),
+                       Catch::Matchers::ContainsSubstring("persistent lifetime"));
+        }
+        CHECK(seen == std::set<std::string>{"h0_image", "twiddle_image"});
+    }
+    const auto pattern = shown();
+    // level 0.25 -> 64; green 0.25 doubled -> 128; blue 0.5 -> 127 or 128.
+    CHECK(int{pattern[0]} == 64);
+    CHECK(int{pattern[1]} == 128);
+    CHECK(std::abs(int{pattern[2]} - 128) <= 1);
+    for (int repeat = 0; repeat < 4; ++repeat) {
+        frame();
+        CHECK_FALSE(recorded("h0"));
+        CHECK_FALSE(recorded("twiddle"));
+        CHECK(recorded("show"));
+        CHECK(shown() == pattern);
+        CHECK(runs().first == first);
+    }
+
+    // 2. rerun_once: h0 runs on the next frame, and twiddle with it (it reads
+    // what h0 wrote); then neither again.
+    CHECK(rpc.result("rerun_once", {{"node", "h0"}}) == Json{{"scheduled", Json::array({"h0"})}});
+    frame();
+    CHECK(recorded("h0"));
+    CHECK(recorded("twiddle"));
+    const auto rerun = runs().first;
+    CHECK(rerun.at("h0").second != first.at("h0").second);
+    CHECK(rerun.at("twiddle").second == rerun.at("h0").second);
+    CHECK(shown() == pattern);
+    frame();
+    CHECK_FALSE(recorded("h0"));
+    CHECK_FALSE(recorded("twiddle"));
+    // Without a node: every once node, in plan order. A node that runs every
+    // frame schedules nothing; an unknown node is invalid params.
+    CHECK(rpc.result("rerun_once") == Json{{"scheduled", Json::array({"h0", "twiddle"})}});
+    CHECK(rpc.result("rerun_once", {{"node", "show"}}) == Json{{"scheduled", Json::array()}});
+    {
+        const auto unknown = rpc.call("rerun_once", {{"node", "nowhere"}});
+        INFO(unknown.dump(2));
+        REQUIRE(unknown.contains("error"));
+        CHECK(unknown.at("error").at("code") == -32602);
+    }
+    frame();
+    CHECK(recorded("h0"));
+    CHECK(recorded("twiddle"));
+    frame();
+    CHECK_FALSE(recorded("h0"));
+
+    // 5. Play and Stop neither change the generation nor run them again.
+    {
+        const auto before = runs();
+        CHECK(rpc.result("set_play_state", {{"state", "playing"}}).at("state") == "playing");
+        (void)rpc.result("render_frame");
+        CHECK(rpc.result("set_play_state", {{"state", "edit"}}).at("state") == "edit");
+        frame();
+        const auto after = runs();
+        INFO(after.second.dump());
+        CHECK(after.second == before.second);
+        CHECK_FALSE(recorded("h0"));
+        CHECK(after.first == before.first);
+        CHECK(shown() == pattern);
+    }
+
+    // 2. The constant edited (the document rewritten and reloaded): the new
+    // generation runs both once passes, and the pattern follows the value.
+    writeFile(rendering_path, ps1RenderingRoot(blank_root, 0.75).dump(2));
+    const auto reloaded = rpc.result("reload_render_documents");
+    INFO(reloaded.dump(2));
+    REQUIRE(reloaded.at("status") == "accepted");
+    Json committed;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        frame();
+        committed = rpc.result("get_edit_result", {{"ticket", reloaded.at("ticket")}});
+        if (committed.value("status", std::string{}) != "pending") break;
+    }
+    INFO(committed.dump(2));
+    REQUIRE(committed.at("status") == "committed");
+    frame();
+    const auto [edited, edited_generation] = runs();
+    CHECK(edited_generation != generation);
+    CHECK(edited.at("h0").first == edited_generation);
+    CHECK(edited.at("twiddle").first == edited_generation);
+    const auto changed = shown();
+    CHECK(int{changed[0]} == 191);
+    CHECK(int{changed[1]} == 128);
+    frame();
+    CHECK_FALSE(recorded("h0"));
+    CHECK(shown() == changed);
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
