@@ -3289,6 +3289,20 @@ OrderedJson RenderConfigEditorService::getEngineShaders(const Json &params) cons
     return engineShadersStatusJson();
 }
 
+OrderedJson RenderConfigEditorService::getShaderInterface(const Json &params) const {
+    constexpr auto method = "get_shader_interface";
+    requireOnly(params, {"reference", "refresh"}, method);
+    const auto reference = requireString(params, "reference", method);
+    bool refresh = false;
+    if (const auto found = params.find("refresh"); found != params.end()) {
+        if (!found->is_boolean()) throw std::invalid_argument("get_shader_interface field 'refresh' must be a boolean");
+        refresh = found->get<bool>();
+    }
+    // EL-5: a worker thread reflects the stem's files; until it is done
+    // this answers {status: building} at once.
+    return shaderInterfaceStatusJson(reference, refresh, dependencies_.resolve_shader_reference);
+}
+
 OrderedJson RenderConfigEditorService::editFrameNodeOrder(const Json &params) {
     constexpr auto method = "edit_frame_node_order";
     requireOnly(params, {"base_source_digest", "orders"}, method);

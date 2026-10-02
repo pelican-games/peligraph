@@ -13,13 +13,22 @@
 #include "../shader/shadercompiler.hpp"
 #include "../shader/shaderresourceinterface.hpp"
 #include "../shader/shaderreference.hpp"
+#include "../shader/shaderlibrary.hpp"
 #include "../shader/shaderreflection.hpp"
+
+#include <picosha2.h>
 
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstring>
+#include <deque>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
+#include <stdexcept>
+#include <system_error>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -101,11 +110,23 @@ OrderedJson materialOutputFormatsJson() {
 
 namespace {
 
-struct EngineShaderForms {
-    std::string stem;
+// EL-5: where one form (the GLSL source or the SPIR-V) of a stem's stage
+// is, as the stem reference resolves it: a built-in resource or a file.
+// `name` is what a diagnostic names (engine://<id>, or the candidate
+// reference a project shader is read from).
+struct ShaderFormLocation {
+    std::string name;
+    std::string engine_id;
+    std::optional<std::filesystem::path> file;
+};
+
+// One stage of a stem reference: the forms it has, read the same way for
+// the engine's shaders (EL-4b) and a project's (EL-5).
+struct ShaderStageForms {
+    std::string reference;
     ShaderStage stage = ShaderStage::vertex;
-    bool source = false;
-    bool spirv = false;
+    std::optional<ShaderFormLocation> source;
+    std::optional<ShaderFormLocation> spirv;
 };
 
 std::vector<std::uint32_t> spirvWords(std::string_view bytes) {
@@ -114,21 +135,48 @@ std::vector<std::uint32_t> spirvWords(std::string_view bytes) {
     return words;
 }
 
+std::string readFileBytes(const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios::binary};
+    if (!file) throw std::runtime_error("cannot read " + path.generic_string());
+    return {std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+}
+
+// A form's bytes: the built-in resource, or the file read from disk.
+std::string readForm(const ShaderFormLocation &form) {
+    if (form.file) return readFileBytes(*form.file);
+    return std::string{*engineResource(form.engine_id)};
+}
+
+#if PELICAN_RUNTIME_SHADER_COMPILER
+// A source form compiled as the shader library compiles it: a built-in
+// source by its engine:// name, a file through compileFile (its directory
+// and the engine's includes resolve its #include, as for a pass).
+ShaderCompileResult compileForm(const ShaderFormLocation &form, ShaderCompiler &compiler) {
+    if (form.file) {
+        auto compiled = compiler.compileFile(*form.file);
+        // The log names the file by its reference, not the machine's path.
+        std::error_code ec;
+        const auto physical = std::filesystem::weakly_canonical(*form.file, ec).string();
+        for (auto at = compiled.log.find(physical); !ec && !physical.empty() && at != std::string::npos;
+             at = compiled.log.find(physical, at + form.name.size()))
+            compiled.log.replace(at, physical.size(), form.name);
+        return compiled;
+    }
+    const auto stage = inferShaderStageFromPath(form.engine_id);
+    return compiler.compileSource(*engineResource(form.engine_id), *stage, form.name);
+}
+#endif
+
 // What ShaderLibrary::loadFromStemReference would load: the GLSL source
 // when the runtime compiler is built in, else the precompiled SPIR-V.
 // Reflection reads that form; a source that does not compile on its own
 // (one that includes a pass's generated ports) is read from its SPIR-V when
 // there is one. The compiler is the worker's own (EL-4c).
-std::optional<ShaderReflection> reflectEngineShader(const EngineShaderForms &forms, ShaderCompiler &compiler,
-                                                    std::string &from, std::string &error) {
-    // The candidates loadFromStemReference tries (shaderSourceCandidateReference).
-    const auto source_id = forms.stem + std::string{shaderStageSourceExtension(forms.stage)};
-    const auto spirv_id = source_id + ".spv";
+std::optional<ShaderReflection> reflectShaderForms(const ShaderStageForms &forms, ShaderCompiler &compiler,
+                                                   std::string &from, std::string &error) {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     if (forms.source) {
-        const auto name = "engine://" + source_id;
-        const auto stage = inferShaderStageFromPath(source_id);
-        const auto compiled = compiler.compileSource(*engineResource(source_id), *stage, name);
+        const auto compiled = compileForm(*forms.source, compiler);
         if (compiled.ok) {
             from = "source";
             return reflect(compiled.spirv);
@@ -139,9 +187,9 @@ std::optional<ShaderReflection> reflectEngineShader(const EngineShaderForms &for
     (void)compiler;
 #endif
     if (forms.spirv) {
-        const auto bytes = *engineResource(spirv_id);
+        const auto bytes = readForm(*forms.spirv);
         if (bytes.empty() || bytes.size() % sizeof(std::uint32_t) != 0) {
-            error = "engine://" + spirv_id + " is not SPIR-V";
+            error = forms.spirv->name + " is not SPIR-V";
             return std::nullopt;
         }
         from = "spirv";
@@ -159,8 +207,10 @@ std::optional<std::string> vocabularyFormatName(vk::Format format) {
     return std::nullopt;
 }
 
-OrderedJson engineShaderJson(const EngineShaderForms &forms, ShaderCompiler &compiler) {
-    OrderedJson entry{{"reference", "engine://" + forms.stem}, {"stage", shaderStageName(forms.stage)}};
+// One stage's entry, get_engine_shaders' (EL-4b) and get_shader_interface's
+// (EL-5) alike; only where the forms are read from differs.
+OrderedJson shaderStageJson(const ShaderStageForms &forms, ShaderCompiler &compiler) {
+    OrderedJson entry{{"reference", forms.reference}, {"stage", shaderStageName(forms.stage)}};
     auto available = OrderedJson::array();
     if (forms.source) available.push_back("source");
     if (forms.spirv) available.push_back("spirv");
@@ -171,16 +221,16 @@ OrderedJson engineShaderJson(const EngineShaderForms &forms, ShaderCompiler &com
     // `ports`). On its own it compiles against the engine's empty include:
     // it reflects when its ports are optional (RS-11, bloom_composite), and
     // fails by the accessor's name when it calls one unconditionally.
-    if (forms.source) {
-        const auto source = *engineResource(forms.stem + std::string{shaderStageSourceExtension(forms.stage)});
-        entry["resource_port_include"] =
-            source.find("\"" + std::string{shaderResourcePortIncludeName} + "\"") != std::string_view::npos;
-    }
     std::string from;
     std::string error;
     std::optional<ShaderReflection> reflection;
     try {
-        reflection = reflectEngineShader(forms, compiler, from, error);
+        if (forms.source) {
+            const auto source = readForm(*forms.source);
+            entry["resource_port_include"] =
+                source.find("\"" + std::string{shaderResourcePortIncludeName} + "\"") != std::string::npos;
+        }
+        reflection = reflectShaderForms(forms, compiler, from, error);
     } catch (const std::exception &failure) {
         error = failure.what();
     }
@@ -235,7 +285,7 @@ OrderedJson engineShaderJson(const EngineShaderForms &forms, ShaderCompiler &com
 // last one: the worker looks at it between shaders.
 std::optional<OrderedJson> buildEngineShadersJson(ShaderCompiler &compiler, const std::atomic_bool &stop) {
     // (stem, stage) in the order stems and stages are listed.
-    std::map<std::pair<std::string, std::size_t>, EngineShaderForms> found;
+    std::map<std::pair<std::string, std::size_t>, ShaderStageForms> found;
     for (const auto id : registeredEngineResourceIds()) {
         for (std::size_t index = 0; index < shaderStages.size(); ++index) {
             const auto stage = shaderStages[index];
@@ -246,9 +296,10 @@ std::optional<OrderedJson> buildEngineShadersJson(ShaderCompiler &compiler, cons
             const auto stem = std::string{id.substr(0, id.size() - (spirv ? spirv_suffix : source_suffix).size())};
             if (stem.empty() || !engineResource(id)) continue;
             auto &forms = found[{stem, index}];
-            forms.stem = stem;
+            forms.reference = "engine://" + stem;
             forms.stage = stage;
-            (spirv ? forms.spirv : forms.source) = true;
+            (spirv ? forms.spirv : forms.source) = ShaderFormLocation{.name = "engine://" + std::string{id},
+                                                                      .engine_id = std::string{id}};
         }
     }
     auto result = OrderedJson::array();
@@ -257,7 +308,7 @@ std::optional<OrderedJson> buildEngineShadersJson(ShaderCompiler &compiler, cons
         // A stem reference never loads a GLSL source without the compiler.
         if (!forms.spirv && !PELICAN_RUNTIME_SHADER_COMPILER) continue;
         if (stop.load(std::memory_order_relaxed)) return std::nullopt;
-        result.push_back(engineShaderJson(forms, compiler));
+        result.push_back(shaderStageJson(forms, compiler));
     }
     return result;
 }
@@ -369,6 +420,146 @@ EngineShadersReflection &engineShadersReflection() {
     return reflection;
 }
 
+// EL-5: one get_shader_interface build: a stem's stages as the request
+// found them.
+struct ShaderInterfaceJob {
+    std::string reference;
+    std::uint64_t generation = 0;
+    std::vector<ShaderStageForms> stages;
+};
+
+// EL-5: project shaders' interfaces, reflected on one worker thread of its
+// own, one reference at a time in the order asked (a queue). Like EL-4c's
+// worker it owns a detached compiler and reads only the disk (the stem's
+// files and their includes) and the built-in resources; the frame loop's
+// shader library and project cache are never touched. An answer is kept per
+// reference with the hash of the stem's files it was built from.
+class ShaderInterfaceReflection {
+    struct Record {
+        // The build the latest request asked for and the hash of the files
+        // it reads; the answer and the build it came from (0: none yet).
+        std::uint64_t wanted = 0;
+        std::string wanted_key;
+        std::uint64_t done = 0;
+        OrderedJson answer;
+    };
+
+    std::mutex mutex;
+    std::condition_variable wake;
+    std::thread worker;
+    std::atomic_bool stop_requested{false};
+    bool held_for_testing = false;
+    std::uint64_t next_generation = 0;
+    std::deque<ShaderInterfaceJob> queue;
+    std::map<std::string, Record> records;
+
+    void run() {
+        auto compiler = ShaderCompiler::detached();
+        for (;;) {
+            ShaderInterfaceJob job;
+            {
+                std::unique_lock lock{mutex};
+                wake.wait(lock, [&] { return stop_requested.load() || (!held_for_testing && !queue.empty()); });
+                if (stop_requested.load()) return;
+                job = std::move(queue.front());
+                queue.pop_front();
+            }
+            OrderedJson answer;
+            try {
+                auto stages = OrderedJson::array();
+                for (const auto &forms : job.stages) {
+                    // Stopped: the unfinished build is dropped (stop()).
+                    if (stop_requested.load(std::memory_order_relaxed)) return;
+                    stages.push_back(shaderStageJson(forms, compiler));
+                }
+                answer = {{"status", "ready"}, {"reference", job.reference}, {"stages", std::move(stages)}};
+            } catch (const std::exception &failure) {
+                answer = {{"status", "failed"}, {"reference", job.reference}, {"error", failure.what()}};
+            } catch (...) {
+                answer = {{"status", "failed"}, {"reference", job.reference}, {"error", "shader reflection failed"}};
+            }
+            std::scoped_lock lock{mutex};
+            // A request since (changed files or refresh) wants a newer build.
+            auto &record = records[job.reference];
+            if (record.wanted != job.generation) continue;
+            record.done = job.generation;
+            record.answer = std::move(answer);
+        }
+    }
+
+  public:
+    ~ShaderInterfaceReflection() { stop(); }
+
+    // {status: building} until the build for these files is done, then its
+    // answer. A changed key, or refresh, queues a new build (a queued one
+    // for the same reference is replaced, not run twice).
+    OrderedJson status(const std::string &reference, const std::string &key, std::vector<ShaderStageForms> stages,
+                       bool refresh) {
+        std::scoped_lock lock{mutex};
+        auto &record = records[reference];
+        if (!refresh && record.wanted != 0 && record.wanted_key == key) {
+            if (record.done == record.wanted) return record.answer;
+            return {{"status", "building"}};
+        }
+        record.wanted = ++next_generation;
+        record.wanted_key = key;
+        std::erase_if(queue, [&](const ShaderInterfaceJob &queued) { return queued.reference == reference; });
+        queue.push_back({reference, record.wanted, std::move(stages)});
+        if (!worker.joinable()) {
+            stop_requested = false;
+            worker = std::thread{[this] { run(); }};
+        }
+        wake.notify_all();
+        return {{"status", "building"}};
+    }
+
+    // Raises stop (the worker leaves after the stage it is reflecting, or
+    // while it waits) and joins it. Done answers are kept; queued and
+    // unfinished builds are dropped, and the next request builds again.
+    void stop() {
+        std::thread running;
+        {
+            std::scoped_lock lock{mutex};
+            stop_requested = true;
+            running = std::move(worker);
+        }
+        wake.notify_all();
+        if (running.joinable()) running.join();
+        std::scoped_lock lock{mutex};
+        stop_requested = false;
+        queue.clear();
+        for (auto &[reference, record] : records) {
+            (void)reference;
+            if (record.done == record.wanted) continue;
+            record.wanted = record.done;
+            record.wanted_key.clear();
+        }
+    }
+
+    void reset() {
+        stop();
+        std::scoped_lock lock{mutex};
+        records.clear();
+    }
+
+    void hold(bool held) {
+        {
+            std::scoped_lock lock{mutex};
+            held_for_testing = held;
+        }
+        wake.notify_all();
+    }
+};
+
+ShaderInterfaceReflection &shaderInterfaceReflection() {
+    static ShaderInterfaceReflection reflection;
+    return reflection;
+}
+
+OrderedJson shaderInterfaceFailure(std::string_view reference, std::string error) {
+    return {{"status", "failed"}, {"reference", std::string{reference}}, {"error", std::move(error)}};
+}
+
 } // namespace
 
 void startEngineShadersReflection() {
@@ -390,5 +581,64 @@ void holdEngineShadersReflectionForTesting(bool held) { engineShadersReflection(
 std::size_t engineShadersRequestCount() {
     return engine_shaders_requests.load(std::memory_order_relaxed);
 }
+
+OrderedJson shaderInterfaceStatusJson(std::string_view reference, bool refresh, const ShaderReferenceResolver &resolve) {
+    // An engine stem is get_engine_shaders' own entries (one reflection per
+    // process; refresh does not apply).
+    if (reference.starts_with("engine://")) {
+        auto engine = engineShadersStatusJson();
+        const auto status = engine.value("status", std::string{});
+        if (status == "building") return engine;
+        if (status != "ready") return shaderInterfaceFailure(reference, engine.value("error", std::string{}));
+        auto stages = OrderedJson::array();
+        for (auto &entry : engine.at("engine_shaders"))
+            if (entry.at("reference").get<std::string>() == reference) stages.push_back(std::move(entry));
+        if (stages.empty()) return shaderInterfaceFailure(reference, "shader_not_found");
+        return {{"status", "ready"}, {"reference", std::string{reference}}, {"stages", std::move(stages)}};
+    }
+    if (!resolve) throw std::logic_error("get_shader_interface has no project to resolve " + std::string{reference});
+    // The stage files a stem reference loads, by loadFromStemReference's
+    // candidates and check; the hash of their bytes is the answer's key.
+    std::vector<ShaderStageForms> stages;
+    std::string hashed;
+    for (const auto stage : shaderStages) {
+        ShaderStageForms forms{.reference = std::string{reference}, .stage = stage};
+        for (const bool spirv : {false, true}) {
+            const auto candidate = shaderStemCandidateReference(reference, stage, spirv);
+            std::optional<ResolvedRef> resolved;
+            try {
+                resolved = existingShaderStemCandidate(resolve(candidate), candidate);
+            } catch (const std::exception &failure) {
+                throw std::invalid_argument("get_shader_interface cannot resolve " + candidate + ": " +
+                                            failure.what());
+            }
+            if (!resolved) continue;
+            ShaderFormLocation location;
+            if (const auto *path = std::get_if<std::filesystem::path>(&*resolved)) {
+                location.name = candidate;
+                location.file = *path;
+            } else {
+                location.engine_id = std::get<EngineResourceId>(*resolved).id;
+                location.name = "engine://" + location.engine_id;
+            }
+            const auto bytes = readForm(location);
+            hashed += candidate + '\n' + picosha2::hash256_hex_string(bytes.begin(), bytes.end()) + '\n';
+            (spirv ? forms.spirv : forms.source) = std::move(location);
+        }
+        if (!forms.source && !forms.spirv) continue;
+        // A stem reference never loads a GLSL source without the compiler.
+        if (!forms.spirv && !PELICAN_RUNTIME_SHADER_COMPILER) continue;
+        stages.push_back(std::move(forms));
+    }
+    if (stages.empty()) return shaderInterfaceFailure(reference, "shader_not_found");
+    return shaderInterfaceReflection().status(std::string{reference}, picosha2::hash256_hex_string(hashed),
+                                              std::move(stages), refresh);
+}
+
+void stopShaderInterfaceReflection() { shaderInterfaceReflection().stop(); }
+
+void resetShaderInterfaceReflectionForTesting() { shaderInterfaceReflection().reset(); }
+
+void holdShaderInterfaceReflectionForTesting(bool held) { shaderInterfaceReflection().hold(held); }
 
 } // namespace Pelican

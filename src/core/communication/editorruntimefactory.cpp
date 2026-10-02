@@ -2039,6 +2039,14 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         }
                         return *path;
                     },
+                    // EL-5: get_shader_interface resolves a stem's stage
+                    // files as the shader library does; only paths cross
+                    // to its worker, which reads the disk.
+                    .resolve_shader_reference = [runtime](
+                                                    std::string_view reference) {
+                        return runtime->modules.path_resolver
+                            .resolveProjectRef(reference);
+                    },
                     // This is the independent editor query policy.  In
                     // particular, it never calls ReloadGate::enabled(),
                     // which is intentionally false for --rpc drivers.

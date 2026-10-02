@@ -283,6 +283,9 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("get_engine_shaders", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getEngineShaders(params); });
     });
+    server.setHandler("get_shader_interface", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getShaderInterface(params); });
+    });
     server.setHandler("edit_compute_task", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editComputeTask(params); });
     });

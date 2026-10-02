@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../project/materialdrawloop.hpp"
+#include "../../project/projectpathresolver.hpp"
 #include "../../project/renderconfigdocument.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "renderconfigtransaction.hpp"
@@ -130,6 +131,10 @@ struct RenderConfigEditorDependencies {
     // fragment-address references must be rejected by the implementation.
     std::function<std::filesystem::path(std::string_view)>
         resolve_document_path;
+    // EL-5: resolves a shader stem's candidate reference as the shader
+    // library's PathResolver does (resolveProjectRef), for
+    // get_shader_interface. Unset: only engine:// stems are answered.
+    std::function<ResolvedRef(std::string_view)> resolve_shader_reference;
     std::function<RenderConfigEditorGateObservation()> gate;
     std::function<RenderConfigRuntimeSnapshot()> runtime_snapshot;
     // Production Renderer compiles and validates the private candidate first,
@@ -543,6 +548,13 @@ class RenderConfigEditorService {
     // reflection reads of each (engineauthoringlists.hpp), reflected on a
     // worker thread once per process, never by get_graph_catalog.
     nlohmann::ordered_json getEngineShaders(const nlohmann::json &params) const;
+    // EL-5. {reference, refresh?: bool} -> {status: building} | {status:
+    // ready, reference, stages: [<get_engine_shaders entry>...]} | {status:
+    // failed, reference, error} (error "shader_not_found" when the stem has
+    // no stage file): a project stem's stages reflected on a worker thread,
+    // rebuilt when their files' bytes change or on refresh
+    // (engineauthoringlists.hpp). Reads the disk only.
+    nlohmann::ordered_json getShaderInterface(const nlohmann::json &params) const;
     nlohmann::ordered_json getRayCallableRecords(const nlohmann::json &params) const;
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params);
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params);

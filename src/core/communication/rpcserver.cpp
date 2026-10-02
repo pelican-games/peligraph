@@ -2679,8 +2679,12 @@ struct EngineRpcEndpoint::Impl {
         startEngineShadersReflection();
     }
 
-    // EL-4c: the worker leaves after the shader it is reflecting.
-    ~Impl() { stopEngineShadersReflection(); }
+    // EL-4c: the worker leaves after the shader it is reflecting; EL-5:
+    // get_shader_interface's after the stage it is reflecting.
+    ~Impl() {
+        stopEngineShadersReflection();
+        stopShaderInterfaceReflection();
+    }
 };
 
 EngineRpcEndpoint::EngineRpcEndpoint(std::istream &input_stream,

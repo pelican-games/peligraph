@@ -631,6 +631,10 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
                     }
                     return *path;
                 },
+            .resolve_shader_reference =
+                [&resolver](std::string_view reference) {
+                    return resolver.resolveProjectRef(reference);
+                },
             .gate = [] { return RenderConfigEditorGateObservation{}; },
             .runtime_snapshot = [&runtime] { return runtime.snapshot; },
             .apply_candidate =
@@ -10219,6 +10223,161 @@ TEST_CASE("EL-4 get_graph_catalog lists material pass formats, material output f
     CHECK(std::find(formats.begin(), formats.end(), mask.at("format")) != formats.end());
     CHECK(port_of(shadow_mask, "normal").at("type") == "sampled_image");
     CHECK_FALSE(port_of(shadow_mask, "normal").contains("format"));
+}
+
+// EL-5: get_shader_interface reads a project stem's stages as
+// get_engine_shaders reads the engine's (the same entry), on a worker thread
+// of its own: building at once, then ready. The answer is kept per reference
+// with the hash of the stem's files; changed bytes or refresh build it again
+// (an include's change only by refresh). A stage that does not compile is
+// its entry's reflection_error; a stem without a stage file fails at once
+// as shader_not_found; an engine:// stem is get_engine_shaders' entries.
+TEST_CASE("EL-5 get_shader_interface reflects a project shader stem on a worker and rebuilds it when its files change",
+          "[render-config-editor][el5][shader-interface]") {
+    G6Harness harness{false};
+    harness.service = makeProjectService(harness.project, harness.resolver, harness.runtime);
+    resetShaderInterfaceReflectionForTesting();
+    const auto shaders = harness.project.root / "shaders";
+    std::filesystem::create_directories(shaders);
+    // A compute shader with two resource ports, LC-1's include and a project
+    // include of its own (the local size).
+    writeBytes(shaders / "el5_size.glsl", "#define EL5_SIZE_X 8\n");
+    const auto write_probe = [&](std::string_view second_port) {
+        writeBytes(shaders / "el5_probe.comp", std::string{R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_sets.glsl"
+#include "pelican_loop.glsl"
+#include "el5_size.glsl"
+layout(local_size_x = EL5_SIZE_X, local_size_y = 4) in;
+layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform sampler2D pelican_resource_source;
+layout(set = PELICAN_SET_PASS_INPUT, binding = 1, rgba16f) uniform writeonly image2D pelican_resource_)glsl"} +
+                                                 std::string{second_port} + R"glsl(;
+void main() {
+    ivec2 at = ivec2(gl_GlobalInvocationID.xy);
+    vec4 value = texelFetch(pelican_resource_source, at, 0) * float(pelican_loop_element() + 1u);
+    imageStore(pelican_resource_)glsl" + std::string{second_port} + R"glsl(, at, value);
+}
+)glsl");
+    };
+    write_probe("target");
+    const auto ask = [&](const Json &params) { return Json(harness.service->getShaderInterface(params)); };
+    const Json building{{"status", "building"}};
+    const auto settle = [&](const Json &params) {
+        auto answered = ask(params);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes{2};
+        while (answered == building && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+            answered = ask(params);
+        }
+        INFO(answered.dump(2));
+        REQUIRE(answered != building);
+        return answered;
+    };
+    const auto port = [](const Json &stage, std::size_t index) { return stage.at("resource_ports").at(index); };
+    const Json probe{{"reference", "project://shaders/el5_probe"}};
+
+    // Building at once (the worker held before its build), and again while
+    // it builds; then ready, the entry get_engine_shaders gives a stage.
+    holdShaderInterfaceReflectionForTesting(true);
+    CHECK(ask(probe) == building);
+    CHECK(ask(probe) == building);
+    holdShaderInterfaceReflectionForTesting(false);
+    const auto ready = settle(probe);
+    REQUIRE(ready.at("status") == "ready");
+    CHECK(ready.at("reference") == "project://shaders/el5_probe");
+    REQUIRE(ready.at("stages").size() == 1);
+    const auto &compute = ready.at("stages").at(0);
+    CHECK(compute.at("reference") == "project://shaders/el5_probe");
+    CHECK(compute.at("stage") == "compute");
+    CHECK(compute.at("forms") == Json::array({"source"}));
+    CHECK(compute.at("loads") == "source");
+    CHECK(compute.at("resource_port_include") == false);
+    CHECK(compute.at("reflected_from") == "source");
+    CHECK(compute.at("reads_loop_index") == true);
+    CHECK(compute.at("local_size") == Json::array({8, 4, 1}));
+    REQUIRE(compute.at("resource_ports").size() == 2);
+    CHECK(port(compute, 0) == Json{{"port", "source"}, {"binding", 0}, {"type", "sampled_image"}});
+    CHECK(port(compute, 1) ==
+          Json{{"port", "target"}, {"binding", 1}, {"type", "storage_image"}, {"format", "R16G16B16A16_SFLOAT"}});
+    // The same bytes: the same answer, no build.
+    CHECK(ask(probe) == ready);
+
+    // The body rewritten: built again, with the new port.
+    write_probe("history");
+    CHECK(ask(probe) == building);
+    const auto rewritten = settle(probe);
+    REQUIRE(rewritten.at("status") == "ready");
+    CHECK(port(rewritten.at("stages").at(0), 1).at("port") == "history");
+    // An include's change is not followed until refresh asks for it.
+    writeBytes(shaders / "el5_size.glsl", "#define EL5_SIZE_X 16\n");
+    CHECK(ask(probe) == rewritten);
+    holdShaderInterfaceReflectionForTesting(true);
+    CHECK(ask({{"reference", "project://shaders/el5_probe"}, {"refresh", true}}) == building);
+    CHECK(ask(probe) == building);
+    holdShaderInterfaceReflectionForTesting(false);
+    const auto refreshed = settle(probe);
+    REQUIRE(refreshed.at("status") == "ready");
+    CHECK(refreshed.at("stages").at(0).at("local_size") == Json::array({16, 4, 1}));
+
+    // A stage that does not compile is its entry's reflection_error; the
+    // stem's other stage reflects. Two references asked while the worker is
+    // held are built one after the other.
+    writeBytes(shaders / "el5_broken.vert", R"glsl(#version 450
+void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }
+)glsl");
+    writeBytes(shaders / "el5_broken.frag", R"glsl(#version 450
+layout(location = 0) out vec4 outColor;
+void main() { outColor = el5_not_declared; }
+)glsl");
+    const Json broken{{"reference", "project://shaders/el5_broken"}};
+    holdShaderInterfaceReflectionForTesting(true);
+    write_probe("queued");
+    CHECK(ask(probe) == building);
+    CHECK(ask(broken) == building);
+    holdShaderInterfaceReflectionForTesting(false);
+    const auto failed_stage = settle(broken);
+    REQUIRE(failed_stage.at("status") == "ready");
+    REQUIRE(failed_stage.at("stages").size() == 2);
+    const auto &vertex = failed_stage.at("stages").at(0);
+    const auto &fragment = failed_stage.at("stages").at(1);
+    CHECK(vertex.at("stage") == "vertex");
+    CHECK(vertex.at("reflected_from") == "source");
+    CHECK(vertex.at("pass_inputs") == Json::array());
+    CHECK(fragment.at("stage") == "fragment");
+    CHECK_FALSE(fragment.contains("reflected_from"));
+    CHECK_THAT(fragment.at("reflection_error").get<std::string>(),
+               Catch::Matchers::ContainsSubstring("el5_not_declared"));
+    // By the file's reference, not the machine's path.
+    CHECK_THAT(fragment.at("reflection_error").get<std::string>(),
+               Catch::Matchers::StartsWith("project://shaders/el5_broken.frag:3:"));
+    CHECK(port(settle(probe).at("stages").at(0), 1).at("port") == "queued");
+
+    // A stem with no stage file fails at once.
+    CHECK(ask({{"reference", "project://shaders/el5_missing"}}) ==
+          Json{{"status", "failed"}, {"reference", "project://shaders/el5_missing"}, {"error", "shader_not_found"}});
+    // The fields: reference required, refresh a boolean, nothing else.
+    CHECK_THROWS_AS(ask(Json::object()), std::invalid_argument);
+    CHECK_THROWS_AS(ask({{"reference", "project://shaders/el5_probe"}, {"refresh", 1}}), std::invalid_argument);
+    CHECK_THROWS_AS(ask({{"reference", "project://shaders/el5_probe"}, {"stage", "compute"}}),
+                    std::invalid_argument);
+
+    // An engine stem: get_engine_shaders' entries of it, unchanged.
+    auto engine = Json(harness.service->getEngineShaders(Json::object()));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes{2};
+    while (engine == building && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+        engine = Json(harness.service->getEngineShaders(Json::object()));
+    }
+    REQUIRE(engine.at("status") == "ready");
+    auto bloom_entries = Json::array();
+    for (const auto &entry : engine.at("engine_shaders"))
+        if (entry.at("reference") == "engine://bloom_composite") bloom_entries.push_back(entry);
+    REQUIRE_FALSE(bloom_entries.empty());
+    CHECK(ask({{"reference", "engine://bloom_composite"}}) ==
+          Json{{"status", "ready"}, {"reference", "engine://bloom_composite"}, {"stages", bloom_entries}});
+    CHECK(ask({{"reference", "engine://el5_missing"}}) ==
+          Json{{"status", "failed"}, {"reference", "engine://el5_missing"}, {"error", "shader_not_found"}});
+    resetShaderInterfaceReflectionForTesting();
 }
 
 // --- EL-3: edit_rendering_keys writes keys of the root's rendering section.

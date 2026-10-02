@@ -1,8 +1,12 @@
 #pragma once
 
+#include "../../project/projectpathresolver.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <cstddef>
+#include <functional>
+#include <string_view>
 
 namespace Pelican {
 
@@ -56,5 +60,32 @@ std::size_t engineShadersRequestCount();
 // again; hold a worker before its first shader until released.
 void resetEngineShadersReflectionForTesting();
 void holdEngineShadersReflectionForTesting(bool held);
+
+// EL-5: get_shader_interface {reference, refresh?}: what reflection reads of
+// each stage of a stem reference, as get_engine_shaders' entries read it.
+//   {status: "building"}
+//   | {status: "ready", reference, stages: [<get_engine_shaders entry>...]}
+//   | {status: "failed", reference, error}
+// A project stem's stages are the files ShaderLibrary::loadFromStemReference
+// would load (each stage's source and .spv, by the same candidates and
+// check, read through `resolve`); none: failed with error
+// "shader_not_found" at once. A worker thread of its own builds the answer
+// (one reference at a time, queued) and keeps it per reference with the
+// hash of those files' bytes: changed bytes, or `refresh`, build it again.
+// A stage that does not compile or reflect is its entry's
+// reflection_error. An engine:// stem is get_engine_shaders' entries of the
+// stem (building while that list builds; refresh does not apply).
+// A reference the resolver refuses throws std::invalid_argument.
+using ShaderReferenceResolver = std::function<ResolvedRef(std::string_view)>;
+nlohmann::ordered_json shaderInterfaceStatusJson(std::string_view reference, bool refresh,
+                                                 const ShaderReferenceResolver &resolve);
+// Stops the worker after the stage it is reflecting and joins it; done
+// answers are kept, queued builds dropped. The engine calls it with
+// stopEngineShadersReflection.
+void stopShaderInterfaceReflection();
+// Tests: stop and forget every answer; hold the worker before its next
+// build until released.
+void resetShaderInterfaceReflectionForTesting();
+void holdShaderInterfaceReflectionForTesting(bool held);
 
 } // namespace Pelican

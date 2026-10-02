@@ -555,6 +555,38 @@ ShaderBundleId ShaderLibrary::loadResolvedReference(const ResolvedRef &resolved,
     return id;
 }
 
+std::string shaderStemCandidateReference(std::string_view stem, ShaderStage stage, bool spirv) {
+    return shaderSourceCandidateReference(stem, sourceStage(stage), spirv);
+}
+
+std::optional<ResolvedRef> existingShaderStemCandidate(ResolvedRef resolved, std::string_view candidate_ref,
+                                                       std::vector<std::string> *tried) {
+    if (const auto path = std::get_if<std::filesystem::path>(&resolved)) {
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(*path, ec) || ec) {
+            if (tried) tried->push_back(std::string{candidate_ref} + " (" + path->string() + ")");
+            return std::nullopt;
+        }
+        return resolved;
+    }
+
+    const auto *engine_resource = std::get_if<EngineResourceId>(&resolved);
+    if (engine_resource == nullptr) {
+        if (const auto fragment = std::get_if<ResolvedPathFragment>(&resolved)) {
+            throwUnsupportedFragment(fragment->fragment);
+        }
+        if (const auto fragment = std::get_if<ResolvedEngineFragment>(&resolved)) {
+            throwUnsupportedFragment(fragment->fragment);
+        }
+        throw std::runtime_error("Unsupported resolved shader reference");
+    }
+    if (!engineResource(engine_resource->id)) {
+        if (tried) tried->push_back(std::string{candidate_ref} + " (engine id not registered)");
+        return std::nullopt;
+    }
+    return resolved;
+}
+
 ShaderBundleId ShaderLibrary::loadFromStemReference(const ShaderReference &reference,
                                                     const PathResolver &resolver,
                                                     const std::vector<std::string> &defines,
@@ -570,35 +602,11 @@ ShaderBundleId ShaderLibrary::loadFromStemReference(const ShaderReference &refer
 
     std::vector<std::string> tried;
     for (const auto &candidate_ref : candidate_refs) {
-        const auto resolved = resolver.resolveProjectRef(candidate_ref);
-        if (const auto path = std::get_if<std::filesystem::path>(&resolved)) {
-            std::error_code ec;
-            if (!std::filesystem::is_regular_file(*path, ec) || ec) {
-                tried.push_back(candidate_ref + " (" + path->string() + ")");
-                continue;
-            }
-            return loadResolvedReference(
-                resolved, reference, candidate_ref, defines,
-                virtual_includes);
-        }
-
-        const auto *engine_resource = std::get_if<EngineResourceId>(&resolved);
-        if (engine_resource == nullptr) {
-            if (const auto fragment = std::get_if<ResolvedPathFragment>(&resolved)) {
-                throwUnsupportedFragment(fragment->fragment);
-            }
-            if (const auto fragment = std::get_if<ResolvedEngineFragment>(&resolved)) {
-                throwUnsupportedFragment(fragment->fragment);
-            }
-            throw std::runtime_error("Unsupported resolved shader reference");
-        }
-        const auto &engine_id = engine_resource->id;
-        if (!engineResource(engine_id)) {
-            tried.push_back(candidate_ref + " (engine id not registered)");
-            continue;
-        }
+        const auto resolved = existingShaderStemCandidate(
+            resolver.resolveProjectRef(candidate_ref), candidate_ref, &tried);
+        if (!resolved) continue;
         return loadResolvedReference(
-            resolved, reference, candidate_ref, defines,
+            *resolved, reference, candidate_ref, defines,
             virtual_includes);
     }
 

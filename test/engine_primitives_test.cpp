@@ -1841,6 +1841,11 @@ TEST_CASE("EL-4 the material pass formats and engine shaders get_graph_catalog l
     INFO(vertex.dump(2) << "\n" << fragment.dump(2));
     REQUIRE(fragment.contains("reflected_from"));
     CHECK(fragment.at("fragment_outputs").at(0).at("location") == 0);
+    // EL-5: get_shader_interface answers an engine stem with these entries.
+    const auto shader_interface = rpc.result("get_shader_interface", {{"reference", "engine://passthrough"}});
+    REQUIRE(shader_interface.value("status", "") == "ready");
+    CHECK(std::find(shader_interface.at("stages").begin(), shader_interface.at("stages").end(), fragment) !=
+          shader_interface.at("stages").end());
     const auto fullscreen = edit(rpc, Json::array({
         {{"op", "add_node"},
          {"scope", "root"},

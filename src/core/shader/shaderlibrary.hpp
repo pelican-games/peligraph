@@ -123,6 +123,17 @@ enum class ShaderLibraryModuleMode {
     reflection_only,
 };
 
+// The check loadFromStemReference makes of each candidate reference
+// (shaderSourceCandidateReference) once the resolver has resolved it: a file
+// that exists, or a registered engine resource. nullopt when it does not
+// exist, after naming it in `tried` (when given); an asset fragment throws.
+// EL-5: get_shader_interface collects a stem's forms with the same check.
+// shaderStemCandidateReference is the candidate itself for a stage:
+// shaderSourceCandidateReference(stem, <the stage's source stage>, spirv).
+std::string shaderStemCandidateReference(std::string_view stem, ShaderStage stage, bool spirv);
+std::optional<ResolvedRef> existingShaderStemCandidate(ResolvedRef resolved, std::string_view candidate_ref,
+                                                       std::vector<std::string> *tried = nullptr);
+
 DECLARE_MODULE(ShaderLibrary) {
     friend class PipelineFactory;
 
