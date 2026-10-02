@@ -63,6 +63,28 @@ bool hasIssue(const AssetManifestVerificationResult &result,
 
 } // namespace
 
+TEST_CASE("asset file hashing matches SHA-256 for empty, small, and multi-chunk files",
+          "[assets][manifest][AH-1]") {
+    Sandbox sandbox;
+    const auto empty = sandbox.store / "empty.bin";
+    const auto small = sandbox.store / "abc.txt";
+    const auto large = sandbox.store / "large.bin";
+    writeText(empty, "");
+    writeText(small, "abc");
+    // Larger than the 1 MiB read chunk and not a multiple of it or of 64.
+    std::string bytes(3 * 1048576 + 7, char{});
+    for (std::size_t i = 0; i < bytes.size(); ++i) {
+        bytes[i] = static_cast<char>(i % 251);
+    }
+    writeText(large, bytes);
+
+    // Reference digests from an independent SHA-256 (Python hashlib) over the same bytes.
+    CHECK(assetFileSha256(empty) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    CHECK(assetFileSha256(small) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    CHECK(assetFileSha256(large) == "f578a61853ca2f4272dba551bd868420e22302fbb6d6dfc0cc80da1d2c7b779f");
+    CHECK_THROWS(assetFileSha256(sandbox.store / "missing.bin"));
+}
+
 TEST_CASE("assets manifest generation is byte-idempotent and reuses unchanged hashes",
           "[assets-manifest]") {
     Sandbox sandbox;

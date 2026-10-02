@@ -36,9 +36,20 @@ StartupAssetsVerificationSummary verifyAssetsAtStartup(
             continue;
         }
 
+        const auto log_hash_plan = [&store](const AssetManifestHashPlan &plan) {
+            if (plan.to_hash == 0) {
+                return;
+            }
+            LOG_INFO(logger, "assets manifest [{}] verifying {} assets ({:.1f} MB), {} cached",
+                     store.name, plan.to_hash,
+                     static_cast<double>(plan.bytes_to_hash) / (1024.0 * 1024.0), plan.cached);
+        };
         const auto verified = verifyAssetsManifest(
             store.root, *store.manifest, cache_path, store.name,
-            {.include_content = true, .force_rehash = false, .strict = strict_assets});
+            {.include_content = true,
+             .force_rehash = false,
+             .strict = strict_assets,
+             .before_hashing = log_hash_plan});
         summary.matched += verified.matched;
         summary.info += countAssetManifestIssues(verified, AssetManifestIssueSeverity::info);
         summary.warnings += countAssetManifestIssues(verified, AssetManifestIssueSeverity::warning);

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -51,11 +52,23 @@ struct AssetManifestVerificationResult {
     std::vector<AssetManifestIssue> issues;
 };
 
+// The content check's work, known before any file is hashed.
+struct AssetManifestHashPlan {
+    int to_hash = 0;
+    std::uintmax_t bytes_to_hash = 0;
+    int cached = 0;
+};
+
 struct AssetManifestVerifyOptions {
     bool include_content = false;
     bool force_rehash = false;
     bool strict = false;
+    // Called once before hashing when include_content is set.
+    std::function<void(const AssetManifestHashPlan &)> before_hashing;
 };
+
+// Lowercase hex SHA-256 of a file's bytes, read in 1 MiB chunks.
+std::string assetFileSha256(const std::filesystem::path &path);
 
 AssetsManifest parseAssetsManifestJson(std::string_view json_text);
 std::string serializeAssetsManifest(const AssetsManifest &manifest);

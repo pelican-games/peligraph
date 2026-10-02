@@ -3,11 +3,24 @@
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <bcrypt.h>
+#endif
+
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -154,14 +167,55 @@ std::string fileMtime(const std::filesystem::path &path, std::error_code &ec) {
     return std::to_string(time.time_since_epoch().count());
 }
 
-std::string fileSha256(const std::filesystem::path &path) {
+} // namespace
+
+std::string assetFileSha256(const std::filesystem::path &path) {
     std::ifstream file{path, std::ios::binary};
     if (!file.is_open()) {
         throw std::runtime_error("failed to hash file: " + pathString(path));
     }
-    return picosha2::hash256_hex_string(std::istreambuf_iterator<char>{file},
-                                        std::istreambuf_iterator<char>{});
+    // picosha2 needs ~20 s for 73 MB in a Debug build, which outlasts the
+    // Studio's wait for the player's window; Windows hashes with CNG instead.
+#ifdef _WIN32
+    BCRYPT_HASH_HANDLE handle = nullptr;
+    if (!BCRYPT_SUCCESS(BCryptCreateHash(BCRYPT_SHA256_ALG_HANDLE, &handle, nullptr, 0, nullptr, 0, 0))) {
+        throw std::runtime_error("failed to hash file: " + pathString(path) + " (BCryptCreateHash)");
+    }
+    const std::unique_ptr<void, decltype(&BCryptDestroyHash)> hash{handle, &BCryptDestroyHash};
+#else
+    picosha2::hash256_one_by_one hasher;
+#endif
+    std::vector<unsigned char> buffer(1 << 20);
+    while (file) {
+        file.read(reinterpret_cast<char *>(buffer.data()), static_cast<std::streamsize>(buffer.size()));
+        const auto count = file.gcount();
+        if (count <= 0) {
+            continue;
+        }
+#ifdef _WIN32
+        if (!BCRYPT_SUCCESS(BCryptHashData(handle, buffer.data(), static_cast<ULONG>(count), 0))) {
+            throw std::runtime_error("failed to hash file: " + pathString(path) + " (BCryptHashData)");
+        }
+#else
+        hasher.process(buffer.begin(), buffer.begin() + count);
+#endif
+    }
+    if (file.bad()) {
+        throw std::runtime_error("failed to hash file: " + pathString(path));
+    }
+    std::array<unsigned char, picosha2::k_digest_size> digest{};
+#ifdef _WIN32
+    if (!BCRYPT_SUCCESS(BCryptFinishHash(handle, digest.data(), static_cast<ULONG>(digest.size()), 0))) {
+        throw std::runtime_error("failed to hash file: " + pathString(path) + " (BCryptFinishHash)");
+    }
+#else
+    hasher.finish();
+    hasher.get_hash_bytes(digest.begin(), digest.end());
+#endif
+    return picosha2::bytes_to_hex_string(digest.begin(), digest.end());
 }
+
+namespace {
 
 std::filesystem::path normalizedAbsolute(const std::filesystem::path &path) {
     std::error_code ec;
@@ -375,24 +429,34 @@ void saveCache(const std::filesystem::path &path, const HashCache &cache) {
     writeTextFile(path, json.dump(2) + "\n");
 }
 
+const CachedHash *cachedHash(const ScannedFile &file,
+                             const HashCache &cache,
+                             std::string_view cache_namespace,
+                             bool force_rehash) {
+    if (force_rehash) {
+        return nullptr;
+    }
+    const auto found = cache.find(cacheKey(cache_namespace, file.relative));
+    if (found != cache.end() && found->second.size == file.size && found->second.mtime == file.mtime &&
+        isHexSha256(found->second.sha256)) {
+        return &found->second;
+    }
+    return nullptr;
+}
+
 std::string cachedOrFreshHash(const ScannedFile &file,
                               HashCache &cache,
                               std::string_view cache_namespace,
                               bool force_rehash,
                               bool &cache_hit) {
-    const auto key = cacheKey(cache_namespace, file.relative);
-    if (!force_rehash) {
-        const auto found = cache.find(key);
-        if (found != cache.end() && found->second.size == file.size && found->second.mtime == file.mtime &&
-            isHexSha256(found->second.sha256)) {
-            cache_hit = true;
-            return lowerAscii(found->second.sha256);
-        }
+    if (const auto *cached = cachedHash(file, cache, cache_namespace, force_rehash)) {
+        cache_hit = true;
+        return lowerAscii(cached->sha256);
     }
 
     cache_hit = false;
-    const auto sha = fileSha256(file.absolute);
-    cache[key] = CachedHash{file.size, file.mtime, sha};
+    const auto sha = assetFileSha256(file.absolute);
+    cache[cacheKey(cache_namespace, file.relative)] = CachedHash{file.size, file.mtime, sha};
     return sha;
 }
 
@@ -560,6 +624,22 @@ AssetManifestVerificationResult verifyAssetsManifest(const std::filesystem::path
     std::set<std::string> manifest_paths;
     std::set<std::string> case_matched_actual;
     auto cache = loadCache(cache_path);
+    if (options.include_content && options.before_hashing) {
+        AssetManifestHashPlan plan;
+        for (const auto &expected : manifest.files) {
+            const auto found = actual.find(expected.file);
+            if (found == actual.end()) {
+                continue;
+            }
+            if (cachedHash(*found->second, cache, cache_namespace, options.force_rehash)) {
+                ++plan.cached;
+            } else {
+                ++plan.to_hash;
+                plan.bytes_to_hash += found->second->size;
+            }
+        }
+        options.before_hashing(plan);
+    }
     bool cache_changed = false;
     for (const auto &expected : manifest.files) {
         manifest_paths.insert(expected.file);

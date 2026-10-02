@@ -78,3 +78,7 @@ target_sources(pelican_project PRIVATE posegraphmodule.cpp)
 endif()
 target_include_directories(pelican_project PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(pelican_project PUBLIC nlohmann_json pelican_schema_leaf PRIVATE picosha2)
+if(WIN32)
+    # assetFileSha256 hashes with CNG (BCrypt) on Windows.
+    target_link_libraries(pelican_project PRIVATE bcrypt)
+endif()
