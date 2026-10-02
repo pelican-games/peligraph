@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -86,6 +87,38 @@ std::string log_directory() {
 #else
   if (const char* dir = std::getenv("XDG_RUNTIME_DIR"); dir && *dir) return dir;
   return "/tmp";
+#endif
+}
+
+// TS-1: every GPU test and every worktree share one shader disk cache. The
+// engine names cache entries by content (sources, compiler, target, options),
+// so a fresh test project starts with the shaders earlier tests compiled.
+// A cache directory the caller already chose is kept; when none can be made,
+// the variable stays unset and each project keeps its own cache.
+void prepare_shader_cache_directory() {
+  constexpr char variable[] = "PELICAN_SHADER_CACHE_DIR";
+  if (const char* set = std::getenv(variable); set && *set) return;
+#ifdef _WIN32
+  const char* base = std::getenv("LOCALAPPDATA");
+  if (!base || !*base) return;
+  const std::filesystem::path directory =
+      std::filesystem::path(base) / "pelican" / "test_shader_cache";
+#else
+  std::filesystem::path directory;
+  if (const char* cache = std::getenv("XDG_CACHE_HOME"); cache && *cache)
+    directory = std::filesystem::path(cache) / "pelican" / "test_shader_cache";
+  else if (const char* home = std::getenv("HOME"); home && *home)
+    directory = std::filesystem::path(home) / ".cache" / "pelican" / "test_shader_cache";
+  else
+    return;
+#endif
+  std::error_code error;
+  std::filesystem::create_directories(directory, error);
+  if (error || !std::filesystem::is_directory(directory, error) || error) return;
+#ifdef _WIN32
+  SetEnvironmentVariableA(variable, directory.string().c_str());
+#else
+  setenv(variable, directory.string().c_str(), 1);
 #endif
 }
 
@@ -279,6 +312,7 @@ int main(int argc, char** argv) {
     std::cerr << "usage: pelican_gpu_lease_run [--timeout-seconds N] -- <command> [args...]\n";
     return 2;
   }
+  prepare_shader_cache_directory();
   if (const char* mode = std::getenv("PELICAN_GPU_LEASE"); mode && std::strcmp(mode, "off") == 0) {
 #ifdef _WIN32
     return run_unleased(argc, argv, at);

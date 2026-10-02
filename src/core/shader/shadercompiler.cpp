@@ -6,9 +6,12 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <picosha2.h>
 #include <regex>
 #include <sstream>
@@ -54,6 +57,14 @@ std::filesystem::path normalizedPath(const std::filesystem::path &path) {
 constexpr std::string_view shaderCacheFormat = "pelican-shader-cache-v1";
 constexpr std::string_view shaderContractSalt = "pelican-shader-contract-v1-wp82-20260712";
 constexpr std::string_view shaderTargetEnvironment = PELICAN_SHADER_TARGET_CACHE_ENV_NAME;
+#define PELICAN_SHADER_CACHE_STRINGIFY_IMPL(value) #value
+#define PELICAN_SHADER_CACHE_STRINGIFY(value) PELICAN_SHADER_CACHE_STRINGIFY_IMPL(value)
+// The options compileGlslUncached gives shaderc, as part of the key: engine
+// builds with other options must not answer from one shared cache directory.
+// Change it together with those options.
+constexpr std::string_view shaderCompileOptions =
+    "target-env-version=" PELICAN_SHADER_CACHE_STRINGIFY(PELICAN_SHADERC_TARGET_ENV_VERSION)
+    ";optimization=none;debug-info=none";
 std::atomic_bool shaderCacheWarningEmitted = false;
 
 shaderc_shader_kind toShadercKind(vk::ShaderStageFlagBits stage) {
@@ -89,9 +100,12 @@ struct IncludeResultStorage {
 
 using VirtualIncludes = std::unordered_map<std::string, std::string>;
 
+using FileReader = std::function<std::string(const std::filesystem::path &)>;
+
 std::optional<std::pair<std::string, std::string>> resolveInclude(
     std::string_view requested_source, shaderc_include_type type, std::string_view requesting_source,
-    const std::vector<std::filesystem::path> &include_dirs, const VirtualIncludes &virtual_includes) {
+    const std::vector<std::filesystem::path> &include_dirs, const VirtualIncludes &virtual_includes,
+    const FileReader &read_file = readTextFile) {
     if (const auto found = virtual_includes.find(std::string{requested_source});
         found != virtual_includes.end()) {
         return std::pair{found->first, found->second};
@@ -120,7 +134,7 @@ std::optional<std::pair<std::string, std::string>> resolveInclude(
         if (!std::filesystem::is_regular_file(candidate, ec) || ec) {
             continue;
         }
-        return std::pair{normalizedPath(candidate).string(), readTextFile(candidate)};
+        return std::pair{normalizedPath(candidate).string(), read_file(candidate)};
     }
 
     const std::string requested{requested_source};
@@ -208,10 +222,67 @@ const std::string &engineShaderUniverseSha256() {
     return result;
 }
 
+// TS-1: a graph without include roots is a function of its root, its virtual
+// sources and the embedded engine sources, which are fixed for the process.
+// Every compiler of the process (each engine, each test project) reuses it.
+std::mutex &processSourceGraphMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::unordered_map<std::string, std::string> &processSourceGraphs() {
+    static std::unordered_map<std::string, std::string> graphs;
+    return graphs;
+}
+
+// D-1 (TS-1): a file the key reads is read again only when its size or write
+// time changed. A file written in the last two seconds is not kept: a second
+// write of the same size inside one write-time tick would look unchanged.
+std::string readKeyFile(const std::filesystem::path &path, ShaderKeyMemory &memory) {
+    const auto id = path.lexically_normal().string();
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    std::filesystem::file_time_type write_time{};
+    if (!ec) write_time = std::filesystem::last_write_time(path, ec);
+    if (!ec) {
+        if (const auto found = memory.files.find(id); found != memory.files.end() &&
+            found->second.size == size && found->second.write_time == write_time) {
+            return found->second.content;
+        }
+    }
+    auto content = readTextFile(path);
+    ++memory.file_reads;
+    if (!ec && content.size() == size &&
+        write_time < std::filesystem::file_time_type::clock::now() - std::chrono::seconds{2}) {
+        memory.files.insert_or_assign(id, ShaderKeyFileMemo{size, write_time, content});
+    } else {
+        memory.files.erase(id);
+    }
+    return content;
+}
+
+// B-2 (TS-1): the key names a physical file by the first include root that
+// holds it ("<root index>/<path below the root>"), so one project's shader
+// and the same bytes at the same place in another project share a key. A
+// file outside every root keeps its absolute path.
+std::string keyFileName(const std::filesystem::path &file,
+                        const std::vector<std::filesystem::path> &include_dirs) {
+    const auto normal = file.lexically_normal();
+    for (std::size_t index = 0; index < include_dirs.size(); ++index) {
+        const auto relative = normal.lexically_relative(include_dirs[index].lexically_normal());
+        if (relative.empty() || relative.is_absolute() ||
+            (relative.begin() != relative.end() && *relative.begin() == "..")) {
+            continue;
+        }
+        return std::to_string(index) + "/" + relative.generic_string();
+    }
+    return normal.string();
+}
+
 std::string sourceGraphSha256(std::string_view source, std::string_view name,
                               const std::vector<std::filesystem::path> &include_dirs,
                               const std::vector<std::pair<std::string, std::string>> &virtual_sources,
-                              std::unordered_map<std::string, std::string> &source_graph_memory,
+                              ShaderKeyMemory &key_memory,
                               std::vector<std::filesystem::path> *dependencies) {
     // With no physical include roots the graph cannot acquire file-backed
     // dependencies, so the prior digest-only fast path remains valid. Graphs
@@ -225,11 +296,22 @@ std::string sourceGraphSha256(std::string_view source, std::string_view name,
             appendKeyPart(stable_input, "virtual-source", content);
         }
         stable_input = picosha2::hash256_hex_string(stable_input);
-        if (const auto found = source_graph_memory.find(stable_input);
-            found != source_graph_memory.end()) {
+        std::lock_guard lock{processSourceGraphMutex()};
+        if (const auto found = processSourceGraphs().find(stable_input);
+            found != processSourceGraphs().end()) {
             return found->second;
         }
     }
+    const FileReader read_key_file = [&](const std::filesystem::path &path) {
+        return readKeyFile(path, key_memory);
+    };
+    // A name the graph records: physical files by their place below the
+    // roots, virtual and engine sources by their own names.
+    const auto graph_name = [&](const std::string &source_name) {
+        if (include_dirs.empty() || source_name.starts_with("engine://")) return source_name;
+        const std::filesystem::path path{source_name};
+        return path.is_absolute() ? keyFileName(path, include_dirs) : source_name;
+    };
     VirtualIncludes virtual_includes;
     for (const auto &[virtual_name, content] : virtual_sources) {
         virtual_includes.emplace(virtual_name, content);
@@ -244,7 +326,8 @@ std::string sourceGraphSha256(std::string_view source, std::string_view name,
         if (!visited.insert(source_name).second) {
             return;
         }
-        appendKeyPart(graph, "source-name", source_name);
+        appendKeyPart(graph, "source-name",
+                      virtual_includes.contains(source_name) ? source_name : graph_name(source_name));
         appendKeyPart(graph, "source-bytes", content);
         std::istringstream lines{content};
         std::string line;
@@ -260,7 +343,7 @@ std::string sourceGraphSha256(std::string_view source, std::string_view name,
             const auto type = match[1].str() == "\"" ? shaderc_include_type_relative
                                                         : shaderc_include_type_standard;
             const auto included = resolveInclude(match[2].str(), type, source_name,
-                                                 include_dirs, virtual_includes);
+                                                 include_dirs, virtual_includes, read_key_file);
             if (included) {
                 if (!included->first.starts_with("engine://") &&
                     !virtual_includes.contains(included->first)) {
@@ -285,30 +368,34 @@ std::string sourceGraphSha256(std::string_view source, std::string_view name,
         appendKeyPart(graph, "potential-virtual-name", virtual_name);
         appendKeyPart(graph, "potential-virtual-source", content);
     }
-    std::vector<std::filesystem::path> potential_files;
-    for (const auto &root : include_dirs) {
+    // Each root lists its own files by their path below it, in root order, so
+    // the key holds what a search of the roots in that order can find.
+    appendKeyPart(graph, "include-root-count", std::to_string(include_dirs.size()));
+    for (std::size_t index = 0; index < include_dirs.size(); ++index) {
+        const auto &root = include_dirs[index];
+        std::vector<std::pair<std::string, std::filesystem::path>> potential_files;
         std::error_code ec;
         if (std::filesystem::is_regular_file(root, ec) && !ec) {
-            potential_files.push_back(normalizedPath(root));
-            continue;
-        }
-        ec.clear();
-        for (std::filesystem::recursive_directory_iterator it{
-                 root, std::filesystem::directory_options::skip_permission_denied, ec}, end;
-             !ec && it != end; it.increment(ec)) {
-            if (it->is_regular_file(ec) && !ec) {
-                potential_files.push_back(normalizedPath(it->path()));
-            }
+            potential_files.emplace_back(".", normalizedPath(root));
+        } else {
             ec.clear();
+            for (std::filesystem::recursive_directory_iterator it{
+                     root, std::filesystem::directory_options::skip_permission_denied, ec}, end;
+                 !ec && it != end; it.increment(ec)) {
+                if (it->is_regular_file(ec) && !ec) {
+                    potential_files.emplace_back(
+                        it->path().lexically_relative(root).generic_string(),
+                        normalizedPath(it->path()));
+                }
+                ec.clear();
+            }
         }
-    }
-    std::sort(potential_files.begin(), potential_files.end());
-    potential_files.erase(std::unique(potential_files.begin(), potential_files.end()),
-                          potential_files.end());
-    for (const auto &path : potential_files) {
-        appendKeyPart(graph, "potential-file-name", path.string());
-        appendKeyPart(graph, "potential-file-source", readTextFile(path));
-        if (dependencies != nullptr) dependencies->push_back(path);
+        std::sort(potential_files.begin(), potential_files.end());
+        for (const auto &[relative, path] : potential_files) {
+            appendKeyPart(graph, "potential-file-name", std::to_string(index) + "/" + relative);
+            appendKeyPart(graph, "potential-file-source", read_key_file(path));
+            if (dependencies != nullptr) dependencies->push_back(path);
+        }
     }
     appendKeyPart(graph, "potential-engine-universe-sha256", engineShaderUniverseSha256());
     if (dependencies != nullptr) {
@@ -318,7 +405,8 @@ std::string sourceGraphSha256(std::string_view source, std::string_view name,
     }
     auto result = picosha2::hash256_hex_string(graph);
     if (!stable_input.empty() && !has_file_dependency) {
-        source_graph_memory.emplace(std::move(stable_input), result);
+        std::lock_guard lock{processSourceGraphMutex()};
+        processSourceGraphs().emplace(std::move(stable_input), result);
     }
     return result;
 }
@@ -328,7 +416,7 @@ std::string shaderCacheKey(std::string_view source, vk::ShaderStageFlagBits stag
                            const std::vector<std::filesystem::path> &include_dirs,
                            const std::vector<std::string> &defines,
                            const std::vector<std::pair<std::string, std::string>> &virtual_includes,
-                           std::unordered_map<std::string, std::string> &source_graph_memory,
+                           ShaderKeyMemory &key_memory,
                            std::vector<std::filesystem::path> *dependencies) {
     unsigned int spirv_version = 0;
     unsigned int spirv_revision = 0;
@@ -337,7 +425,7 @@ std::string shaderCacheKey(std::string_view source, vk::ShaderStageFlagBits stag
     std::string raw;
     appendKeyPart(raw, "source-sha256",
                   sourceGraphSha256(source, name, include_dirs, virtual_includes,
-                                    source_graph_memory, dependencies));
+                                    key_memory, dependencies));
     for (const auto &define : defines) {
         appendKeyPart(raw, "define", define);
     }
@@ -345,6 +433,7 @@ std::string shaderCacheKey(std::string_view source, vk::ShaderStageFlagBits stag
     appendKeyPart(raw, "shaderc-spirv-version", std::to_string(spirv_version));
     appendKeyPart(raw, "shaderc-spirv-revision", std::to_string(spirv_revision));
     appendKeyPart(raw, "target-env", shaderTargetEnvironment);
+    appendKeyPart(raw, "compile-options", shaderCompileOptions);
     appendKeyPart(raw, "stage", std::to_string(static_cast<std::uint32_t>(stage)));
     appendKeyPart(raw, "entry-point", entry_point);
     appendKeyPart(raw, "contract-salt", shaderContractSalt);
@@ -487,7 +576,7 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
                                 const std::vector<std::pair<std::string, std::string>> &virtual_includes,
                                 const std::optional<std::filesystem::path> &cache_directory,
                                 std::unordered_map<std::string, ShaderCompileResult> &memory_cache,
-                                std::unordered_map<std::string, std::string> &source_graph_memory,
+                                ShaderKeyMemory &key_memory,
                                 bool record_metrics) {
     const auto start = std::chrono::steady_clock::now();
     std::string key;
@@ -496,7 +585,7 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
     if (cache_directory) {
         try {
             key = shaderCacheKey(source, stage, name, entry_point, include_dirs, defines, virtual_includes,
-                                 source_graph_memory, &dependencies);
+                                 key_memory, &dependencies);
             cache_path = *cache_directory / (key + ".spv-cache");
             if (const auto found = memory_cache.find(key); found != memory_cache.end()) {
                 auto output = found->second;
@@ -533,7 +622,7 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
         }
     } else {
         (void)sourceGraphSha256(source, name, include_dirs, virtual_includes,
-                               source_graph_memory, &dependencies);
+                               key_memory, &dependencies);
     }
 
     auto output = compileGlslUncached(source, stage, name, entry_point, include_dirs, defines, virtual_includes);
@@ -553,6 +642,21 @@ ShaderCompileResult compileGlsl(std::string_view source, vk::ShaderStageFlagBits
 }
 #endif
 
+std::optional<std::filesystem::path> sharedShaderCacheDirectory() {
+#ifdef _WIN32
+    wchar_t *raw_value = nullptr;
+    std::size_t value_size = 0;
+    const auto error = _wdupenv_s(&raw_value, &value_size, L"PELICAN_SHADER_CACHE_DIR");
+    std::unique_ptr<wchar_t, decltype(&std::free)> value{raw_value, &std::free};
+    if (error != 0 || value == nullptr || value.get()[0] == L'\0') return std::nullopt;
+    return std::filesystem::path{value.get()};
+#else
+    const auto *value = std::getenv(shaderCacheDirectoryEnvironment);
+    if (value == nullptr || value[0] == '\0') return std::nullopt;
+    return std::filesystem::path{value};
+#endif
+}
+
 } // namespace
 
 ShaderCompiler::ShaderCompiler(DetachedTag) : records_startup_metrics{false} {}
@@ -563,6 +667,11 @@ ShaderCompiler::ShaderCompiler() {
     if (const auto *resolver = FastModuleContainer::tryGet<PathResolver>();
         resolver != nullptr && resolver->isSetup()) {
         cache_directory = resolver->projectRoot() / ".pelican" / "shader_cache";
+        // TS-1: the variable moves the cache, it does not give one to a
+        // compiler without a project.
+        if (const auto shared = sharedShaderCacheDirectory()) {
+            cache_directory = normalizedPath(*shared);
+        }
     }
 }
 
@@ -615,7 +724,7 @@ ShaderCompileResult ShaderCompiler::compileFile(const std::filesystem::path &pat
     }
     auto result = compileGlsl(readTextFile(path), stage, normalizedPath(path).string(), opts.entry_point,
                               compile_include_dirs, opts.defines, opts.virtual_includes, cache_directory,
-                              memory_cache, source_graph_memory, records_startup_metrics);
+                              memory_cache, key_memory, records_startup_metrics);
     result.dependencies.push_back(normalizedPath(path));
     std::sort(result.dependencies.begin(), result.dependencies.end());
     result.dependencies.erase(std::unique(result.dependencies.begin(), result.dependencies.end()),
@@ -631,7 +740,7 @@ ShaderCompileResult ShaderCompiler::compileSource(std::string_view source, vk::S
                                                   std::string_view name, const ShaderCompileOptions &opts) {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     return compileGlsl(source, stage, name, opts.entry_point, include_dirs, opts.defines,
-                        opts.virtual_includes, cache_directory, memory_cache, source_graph_memory,
+                        opts.virtual_includes, cache_directory, memory_cache, key_memory,
                         records_startup_metrics);
 #else
     (void)source;

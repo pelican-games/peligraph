@@ -1,10 +1,14 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "../src/core/loader/engineresources.hpp"
+#include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 
 namespace Pelican {
@@ -25,6 +29,57 @@ struct TempDirectory {
 constexpr std::string_view vertexSource = R"glsl(#version 450
 void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }
 )glsl";
+
+// Sets (or, with an empty value, removes) PELICAN_SHADER_CACHE_DIR for one
+// test and restores what the process had.
+class ScopedSharedCacheDirectory {
+    std::optional<std::string> previous;
+
+    static void set(const std::string &value) {
+#ifdef _WIN32
+        (void)_putenv_s(shaderCacheDirectoryEnvironment, value.c_str());
+#else
+        if (value.empty()) unsetenv(shaderCacheDirectoryEnvironment);
+        else setenv(shaderCacheDirectoryEnvironment, value.c_str(), 1);
+#endif
+    }
+
+  public:
+    explicit ScopedSharedCacheDirectory(const std::string &value) {
+        if (const char *current = std::getenv(shaderCacheDirectoryEnvironment)) previous = current;
+        set(value);
+    }
+    ~ScopedSharedCacheDirectory() { set(previous.value_or("")); }
+};
+
+void writeFile(const std::filesystem::path &path, std::string_view text) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream file{path, std::ios::binary | std::ios::trunc};
+    file << text;
+}
+
+// A project with a shader that includes a file next to it.
+void writeIncludingProject(const std::filesystem::path &root, std::string_view constant) {
+    writeFile(root / "shaders" / "common.glsl",
+              std::string{"const float kTint = "} + std::string{constant} + ";\n");
+    writeFile(root / "shaders" / "tint.vert", R"glsl(#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "common.glsl"
+void main() { gl_Position = vec4(kTint, 0.0, 0.0, 1.0); }
+)glsl");
+}
+
+// Compiles a project's file as an engine does: the project is the
+// PathResolver root, the compiler is built after it.
+ShaderCompileResult compileInProject(const std::filesystem::path &project,
+                                     const std::filesystem::path &shader,
+                                     std::optional<std::filesystem::path> *cache_directory = nullptr) {
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(project, false);
+    ShaderCompiler compiler;
+    if (cache_directory != nullptr) *cache_directory = compiler.cacheDirectory();
+    return compiler.compileFile(shader);
+}
 } // namespace
 
 #if PELICAN_RUNTIME_SHADER_COMPILER
@@ -134,6 +189,151 @@ TEST_CASE("unwritable shader cache never prevents compilation", "[shader][startu
     REQUIRE(result.ok);
     REQUIRE_FALSE(result.cache_hit);
     REQUIRE_FALSE(result.spirv.empty());
+}
+
+TEST_CASE("TS-1 a shared shader cache directory serves an engine shader to a second project",
+          "[shader][startup][cache][ts1]") {
+    TempDirectory temp;
+    const auto shared = temp.path / "shared";
+    const ScopedSharedCacheDirectory environment{shared.string()};
+    const auto source = engineResourceOrThrow("fullscreen.vert");
+
+    const auto compile = [&](const std::filesystem::path &project) {
+        std::filesystem::create_directories(project);
+        FastModuleContainer modules;
+        GET_MODULE(PathResolver).setup(project, false);
+        ShaderCompiler compiler;
+        REQUIRE(compiler.cacheDirectory() == std::filesystem::weakly_canonical(shared));
+        return compiler.compileSource(source, vk::ShaderStageFlagBits::eVertex, "engine://fullscreen.vert");
+    };
+    const auto first = compile(temp.path / "first_project");
+    REQUIRE(first.ok);
+    REQUIRE_FALSE(first.cache_hit);
+    const auto second = compile(temp.path / "second_project");
+    REQUIRE(second.ok);
+    CHECK(second.cache_hit);
+    CHECK(second.log == "shader disk cache hit");
+    CHECK(second.cache_key == first.cache_key);
+    CHECK(second.spirv == first.spirv);
+    CHECK(std::filesystem::exists(shared / (first.cache_key + ".spv-cache")));
+    CHECK_FALSE(std::filesystem::exists(temp.path / "first_project" / ".pelican"));
+    CHECK_FALSE(std::filesystem::exists(temp.path / "second_project" / ".pelican"));
+
+    // The variable moves a project's cache; it gives none to a compiler that
+    // has no project.
+    FastModuleContainer modules;
+    CHECK_FALSE(ShaderCompiler{}.cacheDirectory().has_value());
+}
+
+TEST_CASE("TS-1 without the shared cache variable a project keeps its own shader cache",
+          "[shader][startup][cache][ts1]") {
+    TempDirectory temp;
+    const ScopedSharedCacheDirectory environment{""};
+    const auto project = temp.path / "project";
+    std::filesystem::create_directories(project);
+    FastModuleContainer modules;
+    auto &resolver = GET_MODULE(PathResolver);
+    resolver.setup(project, false);
+    ShaderCompiler compiler;
+    const auto expected = resolver.projectRoot() / ".pelican" / "shader_cache";
+    REQUIRE(compiler.cacheDirectory() == expected);
+    const auto result = compiler.compileSource(vertexSource, vk::ShaderStageFlagBits::eVertex, "project.vert");
+    REQUIRE(result.ok);
+    CHECK(std::filesystem::exists(expected / (result.cache_key + ".spv-cache")));
+}
+
+TEST_CASE("TS-1 a project shader shares its key across project locations and misses on an include byte",
+          "[shader][startup][cache][ts1]") {
+    TempDirectory temp;
+    const auto shared = temp.path / "shared";
+    const ScopedSharedCacheDirectory environment{shared.string()};
+    const auto first_project = temp.path / "a" / "first";
+    const auto second_project = temp.path / "b" / "second_project";
+    writeIncludingProject(first_project, "0.25");
+    writeIncludingProject(second_project, "0.25");
+
+    const auto first = compileInProject(first_project, first_project / "shaders" / "tint.vert");
+    REQUIRE(first.ok);
+    REQUIRE_FALSE(first.cache_hit);
+    const auto second = compileInProject(second_project, second_project / "shaders" / "tint.vert");
+    REQUIRE(second.ok);
+    CHECK(second.cache_hit);
+    CHECK(second.cache_key == first.cache_key);
+    // The cached SPIR-V is what the second project compiles to by itself.
+    auto uncached = ShaderCompiler::detached();
+    const auto own = uncached.compileFile(second_project / "shaders" / "tint.vert");
+    REQUIRE(own.ok);
+    CHECK(own.spirv == second.spirv);
+    // Hot reload still learns the second project's own files.
+    CHECK(std::ranges::find(second.dependencies,
+                            std::filesystem::weakly_canonical(second_project / "shaders" / "common.glsl")) !=
+          second.dependencies.end());
+
+    // One byte of the include changes the key.
+    writeFile(second_project / "shaders" / "common.glsl", "const float kTint = 0.75;\n");
+    const auto changed = compileInProject(second_project, second_project / "shaders" / "tint.vert");
+    REQUIRE(changed.ok);
+    CHECK_FALSE(changed.cache_hit);
+    CHECK(changed.cache_key != first.cache_key);
+
+    // The same bytes at another place below the root change the key too.
+    const auto moved_project = temp.path / "c" / "moved";
+    writeIncludingProject(moved_project, "0.25");
+    std::filesystem::rename(moved_project / "shaders" / "common.glsl",
+                            moved_project / "shaders" / "common_moved.glsl");
+    writeFile(moved_project / "shaders" / "common.glsl", "const float kTint = 0.25;\n");
+    const auto moved = compileInProject(moved_project, moved_project / "shaders" / "tint.vert");
+    REQUIRE(moved.ok);
+    CHECK_FALSE(moved.cache_hit);
+    CHECK(moved.cache_key != first.cache_key);
+}
+
+TEST_CASE("TS-1 a cache key reads an unchanged include file once per compiler",
+          "[shader][startup][cache][ts1]") {
+    TempDirectory temp;
+    const ScopedSharedCacheDirectory environment{""};
+    const auto project = temp.path / "project";
+    writeIncludingProject(project, "0.25");
+    const auto include = project / "shaders" / "common.glsl";
+    const auto shader = project / "shaders" / "tint.vert";
+    // Written long enough ago that a same-size rewrite would move the time.
+    const auto settled = std::filesystem::file_time_type::clock::now() - std::chrono::minutes{1};
+    std::filesystem::last_write_time(include, settled);
+    std::filesystem::last_write_time(shader, settled);
+
+    ShaderCompiler compiler;
+    compiler.setCacheDirectory(temp.path / "cache");
+    const auto first = compiler.compileFile(shader);
+    REQUIRE(first.ok);
+    const auto reads_after_first = compiler.keyFileReadCount();
+    REQUIRE(reads_after_first > 0);
+    const auto second = compiler.compileFile(shader);
+    REQUIRE(second.ok);
+    CHECK(second.cache_key == first.cache_key);
+    CHECK(compiler.keyFileReadCount() == reads_after_first);
+
+    // Same size, other bytes, a later write time: read again, new key.
+    writeFile(include, "const float kTint = 0.75;\n");
+    std::filesystem::last_write_time(include, settled + std::chrono::seconds{30});
+    const auto changed = compiler.compileFile(shader);
+    REQUIRE(changed.ok);
+    CHECK(compiler.keyFileReadCount() == reads_after_first + 1);
+    CHECK(changed.cache_key != first.cache_key);
+    CHECK_FALSE(changed.cache_hit);
+    const auto again = compiler.compileFile(shader);
+    CHECK(again.cache_key == changed.cache_key);
+    CHECK(compiler.keyFileReadCount() == reads_after_first + 1);
+
+    // A file written just now is read on every key: a second same-size write
+    // inside one write-time tick must not look unchanged.
+    writeFile(include, "const float kTint = 0.50;\n");
+    const auto fresh = compiler.compileFile(shader);
+    REQUIRE(fresh.ok);
+    writeFile(include, "const float kTint = 0.12;\n");
+    const auto rewritten = compiler.compileFile(shader);
+    REQUIRE(rewritten.ok);
+    CHECK(rewritten.cache_key != fresh.cache_key);
+    CHECK_FALSE(rewritten.cache_hit);
 }
 #endif
 

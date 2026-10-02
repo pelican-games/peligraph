@@ -11454,6 +11454,25 @@ TEST_CASE(
     "WP366 renderer A B recovers q r group miss and WP384 preserves frame publication",
     "[headless][gpu][ray-tracing][rt1b][renderer][sentinel][transaction]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
+    // TS-1: this test lists the project's own shader cache directory and
+    // needs each salted variant to miss once; the cache pelican_gpu_lease_run
+    // shares between tests would already hold them.
+    struct SharedShaderCacheOff {
+        std::optional<std::string> previous;
+        SharedShaderCacheOff() {
+            if (const char *value = std::getenv(shaderCacheDirectoryEnvironment)) previous = value;
+            set("");
+        }
+        ~SharedShaderCacheOff() { set(previous ? previous->c_str() : ""); }
+        static void set(const char *value) {
+#ifdef _WIN32
+            (void)_putenv_s(shaderCacheDirectoryEnvironment, value);
+#else
+            if (*value == '\0') unsetenv(shaderCacheDirectoryEnvironment);
+            else setenv(shaderCacheDirectoryEnvironment, value, 1);
+#endif
+        }
+    } shared_cache_off;
     setupLogger();
     const auto temp_dir = makeTempProjectDir();
     try {
