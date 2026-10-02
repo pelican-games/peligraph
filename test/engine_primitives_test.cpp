@@ -2688,9 +2688,9 @@ TEST_CASE("IA-1 persistent images start from their KTX2 and PNG assets and per-f
     }
 
     // 3. The LUT rewritten on disk and the documents reloaded: the new
-    // generation reads the asset again and copies the new values in.
-    // reload_render_documents publishes nothing when no document changed
-    // (RL-1), so the root is rewritten too (same content, other layout).
+    // generation reads the asset again and copies the new values in. The
+    // root is rewritten too (same content, other layout); IA-2's test
+    // reloads the asset alone.
     ia1WriteLut(root / "assets/luts/ltc.ktx2", ia1LutValues(7.0f));
     writeFile(rendering_path, ia1RenderingRoot(blank_root).dump(4));
     const auto reloaded = rpc.result("reload_render_documents");
@@ -2706,6 +2706,128 @@ TEST_CASE("IA-1 persistent images start from their KTX2 and PNG assets and per-f
     REQUIRE(committed.at("status") == "committed");
     frame();
     CHECK(ia1ReadFloats(renderer, "shown_float") == ia1LutValues(7.0f));
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+// IA-2: Studio's engine runs without the file watcher, so a LUT rewritten on
+// disk reaches the frame through reload_render_documents. The documents stay
+// byte for byte; the asset's bytes differing from what the live generation
+// read is enough to publish a new one, and the result names the asset.
+TEST_CASE("IA-2 reload_render_documents takes in an initial asset rewritten on disk with the documents unchanged",
+          "[ia2][rl1][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("ia2_reload_asset");
+    const auto root = dir.root / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    auto project = Json::parse(readFile(root / "project.json"));
+    project["asset_stores"] = {{"main", {{"mount", "assets/"}, {"manifest", "assets.manifest.json"}}}};
+    writeFile(root / "project.json", project.dump(2));
+    const auto lut_path = root / "assets/luts/ltc.ktx2";
+    ia1WriteLut(lut_path, ia1LutValues(0.5f));
+    (void)generateAssetsManifest(root / "assets", root / "assets.manifest.json", dir.root / "assets.cache.json",
+                                 "main", true);
+    // IA-1's frame with the float LUT only.
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    auto rendering = ia1RenderingRoot(Json::parse(readFile(rendering_path)));
+    auto &nodes = rendering.at("nodes");
+    nodes.erase(std::remove_if(nodes.begin(), nodes.end(),
+                               [](const Json &node) {
+                                   const auto id = node.at("id").get<std::string>();
+                                   return id != "lut_float" && id != "shown_float" && id != "show_float";
+                               }),
+                nodes.end());
+    REQUIRE(nodes.size() == 3);
+    const auto rendering_bytes = rendering.dump(2);
+    writeFile(rendering_path, rendering_bytes);
+    writeFile(root / "shaders/ia1_show.frag", ia1_show_frag);
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    GET_MODULE(PathResolver).resetForTesting();
+    GET_MODULE(PathResolver).setup(root, false, readFile(root / "project.json"));
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    auto &renderer = GET_MODULE(Renderer);
+    const auto frame = [&] { (void)rpc.result("step_frame"); };
+    const auto reload = [&] {
+        const auto accepted = rpc.result("reload_render_documents");
+        INFO(accepted.dump(2));
+        if (accepted.value("status", std::string{}) == "rejected") return accepted;
+        REQUIRE(accepted.at("status") == "accepted");
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            frame();
+            auto result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+            if (result.value("status", std::string{}) != "pending") return result;
+        }
+        FAIL("the ticket stayed pending");
+        return Json{};
+    };
+    const auto source_digest = [&] {
+        return rpc.result("get_render_authoring_context").at("source_digest").at("hex").get<std::string>();
+    };
+
+    frame();
+    REQUIRE(ia1ReadFloats(renderer, "shown_float") == ia1LutValues(0.5f));
+    const auto digest_before = source_digest();
+
+    // 2. Nothing changed: no_change, no asset named.
+    std::uint64_t generation = 0;
+    {
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK(result.at("no_change") == true);
+        CHECK(result.at("changed") == Json::array());
+        CHECK(result.at("changed_assets") == Json::array());
+        generation = result.at("published_generation").get<std::uint64_t>();
+    }
+
+    // 1. Only the LUT's bytes rewritten: committed as a new generation that
+    // names the asset and no document, and the frame shows the new values.
+    ia1WriteLut(lut_path, ia1LutValues(7.0f));
+    REQUIRE(readFile(rendering_path) == rendering_bytes);
+    {
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK_FALSE(result.contains("no_change"));
+        CHECK(result.at("changed") == Json::array());
+        CHECK(result.at("changed_assets") == Json::array({"assets/luts/ltc.ktx2"}));
+        CHECK(result.at("published_generation").get<std::uint64_t>() > generation);
+        CHECK(result.at("source_digest").at("hex") == digest_before);
+        generation = result.at("published_generation").get<std::uint64_t>();
+    }
+    frame();
+    CHECK(ia1ReadFloats(renderer, "shown_float") == ia1LutValues(7.0f));
+    CHECK(source_digest() == digest_before);
+
+    // The new generation read what is on disk: the next reload is no_change.
+    {
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK(result.at("no_change") == true);
+        CHECK(result.at("changed_assets") == Json::array());
+        CHECK(result.at("published_generation").get<std::uint64_t>() == generation);
+    }
+
+    // An asset that no longer fits the image (one channel for an RGBA32F
+    // image) is refused by name, and the live frame keeps the last LUT.
+    {
+        std::vector<std::byte> texels(std::size_t{64} * 64 * sizeof(float));
+        const auto file = writeKtx2(Ktx2Format::R32Sfloat, 64, 64, texels);
+        writeFile(lut_path, std::string_view{reinterpret_cast<const char *>(file.data()), file.size()});
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(result.at("error").at("code") == "graph.image_initial_mismatch@1");
+        CHECK(result.at("error").at("node") == "lut_float");
+        CHECK(result.at("error").at("asset") == "assets/luts/ltc.ktx2");
+        CHECK(result.at("error").at("what") == "format");
+    }
+    frame();
+    CHECK(ia1ReadFloats(renderer, "shown_float") == ia1LutValues(7.0f));
+    CHECK(source_digest() == digest_before);
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 

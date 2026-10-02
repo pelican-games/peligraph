@@ -1106,6 +1106,9 @@ void RegistrationStages::prepare() {
             [&](std::string_view node, const std::string &asset) {
                 const auto &resolver = dependencies.front().runtime.path_resolver;
                 const auto file = resolver.resolveExistingFile(asset);
+                // IA-2: hashed before it is decoded, so a write in between
+                // reads as a change on the next reload, never as none.
+                auto content_sha256 = assetFileSha256(file);
                 auto loaded = loadImageFile(file);
                 if (loaded.dimension != LoadedImageDimension::TwoD || loaded.array_layers != 1 ||
                     loaded.depth != 1 || loaded.isBlockCompressed() || loaded.levels.empty())
@@ -1116,6 +1119,7 @@ void RegistrationStages::prepare() {
                 entry->asset = asset;
                 entry->file = file;
                 entry->sha256 = assetManifestSha256(resolver, file, manifests);
+                entry->content_sha256 = std::move(content_sha256);
                 entry->width = loaded.width;
                 entry->height = loaded.height;
                 entry->format = std::string{imagePixelFormatName(loaded.format)};

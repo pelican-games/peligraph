@@ -48,6 +48,9 @@ struct RenderImageInitialAsset {
     std::filesystem::path file;
     // The file's sha256 in its asset store's assets.manifest, when listed.
     std::optional<std::string> sha256;
+    // IA-2: the sha256 of the file's bytes, hashed before they were decoded
+    // for this generation. reload_render_documents compares the file with it.
+    std::string content_sha256;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     // The Vulkan name of the texels' format ("R32G32B32A32_SFLOAT").

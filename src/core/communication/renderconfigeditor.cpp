@@ -1,6 +1,7 @@
 #include "../shader/raygrouplayout.hpp"
 #include "renderconfigeditor.hpp"
 #include "../../project/viewselect.hpp"
+#include "../../project/assetsmanifest.hpp"
 #include "../../project/packagemanifest.hpp"
 #include "../../project/rendercomponent.hpp"
 #include "../../project/rasterrayquery.hpp"
@@ -5969,7 +5970,30 @@ OrderedJson RenderConfigEditorService::reloadRenderDocuments(
         }
         if (previous != digest) changed.push_back(entry.reference);
     }
-    const bool no_change = changed.empty();
+    // IA-2: an initial asset rewritten on disk is a change though every
+    // document is the same: the new generation reads it again and its first
+    // frame copies it in. One that cannot be read now counts as changed, and
+    // the composition refuses it as it would with a document edit.
+    auto changed_assets = OrderedJson::array();
+    if (dependencies_.published_initial_assets) {
+        std::vector<RenderConfigPublishedInitialAsset> assets;
+        try {
+            assets = dependencies_.published_initial_assets();
+        } catch (const std::exception &) {
+        }
+        std::map<std::string, bool> asset_changed;
+        for (const auto &asset : assets) {
+            bool differs = true;
+            try {
+                differs = assetFileSha256(asset.file) != asset.sha256;
+            } catch (const std::exception &) {
+            }
+            asset_changed[asset.asset] = asset_changed[asset.asset] || differs;
+        }
+        for (const auto &[asset, differs] : asset_changed)
+            if (differs) changed_assets.push_back(asset);
+    }
+    const bool no_change = changed.empty() && changed_assets.empty();
     RenderConfigCandidateDocumentSet candidate_set{
         source_normalized_reference_, std::move(documents)};
 
@@ -6009,6 +6033,7 @@ OrderedJson RenderConfigEditorService::reloadRenderDocuments(
         .reload_documents = std::move(listed),
         .reload_changed = std::move(changed),
         .reload_digests = std::move(digests),
+        .reload_changed_assets = std::move(changed_assets),
     });
     results_[ticket_id] = {{"ticket", ticket_id}, {"status", "pending"}};
     return {{"ticket", ticket_id},
@@ -6259,8 +6284,11 @@ void RenderConfigEditorService::completeCommitTransaction(
             completed["fragment_reference"] =
                 transaction->ticket.fragment_reference;
         }
-        if (transaction->ticket.reload)
+        if (transaction->ticket.reload) {
             completed["changed"] = transaction->ticket.reload_changed;
+            completed["changed_assets"] =
+                transaction->ticket.reload_changed_assets;
+        }
         if (!applied.post_commit_error.empty()) {
             completed["post_commit_error"] =
                 applied.post_commit_error;
@@ -6377,6 +6405,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                     {"source_commit_called", false},
                     {"documents", ticket.reload_documents},
                     {"changed", OrderedJson::array()},
+                    {"changed_assets", OrderedJson::array()},
                 });
                 continue;
             }

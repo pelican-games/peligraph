@@ -76,6 +76,15 @@ struct RenderAuthoringRegionProvider {
     bool operator==(const RenderAuthoringRegionProvider &) const = default;
 };
 
+// IA-2: an asset a persistent render.image of the published generation
+// starts from: the reference as written, the file it resolved to, and the
+// sha256 of the bytes that generation read.
+struct RenderConfigPublishedInitialAsset {
+    std::string asset;
+    std::filesystem::path file;
+    std::string sha256;
+};
+
 struct RenderConfigEditorGateObservation {
     bool can_edit = true;
     std::uint64_t transition_epoch = 0;
@@ -181,6 +190,13 @@ struct RenderConfigEditorDependencies {
     // with it to say whether the document changed. Unset: such a document is
     // reported as changed.
     std::function<std::map<std::string, std::string>()> published_documents;
+    // IA-2: the assets the published generation's persistent images start
+    // from (render.image `initial: {asset}`), each with the sha256 of the
+    // bytes that generation read. reload_render_documents hashes each file
+    // again; one that differs is published anew even when no document
+    // changed. Unset: no asset is compared.
+    std::function<std::vector<RenderConfigPublishedInitialAsset>()>
+        published_initial_assets;
     // FG-2: draws a verify_fold job's three runs on a worker thread
     // (graphfoldverify.hpp; production: runFoldVerifyProcesses). Unset:
     // verify_fold is fold_verify_unavailable {reason: "no_runner"}.
@@ -232,6 +248,10 @@ class RenderConfigEditorService {
             nlohmann::ordered_json::array();
         // {normalized reference: sha256 hex} of what was read.
         std::map<std::string, std::string> reload_digests;
+        // IA-2: the initial assets whose bytes differ from what the
+        // published generation read, as written in the documents.
+        nlohmann::ordered_json reload_changed_assets =
+            nlohmann::ordered_json::array();
         // FG-2: fields the committed result carries besides the usual ones
         // (verify_fold's {group, verified}).
         nlohmann::ordered_json result_extras = nlohmann::ordered_json::object();
@@ -659,7 +679,10 @@ class RenderConfigEditorService {
     // ticket, as an edit is, without writing anything. The committed result
     // carries {operation: "reload_render_documents", source_digest,
     // documents: {reference: digest}, changed: [reference]} and no_change
-    // when nothing differs. A refusal leaves the live generation and the
+    // when nothing differs. IA-2: it also carries changed_assets: [asset],
+    // the initial assets (published_initial_assets) whose bytes on disk
+    // differ from what the live generation read; one is enough to publish
+    // a new generation with the same documents. A refusal leaves the live generation and the
     // editor's documents as they were. A pending or in-flight ticket, or
     // `preview_open`, is reload_busy.
     nlohmann::ordered_json reloadRenderDocuments(

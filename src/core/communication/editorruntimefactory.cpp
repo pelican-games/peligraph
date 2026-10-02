@@ -2299,6 +2299,25 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         }
                         return result;
                     },
+                    // IA-2: the initial assets the live generation read, as
+                    // its programs recorded them.
+                    .published_initial_assets = [] {
+                        std::vector<RenderConfigPublishedInitialAsset> result;
+                        const auto generation =
+                            GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+                        if (generation == nullptr) return result;
+                        for (const auto &[id, program] : generation->programs) {
+                            (void)id;
+                            for (const auto &[name, asset] :
+                                 program.frame_graph.image_initial_assets) {
+                                (void)name;
+                                result.push_back({.asset = asset->asset,
+                                                  .file = asset->file,
+                                                  .sha256 = asset->content_sha256});
+                            }
+                        }
+                        return result;
+                    },
                     // FG-2: verify_fold's runs are this executable, headless,
                     // in a copy of the project (graphfoldverify.hpp). What the
                     // children need of this launch is read once, here: the
