@@ -72,6 +72,29 @@ bool isProjectMetadataName(std::wstring_view name) {
     return true;
 }
 
+// `path` equals `prefix` or lies under it, component-wise.
+bool logicalWithin(std::string_view prefix, std::string_view path) {
+    return path == prefix ||
+           (path.size() > prefix.size() && path.starts_with(prefix) && path[prefix.size()] == '/');
+}
+
+// HW-1: a logical folder worth entering (or a notification worth a scan):
+// it is covered by an entry, or an entry lies under it.
+bool watchPathReaches(const std::vector<std::string> &entries, std::string_view logical_path) {
+    return std::any_of(entries.begin(), entries.end(), [&](const std::string &entry) {
+        return logicalWithin(entry, logical_path) || logicalWithin(logical_path, entry);
+    });
+}
+
+// The logical path of a name relative to a store's root.
+std::string logicalPathUnder(std::string_view logical_mount, const std::filesystem::path &relative) {
+    auto name = pathUtf8(relative);
+    while (name.starts_with("./")) name.erase(0, 2);
+    if (logical_mount.empty()) return name;
+    if (name.empty() || name == ".") return std::string{logical_mount};
+    return std::string{logical_mount} + "/" + name;
+}
+
 // A file whose mtime is this close to the scan may be written again within
 // the same timestamp tick without changing size or mtime. Its size and mtime
 // are not trusted: the next scan hashes it again. This covers NTFS (ticks of
@@ -109,9 +132,11 @@ class NativeWatch {
   public:
     using Notify = std::function<void(bool)>;
 
-    NativeWatch(WatchStore store, Notify notify)
+    NativeWatch(WatchStore store, Notify notify,
+                std::optional<std::vector<std::string>> watch_paths)
         : store_(std::move(store)), notify_(std::move(notify)),
-          skip_project_metadata_(store_.logical_mount.empty()) {}
+          skip_project_metadata_(store_.logical_mount.empty()),
+          watch_paths_(std::move(watch_paths)) {}
     ~NativeWatch() { stop(); }
 
     bool start(std::string &error) {
@@ -192,16 +217,26 @@ class NativeWatch {
                                      nullptr, &overlapped_, nullptr) != FALSE;
     }
 
-    // FW-1: every record of a completed read names the project's `.pelican`
-    // tree, which the scan skips; such a batch is not a reason to scan.
-    bool onlyProjectMetadata(DWORD bytes) const {
-        if (!skip_project_metadata_ || bytes == 0) return false;
+    // FW-1: a record naming the project's `.pelican` tree, which the scan
+    // skips. HW-1: or a name outside the declared `hot_reload` paths.
+    bool ignoredRecord(std::wstring_view name) const {
+        if (skip_project_metadata_ && isProjectMetadataName(name)) return true;
+        if (!watch_paths_) return false;
+        const auto logical = logicalPathUnder(
+            store_.logical_mount, std::filesystem::path{name}.lexically_normal());
+        return !watchPathReaches(*watch_paths_, logical);
+    }
+
+    // Every record of a completed read is ignored: the batch is not a
+    // reason to scan.
+    bool onlyIgnoredRecords(DWORD bytes) const {
+        if ((!skip_project_metadata_ && !watch_paths_) || bytes == 0) return false;
         std::size_t offset = 0;
         for (;;) {
             if (offset + offsetof(FILE_NOTIFY_INFORMATION, FileName) > bytes) return false;
             const auto *record = reinterpret_cast<const FILE_NOTIFY_INFORMATION *>(buffer_.data() + offset);
             if (offset + offsetof(FILE_NOTIFY_INFORMATION, FileName) + record->FileNameLength > bytes) return false;
-            if (!isProjectMetadataName({record->FileName, record->FileNameLength / sizeof(wchar_t)})) return false;
+            if (!ignoredRecord({record->FileName, record->FileNameLength / sizeof(wchar_t)})) return false;
             if (record->NextEntryOffset == 0) return true;
             offset += record->NextEntryOffset;
         }
@@ -229,7 +264,7 @@ class NativeWatch {
             }
             const bool overflow = (ok && bytes == 0) || error == ERROR_NOTIFY_ENUM_DIR;
             // Read the records before re-arming reuses the buffer.
-            const bool ignorable = ok && !overflow && onlyProjectMetadata(bytes);
+            const bool ignorable = ok && !overflow && onlyIgnoredRecords(bytes);
             // Re-arm before handing work to the hash/reconcile worker.
             bool stop_now = false;
             bool armed = false;
@@ -276,6 +311,7 @@ class NativeWatch {
     WatchStore store_;
     Notify notify_;
     bool skip_project_metadata_ = false;
+    std::optional<std::vector<std::string>> watch_paths_;
     HANDLE directory_ = INVALID_HANDLE_VALUE;
     HANDLE event_ = nullptr;
     OVERLAPPED overlapped_{};
@@ -293,7 +329,7 @@ class NativeWatch {
 class NativeWatch {
   public:
     using Notify = std::function<void(bool)>;
-    NativeWatch(WatchStore, Notify) {}
+    NativeWatch(WatchStore, Notify, std::optional<std::vector<std::string>>) {}
     bool start(std::string &error) { error = "native watcher unavailable"; return false; }
     void stop() {}
 };
@@ -344,6 +380,12 @@ struct InventoryScan {
 
 } // namespace
 
+bool watchPathCovers(const std::vector<std::string> &entries, std::string_view logical_path) {
+    return std::any_of(entries.begin(), entries.end(), [&](const std::string &entry) {
+        return logicalWithin(entry, logical_path);
+    });
+}
+
 std::string_view watcherStateName(WatcherState state) noexcept {
     switch (state) {
     case WatcherState::disabled: return "disabled";
@@ -386,6 +428,17 @@ struct FileWatcher::Impl {
 
     Impl(std::vector<WatchStore> input, GateProvider provider, FileWatcherOptions opts)
         : stores(std::move(input)), gate(std::move(provider)), options(std::move(opts)) {
+        if (options.watch_paths) {
+            // HW-1: a store none of whose files can be covered is neither
+            // scanned nor natively watched. The project root (no mount)
+            // holds every declared path.
+            const auto &entries = *options.watch_paths;
+            std::erase_if(stores, [&](const WatchStore &store) {
+                if (entries.empty()) return true;
+                return !store.logical_mount.empty() &&
+                       !watchPathReaches(entries, store.logical_mount);
+            });
+        }
         std::sort(stores.begin(), stores.end(), [](const auto &a, const auto &b) {
             // A declared mount shadows bytes at the same logical location in
             // the project tree. This also makes local override roots identity-
@@ -422,7 +475,8 @@ struct FileWatcher::Impl {
                 error = "watch start rejected by fixture for " + store.name;
                 continue;
             }
-            auto watch = std::make_unique<NativeWatch>(store, [this](bool ov) { notify(ov); });
+            auto watch = std::make_unique<NativeWatch>(
+                store, [this](bool ov) { notify(ov); }, options.watch_paths);
             if (!watch->start(error)) continue;
             armed.push_back(std::move(watch));
         }
@@ -503,6 +557,13 @@ struct FileWatcher::Impl {
                     isProjectMetadataName(path.filename().wstring())) {
                     // The project's own `.pelican` tree is not watched.
                     it.disable_recursion_pending();
+                } else if (!metadata_error && !regular && !symlink && options.watch_paths &&
+                           !watchPathReaches(*options.watch_paths,
+                                             logicalPathUnder(store.logical_mount,
+                                                              path.lexically_relative(store.root)))) {
+                    // HW-1: a folder outside the declared paths that leads
+                    // to none of them is not entered.
+                    it.disable_recursion_pending();
                 } else if (metadata_error) {
                     result.unreadable_roots.insert(root_key);
                 } else if (regular && (link_depth < 0 || withinRoot(store.root, path))) {
@@ -522,7 +583,11 @@ struct FileWatcher::Impl {
                     } else {
                         const auto key =
                             makeAssetKey(store.logical_mount, relative);
-                        if (seen_logical_keys.insert(key).second) {
+                        // HW-1: a file outside the declared paths is not
+                        // recorded, so it is never hashed or queued.
+                        const bool covered = !options.watch_paths ||
+                                             watchPathCovers(*options.watch_paths, key.path);
+                        if (covered && seen_logical_keys.insert(key).second) {
                             recordFile(result, seen_identities, epoch, seed, scan_start,
                                        *it, path, physical, key);
                         }

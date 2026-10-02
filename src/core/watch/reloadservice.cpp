@@ -868,8 +868,18 @@ void ReloadService::setup(const PathResolver &resolver) {
     std::vector<WatchStore> stores;
     stores.push_back({"project", resolver.projectRoot(), {}});
     for (const auto &store : resolver.stores()) stores.push_back({store.name, store.root, store.mount});
+    // HW-1: project.json `hot_reload` decides what the watch covers, and the
+    // gate is told whether there is a declaration (it alone decides whether
+    // an RPC driver shuts the watch).
+    watch_paths_ = resolver.hotReloadPaths();
     auto *gate = &GET_MODULE(ReloadGate);
-    watcher_ = std::make_unique<FileWatcher>(std::move(stores), [gate] { return gate->snapshot(); });
+    gate->setWatchDeclaration(!watch_paths_                ? WatchDeclaration::undeclared
+                              : watch_paths_->empty()      ? WatchDeclaration::empty
+                                                           : WatchDeclaration::listed);
+    FileWatcherOptions options;
+    options.watch_paths = watch_paths_;
+    watcher_ = std::make_unique<FileWatcher>(std::move(stores), [gate] { return gate->snapshot(); },
+                                             std::move(options));
     watcher_->start();
 }
 
@@ -879,8 +889,14 @@ void ReloadService::applyFrame() {
     // frame phase can observe it. Render-boundary participants run separately.
     (void)applyRuntimeBoundary(RuntimeReloadBoundary::frame_start);
     if (watcher_) {
-        watcher_->applyFrameBatch([this](std::span<const ReloadRequest> requests) {
-            return applyRequests(requests);
+        // HW-1: under an RPC driver the render documents belong to the
+        // client's reload_render_documents, so a watched change never
+        // reaches the render-pipeline participant (it would publish the
+        // same documents a second time).
+        const bool rpc_driven = GET_MODULE(ReloadGate).rpcDriven();
+        watcher_->applyFrameBatch([this, rpc_driven](std::span<const ReloadRequest> requests) {
+            return applyRequests(requests, rpc_driven ? renderPipelineReloadParticipantName
+                                                      : std::string_view{});
         });
     }
     transactions_.applyFrame(retireSink());
@@ -1109,7 +1125,8 @@ std::vector<std::size_t> ReloadService::companionOwnerOrder() const {
 }
 
 std::vector<bool> ReloadService::applyRequests(
-    std::span<const ReloadRequest> requests) {
+    std::span<const ReloadRequest> requests,
+    std::string_view excluded_participant) {
     ensureBuiltInParticipants();
     // One slot per request. Every pass below reads `pending()` instead of
     // repeating the guard, and an applied slot is never touched again.
@@ -1141,6 +1158,10 @@ std::vector<bool> ReloadService::applyRequests(
              ++participant) {
             if (!participants_[participant].file) continue;
             const auto participant_name = participants_[participant].name;
+            if (!excluded_participant.empty() &&
+                participant_name == excluded_participant) {
+                continue;
+            }
             bool claimed = false;
             try {
                 claimed = participants_[participant].file->claims(request);
@@ -1386,6 +1407,9 @@ nlohmann::json ReloadService::statusJson() const {
     if (const auto *models =
             FastModuleContainer::tryGet<ModelAssetContainer>())
         model_catalog = models->occurrenceCatalogStatus();
+    // HW-1: the declared watch (null when project.json declares none) and
+    // the watcher's FW-1 totals.
+    const auto watch = watch_paths_ ? nlohmann::json(*watch_paths_) : nlohmann::json(nullptr);
     if (!watcher_) {
         return {{"state", "disabled"}, {"epoch", gate.epoch},
                 {"error", gate.reason.empty() ? nlohmann::json(nullptr) : nlohmann::json(gate.reason)},
@@ -1393,7 +1417,9 @@ nlohmann::json ReloadService::statusJson() const {
                 {"participants", participantNames()},
                 {"runtime", runtimeStatusJson()},
                 {"model_catalog", model_catalog},
-                {"last_reload_error", std::move(resource_error)}};
+                {"last_reload_error", std::move(resource_error)},
+                {"watch", watch},
+                {"scans", 0}, {"hashed_files", 0}, {"hashed_bytes", 0}};
     }
     const auto status = watcher_->status();
     return {{"state", watcherStateName(status.state)}, {"epoch", status.epoch},
@@ -1402,7 +1428,10 @@ nlohmann::json ReloadService::statusJson() const {
             {"participants", participantNames()},
             {"runtime", runtimeStatusJson()},
             {"model_catalog", model_catalog},
-            {"last_reload_error", std::move(resource_error)}};
+            {"last_reload_error", std::move(resource_error)},
+            {"watch", watch},
+            {"scans", status.scans}, {"hashed_files", status.hashed_files},
+            {"hashed_bytes", status.hashed_bytes}};
 }
 
 } // namespace Pelican::watch

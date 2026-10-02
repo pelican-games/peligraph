@@ -82,6 +82,8 @@ class ProjectPathResolver {
         std::optional<std::string> manifest_error;
     };
     std::vector<AssetStoreMount> asset_stores;
+    // HW-1: project.json `hot_reload`, as the envelope parsed it.
+    std::optional<std::vector<std::string>> hot_reload_paths;
 
     void setupImpl(
         const std::filesystem::path &project_root,
@@ -106,6 +108,11 @@ class ProjectPathResolver {
         return project_root_abs;
     }
     std::vector<AssetStoreStatus> stores() const;
+    // HW-1: the logical paths project.json declares for the file watch;
+    // nullopt when it declares none (or the resolver has no project.json).
+    const std::optional<std::vector<std::string>> &hotReloadPaths() const {
+        return hot_reload_paths;
+    }
 
     PathResolutionResult resolveProjectRef(std::string_view ref) const;
     PathResolutionResult resolveCliRef(std::string_view ref) const;

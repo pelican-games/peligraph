@@ -2049,7 +2049,8 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                     },
                     // This is the independent editor query policy.  In
                     // particular, it never calls ReloadGate::enabled(),
-                    // which is intentionally false for --rpc drivers.
+                    // which is intentionally false for --rpc drivers
+                    // (unless project.json declares hot_reload).
                     .gate = [runtime] {
                         const auto observation =
                             editorGateObservation(

@@ -1,5 +1,6 @@
 #include "../src/core/container.hpp"
 #include "../src/core/launchconfig.hpp"
+#include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/material/materialcontainer.hpp"
 #include "materialcontainer_testaccess.hpp"
@@ -8,6 +9,7 @@
 #include "../src/core/vkcore/deletionqueue.hpp"
 #include "../src/core/watch/assetkey.hpp"
 #include "../src/core/watch/filewatcher.hpp"
+#include "../src/core/watch/reloadgate.hpp"
 #include "../src/core/watch/reloadservice.hpp"
 #include "ktx2_test_writer.hpp"
 #include "vulkan_test_support.hpp"
@@ -19,6 +21,8 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <span>
+#include <thread>
+#include <vector>
 
 namespace Pelican {
 namespace {
@@ -226,6 +230,82 @@ TEST_CASE("HR1-T uses watcher gate and survives 1000 same-shape reloads plus KTX
         GET_MODULE(VulkanManageCore).waitIdle();
         GET_MODULE(DeletionQueue).flushAll();
         REQUIRE(GET_MODULE(DeletionQueue).pendingCountForTesting() == 0);
+}
+
+// HW-1: an engine driven over RPC (what Studio launches) whose project.json
+// declares `hot_reload`. The production path end to end: the gate opened by
+// the declaration in ReloadService::setup, the watcher thread on the real
+// filesystem, and ReloadService::applyFrame handing its batch to the
+// material participant.
+TEST_CASE("HW-1 under an RPC driver the watch reloads a texture in the declared folder and not one outside",
+          "[hw1][wp100][texture-reload][gpu]") {
+    setupLogger();
+    Sandbox box;
+    FastModuleContainer modules;
+    const auto inside = box.root / "assets" / "textures" / "in.png";
+    const auto outside = box.root / "assets" / "other" / "out.png";
+    for (const auto &path : {inside, outside}) {
+        std::filesystem::create_directories(path.parent_path());
+        writeBytes(path, std::span{redPng});
+        std::filesystem::last_write_time(
+            path, std::filesystem::file_time_type::clock::now() - std::chrono::minutes{60});
+    }
+    GET_MODULE(PathResolver).setup(
+        box.root, true,
+        parseProjectEnvelopeJson(nlohmann::json{{"schema", "pelican.project"},
+                                                {"version", 1},
+                                                {"hot_reload", nlohmann::json::array({"assets/textures"})}})
+            .envelope);
+    configureGpu(box);
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.rpc = true;
+    // A windowed engine asks for the watch; headless leaves it off.
+    launch.shader_hot_reload = true;
+    TestSupport::requireVulkanDevice("Vulkan texture reload unavailable");
+    auto &gate = GET_MODULE(watch::ReloadGate);
+    gate.configureFromLaunch(launch);
+    REQUIRE(gate.snapshot().reason == "rpc driver");
+
+    auto &materials = GET_MODULE(MaterialContainer);
+    const auto inside_texture = materials.registerReloadableTextureFile(
+        watch::makeAssetKey("assets/textures/in.png"), inside);
+    const auto outside_texture = materials.registerReloadableTextureFile(
+        watch::makeAssetKey("assets/other/out.png"), outside);
+    const std::vector<std::uint8_t> red{255, 0, 0, 255};
+    const std::vector<std::uint8_t> blue{0, 0, 255, 255};
+    REQUIRE(MaterialContainerTestAccess::texturePixels(materials, inside_texture) == red);
+
+    auto &reload = GET_MODULE(watch::ReloadService);
+    reload.setup(GET_MODULE(PathResolver));
+    REQUIRE(gate.enabled());
+    const auto wait = [&](auto predicate) {
+        const auto deadline = std::chrono::steady_clock::now() + 10s;
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (predicate()) return true;
+            std::this_thread::sleep_for(20ms);
+        }
+        return predicate();
+    };
+    REQUIRE(wait([&] { return reload.statusJson().at("state") == "watching"; }));
+    CHECK(reload.statusJson().at("watch") == nlohmann::json::array({"assets/textures"}));
+
+    writeBytes(inside, std::span{bluePng});
+    writeBytes(outside, std::span{bluePng});
+    REQUIRE(wait([&] {
+        reload.applyFrame();
+        return MaterialContainerTestAccess::texturePixels(materials, inside_texture) == blue;
+    }));
+    // The watch has had every chance to see the outside write.
+    std::this_thread::sleep_for(600ms);
+    reload.applyFrame();
+    CHECK(MaterialContainerTestAccess::texturePixels(materials, outside_texture) == red);
+    const auto status = reload.statusJson();
+    CHECK(status.at("applied").get<std::uint64_t>() >= 1);
+    CHECK(status.at("hashed_files").get<std::uint64_t>() >= 1);
+
+    reload.watcherForTesting()->stop();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    GET_MODULE(DeletionQueue).flushAll();
 }
 
 } // namespace Pelican

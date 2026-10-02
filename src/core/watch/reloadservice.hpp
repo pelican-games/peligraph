@@ -275,7 +275,9 @@ DECLARE_MODULE(ReloadService) {
     void ensureBuiltInParticipants();
     ReloadCoordinator::RetireSink retireSink();
     bool applyRequest(const ReloadRequest &request);
-    std::vector<bool> applyRequests(std::span<const ReloadRequest> requests);
+    // `excluded_participant` (HW-1) does not claim any of these requests.
+    std::vector<bool> applyRequests(std::span<const ReloadRequest> requests,
+                                    std::string_view excluded_participant = {});
     std::vector<std::size_t> companionOwnerOrder() const;
     bool applyClaimedRequest(std::size_t claimant,
                              const ReloadRequest &request);
@@ -295,6 +297,8 @@ DECLARE_MODULE(ReloadService) {
                                                  RuntimeReloadTrigger trigger);
     nlohmann::json runtimeStatusJson() const;
     std::unique_ptr<FileWatcher> watcher_;
+    // HW-1: project.json `hot_reload` as of setup (nullopt: undeclared).
+    std::optional<std::vector<std::string>> watch_paths_;
     ReloadCoordinator transactions_;
     std::vector<ReloadParticipant> participants_;
     std::unordered_map<std::string, RuntimeParticipantStatus> runtime_status_;

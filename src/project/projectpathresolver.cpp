@@ -366,9 +366,11 @@ void ProjectPathResolver::setupImpl(
     asset_stores.clear();
     project_id.reset();
     user_root_abs.reset();
+    hot_reload_paths.reset();
 
     if (project != nullptr) {
         project_id = project->name;
+        hot_reload_paths = project->hot_reload;
         if (project_id) {
             const auto root = user_dir_override ? absolutePath(*user_dir_override) : defaultUserRoot(*project_id);
             user_root_abs = weaklyCanonicalOrThrow(root, "PathResolver user root");
@@ -520,6 +522,7 @@ void ProjectPathResolver::reset() {
     project_id.reset();
     allow_absolute_paths = false;
     asset_stores.clear();
+    hot_reload_paths.reset();
 }
 
 std::vector<AssetStoreStatus> ProjectPathResolver::stores() const {

@@ -19,6 +19,12 @@ inline constexpr std::string_view pelicanEngineVersion = "0.1.0";
 inline constexpr std::string_view projectEngineTooOldCode =
     "project.engine_too_old@1";
 
+// HW-1: project.json's `hot_reload` is not an array of distinct
+// project-relative paths (not an array, an entry that is not a string, an
+// empty entry, an absolute path, a `..` component, or a duplicate).
+inline constexpr std::string_view projectHotReloadInvalidCode =
+    "project.hot_reload_invalid@1";
+
 struct ProjectEnvelope {
     std::optional<std::string> name;
     std::optional<std::string> engine_min_version;
@@ -33,6 +39,12 @@ struct ProjectEnvelope {
     std::vector<std::string> requirements;
     nlohmann::json basic_config = nlohmann::json::object();
     nlohmann::json asset_stores = nlohmann::json::object();
+    // HW-1: `hot_reload` in project.json, the folders and files the file
+    // watch covers, as normalized logical paths (`assets/textures`, no
+    // trailing `/`). nullopt when the key is absent: the watch keeps its
+    // launch default (the whole project, or nothing under an RPC driver).
+    // An empty list watches nothing.
+    std::optional<std::vector<std::string>> hot_reload;
     std::vector<PrefabRegistryEntry> prefabs;
 };
 
@@ -84,5 +96,12 @@ std::vector<std::string> parseProjectRequirements(const nlohmann::json &project)
 // failing on the operations the disabled module never registered.
 std::optional<std::string>
 unsatisfiedProjectRequirement(const nlohmann::json &project);
+
+// HW-1: reads `hot_reload`. nullopt when absent; otherwise each entry
+// normalized (generic separators, no `./`, no trailing `/`). Throws
+// `project.hot_reload_invalid@1` for the refusals above. A path that does
+// not exist is accepted: a folder may be created later.
+std::optional<std::vector<std::string>>
+parseProjectHotReload(const nlohmann::json &project);
 
 } // namespace Pelican

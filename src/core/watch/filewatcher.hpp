@@ -52,7 +52,19 @@ struct FileWatcherOptions {
     // A deterministic fixture may reject native watch arming. The production
     // path leaves this empty and uses ReadDirectoryChangesW.
     std::function<bool(const WatchStore &, unsigned attempt)> watch_arm_override;
+    // HW-1: project.json `hot_reload`. nullopt watches every store. A list
+    // watches only the files whose AssetKey path equals an entry or lies
+    // under it as a folder (component-wise: `assets/tex` does not cover
+    // `assets/textures/a.png`). Other files are neither listed into the
+    // inventory nor hashed, a notification that names only them does not
+    // scan, and a store whose mount neither covers nor lies under an entry
+    // is not scanned or natively watched at all.
+    std::optional<std::vector<std::string>> watch_paths;
 };
+
+// HW-1: true when `logical_path` (an AssetKey path) equals one of `entries`
+// or lies under one of them as a folder.
+bool watchPathCovers(const std::vector<std::string> &entries, std::string_view logical_path);
 
 class FileWatcher {
   public:

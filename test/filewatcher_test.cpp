@@ -822,6 +822,168 @@ TEST_CASE("FileWatcher bench on the example project", "[.][bench][fw1]") {
     watcher.stop();
 }
 
+TEST_CASE("HW-1 a declared watch covers its folders and files only, component-wise, and hashes nothing else",
+          "[hw1][watcher]") {
+    Sandbox box;
+    const auto in_folder = box.root / "assets" / "textures" / "a.png";
+    const auto nested = box.root / "assets" / "textures" / "deep" / "n.png";
+    const auto sibling = box.root / "assets" / "tex" / "b.png";
+    const auto file = box.root / "assets" / "models" / "hero.glb";
+    const auto other_model = box.root / "assets" / "models" / "other.glb";
+    const auto loose = box.root / "root.txt";
+    for (const auto &path : {in_folder, nested, sibling, file, other_model, loose}) {
+        writeText(path, "v1");
+        setAge(path, 60min);
+    }
+    GateFixture gate;
+    auto options = watchingOptions();
+    options.watch_paths = std::vector<std::string>{"assets/textures", "assets/models/hero.glb"};
+    FileWatcher watcher({{"project", box.root}}, [&] { return gate.snapshot(); }, options);
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now());
+    REQUIRE(watcher.status().state == WatcherState::watching);
+    REQUIRE(watcher.status().hashed_files == 0);
+
+    SECTION("only the covered files are queued, and only they are hashed") {
+        for (const auto &path : {in_folder, nested, sibling, file, other_model, loose}) {
+            rewriteAged(path, "v2 changed", 30min);
+        }
+        settleNotifications();
+        watcher.injectOverflowZeroBytes(); // a full rescan, whatever was notified
+        watcher.runControlCycleForTesting(FileWatcher::Clock::now() + 1s);
+        CHECK(watcher.status().hashed_files == 3);
+        std::set<std::string> keys;
+        for (const auto &request : applyAll(watcher)) keys.insert(request.key.path);
+        CHECK(keys == std::set<std::string>{"assets/models/hero.glb", "assets/textures/a.png",
+                                            "assets/textures/deep/n.png"});
+    }
+    SECTION("a notification naming only files outside the declaration does not scan") {
+        const auto seeded = watcher.status();
+        rewriteAged(sibling, "v2 sibling", 30min);
+        rewriteAged(loose, "v2 loose", 30min);
+        settleNotifications();
+        watcher.runControlCycleForTesting(FileWatcher::Clock::now() + 1s);
+        CHECK(watcher.status().scans == seeded.scans);
+        CHECK(watcher.pendingCount() == 0);
+
+        rewriteAged(in_folder, "v2 inside", 30min);
+        settleNotifications();
+        watcher.runControlCycleForTesting(FileWatcher::Clock::now() + 1s);
+        CHECK(watcher.status().scans > seeded.scans);
+        CHECK(watcher.status().hashed_files == 1);
+        const auto requests = applyAll(watcher);
+        REQUIRE(requests.size() == 1);
+        CHECK(requests.front().key.path == "assets/textures/a.png");
+    }
+    watcher.stop();
+}
+
+TEST_CASE("HW-1 a store the declaration cannot reach is neither scanned nor watched",
+          "[hw1][watcher][stores]") {
+    Sandbox box;
+    const auto project = box.root / "project";
+    const auto art = box.root / "art_store";
+    const auto music = box.root / "music_store";
+    writeText(project / "readme.txt", "v1");
+    writeText(art / "characters" / "hero.png", "v1");
+    writeText(art / "props" / "box.png", "v1");
+    writeText(music / "theme.ogg", "v1");
+    GateFixture gate;
+    std::set<std::string> armed;
+    FileWatcherOptions options;
+    options.manual_clock = true;
+    options.poll_interval = 20ms;
+    options.watch_arm_override = [&](const WatchStore &store, unsigned) {
+        armed.insert(store.name);
+        return false;
+    };
+    options.watch_paths = std::vector<std::string>{"art/characters"};
+    FileWatcher watcher({{"project", project, {}}, {"art", art, "art"}, {"music", music, "music"}},
+                        [&] { return gate.snapshot(); }, options);
+    const auto t0 = FileWatcher::Clock::now();
+    watcher.runControlCycleForTesting(t0);
+    CHECK(armed == std::set<std::string>{"art", "project"});
+
+    writeText(project / "readme.txt", "v2");
+    writeText(art / "characters" / "hero.png", "v2");
+    writeText(art / "props" / "box.png", "v2");
+    writeText(music / "theme.ogg", "v2");
+    watcher.runControlCycleForTesting(t0 + 25ms);
+    const auto requests = applyAll(watcher);
+    REQUIRE(requests.size() == 1);
+    CHECK(requests.front().key == makeAssetKey("project://art/characters/hero.png"));
+
+    // An empty declaration watches nothing at all.
+    armed.clear();
+    options.watch_paths = std::vector<std::string>{};
+    FileWatcher nothing({{"project", project, {}}, {"art", art, "art"}},
+                        [&] { return gate.snapshot(); }, options);
+    nothing.runControlCycleForTesting(t0);
+    CHECK(armed.empty());
+    writeText(art / "characters" / "hero.png", "v3");
+    nothing.runControlCycleForTesting(t0 + 25ms);
+    CHECK(applyAll(nothing).empty());
+    nothing.stop();
+    watcher.stop();
+}
+
+TEST_CASE("HW-1 central gate: a declaration opens the watch under an RPC driver, nothing else does",
+          "[hw1][gate]") {
+    EngineLaunchConfig config;
+    config.shader_hot_reload = true;
+    config.rpc = true;
+    ReloadGate gate;
+    gate.configureFromLaunch(config);
+    // Undeclared: as before.
+    CHECK_FALSE(gate.enabled());
+    CHECK(gate.snapshot().reason == "rpc driver");
+    CHECK(gate.rpcDriven());
+    const auto shut_epoch = gate.snapshot().epoch;
+
+    gate.setWatchDeclaration(WatchDeclaration::listed);
+    CHECK(gate.enabled());
+    CHECK(gate.snapshot().reason.empty());
+    CHECK(gate.snapshot().epoch > shut_epoch);
+    // A launch reconfiguration (the renderer's per-frame sync) keeps it.
+    gate.configureFromLaunch(config);
+    CHECK(gate.enabled());
+    // The explicit reload_shaders request is refused by the same reasons only.
+    CHECK(gate.explicitShaderReloadRefusal().empty());
+
+    gate.setWatchDeclaration(WatchDeclaration::empty);
+    CHECK_FALSE(gate.enabled());
+    CHECK(gate.snapshot().reason == "hot_reload empty");
+
+    gate.setWatchDeclaration(WatchDeclaration::listed);
+    gate.setReason(ReloadGateReason::replay, true);
+    CHECK_FALSE(gate.enabled());
+    CHECK(gate.snapshot().reason == "replay");
+    gate.setReason(ReloadGateReason::replay, false);
+    config.strict_assets = true;
+    gate.configureFromLaunch(config);
+    CHECK_FALSE(gate.enabled());
+    CHECK(gate.snapshot().reason == "strict assets");
+    config.strict_assets = false;
+
+    // Headless (shader_hot_reload off) stays shut with a declaration.
+    config.shader_hot_reload = false;
+    gate.configureFromLaunch(config);
+    CHECK_FALSE(gate.enabled());
+    CHECK(gate.snapshot().reason == "shader_hot_reload disabled");
+
+    // Without an RPC driver: undeclared watches, an empty list does not.
+    config.shader_hot_reload = true;
+    config.rpc = false;
+    gate.configureFromLaunch(config);
+    gate.setWatchDeclaration(WatchDeclaration::undeclared);
+    CHECK(gate.enabled());
+    CHECK_FALSE(gate.rpcDriven());
+    gate.setWatchDeclaration(WatchDeclaration::empty);
+    CHECK_FALSE(gate.enabled());
+    CHECK(gate.snapshot().reason == "hot_reload empty");
+    gate.setWatchDeclaration(WatchDeclaration::listed);
+    CHECK(gate.enabled());
+}
+
 TEST_CASE("central gate adapts legacy shader flag without a second apply path", "[wp96][gate]") {
     EngineLaunchConfig config;
     config.shader_hot_reload = true;

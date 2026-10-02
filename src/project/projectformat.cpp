@@ -1,6 +1,7 @@
 #include "projectformat.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -163,6 +164,67 @@ unsatisfiedProjectRequirement(const nlohmann::json &project) {
     return std::nullopt;
 }
 
+std::optional<std::vector<std::string>>
+parseProjectHotReload(const nlohmann::json &project) {
+    if (!project.is_object() || !project.contains("hot_reload")) {
+        return std::nullopt;
+    }
+    const auto refuse = [](const std::string &message) {
+        return std::runtime_error(std::string{projectHotReloadInvalidCode} +
+                                  ": project.json " + message);
+    };
+    const auto &declared = project.at("hot_reload");
+    if (!declared.is_array()) {
+        throw refuse("hot_reload must be an array of project-relative paths");
+    }
+    std::vector<std::string> paths;
+    for (std::size_t index = 0; index < declared.size(); ++index) {
+        const auto entry_name = "hot_reload[" + std::to_string(index) + "]";
+        const auto &entry = declared.at(index);
+        if (!entry.is_string()) {
+            throw refuse(entry_name + " must be a string");
+        }
+        const auto &raw = entry.get_ref<const std::string &>();
+        const auto quoted = entry_name + " '" + raw + "'";
+        const bool drive = raw.size() >= 2 && raw[1] == ':' &&
+                           std::isalpha(static_cast<unsigned char>(raw[0])) != 0;
+        if (!raw.empty() && (raw.front() == '/' || raw.front() == '\\' ||
+                             drive || raw.find("://") != std::string::npos)) {
+            throw refuse(quoted +
+                         " must be a path relative to the project root");
+        }
+        std::string normalized;
+        std::size_t start = 0;
+        while (start <= raw.size()) {
+            const auto end = raw.find_first_of("/\\", start);
+            const auto component = raw.substr(
+                start, end == std::string::npos ? std::string::npos : end - start);
+            if (component == "..") {
+                throw refuse(quoted + " must not contain '..'");
+            }
+            if (!component.empty() && component != ".") {
+                if (!normalized.empty()) normalized += '/';
+                normalized += component;
+            }
+            if (end == std::string::npos) break;
+            start = end + 1;
+        }
+        if (normalized.empty()) {
+            throw refuse(entry_name +
+                         " is empty; name a folder or file under the "
+                         "project root");
+        }
+        if (const auto found = std::find(paths.begin(), paths.end(), normalized);
+            found != paths.end()) {
+            throw refuse(quoted + " repeats hot_reload[" +
+                         std::to_string(found - paths.begin()) + "] '" +
+                         normalized + "'");
+        }
+        paths.push_back(std::move(normalized));
+    }
+    return paths;
+}
+
 ProjectEnvelopeParseResult
 parseProjectEnvelopeJson(const nlohmann::json &project,
                          const ProjectEnvelopeParseOptions &options) {
@@ -200,6 +262,7 @@ parseProjectEnvelopeJson(const nlohmann::json &project,
         project.value("basic_config", nlohmann::json::object());
     result.envelope.asset_stores =
         project.value("asset_stores", nlohmann::json::object());
+    result.envelope.hot_reload = parseProjectHotReload(project);
     result.envelope.prefabs = parsePrefabRegistryEntries(
         project.value("prefabs", nlohmann::json::array()));
 
