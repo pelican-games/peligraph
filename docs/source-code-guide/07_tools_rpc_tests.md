@@ -565,7 +565,7 @@ revision、背景での解除、feature/RPC 失敗時の選択維持を純粋 mo
 [`InspectorModel`](../../src/devstudio/model/inspectormodel.hpp) も view/Qt から独立した公開 RPC client
 です。選択の object を一覧の `authoring_object_id` で確かめてから(選択が id を持てば id で、持たなければ
 `declaration_index` で引く。一覧は ✅UX-13c から `scene_outline {scene_id}`、`-32601` で断る engine にはその session の間
-`scene_tree`。[問いを積む所](../../src/devstudio/model/inspectormodel.cpp#L2033)、[`-32601` を覚える所](../../src/devstudio/model/inspectormodel.cpp#L3025)。
+`scene_tree`。[問いを積む所](../../src/devstudio/model/inspectormodel.cpp#L2059)、[`-32601` を覚える所](../../src/devstudio/model/inspectormodel.cpp#L3051)。
 `-32601` は `InspectorWidget` が `EmbeddedViewport::engineRpcRefused` から拾って `receiveRpcFailure(..., unknown_method)` で渡す)
 `get_components` を読み、component 応答の `schema.fields` だけから整数、浮動小数、真偽、列挙、文字列、
 vector、quaternion の [`InspectorWidgetDescriptor`](../../src/devstudio/model/inspectormodel.hpp) を作ります。
@@ -650,9 +650,9 @@ protocol は**改行区切り JSON 1 行 = 1 命令**で、`{id, cmd, ...}` に 
 `text` は描かれた字ではなく item が data role に入れた値を優先します
 ([優先](../../src/devstudio/automation/automationcommands.cpp#L552))。
 
-driver は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1268)(stdlib のみ)。シナリオ JSON の step を順に送り、
+driver は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1276)(stdlib のみ)。シナリオ JSON の step を順に送り、
 `rpc_equals` / `text_equals` / `visible` / `list_count` / `screenshot` の期待を検査し、`verdict` / `summary` /
-`failures` / `steps` / `studio_log` を持つ `report.json` を書きます([組み立て](../../tools/studio_drive.py#L1437))。
+`failures` / `steps` / `studio_log` を持つ `report.json` を書きます([組み立て](../../tools/studio_drive.py#L1445))。
 最後の `shutdown` step で終了コード 0 と強制終了されていないことを検査します。異常終了や終了待ちのタイムアウトは
 失敗になり、`studio_exit_code` / `studio_shutdown_forced` と `failures` に結果を記録します。
 書式の正本は [`test/studio_scenarios/README.md`](../../test/studio_scenarios/README.md#L1) です。

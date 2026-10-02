@@ -27645,6 +27645,46 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - **新しいファイル**: なし
 - **シナリオ**: 変えていない。実装者の run で `outliner_edit_roundtrip`・`add_primitive_object`・`play_mode_roundtrip`・`menu_actions` が緑。実装者の `studio_cpu` は 653 本中 1 本(`UX-12e decision 3`、SegFault)が赤で、これは UX-13b が直した test(作業の log と UX-13b の commit の記録)。本数は 61 のまま
 
+### UX-13d: 空を present に映すのを 1 本の edit_batch に、target_ref の型の書き換えをやめる(engine FR-4 の Studio 側)
+
+**Studio のみ(engine は FR-4 `2eb08d21`)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「書き手を繋ぎ、1 本の edit_batch で足す(✅UX-12d)」の繋ぎ替えの op・Connect … to present・FR-4 の残る穴との関係、シナリオの `gui_settings_choose`。**
+
+#### 前提
+- UX-12d(6c7dc8bb)の Connect lit_color to present は `edit_graph_document` と `edit_preset_pass` の 2 ticket(Undo 2 回)で、`lit_color_ref` の型を同じ ops で `color_signal` に書き換えていた。engine の FR-4 で `edit_preset_pass` が `edit_batch` に入り、catalog の色の target の型が `color_signal` になった(仕様の engine の契約)
+
+#### 着地(2026-10-03、b289d706)
+- **決定 1(1 本の edit_batch)**: graph の op があれば `[edit_graph_document, edit_preset_pass]` の 1 本の `edit_batch`、無ければ `edit_preset_pass` だけ([`sendShow()`](../src/devstudio/view/renderfeatureswidget.cpp#L3384))。batch の `base_source_digest` と preset の digest は batch の前に読んだ値。断られたら `Connecting <target> to <present> was refused at <段>: …` で、取り消しの案内(`… Edit > Undo Render Edit takes it back.`)は消えた。`Step::ShowWriter` / `sendShowWriter()` / `sendShowPresent()` は消えた
+- **決定 2(型の書き換え)**: `writerConnectOps()` が target_ref の型を port の型に書き換えるのは、型が `pelican.render.legacy_opaque_image@1` で port の型と違うときだけ([条件](../src/devstudio/model/featurerefusalfix.cpp#L455))。UX-12d では型が違えば必ず書き換えていた
+- **決定 3(Add with targets)**: `required_targets` の型をそのまま使う(`requiredTargetReferenceOps()` は変えていない。test で `rt_shadow_mask` の `gbuffer_worldpos` / `gbuffer_normal` が `color_signal` のまま target_ref になることを見る)
+- **決定 4(FR-4 の残る穴)**: Studio が `edit_batch` を送るのは Add with targets・Fix・Connect の 3 か所で、どれにも `edit_region_replacement` / `decompose_material_pass` / `apply_graph_template` は入らない(コードの読み。commit の記録には無い)
+- **決定 5(シナリオ)**: `gui_settings_choose` の Connect の段は、frame plan を問う確かめから notice `present shows lit_color.` を待つ形に戻し(1 本の ticket なので `Refreshing…` に上書きされない)、押す前の root 文書を覚えて Undo 1 回で同じに戻ること、Redo 1 回で `present` が `lit_color` を読み `lit_color_ref` への繋ぎが戻ることを見る
+- **test**: `devstudio_rendering_settings_test` の `UX-12d decision 4 / UX-13d decision 1 …`(UX-12d decision 4 の名前と中身を書き換えた)と新しい `UX-13d decisions 2 and 3 …`([decisions 2 and 3](../test/devstudio_rendering_settings_test.cpp#L1498))
+- **新しいファイル**: なし
+- **シナリオ**: `gui_settings_choose`(197 → 205)。実装者の run で `gui_settings_choose`・`gui_build_E` が緑、`studio_cpu` の 659 本も緑(作業の log)。commit の記録では、この run は座標の規約の直し(CC-1)の前で、viewport の期待は CC-1 の後に他のシナリオと一緒に見直す。本数は 61 のまま
+
+### UX-14: 座標の規約の直し(CC-1)の後の Studio —— 角度の欄の基準、AB-2 の一文と Bake again、viewport の期待の直し
+
+**Studio のみ(engine は CC-1 `c8367b87`・CC-2 `1501685a`・AB-2 `b3003b2a`)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「光の向きは方位角と仰角で、camera の yaw と同じ基準です(✅UX-10 / ✅UX-14)」、「音の解析を焼いて描画に使う(✅AB-1s)」の拒否の行、「Studio の自動化面」の `gui_settings_choose`・`gui_build_ocean`・`gui_build_ocean_compute`・`gui_build_ltc`。**
+
+#### 前提
+- CC-1 で 3D の絵が鏡像でなくなり、camera は回転なしで −Z を向き、Blank の雛形の MainCamera は z=+3。Studio の fixture は変換済みだったが、viewport の左右・上下を見るシナリオの期待は直していなかった。camera.controller の yaw / pitch の基準は yaw 0 が +Z、−X の側へ、pitch は +Y の側へ(仕様の「CC-1 で変わったこと」)
+
+#### 着地(2026-10-03、aaba15a6)
+- **決定 1・2(全部を流して仕分け)**: 作業の log では、最初の全シナリオの run は 61 本中 10 本が赤、直した後は 7 本が赤(`add_primitive_object`・`forward_loop_from_scratch`・`gui_build_A` / `B` / `C` / `full` / `optimize`)。この 7 本は Blank の箱の正面を読むもので、commit の記録は、雛形の KeyLight が箱の奥の面を照らすため(engine の雛形の光の向き)とし、Studio では直していない。`studio_cpu` は 661 本が緑(作業の log)
+- **シナリオの直し**: `gui_build_ocean` / `gui_build_ocean_compute` は海と太陽を −Z の側に(vertex の `EXTENT_Z` `(-2.5, 140)` → `(2.5, -140)`、fragment の `SUN` の z 1 → −1)。`gui_build_ltc` は矩形の光を z=+4 から z=−4 に(角の順も替えた)して、映り込みと暗い床を読む点を新しい絵から選び直した。`gui_settings_choose` は雛形の光を方位角 63.43 と読み、−63.43 で影を左から右へ(この形は下の CC-1c の後の直しで替えた)
+- **決定 3(角度の欄)**: light の方位角を camera の yaw と同じ基準(0 が +Z、正は −X の側)に揃えた(`atan2(-x, z)`。[`directionAnglesDegrees()`](../src/devstudio/model/inspectormodel.cpp#L610))。UX-10 の着地時は +X の側だった。方位角・仰角・yaw・pitch の欄に基準を言う tooltip([`inspectorAngleTip()`](../src/devstudio/model/inspectormodel.cpp#L592) と `inspectorDirectionAngleTip()`)
+- **決定 4(gizmo / 視点プリセット / orbit / pan の Studio 側の符号)**: commit の記録にも test にも無い(未確認)
+- **決定 5(AB-2)**: `audio.analysis_failed@1` の `reason: "output_locked"` を `<asset> could not be baked into <out>: the table is in use — try Bake again` の 1 文に([`audioAnalysisOutputLocked()`](../src/devstudio/model/inspectormodel.cpp#L1469))。bake の行に Bake again(`pelican.graphCanvasBake.again`)を出し、前に送った params をそのまま送り直す
+- **CC-2**: commit の記録は、`clip_y` が `render.raster` の More parameters に出ることと、Studio の雛形が NDC / uv の変換を自前でしないことを言う(どちらも見る test は無く、この commit にコードの変更も無い)
+- **test**: `devstudio_inspector_test` の `UX-14 decision 3 …`([decision 3](../test/devstudio_inspector_test.cpp#L1899))と、`UX-10 a light's direction …` の 90 度の期待を +X から −X に。`devstudio_graphcanvas_scene_test` の `UX-14 decision 5 …`([decision 5](../test/devstudio_graphcanvas_scene_test.cpp#L11815))
+- **新しいファイル**: なし
+- **シナリオ**: `gui_build_ocean`(259)・`gui_build_ocean_compute`(268)・`gui_build_ltc`(192)・`gui_settings_choose`(205)は step の数を変えずに期待を直した。本数は 61 のまま
+
+#### CC-1c の後の gui_settings_choose(2026-10-03、a954d38c)
+- engine の CC-1c(`b0b2fc77`)で雛形の KeyLight が `(-0.5, -1, -0.25)`(−X の側へ、camera から離れる向き)になり、方位角は 116.57 と読める。シナリオは 116.57 を待ち、−116.57 を打って x だけが反転し z は camera から離れる向きのまま(rpc で `direction[2] < -0.15`)であることを見る。影は箱の脇の細い楔になったので、影と照らされた床を読む点を `(0.31, 0.7)` / `(0.69, 0.7)` から `(0.325, 0.695)` / `(0.675, 0.695)` に選び直した(読むすべての段で)
+- 作業の log では、CC-1c の後の統合側の run で上の 7 本は緑、`gui_settings_choose` だけが赤で、この直しの後に 2 回緑
+- **シナリオ**: `gui_settings_choose`(205 → 206)。打つ数は 2・−116.57・4・3
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
