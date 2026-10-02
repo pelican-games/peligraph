@@ -319,13 +319,16 @@ item {
 | WP | 中身 | 状態 |
 |---|---|---|
 | SH-0 | 下げ先の実証 | ✅ |
-| **CV-1** | module、`shape.rect` / `shape.ellipse` / `shape.fill` / `shape.stroke` / `canvas.stack`(normal)/ `canvas.output`、lowering(純関数)、CPU の参照描画、`pelican_cli canvas-lower`。下げた project を今の player で走らせる | 実装中(`<作業ディレクトリ>/cv1`) |
-| **EN-2** | 画像 asset を graph の pass で読む口(`render.image` の `source`)、未知の key の拒否 | 実装中(`<作業ディレクトリ>/en2`) |
-| CV-1b / EN-1 | engine が文書を読む点で登録済みの lowering を通す汎用の hook(compose、ValueGraph、PoseGraph、editor の candidate)。生成 shader の渡し方 | 次 |
-| CV-2 | `canvas.image` / `canvas.from_image`、`canvas.transform`、mask・clip、pass through でない group、blend mode(backdrop の写し)、`blend_space` | 次 |
+| **CV-1** | module、`shape.rect` / `shape.ellipse` / `shape.fill` / `shape.stroke` / `canvas.stack`(normal)/ `canvas.output`、lowering(純関数)、CPU の参照描画、`pelican_cli canvas-lower`。下げた project を今の player で走らせる | ✅ `4e133e0c`。参照描画との一致 99.96 %(2/255 以内。外れは inner stroke の角の 23 画素) |
+| **EN-2** | 画像 asset を graph の pass で読む口(`render.image` の `source {asset, color_space, alpha, mips}`)、未知の key の拒否(`graph.image_parameter_unknown@1`) | ✅ `a3fd7e99` |
+| **CV-1b** | engine が文書を読む点で登録済みの lowering を通す汎用の hook(`src/project/authoringlowering`。登録点と editor の compose の道で呼ぶ。core は canvas の名前を知らない)。生成 shader は `.pelican/generated/canvas/<stem>/`。rendering 節の pass の入力に `canvas.output` の id を書ける。`get_authoring_lowering` | ✅ `b5f399fc` |
+| **CV-P** | PSD の取り込み(`pelican-import-tools` の `psd-canvas`。psd-tools)→ 画像 + mask + canvas の definition + `reference.png`(§10) | ✅ import tool の `feature/canvas-psd`(`13310e1`、`d1577a8`) |
+| CV-2a | `canvas.image` / `canvas.from_image` / `canvas.color`、`canvas.transform`、mask・clip(PSD の意味)、pass through でない group、`blend_space`。blend は normal まで。PSD の往復が `reference.png` と一致 | 実装中(`<作業ディレクトリ>/en2`) |
+| CV-2b | blend mode と調整 layer(backdrop の写し) | |
 | CV-3 | filter: 色(融合)、座標(融合)、近傍(blur・影) | |
-| CV-P | PSD の取り込み(engine の外の tool。psd-tools)→ 画像 + canvas の definition(§10) | |
-| CV-4 | 文字: `font-import`、`pelican.font`、MSDF の atlas、`shape.text` | |
+| DF-1 | 距離場の内製 library(輪郭 → MSDF + 真の距離、画像の alpha → SDF)と font の読み込み(`stb_truetype`)。engine の build の外で作って測る | 実装中(`<作業ディレクトリ>/v2d_work/df1/`) |
+| CV-4 | 文字: `pelican_cli font-import`、`pelican.font`、MSDF の atlas、`shape.text`(DF-1 を `src/project/canvas/` に入れる) | 利用者の指定で次の優先 |
+| SG-1 | Studio: 領域 `canvas`、palette の Canvas、stack のソケット、Layers パネル(行・+ Rect / + Ellipse / + Group・目・不透明度・並べ替え・欄) | 実装中(`<作業ディレクトリ>/cv1`) |
 | CV-5 | `ship` 方針: 定数の畳み込み、動かない layer を畳む、`dist-bake` の段 1、OFF の build の player で同じ絵 | |
 | CV-6 | 3D: `canvas.place`、depth、厚み、owner の transform(EN-4) | |
 | CV-7 | path(折れ線・ベジエ)、`shape.trim`、`shape.path_sample`、`element` の段(`shape.repeat`、1 文字ずつ動く文字) | |
@@ -366,6 +369,10 @@ item {
 | brush は後回し、画素は取り込み | 利用者が決定 |
 | 動的な物の最初の範囲(§10.2 の上 2 行) | 利用者が決定 |
 | depth は層ごと + 画素ごと | 利用者が決定 |
+| Studio 側(Layers パネルなど)はこの track の session が `develop_v1` 向けに進める | 利用者が決定 |
+| 次の優先は文字(font と MSDF) | 利用者が決定 |
+| 距離場(MSDF、画像からの SDF)は内製。外部の font / MSDF の library は足さない(font は既に依存にある `stb_truetype` を tool で使う)。画像 → SDF は EDTAA4(Gustavson。縁の距離を subpixel で見積もり、後処理で微調整)とマーチングパラボラ(Felzenszwalb の下側包絡)の併用。EDTAA4 の配布 code は GPL v3+ なので写さず、手法から書き直す | 利用者が決定 |
+| build は target を絞る(初回の全体 build の 59 % は誰も回さない test だった) | 利用者が指示(「死活問題」) |
 | 実行時に canvas の code を持たない(§2-3)。実行中に変わる文字列は UI との融合の段で | Claude の案で進行中。異議があれば戻す |
 | 編集中と出荷で同じ道(L2) | 同上 |
 | 距離場を中心にする(§12) | 同上 |
@@ -381,7 +388,9 @@ item {
 
 - 選び方: 式で書けて葉が K 個以下 → `analytic`。形が `bake` の段 → `atlas`。それ以外 → `field_pass`(入るまでは `canvas.method_unavailable@1`)
 - 下流の要求を逆に辿って atlas の距離の幅を決める(縁取り・glow・影の最大の届く範囲。`frame` の段の半径には parameter の `max` を使い、無ければ `canvas.range_unbounded@1`)
-- font の資産(`pelican.font`): metrics と kerning、輪郭(2 次ベジエ)、焼いた atlas。ttf → 輪郭は取り込みの tool。atlas は「文書が使う glyph」から決まる(L2)。日本語は使う文字だけ焼く
+- font の資産(`pelican.font`): metrics と kerning、輪郭(2 次ベジエ)、焼いた atlas。ttf → 輪郭は取り込みの tool(`pelican_cli font-import`。既に依存にある `stb_truetype.h` を使う。engine と player は ttf を読まない)。atlas は「文書が使う glyph」から決まる(L2)。日本語は使う文字だけ焼く
+- 距離場の生成は内製(`src/project/canvas/`): 輪郭 → MSDF(RGB)+ 真の距離(A)。符号は winding(交差数)で決め、輪郭が重なる漢字に耐える。shader は `clamp(median(r,g,b), a - t, a + t)` で復元し、MSDF の暴れを真の距離で抑える
+- 画像の layer の距離場(縁取り・glow・厚みに使う)は、alpha から作る: EDTAA4 の縁の見積もりを種にして、マーチングパラボラで広げる
 - 縮小(P5)は実測で決める(第一案: 真の距離の channel に mip)
 - `field_pass` の制限(レビューの指摘): 重なる輪郭では内側の辺で距離が 0 になり継ぎ目が出る / 符号と距離を別に持つと補間で縁が跳ぶ / 外側の角の楔を覆う必要がある / 1 枚の image では和しか作れない。Chen らと同じく「重ならない閉じた輪郭」に限り、重ねは `shape.boolean`(距離場どうしの演算)で書く。CV-8 の最初に実験で確かめる
 
