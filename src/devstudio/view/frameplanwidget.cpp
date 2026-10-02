@@ -1510,6 +1510,13 @@ struct FramePlanWidget::Impl {
         clearTrees();
         refresh->setEnabled(false);
         status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+        // UX-8, decision 13 (c): a code the engine stopped on reads as its
+        // sentence and the file to fix; the line itself stays the detail.
+        if (const auto stopped = engineStoppedSentence(fatal_error_line.toStdString());
+            !stopped.empty()) {
+            showStatus(QString::fromStdString(stopped), fatal_error_line);
+            return;
+        }
         showStatus(oneLine(fatal_error_line), fatal_error_line);
     }
 

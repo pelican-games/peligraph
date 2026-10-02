@@ -233,6 +233,14 @@ modelReferenceChoices(std::string_view current,
 // code ("<code> {...}" as the engine writes it, or "<code>: {...}"). Answers
 // "<sentence> (<code>).", or empty for any other refusal.
 [[nodiscard]] std::string graphLoopRefusalDescription(const nlohmann::json &error);
+// UX-8, decision 13 (c) (engine CT-1): the engine could not read its
+// configuration at start and stopped. Its fatal line ("Pelican fatal error :
+// <message>") reads as "The engine stopped: <the code's sentence> in <file>.
+// Fix the file (or Reload from disk) to start it again." -- the sentence of
+// the first known code the message carries, the file the last .json path it
+// names (the project's render documents when it names none). Empty when the
+// line carries no code Studio has a sentence for.
+[[nodiscard]] std::string engineStoppedSentence(std::string_view fatal_line);
 // LP-0d: the graph variant (preview, XR) that refused an edit, named by
 // `variant` beside the code; empty when the main graph did. LP-4d2: always --
 // graph.loop_variant_missing@1 names the material's variant

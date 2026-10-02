@@ -143,6 +143,11 @@ class GraphCanvasLoopFields final : public QWidget {
     QComboBox *count_target_ = nullptr;
     QPushButton *insert_mips_ = nullptr;
     QPushButton *insert_layers_ = nullptr;
+    // UX-8, decision 12 (a) (RS-15): log2(<the target's size>), for a
+    // fixed-size image of the graph.
+    QPushButton *insert_log2_ = nullptr;
+    [[nodiscard]] std::optional<long long> countTargetSize() const;
+    void insertLog2();
     QWidget *view_row_ = nullptr;
     QComboBox *view_family_ = nullptr;
     QComboBox *view_axis_ = nullptr;

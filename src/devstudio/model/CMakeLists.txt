@@ -16,6 +16,8 @@ add_library(pelican_studio_inspector_model STATIC
     graphattachmentmodel.hpp
     graphcanvasmodel.cpp
     graphcanvasmodel.hpp
+    # UX-8: a curve's keys, a playback's fields, buffer ports, packed scalars.
+    graphcanvasvalues.cpp
     # GL-3a: fold groups, read and written from the Graph tab.
     graphfoldgroups.cpp
     graphfoldgroups.hpp

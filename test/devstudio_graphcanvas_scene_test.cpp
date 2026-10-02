@@ -1,6 +1,7 @@
 #include "fullscreenshadertemplate.hpp"
 #include "graphcanvasloopfields.hpp"
 #include "graphcanvasrenderfields.hpp"
+#include "graphcanvasvaluefields.hpp"
 #include "graphcanvaswidget.hpp"
 #include "graphcomposition.hpp"
 #include "graphmodule.hpp"
@@ -9494,4 +9495,276 @@ TEST_CASE("UX-7 decision 7: a node the document gains is drawn while a pill's ed
     CHECK(nodeItem(scene, QStringLiteral("sea__color")) != nullptr);
     // The editor is still open, over the new drawing.
     CHECK(scene.editingInline());
+}
+
+// --- UX-8.
+
+namespace {
+
+Json ux8CurveDocument() {
+    return {{"schema", "pelican.graph"},
+            {"version", 1},
+            {"outputs", Json::object()},
+            {"definitions", Json::object()},
+            {"nodes",
+             Json::array({{{"id", "scene_time"}, {"op", "value.input"},
+                           {"parameters", {{"name", "scene_time"}}},
+                           {"outputs", Json::array({"value"})}},
+                          {{"id", "curve"}, {"op", "value.curve"},
+                           {"parameters",
+                            {{"keys", Json::array({{{"time", 0.0}, {"value", 0.0}},
+                                                   {{"time", 1.0}, {"value", 1.0}}})}}},
+                           {"inputs", {{"time", {{"node", "scene_time"}, {"port", "value"}}}}},
+                           {"outputs", Json::array({"value"})}}})}};
+}
+
+// The keys the `count`th edit wrote.
+Json ux8Keys(const Ux2Tab &tab, int count) {
+    const auto ops = ux7Ops(tab, count);
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].at("op") == "set_node_parameters");
+    return ops[0].at("parameters").at("keys");
+}
+
+void ux8Mouse(QWidget *widget, QEvent::Type type, const QPointF &at,
+              Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+    QMouseEvent event{type, at, widget->mapToGlobal(at), Qt::LeftButton,
+                      type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton,
+                      modifiers};
+    QCoreApplication::sendEvent(widget, &event);
+}
+
+} // namespace
+
+TEST_CASE("UX-8 decision 4: a curve's Keys table, its small curve and the Timeline's marks each "
+          "write one edit",
+          "[devstudio][graph-canvas][scene][ux8]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = ux8CurveDocument();
+    tab.read(document, "ux8-k-0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    tab.widget->scene().selectNode("curve");
+    QCoreApplication::processEvents();
+
+    auto *table = tab.field<QTableWidget>("pelican.graphCanvasCurve.keys");
+    REQUIRE(table->isVisible());
+    CHECK(table->rowCount() == 2);
+    // One row's value, typed: one edit with the whole list.
+    auto *value = tab.field<QDoubleSpinBox>("pelican.graphCanvasCurve.key1.value");
+    value->setValue(0.9);
+    Q_EMIT value->editingFinished();
+    QCoreApplication::processEvents();
+    CHECK(ux8Keys(tab, 1) == Json::array({{{"time", 0.0}, {"value", 0.0}},
+                                          {{"time", 1.0}, {"value", 0.9}}}));
+    document["nodes"][1]["parameters"]["keys"][1]["value"] = 0.9;
+    tab.commit(document, "ux8-k-1");
+    QCoreApplication::processEvents();
+
+    // The small curve: key 0 dragged right with Shift moves its time only.
+    tab.widget->scene().selectNode("curve");
+    QCoreApplication::processEvents();
+    // No Q_OBJECT of its own: found as the widget it is.
+    auto *graph = static_cast<PelicanStudio::GraphCanvasCurveGraph *>(
+        tab.field<QWidget>("pelican.graphCanvasCurve.graph"));
+    REQUIRE(graph->keys().size() == 2);
+    const auto start = graph->keyPoint(0);
+    ux8Mouse(graph, QEvent::MouseButtonPress, start);
+    ux8Mouse(graph, QEvent::MouseMove, start + QPointF{30.0, -20.0}, Qt::ShiftModifier);
+    ux8Mouse(graph, QEvent::MouseButtonRelease, start + QPointF{30.0, -20.0}, Qt::ShiftModifier);
+    QCoreApplication::processEvents();
+    const auto dragged = ux8Keys(tab, 2);
+    CHECK(dragged[0].at("time").get<double>() > 0.0);
+    CHECK(dragged[0].at("value") == 0.0);
+    CHECK(dragged[1] == Json{{"time", 1.0}, {"value", 0.9}});
+    document["nodes"][1]["parameters"]["keys"] = dragged;
+    tab.commit(document, "ux8-k-2");
+    QCoreApplication::processEvents();
+
+    // The Timeline: key 1's mark dragged left, to the middle of the strip.
+    tab.widget->scene().selectNode("curve");
+    tab.field<QPushButton>("pelican.graphTimelineToggle")->click();
+    QCoreApplication::processEvents();
+    auto *strip = tab.field<QWidget>("pelican.graphTimeline");
+    REQUIRE(strip->isVisible());
+    const qreal y = strip->height() - 10.0;
+    const qreal right = strip->width() - 1.0;
+    ux8Mouse(strip, QEvent::MouseButtonPress, QPointF{right, y});
+    ux8Mouse(strip, QEvent::MouseMove, QPointF{right * 0.75, y});
+    ux8Mouse(strip, QEvent::MouseButtonRelease, QPointF{right * 0.75, y});
+    QCoreApplication::processEvents();
+    const auto moved = ux8Keys(tab, 3);
+    CHECK(std::abs(moved[1].at("time").get<double>() - 0.75) < 0.02);
+    CHECK(moved[1].at("value") == 0.9);
+    // A press elsewhere on the strip is a scrub, as before.
+    CHECK(tab.reads("set_time") == 0);
+    ux8Mouse(strip, QEvent::MouseButtonPress, QPointF{right * 0.5, 10.0});
+    ux8Mouse(strip, QEvent::MouseButtonRelease, QPointF{right * 0.5, 10.0});
+    CHECK(tab.reads("set_time") == 1);
+    CHECK(tab.reads("edit_graph_document") == 3);
+}
+
+TEST_CASE("UX-8 decisions 7 and 8: audio.volume asks which voice it drives; what one addition "
+          "brings beside it is placed clear of what is drawn",
+          "[devstudio][graph-canvas][scene][ux8]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = ux8CurveDocument();
+    document["nodes"].push_back({{"id", "voice"}, {"op", "audio.playback"},
+                                 {"parameters", {{"asset", "project://assets/audio/pulse.wav"}}},
+                                 {"inputs", {{"time", {{"node", "scene_time"}, {"port", "value"}}}}},
+                                 {"outputs", Json::array({"voice"})}});
+    // The root draws its value and audio nodes too (Render only to begin with).
+    tab.field<QCheckBox>("pelican.graphCanvasShow.value")->setChecked(true);
+    tab.field<QCheckBox>("pelican.graphCanvasShow.audio")->setChecked(true);
+    tab.read(document, "ux8-p-0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    auto &model = tab.widget->model();
+
+    PelicanStudio::GraphCanvasRequiredDialog ask{model, {}, "audio.volume"};
+    REQUIRE(ask.asks());
+    auto *voice = ask.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRequired.voice"));
+    REQUIRE(voice != nullptr);
+    CHECK(voice->currentText() == QStringLiteral("voice"));
+    CHECK(ask.seed() == Json{{"parameters", Json::object()},
+                             {"inputs", {{"voice", {{"node", "voice"}, {"port", "voice"}}}}}});
+
+    // Placed: the sink and the constant on its value, which lands left of it.
+    auto &scene = tab.widget->scene();
+    REQUIRE(scene.addFromPalette({}, "audio.volume", {}, ask.seed()));
+    QCoreApplication::processEvents();
+    const auto ops = ux7Ops(tab, 1);
+    REQUIRE(ops.size() == 2);
+    auto placed = document;
+    for (const auto &op : ops) placed["nodes"].push_back(op.at("node"));
+    tab.commit(placed, "ux8-p-1");
+    QCoreApplication::processEvents();
+    std::vector<std::pair<QString, QRectF>> boxes;
+    for (const auto &node : placed.at("nodes")) {
+        const auto id = QString::fromStdString(node.at("id").get<std::string>());
+        auto *item = nodeItem(scene, id);
+        REQUIRE(item != nullptr);
+        boxes.emplace_back(id, item->sceneBoundingRect());
+    }
+    for (std::size_t a = 0; a < boxes.size(); ++a)
+        for (std::size_t b = a + 1; b < boxes.size(); ++b) {
+            INFO(boxes[a].first.toStdString() << " / " << boxes[b].first.toStdString());
+            CHECK_FALSE(boxes[a].second.intersects(boxes[b].second));
+        }
+    const auto constant = QString::fromStdString(ops[0].at("node").at("id").get<std::string>());
+    CHECK(nodeItem(scene, constant)->sceneBoundingRect().right() <
+          nodeItem(scene, QStringLiteral("audio_volume"))->sceneBoundingRect().left());
+}
+
+TEST_CASE("UX-8 decisions 10 and 11: New definition opens the definition it made; a loop's body is "
+          "drawn when its loop is gone",
+          "[devstudio][graph-canvas][scene][ux8]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = ux8CurveDocument();
+    tab.read(document, "ux8-d-0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    auto *action = tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvas.newDefinition"));
+    REQUIRE(action != nullptr);
+    action->trigger();
+    QCoreApplication::processEvents();
+    auto *name = tab.field<QLineEdit>("pelican.graphCanvasDefinitionName");
+    CHECK(name->text() == QStringLiteral("definition"));
+    name->setText(QStringLiteral("loop_body"));
+    tab.field<QPushButton>("pelican.graphCanvasDefinitionApply")->click();
+    QCoreApplication::processEvents();
+    const auto ops = ux7Ops(tab, 1);
+    CHECK(ops == Json::array({{{"op", "add_definition"}, {"name", "loop_body"},
+                               {"definition", {{"nodes", Json::array()},
+                                               {"outputs", Json::object()}}}}}));
+    document["definitions"]["loop_body"] = {{"nodes", Json::array()}, {"outputs", Json::object()}};
+    tab.commit(document, "ux8-d-1");
+    QCoreApplication::processEvents();
+    auto *scopes = tab.field<QComboBox>("pelican.graphCanvasScope");
+    CHECK(scopes->currentData().toString() == QStringLiteral("loop_body"));
+    auto &scene = tab.widget->scene();
+    auto *view = tab.field<QGraphicsView>("pelican.graphCanvasView");
+    // Decision 11 (GB-4): the empty body was fitted to nothing; the first
+    // node it gains is brought into view rather than left outside it.
+    view->scale(4.0, 4.0);
+    view->centerOn(QPointF{-5000.0, -5000.0});
+    document["definitions"]["loop_body"]["nodes"].push_back(
+        {{"id", "gain"}, {"op", "value.constant"}, {"parameters", {{"value", 2.0}}},
+         {"outputs", Json::array({"value"})}});
+    tab.field<QPushButton>("pelican.graphCanvasRefresh")->click();
+    tab.read(document, "ux8-d-1b");
+    QCoreApplication::processEvents();
+    REQUIRE(nodeItem(scene, QStringLiteral("gain")) != nullptr);
+    CHECK(view->mapToScene(view->viewport()->rect())
+              .boundingRect()
+              .intersects(nodeItem(scene, QStringLiteral("gain"))->sceneBoundingRect()));
+
+    // GB-4: a loop runs the body, the loop is deleted, and the body is
+    // chosen in Scope again: its nodes are drawn and in view.
+    scopes->setCurrentIndex(scopes->findData(QString{}));
+    QCoreApplication::processEvents();
+    auto with_loop = document;
+    with_loop["nodes"].push_back({{"id", "loop"}, {"op", "graph.loop"},
+                                  {"parameters", {{"over", {{"range", {{"count", 1}}}}},
+                                                  {"branches", Json::array({{{"body", "loop_body"}}})}}},
+                                  {"outputs", Json::array()}});
+    tab.field<QPushButton>("pelican.graphCanvasRefresh")->click();
+    tab.read(with_loop, "ux8-d-2");
+    QCoreApplication::processEvents();
+    scopes->setCurrentIndex(scopes->findData(QStringLiteral("loop_body")));
+    QCoreApplication::processEvents();
+    scopes->setCurrentIndex(scopes->findData(QString{}));
+    QCoreApplication::processEvents();
+    tab.field<QPushButton>("pelican.graphCanvasRefresh")->click();
+    tab.read(document, "ux8-d-3");
+    QCoreApplication::processEvents();
+    scopes->setCurrentIndex(scopes->findData(QStringLiteral("loop_body")));
+    QCoreApplication::processEvents();
+    auto *gain = nodeItem(scene, QStringLiteral("gain"));
+    REQUIRE(gain != nullptr);
+    const auto visible = view->mapToScene(view->viewport()->rect()).boundingRect();
+    CHECK(visible.intersects(gain->sceneBoundingRect()));
+}
+
+TEST_CASE("UX-8 decision 2: a pass's Buffers list its shader's buffer bindings, and + Buffer port "
+          "offers the names its shader reads through the port header",
+          "[devstudio][graph-canvas][scene][ux8]") {
+    (void)application();
+    const auto root = std::filesystem::temp_directory_path() / "pelican_ux8_buffers";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "shaders");
+    {
+        std::ofstream shader{root / "shaders" / "level.frag", std::ios::binary};
+        shader << "#include \"pelican_resource_ports.glsl\"\n"
+                  "#ifdef PELICAN_RESOURCE_PORT_level\n"
+                  "float level = pelican_load_level(0u);\n#endif\n";
+    }
+    Ux2Tab tab{false};
+    tab.widget->setProjectRoot(root);
+    auto pass = ux2Pass();
+    pass["shader"]["fragment"] = "project://shaders/level";
+    auto document = ux2Document(ux2Image(), pass);
+    document["nodes"].push_back({{"id", "level_buffer"}, {"op", "render.buffer"},
+                                 {"parameters", {{"element", "float"}, {"size", 4}}},
+                                 {"outputs", Json::array({"resource"})}});
+    tab.read(document, "ux8-b-0");
+    tab.answer("get_graph_catalog", ux7Catalog());
+    tab.widget->scene().selectNode("shade");
+    QCoreApplication::processEvents();
+    auto *list = tab.field<QLabel>("pelican.graphCanvasBuffers.list");
+    REQUIRE(list->isVisible());
+    tab.field<QPushButton>("pelican.graphCanvasBuffers.add")->click();
+    QCoreApplication::processEvents();
+    auto *name = tab.field<QComboBox>("pelican.graphCanvasBuffers.name");
+    CHECK(name->currentText() == QStringLiteral("level"));
+    auto *source = tab.field<QComboBox>("pelican.graphCanvasBuffers.source");
+    CHECK(source->currentData().toString() == QStringLiteral("level_buffer"));
+    tab.field<QPushButton>("pelican.graphCanvasBuffers.apply")->click();
+    QCoreApplication::processEvents();
+    const auto ops = ux7Ops(tab, 1);
+    REQUIRE(ops.size() == 2);
+    CHECK(ops[0].at("parameters").at("ports").at("level") ==
+          Json{{"kind", "buffer"}, {"access", "read"}, {"element", "float"}});
+    CHECK(ops[1].at("port") == "level");
+    std::filesystem::remove_all(root);
 }

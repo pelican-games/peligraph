@@ -843,6 +843,17 @@ struct GraphCanvasTimelineSample {
     double progress = 0;
 };
 
+// UX-8, decision 4: one key of a value.curve, as the engine reads it. What
+// the table does not show (a cubic key's tangents) rides in `rest`.
+struct GraphCanvasCurveKey {
+    double time = 0;
+    double value = 0;
+    std::string interpolation = "linear";
+    nlohmann::json rest = nlohmann::json::object();
+
+    bool operator==(const GraphCanvasCurveKey &) const = default;
+};
+
 // Reads the common graph for a read-only node canvas. Qt-independent, in the
 // same request/read two-slot shape as GraphAttachmentModel: the caller drains
 // takeRpcRequests(), sends them over whatever transport it has, and feeds the
@@ -2308,6 +2319,134 @@ class GraphCanvasModel {
     // The cut ends of the root's lines to hidden nodes, one per socket and
     // domain.
     [[nodiscard]] std::vector<GraphCanvasDomainStub> domainStubs() const;
+
+    // --- UX-8: a curve onto a shader's value, the curve's keys, the sound
+    // nodes' placing (graphcanvasvalues.cpp).
+
+    // Decision 4: the interpolations the engine's value.curve takes
+    // (valuegraph's curve keys: linear, step, cubic), the default first.
+    [[nodiscard]] static const std::vector<std::string> &curveInterpolations();
+    // The keys of a value.curve, as its `keys` holds them; empty for a node
+    // that is no curve (or keys the engine would not read).
+    [[nodiscard]] std::vector<GraphCanvasCurveKey> curveKeys(std::string_view scope,
+                                                             std::string_view node) const;
+    // Why the engine would refuse these keys -- none, or times that do not
+    // rise -- in one line; empty when it would take them.
+    [[nodiscard]] static std::string curveKeysRefusal(const std::vector<GraphCanvasCurveKey> &keys);
+    [[nodiscard]] static nlohmann::json curveKeysJson(const std::vector<GraphCanvasCurveKey> &keys);
+    // Key `index` moved to (time, value), its time held strictly between its
+    // neighbours' (a drag past one stops just short of it).
+    [[nodiscard]] static std::vector<GraphCanvasCurveKey>
+    curveKeysWithMoved(std::vector<GraphCanvasCurveKey> keys, std::size_t index, double time,
+                       double value);
+    // A key after `index` (halfway to the next, or one past the last), with
+    // the value the curve has there.
+    [[nodiscard]] static std::vector<GraphCanvasCurveKey>
+    curveKeysWithAdded(std::vector<GraphCanvasCurveKey> keys, std::size_t index);
+    // One gesture: the curve's keys replaced (one set_node_parameters, one
+    // Undo step). Refused keys are not sent; the edit notice says why.
+    bool setCurveKeys(std::string_view scope, const std::string &node,
+                      const std::vector<GraphCanvasCurveKey> &keys);
+
+    // Decision 5: value.playback's fields. The wraps the engine takes, the
+    // default first; the numbers it reads beside `elapsed` and their
+    // defaults (CurvePlaybackSettings).
+    [[nodiscard]] static const std::vector<std::string> &playbackWraps();
+    [[nodiscard]] static const std::vector<std::pair<std::string, double>> &playbackNumbers();
+    // An audio.playback carries the same map but no duration.
+    [[nodiscard]] static bool isPlayback(std::string_view op) noexcept;
+    // The number a field shows: the document's, else the default.
+    [[nodiscard]] double playbackNumber(std::string_view scope, std::string_view node,
+                                        std::string_view key) const;
+    // An edge drives it instead (its field is read only then).
+    [[nodiscard]] bool playbackDriven(std::string_view scope, std::string_view node,
+                                      std::string_view key) const;
+    // One set_node_parameters with `key` written (a default writes it too:
+    // what the field shows is what the document says).
+    bool setPlaybackField(std::string_view scope, const std::string &node, const std::string &key,
+                          const nlohmann::json &value);
+
+    // Decision 2: a pass's named buffer ports (kind buffer), in name order,
+    // which is the order the engine binds them after the images.
+    [[nodiscard]] std::vector<std::string> bufferPorts(std::string_view scope,
+                                                       std::string_view node) const;
+    // The element of the buffer a node hands on (a render.buffer's or
+    // render.attribute's own), or empty.
+    [[nodiscard]] std::string bufferElementOf(std::string_view scope, std::string_view node) const;
+    // A named buffer port `port` on the pass, reading `source_node.source_port`,
+    // and the edge into it, in one list -- or the edge moved onto the port
+    // already there. `element` is always written (the engine reads it).
+    // Empty, with `refusal` saying why, when the source hands on no buffer.
+    [[nodiscard]] nlohmann::json bufferPortOps(std::string_view scope, const std::string &node,
+                                               const std::string &port,
+                                               const std::string &source_node,
+                                               const std::string &source_port,
+                                               std::string *refusal = nullptr) const;
+    bool addBufferPort(std::string_view scope, const std::string &node, const std::string &port,
+                       const std::string &source_node, const std::string &source_port);
+    // A port name made of a shader's declaration ("Level" stays, "level
+    // buffer" becomes level_buffer); "buffer" for none.
+    [[nodiscard]] static std::string bufferPortName(std::string_view declaration);
+    // What the engine reads a resource port through (shaderresourceinterface's
+    // shaderResourcePortVariableName): a buffer the shader declares itself is
+    // a port's only under that name.
+    static constexpr std::string_view kResourcePortVariablePrefix = "pelican_resource_";
+    // The buffers a "+ Buffer port" can read in `scope`: render.buffer and
+    // render.attribute ids.
+    [[nodiscard]] std::vector<std::string> bufferSources(std::string_view scope) const;
+
+    // Decision 7: the voices a new audio.volume or audio.pitch can drive,
+    // the audio.playback nodes of the scope.
+    [[nodiscard]] std::vector<std::string> voiceChoices(std::string_view scope) const;
+
+    // Decision 6: why the Timeline cannot read values now, in one line;
+    // empty when it can (the root reads without an instance, with Live on).
+    [[nodiscard]] std::string timelineReason() const;
+
+    // Decision 10: a new, empty definition (no nodes, no outputs) by name.
+    [[nodiscard]] nlohmann::json newDefinitionOps(const std::string &name) const;
+    bool addDefinition(const std::string &name);
+
+    // Decision 12 (b): render.scalar's value -- the edge's one number, or 2
+    // to 4 numbers it writes itself -- and where it lands in its buffer.
+    // `components` is 1 for the edge's scalar.
+    [[nodiscard]] std::vector<double> scalarValue(std::string_view scope,
+                                                  std::string_view node) const;
+    // The sinks writing `target` in `scope`, in the order they tile the
+    // buffer (offset, then id), and the offsets that tile it without a gap.
+    [[nodiscard]] std::vector<std::pair<std::string, std::int64_t>>
+    scalarLayout(std::string_view scope, const std::string &target,
+                 const std::map<std::string, std::size_t> &components = {}) const;
+    // One edit: the sink's components (1 for the edge, else the numbers),
+    // and every sink on the same buffer given the offset that packs it.
+    bool setScalarValue(std::string_view scope, const std::string &node,
+                        const std::vector<double> &value);
+    // And its target: the old buffer's sinks and the new one's packed again.
+    bool setScalarTarget(std::string_view scope, const std::string &node,
+                         const std::string &target);
+    // What a render.scalar can write: the graph's buffers (bufferChoices)
+    // and the frame plan's other buffers (a feature's runtime buffer, as
+    // bloom.intensity).
+    [[nodiscard]] std::vector<std::string> scalarTargets(std::string_view scope) const;
+
+    // Decision 13 (a) (engine CT-1): the parameters the palette asks for,
+    // from the catalog's `required_parameters` when the engine lists them
+    // (the ones Studio seeds itself left out), else requiredParameters();
+    // and the names value.input takes, from the catalog's `input_names`.
+    [[nodiscard]] std::vector<RequiredParameter> requiredParametersFor(std::string_view op) const;
+    [[nodiscard]] std::vector<std::string> valueInputNamesFor() const;
 };
+
+// UX-8, decision 9: sound files copied into a project's assets/audio. Each
+// path is copied under its own name, `_2`, `_3`... when that name is taken.
+// Answers the references the copies are named by
+// (`project://assets/audio/<name>`) and, in `error`, why one was not copied
+// (not a .wav or .ogg, unreadable). Nothing is overwritten.
+struct GraphCanvasAudioImport {
+    std::vector<std::string> references;
+    std::string error;
+};
+GraphCanvasAudioImport importProjectAudio(const std::filesystem::path &project_root,
+                                          const std::vector<std::filesystem::path> &files);
 
 } // namespace PelicanStudio

@@ -338,6 +338,43 @@ Json sceneColorType() {
                                    {"range", "extended"}}}};
 }
 
+// UX-8, decision 2. A pass's named buffer ports, in name order -- the order
+// the engine binds a graph pass's buffer reads, after its images.
+std::vector<std::string> namedBufferPorts(const Json &node) {
+    std::vector<std::string> ports;
+    const auto parameters = node.value("parameters", Json::object());
+    const auto declared = parameters.is_object() ? parameters.value("ports", Json::object())
+                                                 : Json::object();
+    if (!declared.is_object()) return ports;
+    for (const auto &[name, port] : declared.items())
+        if (port.is_object() && text(port, "kind") == "buffer" && !port.contains("binding"))
+            ports.push_back(name);
+    std::ranges::sort(ports);
+    return ports;
+}
+
+// The named buffer port a buffer declaration of the shader reads: the one
+// called what the declaration is called, else the one at its place among
+// the buffers (the k-th buffer declaration is the k-th buffer port).
+std::string bufferSocketPort(const FramePlanPassInputs &declared, const Json &node,
+                             const FramePlanPassInputDeclaration &declaration) {
+    const auto ports = namedBufferPorts(node);
+    if (ports.empty()) return {};
+    const auto named = GraphCanvasModel::bufferPortName(declaration.name);
+    if (std::ranges::find(ports, named) != ports.end()) return named;
+    std::vector<std::string> unnamed = ports;
+    std::size_t place = 0;
+    bool counted = false;
+    for (const auto &other : declared.declarations) {
+        if (!other.buffer() || other.variadic) continue;
+        const auto other_name = GraphCanvasModel::bufferPortName(other.name);
+        std::erase(unnamed, other_name);
+        if (&other == &declaration) counted = true;
+        else if (!counted && std::ranges::find(ports, other_name) == ports.end()) ++place;
+    }
+    return place < unnamed.size() ? unnamed[place] : std::string{};
+}
+
 // Q-19, decision 1: a render node's sockets, from its pass's declarations and
 // its numbered ports -- VI-3a's framePlanInputSockets, with a numbered port
 // where the Frame Plan has a pass's input. Binding n is input n: the numbered
@@ -398,6 +435,14 @@ std::vector<GraphCanvasInputSocket> graphInputSockets(const FramePlanPassInputs 
             const auto index = static_cast<std::int64_t>(declaration.binding);
             taken.insert(index);
             connect(socket, index);
+        } else if (const auto port = bufferSocketPort(declared, node, declaration); !port.empty()) {
+            // UX-8, decision 2: the named buffer port that binding reads.
+            socket.port = port;
+            if (inputs.is_object())
+                if (const auto edge = inputs.find(port); edge != inputs.end() && edge->is_object()) {
+                    socket.source_node = text(*edge, "node");
+                    socket.source_port = text(*edge, "port");
+                }
         }
         socket.label = socket.connected() ? declaration.name + " ← " + source(socket)
                                           : declaration.name;
@@ -753,8 +798,12 @@ std::string GraphCanvasModel::nodeValuesInstance() const {
 
 void GraphCanvasModel::requestObservation() {
     // The overlay is what the user asked for by naming an instance. Without
-    // one, the canvas is the document's and nothing is read.
-    if (!connected_ || values_instance_.empty()) return;
+    // one, the canvas is the document's and nothing is read -- except, UX-8
+    // decision 6, the root's own nodes while Live is on: the root is the
+    // empty question, which needs no instance (a graph of root nodes only
+    // has none to name).
+    if (!connected_) return;
+    if (values_instance_.empty() && !(live_ && currentScope().empty())) return;
     // A pair already in the air is the answer to the same question. Asking
     // again would only drop it: a Live tick on an engine slower than the tick
     // must not build a queue of reads nobody will ever look at.
@@ -1918,6 +1967,19 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
                 add_port(name, false);
             }
         }
+        // UX-8, decision 1: a buffer takes its value on an edge (graphmodule's
+        // renderPorts gives render.buffer and render.attribute an optional
+        // scalar `value`), which the catalog cannot list for an op whose
+        // ports follow its parameters. It is the first row, typed, so a
+        // curve's line lands there and nothing else's does.
+        if (!declared && (drawn.op == "render.buffer" || drawn.op == "render.attribute") &&
+            std::ranges::none_of(ports, [](const auto &port) { return port.port == "value"; })) {
+            GraphCanvasPort value;
+            value.port = "value";
+            value.declared = true;
+            value.type = kGraphInputType;
+            ports.insert(ports.begin(), std::move(value));
+        }
         if (has_authored_inputs)
             for (const auto &[name, value] : authored_inputs->items()) {
                 (void)value;
@@ -1974,8 +2036,12 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
                 const auto numbered = numberedPorts(drawn.parameters);
                 std::erase_if(drawn.inputs, [&](const GraphCanvasPort &port) {
                     return std::ranges::any_of(numbered, [&](const auto &entry) {
-                        return entry.second == port.port;
-                    });
+                               return entry.second == port.port;
+                           }) ||
+                           // UX-8: a buffer port a declaration's socket shows.
+                           std::ranges::any_of(drawn.input_sockets, [&](const auto &socket) {
+                               return socket.buffer && socket.port == port.port;
+                           });
                 });
             }
 
@@ -2695,9 +2761,32 @@ bool GraphCanvasModel::connectInput(std::string_view scope, const std::string &n
                                     const std::string &source_port) {
     if (!canEdit()) return false;
     if (!canConnect(scope, source_node, source_port, node, port)) return false;
-    return submitOps(Json::array({Json{
+    Json ops = Json::array();
+    // UX-8, decision 1: a buffer fed by a value is one runtime float
+    // (graphpartition: "scalar-connected buffer requires one runtime float").
+    // Its size goes with the line; another element is refused here, by name.
+    if (const auto *target = findNode(scope, node);
+        port == "value" && target != nullptr &&
+        (text(*target, "op") == "render.buffer" || text(*target, "op") == "render.attribute")) {
+        auto parameters = nodeParameters(scope, node);
+        const auto element = parameters.is_object() ? text(parameters, "element") : std::string{};
+        if (element != "float") {
+            edit_notice_ = {InspectorNoticeKind::Error,
+                            node + " holds " + (element.empty() ? std::string{"no element"} : element) +
+                                ": a value's line writes one float. For two to four numbers, "
+                                "write them with a render.scalar."};
+            return false;
+        }
+        if (text(*target, "op") == "render.buffer" && parameters.value("size", Json{}) != Json(4)) {
+            parameters["size"] = 4;
+            ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", scopeToken(scope)},
+                               {"node", node}, {"parameters", std::move(parameters)}});
+        }
+    }
+    ops.push_back(Json{
         {"op", "set_input"}, {"scope", scopeToken(scope)}, {"node", node}, {"port", port},
-        {"source", Json{{"node", source_node}, {"port", source_port}}}}}));
+        {"source", Json{{"node", source_node}, {"port", source_port}}}});
+    return submitOps(std::move(ops));
 }
 
 bool GraphCanvasModel::disconnectInput(const std::string &node, const std::string &port) {
@@ -2711,6 +2800,19 @@ bool GraphCanvasModel::disconnectInput(std::string_view scope, const std::string
     // takes the port, and the ones after it move down a number.
     if (auto ops = removeInputPortOps(scope, node, port); !ops.empty())
         return submitOps(std::move(ops));
+    // UX-8, decision 2: so is a pass's named buffer port -- a port with no
+    // line is not one the engine binds.
+    if (const auto buffers = bufferPorts(scope, node);
+        isGraphicsPass(text(*findNode(scope, node), "op")) &&
+        std::ranges::find(buffers, port) != buffers.end()) {
+        auto parameters = nodeParameters(scope, node);
+        parameters["ports"].erase(port);
+        return submitOps(Json::array(
+            {Json{{"op", "set_input"}, {"scope", scopeToken(scope)}, {"node", node}, {"port", port},
+                  {"source", nullptr}},
+             Json{{"op", "set_node_parameters"}, {"scope", scopeToken(scope)}, {"node", node},
+                  {"parameters", std::move(parameters)}}}));
+    }
     return submitOps(Json::array({Json{
         {"op", "set_input"}, {"scope", scopeToken(scope)}, {"node", node}, {"port", port},
         {"source", nullptr}}}));
@@ -3270,7 +3372,11 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
         // -- the scope's own scene_time when it has one, a new one otherwise
         // -- and so starts on its owner's first frame (AU-3). The clock and
         // the node go out as one edit, so one Undo takes both back.
-        if (isAudioPlayback(op) && port == "time") {
+        // UX-8, decision 3: a curve and a playback likewise -- a curve read
+        // at a constant time is one number, and a playback whose elapsed
+        // stands still never plays.
+        if ((isAudioPlayback(op) && port == "time") || (op == "value.curve" && port == "time") ||
+            (op == "value.playback" && port == "elapsed")) {
             auto clock = sceneTimeNode(in_scope);
             if (clock.empty()) {
                 clock = suggestNodeId(in_scope, "scene_time");
@@ -3283,13 +3389,27 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
             continue;
         }
         const auto seed = id + "__" + port;
+        // UX-8, decision 7: a sound's volume or pitch starts where the voice
+        // plays as it is (1), not at silence.
+        const double start = op == "audio.volume" || op == "audio.pitch" ? 1.0 : 0.0;
         ops.push_back(Json{{"op", "add_node"}, {"scope", scope},
             {"node", Json{{"id", seed}, {"op", "value.constant"},
-                          {"parameters", Json{{"value", 0.0}}},
+                          {"parameters", Json{{"value", start}}},
                           {"outputs", Json::array({"value"})}}}});
         inputs[port] = Json{{"node", seed}, {"port", "value"}};
     }
+    // UX-8, decision 7: the edges the palette's dialog chose (a sound sink's
+    // voice), beside the ones seeded here.
+    if (seed.is_object())
+        if (const auto given = seed.find("inputs"); given != seed.end() && given->is_object())
+            for (const auto &[port, edge] : given->items())
+                if (edge.is_object()) inputs[port] = edge;
     if (!inputs.empty()) node["inputs"] = std::move(inputs);
+    // UX-8, decision 3: a curve arrives as a ramp from 0 to 1 over its first
+    // second, which its Keys table edits.
+    if (op == "value.curve")
+        node["parameters"]["keys"] =
+            Json::array({Json{{"time", 0.0}, {"value", 0.0}}, Json{{"time", 1.0}, {"value", 1.0}}});
     // Q-8. A ui.* sink without a node path is not a document the engine
     // loads either ("ui sink requires a node path"). It arrives writing the
     // first node the project's UI document offers for it; the details panel
@@ -5018,9 +5138,36 @@ Json GraphCanvasModel::socketOps(std::string_view scope, const std::string &node
             std::ranges::any_of(declared->declarations, &FramePlanPassInputDeclaration::variadic);
         if (declaration == declared->declarations.end() && !member)
             return refuse(node + "'s shader declares no binding " + std::to_string(binding) + ".");
-        if (declaration != declared->declarations.end() && declaration->buffer())
-            return refuse("Binding " + std::to_string(binding) + " of " + node +
-                          " takes a buffer: a graph pass reads only images by number.");
+        if (declaration != declared->declarations.end() && declaration->buffer()) {
+            // UX-8, decision 2: a buffer binding reads a named buffer port --
+            // the one it reads already, else one named for the declaration
+            // -- added with its line in one list. The engine hands a pass's
+            // buffer reads over as storage buffers only.
+            if (declaration->type.find("storage") == std::string::npos)
+                return refuse("Binding " + std::to_string(binding) + " of " + node + " is a " +
+                              declaration->type +
+                              ": a pass hands its shader storage buffers (declare it as a "
+                              "`readonly buffer` block).");
+            // The engine binds a named port only to the variable the port
+            // header would declare for it: pelican_resource_<port>.
+            if (!declaration->name.starts_with(kResourcePortVariablePrefix))
+                return refuse(
+                    "Binding " + std::to_string(binding) + " of " + node + " is " +
+                    (declaration->name.empty() ? std::string{"an unnamed block"}
+                                               : declaration->name) +
+                    ": the engine reads a buffer port through a variable named "
+                    "pelican_resource_<port>. Name the block's variable so, or read it "
+                    "through pelican_resource_ports.glsl and + Buffer port.");
+            auto port = bufferSocketPort(*declared, *target, *declaration);
+            if (port.empty()) {
+                port = bufferPortName(declaration->name);
+                const auto ports = parameters.value("ports", Json::object());
+                if (ports.is_object() && ports.contains(port) &&
+                    text(ports.at(port), "kind") != "buffer")
+                    port = suggestInputPortName(scope, node, port);
+            }
+            return bufferPortOps(scope, node, port, source_node, source_port, refusal);
+        }
         if (binding > count) return fill_first(count, binding);
         if (binding < count) existing = numbered.at(static_cast<std::int64_t>(binding));
     } else {

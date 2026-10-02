@@ -88,6 +88,12 @@ class GraphCanvasImageFields final : public QWidget {
     QSpinBox *width_ = nullptr;
     QSpinBox *height_ = nullptr;
     QSpinBox *layers_ = nullptr;
+    // UX-8, decision 12 (a) (RS-15): the mip count (0 reads "full"), and
+    // behind the f button the layer and mip counts as integer expressions
+    // too (a body's image: `6 - element`).
+    QSpinBox *mip_levels_ = nullptr;
+    QLineEdit *layers_expression_ = nullptr;
+    QLineEdit *mip_levels_expression_ = nullptr;
     // UX-7, decision 6: `history: true`, named `pelican.graphCanvasImage.history`.
     QCheckBox *history_ = nullptr;
     QLabel *note_ = nullptr;
@@ -291,6 +297,10 @@ class GraphCanvasRequiredDialog final : public QDialog {
     [[nodiscard]] bool asks() const noexcept { return !fields_.empty(); }
     // The parameters as the fields hold them now.
     [[nodiscard]] nlohmann::json parameters() const;
+    // UX-8, decision 7: what the palette adds the node with --
+    // {"parameters": ..., "inputs": {"voice": {node, port}}} (the voice a
+    // sound sink drives is an edge).
+    [[nodiscard]] nlohmann::json seed() const;
 
   private:
     void follow();

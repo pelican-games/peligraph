@@ -1175,6 +1175,12 @@ void MainWindow::createMenus() {
                 5000);
         }
     });
+    // UX-8, decision 9: sounds copied into the project's assets/audio, the
+    // Graph tab's Sound list's Import….
+    QAction *import_sound_action = file_menu->addAction(tr("Import &Sound…"));
+    import_sound_action->setObjectName(QStringLiteral("pelican.file.importSound"));
+    connect(import_sound_action, &QAction::triggered, this,
+            [this] { graph_canvas_->chooseSoundsToImport(); });
     file_menu->addSeparator();
     QAction *exit_action = file_menu->addAction(tr("E&xit"));
     exit_action->setObjectName(QStringLiteral("pelican.file.exit"));

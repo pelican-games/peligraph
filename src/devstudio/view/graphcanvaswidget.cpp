@@ -3,6 +3,7 @@
 #include "graphcanvasfoldgroups.hpp"
 #include "graphcanvasloopfields.hpp"
 #include "graphcanvasrenderfields.hpp"
+#include "graphcanvasvaluefields.hpp"
 #include "fullscreenshadertemplate.hpp"
 
 #include "inlineediteventfilter.hpp"
@@ -27,6 +28,11 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QFileDialog>
+#include <QMimeData>
+#include <QUrl>
 #include <QFont>
 #include <QFontMetrics>
 #include <QFormLayout>
@@ -3293,6 +3299,10 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
         add_fullscreen_action_->setEnabled(true);
         menu.addAction(add_fullscreen_action_);
     }
+    // UX-8, decision 10: a definition of its own, without a loop.
+    if (new_definition_action_ != nullptr && model_ != nullptr && model_->canEdit() &&
+        !model_->foldedView())
+        menu.addAction(new_definition_action_);
     // Decision 6: an input of a root loop can read one element of another
     // loop's p[].
     if (model_ != nullptr && perIterationRequested && model_->currentScope().empty()) {
@@ -3878,16 +3888,69 @@ bool GraphCanvasScene::addFromPalette(const std::string &scope, const std::strin
     // end with the loop that runs the scope being given a place.
     std::string added;
     std::string added_scope = scope;
+    // UX-8, decision 8: the nodes the list adds beside it (a clock, a
+    // required input's constant, a pass's image), each given a place too.
+    std::vector<std::pair<std::string, std::string>> all_added;
     for (const auto &entry : ops)
         if (entry.value("op", std::string{}) == "add_node") {
             added = entry.at("node").value("id", std::string{});
             const auto token = entry.value("scope", std::string{"root"});
             added_scope = token == "root" ? std::string{} : token;
+            all_added.emplace_back(added_scope, added);
         }
     if (!model_->addNodeIn(scope, op, definition, seed)) return false;
     placeNewNode(added_scope, added, added_scope == scope ? op : std::string{});
+    std::vector<std::string> companions;
+    for (const auto &[each_scope, id] : all_added)
+        if (each_scope == added_scope && id != added) companions.push_back(id);
+    placeCompanions(added_scope, added, companions);
     afterEdit(true);
     return true;
+}
+
+void GraphCanvasScene::placeCompanions(const std::string &scope, const std::string &main,
+                                       const std::vector<std::string> &companions) {
+    const auto main_at = session_node_positions_.find({scope, main});
+    if (companions.empty() || main_at == session_node_positions_.end()) return;
+    // What is drawn in the scope, and what has been placed since: a
+    // companion goes left of the node it feeds, one under the other, moved
+    // down past anything it would land on.
+    std::vector<QRectF> boxes;
+    for (QGraphicsItem *item : items()) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem} ||
+            item->data(GraphCanvasScopeRole).toString() != qtext(scope))
+            continue;
+        const auto name = item->data(NodeGraphNameRole).toString().toStdString();
+        if (name == main || std::ranges::find(companions, name) != companions.end()) continue;
+        const QRectF drawn = item->sceneBoundingRect();
+        boxes.push_back(QRectF{toScopePoint(scope, drawn.topLeft()),
+                               toScopePoint(scope, drawn.bottomRight())});
+    }
+    // Not drawn yet, so as wide as a node gets (a heading names it):
+    // whatever it turns out to be, it ends left of the node it feeds.
+    const QSizeF size{GraphCanvasNodeMaximumWidth,
+                      GraphCanvasHeaderHeight + 2.0 * GraphCanvasSectionPadding +
+                          3.0 * GraphCanvasSocketRowHeight};
+    boxes.emplace_back(main_at->second, QSizeF{GraphCanvasNodeMaximumWidth,
+                                               GraphCanvasHeaderHeight +
+                                                   2.0 * GraphCanvasSectionPadding +
+                                                   4.0 * GraphCanvasSocketRowHeight});
+    QPointF next{main_at->second.x() - GraphCanvasNodeMaximumWidth - NodeGraphHorizontalGap,
+                 main_at->second.y()};
+    const qreal margin = GraphCanvasSectionPadding;
+    for (const auto &id : companions) {
+        QRectF box{next, size};
+        for (std::size_t guard = 0; guard <= boxes.size(); ++guard) {
+            const auto hit = std::ranges::find_if(boxes, [&](const QRectF &other) {
+                return box.adjusted(-margin, -margin, margin, margin).intersects(other);
+            });
+            if (hit == boxes.end()) break;
+            box.moveTop(hit->bottom() + NodeGraphVerticalGap / 2.0);
+        }
+        session_node_positions_[{scope, id}] = box.topLeft();
+        boxes.push_back(box);
+        next = QPointF{box.left(), box.bottom() + NodeGraphVerticalGap / 2.0};
+    }
 }
 
 bool GraphCanvasScene::addLoop(const std::string &body, const std::string &new_definition) {
@@ -4317,6 +4380,27 @@ class GraphTimelineStrip final : public QWidget {
         setScrubBlocked({});
     }
 
+    // UX-8, decision 4: the picked value.curve's keys, drawn on the strip
+    // at their times; a key dragged sideways is moved to the time it is
+    // let go at (one edit), its value kept.
+    using Keys = std::function<std::vector<GraphCanvasCurveKey>()>;
+    using MoveKey = std::function<void(std::size_t index, double time)>;
+    void setKeyAccess(Keys keys, MoveKey move) {
+        keys_ = std::move(keys);
+        move_key_ = std::move(move);
+    }
+    [[nodiscard]] std::vector<GraphCanvasCurveKey> curveKeys() const {
+        return keys_ ? keys_() : std::vector<GraphCanvasCurveKey>{};
+    }
+    // Where key `index` is drawn on the strip (its x), for a test.
+    [[nodiscard]] std::optional<int> keyX(std::size_t index) const {
+        const auto keys = curveKeys();
+        double from = 0;
+        double to = 0;
+        if (index >= keys.size() || !span(&from, &to) || width() <= 1) return std::nullopt;
+        return static_cast<int>(std::lround((keys[index].time - from) / (to - from) * (width() - 1)));
+    }
+
     // PM-3a: while the game plays, the strip is read-only and says why.
     void setScrubBlocked(const QString &reason) {
         setToolTip(reason.isEmpty()
@@ -4332,9 +4416,16 @@ class GraphTimelineStrip final : public QWidget {
     // been watched, so there is no span and no scrub.
     [[nodiscard]] bool span(double *from, double *to) const {
         const auto &samples = model_.timelineSamples();
-        if (samples.empty()) return false;
-        *from = samples.front().time;
-        *to = samples.back().time;
+        const auto keys = curveKeys();
+        if (samples.empty() && keys.empty()) return false;
+        // UX-8, decision 4: the picked curve's keys are on the strip too, so
+        // it reaches them -- and from 0, where a curve is first read.
+        *from = samples.empty() ? 0.0 : samples.front().time;
+        *to = samples.empty() ? 0.0 : samples.back().time;
+        if (!keys.empty()) {
+            *from = std::min({*from, 0.0, keys.front().time});
+            *to = std::max(*to, keys.back().time);
+        }
         // A run that has not moved yet is one point, and a point has no
         // inside: give it a second of width so the strip is drivable rather
         // than dividing by zero.
@@ -4360,6 +4451,17 @@ class GraphTimelineStrip final : public QWidget {
             QWidget::mousePressEvent(event);
             return;
         }
+        // A press on a key's mark takes the key, not the clock.
+        const auto keys = curveKeys();
+        for (std::size_t index = 0; move_key_ && index < keys.size(); ++index)
+            if (const auto x = keyX(index);
+                x && std::abs(*x - event->position().x()) <= 5.0 &&
+                event->position().y() >= height() - 22.0) {
+                dragging_key_ = index;
+                dragged_to_.reset();
+                event->accept();
+                return;
+            }
         emitScrub(event);
     }
     void mouseMoveEvent(QMouseEvent *event) override {
@@ -4367,7 +4469,24 @@ class GraphTimelineStrip final : public QWidget {
             QWidget::mouseMoveEvent(event);
             return;
         }
+        if (dragging_key_) {
+            dragged_to_ = timeAt(static_cast<int>(event->position().x()));
+            update();
+            event->accept();
+            return;
+        }
         emitScrub(event);
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override {
+        if (!dragging_key_) {
+            QWidget::mouseReleaseEvent(event);
+            return;
+        }
+        const auto index = *std::exchange(dragging_key_, std::nullopt);
+        const auto to = std::exchange(dragged_to_, std::nullopt);
+        if (to && move_key_) move_key_(index, *to);
+        update();
+        event->accept();
     }
 
     void paintEvent(QPaintEvent *) override {
@@ -4380,6 +4499,7 @@ class GraphTimelineStrip final : public QWidget {
 
         const auto &samples = model_.timelineSamples();
         const auto &ports = model_.timelinePorts();
+        paintKeys(painter);
         if (samples.size() < 2 || ports.empty()) {
             painter.setPen(QPen{theme.canvas.dim_text});
             painter.drawText(rect(), Qt::AlignCenter,
@@ -4467,8 +4587,83 @@ class GraphTimelineStrip final : public QWidget {
         event->accept();
     }
 
+    // The keys as diamonds along the bottom edge, the one being dragged
+    // where the hand is.
+    void paintKeys(QPainter &painter) const {
+        const auto keys = curveKeys();
+        if (keys.empty()) return;
+        const StudioTheme &theme = currentStudioTheme();
+        for (std::size_t index = 0; index < keys.size(); ++index) {
+            auto x = keyX(index);
+            if (dragging_key_ == index && dragged_to_) {
+                double from = 0;
+                double to = 0;
+                if (span(&from, &to))
+                    x = static_cast<int>(std::lround((*dragged_to_ - from) / (to - from) * (width() - 1)));
+            }
+            if (!x) continue;
+            const qreal y = height() - 10.0;
+            QPolygonF diamond{{QPointF{*x - 5.0, y}, QPointF{static_cast<qreal>(*x), y - 5.0},
+                               QPointF{*x + 5.0, y}, QPointF{static_cast<qreal>(*x), y + 5.0}}};
+            painter.setPen(QPen{theme.canvas.node_border, 1.0});
+            painter.setBrush(theme.domainTint(dragging_key_ == index ? QStringLiteral("rendering")
+                                                                     : QStringLiteral("values")));
+            painter.drawPolygon(diamond);
+            painter.setPen(QPen{theme.canvas.node_border, 1.0, Qt::DotLine});
+            painter.drawLine(QPointF{static_cast<qreal>(*x), 4.0}, QPointF{static_cast<qreal>(*x), y - 6.0});
+        }
+        painter.setBrush(Qt::NoBrush);
+    }
+
     const GraphCanvasModel &model_;
     Scrub scrub_;
+    Keys keys_;
+    MoveKey move_key_;
+    std::optional<std::size_t> dragging_key_;
+    std::optional<double> dragged_to_;
+};
+
+// UX-8, decision 9: .wav and .ogg files dropped on the canvas or on the
+// Sound list are copied into the project.
+class SoundDropFilter final : public QObject {
+  public:
+    using Import = std::function<void(const std::vector<std::filesystem::path> &)>;
+    SoundDropFilter(Import import, QObject *parent) : QObject{parent}, import_{std::move(import)} {}
+
+    static std::vector<std::filesystem::path> sounds(const QMimeData *data) {
+        std::vector<std::filesystem::path> files;
+        if (data == nullptr || !data->hasUrls()) return files;
+        for (const auto &url : data->urls()) {
+            if (!url.isLocalFile()) continue;
+            const auto path = url.toLocalFile();
+            if (path.endsWith(QStringLiteral(".wav"), Qt::CaseInsensitive) ||
+                path.endsWith(QStringLiteral(".ogg"), Qt::CaseInsensitive))
+                files.emplace_back(path.toStdWString());
+        }
+        return files;
+    }
+
+  protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove) {
+            auto *drag = static_cast<QDropEvent *>(event);
+            if (sounds(drag->mimeData()).empty()) return QObject::eventFilter(watched, event);
+            drag->acceptProposedAction();
+            return true;
+        }
+        if (event->type() == QEvent::Drop) {
+            auto *drop = static_cast<QDropEvent *>(event);
+            const auto files = sounds(drop->mimeData());
+            if (files.empty()) return QObject::eventFilter(watched, event);
+            drop->acceptProposedAction();
+            if (import_) import_(files);
+            return true;
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+  private:
+    Import import_;
 };
 
 // GL-1d, decision 5: the palette's filter keeps the keyboard while the list
@@ -4548,6 +4743,9 @@ struct GraphCanvasWidget::Impl {
     std::unique_ptr<GraphCanvasFoldController> folds;
     // UX-3, decision 2: where a render node lands.
     GraphCanvasPlaceFields *place_fields = nullptr;
+    // UX-8: a curve's keys, a playback's map, a scalar's numbers, a
+    // pass's buffers.
+    GraphCanvasValueFields *value_fields = nullptr;
     QComboBox *loop_branch = nullptr;
     QLabel *shared_mark = nullptr;
     // GL-1, decision 5: Show: one box per domain the root canvas can draw.
@@ -4587,6 +4785,7 @@ struct GraphCanvasWidget::Impl {
     QLineEdit *definition_name = nullptr;
     QPushButton *definition_apply = nullptr;
     QPushButton *definition_cancel = nullptr;
+    QAction *new_definition_action = nullptr;
     QLabel *definition_line = nullptr;
     // What the row is about, and whether it deletes rather than renames.
     std::string definition_subject;
@@ -4955,6 +5154,15 @@ struct GraphCanvasWidget::Impl {
             scene->addFromPalette("render.fullscreen");
         });
         scene->setAddActions(add_loop_action, add_fullscreen_action);
+        // UX-8, decision 10. Named, so the automation surface fires it too.
+        new_definition_action = new QAction(QObject::tr("New definition…"), &view);
+        new_definition_action->setObjectName(QStringLiteral("pelican.graphCanvas.newDefinition"));
+        new_definition_action->setToolTip(
+            QObject::tr("An empty definition of its own, to fill and attach as an instance"));
+        view.addAction(new_definition_action);
+        QObject::connect(new_definition_action, &QAction::triggered, &view,
+                         [this] { openNewDefinitionRow(); });
+        scene->setNewDefinitionAction(new_definition_action);
         // Q-19, decision 4. Named, like the additions: fired by name they
         // are about the definition on screen, else the one the picked zone
         // shows; from a menu, about the definition the menu was opened over.
@@ -5101,7 +5309,28 @@ struct GraphCanvasWidget::Impl {
             label->setFont(studioSmallFont());
             return label;
         };
-        audio_layout->addRow(caption(QObject::tr("Sound")), audio_asset);
+        // UX-8, decision 9: Import... copies sounds into assets/audio (the
+        // first is put on the voice), and a sound dropped here does too.
+        auto *sound_row = new QHBoxLayout;
+        sound_row->setContentsMargins(0, 0, 0, 0);
+        sound_row->addWidget(audio_asset, 1);
+        audio_import = new QPushButton(QObject::tr("Import…"), audio_row);
+        audio_import->setObjectName(QStringLiteral("pelican.graphCanvasAudioImport"));
+        audio_import->setToolTip(QObject::tr(
+            "Copy .wav or .ogg files into the project's assets/audio and play the first on "
+            "this voice (a name already there gets _2)."));
+        sound_row->addWidget(audio_import);
+        audio_layout->addRow(caption(QObject::tr("Sound")), sound_row);
+        auto *sound_drop = new SoundDropFilter(
+            [this](const std::vector<std::filesystem::path> &files) { importSounds(files); }, &view);
+        for (QWidget *target : std::initializer_list<QWidget *>{
+                 canvas->viewport(), audio_asset, audio_asset->lineEdit()}) {
+            target->setAcceptDrops(true);
+            target->installEventFilter(sound_drop);
+        }
+        QObject::connect(audio_import, &QPushButton::clicked, &view, [this] {
+            chooseSounds();
+        });
         audio_layout->addRow(caption(QObject::tr("Bus")), audio_bus);
         audio_layout->addRow(caption(QObject::tr("Wrap")), audio_wrap);
         side_layout->addWidget(audio_row);
@@ -5142,6 +5371,8 @@ struct GraphCanvasWidget::Impl {
         side_layout->addWidget(pass_fields);
         place_fields = new GraphCanvasPlaceFields(model, [this] { dispatch(); }, side);
         side_layout->addWidget(place_fields);
+        value_fields = new GraphCanvasValueFields(model, [this] { dispatch(); }, side);
+        side_layout->addWidget(value_fields);
         details = new QTreeWidget(side);
         details->setObjectName(QStringLiteral("pelican.graphCanvasDetails"));
         details->setColumnCount(2);
@@ -5196,6 +5427,26 @@ struct GraphCanvasWidget::Impl {
         timeline = new GraphTimelineStrip(model, [this](double time) {
             if (model.scrub(time)) dispatch();
         }, timeline_panel);
+        // UX-8, decision 4: the picked curve's keys on the strip.
+        timeline->setKeyAccess(
+            [this] {
+                const auto &selected = scene->selectedNode();
+                if (!selected) return std::vector<GraphCanvasCurveKey>{};
+                return model.curveKeys(scene->selectedScope(), *selected);
+            },
+            [this](std::size_t index, double time) {
+                const auto &selected = scene->selectedNode();
+                if (!selected) return;
+                const auto scope = scene->selectedScope();
+                const auto keys = model.curveKeys(scope, *selected);
+                if (index >= keys.size()) return;
+                if (model.setCurveKeys(scope, *selected,
+                                       GraphCanvasModel::curveKeysWithMoved(keys, index, time,
+                                                                            keys[index].value)))
+                    dispatch();
+                else
+                    showNotice();
+            });
         timeline_layout->addWidget(timeline);
         timeline_panel->hide();
         layout->addWidget(timeline_panel);
@@ -5299,6 +5550,12 @@ struct GraphCanvasWidget::Impl {
         scene->repopulated = [this] {
             // GL-1: a folded view is a view of its own, fitted the first time.
             canvas->showScope(qtext(model.viewKey()));
+            // UX-8, decision 11 (GB-4): a scope first shown with nothing in
+            // it -- a new, empty definition -- was fitted to nothing, and
+            // kept that view; the first nodes it gains are fitted instead,
+            // or they lie outside it (and the scope looks empty whenever it
+            // is shown again).
+            fitScopeGainingNodes();
             // GL-3a: the fold groups over what was just drawn.
             if (folds) folds->redraw();
         };
@@ -5616,6 +5873,7 @@ struct GraphCanvasWidget::Impl {
         dispatch();
         tellPlanCommit();
         revealPending();
+        scopePending();
         // GL-1e: an edit refused for a moved document, once the context
         // read after it has arrived.
         resumePassRetry();
@@ -5815,6 +6073,41 @@ struct GraphCanvasWidget::Impl {
         synchronize();
     }
 
+    // UX-8, decision 10: "New definition…" opens the same row on a name
+    // Studio proposes; Create adds the empty definition and the canvas goes
+    // into it once the document holds it.
+    bool definition_creating = false;
+    std::string pending_scope;
+    void openNewDefinitionRow() {
+        if (!model.canEdit()) return;
+        closeDefinitionRow();
+        definition_creating = true;
+        definition_deleting = false;
+        definition_subject = "\x01new";
+        definition_caption->setText(QObject::tr("New definition named"));
+        definition_name->setVisible(true);
+        definition_apply->setText(QObject::tr("Create"));
+        definition_row->show();
+        definition_name->setText(qtext(model.suggestDefinitionName("definition")));
+        definition_name->selectAll();
+        definition_name->setFocus(Qt::OtherFocusReason);
+        validateDefinitionRow();
+    }
+    bool scopePending() {
+        if (pending_scope.empty()) return false;
+        const auto scopes_now = model.scopes();
+        if (std::ranges::none_of(scopes_now,
+                                 [&](const auto &scope) { return scope.id == pending_scope; }))
+            return false;
+        model.selectScope(std::exchange(pending_scope, {}));
+        scene->repopulate();
+        syncScopeControls();
+        syncValueControls();
+        showDetails();
+        dispatch();
+        return true;
+    }
+
     void openDefinitionRow(bool deleting) {
         const auto target = definitionTarget();
         if (target.empty() || !model.canEdit()) return;
@@ -5848,7 +6141,11 @@ struct GraphCanvasWidget::Impl {
         if (definition_subject.empty()) return;
         std::string refusal;
         bool changed = true;
-        if (!definition_deleting) {
+        if (definition_creating) {
+            const auto name = definition_name->text().toStdString();
+            refusal = name.empty() ? std::string{"A definition needs a name."}
+                                   : model.definitionNameRefusal({}, name);
+        } else if (!definition_deleting) {
             const auto name = definition_name->text().toStdString();
             refusal = model.definitionNameRefusal(definition_subject, name);
             changed = name != definition_subject;
@@ -5860,6 +6157,18 @@ struct GraphCanvasWidget::Impl {
 
     void applyDefinitionRow() {
         if (definition_subject.empty()) return;
+        if (definition_creating) {
+            const auto name = definition_name->text().trimmed().toStdString();
+            if (name.empty() || !model.definitionNameRefusal({}, name).empty()) {
+                validateDefinitionRow();
+                return;
+            }
+            if (model.addDefinition(name)) pending_scope = name;
+            closeDefinitionRow();
+            dispatch();
+            showNotice();
+            return;
+        }
         if (!definition_deleting) {
             const auto name = definition_name->text().toStdString();
             // Checked before anything is sent: the line says why, and the
@@ -5879,6 +6188,7 @@ struct GraphCanvasWidget::Impl {
     }
 
     void closeDefinitionRow() {
+        definition_creating = false;
         definition_subject.clear();
         definition_line->clear();
         definition_line->hide();
@@ -6299,6 +6609,70 @@ struct GraphCanvasWidget::Impl {
 
     // Q-10. The project's sounds, read again whenever they are about to be
     // offered, as the UI document is.
+    // UX-8, decision 11: the views (by viewKey) last drawn with no node.
+    std::set<std::string> empty_views;
+    void fitScopeGainingNodes() {
+        const auto key = model.viewKey();
+        const auto scope = qtext(model.currentScope());
+        const bool holds = std::ranges::any_of(scene->items(), [&](const QGraphicsItem *item) {
+            return nodeGraphItemKind(*item) == QLatin1String{GraphCanvasNodeItem} &&
+                   item->data(GraphCanvasScopeRole).toString() == scope;
+        });
+        if (!holds) {
+            empty_views.insert(key);
+            return;
+        }
+        if (empty_views.erase(key) > 0) canvas->fitView();
+    }
+
+    // UX-8, decision 9.
+    QPushButton *audio_import = nullptr;
+    void chooseSounds() {
+        if (project_root.empty()) {
+            model.setEditNotice({InspectorNoticeKind::Error, "Open a project to import sounds into."});
+            showNotice();
+            return;
+        }
+        // Qt's own dialog, so a scenario can name its file field; opened
+        // window-modal and answered when it closes, so no event loop of its
+        // own sits under whatever opened it.
+        auto *dialog = new QFileDialog{&view, QObject::tr("Import sounds")};
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setObjectName(QStringLiteral("pelican.audioImportDialog"));
+        dialog->setOption(QFileDialog::DontUseNativeDialog, true);
+        dialog->setFileMode(QFileDialog::ExistingFiles);
+        dialog->setNameFilter(QObject::tr("Sounds (*.wav *.ogg *.WAV *.OGG)"));
+        if (auto *name = dialog->findChild<QLineEdit *>(QStringLiteral("fileNameEdit")))
+            name->setObjectName(QStringLiteral("pelican.audioImportDialog.fileName"));
+        QObject::connect(dialog, &QFileDialog::filesSelected, &view, [this](const QStringList &picked) {
+            std::vector<std::filesystem::path> files;
+            for (const auto &file : picked) files.emplace_back(file.toStdWString());
+            importSounds(files);
+        });
+        dialog->open();
+    }
+    void importSounds(const std::vector<std::filesystem::path> &files) {
+        if (files.empty()) return;
+        const auto imported = importProjectAudio(project_root, files);
+        reloadAudioAssets();
+        audio_row_node.clear();
+        if (!imported.error.empty())
+            model.setEditNotice({InspectorNoticeKind::Error, imported.error});
+        else if (!imported.references.empty())
+            model.setEditNotice({InspectorNoticeKind::Information,
+                                 "Imported " + imported.references.front() +
+                                     (imported.references.size() > 1
+                                          ? " and " + std::to_string(imported.references.size() - 1) +
+                                                " more"
+                                          : std::string{}) +
+                                     "."});
+        // A picked voice plays the first one.
+        if (!imported.references.empty()) commitAudio("asset", qtext(imported.references.front()));
+        showDetails();
+        showNotice();
+        dispatch();
+    }
+
     void reloadAudioAssets() {
         auto read = readProjectAudioAssets(project_root);
         model.setAudioAssets(std::move(read.assets));
@@ -6702,10 +7076,12 @@ struct GraphCanvasWidget::Impl {
         }
         // UX-7, decision 5: an op the engine refuses without a parameter
         // asks for just those first (render.scalar's target, ...).
-        if (!GraphCanvasModel::requiredParameters(op).empty()) {
+        if (!model.requiredParametersFor(op).empty()) {
             GraphCanvasRequiredDialog ask{model, scope, op, &view};
             if (ask.exec() != QDialog::Accepted) return;
-            seed["parameters"] = ask.parameters();
+            // UX-8, decision 7: and the edge it chose (a sound sink's voice).
+            const auto chosen = ask.seed();
+            for (const auto &[key, value] : chosen.items()) seed[key] = value;
         }
         if (!seed.empty()) {
             scene->addFromPalette(scope, op, {}, seed);
@@ -6737,6 +7113,7 @@ struct GraphCanvasWidget::Impl {
             image_fields->showNode(nullptr, {});
             pass_fields->showNode(nullptr, {});
             place_fields->showNode(nullptr, {});
+            value_fields->showNode(nullptr, {});
             return;
         }
         // LP-4d1: the node is looked for in the scope it was picked in -- a
@@ -6754,6 +7131,7 @@ struct GraphCanvasWidget::Impl {
             image_fields->showNode(nullptr, {});
             pass_fields->showNode(nullptr, {});
             place_fields->showNode(nullptr, {});
+            value_fields->showNode(nullptr, {});
             return;
         }
         label_edit->setText(qtext(found->label));
@@ -6770,6 +7148,9 @@ struct GraphCanvasWidget::Impl {
         image_fields->showNode(&*found, scope);
         pass_fields->showNode(&*found, scope);
         place_fields->showNode(&*found, scope);
+        // UX-8: a curve's keys, a playback's map, a scalar's numbers, a
+        // pass's buffers.
+        value_fields->showNode(&*found, scope);
         const auto row = [this](const QString &field, const QString &value) {
             auto *item = new QTreeWidgetItem(details);
             item->setText(0, field);
@@ -6866,8 +7247,11 @@ struct GraphCanvasWidget::Impl {
         if (model.timelineNode().empty())
             summary = QObject::tr("no node selected");
         else if (samples.empty())
-            summary = QObject::tr("%1: 0 samples")
-                          .arg(qtext(model.timelineNode()));
+            // UX-8, decision 6: and why, when something keeps it from reading.
+            summary = model.timelineReason().empty()
+                          ? QObject::tr("%1: 0 samples").arg(qtext(model.timelineNode()))
+                          : QObject::tr("%1: 0 samples: %2")
+                                .arg(qtext(model.timelineNode()), qtext(model.timelineReason()));
         else
             summary = QObject::tr("%1: %2 samples · %3 · t %4 to %5")
                           .arg(qtext(model.timelineNode()))
@@ -6992,11 +7376,13 @@ struct GraphCanvasWidget::Impl {
         if (image_fields != nullptr) image_fields->followEditable();
         if (pass_fields != nullptr) pass_fields->followEditable();
         if (place_fields != nullptr) place_fields->followEditable();
+        if (value_fields != nullptr) value_fields->followEditable();
         // GL-4a, decision 2: a node of a group being verified takes no edit
         // from the side fields until the verify finishes.
         if (folds)
             folds->gateNodeFields({loop_fields, draw_fields, view_fields, image_fields,
-                                   pass_fields, place_fields, label_edit, apply_label});
+                                   pass_fields, place_fields, value_fields, label_edit,
+                                   apply_label});
         showNotice();
         refresh->setEnabled(model.canRefresh());
         synchronizeTimeline();
@@ -7384,12 +7770,22 @@ void GraphCanvasWidget::receiveFailure(qint64 request_id,
     impl_->deliverFailure(request_id, message);
 }
 
+void GraphCanvasWidget::chooseSoundsToImport() {
+    // The dialog opens window-modal and answers when it closes.
+    impl_->chooseSounds();
+}
+
+void GraphCanvasWidget::importSounds(const std::vector<std::filesystem::path> &files) {
+    impl_->importSounds(files);
+}
+
 void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root) {
     // OT-1: the graph history survives an engine restart, not a project
     // switch.
     if (impl_->project_root != project_root) impl_->model.forgetHistory();
     impl_->project_root = project_root;
     impl_->pass_fields->setProjectRoot(project_root);
+    impl_->value_fields->setProjectRoot(project_root);
     impl_->publishShaderSources();
     impl_->reloadUiNodes();
     impl_->reloadAudioAssets();

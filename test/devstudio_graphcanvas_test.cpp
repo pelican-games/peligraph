@@ -1,5 +1,7 @@
 #include "graphcanvasmodel.hpp"
 #include "graphcomposition.hpp"
+#include "graphmodule.hpp"
+#include "graphpartition.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -2512,8 +2514,11 @@ TEST_CASE("Q-19 a line on a socket past the next binding, on a buffer or on a fu
           "Connect binding 0 of fill first: a pass's inputs fill the bindings in order.");
     CHECK_FALSE(h.client.model.connectSocket("paint", "fill", "in@8", "target", "value"));
     CHECK_FALSE(h.sentEdit());
+    // UX-8, decision 2: a buffer binding takes a named buffer port, but a
+    // uniform buffer is none a pass can hand over.
     CHECK(h.client.model.notice().message ==
-          "Binding 8 of fill takes a buffer: a graph pass reads only images by number.");
+          "Binding 8 of fill is a uniform buffer: a pass hands its shader storage buffers "
+          "(declare it as a `readonly buffer` block).");
 
     // Binding 0 is the next: the boundary port target, named by its id and
     // typed by what the loop is fed there (lit), in the body's scope.
@@ -3400,4 +3405,522 @@ TEST_CASE("LC-1s shader.loop_push_overlap@1 reads as a sentence",
               "render_pipeline_preflight_failed",
               "shader.loop_push_overlap@1: {\"shader\":\"project://shaders/fft\",\"stage\":"
               "\"fragment\",\"range\":{\"offset\":96,\"size\":20}}") == sentence);
+}
+
+// --- UX-8: a curve onto a shader's value, the curve's keys, the sound nodes.
+
+namespace {
+
+Json ux8Catalog() {
+    return Json::parse(Pelican::makeBuiltinGraphModuleRegistry().catalog().dump());
+}
+
+Json ux8ColorType() {
+    return {{"semantic", "pelican.render.color_signal@1"},
+            {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+}
+
+// A float buffer, a fullscreen pass drawing into an image of its own, and
+// what the palette puts beside them.
+Json ux8Document() {
+    return {{"schema", "pelican.graph"},
+            {"version", 1},
+            {"definitions", Json::object()},
+            {"outputs", Json::object()},
+            {"nodes",
+             Json::array(
+                 {{{"id", "level"}, {"op", "render.buffer"},
+                   {"parameters", {{"element", "float"}, {"size", 4}}},
+                   {"outputs", Json::array({"resource"})}},
+                  {{"id", "shade__color"}, {"op", "render.image"},
+                   {"parameters", {{"type", ux8ColorType()}, {"format", "R16G16B16A16_SFLOAT"},
+                                   {"extent_scale", 1.0},
+                                   {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}}},
+                   {"outputs", Json::array({"resource"})}},
+                  {{"id", "shade"}, {"op", "render.fullscreen"},
+                   {"parameters",
+                    {{"shader", {{"vertex", "engine://fullscreen"},
+                                 {"fragment", "project://shaders/level"}}},
+                     {"ports", {{"color", {{"kind", "image"}, {"type", ux8ColorType()},
+                                           {"access", "write"}, {"attachment", "color"},
+                                           {"location", 0}}}}}}},
+                   {"inputs", {{"color", {{"node", "shade__color"}, {"port", "resource"}}}}},
+                   {"outputs", Json::array({"color"})}}})}};
+}
+
+// The plan's word on `shade`: its shader declares one storage buffer.
+Json ux8Plan(const char *type = "storage_buffer", const char *name = "pelican_resource_level") {
+    return {{"schema", "pelican.frame_plan"},
+            {"version", 1},
+            {"nodes", Json::array({{{"name", "shade"},
+                                    {"kind", "fullscreen"},
+                                    {"pass_inputs",
+                                     {{"state", "declared"},
+                                      {"fragment", "project://shaders/level"},
+                                      {"declarations", Json::array({{{"binding", 0},
+                                                                     {"type", type},
+                                                                     {"name", name},
+                                                                     {"variadic", false}}})},
+                                      {"variadic_range", nullptr}}}}})}};
+}
+
+struct Ux8Harness : GraphHistoryHarness {
+    Ux8Harness() {
+        document = ux8Document();
+        client.catalog_reply = ux8Catalog();
+    }
+    void report(const Json &plan = ux8Plan()) { client.reply(client.take("get_frame_plan"), plan); }
+    void commitAndReport() {
+        commit();
+        report();
+    }
+    // What the engine composes from the document: it has to take it.
+    void partitions() const {
+        CHECK_NOTHROW(Pelican::partitionGraphDocument(document,
+                                                      Pelican::makeBuiltinGraphModuleRegistry()));
+    }
+    Json &node(const std::string &id) {
+        auto &nodes = document.at("nodes");
+        const auto found =
+            std::ranges::find_if(nodes, [&](const Json &each) { return each.at("id") == id; });
+        REQUIRE(found != nodes.end());
+        return *found;
+    }
+    // The document changed under the canvas (a hand edit): read it again.
+    void reread() {
+        client.model.refresh();
+        refresh();
+        report();
+    }
+    bool sentEdit() {
+        const auto requests = client.model.takeRpcRequests();
+        return std::ranges::any_of(requests, [](const auto &request) {
+            return request.method == "edit_graph_document";
+        });
+    }
+};
+
+} // namespace
+
+TEST_CASE("UX-8 decisions 1 and 3: a curve from the palette is a ramp on the scene clock, and its "
+          "line lands on a float buffer's value socket",
+          "[studio][graph-canvas][ux8]") {
+    Ux8Harness h;
+    h.open();
+    h.report();
+
+    // Decision 1: the buffer's first row is a value socket, typed as the
+    // curve's output is.
+    const auto level = h.client.node("level");
+    REQUIRE_FALSE(level.inputs.empty());
+    CHECK(level.inputs[0].port == "value");
+    CHECK(level.inputs[0].type == "pelican.value.scalar@1");
+    CHECK_FALSE(level.inputs[0].connected);
+
+    // Decision 3: the palette's curve is a ramp from 0 to 1, read on the
+    // scope's scene clock (a new one), in one list.
+    const auto ops = h.client.model.addNodeOpsIn({}, "value.curve");
+    REQUIRE(ops.size() == 2);
+    CHECK(ops[0].at("node").at("op") == "value.input");
+    CHECK(ops[0].at("node").at("parameters") == Json{{"name", "scene_time"}});
+    const auto &curve = ops[1].at("node");
+    CHECK(curve.at("parameters").at("keys") ==
+          Json::array({{{"time", 0.0}, {"value", 0.0}}, {{"time", 1.0}, {"value", 1.0}}}));
+    CHECK(curve.at("inputs").at("time") ==
+          Json{{"node", ops[0].at("node").at("id")}, {"port", "value"}});
+    REQUIRE(h.client.model.addNodeIn({}, "value.curve"));
+    h.commitAndReport();
+    h.partitions();
+    // A second curve reads the clock that is there.
+    CHECK(h.client.model.addNodeOpsIn({}, "value.curve").size() == 1);
+    // Nothing to ask for: the palette places it as it is.
+    CHECK(h.client.model.requiredParametersFor("value.curve").empty());
+    CHECK(h.client.model.requiredParametersFor("render.buffer").empty());
+
+    CHECK(h.client.model.canConnect({}, "value_curve", "value", "level", "value"));
+    REQUIRE(h.client.model.connectInput({}, "level", "value", "value_curve", "value"));
+    h.commitAndReport();
+    CHECK(h.last_ops == Json::array({{{"op", "set_input"}, {"scope", "root"}, {"node", "level"},
+                                      {"port", "value"},
+                                      {"source", {{"node", "value_curve"}, {"port", "value"}}}}}));
+    h.partitions();
+    CHECK(h.client.node("level").inputs[0].connected);
+
+    // A buffer of another size is made one float in the same list; one of
+    // another element is refused by name.
+    h.node("level")["parameters"]["size"] = 16;
+    h.node("level").erase("inputs");
+    h.reread();
+    REQUIRE(h.client.model.connectInput({}, "level", "value", "value_curve", "value"));
+    h.commitAndReport();
+    REQUIRE(h.last_ops.size() == 2);
+    CHECK(h.last_ops[0].at("parameters") == Json{{"element", "float"}, {"size", 4}});
+    h.partitions();
+    h.node("level")["parameters"] = {{"element", "vec4"}, {"size", 16}};
+    h.node("level").erase("inputs");
+    h.reread();
+    CHECK_FALSE(h.client.model.connectInput({}, "level", "value", "value_curve", "value"));
+    CHECK_FALSE(h.sentEdit());
+    CHECK(h.client.model.notice().message ==
+          "level holds vec4: a value's line writes one float. For two to four numbers, write "
+          "them with a render.scalar.");
+}
+
+TEST_CASE("UX-8 decision 2: a buffer binding of the shader is a named buffer port, added with its "
+          "line and its element in one list; taking the line away takes the port",
+          "[studio][graph-canvas][ux8]") {
+    Ux8Harness h;
+    h.open();
+    h.report();
+    const auto shade = h.client.node("shade");
+    REQUIRE(shade.declared_sockets);
+    REQUIRE(shade.input_sockets.size() == 1);
+    CHECK(shade.input_sockets[0].buffer);
+    CHECK(shade.input_sockets[0].key() == "in@0");
+    CHECK_FALSE(shade.input_sockets[0].connected());
+
+    // Something that hands on no buffer is refused in one line.
+    CHECK_FALSE(h.client.model.connectSocket({}, "shade", "in@0", "shade__color", "resource"));
+    CHECK_FALSE(h.sentEdit());
+    CHECK(h.client.model.notice().message ==
+          "shade__color hands on no buffer: a buffer port reads a render.buffer or a "
+          "render.attribute.");
+
+    const auto before = h.document;
+    REQUIRE(h.client.model.connectSocket({}, "shade", "in@0", "level", "resource"));
+    h.commitAndReport();
+    REQUIRE(h.last_ops.size() == 2);
+    CHECK(h.last_ops[0].at("op") == "set_node_parameters");
+    CHECK(h.last_ops[0].at("parameters").at("ports").at("level") ==
+          Json{{"kind", "buffer"}, {"access", "read"}, {"element", "float"}});
+    CHECK(h.last_ops[1] == Json{{"op", "set_input"}, {"scope", "root"}, {"node", "shade"},
+                                {"port", "level"},
+                                {"source", {{"node", "level"}, {"port", "resource"}}}});
+    h.partitions();
+    // The socket shows it; it is no row of its own.
+    const auto connected = h.client.node("shade");
+    CHECK(connected.input_sockets[0].port == "level");
+    CHECK(connected.input_sockets[0].source_node == "level");
+    CHECK(std::ranges::none_of(connected.inputs, [](const auto &row) { return row.port == "level"; }));
+    CHECK(h.client.model.bufferPorts({}, "shade") == std::vector<std::string>{"level"});
+
+    // + Buffer port, for a port the reflection cannot show: by name.
+    REQUIRE(h.client.model.addBufferPort({}, "shade", "gain", "level", "resource"));
+    h.commitAndReport();
+    CHECK(h.node("shade").at("parameters").at("ports").at("gain").at("element") == "float");
+    CHECK(h.node("shade").at("inputs").at("gain") == Json{{"node", "level"}, {"port", "resource"}});
+
+    // The line taken away takes the port: one without a line is not bound.
+    REQUIRE(h.client.model.disconnectInput({}, "shade", "gain"));
+    h.commitAndReport();
+    REQUIRE(h.client.model.disconnectInput({}, "shade", "level"));
+    h.commitAndReport();
+    CHECK(h.document.at("nodes") == before.at("nodes"));
+    // A block of another name is no port's: the engine binds a port to
+    // pelican_resource_<port> only.
+    h.client.model.refresh();
+    h.refresh();
+    h.report(ux8Plan("storage_buffer", "Level"));
+    CHECK_FALSE(h.client.model.connectSocket({}, "shade", "in@0", "level", "resource"));
+    CHECK(h.client.model.notice().message ==
+          "Binding 0 of shade is Level: the engine reads a buffer port through a variable named "
+          "pelican_resource_<port>. Name the block's variable so, or read it through "
+          "pelican_resource_ports.glsl and + Buffer port.");
+    // A uniform buffer is none a pass hands over.
+    h.client.model.refresh();
+    h.refresh();
+    h.report(ux8Plan("uniform_buffer"));
+    CHECK_FALSE(h.client.model.connectSocket({}, "shade", "in@0", "level", "resource"));
+    CHECK(h.client.model.notice().message ==
+          "Binding 0 of shade is a uniform_buffer: a pass hands its shader storage buffers "
+          "(declare it as a `readonly buffer` block).");
+}
+
+TEST_CASE("UX-8 decision 4: a curve's keys are edited a row or a drag at a time, held in order, "
+          "and each change is one Undo step",
+          "[studio][graph-canvas][ux8]") {
+    using Key = PelicanStudio::GraphCanvasCurveKey;
+    CHECK(GraphCanvasModel::curveInterpolations() ==
+          std::vector<std::string>{"linear", "step", "cubic"});
+    const std::vector<Key> keys{{0.0, 0.0}, {1.0, 1.0}};
+    // A drag past a neighbour stops just short of it; the value goes along.
+    const auto moved = GraphCanvasModel::curveKeysWithMoved(keys, 0, 5.0, 0.25);
+    CHECK(moved[0].time < 1.0);
+    CHECK(moved[0].time > 0.99);
+    CHECK(moved[0].value == 0.25);
+    // A key added halfway takes the curve's value there.
+    const auto added = GraphCanvasModel::curveKeysWithAdded(keys, 0);
+    REQUIRE(added.size() == 3);
+    CHECK(added[1].time == 0.5);
+    CHECK(added[1].value == 0.5);
+    CHECK(GraphCanvasModel::curveKeysWithAdded(keys, 1)[2].time == 2.0);
+    CHECK(GraphCanvasModel::curveKeysRefusal({{1.0, 0.0}, {1.0, 1.0}}) ==
+          "The keys' times have to rise: key 2 is not later than key 1.");
+    CHECK(GraphCanvasModel::curveKeysRefusal({}) == "A curve needs at least one key.");
+
+    Ux8Harness h;
+    h.open();
+    h.report();
+    REQUIRE(h.client.model.addNodeIn({}, "value.curve"));
+    h.commitAndReport();
+    const auto ramp = h.document;
+    REQUIRE(h.client.model.curveKeys({}, "value_curve") == keys);
+
+    // One row: 0.1 at 0, 0.9 at 1, the second one a step.
+    REQUIRE(h.client.model.setCurveKeys({}, "value_curve", {{0.0, 0.1}, {1.0, 0.9, "step"}}));
+    h.commitAndReport();
+    CHECK(h.last_ops.size() == 1);
+    CHECK(h.node("value_curve").at("parameters").at("keys") ==
+          Json::array({{{"time", 0.0}, {"value", 0.1}},
+                       {{"time", 1.0}, {"value", 0.9}, {"interpolation", "step"}}}));
+    h.partitions();
+    // A cubic key's tangents ride along untouched.
+    h.node("value_curve")["parameters"]["keys"][0]["interpolation"] = "cubic";
+    h.node("value_curve")["parameters"]["keys"][0]["out_tangent"] = 2.0;
+    h.reread();
+    auto cubic = h.client.model.curveKeys({}, "value_curve");
+    CHECK(cubic[0].rest == Json{{"out_tangent", 2.0}});
+    cubic[1].value = 0.5;
+    REQUIRE(h.client.model.setCurveKeys({}, "value_curve", cubic));
+    h.commitAndReport();
+    CHECK(h.node("value_curve").at("parameters").at("keys")[0].at("out_tangent") == 2.0);
+
+    // Times that do not rise are not sent.
+    CHECK_FALSE(h.client.model.setCurveKeys({}, "value_curve", {{1.0, 0.0}, {0.5, 1.0}}));
+    CHECK_FALSE(h.sentEdit());
+    CHECK(h.client.model.notice().message ==
+          "The keys' times have to rise: key 2 is not later than key 1.");
+
+    // Undo takes back one change at a time: the cubic change, then the row.
+    REQUIRE(h.client.model.undo());
+    h.commitAndReport();
+    CHECK(h.node("value_curve").at("parameters").at("keys")[1].at("value") == 0.9);
+}
+
+TEST_CASE("UX-8 decision 5: a playback's wrap and numbers are written one at a time; a number an "
+          "edge drives is not",
+          "[studio][graph-canvas][ux8]") {
+    CHECK(GraphCanvasModel::playbackWraps() ==
+          std::vector<std::string>{"once", "repeat", "ping_pong"});
+    Ux8Harness h;
+    h.open();
+    h.report();
+    REQUIRE(h.client.model.addNodeIn({}, "value.playback"));
+    h.commitAndReport();
+    // It plays on the scene clock it arrived on.
+    CHECK(h.node("value_playback").at("inputs").at("elapsed").at("node") == "scene_time");
+    CHECK(h.client.model.playbackNumber({}, "value_playback", "duration") == 1.0);
+    REQUIRE(h.client.model.setPlaybackField({}, "value_playback", "wrap", "repeat"));
+    h.commitAndReport();
+    REQUIRE(h.client.model.setPlaybackField({}, "value_playback", "duration", 2.5));
+    h.commitAndReport();
+    CHECK(h.node("value_playback").at("parameters") ==
+          Json{{"wrap", "repeat"}, {"duration", 2.5}});
+    h.partitions();
+    CHECK_FALSE(h.client.model.setPlaybackField({}, "value_playback", "wrap", "bounce"));
+    CHECK_FALSE(h.client.model.setPlaybackField({}, "value_playback", "duration", 0.0));
+    CHECK(h.client.model.notice().message == "A playback's duration has to be above 0.");
+    // speed on an edge: its field is the edge's.
+    REQUIRE(h.client.model.connectInput({}, "value_playback", "speed", "scene_time", "value"));
+    h.commitAndReport();
+    CHECK(h.client.model.playbackDriven({}, "value_playback", "speed"));
+    CHECK_FALSE(h.client.model.setPlaybackField({}, "value_playback", "speed", 2.0));
+    CHECK_FALSE(h.sentEdit());
+}
+
+TEST_CASE("UX-8 decision 6: the Timeline reads the root's nodes without an instance while Live is "
+          "on, and says why when it cannot",
+          "[studio][graph-canvas][ux8]") {
+    Ux8Harness h;
+    h.open();
+    h.report();
+    h.client.model.setTimelineNode("level");
+    CHECK(h.client.model.timelineReason() ==
+          "Turn Live on to read the values while the engine runs.");
+    // Live on, no instance named: the root's question is the empty one.
+    h.client.model.setLive(true);
+    const auto requests = h.client.model.takeRpcRequests();
+    const auto values = std::ranges::find(requests, std::string{"get_graph_node_values"},
+                                          &PelicanStudio::InspectorRpcRequest::method);
+    REQUIRE(values != requests.end());
+    CHECK(values->params == Json::object());
+    CHECK(std::ranges::count(requests, std::string{"get_status"},
+                             &PelicanStudio::InspectorRpcRequest::method) == 1);
+    CHECK(h.client.model.timelineReason().empty());
+    // Off, nothing is read on the clock.
+    h.client.model.setLive(false);
+    h.client.model.poll();
+    CHECK(std::ranges::none_of(h.client.model.takeRpcRequests(), [](const auto &request) {
+        return request.method == "get_graph_node_values";
+    }));
+}
+
+TEST_CASE("UX-8 decisions 7 and 13: a sound sink is placed driving the voice the dialog picked, at "
+          "full volume; the dialog asks what the catalog lists",
+          "[studio][graph-canvas][ux8]") {
+    Ux8Harness h;
+    h.document["nodes"].push_back({{"id", "voice"}, {"op", "audio.playback"},
+                                   {"parameters", {{"asset", "project://assets/audio/pulse.wav"}}},
+                                   {"inputs", {{"time", {{"node", "clock"}, {"port", "value"}}}}},
+                                   {"outputs", Json::array({"voice"})}});
+    h.document["nodes"].push_back({{"id", "clock"}, {"op", "value.input"},
+                                   {"parameters", {{"name", "scene_time"}}},
+                                   {"outputs", Json::array({"value"})}});
+    // CT-1's catalog: what each op cannot be placed without.
+    auto catalog = ux8Catalog();
+    for (auto &module : catalog.at("modules"))
+        for (auto &operation : module.at("operations")) {
+            const auto op = operation.at("op").get<std::string>();
+            if (op == "audio.volume" || op == "audio.pitch")
+                operation["required_parameters"] =
+                    Json::array({{{"one_of", {"target", "voice"}}}});
+            if (op == "value.curve")
+                operation["required_parameters"] = Json::array({{{"name", "keys"}}});
+            if (op == "render.scalar")
+                operation["required_parameters"] = Json::array({{{"name", "target"}}});
+            if (op == "value.input") {
+                operation["required_parameters"] = Json::array({{{"name", "name"}}});
+                operation["input_names"] =
+                    Json::array({{{"name", "scene_time"}}, {{"name", "time"}}});
+            }
+        }
+    h.client.catalog_reply = catalog;
+    h.open();
+    h.report();
+    const auto kinds = [&](const char *op) {
+        std::vector<std::string> result;
+        for (const auto &each : h.client.model.requiredParametersFor(op))
+            result.push_back(each.name + ":" + each.kind);
+        return result;
+    };
+    CHECK(kinds("audio.volume") == std::vector<std::string>{"voice:voice"});
+    CHECK(kinds("value.curve").empty());
+    CHECK(kinds("render.scalar") == std::vector<std::string>{"target:buffer"});
+    CHECK(kinds("value.input") == std::vector<std::string>{"name:input"});
+    CHECK(h.client.model.valueInputNamesFor() == std::vector<std::string>{"scene_time", "time"});
+    CHECK(h.client.model.voiceChoices({}) == std::vector<std::string>{"voice"});
+
+    REQUIRE(h.client.model.addNodeIn(
+        {}, "audio.volume", {},
+        Json{{"parameters", Json::object()},
+             {"inputs", {{"voice", {{"node", "voice"}, {"port", "voice"}}}}}}));
+    h.commitAndReport();
+    const auto volume = h.node("audio_volume");
+    CHECK(volume.at("inputs").at("voice") == Json{{"node", "voice"}, {"port", "voice"}});
+    CHECK(h.node(volume.at("inputs").at("value").at("node").get<std::string>())
+              .at("parameters")
+              .at("value") == 1.0);
+    h.partitions();
+    // A curve fades it: its line onto the volume's value.
+    REQUIRE(h.client.model.addNodeIn({}, "value.curve"));
+    h.commitAndReport();
+    REQUIRE(h.client.model.connectInput({}, "audio_volume", "value", "value_curve", "value"));
+    h.commitAndReport();
+    h.partitions();
+}
+
+TEST_CASE("UX-8 decision 10: New definition adds an empty definition by a free name",
+          "[studio][graph-canvas][ux8]") {
+    Ux8Harness h;
+    h.open();
+    h.report();
+    const auto name = h.client.model.suggestDefinitionName("definition");
+    CHECK(name == "definition");
+    REQUIRE(h.client.model.addDefinition(name));
+    h.commitAndReport();
+    CHECK(h.document.at("definitions").at("definition") ==
+          Json{{"nodes", Json::array()}, {"outputs", Json::object()}});
+    CHECK(h.client.model.suggestDefinitionName("definition") == "definition_2");
+    CHECK_FALSE(h.client.model.addDefinition("definition"));
+    CHECK(h.client.model.notice().message == "A definition named definition already exists.");
+    CHECK_FALSE(h.client.model.addDefinition("a/b"));
+}
+
+TEST_CASE("UX-8 decision 12: render.scalar's numbers are packed with the other sinks on the "
+          "buffer, and the engine's layout and port refusals read as sentences",
+          "[studio][graph-canvas][ux8]") {
+    Ux8Harness h;
+    h.document["nodes"].push_back({{"id", "params"}, {"op", "render.buffer"},
+                                   {"parameters", {{"element", "vec4"}, {"size", 32}}},
+                                   {"outputs", Json::array({"resource"})}});
+    for (const char *id : {"a", "b"})
+        h.document["nodes"].push_back(
+            {{"id", id}, {"op", "render.scalar"},
+             {"parameters", {{"target", "params"}, {"value", {0.0, 0.0}}}},
+             {"outputs", Json::array()}});
+    h.node("b")["parameters"]["offset"] = 8;
+    h.open();
+    h.report();
+    CHECK(h.client.model.scalarValue({}, "a") == std::vector<double>{0.0, 0.0});
+    // a grows to a vec4: b moves on to byte 16, in the same list.
+    REQUIRE(h.client.model.setScalarValue({}, "a", {1.0, 2.0, 3.0, 4.0}));
+    h.commitAndReport();
+    CHECK(h.last_ops.size() == 2);
+    CHECK(h.node("a").at("parameters") ==
+          Json{{"target", "params"}, {"value", {1.0, 2.0, 3.0, 4.0}}});
+    CHECK(h.node("b").at("parameters").at("offset") == 16);
+    CHECK(h.client.model.scalarLayout({}, "params") ==
+          std::vector<std::pair<std::string, std::int64_t>>{{"a", 0}, {"b", 16}});
+    h.partitions();
+    // a moves to level: b goes back to 0.
+    REQUIRE(h.client.model.setScalarTarget({}, "a", "level"));
+    h.commitAndReport();
+    CHECK(h.node("a").at("parameters").at("target") == "level");
+    CHECK_FALSE(h.node("b").at("parameters").contains("offset"));
+    const auto targets = h.client.model.scalarTargets({});
+    CHECK(std::ranges::find(targets, "params") != targets.end());
+
+    using PelicanStudio::graphLoopRefusalDescription;
+    CHECK(graphLoopRefusalDescription({{"code", "graph.render_scalar_layout_invalid@1"},
+                                       {"target", "params"}, {"node", "b"}, {"offset", 4},
+                                       {"expected_offset", 8}, {"reason", "overlap"}}) ==
+          "The render.scalar b writes params from byte 4, over the sink before it (which ends "
+          "at byte 8) (graph.render_scalar_layout_invalid@1).");
+    CHECK(graphLoopRefusalDescription({{"code", "graph.render_scalar_layout_invalid@1"},
+                                       {"target", "params"}, {"node", "b"}, {"offset", 12},
+                                       {"expected_offset", 8}, {"reason", "gap"}}) ==
+          "The render.scalar b writes params from byte 12, leaving bytes 8 up to 12 unwritten "
+          "(graph.render_scalar_layout_invalid@1).");
+    CHECK(graphLoopRefusalDescription({{"code", "graph.render_scalar_type_mismatch@1"},
+                                       {"node", "a"}, {"target", "counts"}, {"element", "uint"},
+                                       {"components", 1}}) ==
+          "The render.scalar a writes 1 float(s) into counts, whose elements are uint "
+          "(graph.render_scalar_type_mismatch@1).");
+    CHECK(graphLoopRefusalDescription({{"code", "graph.port_field_missing@1"}, {"node", "shade"},
+                                       {"port", "level"}, {"field", "element"}}) ==
+          "Port level of shade needs element (graph.port_field_missing@1).");
+    // Decision 13 (c): the line the engine stopped on, read as a sentence.
+    CHECK(PelicanStudio::engineStoppedSentence(
+              "12:00:00 [1] pelican_core.cpp:166 LOG_ERROR pelican Pelican fatal error : "
+              "invalid graph document C:/project/passes/main.json: graph.port_field_missing@1 "
+              "{\"field\":\"element\",\"node\":\"shade\",\"port\":\"level\"}") ==
+          "The engine stopped: Port level of shade needs element (graph.port_field_missing@1) "
+          "in C:/project/passes/main.json. Fix the file (or Reload from disk) to start it again.");
+    CHECK(PelicanStudio::engineStoppedSentence("Pelican fatal error : out of memory").empty());
+}
+
+TEST_CASE("UX-8 decision 9: sounds are copied into assets/audio, _2 beside a name already there",
+          "[studio][graph-canvas][ux8]") {
+    const auto root = std::filesystem::temp_directory_path() / "pelican_ux8_import";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "outside");
+    for (const char *name : {"pulse.wav", "note.txt"}) {
+        std::ofstream file{root / "outside" / name, std::ios::binary};
+        file << "RIFF";
+    }
+    const auto project = root / "project";
+    const auto first = PelicanStudio::importProjectAudio(project, {root / "outside" / "pulse.wav"});
+    CHECK(first.error.empty());
+    CHECK(first.references == std::vector<std::string>{"project://assets/audio/pulse.wav"});
+    const auto second = PelicanStudio::importProjectAudio(
+        project, {root / "outside" / "pulse.wav", root / "outside" / "note.txt"});
+    CHECK(second.references == std::vector<std::string>{"project://assets/audio/pulse_2.wav"});
+    CHECK(second.error == "note.txt is not a .wav or .ogg file.");
+    CHECK(std::filesystem::exists(project / "assets" / "audio" / "pulse_2.wav"));
+    CHECK_FALSE(std::filesystem::exists(project / "assets" / "audio" / "note.txt"));
+    // What the Sound list then offers.
+    const auto listed = PelicanStudio::readProjectAudioAssets(project);
+    CHECK(listed.assets == std::vector<std::string>{"project://assets/audio/pulse.wav",
+                                                    "project://assets/audio/pulse_2.wav"});
+    std::filesystem::remove_all(root);
 }

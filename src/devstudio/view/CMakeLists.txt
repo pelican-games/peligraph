@@ -76,6 +76,9 @@ add_library(pelican_studio_view STATIC
     graphcanvasloopfields.hpp
     graphcanvasrenderfields.cpp
     graphcanvasrenderfields.hpp
+    # UX-8: a curve's keys, a playback's map, a scalar's numbers, a pass's buffers.
+    graphcanvasvaluefields.cpp
+    graphcanvasvaluefields.hpp
     # GL-3a: fold groups on the Graph canvas, and their Decisions.
     graphcanvasfoldgroups.cpp
     graphcanvasfoldgroups.hpp
