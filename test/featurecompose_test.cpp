@@ -9994,6 +9994,42 @@ TEST_CASE("FR-1 a feature names the targets it leaves to the pipeline and is ref
                         Catch::Matchers::ContainsSubstring("required_targets"));
 }
 
+TEST_CASE("RG-3 a target bound to a feature's depth parameter is refused unwritten as depth, with depth writers",
+          "[render-feature][temporal][taa][fr3]") {
+    using Json = nlohmann::json;
+    auto document = readJson(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                             "projects/example/passes/main_rendering_config.json");
+    auto &config = renderingSectionOf(document);
+    auto &targets = config.at("render_targets");
+    const auto lit_color = std::find_if(targets.begin(), targets.end(), [](const Json &target) {
+        return target.value("name", std::string{}) == "lit_color";
+    });
+    REQUIRE(lit_color != targets.end());
+    (*lit_color)["format_class"] = "scene";
+    // taa's depth bound to a depth target nothing draws.
+    targets.push_back({{"name", "taa_bound_depth"}, {"extent_scale", 1.0}, {"format", "D32_SFLOAT"},
+                       {"format_class", "data"}, {"role", "data"},
+                       {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"})}});
+    config["features"].push_back("engine://features/velocity.json");
+    config["features"].push_back(Json{{"ref", "engine://features/taa.json"},
+                                      {"parameters", {{"depth", "taa_bound_depth"}}}});
+
+    const auto [code, fields] = lp0aRefusal(document);
+    CHECK(code == "feature.required_target_unwritten@1");
+    CHECK(fields.at("target") == "taa_bound_depth");
+    // The parameter's declaration (DEPTH_STENCIL_ATTACHMENT) types the bound
+    // target, so the passes offered are the ones drawing a depth target.
+    CHECK(fields.at("type") == fr1DeviceDepth());
+    const auto &candidates = fields.at("writer_candidates");
+    REQUIRE_FALSE(candidates.empty());
+    bool offscreen_depth = false;
+    for (const auto &candidate : candidates) {
+        CHECK(candidate.at("port") == "depth");
+        if (candidate.at("resource") == "offscreen_depth") offscreen_depth = true;
+    }
+    CHECK(offscreen_depth);
+}
+
 TEST_CASE("FR-1 a snapshot after a name the pipeline lacks is refused with the names it takes",
           "[render-feature][snapshot][fr1]") {
     using Json = nlohmann::json;

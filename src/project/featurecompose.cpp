@@ -3708,7 +3708,11 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
             loaded.name, loaded.instance.ref,
             resource_provenance);
         requireFeatureTargets(feature, loaded.name, loaded.instance.ref, available_targets);
-        written_checks.emplace_back(loaded.name, loaded.instance.ref, renderFeatureRequiredTargets(feature, true));
+        // RG-3: from the document before binding, with the instance's
+        // bindings: a target bound to a depth parameter keeps the depth type
+        // (and depth writer candidates) the parameter declares.
+        written_checks.emplace_back(loaded.name, loaded.instance.ref,
+                                    renderFeatureRequiredTargets(loaded.feature, true, &resolved_parameters));
         applyRenderTargetOverrides(composed, feature);
         addFeaturePasses(
             composed, feature, pass_names,
@@ -4277,7 +4281,8 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
 }
 
 // FR-1: renderFeatureRequiredTargets (featurecompose.hpp).
-nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature, bool with_needs_writer) {
+nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature, bool with_needs_writer,
+                                            const nlohmann::json *bindings) {
     auto result = nlohmann::json::array();
     if (!feature.is_object()) return result;
     const auto stringOf = [](const nlohmann::json &value) {
@@ -4322,11 +4327,15 @@ nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature, bool 
         if (name.starts_with("$")) {
             const auto parameter = parameters.find(name.substr(1));
             if (parameter == parameters.end()) return;
+            const nlohmann::json *bound = nullptr;
+            if (bindings != nullptr && bindings->is_object())
+                if (const auto found = bindings->find(parameter->first); found != bindings->end() && found->is_string())
+                    bound = &*found;
             const auto fallback = parameter->second->find("default");
-            if (fallback == parameter->second->end() || !fallback->is_string()) return;
+            if (bound == nullptr && (fallback == parameter->second->end() || !fallback->is_string())) return;
             if (const auto declared = parameter->second->find("usage"); declared != parameter->second->end())
                 parameter_usage = &*declared;
-            name = fallback->get<std::string>();
+            name = (bound != nullptr ? *bound : *fallback).get<std::string>();
         }
         if (name.empty() || name == "swapchain" || name == "display" || own.contains(name)) return;
         auto entry = std::find_if(entries.begin(), entries.end(), [&](const Entry &e) { return e.name == name; });

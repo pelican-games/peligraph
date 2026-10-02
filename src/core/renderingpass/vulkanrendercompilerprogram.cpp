@@ -11,6 +11,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../shader/raygrouplayout.hpp"
 #include "../renderer/viewfamilyproviderregistry.hpp"
+#include "../../project/graphvariantpolicy.hpp"
 #include "../../project/renderconfigsection.hpp"
 
 #include <algorithm>
@@ -973,6 +974,9 @@ class DefaultVulkanRenderCompilerProgram final
         RenderCompilerProgramOutput output;
         output.variants.reserve(
             input.variants.size());
+        // RG-3: a non-preview variant of this invocation composed the
+        // authoring, so a later preview failure is the preview's own.
+        bool runtime_variant_composed = false;
         for (const auto &request :
              input.variants) {
             if (request.artifact ==
@@ -984,21 +988,37 @@ class DefaultVulkanRenderCompilerProgram final
                 // recorded as unavailable, with the refusal, and normal
                 // play publishes. The registration puts runtime variants
                 // first, so one that cannot compose has already thrown.
-                try {
-                    output.variants.push_back(
-                        compileDefaultVulkanVariant(
-                            input, backend, request));
-                } catch (...) {
+                // RG-3: only the preview's own refusals are kept here: an
+                // authored surface the preview does not support, or any
+                // failure after a runtime variant composed the same
+                // authoring (the "composition" reason). Without a runtime
+                // variant to compare with, any other failure (a pass that
+                // does not own a field, say) is the authoring's and throws
+                // as it would for flat.
+                const auto recordUnavailable = [&] {
                     RenderCompilerProgramVariantOutput unavailable;
                     unavailable.graph_variant = request.graph_variant;
                     unavailable.unavailable = std::current_exception();
                     output.variants.push_back(std::move(unavailable));
+                };
+                try {
+                    output.variants.push_back(
+                        compileDefaultVulkanVariant(
+                            input, backend, request));
+                } catch (const PreviewUnsupportedAuthoringError &) {
+                    recordUnavailable();
+                } catch (...) {
+                    if (!runtime_variant_composed) throw;
+                    recordUnavailable();
                 }
                 continue;
             }
             output.variants.push_back(
                 compileDefaultVulkanVariant(
                     input, backend, request));
+            if (request.graph_variant !=
+                RenderPipelineGraphVariant::preview)
+                runtime_variant_composed = true;
         }
         // P-2a-4b: `input.rendering_config` is the authored document, so a
         // `pelican.graph` root keeps `frame_node_order` in its `rendering`

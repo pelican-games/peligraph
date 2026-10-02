@@ -148,7 +148,12 @@ void insertRenderPassRunAtAnchor(nlohmann::json &passes,
 // `@history` read) and none of its passes writes it (a color or depth
 // output) -- a target the pipeline has to have drawn by someone else
 // (feature.required_target_unwritten@1 otherwise).
-nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature, bool with_needs_writer = false);
+// RG-3: `bindings` ({parameter: target}, an instance's resolved parameters)
+// names a `$parameter` target by its binding instead of its default, so the
+// parameter's declaration (its usage, hence a depth type) still applies to
+// the target it was bound to. Pass the feature document before binding.
+nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature, bool with_needs_writer = false,
+                                            const nlohmann::json *bindings = nullptr);
 
 // FR-3: a feature reads a target (renderFeatureRequiredTargets'
 // needs_writer) that no pass or compute task of the composed pipeline
