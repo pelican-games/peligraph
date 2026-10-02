@@ -346,6 +346,18 @@ GB-3(Blank から GUI で FFT の海を組む試験)で、body の shader に回
 
 **Studio 側(LC-1s、`ed4ed5f9`、2026-10-02)**: Graph の pass の欄の New… でループの body(分岐の body を含む)の pass に雛形を作ると、`pelican_sets.glsl` の include の次に `#include "pelican_loop.glsl"` と使い方の 1 行を入れる(ループの外では入れない。雛形は自分の push constant の block を持たないので `PELICAN_LOOP_CUSTOM_PUSH` の形にはしない。Pass Editor の New… は入れない。[`withLoopElementInclude()`](../src/devstudio/view/fullscreenshadertemplate.cpp#L358))。frame plan の node の `reads_loop_index` を読み、その node が作った pass が読んでいれば、body の pass の帯に `reads element`、pass の欄に「This shader reads the loop element (pelican_loop_element)」(ループに複製されない pass なら「outside a loop it reads element 0」)を出す([`GraphCanvasModel::loopElementRead()`](../src/devstudio/model/graphcanvasmodel.cpp#L3687))。`shader.loop_push_overlap@1` は Graph の拒否の 1 文の表に入る。GB-3 の `gui_build_ocean` は FFT の段を 16 本の分岐から 1 本の body(`ocean_fft.frag` が `pelican_loop_element()` で段を選ぶ、Count は `2 * log2(256)`)に書き直し、json の step は 552 から 235 になった。見え方は manual 第13章 §13.5 の「ループの body の pass は回の番号を読めます」。
 
+### body の once(PS-1、`9b3c9566`、2026-10-02)
+
+GB-3 で、初期スペクトル(h0)と twiddle を毎 frame 計算し直していた。graph の `render.fullscreen` / `render.raster` に `schedule: "per_frame" | "once"`、`render.compute` に `"once"` を足し(`per_frame` / `per_view` に加えて)、`render.image` に `lifetime: "persistent" | "transient"` を足した(GUI session と合意した形)。once の node は、世代が替わった・`rerun_once` に名指された・同じ frame で上流の once が走った・書く resource が作り直された・読む host 書きの buffer の bytes が変わった、のどれかの frame にだけ走り、ほかの frame は何も記録しない。書き方と規則の正は manual 第6章 §6.18「一度だけ走る pass と、frame をまたぐ image」。
+
+**ループとの関係**
+
+- body の pass / task に `schedule: "once"` を書くと、展開した**全回**が once になる(test は 2 回の body の `steps/0/seed`・`steps/1/seed` が両方 `schedule: "once"`、回の image が `lifetime: "persistent"`。[test](../test/featurecompose_test.cpp#L9593))。
+- `rerun_once {node: <graph.loop の id>}` は、その loop の全回のうち once のものを走らせる(frame plan の node の出所の `loop_origin.loop` で集める。[`Renderer::requestOnceRerun()`](../src/core/vkcore/renderer.cpp#L4075))。回が 0 の loop も知っている node で、`{scheduled: []}`。
+- once の node が once の node の出力を読む連鎖(h0 → twiddle)は、同じ frame の plan の順で上流が走れば下流も走る(`upstream`)。回の間の順は §5.2 の明示の `after` のまま。
+- **判定しないもの**: once の node がループの出力(`p` / `p[]`)や carry の値を読むときは、読む resource を辿るのがループの出力と carry の印で止まるので、`graph.once_reads_per_frame@1` の判定をしない([検査](../src/project/rendergraphcomposition.cpp#L405))。
+- 拒否は 2 つ(§10): `graph.once_writes_transient@1 {node, resource}`(書く port が中身を保たない resource に届く)、`graph.once_reads_per_frame@1 {node, input}`(per_frame の pass の出力、history の読み、transient の resource、once でない node が書く resource、`time` / `delta_time` / `scene_time` 由来の value graph の buffer)。`render.target_ref` の先は解決の段で合成後の宣言の `lifetime` を見る。
+
 ## 3. 実行の段(engine が決めるもの)
 
 | `over` の種類 | body の中身 | 段 | 実行 |
@@ -816,6 +828,8 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `view_axis` の拒否(LP-Vb) | 組み直し / 編集 | 実行時の軸は `graph.loop_tier_unsupported@1 {node, reason: set_unsupported}`、無い軸は `graph.view_select_axis_unknown@1 {pass: <loop id>, family, axis}`、body に value node があれば `graph.loop_expression_invalid@1 {reason: not_static}` |
 | `render_feature.pass_replacement_unknown@1` | 組み直し | `{feature, pass}` |
 | `graph.node_missing@1`(置き換え先) | 組み直し | `{node, feature, pass}`(LP-0d) |
+| `graph.once_writes_transient@1` | 組み直し(graph の lowering。`render.target_ref` の先は解決の段) | `{node, resource}`(`schedule: "once"` の node の書く port が、`lifetime` を書かない・`transient` の `render.image`、`transient` の buffer、persistent でない target に届く。`resource` は resource の node の id、`render.target_ref` なら target 名。PS-1。決定 5 の後の「body の once」) |
+| `graph.once_reads_per_frame@1` | 組み直し(graph の lowering。`render.target_ref` の先は解決の段) | `{node, input}`(once の node の読む port が、per_frame の pass の出力・`history: true`・transient の resource・once でない node が書く resource・`time` / `delta_time` / `scene_time` 由来の value graph の buffer に届く。`input` は port 名。PS-1) |
 | `shader.loop_push_overlap@1` | 組み直し(graphics / compute の pipeline を作る時) | `{shader, stage, range: {offset, size}}`(push constant の range が回の番号の `[112, 120)` に一部だけ重なる。編集の結果には code のまま fields が並ぶ。LC-1) |
 
 **既存の code に寄せるもの**

@@ -368,7 +368,7 @@ WP240c(project material)= [第5章](05_assets.md) §5.2 / WP248(`pelican_project
 | 381a | reader の境界と busy な source | 済(`6f48d617`) | descriptor 範囲・同一 section・ファイル境界と 4 種の上限。sharing violation 3 回で [`game_logic_source_busy@1`](../../src/core/gamelogic/gamelogicimports.hpp#L54) を pending status に出し、解除後の poll で再試行 | ビルド中の DLL 差し替えが「失敗」にならず次の poll で通る。dead pid の shadow directory を起動時に掃除 |
 | 382a | 宣言 schema v3(`List` / `Flags`) | 済(`c49ba868`) | [`SchemaNode`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L155)(Leaf / Flags / List、深さ 2)、presence 3 値、`$list` object container、behavior / event / component の独立した v3 registration 入口 | WP382dで`pelican_ray_instance.overrides`がListを利用。[decode入口](../../src/core/loader/componentcodec.cpp#L1716)で受理し、previewは専用codeで拒否 |
 | 383 | AS row の material identity | 済(`498dec1f`) | `MaterialRowIdentity` を 1 箇所で作り、gate / bindings lookup / AS rule / material reference が同じ値を見る。`source_material_index` を producer から AS snapshot まで optional で運ぶ | `pelican.ray_material_index_out_of_range@1` |
-| 385 | GPU テストの process 間 lease | 済(`f0955c8d`) | `gpu` label の CTest を launcher [`pelican_gpu_lease_run`](../../test/gpu_lease_run.cpp#L157) 経由にし、Windows では machine-wide の lease を 1 本だけ取る | 別 worktree の `ctest` と同時に走っても GPU が重ならない([第10章](10_tools.md) §10.9) |
+| 385 | GPU テストの process 間 lease | 済(`f0955c8d`) | `gpu` label の CTest を launcher [`pelican_gpu_lease_run`](../../test/gpu_lease_run.cpp#L190) 経由にし、Windows では machine-wide の lease を 1 本だけ取る | 別 worktree の `ctest` と同時に走っても GPU が重ならない([第10章](10_tools.md) §10.9) |
 
 **未統合(2026-09-04 時点)。使えると書いてはいけないもの:**
 

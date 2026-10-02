@@ -162,7 +162,7 @@
 
 **stem(ステム)** — シェーダを**拡張子なしの名前**で参照する規約(`"shaders/lava"`、`"engine://ssao"`)。解決順は `<stem>.vert`(GLSL ソース → 実行時コンパイル)→ `<stem>.vert.spv`(ビルド済み SPIR-V)で、拡張子を書くとエラーです。この規約は web プロファイルと共有される可搬形式です。初出: [第6章 stem 参照](06_rendering.md#stem-参照)、web 側は [第9章 §9.4](09_web.md#94-シェーダ-stem-規約--可搬シェーダの書き方)。
 
-**SPIR-V / SPIR-V reflection** — SPIR-V は Vulkan が読むシェーダの中間バイナリ形式。**reflection**(リフレクション)は、そのバイナリを解析して「どの set / binding に何型のリソースが要るか」を取り出すことです。pelican2 は spirv-reflect で解析し、descriptor set layout・pipeline layout・push constant range を**全自動生成**します。初出: [第6章 自動リフレクションとキャッシュ](06_rendering.md#自動リフレクションとキャッシュ)。([ShaderCompiler](../../src/core/shader/shadercompiler.hpp#L39))
+**SPIR-V / SPIR-V reflection** — SPIR-V は Vulkan が読むシェーダの中間バイナリ形式。**reflection**(リフレクション)は、そのバイナリを解析して「どの set / binding に何型のリソースが要るか」を取り出すことです。pelican2 は spirv-reflect で解析し、descriptor set layout・pipeline layout・push constant range を**全自動生成**します。初出: [第6章 自動リフレクションとキャッシュ](06_rendering.md#自動リフレクションとキャッシュ)。([ShaderCompiler](../../src/core/shader/shadercompiler.hpp#L58))
 
 **descriptor set** — シェーダが使うリソース(テクスチャ・バッファ)をまとめて束ねた単位で、番号(set 0, 1, …)で区別します。pelican2 は set の役割を規約で固定しており(フレーム共通・パス・マテリアルなど)、シェーダ側は番号を直接書かずに規約の定数を使います。初出: [第6章 descriptor set 規約](06_rendering.md#descriptor-set-規約shader_contractmd-が正)。([pelican_sets.hpp:7](../../src/core/shader/pelican_sets.hpp#L15))
 
@@ -170,9 +170,9 @@
 
 **canonical anchor(標準アンカー)** — feature がパスを差し込む先として、常に実体化される 8 つの目印ノード(`sprite → post_main → tonemap → post_ldr → pelican_ui → debug_draw → debug_text → imgui`)。この**全順序はエンジンの契約**で並べ替えられませんが、あいだに挿すのは自由です。初出: [第6章 canonical anchor](06_rendering.md#canonical-anchorwp73)。
 
-**frame graph(フレームグラフ)** — パスの `input` / `output` から依存を自動で導き、実行順・並び・barrier をエンジンが決める仕組み。手書きの barrier は禁止で、JSON の宣言順は依存が許す範囲での**安定タイブレーク**にすぎません。「グラフ」の中身は、**ノード** = パスや compute タスク、**辺** = 「ある RT を書く側 → それを読む側」の依存で、プランナはこれをトポロジカルに並べて `nodes`(実行順)・`levels`(依存が無く同じ段に置けるノードの束)・`barriers` を出します([FramePlan](../../src/core/renderingpass/frameplanner.hpp#L162))。初出: [第6章 §6.6](06_rendering.md#66-フレームグラフf0f2--wp3335--wp64)。
+**frame graph(フレームグラフ)** — パスの `input` / `output` から依存を自動で導き、実行順・並び・barrier をエンジンが決める仕組み。手書きの barrier は禁止で、JSON の宣言順は依存が許す範囲での**安定タイブレーク**にすぎません。「グラフ」の中身は、**ノード** = パスや compute タスク、**辺** = 「ある RT を書く側 → それを読む側」の依存で、プランナはこれをトポロジカルに並べて `nodes`(実行順)・`levels`(依存が無く同じ段に置けるノードの束)・`barriers` を出します([FramePlan](../../src/core/renderingpass/frameplanner.hpp#L168))。初出: [第6章 §6.6](06_rendering.md#66-フレームグラフf0f2--wp3335--wp64)。
 
-**FramePlan** — フレームグラフを解決した結果の**実行計画**。ノード種別は `render` / `compute` / `anchor` / `snapshot_copy` / `output_transform` で、全構成がこの順序で実行されます(旧来の「JSON 宣言順で実行」経路は撤去済み)。RPC の `get_frame_plan` や ImGui の plan viewer で中身を見られます。初出: [第6章 §6.6](06_rendering.md#66-フレームグラフf0f2--wp3335--wp64)。([FramePlan](../../src/core/renderingpass/frameplanner.hpp#L162) / [FramePlanNodeKind](../../src/core/renderingpass/frameplanner.hpp#L16))
+**FramePlan** — フレームグラフを解決した結果の**実行計画**。ノード種別は `render` / `compute` / `anchor` / `snapshot_copy` / `output_transform` で、全構成がこの順序で実行されます(旧来の「JSON 宣言順で実行」経路は撤去済み)。RPC の `get_frame_plan` や ImGui の plan viewer で中身を見られます。初出: [第6章 §6.6](06_rendering.md#66-フレームグラフf0f2--wp3335--wp64)。([FramePlan](../../src/core/renderingpass/frameplanner.hpp#L168) / [FramePlanNodeKind](../../src/core/renderingpass/frameplanner.hpp#L16))
 
 **logical plan / physical plan(論理プラン / 物理プラン)** — **論理プラン**はリソースを「値と読み取り範囲」だけで表したデバイス非依存の表現、**物理プラン**はそこへ実フォーマット・サンプル数・scope・view 実行を載せたデバイス依存の表現です。「何を計算するか」と「Vulkan でどう置くか」を分ける層で、物理プランは丸ごと差し替え可能なパッケージとして eject できます。違いは型の欄で見るのが早く、論理側の 1 リソースは `name` / `type` / materialization の 3 項だけ([LogicalResourceDesc](../../src/project/logicalrendergraph.hpp#L60))、物理側の同じリソースにはそこへ `format` / `rasterization_samples` / `view_layout` / `mip_levels` / `array_layers` / alias 可否が付きます([VulkanPhysicalResourcePlan](../../src/project/targetrenderplanning.hpp#L208))。例えば `format_class: "scene"` は論理側では文字どおり「scene 用の色」でしかなく、実 format(HDR なら `R16G16B16A16_SFLOAT`、SDR なら `B8G8R8A8_SRGB`)を欄として持つのは物理側です([第6章 §6.3](06_rendering.md))。初出: [第6章 target planning と Vulkan plan pin](06_rendering.md#target-planning-と-vulkan-plan-pin)。([CompiledLogicalRenderGraph](../../src/project/logicalrendergraph.hpp#L258) / [VulkanTargetPlan](../../src/project/targetrenderplanning.hpp#L488))
 
@@ -216,7 +216,7 @@
 
 **Job オブジェクト(Windows)** — 子プロセスを束ねて**まとめて終了させる**ための Windows のカーネルオブジェクト(POSIX のプロセスグループに相当)。pelican2 ではツールが起動した子プロセス(と孫)を取り残さないために使います。初出: [source-code-guide 第10章 §10.4](../source-code-guide/10_background_knowledge.md#windows-の-job-オブジェクトプロセスグループの対応物)。([processrunner.cpp:171](../../src/devcli/processrunner.cpp#L171))
 
-**名前付き mutex(named mutex)** — 名前でプロセスをまたいで待ち合わせられる排他オブジェクト。`Global\` を付けるとマシン全体が範囲になります。pelican2 では GPU を使うテストを 1 本ずつ走らせる lease に使い、前の保持者が異常終了した場合(`WAIT_ABANDONED`)も取得成功として扱います(GPU が永久にロックされないため)。初出: [source-code-guide 第10章 §10.4](../source-code-guide/10_background_knowledge.md#windows-の名前付き-mutex-と-global-名前空間machine-wide-の相互排他)。([gpu_lease_run.cpp:157](../../test/gpu_lease_run.cpp#L157))
+**名前付き mutex(named mutex)** — 名前でプロセスをまたいで待ち合わせられる排他オブジェクト。`Global\` を付けるとマシン全体が範囲になります。pelican2 では GPU を使うテストを 1 本ずつ走らせる lease に使い、前の保持者が異常終了した場合(`WAIT_ABANDONED`)も取得成功として扱います(GPU が永久にロックされないため)。初出: [source-code-guide 第10章 §10.4](../source-code-guide/10_background_knowledge.md#windows-の名前付き-mutex-と-global-名前空間machine-wide-の相互排他)。([gpu_lease_run.cpp:157](../../test/gpu_lease_run.cpp#L190))
 
 **doclink** — 文書中の `#L<行番号>` リンクが指す先を追跡し続けるためのツール(`tools/doclink.py`)。`update` で行番号を貼り直し、`check` で古くなったリンクを検出します。行番号はキャッシュで、本体は「その行に何が書いてあったか」というアンカーです。初出: [第10章 §10.10](10_tools.md#1010-リポジトリ保守スクリプトtools)。
 
