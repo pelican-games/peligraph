@@ -7,7 +7,7 @@
 - `pelican_player` の全 CLI 引数(**30 個**。正は [main.cpp](../../src/player/main.cpp) の `add_argument` 群)
 - JSON-RPC(stdio)による外部制御 — 基盤メソッド、エディタ拡張、実セッション例
   - **JSON-RPC** は外部プロセスからエンジンを操る制御プロトコル、**stdio** はその通り道です: 起動した `pelican_player --rpc` の標準入力へリクエスト行を書き、標準出力から応答行を読みます(1 行 = 1 リクエスト / 1 応答の NDJSON。詳細は §10.3)
-- `pelican_cli` の **9 サブコマンド系統**(`assets` / `bake-camera` / `import` / `dist-config` / `package` / `project` / `dump-lowered-material` / `vrm` / `graph-catalog`。正は [main.cpp の usage](../../src/devcli/main.cpp#L43))
+- `pelican_cli` の **10 サブコマンド系統**(`assets` / `bake-camera` / `import` / `dist-config` / `package` / `project` / `dump-lowered-material` / `vrm` / `graph-catalog` / `intro-link`。正は [main.cpp の usage](../../src/devcli/main.cpp#L47))
 - ホットリロード(シェーダ・テクスチャ・マテリアル・モデル・ゲーム DLL)と起動高速化
 - ImGui 開発者 UI(F1)と Frame Plan Viewer
 - 配布ビルド、Pelican Studio の現状、テスト基盤
@@ -449,7 +449,7 @@ AuthoringObjectId は scratch session 内で新しく採番されます。採用
 ## 10.4 pelican_cli リファレンス
 
 ```
-pelican_cli <assets|bake-camera|import|dist-config|package|project|dump-lowered-material|vrm|graph-catalog> ...
+pelican_cli <assets|bake-camera|import|dist-config|package|project|dump-lowered-material|vrm|graph-catalog|intro-link> ...
 ```
 
 エラーは stderr+終了コード -1、成功は 1 行サマリ+終了コード 0。
@@ -645,6 +645,24 @@ pelican_cli graph-catalog
 [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake#L24)(ctest 名 `devcli_graph_catalog`)が
 固定しています。出力はモジュール名・操作名・型・sink のどれも**名前順**です([catalog()](../../src/project/graphmodule.cpp#L698) が名前を鍵にした `std::map` を走り、型と sink は明示的に sort します)。登録順に依存しません。
 
+### `pelican_cli intro-link bake|serve`(✅IL-1 / IL-2。v1 向け、`develop_v1`)
+
+```sh
+pelican_cli intro-link serve <project> [--port N] [--shaders <dir>] [--glslc <path>] [--exit-after-client]
+pelican_cli intro-link bake  <project> --out <header> [--shaders <dir>] [--glslc <path>]
+```
+
+自作の小さな Vulkan program(デモシーンの intro)に、project の時刻・曲線・シェーダを渡す口です。
+曲線は `passes/*.json` の `value.curve`(名前 = node の `id`)、シェーダは `shaders/` 直下の `.vert` / `.frag` / `.comp`
+(名前 = `<stem>_<stage>`)です。**`serve`** は 127.0.0.1 の TCP で待ち(既定 47611、`--port 0` で空き port)、stdout の
+1 行目に `port <N>` を出して、file が変わった曲線とシェーダを送り直します。stdin で `play` / `pause` / `seek <秒>` / `quit`
+を受けます。**`bake`** は同じものを C header 1 本に焼きます(提出の形)。作品は単一 header
+`tools/intro_link/pelican_intro_link.h` を使い、開発中は socket、提出時は焼いた表を同じ関数で引きます。
+シェーダは glslc を子 process で呼んで compile します(serve と bake で同じ引数。`pelican_cli` に shaderc は入りません)。
+失敗は stderr に `intro_link.*@1` の 1 行で終了コード 1 です(この節の冒頭の -1 の例外。[振り分け](../../src/devcli/introlinkcommand.cpp#L98))。
+`PELICAN_WITH_INTRO_LINK=OFF` の build では `build_feature_disabled@1` を出して 1 で終わり、`dist-config` の配布 preset は常に OFF を書きます。
+通信の形、header の API、パージ、実例 program と大きさの実測は [design_intro_link.md](../design_intro_link.md) が正です。
+
 ## 10.5 ホットリロード(✅WP90/96〜110/147/162/178)
 
 保存すれば動いたまま反映される、が現在の開発体験です。基盤は [src/core/watch/](../../src/core/watch)(FileWatcher + ReloadService。デバウンス 200ms、適用は**次フレーム先頭で一括**、mid-frame 差し替えなし)。
@@ -716,7 +734,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 ```
 
 `--tab` が取るのは `frame_plan` / `render_features` / `rendering_settings` / `graph` の 4 つ(`rendering_settings` は ✅RSX から。[第13章](13_editor.md)「Studio の Rendering settings タブ」)
-([一覧](../../src/devstudio/view/mainwindow.cpp#L1572))。**未知の名前は window を作る前に console へ
+([一覧](../../src/devstudio/view/mainwindow.cpp#L1578))。**未知の名前は window を作る前に console へ
 理由を出して終了コード 2** です([検査](../../src/devstudio/main.cpp#L36)) —— window を開いて「たまたま前にあった
 タブ」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます
 ([順序](../../src/devstudio/view/uimain.cpp#L78)) —— project を開くとその project のツール配置が復元され、
@@ -985,7 +1003,7 @@ HEAD が動くと configure が再実行される。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。2026-07-10 以降の追加: `run_devcli_assets`(WP66)/ `run_event_schema_compile`(WP71)/ `run_dump_lowered_material`(WP76)/ `run_devcli_gltf_extract`(WP79)/ `run_spvlink_golden`(WP80)/ `run_devcli_rules_import`(WP84)/ `run_devcli_bake_camera` + `run_input_record_replay_headless`(WP89)/ `run_ui_u2_rpc_replay`(WP93)など。
 - 2026-09 の追加: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(ctest 名 `devcli_graph_catalog`。`pelican_cli graph-catalog` の出力を検査し、**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` / `:end` のコメントで区切られていて、誰も比べない写しを 2 つ目の正にしないための仕掛けです)、`package_install_smoke`(X-1。install → カタログ → 描画 → uninstall を実 player で。`gpu` ラベル)、[`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(出荷 project の走査。`project.json` の `requires` が満たせない project は**名前を出して skip** し、player の中で落ちません)。
 - **Studio のシナリオ(Q-1)**: `test/studio_scenarios/*.json` は 1 本が 1 つの ctest `studio_scenario_<名前>` になり
-([登録](../../test/CMakeLists.txt#L3469))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
+([登録](../../test/CMakeLists.txt#L3478))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
 実物の player が埋まるので `QT_QPA_PLATFORM=offscreen` は掛けません。Studio target と Python 製テストを有効にし、
 Python 3.11 以上を用意します。`uv` は不要です。完全な GPU gate はシナリオの未登録・skip を失敗にするため、
 `SKIP_DEVSTUDIO=OFF` と `PELICAN_PYTHON_TESTS=ON` を指定します。[`run_studio_scenario.cmake`](../../test/run_studio_scenario.cmake#L30) が fixture
