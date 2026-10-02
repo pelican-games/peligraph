@@ -28,6 +28,7 @@
 #include "../renderingpass/rendertargetjsonparser.hpp"
 #include "../renderingpass/rendertargetmetadataresolver.hpp"
 #include "../renderingpass/rendertargetnameresolver.hpp"
+#include "../shader/shaderreflection.hpp"
 #include "../vkcore/renderer_config.hpp"
 
 #include <algorithm>
@@ -82,7 +83,9 @@ bool isCarriedRefusalCode(std::string_view code) {
            code == viewFamilyExtentMismatchCode ||
            // LP-2: the refusals raised while the draw-loop tables are
            // built (the steps are judged against the loaded materials).
-           isMaterialDrawLoopRefusalCode(code);
+           isMaterialDrawLoopRefusalCode(code) ||
+           // LC-1: a push-constant range partly over the loop index.
+           code == shaderLoopPushOverlapCode;
 }
 
 // LP-0a: a graph refusal that only composing the candidate can raise (a

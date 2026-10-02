@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <map>
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <spirv_reflect.h>
 #include <stdexcept>
 
@@ -514,6 +515,58 @@ std::vector<vk::PushConstantRange> makePushConstantRanges(const ShaderReflection
 
 void validatePushConstantContract(const ShaderReflection &reflection) {
     (void)makePushConstantRanges(reflection);
+}
+
+namespace {
+
+constexpr uint32_t loop_push_begin = PELICAN_PUSH_LOOP_OFFSET;
+constexpr uint32_t loop_push_end = PELICAN_PUSH_LOOP_OFFSET + PELICAN_PUSH_LOOP_BYTES;
+
+bool holdsLoopRange(const vk::PushConstantRange &range) noexcept {
+    return range.offset <= loop_push_begin && range.offset + range.size >= loop_push_end;
+}
+
+bool overlapsLoopRange(const vk::PushConstantRange &range) noexcept {
+    return range.offset < loop_push_end && range.offset + range.size > loop_push_begin;
+}
+
+std::string loopPushStageName(vk::ShaderStageFlags stages) {
+    using Bit = vk::ShaderStageFlagBits;
+    if (stages == Bit::eVertex) return "vertex";
+    if (stages == Bit::eFragment) return "fragment";
+    if (stages == Bit::eCompute) return "compute";
+    if (stages == Bit::eRaygenKHR) return "raygen";
+    if (stages == Bit::eMissKHR) return "miss";
+    if (stages == Bit::eClosestHitKHR) return "closesthit";
+    if (stages == Bit::eAnyHitKHR) return "anyhit";
+    if (stages == Bit::eIntersectionKHR) return "intersection";
+    if (stages == Bit::eCallableKHR) return "callable";
+    return vk::to_string(stages);
+}
+
+} // namespace
+
+vk::ShaderStageFlags loopIndexPushStages(const ShaderReflection &reflection) noexcept {
+    vk::ShaderStageFlags stages;
+    for (const auto &range : reflection.push_constants)
+        if (holdsLoopRange(range)) stages |= range.stageFlags;
+    return stages;
+}
+
+bool readsLoopIndex(const ShaderReflection &reflection) noexcept {
+    return static_cast<bool>(loopIndexPushStages(reflection));
+}
+
+void validateLoopIndexPushRange(const ShaderReflection &reflection, std::string_view shader) {
+    for (const auto &range : reflection.push_constants) {
+        if (!overlapsLoopRange(range) || holdsLoopRange(range)) continue;
+        const nlohmann::ordered_json fields{
+            {"shader", shader},
+            {"stage", loopPushStageName(range.stageFlags)},
+            {"range", {{"offset", range.offset}, {"size", range.size}}},
+        };
+        throw std::runtime_error(std::string{shaderLoopPushOverlapCode} + ": " + fields.dump());
+    }
 }
 
 vk::PipelineLayoutCreateInfo makePipelineLayoutCreateInfo(std::span<const vk::DescriptorSetLayout> layouts,

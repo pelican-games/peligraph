@@ -106,6 +106,7 @@
     "shaders/include/pelican_morph.glsl",
     "shaders/include/pelican_vat.glsl",
     "shaders/include/pelican_resource_ports.glsl",
+    "shaders/include/pelican_loop.glsl",
     "shaders/material/standard_lighting.glsl",
     "shaders/material/toon_lighting.glsl",
     "shaders/material/openpbr_lighting.glsl",

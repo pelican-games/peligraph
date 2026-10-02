@@ -407,6 +407,12 @@ DECLARE_MODULE(PipelineFactory) {
     const ShaderReflection &reflection(PipelineHandle handle) const;
     GraphicsPipelineDesc graphicsDesc(
         PipelineHandle handle) const;
+    // LC-1: pushes {element, count} at PELICAN_PUSH_LOOP_OFFSET to the
+    // stages of the pipeline whose push-constant range holds them
+    // (loopIndexPushStages), once, with their stage flags OR-ed. Does
+    // nothing when no stage declares them; returns whether it pushed.
+    bool pushLoopIndex(vk::CommandBuffer command_buffer, PipelineHandle handle,
+                       std::uint32_t element, std::uint32_t count) const;
 
     // Builds every dependent pipeline while prepared shader bundles are only
     // temporarily visible. Publication happens once, after all candidates and

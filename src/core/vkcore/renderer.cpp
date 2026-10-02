@@ -4136,10 +4136,35 @@ nlohmann::json Renderer::currentFramePlanJson() const {
                 appendUnusedBindingDiagnostics(result, *fullscreen, *targets,
                                                compiled);
             }
+            // LC-1: its shaders read pelican_loop_element() / _count().
+            bool reads_loop_index = false;
+            try {
+                reads_loop_index = fullscreen->readsLoopIndex(compiled.pass_id);
+            } catch (const std::exception &) {
+            }
             for (auto &node : result["nodes"]) {
                 if (node.value("kind", std::string{}) != "compute" &&
                     node.value("name", std::string{}) == definition.name) {
                     node["pass_inputs"] = std::move(field);
+                    if (reads_loop_index) node["reads_loop_index"] = true;
+                    break;
+                }
+            }
+        }
+    }
+    // LC-1: a compute task whose shader reads the loop index.
+    if (const auto *compute_tasks = FastModuleContainer::tryGet<ComputeTaskContainer>()) {
+        for (const auto &compiled : program->rendering_pass.compute_tasks) {
+            bool reads_loop_index = false;
+            try {
+                reads_loop_index = compute_tasks->readsLoopIndex(compiled.task_id);
+            } catch (const std::exception &) {
+            }
+            if (!reads_loop_index) continue;
+            for (auto &node : result["nodes"]) {
+                if (node.value("kind", std::string{}) == "compute" &&
+                    node.value("name", std::string{}) == compiled.definition.name) {
+                    node["reads_loop_index"] = true;
                     break;
                 }
             }

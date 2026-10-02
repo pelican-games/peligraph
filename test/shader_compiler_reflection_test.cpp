@@ -13,6 +13,8 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <nlohmann/json.hpp>
+#include <string>
 
 namespace Pelican {
 
@@ -819,6 +821,133 @@ void main() { outColor = pc.value; }
     const auto asymmetric_ranges = makePushConstantRanges(asymmetric);
     REQUIRE(asymmetric_ranges.size() == 2);
     REQUIRE_FALSE(asymmetric_ranges[0].stageFlags & asymmetric_ranges[1].stageFlags);
+#endif
+}
+
+// LC-1: pelican_loop.glsl declares the element and count at [112, 120), in
+// its own push-constant block or (PELICAN_LOOP_CUSTOM_PUSH) in the shader's;
+// the engine pushes them to the stages whose range holds them, and refuses a
+// range that covers only part of them.
+TEST_CASE("LC-1 pelican_loop.glsl declares the loop index at 112 in its own block or the shader's",
+          "[shader][lc1]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    REQUIRE(engineResource("shaders/include/pelican_loop.glsl").has_value());
+    ShaderCompiler compiler;
+    compiler.addIncludeDir(sourceRoot() / "src/core/resources/shaders/include");
+    const auto compile = [&](const char *source, vk::ShaderStageFlagBits stage, const char *name) {
+        const auto compiled = compiler.compileSource(source, stage, name);
+        INFO(compiled.log);
+        REQUIRE(compiled.ok);
+        return reflect(compiled.spirv);
+    };
+    const auto vertex = compile(R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_loop.glsl"
+layout(location = 0) flat out uvec2 outLoop;
+void main() {
+    outLoop = uvec2(pelican_loop_element(), pelican_loop_count());
+    gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+}
+)glsl", vk::ShaderStageFlagBits::eVertex, "lc1_loop.vert");
+    const auto fragment = compile(R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_loop.glsl"
+layout(location = 0) out vec4 outColor;
+void main() { outColor = vec4(float(pelican_loop_element()), float(pelican_loop_count()), 0.0, 1.0); }
+)glsl", vk::ShaderStageFlagBits::eFragment, "lc1_loop.frag");
+
+    // The include's own block: [112, 120) in the stage that includes it.
+    REQUIRE(fragment.push_constants.size() == 1);
+    CHECK(fragment.push_constants[0].offset == PELICAN_PUSH_LOOP_OFFSET);
+    CHECK(fragment.push_constants[0].size == PELICAN_PUSH_LOOP_BYTES);
+    CHECK(loopIndexPushStages(fragment) == vk::ShaderStageFlagBits::eFragment);
+    CHECK(readsLoopIndex(fragment));
+    REQUIRE_NOTHROW(validatePushConstantContract(fragment));
+    REQUIRE_NOTHROW(validateLoopIndexPushRange(fragment, "lc1_loop.frag"));
+
+    // Both stages of a raster pass include it: one push reaches both.
+    const std::array stages{vertex, fragment};
+    const auto both = merge(stages);
+    CHECK(loopIndexPushStages(both) ==
+          (vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment));
+    const auto both_ranges = makePushConstantRanges(both);
+    REQUIRE(both_ranges.size() == 1);
+    CHECK(both_ranges[0].stageFlags ==
+          (vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment));
+    CHECK(both_ranges[0].offset == PELICAN_PUSH_LOOP_OFFSET);
+    CHECK(both_ranges[0].size == PELICAN_PUSH_LOOP_BYTES);
+
+    // PELICAN_LOOP_CUSTOM_PUSH: the fields in the shader's own block, next to
+    // a projection_view; the functions read them through the block's name.
+    const auto custom = compile(R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#define PELICAN_LOOP_CUSTOM_PUSH
+#include "pelican_loop.glsl"
+layout(push_constant) uniform Push {
+    mat4 projection_view;
+    vec4 camera_position;
+    PELICAN_LOOP_PUSH_FIELDS
+} push;
+PELICAN_LOOP_FUNCTIONS(push)
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = push.projection_view * push.camera_position +
+               vec4(float(pelican_loop_element()), float(pelican_loop_count()), 0.0, 0.0);
+}
+)glsl", vk::ShaderStageFlagBits::eFragment, "lc1_custom.frag");
+    REQUIRE(custom.push_constants.size() == 1);
+    CHECK(custom.push_constants[0].offset == 0);
+    CHECK(custom.push_constants[0].size == PELICAN_PUSH_LOOP_OFFSET + PELICAN_PUSH_LOOP_BYTES);
+    CHECK(loopIndexPushStages(custom) == vk::ShaderStageFlagBits::eFragment);
+    REQUIRE_NOTHROW(validatePushConstantContract(custom));
+    REQUIRE_NOTHROW(validateLoopIndexPushRange(custom, "lc1_custom.frag"));
+    // With the default block in the vertex stage: two ranges, and the push to
+    // both stages covers [112, 120) in each.
+    const std::array mixed_stages{vertex, custom};
+    const auto mixed = merge(mixed_stages);
+    CHECK(loopIndexPushStages(mixed) ==
+          (vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment));
+    const auto mixed_ranges = makePushConstantRanges(mixed);
+    REQUIRE(mixed_ranges.size() == 2);
+    for (const auto &range : mixed_ranges) {
+        CHECK(range.offset <= PELICAN_PUSH_LOOP_OFFSET);
+        CHECK(range.offset + range.size >= PELICAN_PUSH_LOOP_OFFSET + PELICAN_PUSH_LOOP_BYTES);
+    }
+
+    // A shader without it: nothing to push.
+    const auto plain = compile(R"glsl(
+#version 450
+layout(push_constant) uniform ShaderData { layout(offset = 64) vec4 value; } pc;
+layout(location = 0) out vec4 outColor;
+void main() { outColor = pc.value; }
+)glsl", vk::ShaderStageFlagBits::eFragment, "lc1_plain.frag");
+    CHECK_FALSE(loopIndexPushStages(plain));
+    CHECK_FALSE(readsLoopIndex(plain));
+    REQUIRE_NOTHROW(validateLoopIndexPushRange(plain, "lc1_plain.frag"));
+
+    // A range that covers part of [112, 120) is refused by name.
+    const auto overlap = compile(R"glsl(
+#version 450
+layout(push_constant) uniform ShaderData { layout(offset = 104) uvec2 value; uint more; } pc;
+layout(location = 0) out vec4 outColor;
+void main() { outColor = vec4(pc.value, pc.more, 1.0); }
+)glsl", vk::ShaderStageFlagBits::eFragment, "lc1_overlap.frag");
+    CHECK_FALSE(loopIndexPushStages(overlap));
+    std::string message;
+    try {
+        validateLoopIndexPushRange(overlap, "project://shaders/lc1_overlap.frag");
+    } catch (const std::runtime_error &error) {
+        message = error.what();
+    }
+    const std::string prefix = std::string{shaderLoopPushOverlapCode} + ": ";
+    REQUIRE(message.starts_with(prefix));
+    CHECK(nlohmann::json::parse(message.substr(prefix.size())) ==
+          nlohmann::json{{"shader", "project://shaders/lc1_overlap.frag"},
+                         {"stage", "fragment"},
+                         {"range", {{"offset", 104}, {"size", 12}}}});
 #endif
 }
 

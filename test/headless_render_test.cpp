@@ -74,8 +74,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -15222,6 +15224,177 @@ TEST_CASE("LP-1a a graph.loop draws one copy per element, in element order where
     }
 #else
     SUCCEED("LP-1a GPU acceptance is compiler-ON only");
+#endif
+}
+
+// LC-1: a loop body's passes read which element they are from push constants
+// (pelican_loop.glsl), not from a define. `steps` runs a body three times: a
+// fullscreen pass writes (element, count) * 0.2 into an image of its own, and
+// a raster pass whose vertex and fragment shaders both include the header
+// writes what each stage read. A fullscreen pass outside the loop with the
+// same shader reads element 0 of 1. The copies share one compiled shader.
+TEST_CASE("LC-1 a loop body's passes read their element and count from push constants",
+          "[headless][gpu][lc1][graph-loop]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(temp_dir / "assets.json",
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
+        using Json = nlohmann::json;
+        const Json type{{"semantic", "pelican.render.color_signal@1"},
+            {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+        const Json color{{"kind", "image"}, {"type", type}, {"access", "write"},
+                         {"attachment", "color"}, {"location", 0}};
+        const auto image = [&](const std::string &id) {
+            return Json{{"id", id}, {"op", "render.image"},
+                        {"parameters", {{"type", type}, {"format", "R8G8B8A8_UNORM"}, {"extent_scale", 1.0},
+                                        {"usage", {"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"}}}},
+                        {"outputs", {"resource"}}};
+        };
+        const auto draw = [&](const std::string &id, const std::string &op, const Json &shader,
+                              const std::string &target) {
+            Json parameters{{"pass_set", "main_render"}, {"shader", shader}, {"ports", {{"color", color}}}};
+            if (op == "render.raster") parameters["draw"] = {{"vertex_count", 3}};
+            return Json{{"id", id}, {"op", op}, {"parameters", parameters},
+                        {"inputs", {{"color", {{"node", target}, {"port", "resource"}}}}},
+                        {"outputs", {"color"}}};
+        };
+        const Json index_shader{{"vertex", "engine://fullscreen"}, {"fragment", "shaders/lc1_index"}};
+        const Json both_shader{{"vertex", "shaders/lc1_both"}, {"fragment", "shaders/lc1_both"}};
+        const Json body{{"nodes", Json::array({
+            image("paint_image"), draw("paint", "render.fullscreen", index_shader, "paint_image"),
+            image("raster_image"), draw("raster", "render.raster", both_shader, "raster_image")})},
+            {"outputs", {{"paint", {{"node", "paint"}, {"port", "color"}}},
+                         {"raster", {{"node", "raster"}, {"port", "color"}}}}}};
+        const Json document{{"schema", "pelican.graph"}, {"version", 1},
+            {"definitions", {{"lc1_body", body}}},
+            {"nodes", Json::array({
+                {{"id", "steps"}, {"op", "graph.loop"},
+                 {"parameters", {{"over", {{"range", {{"count", 3}}}}},
+                                 {"branches", Json::array({{{"body", "lc1_body"}}})}}},
+                 {"outputs", Json::array()}},
+                image("outside_image"), draw("outside", "render.fullscreen", index_shader, "outside_image")})},
+            {"outputs", Json::object()},
+            {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}}}};
+        writeTextFile(temp_dir / "hybrid.json", document.dump(2));
+        std::filesystem::create_directories(temp_dir / "shaders");
+        writeTextFile(temp_dir / "shaders" / "lc1_index.frag", R"glsl(#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_loop.glsl"
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() {
+    outColor = vec4(float(pelican_loop_element()) * 0.2, float(pelican_loop_count()) * 0.2, 0.0, 1.0);
+}
+)glsl");
+        writeTextFile(temp_dir / "shaders" / "lc1_both.vert", R"glsl(#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_loop.glsl"
+layout(location = 0) flat out uint outElement;
+layout(location = 1) flat out uint outCount;
+void main() {
+    vec2 uv = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+    gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
+    outElement = pelican_loop_element();
+    outCount = pelican_loop_count();
+}
+)glsl");
+        writeTextFile(temp_dir / "shaders" / "lc1_both.frag", R"glsl(#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_loop.glsl"
+layout(location = 0) flat in uint inElement;
+layout(location = 1) flat in uint inCount;
+layout(location = 0) out vec4 outColor;
+void main() {
+    // r, b: what the vertex stage read; g, a: what this stage reads.
+    outColor = vec4(float(inElement), float(pelican_loop_element()), float(inCount),
+                    float(pelican_loop_count())) * 0.2;
+}
+)glsl");
+        configureRayQueryTestRuntime(temp_dir);
+
+        auto &renderer = GET_MODULE(Renderer);
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+
+        // Every texel of a target, as one RGBA8 value.
+        const auto uniformTexel = [&](const std::string &target) {
+            INFO(target);
+            const auto read = RendererTestAccess::readRenderTarget(renderer, target, ImageSubresourceRange{});
+            REQUIRE(read.format == vk::Format::eR8G8B8A8Unorm);
+            std::set<std::array<std::uint8_t, 4>> values;
+            for (std::size_t offset = 0; offset + 4 <= read.bytes.size(); offset += 4)
+                values.insert({read.bytes.at(offset), read.bytes.at(offset + 1), read.bytes.at(offset + 2),
+                               read.bytes.at(offset + 3)});
+            REQUIRE(values.size() == 1);
+            return *values.begin();
+        };
+        for (std::uint8_t element = 0; element < 3; ++element) {
+            const auto prefix = "steps/" + std::to_string(element) + "/";
+            const std::uint8_t expected = element * 51;
+            CHECK(uniformTexel(prefix + "paint_image") == std::array<std::uint8_t, 4>{expected, 153, 0, 255});
+            // Both stages read the same element and count.
+            CHECK(uniformTexel(prefix + "raster_image") ==
+                  std::array<std::uint8_t, 4>{expected, expected, 153, 153});
+        }
+        // Outside the loop: element 0 of 1.
+        CHECK(uniformTexel("outside_image") == std::array<std::uint8_t, 4>{0, 51, 0, 255});
+
+        // What was pushed, and one compiled shader for every copy.
+        const auto pass_id = GET_MODULE(RenderingPassContainer).getRenderingPassIdByName("main_render");
+        const auto program = GET_MODULE(FrameGraphRuntimeContainer).findProgram(pass_id);
+        REQUIRE(program != nullptr);
+        std::map<std::string, const CompiledPass *> passes;
+        for (const auto &compiled : program->rendering_pass.passes) passes.emplace(compiled.definition.name, &compiled);
+        auto &fullscreen = GET_MODULE(FullscreenPassContainer);
+        auto &shaders = GET_MODULE(ShaderLibrary);
+        // Each pass registers its own shader bundle; the copies' bundles are
+        // the same compile (one cache key: no per-element define) and the
+        // same SPIR-V.
+        const auto compileOf = [&](ShaderBundleId id) {
+            const auto &bundle = shaders.get(id);
+            return std::pair{bundle.cache_key, bundle.spirv_sha256};
+        };
+        REQUIRE(passes.contains("outside"));
+        CHECK(passes.at("outside")->definition.loop_index == PassLoopIndex{0, 1});
+        const auto index_fragment = compileOf(fullscreen.fragmentShaderForTesting(passes.at("outside")->pass_id));
+        CHECK_FALSE(index_fragment.second.empty());
+        std::optional<std::pair<std::string, std::string>> both_vertex;
+        for (std::uint32_t element = 0; element < 3; ++element) {
+            const auto prefix = "steps/" + std::to_string(element) + "/";
+            INFO(prefix);
+            REQUIRE(passes.contains(prefix + "paint"));
+            REQUIRE(passes.contains(prefix + "raster"));
+            const auto &paint = *passes.at(prefix + "paint");
+            const auto &raster = *passes.at(prefix + "raster");
+            CHECK(paint.definition.loop_index == PassLoopIndex{element, 3});
+            CHECK(raster.definition.loop_index == PassLoopIndex{element, 3});
+            CHECK(compileOf(fullscreen.fragmentShaderForTesting(paint.pass_id)) == index_fragment);
+            const auto vertex = compileOf(fullscreen.graphicsPipelineDescForTesting(raster.pass_id).vert);
+            if (!both_vertex) both_vertex = vertex;
+            CHECK(vertex == *both_vertex);
+        }
+
+        // get_frame_plan marks the nodes whose shaders read the loop index.
+        const auto plan = renderer.currentFramePlanJson();
+        std::set<std::string> reading;
+        for (const auto &node : plan.at("nodes"))
+            if (node.value("reads_loop_index", false)) reading.insert(node.at("name").get<std::string>());
+        CHECK(reading == std::set<std::string>{"outside", "steps/0/paint", "steps/0/raster", "steps/1/paint",
+                                               "steps/1/raster", "steps/2/paint", "steps/2/raster"});
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) std::filesystem::remove_all(temp_dir);
+        TestSupport::skipIfVulkanDeviceUnavailable(error, "Vulkan LC-1 loop index fixture unavailable");
+        throw;
+    }
+#else
+    SUCCEED("LC-1 GPU acceptance is compiler-ON only");
 #endif
 }
 

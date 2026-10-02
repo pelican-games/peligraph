@@ -1302,6 +1302,17 @@ vk::PipelineLayout FullscreenPassContainer::getPipelineLayout(PassId pass_id) co
     return GET_MODULE(PipelineFactory).layout(requirePipelineHandle(pass_id, pipelines));
 }
 
+bool FullscreenPassContainer::pushLoopIndex(vk::CommandBuffer cmd_buf, PassId pass_id,
+                                            std::uint32_t element, std::uint32_t count) const {
+    return GET_MODULE(PipelineFactory)
+        .pushLoopIndex(cmd_buf, requirePipelineHandle(pass_id, pipelines), element, count);
+}
+
+bool FullscreenPassContainer::readsLoopIndex(PassId pass_id) const {
+    return Pelican::readsLoopIndex(
+        GET_MODULE(PipelineFactory).reflection(requirePipelineHandle(pass_id, pipelines)));
+}
+
 std::vector<FullscreenInputSampling>
 FullscreenPassContainer::inputSamplingForTesting(
     PassId pass_id) const {

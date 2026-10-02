@@ -1298,6 +1298,9 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
     const ComputeTaskDefinition &definition,
     const ComputeTaskRuntimeDependencies &dependencies) {
     if (auto found = name_to_id.find(definition.name); found != name_to_id.end()) {
+        // LC-1: a recompile may expand the task's loop to another count.
+        if (const auto task = tasks.find(found->second.value); task != tasks.end())
+            task->second.definition.loop_index = definition.loop_index;
         return found->second;
     }
 
@@ -1696,6 +1699,14 @@ const ComputeTaskDefinition &ComputeTaskContainer::definition(ComputeTaskId task
     return found->second.definition;
 }
 
+bool ComputeTaskContainer::readsLoopIndex(ComputeTaskId task_id) const {
+    const auto found = tasks.find(task_id.value);
+    if (found == tasks.end()) {
+        throw std::runtime_error("Compute task not found");
+    }
+    return Pelican::readsLoopIndex(GET_MODULE(PipelineFactory).reflection(found->second.pipeline));
+}
+
 ComputeTaskId ComputeTaskContainer::getComputeTaskIdByName(const std::string &name) const {
     if (auto found = name_to_id.find(name); found != name_to_id.end()) {
         return found->second;
@@ -1886,6 +1897,10 @@ void ComputeTaskContainer::dispatch(
                                            .get(),
                                    {});
     }
+    // LC-1: the graph.loop element and count, to the stages that read them.
+    pipeline_factory.pushLoopIndex(cmd_buf, record.pipeline,
+                                   record.definition.loop_index.element,
+                                   record.definition.loop_index.count);
     if (record.ray_tracing) {
         if (record.definition.ray_tracing->callable_record_layout) {
             record.callable_records = pipeline_factory.prepareCallableRecords(

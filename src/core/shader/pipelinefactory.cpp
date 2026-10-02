@@ -443,6 +443,14 @@ bool hasPipelineObject(
         pipeline);
 }
 
+// LC-1: each stage on its own, so the refusal names the shader whose range
+// overlaps the loop range.
+void validateBundleLoopIndexPushRange(const ShaderBundle &bundle) {
+    validateLoopIndexPushRange(bundle.reflection, bundle.diagnostic_uri.empty()
+                                                      ? bundle.source_path.generic_string()
+                                                      : bundle.diagnostic_uri);
+}
+
 } // namespace
 
 const RayTracingShaderBindingTableRegions *
@@ -979,8 +987,10 @@ PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const Gra
     }
 
     std::vector<ShaderReflection> stage_reflections;
+    validateBundleLoopIndexPushRange(shader_library.get(desc.vert));
     stage_reflections.push_back(shader_library.get(desc.vert).reflection);
     if (desc.frag) {
+        validateBundleLoopIndexPushRange(shader_library.get(*desc.frag));
         stage_reflections.push_back(shader_library.get(*desc.frag).reflection);
     }
     auto merged_reflection = merge(stage_reflections);
@@ -1018,6 +1028,7 @@ PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const Gra
 }
 
 PipelineFactory::PipelineRecord PipelineFactory::buildComputePipeline(const ComputePipelineDesc &desc) {
+    validateBundleLoopIndexPushRange(shader_library.get(desc.shader));
     auto reflection = shader_library.get(desc.shader).reflection;
     validateFrameBindings(reflection);
     validatePushConstantContract(reflection);
@@ -1860,6 +1871,18 @@ void PipelineFactory::traceRays(
 
 const ShaderReflection &PipelineFactory::reflection(PipelineHandle handle) const {
     return pipelines.get(handle).reflection;
+}
+
+bool PipelineFactory::pushLoopIndex(vk::CommandBuffer command_buffer, PipelineHandle handle,
+                                    std::uint32_t element, std::uint32_t count) const {
+    const auto &record = pipelines.get(handle);
+    const auto stages = loopIndexPushStages(record.reflection);
+    if (!stages) return false;
+    const std::array<std::uint32_t, 2> values{element, count};
+    static_assert(sizeof(values) == PELICAN_PUSH_LOOP_BYTES);
+    command_buffer.pushConstants(record.layout.get(), stages, PELICAN_PUSH_LOOP_OFFSET,
+                                 PELICAN_PUSH_LOOP_BYTES, values.data());
+    return true;
 }
 
 GraphicsPipelineDesc PipelineFactory::graphicsDesc(

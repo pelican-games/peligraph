@@ -52,6 +52,9 @@ void FullscreenPassRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id, c
     container.bindResource(cmd_buf, pass_id, invocation);
     dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout,
         pass_def.ray_query_acceleration_structure);
+    // LC-1: the graph.loop element and count, to the stages that read them.
+    container.pushLoopIndex(cmd_buf, pass_id, pass_def.loop_index.element,
+                            pass_def.loop_index.count);
 
     if (!pass_def.isGenericRaster()) {
         const auto draw =

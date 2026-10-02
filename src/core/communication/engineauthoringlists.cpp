@@ -189,6 +189,8 @@ OrderedJson engineShaderJson(const EngineShaderForms &forms, ShaderCompiler &com
         return entry;
     }
     entry["reflected_from"] = from;
+    // LC-1: it declares pelican_loop.glsl's element and count.
+    if (readsLoopIndex(*reflection)) entry["reads_loop_index"] = true;
     if (forms.stage == ShaderStage::vertex || forms.stage == ShaderStage::fragment) {
         // The pass-input set, as a fullscreen or raster pass binds it and
         // get_frame_plan's pass_inputs.declarations tell it.

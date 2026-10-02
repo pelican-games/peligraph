@@ -460,6 +460,17 @@ struct DeclaredShaderReference {
     bool operator==(const DeclaredShaderReference &) const = default;
 };
 
+// LC-1: the graph.loop element a pass or compute task is a copy of, and how
+// many elements the loop expanded (pelican_loop.glsl). Pushed at
+// PELICAN_PUSH_LOOP_OFFSET to every stage whose push-constant range holds it.
+// A pass no loop expanded is element 0 of 1.
+struct PassLoopIndex {
+    std::uint32_t element = 0;
+    std::uint32_t count = 1;
+
+    bool operator==(const PassLoopIndex &) const = default;
+};
+
 struct PassDefinition {
     PassDefinition() : output_depth{noRenderTargetId()} {
         applyDefaultAttachmentOperations(RenderPassType::material);
@@ -529,6 +540,9 @@ struct PassDefinition {
         vk::SampleCountFlagBits::e1;
     RenderResolutionDomain resolution_domain =
         RenderResolutionDomain::unclassified;
+    // LC-1: runtime-only. Set from the compiled pipeline's provenance when
+    // the pass is registered; never parsed from JSON.
+    PassLoopIndex loop_index;
 
     bool isMaterial() const { return std::holds_alternative<MaterialPassInfo>(pass_info); }
     bool isFullscreen() const { return std::holds_alternative<FullscreenPassInfo>(pass_info); }
@@ -799,6 +813,8 @@ struct ComputeTaskDefinition {
     std::string view_family{
         mainRenderViewFamilyId};
     RenderViewSelect view_select;
+    // LC-1: as PassDefinition::loop_index.
+    PassLoopIndex loop_index;
 };
 
 struct CompiledComputeTask {

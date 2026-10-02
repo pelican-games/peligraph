@@ -84,6 +84,24 @@ vk::DescriptorSetLayoutCreateInfo
 makeDescriptorSetLayoutCreateInfo(std::span<const vk::DescriptorSetLayoutBinding> bindings);
 std::vector<vk::PushConstantRange> makePushConstantRanges(const ShaderReflection &reflection);
 void validatePushConstantContract(const ShaderReflection &reflection);
+
+// LC-1: a shader stage whose push-constant range covers only part of the
+// loop range [PELICAN_PUSH_LOOP_OFFSET, + PELICAN_PUSH_LOOP_BYTES). Thrown as
+// "shader.loop_push_overlap@1: {shader, stage, range: {offset, size}}" (the
+// render config editor carries it as a named refusal).
+inline constexpr std::string_view shaderLoopPushOverlapCode =
+    "shader.loop_push_overlap@1";
+// LC-1: the stages whose push-constant range holds the whole loop range
+// (pelican_loop.glsl's element and count): the stages the engine pushes the
+// element and count to. Empty when none does. A range that covers only part
+// of it is not counted (validateLoopIndexPushRange refuses it).
+vk::ShaderStageFlags loopIndexPushStages(const ShaderReflection &reflection) noexcept;
+// LC-1: whether any stage reads the loop index (get_frame_plan's and the
+// engine shader list's `reads_loop_index`).
+bool readsLoopIndex(const ShaderReflection &reflection) noexcept;
+// LC-1: refuses a push-constant range that partly overlaps the loop range
+// (shaderLoopPushOverlapCode). `shader` names the shader in the refusal.
+void validateLoopIndexPushRange(const ShaderReflection &reflection, std::string_view shader);
 vk::PipelineLayoutCreateInfo makePipelineLayoutCreateInfo(std::span<const vk::DescriptorSetLayout> layouts,
                                                           std::span<const vk::PushConstantRange> push_constants);
 

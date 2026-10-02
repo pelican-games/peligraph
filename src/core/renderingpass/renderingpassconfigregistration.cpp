@@ -427,6 +427,26 @@ void mergeVariantRenderTargetPhysicalRequirements(
     }
 }
 
+// LC-1: the element and count of every pass and compute task a graph.loop
+// expanded, by name: its loop_origin's element, and the number of elements
+// the loop expanded (get_frame_plan's loops[].count).
+std::unordered_map<std::string, PassLoopIndex> loopIndicesOf(
+    const CompiledRenderPipeline *pipeline) {
+    std::unordered_map<std::string, PassLoopIndex> result;
+    if (pipeline == nullptr || pipeline->graph_loops.empty()) return result;
+    std::unordered_map<std::string, std::size_t> counts;
+    for (const auto &loop : pipeline->graph_loops) counts.emplace(loop.node, loop.count);
+    for (const auto &provenance : pipeline->pass_provenance) {
+        if (!provenance.loop_origin) continue;
+        const auto count = counts.find(provenance.loop_origin->loop);
+        if (count == counts.end()) continue;
+        result.emplace(provenance.name,
+                       PassLoopIndex{.element = static_cast<std::uint32_t>(provenance.loop_origin->element),
+                                     .count = static_cast<std::uint32_t>(count->second)});
+    }
+    return result;
+}
+
 std::vector<RenderPipelineProgramPreparation>
 registerPreparedRenderingPassConfigVariant(
     RenderCompilerProgramVariantOutput &prepared,
@@ -489,6 +509,16 @@ registerPreparedRenderingPassConfigVariant(
         resolveRenderingPassImplementations(
             definition, *target_plan->second,
             pass_implementation_providers);
+    }
+    // LC-1: what each loop copy pushes as its element and count.
+    if (const auto loop_indices = loopIndicesOf(prepared.compiled_pipeline.get()); !loop_indices.empty()) {
+        for (auto &definition : pass_definitions)
+            for (auto &pass : definition.passes)
+                if (const auto found = loop_indices.find(pass.name); found != loop_indices.end())
+                    pass.loop_index = found->second;
+        for (auto &task : prepared.compute_task_definitions)
+            if (const auto found = loop_indices.find(task.name); found != loop_indices.end())
+                task.loop_index = found->second;
     }
     auto compiled_compute_tasks =
         compileComputeTasks(

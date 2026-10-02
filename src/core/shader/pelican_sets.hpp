@@ -72,5 +72,12 @@ inline constexpr uint32_t PELICAN_MATERIAL_INSTANCE_ABSOLUTE_RECORD_BINDING = 11
 inline constexpr uint32_t PELICAN_PUSH_ENGINE_BYTES = 64;
 inline constexpr uint32_t PELICAN_PUSH_SHADER_BYTES = 64;
 inline constexpr uint32_t PELICAN_PUSH_TOTAL_BYTES = PELICAN_PUSH_ENGINE_BYTES + PELICAN_PUSH_SHADER_BYTES;
+// LC-1: the element and count of the graph.loop copy a pass or compute task
+// is (two uints, shaders/include/pelican_loop.glsl), in the shader's half.
+// The engine pushes them to every stage whose range holds them.
+inline constexpr uint32_t PELICAN_PUSH_LOOP_OFFSET = 112;
+inline constexpr uint32_t PELICAN_PUSH_LOOP_BYTES = 8;
+static_assert(PELICAN_PUSH_LOOP_OFFSET >= PELICAN_PUSH_ENGINE_BYTES &&
+              PELICAN_PUSH_LOOP_OFFSET + PELICAN_PUSH_LOOP_BYTES <= PELICAN_PUSH_TOTAL_BYTES);
 
 } // namespace Pelican

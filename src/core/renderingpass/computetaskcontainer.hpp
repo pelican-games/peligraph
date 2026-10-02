@@ -215,6 +215,9 @@ DECLARE_MODULE(ComputeTaskContainer) {
                                       const ComputeTaskRuntimeDependencies &dependencies);
     void rebindRenderTargets(RenderTargetContainer &render_target_container);
     const ComputeTaskDefinition &definition(ComputeTaskId task_id) const;
+    // LC-1: whether a stage of the task's pipeline declares the loop index
+    // (pelican_loop.glsl), which dispatch() pushes.
+    bool readsLoopIndex(ComputeTaskId task_id) const;
     ComputeTaskId getComputeTaskIdByName(const std::string &name) const;
     // Render-thread update. Published GPU records remain immutable until their submission completes.
     void setCallableRecord(ComputeTaskId task_id, std::uint32_t index, const nlohmann::json &values);

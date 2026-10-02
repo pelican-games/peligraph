@@ -30,5 +30,8 @@
 #define PELICAN_PUSH_ENGINE_BYTES 64
 #define PELICAN_PUSH_SHADER_BYTES 64
 #define PELICAN_PUSH_TOTAL_BYTES 128
+// LC-1: a graph.loop's element and count, two uints (pelican_loop.glsl).
+#define PELICAN_PUSH_LOOP_OFFSET 112
+#define PELICAN_PUSH_LOOP_BYTES 8
 
 #endif

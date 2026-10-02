@@ -284,6 +284,12 @@ DECLARE_MODULE(FullscreenPassContainer) {
     inputLocalReadsForTesting(PassId pass_id) const;
     uint64_t inputBindingRevisionForTesting(PassId pass_id) const;
     vk::PipelineLayout getPipelineLayout(PassId pass_id) const;
+    // LC-1: pushes the pass's graph.loop element and count to the stages of
+    // its pipeline that declare them (PipelineFactory::pushLoopIndex).
+    bool pushLoopIndex(vk::CommandBuffer cmd_buf, PassId pass_id,
+                       std::uint32_t element, std::uint32_t count) const;
+    // LC-1: whether a stage of the pass's published pipeline declares them.
+    bool readsLoopIndex(PassId pass_id) const;
 
     RegistrationCheckpoint checkpointRegistrations() const noexcept;
     void rollbackRegistrations(RegistrationCheckpoint checkpoint);
