@@ -441,7 +441,7 @@ attachment ops、resource use、material filter、前後 barrier は折りたた
 **値の問い合わせが次の文書再取得を待たせないため**で、遅れて届いた古い答えは捨てられます。
 提供するのは scope 一覧(`root` + definition 名)、scope ごとの node と edge、root scope の `graph.instance` へ
 重ねる値の overlay、そして `contentRevision()` / `reportRevision()` の 2 つの世代です
-([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L1649))。編集側は 6 つの操作
+([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L1652))。編集側は 6 つの操作
 (`connectInput` / `disconnectInput` / `setNodeParameter` / `removeNode` / `setNodeLabel` / `addNode`)で、
 **どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L2307))。
 `addNodeOps()` だけは複数 op を返します —— 必須の scalar 入力を持つ操作は、未接続のままでは engine が受け取らないので、
@@ -479,7 +479,7 @@ heading_text, dim_text, pill_bg}, domain_tint, source_tint}` で、描画側は�
 (`pelican.studio.themes` v1、`light` / `dark` の 2 preset で既定は `dark`)なので、3 つ目のテーマを足すのに
 C++ は要りません。切り替えの通知は Qt signal ではなく**素の関数リスト**
 ([理由はヘッダのコメント](../../src/devstudio/view/studiotheme.hpp#L110)) —— scene test が view の `.cpp` を
-moc 無しで compile するためで、`GraphCanvasWidget` は [repopulate](../../src/devstudio/view/graphcanvaswidget.cpp#L1466)、
+moc 無しで compile するためで、`GraphCanvasWidget` は [repopulate](../../src/devstudio/view/graphcanvaswidget.cpp#L1467)、
 Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphics.cpp#L2300) で追随します
 (item は作られた時の色を抱えるので、描き直す以外に追随する道がありません)。**ソケットの型別の fill だけは
 テーマから引きません** —— 型の識別色は `graph_socket_styles.json` のままで、テーマが決めるのは縁と
@@ -487,7 +487,7 @@ Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphic
 
 [`GraphCanvasWidget`](../../src/devstudio/view/graphcanvaswidget.hpp) と `GraphCanvasScene` が view です。
 上段は `Scope:` の combo とパンくず、`Values from:` の combo、`Refresh`
-([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L5058))、本体は左がキャンバス、右が
+([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L5059))、本体は左がキャンバス、右が
 `Field` / `Value` の詳細表です。node は見出し帯 + 出力欄 + 入力欄の 3 段で、見出しの三角はソケット欄を
 折り畳みます(折り畳むと辺は見出し帯の左右中央 1 点へ集まります)。編集はすべて**即時**で Apply ボタンがなく、
 ソケット間ドラッグ = `set_input`、辺の `Delete` = `set_input{null}`、値の帯のその場編集 =
@@ -497,7 +497,7 @@ node の `Delete` = `remove_node` です。位置と折り畳みは `(scope, nod
 engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view/graphcanvasreadcapability.hpp#L34) が
 名前で持つ 5 つ(`get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` /
 `get_edit_result`)だけで、それ以外は `The graph canvas cannot issue %1.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L6265))。規範は struct の宣言そのもの
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L6266))。規範は struct の宣言そのもの
 ([メンバ 5 本](../../src/devstudio/view/graphcanvasreadcapability.hpp#L43))で、その上の宣言コメントは
 **読みを 3 つと数えたまま**です —— メンバは `requestGraphInstances` / `requestGraphCatalog` /
 `requestGraphValues` / `requestEditResult` の 4 読み + `requestEditGraphDocument` の 1 編集なので、
@@ -827,7 +827,7 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 
 `set_seed` と replay は役割が別です。`set_seed` は `DeterministicRng` の種を撒き直すだけで、時間の刻みも入力も固定しません。再現可能な実行は「seed」「fixed step の時間」「記録済み入力」の3つが揃って初めて成立し、後ろ2つを与えるのが `start_input_replay` です。
 
-#### 編集系(表は 52 行・75 メソッド) ✅実装済み(WP153〜WP172 で始まり、range はそこを大きく越えます)
+#### 編集系(表は 53 行・76 メソッド) ✅実装済み(WP153〜WP172 で始まり、range はそこを大きく越えます)
 
 すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L394) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L258) です。
 
@@ -848,10 +848,10 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | `undo` / `redo` | [登録 `undo`](../../src/core/communication/editorrpchandlers.cpp#L169) / [登録 `redo`](../../src/core/communication/editorrpchandlers.cpp#L172) | actor 単位 |
 | `open_preview` / `update_preview` / `commit_preview` / `abort_preview` | [lease 発行](../../src/core/communication/editorrpchandlers.cpp#L175) 〜 [lease 破棄](../../src/core/communication/editorrpchandlers.cpp#L184) | preview ticket(lease)の発行・更新・確定・破棄 |
 | `get_render_features` | [feature 構成取得](../../src/core/communication/editorrpchandlers.cpp#L187) | authored feature 構成と編集 token を返す |
-| `list_render_features` | [feature catalog](../../src/core/communication/editorrpchandlers.cpp#L190) | 追加可能な render feature の catalog を返す。✅FR-1 / FR-2 から各 entry に `required_targets` / `insertion`(`renderFeatureRequiredTargets()` / `renderFeatureInsertions()` の結果。第3章「feature の要る target・挿入先・snapshot の `after`」) |
+| `list_render_features` | [feature catalog](../../src/core/communication/editorrpchandlers.cpp#L190) | 追加可能な render feature の catalog を返す。✅FR-1 / FR-2 から各 entry に `required_targets` / `insertion`(`renderFeatureRequiredTargets()` / `renderFeatureInsertions()` の結果。第3章「feature の要る target・挿入先・snapshot の `after`」)。✅FR-3 から `required_targets` の各要素に `needs_writer`(第3章の同じ節の「書き手の無い target」) |
 | `edit_render_features` | [feature 編集](../../src/core/communication/editorrpchandlers.cpp#L205) | render feature 構成を編集する |
 | `get_scene_acceleration_structures` / `edit_scene_acceleration_structures` | 名前付きASの取得・編集 | AS定義とdigestを取得し、既存render config ticketで変更・保存する |
-| `get_render_authoring_context` | [authoring context](../../src/core/communication/editorrpchandlers.cpp#L208) | authored pass 編集に必要な target / resource context を返す。✅FR-1 から `snapshot_after_candidates`(`renderSnapshotAfterCandidates()`) |
+| `get_render_authoring_context` | [authoring context](../../src/core/communication/editorrpchandlers.cpp#L208) | authored pass 編集に必要な target / resource context を返す。✅FR-1 から `snapshot_after_candidates`(`renderSnapshotAfterCandidates()`)。✅CT-4 から `view_families` / `canonical_anchors`(catalog の parameter の `choices_from` が指す一覧。第3章「parameter の表の CT-4 の鍵と、op の置き場所」) |
 | `add_authored_pass` | [pass 追加](../../src/core/communication/editorrpchandlers.cpp#L329) | authored pass を追加する |
 | `remove_authored_pass` | [pass 削除](../../src/core/communication/editorrpchandlers.cpp#L332) | authored pass を削除する |
 | `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L356) / [登録 `get_preview_result`](../../src/core/communication/editorrpchandlers.cpp#L359) | 非同期結果取得 |
@@ -885,10 +885,11 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | `get_fold_groups` / `fold_nodes` / `verify_fold` | [読み](../../src/core/communication/editorrpchandlers.cpp#L246) / [宣言](../../src/core/communication/editorrpchandlers.cpp#L249) / [検査](../../src/core/communication/editorrpchandlers.cpp#L253) | ✅FG-1 / FG-2。root の graph 文書の `fold_groups` の読み、group 1 つの宣言(root 編集の ticket。[`RenderConfigEditorService::queueFoldGroupEdit()`](../../src/core/communication/renderconfigeditor.cpp#L2891) を通る)、開いた形と決定ありの形を子 process で描き比べて印を書く非同期の ticket(下の「`verify_fold` の子 process」) |
 | `reload_render_documents` | [読み直し](../../src/core/communication/editorrpchandlers.cpp#L353) | ✅RL-1。ディスクの render 文書を読み直して 1 つの ticket で組み直し・公開する。ディスクは書かない(下の「`reload_render_documents` の ticket」) |
 | `bake_audio_analysis` / `list_derived_assets` | [音の解析を焼く](../../src/core/communication/editorrpchandlers.cpp#L258) / [派生 asset の一覧](../../src/core/communication/editorrpchandlers.cpp#L261) | ✅AB-1。音の解析を worker で焼く非同期の ticket(render 文書は書かない)と、asset store の `*.import.json` の読み。実体は [`renderconfigaudioanalysis.cpp`](../../src/core/communication/renderconfigaudioanalysis.cpp#L36)(第5章 §5.9「音の解析を焼く」)。`list_derived_assets` は `service_` 側、`bake_audio_analysis` は `mutable_service_` が要る |
+| `edit_batch` | [登録 `edit_batch`](../../src/core/communication/editorrpchandlers.cpp#L340) | ✅FR-3。`{base_source_digest, edits: [{method, params}]}`。[`RenderConfigEditorService::editBatch()`](../../src/core/communication/renderconfigeditor.cpp#L1926) が、[edit_batch が受ける 20 の method の表 `batchEdits()`](../../src/core/communication/renderconfigeditor.cpp#L1889) の method を、editor の `document_` / `managed_documents_` を候補に置き換えながら順に呼びます。呼ばれた側は `batch_`([`BatchOverlay`](../../src/core/communication/renderconfigeditor.hpp#L405))が立っている間、ディスクとの比べ直しと各自の preflight を飛ばし、`add_authored_pass` の検査は `batch_->checks` に積みます。各 edit の ticket は pending から外して 1 つにまとめ、最後の候補を 1 回組み立てて(積んだ検査も当てる)変種の preflight を通し、1 つの ticket(`operation: "edit_batch"`、`methods`)を積みます。当てられない edit の拒否には `batch_index` を足して返し([batch_index を足す所](../../src/core/communication/renderconfigeditor.cpp#L2014))、editor の状態と途中の ticket はスコープの終わりの `Restore` が戻します。外した method と理由はヘッダの `editBatchMethods()` の注記(manual §13.5「複数の編集を 1 つの ticket で —— `edit_batch`」) |
 
 上 11 行(19 メソッド)は P-2a 系・RT 系・prefab 系で足された分で、params と戻り値の正本は
 [manual 第13章](../manual/13_editor.md)です。この表と `editorrpchandlers.cpp` の登録を突き合わせるときは、
-行ではなくメソッド名を数えてください(併記した行が 1 行 2〜4 メソッドあります)。最後の EL-2 の行(3 メソッド)は、この 11 行の後に足したものです。その後に FG-1 / FG-2 と RL-1 の 2 行(4 メソッド)を足しました。✅EL-6 の `get_registered_providers` の 1 行(1 メソッド)は、同じ読みの仲間として `get_shader_interface` の行の後に置きました。✅AB-1 の `bake_audio_analysis` / `list_derived_assets` の 1 行(2 メソッド)は最後に足しました。
+行ではなくメソッド名を数えてください(併記した行が 1 行 2〜4 メソッドあります)。最後の EL-2 の行(3 メソッド)は、この 11 行の後に足したものです。その後に FG-1 / FG-2 と RL-1 の 2 行(4 メソッド)を足しました。✅EL-6 の `get_registered_providers` の 1 行(1 メソッド)は、同じ読みの仲間として `get_shader_interface` の行の後に置きました。✅AB-1 の `bake_audio_analysis` / `list_derived_assets` の 1 行(2 メソッド)は最後に足しました。✅FR-3 の `edit_batch` の 1 行(1 メソッド)は、その後に足しました。
 
 **`verify_fold` の子 process(✅FG-2)。**[`verifyFold()`](../../src/core/communication/renderconfigeditor.cpp#L2977) は、受けた時に engine の thread で [`FoldVerifyJob`](../../src/core/communication/graphfoldverify.hpp#L53)(開いた形と決定ありの形の root の bytes、managed fragment、数)を作り切り、worker は editor の状態を読みません。子を起こす口は依存として差し込まれる [`FoldVerifyRunner`](../../src/core/communication/renderconfigeditor.hpp#L203) で、本番は [`runFoldVerifyProcesses()`](../../src/core/communication/graphfoldverify.cpp#L438)(factory が親の起動引数から [`foldVerifyProcessOptions()`](../../src/core/communication/editorruntimefactory.cpp#L1967) を 1 度だけ読んで包む)、test は偽の runner です。worker は `std::async` の thread で走り([始める所](../../src/core/communication/renderconfigeditor.cpp#L3058))、frame と RPC は待ちません。`commitPending()` は frame の境界ごとに最初に [`harvestFoldVerifies()`](../../src/core/communication/renderconfigeditor.cpp#L3066) を呼び、終わった run を [`judgeFoldVerifyRuns()`](../../src/core/communication/graphfoldverify.cpp#L388)(純関数)で判定し、通れば `queueFoldGroupEdit()` で印を書く ticket を同じ ticket の番号で作って待ち行列の先頭に置きます。CAS は受けた時の `base_source_digest` なので、間に root が変われば `external_modification` です。子は [`runChild()`](../../src/core/communication/graphfoldverify.cpp#L157) が `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` の job object に入れ、時間切れと終了は job の handle を閉じて終わらせます(名前や pid で探しません)。editor の destructor は止めの flag を立てて全部の worker を待ちます。
 

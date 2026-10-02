@@ -354,6 +354,14 @@ component に `resolution_error`。
 - 新メソッド `bake_audio_analysis {asset, out, settings?}`(✅AB-1、`892a1455`)→ `{ticket, status: "accepted", asset, out}`。worker で焼き、`get_edit_result` の committed に `{operation: "bake_audio_analysis", asset, out, manifest, layout}`([登録 `bake_audio_analysis`](../../src/core/communication/editorrpchandlers.cpp#L258))。
 - 新メソッド `list_derived_assets {}`(✅AB-1)→ `[{asset, manifest, tool, source, derived_from, stale, stale_reasons}]`(配列)。asset store の `*.import.json` を全部読みます([登録 `list_derived_assets`](../../src/core/communication/editorrpchandlers.cpp#L261))。
 
+2026-10 の追加(CT-4 / FR-3。形の正は [第13章](13_editor.md) §13.5、[第6章](06_rendering.md) §6.5・§6.17・§6.18):
+
+- `get_graph_catalog` の各 op の `parameters` の要素に `choices_from?`(`{rpc, key, field?}` か `{graph_nodes: [<op>...]}`)・`asset_kind?` / `extensions?`・`soft_min?` / `soft_max?`、kind `union` と `variants`、各 op に `placement: "anywhere" | "owned_instance"`(✅CT-4、`4d682338`)。catalog 本体の鍵なので `pelican_cli graph-catalog` にも出ます。
+- `get_render_authoring_context` に `view_families` と `canonical_anchors`(✅CT-4)。`choices_from` が指す一覧です。
+- 名前付きの拒否 `graph.op_requires_owned_instance@1 {node, op}`(✅CT-4)。`pose.*` と `value.morph_weight` を `owner` 付きの `graph.instance` の外に置いた。編集の rejected には CT-2 の `document` も付きます。
+- `list_render_features` の `required_targets` の各要素に `needs_writer`(✅FR-3、`55390f4b`)。名前付きの拒否 `feature.required_target_unwritten@1 {feature, target, type, writer_candidates: [{node?, pass, port, resource}], document}`(✅FR-3)。
+- 新メソッド `edit_batch {base_source_digest, edits: [{method, params}]}`(✅FR-3)→ `{ticket, status: "accepted", base_source_digest, methods}`。文書を書き換える 20 の編集 method を順に 1 つの候補へ当て、組み立てと preflight を 1 回だけ行う 1 つの ticket です。当てられない edit は `batch_index` 付きで断ります([登録 `edit_batch`](../../src/core/communication/editorrpchandlers.cpp#L340))。
+
 ### 起動時の asset 検証の結果(✅AV-1)
 
 player が起動時に行う assets manifest の照合([第3章](03_project_format.md) §3.4 の「起動時検証」)の結果は、log に出るだけでなく store ごとに engine に残ります([`AssetsVerification`](../../src/core/loader/assetsverification.hpp#L83))。読み方と走らせ直し方は次の 4 つです(handler は [`configureAssetsVerificationRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1477))。Studio にこれを見せる画面はまだありません(AV-1s)。
@@ -711,7 +719,7 @@ install した feature は `list_render_features` の catalog に `source: "pack
 
 引数を取りません。**登録済みグラフモジュールのカタログ**を `pelican.graph_catalog` v1 の JSON で stdout に出します
 ([実装](../../src/devcli/graphcatalogcommand.cpp#L10))。モジュール作者が engine のソースを読まずに
-型・操作・sink を知るための口で、`get_graph_catalog` RPC が返すのと同じ値です(✅EL-4 から RPC はこれに `material_pass_contracts` / `material_output_formats` を足して返します。EL-4 で同じく足した `engine_shaders` は ✅EL-4b から別の RPC `get_engine_shaders` が返します。CLI はモジュールのカタログだけを印字し、この 2 つも engine の shader の一覧も出しません。[第13章](13_editor.md) §13.5)。op ごとの `required_parameters`(✅CT-1)と `parameters` / `parameters_complete`(✅CT-3)はモジュールのカタログの側の鍵なので、CLI にも出ます([第6章](06_rendering.md) §6.17「catalog の読み方」)。
+型・操作・sink を知るための口で、`get_graph_catalog` RPC が返すのと同じ値です(✅EL-4 から RPC はこれに `material_pass_contracts` / `material_output_formats` を足して返します。EL-4 で同じく足した `engine_shaders` は ✅EL-4b から別の RPC `get_engine_shaders` が返します。CLI はモジュールのカタログだけを印字し、この 2 つも engine の shader の一覧も出しません。[第13章](13_editor.md) §13.5)。op ごとの `required_parameters`(✅CT-1)と `parameters` / `parameters_complete`(✅CT-3)、`placement` と parameter の `choices_from` などの CT-4 の鍵(✅CT-4)はモジュールのカタログの側の鍵なので、CLI にも出ます([第6章](06_rendering.md) §6.17「catalog の読み方」)。
 
 ```sh
 pelican_cli graph-catalog

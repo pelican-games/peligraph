@@ -1224,7 +1224,7 @@ VRM expression service 経由のみ(通常クリップの weights channel は非
 
 規則:
 
-- **pose の op は `owner` 付きの `graph.instance` の中にしか置けません。** owner の無い場所の pose ノードは書き込む先が無いので、`pose operation requires an owned graph instance: <id>` で断られます([posegraph.cpp:100](../../src/core/animation/posegraph.cpp#L100))。
+- **pose の op は `owner` 付きの `graph.instance` の中にしか置けません。** owner の無い場所の pose ノードは書き込む先が無いので、graph の分割の段で `graph.op_requires_owned_instance@1 {node, op}` で断られます(✅CT-4。catalog の op の `placement: "owned_instance"`。元の `pose operation requires an owned graph instance: <id>`([posegraph.cpp:100](../../src/core/animation/posegraph.cpp#L100))は、その手前で先回りされます)。
 - **pose ノードが読めるスカラー以外の入力はありません。** pose 以外のノードから来る edge は `value` ポートだけが許され、それ以外は `pose operations read scalar inputs only` です。評価は **animation phase** で、同じフレームの値評価より 1 段早く走ります —— つまり **スカラー → 姿勢の一方向**で、逆向きはありません([第6章](06_rendering.md) §6.17)。
 - **ポートを流れる型は `pelican.pose@1`(opaque)だけ**です —— **staged pose のハンドル + レイアウト世代 + フレーム改訂**であって骨の bytes ではありません。レイアウトの食い違いは評価時に `pose.layout_mismatch@1` で名前が付きます。pose のコントラクトはこの `pose` とスカラーの `time` / `weight` だけで組まれています([posegraphmodule.cpp:114](../../src/project/posegraphmodule.cpp#L114))。`pelican.rig@1` も opaque な型として登録されていますが、**どのポートにも現れません** —— リグは各ノードの `parameters.rig`(必須の文字列)で指す**同一性**であって、運ばれる値ではないからです([posegraphmodule.cpp:142](../../src/project/posegraphmodule.cpp#L142)、[posegraphmodule.hpp:15](../../src/project/posegraphmodule.hpp#L15))。
 - **`pose.state_machine` の出力は、`pose.skeletal` sink ちょうど 1 本にしか繋げません。** 包んだ評価器が自分の個体の writer を持っているので、2 本目に渡すのも `pose.skeletal` 以外の op に渡すのも `pose.sink_conflict@1` です。繋ぎ先が 1 本も無い文書も拒否されます([posegraph.cpp:207](../../src/core/animation/posegraph.cpp#L207))。
