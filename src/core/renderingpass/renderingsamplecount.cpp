@@ -91,7 +91,7 @@ vk::ImageUsageFlags runtimeAliasSafeUsage() {
 
 bool isRuntimeAliasCandidate(
     const RenderTargetDefinition &definition) {
-    return !definition.history &&
+    return !definition.history && !definition.source &&
            definition.format_class != "display" &&
            definition.storage_mode ==
                RenderTargetStorageMode::materialized &&
@@ -117,6 +117,10 @@ std::string runtimeAliasExclusion(
     if (definition.history) {
         causes.push_back(
             "history target keeps its contents for the next frame");
+    }
+    if (definition.source) {
+        causes.push_back(
+            "image read from a file keeps its contents");
     }
     if (definition.format_class == "display") {
         causes.push_back("display-format target is not aliased");

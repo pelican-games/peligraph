@@ -34,4 +34,18 @@ using GraphAttributeSourceResolver = std::function<std::uint64_t(
     std::string_view node, const nlohmann::json &parameters)>;
 nlohmann::json resolveGraphAttributeSources(const nlohmann::json &document,
     const GraphAttributeSourceResolver &resolve);
+// EN-2: resolve the image files instantiated render.image nodes read. The
+// resolver returns the file's width and height; the returned compiler
+// document carries them as the authored declaration's source.width / height
+// (graph.image_source_size_mismatch@1 {node, asset, width, height,
+// file_width, file_height} when an authored size differs). The authored
+// document remains unchanged.
+struct GraphImageSourceExtent {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+using GraphImageSourceResolver = std::function<GraphImageSourceExtent(
+    std::string_view node, const nlohmann::json &source)>;
+nlohmann::json resolveGraphImageSources(const nlohmann::json &document,
+    const GraphImageSourceResolver &resolve);
 }

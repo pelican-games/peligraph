@@ -98,6 +98,11 @@ DECLARE_MODULE(RenderTargetContainer) {
         std::optional<std::uint64_t> alias_group_token;
         std::unique_ptr<RenderTargetResourceSet>
             resources;
+        // EN-2: a file image's pixels, uploaded whenever its image is
+        // created. Such a target is read only and starts each frame in
+        // SHADER_READ_ONLY_OPTIMAL.
+        std::shared_ptr<const RenderTargetSourcePixels>
+            source_pixels;
     };
     ResourceContainer<GlobalRenderTargetId, InternalRenderTarget> render_targets;
 

@@ -4,13 +4,39 @@
 #include "../../project/imagesubresource.hpp"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
+
+// EN-2: a render.image read from a project image file. The image is read
+// only: its pixels are uploaded whenever the target's image is created (each
+// generation and each extent change) and it is never cleared, aliased or
+// written by a pass.
+struct RenderTargetSource {
+    std::string asset;
+    // "srgb": the image has an sRGB view and shaders read linear values.
+    // "linear": UNORM, read as stored.
+    std::string color_space = "srgb";
+    // "straight": the file's values; "premultiply": RGB times alpha, in
+    // linear space, when the file is read.
+    std::string alpha = "straight";
+    // "none" or "full" (every mip generated at upload).
+    std::string mips = "none";
+};
+
+// The decoded RGBA8 pixels of a RenderTargetSource, in the target's format
+// (premultiplied when asked), shared by every variant that registers it.
+struct RenderTargetSourcePixels {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::byte> rgba8;
+};
 
 struct RenderTargetDefinition {
     std::string name;
@@ -39,6 +65,10 @@ struct RenderTargetDefinition {
     // Filled by physical-plan compilation. Targets with the same value may
     // share one allocation when their compiled lifetimes do not overlap.
     std::optional<std::string> alias_group;
+    // EN-2: set for a render.image read from a file. The pixels are attached
+    // by registration (graph image sources); the parser fills only `source`.
+    std::optional<RenderTargetSource> source;
+    std::shared_ptr<const RenderTargetSourcePixels> source_pixels;
 };
 
 // Resolves the authored clear value against the target's format. Lives with

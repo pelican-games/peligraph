@@ -897,10 +897,15 @@ compileDefaultVulkanVariant(
     auto frame_plans =
         framePlansByName(graph_definitions);
     if (logical.composed_config.contains("rendering_passes")) {
+        // EN-2: a file image holds its pixels before the frame, as a
+        // buffer holds its data, so no pass needs to have written it.
+        auto imported_names = buffer_names;
+        for (const auto &target : physical->render_target_definitions)
+            if (target.source) imported_names.insert(target.name);
         for (const auto &pass_set : logical.composed_config.at("rendering_passes")) {
             validateFramePlanPassInputsProduced(
                 frame_plans.at(pass_set.at("name").get<std::string>()),
-                pass_set, buffer_names);
+                pass_set, imported_names);
         }
     }
     auto execution_plans =

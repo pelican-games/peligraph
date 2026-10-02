@@ -9483,3 +9483,151 @@ TEST_CASE("RS-13 the rendering section reads a loop's output as <loop>.<output>"
 }
 
 } // namespace Pelican
+
+namespace Pelican {
+namespace {
+// EN-2: lp0bGraph's `blit` reads `logo`, a render.image read from a file
+// whose size registration already wrote into its source.
+nlohmann::json en2Graph(const nlohmann::json &source) {
+    using Json = nlohmann::json;
+    auto document = lp0bGraph({"blit"}, Json::object());
+    document["nodes"].push_back({{"id", "logo"}, {"op", "render.image"},
+                                 {"parameters", {{"type", lp0aSceneColorType()}, {"source", source}}},
+                                 {"outputs", {"resource"}}});
+    for (auto &node : document["nodes"])
+        if (node.at("id") == "blit") node["inputs"]["source"] = {{"node", "logo"}, {"port", "resource"}};
+    return document;
+}
+
+nlohmann::json en2Resolved() {
+    return {{"asset", "project://assets/logo.png"}, {"width", 4}, {"height", 2}};
+}
+
+nlohmann::json en2Target(const nlohmann::json &config, std::string_view name) {
+    for (const auto &target : config.at("render_targets"))
+        if (target.at("name") == std::string{name}) return target;
+    FAIL("no render target " << name);
+    return {};
+}
+} // namespace
+
+TEST_CASE("EN-2 a render.image read from a file lowers to a sampled image of the file's size",
+          "[render-feature][graph-composition][en2]") {
+    using Json = nlohmann::json;
+    SECTION("srgb, straight, no mips: an sRGB image the file's size, uploaded and only sampled") {
+        const auto composed = lp0aCompose(en2Graph(en2Resolved()));
+        const auto logo = en2Target(composed.config, "logo");
+        INFO(logo.dump(2));
+        CHECK(logo.at("width") == 4);
+        CHECK(logo.at("height") == 2);
+        CHECK(logo.at("extent_scale") == 1.0);
+        CHECK(logo.at("format") == "R8G8B8A8_SRGB");
+        CHECK(logo.at("usage") == Json::array({"SAMPLED", "TRANSFER_DST"}));
+        CHECK_FALSE(logo.contains("mip_levels"));
+        CHECK(logo.at("source") == Json{{"asset", "project://assets/logo.png"}, {"color_space", "srgb"},
+                                         {"alpha", "straight"}, {"mips", "none"}});
+        CHECK(lp0bListed(passByName(composed.config, "blit").at("input"), "logo"));
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
+    SECTION("linear, premultiplied, full mips: UNORM with a mip chain the upload generates") {
+        auto source = en2Resolved();
+        source["color_space"] = "linear";
+        source["alpha"] = "premultiply";
+        source["mips"] = "full";
+        const auto composed = lp0aCompose(en2Graph(source));
+        const auto logo = en2Target(composed.config, "logo");
+        INFO(logo.dump(2));
+        CHECK(logo.at("format") == "R8G8B8A8_UNORM");
+        CHECK(logo.at("mip_levels") == "full");
+        CHECK(logo.at("usage") == Json::array({"SAMPLED", "TRANSFER_DST", "TRANSFER_SRC"}));
+        CHECK(logo.at("source").at("alpha") == "premultiply");
+        REQUIRE_NOTHROW(compileComposition(composed));
+    }
+    SECTION("an unresolved source is not lowered as if it had a size") {
+        CHECK_THROWS_WITH(lp0aCompose(en2Graph({{"asset", "project://assets/logo.png"}})),
+                          Catch::Matchers::ContainsSubstring("image source must be resolved"));
+    }
+    SECTION("registration writes the file's size into the authored declaration") {
+        const auto authored = en2Graph({{"asset", "project://assets/logo.png"}, {"alpha", "premultiply"}});
+        std::vector<std::string> asked;
+        const auto resolved = resolveGraphImageSources(authored, [&](std::string_view node, const Json &source) {
+            asked.emplace_back(node);
+            CHECK(source.at("alpha") == "premultiply");
+            return GraphImageSourceExtent{4, 2};
+        });
+        CHECK(asked == std::vector<std::string>{"logo"});
+        CHECK(resolved.at("nodes").back().at("parameters").at("source") ==
+              Json{{"asset", "project://assets/logo.png"}, {"alpha", "premultiply"}, {"width", 4}, {"height", 2}});
+        CHECK(en2Target(lp0aCompose(resolved).config, "logo").at("width") == 4);
+        // An authored size is the file's, or refused by name.
+        try {
+            (void)resolveGraphImageSources(en2Graph(en2Resolved()), [](std::string_view, const Json &) {
+                return GraphImageSourceExtent{8, 2};
+            });
+            FAIL("a size that is not the file's was accepted");
+        } catch (const GraphRegistryError &error) {
+            CHECK(error.code() == "graph.image_source_size_mismatch@1");
+            CHECK(error.detail() == Json{{"node", "logo"}, {"asset", "project://assets/logo.png"}, {"width", 4},
+                                        {"height", 2}, {"file_width", 8}, {"file_height", 2}});
+        }
+    }
+}
+
+TEST_CASE("EN-2 a file image's parameters and its readers are refused by name",
+          "[render-feature][graph-composition][en2]") {
+    using Json = nlohmann::json;
+    SECTION("a pass that writes it") {
+        auto document = en2Graph(en2Resolved());
+        for (auto &node : document["nodes"])
+            if (node.at("id") == "blit") node["inputs"]["color"] = {{"node", "logo"}, {"port", "resource"}};
+        const auto [code, fields] = lp0aRefusal(document);
+        CHECK(code == "graph.image_source_access@1");
+        CHECK(fields == Json{{"node", "blit"}, {"port", "color"}, {"image", "logo"}, {"reason", "write"}});
+    }
+    SECTION("a read of its previous frame") {
+        auto document = en2Graph(en2Resolved());
+        for (auto &node : document["nodes"])
+            if (node.at("id") == "blit") node["parameters"]["ports"]["source"]["history"] = true;
+        const auto [code, fields] = lp0aRefusal(document);
+        CHECK(code == "graph.image_source_access@1");
+        CHECK(fields == Json{{"node", "blit"}, {"port", "source"}, {"image", "logo"}, {"reason", "history"}});
+    }
+    SECTION("a size, format or usage written beside the source") {
+        for (const auto &[key, value] : std::vector<std::pair<std::string, Json>>{
+                 {"extent_scale", 1.0}, {"width", 4}, {"height", 2}, {"format", "R8G8B8A8_SRGB"},
+                 {"usage", Json::array({"SAMPLED"})}, {"mip_levels", "full"}, {"history", false}}) {
+            INFO(key);
+            auto document = en2Graph(en2Resolved());
+            document["nodes"].back()["parameters"][key] = value;
+            const auto [code, fields] = lp0bEditRefusal(document);
+            CHECK(code == "graph.image_source_conflict@1");
+            CHECK(fields == Json{{"node", "logo"}, {"key", key}});
+        }
+    }
+    SECTION("a source that is not one") {
+        const auto refused = [](const Json &source) { return lp0bEditRefusal(en2Graph(source)); };
+        auto [code, fields] = refused(Json{{"color_space", "srgb"}});
+        CHECK(code == "graph.image_source_invalid@1");
+        CHECK(fields == Json{{"node", "logo"}, {"field", "asset"}, {"reason", "missing"}});
+        std::tie(code, fields) = refused(Json{{"asset", "project://a.png"}, {"alpha", "multiply"}});
+        CHECK(fields == Json{{"node", "logo"}, {"field", "alpha"}, {"reason", "unknown_value"}});
+        std::tie(code, fields) = refused(Json{{"asset", "project://a.png"}, {"filter", "linear"}});
+        CHECK(fields == Json{{"node", "logo"}, {"field", "filter"}, {"reason", "unknown"}});
+        std::tie(code, fields) = refused(Json{{"asset", "project://a.png"}, {"width", 0}});
+        CHECK(fields == Json{{"node", "logo"}, {"field", "width"}, {"reason", "not_a_positive_integer"}});
+        std::tie(code, fields) = refused(Json{{"asset", ""}});
+        CHECK(fields == Json{{"node", "logo"}, {"field", "asset"}, {"reason", "not_a_reference"}});
+        std::tie(code, fields) = refused(Json("project://a.png"));
+        CHECK(fields == Json{{"node", "logo"}, {"field", "source"}, {"reason", "not_an_object"}});
+    }
+    SECTION("a render.image parameter that is no parameter of it") {
+        auto document = lp0bGraph({"blit"}, Json::object());
+        for (auto &node : document["nodes"])
+            if (node.at("id") == "blit_image") node["parameters"]["sorce"] = "project://assets/logo.png";
+        const auto [code, fields] = lp0bEditRefusal(document);
+        CHECK(code == "graph.image_parameter_unknown@1");
+        CHECK(fields == Json{{"node", "blit_image"}, {"key", "sorce"}});
+    }
+}
+
+} // namespace Pelican

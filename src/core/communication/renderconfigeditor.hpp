@@ -135,6 +135,10 @@ struct RenderConfigEditorDependencies {
     // library's PathResolver does (resolveProjectRef), for
     // get_shader_interface. Unset: only engine:// stems are answered.
     std::function<ResolvedRef(std::string_view)> resolve_shader_reference;
+    // EN-2: writes each render.image source's size from its file into a
+    // document composed as written (resolveGraphImageSourceExtents). Unset:
+    // a document whose image sources lack their size cannot be composed.
+    std::function<nlohmann::json(const nlohmann::json &)> resolve_image_sources;
     std::function<RenderConfigEditorGateObservation()> gate;
     std::function<RenderConfigRuntimeSnapshot()> runtime_snapshot;
     // Production Renderer compiles and validates the private candidate first,

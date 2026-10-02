@@ -11,8 +11,11 @@
 #endif
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <set>
+#include <string_view>
 #include <utility>
 
 namespace Pelican {
@@ -341,6 +344,60 @@ void checkRenderPortDeclaration(const Json &node, const std::string &port, const
         missing("location");
 }
 
+// EN-2: what a render.image's parameters may hold. Everything else is refused
+// by name (graph.image_parameter_unknown@1 {node, key}) rather than passed to
+// the target declaration, which ignored it.
+bool isRenderImageParameter(std::string_view key) {
+    static const std::set<std::string, std::less<>> keys{"type", "format", "format_class", "format_candidates",
+        "role", "extent_scale", "width", "height", "layers", "dimension", "mip_levels", "usage", "history",
+        "clear_color", "source"};
+    return keys.contains(key);
+}
+
+// EN-2: a render.image read from a project image file:
+//   "source": {"asset": "project://...png", "color_space": "srgb" | "linear",
+//              "alpha": "straight" | "premultiply", "mips": "none" | "full"}
+// The file decides its size, format and usage, so a parameter that would say
+// them as well is refused (graph.image_source_conflict@1 {node, key}). The
+// source's `width` and `height` are the file's size: registration writes them
+// once it has read the file, and an authored value must match it.
+void checkRenderImageSource(const Json &parameters, const Json &node) {
+    const auto id = nodeId(node);
+    for (const auto &[key, value] : parameters.items()) {
+        (void)value;
+        if (!isRenderImageParameter(key))
+            throw GraphRegistryError("graph.image_parameter_unknown@1", {{"node", id}, {"key", key}});
+    }
+    const auto source = parameters.find("source");
+    if (source == parameters.end()) return;
+    const auto invalid = [&](const std::string &field, const char *reason) {
+        throw GraphRegistryError("graph.image_source_invalid@1",
+                                 {{"node", id}, {"field", field}, {"reason", reason}});
+    };
+    if (!source->is_object()) invalid("source", "not_an_object");
+    for (const auto &[key, value] : source->items()) {
+        if (key == "asset") {
+            if (!value.is_string() || value.get_ref<const std::string &>().empty()) invalid(key, "not_a_reference");
+        } else if (key == "color_space" || key == "alpha" || key == "mips") {
+            const auto &allowed = key == "color_space" ? std::set<std::string>{"srgb", "linear"}
+                                  : key == "alpha"     ? std::set<std::string>{"straight", "premultiply"}
+                                                       : std::set<std::string>{"none", "full"};
+            if (!value.is_string() || !allowed.contains(value.get<std::string>())) invalid(key, "unknown_value");
+        } else if (key == "width" || key == "height") {
+            if (!value.is_number_integer() || value.get<std::int64_t>() <= 0 ||
+                value.get<std::int64_t>() > (std::numeric_limits<std::uint32_t>::max)())
+                invalid(key, "not_a_positive_integer");
+        } else {
+            invalid(key, "unknown");
+        }
+    }
+    if (!source->contains("asset")) invalid("asset", "missing");
+    for (const auto *key : {"extent_scale", "width", "height", "layers", "dimension", "mip_levels", "format",
+                            "format_class", "format_candidates", "usage", "history", "clear_color"})
+        if (parameters.contains(key))
+            throw GraphRegistryError("graph.image_source_conflict@1", {{"node", id}, {"key", key}});
+}
+
 // Render resources and passes declare their own ports, so pelican.render
 // registers a factory rather than a fixed contract.
 GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
@@ -406,6 +463,7 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
         contract.outputs.emplace("resource", bufferType(registry, parameters, parameterFieldMissing(op, node)));
         contract.inputs.emplace("value", GraphInputContract{exactLogicalTypePattern(registry, scalar), false});
     } else if (op == "render.image") {
+        checkRenderImageSource(parameters, node);
         auto declaration = parameters;
         declaration["kind"] = "image";
         contract.outputs.emplace("resource", resourceType(registry, declaration, parameterFieldMissing(op, node)));

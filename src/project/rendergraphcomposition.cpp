@@ -361,6 +361,21 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         }
         return std::nullopt;
     };
+    // EN-2: a file image (render.image with a source) is uploaded once and
+    // only sampled: graph.image_source_access@1 {node, port, image, reason}
+    // refuses a pass that writes it ("write"), reads it as a storage image
+    // ("storage"), reads its previous frame ("history") or copies from it
+    // ("copy").
+    const auto refuseFileImage = [&](const std::string &reader, const std::string &port, const Json &endpoint,
+                                     const char *reason) {
+        const auto image = writtenImage(endpoint);
+        if (!image) return;
+        const auto &declaration = *nodes.at(*image);
+        const auto parameters = declaration.find("parameters");
+        if (parameters != declaration.end() && parameters->is_object() && parameters->contains("source"))
+            throw GraphRegistryError("graph.image_source_access@1",
+                                     {{"node", reader}, {"port", port}, {"image", *image}, {"reason", reason}});
+    };
     for (const auto &node : graph.nodes) {
         const auto id = node.at("id").get<std::string>();
         const auto inputs = node.find("inputs");
@@ -389,6 +404,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         const auto *const body = bodyOf(id);
         for (const auto &port : ports) {
             if (!inputs->contains(port)) continue;
+            refuseFileImage(id, port, inputs->at(port), "write");
             const auto image = writtenImage(inputs->at(port));
             // A root pass writes a root image; a body's pass, a root image or
             // one of its own body.
@@ -506,7 +522,10 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                     std::find(after.begin(), after.end(), producer) == after.end())
                     after.push_back(producer);
                 // LP-6: a copy's source read from an image node.
-                if (port == "source") waitOnImageWriters(id, endpoint, after);
+                if (port == "source") {
+                    refuseFileImage(id, port, endpoint, "copy");
+                    waitOnImageWriters(id, endpoint, after);
+                }
                 return resourceName(endpoint);
             };
             const auto graph_pass = [&](const std::string &name) {
@@ -614,6 +633,29 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         if (node.at("op") == "render.image") {
             forbid(parameters, {"name", "kind"});
             parameters.erase("type");
+            // EN-2: a file image. Registration read the file and wrote its
+            // size into the source; the declaration takes the size, the
+            // format its color space reads with and the usage of an image
+            // that is uploaded and then only sampled.
+            if (const auto source = parameters.find("source"); source != parameters.end()) {
+                if (!source->contains("width") || !source->contains("height"))
+                    throw std::invalid_argument("image source must be resolved before render lowering: " + id);
+                const Json lowered_source{{"asset", source->at("asset")},
+                                          {"color_space", source->value("color_space", "srgb")},
+                                          {"alpha", source->value("alpha", "straight")},
+                                          {"mips", source->value("mips", "none")}};
+                parameters["width"] = source->at("width");
+                parameters["height"] = source->at("height");
+                parameters["extent_scale"] = 1.0;
+                parameters["format"] = lowered_source.at("color_space") == "linear" ? "R8G8B8A8_UNORM"
+                                                                                    : "R8G8B8A8_SRGB";
+                parameters["usage"] = Json::array({"SAMPLED", "TRANSFER_DST"});
+                if (lowered_source.at("mips") == "full") {
+                    parameters["mip_levels"] = "full";
+                    parameters["usage"].push_back("TRANSFER_SRC");
+                }
+                parameters["source"] = lowered_source;
+            }
             parameters["name"] = id;
             (body != nullptr ? body->render_targets : config["render_targets"]).push_back(std::move(parameters));
             continue;
@@ -697,6 +739,13 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             // (graph.history_write@1), so this reads the previous frame and
             // waits for no pass of this one.
             const bool history = declaration.value("history", false);
+            // EN-2: a file image is read sampled (or as a numbered input) of
+            // this frame; its writes were refused above.
+            if (history) refuseFileImage(id, port, endpoint, "history");
+            else if (declaration.value("kind", std::string{"buffer"}) == "image" &&
+                     !declaration.contains("attachment") &&
+                     declaration.value("binding", std::string{graphics ? "sampled" : "storage"}) == "storage")
+                refuseFileImage(id, port, endpoint, "storage");
             const auto target = resourceName(endpoint);
             const auto resource = history ? target + "@history" : target;
             if (history) (body != nullptr ? body->history_reads : lowered.history_reads).push_back({id, port, target});

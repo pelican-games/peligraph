@@ -1204,7 +1204,9 @@ OrderedJson RenderConfigEditorService::materializeRenderFeature(const std::strin
             if (const auto overrides = fragment.find("pass_overrides"); overrides != fragment.end())
                 for (const auto &[name, value] : overrides->items()) edited_passes.insert(name);
         };
-        const auto composition = composeRenderFeatureConfig(Json::parse(document_.bytes()), RenderFeatureComposeDependencies{
+        auto root = Json::parse(document_.bytes());
+        if (dependencies_.resolve_image_sources) root = dependencies_.resolve_image_sources(root);
+        const auto composition = composeRenderFeatureConfig(std::move(root), RenderFeatureComposeDependencies{
             .load_feature_json = loader,
             // This authors the currently selected feature. Actual device/module
             // availability is checked by the existing candidate publication path.

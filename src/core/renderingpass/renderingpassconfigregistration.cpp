@@ -1,4 +1,5 @@
 #include "renderingpassconfigregistration.hpp"
+#include "graphimagesource.hpp"
 #include "graphinputs.hpp"
 #include "../userpublic/valuegraph.hpp"
 #include "../model/gltf.hpp"
@@ -858,6 +859,8 @@ class RegistrationStages {
     std::vector<GraphDeformedAttribute> deformed_attributes;
     std::vector<GraphPoseAttribute> pose_attributes;
     std::set<std::filesystem::path> attribute_source_files;
+    // EN-2: the image files the graph's render.image nodes read.
+    std::optional<GraphImageSourceLoader> image_sources;
     std::shared_ptr<const ValueGraph::Graph> value_graph;
 #if PELICAN_WITH_ANIMATION
     std::shared_ptr<const Animation::PoseGraph> pose_graph;
@@ -1057,6 +1060,13 @@ void RegistrationStages::prepare() {
     }
     validateGraphDeformedAttributes(deformed_attributes);
     validateGraphPoseAttributes(pose_attributes);
+    // EN-2: read the image files render.image nodes name; the compiler takes
+    // each file's size, the render targets its pixels (below), and the files
+    // join the sources this generation watches.
+    image_sources.emplace(dependencies.front().runtime.path_resolver);
+    resolved_rendering_data = resolveGraphImageSources(resolved_rendering_data,
+        [&](std::string_view node, const nlohmann::json &source) { return image_sources->load(node, source); });
+    attribute_source_files.insert(image_sources->files().begin(), image_sources->files().end());
 
     // Keep common authoring intact through preset/feature validation. Runtime
     // availability filters only its derived GPU declarations during composition.
@@ -1154,6 +1164,19 @@ void RegistrationStages::prepare() {
     // expanding live resources inside the transaction.
     mergeVariantRenderTargetPhysicalRequirements(
         prepared_variants);
+    // EN-2: every variant's declaration of a file image shares its pixels.
+    for (auto &variant : prepared_variants) {
+        auto &physical =
+            requireVulkanRenderCompilerPhysicalPackage(
+                *variant.physical_package);
+        for (auto &target :
+             physical.render_target_definitions) {
+            if (target.source) {
+                target.source_pixels =
+                    image_sources->pixels(*target.source);
+            }
+        }
+    }
 }
 
 void RegistrationStages::allocate() {

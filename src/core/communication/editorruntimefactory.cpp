@@ -29,6 +29,7 @@
 #include "../os/inputsequence.hpp"
 #include "../phys/physworld.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
+#include "../renderingpass/graphimagesource.hpp"
 #include "../renderingpass/previewgraph.hpp"
 #include "../renderingpass/subgraphreplacementregistry.hpp"
 #include "../renderer/camera.hpp"
@@ -2047,6 +2048,11 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         return runtime->modules.path_resolver
                             .resolveProjectRef(reference);
                     },
+                    .resolve_image_sources = [runtime](
+                                                 const nlohmann::json &document) {
+                        return resolveGraphImageSourceExtents(
+                            document, runtime->modules.path_resolver);
+                    },
                     // This is the independent editor query policy.  In
                     // particular, it never calls ReloadGate::enabled(),
                     // which is intentionally false for --rpc drivers.
@@ -2142,9 +2148,13 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                         reference);
                                 };
                             std::optional<std::string> preset_bytes;
+                            // EN-2: render.image sources take their size
+                            // from the file, as registration does.
                             auto composed = composeRenderFeatureConfig(
-                                nlohmann::json::parse(
-                                    documents.rootDocument().bytes),
+                                resolveGraphImageSourceExtents(
+                                    nlohmann::json::parse(
+                                        documents.rootDocument().bytes),
+                                    runtime->modules.path_resolver),
                                 RenderFeatureComposeDependencies{
                                     .load_feature_json = loader,
 #if PELICAN_RUNTIME_SHADER_COMPILER
@@ -2200,6 +2210,14 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                 runtime->modules.launch_config;
                             std::string bytes =
                                 documents.rootDocument().bytes;
+                            // EN-2: as resolve_authoring_context.
+                            if (const auto document = nlohmann::json::parse(bytes, nullptr, false);
+                                !document.is_discarded()) {
+                                if (auto resolved = resolveGraphImageSourceExtents(
+                                        document, runtime->modules.path_resolver);
+                                    resolved != document)
+                                    bytes = resolved.dump();
+                            }
                             if (!launch.render_feature_overlays.empty()) {
                                 bytes = applyRenderFeatureOverlays(
                                             nlohmann::json::parse(bytes),

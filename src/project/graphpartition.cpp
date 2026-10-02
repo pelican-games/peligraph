@@ -417,4 +417,52 @@ Json resolveGraphAttributeSources(const Json &document, const GraphAttributeSour
     (void)partitionGraphDocument(result); // Validate resolved count/stride overflow too.
     return result;
 }
+
+Json resolveGraphImageSources(const Json &document, const GraphImageSourceResolver &resolve) {
+    // A document without a file image is returned as it is, unpartitioned.
+    const auto has_source = [](const Json &scope) {
+        const auto nodes = scope.find("nodes");
+        return nodes != scope.end() && nodes->is_array() &&
+               std::any_of(nodes->begin(), nodes->end(), [](const Json &node) {
+                   if (!node.is_object() || node.value("op", Json()) != "render.image") return false;
+                   const auto parameters = node.find("parameters");
+                   return parameters != node.end() && parameters->is_object() && parameters->contains("source");
+               });
+    };
+    if (!document.is_object()) return document;
+    bool any = has_source(document);
+    if (const auto definitions = document.find("definitions"); definitions != document.end() &&
+                                                               definitions->is_object())
+        for (const auto &definition : *definitions) any = any || has_source(definition);
+    if (!any) return document;
+    const auto graph = partitionGraphDocument(document).rendering;
+    auto result = document;
+    // Every instance of a definition reads the same file, so its one authored
+    // declaration takes the size once.
+    std::set<std::pair<std::string, std::string>> resolved;
+    for (const auto &node : graph.nodes) {
+        if (node.at("op") != "render.image") continue;
+        const auto parameters = node.find("parameters");
+        if (parameters == node.end() || !parameters->is_object() || !parameters->contains("source")) continue;
+        const auto id = node.at("id").get<std::string>();
+        const auto &source = parameters->at("source");
+        const auto extent = resolve(id, source);
+        const auto &origin = graph.origins.at(id);
+        if (!resolved.emplace(origin.definition, origin.node).second) continue;
+        if ((source.contains("width") && source.at("width") != extent.width) ||
+            (source.contains("height") && source.at("height") != extent.height))
+            throw GraphRegistryError("graph.image_source_size_mismatch@1",
+                {{"node", id}, {"asset", source.at("asset")}, {"width", source.value("width", Json())},
+                 {"height", source.value("height", Json())}, {"file_width", extent.width},
+                 {"file_height", extent.height}});
+        auto &scope = origin.definition.empty() ? result : result.at("definitions").at(origin.definition);
+        for (auto &authored : scope.at("nodes"))
+            if (authored.at("id") == origin.node) {
+                authored["parameters"]["source"]["width"] = extent.width;
+                authored["parameters"]["source"]["height"] = extent.height;
+                break;
+            }
+    }
+    return result;
+}
 }

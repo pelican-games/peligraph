@@ -2156,6 +2156,14 @@ target_link_libraries(pelican_test_vi1_variadic_inputs_test PRIVATE pelican_shad
 if(COMMAND pelican_copy_shaderc_runtime)
     pelican_copy_test_shaderc_runtime(pelican_test_vi1_variadic_inputs_test)
 endif()
+# EN-2: a render.image read from a project image file. The loader case is
+# CPU-only; the other draws the file through a graph fullscreen pass.
+pelican_define_test(en2_image_source_test MIXED_GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp stb glm)
+target_include_directories(pelican_test_en2_image_source_test PRIVATE ${stb_SOURCE_DIR})
+target_link_libraries(pelican_test_en2_image_source_test PRIVATE pelican_shaderc)
+if(COMMAND pelican_copy_shaderc_runtime)
+    pelican_copy_test_shaderc_runtime(pelican_test_en2_image_source_test)
+endif()
 # PM-1a: playing <-> paused, advance_frames and the evaluation index over the
 # headless RPC, with the shipped posegraph_demo as the animated scene.
 if(PELICAN_WITH_ANIMATION)
