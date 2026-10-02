@@ -7,9 +7,11 @@
 #include "../src/project/rendergraphcomposition.hpp"
 #include "graph_composition_fixture.hpp"
 #include "graphtestopaquemodule.hpp"
+#include "../src/core/renderingpass/graphinputs.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <cmath>
 #include <functional>
@@ -1128,6 +1130,65 @@ TEST_CASE("one operation has exactly one registering module",
     expected.insert(expected.begin(), "pelican.audio");
 #endif
     REQUIRE(namespaces == expected);
+}
+
+// CT-1: the catalog Studio reads (get_graph_catalog) says what each op cannot
+// do without and which names value.input takes, from the tables the engine
+// checks with: resolveOperation's required parameters, and the names the
+// frame binds (validateGraphInputs).
+TEST_CASE("CT-1 the catalog lists each op's required parameters and the names value.input takes",
+          "[curve][graph-module][graph-catalog][ct1]") {
+    using namespace Pelican;
+    using Json = nlohmann::json;
+    const auto catalog = Json(builtinGraphModuleRegistry().catalog());
+    const auto operation = [&](std::string_view op) {
+        for (const auto &module : catalog.at("modules"))
+            for (const auto &entry : module.at("operations"))
+                if (entry.at("op").get<std::string>() == std::string{op}) return entry;
+        FAIL("the catalog lists no " << op);
+        return Json{};
+    };
+    // A single name, or alternatives of which one is enough; nothing for an
+    // op that requires nothing.
+    CHECK(operation("render.scalar").at("required_parameters") == Json::array({Json{{"name", "target"}}}));
+    CHECK(operation("render.compute").at("required_parameters") ==
+          Json::array({Json{{"name", "ports"}}, Json{{"one_of", Json::array({"shader", "ray_tracing"})}}}));
+    CHECK(operation("value.add").at("required_parameters") == Json::array());
+#if PELICAN_WITH_AUDIO
+    CHECK(operation("audio.volume").at("required_parameters") ==
+          Json::array({Json{{"one_of", Json::array({"target", "voice"})}}}));
+#endif
+    for (const auto &module : catalog.at("modules"))
+        for (const auto &entry : module.at("operations")) {
+            INFO(entry.at("op"));
+            CHECK(entry.at("required_parameters").is_array());
+            CHECK(entry.contains("input_names") == (entry.at("op") == "value.input"));
+        }
+
+    // value.input: every name it takes, each a scalar.
+    const auto input = operation("value.input");
+    CHECK(input.at("required_parameters") == Json::array({Json{{"name", "name"}}}));
+    std::vector<std::string> names;
+    for (const auto &entry : input.at("input_names")) {
+        INFO(entry.dump());
+        names.push_back(entry.at("name").get<std::string>());
+        CHECK(entry.at("type").at("semantic") == "pelican.value.scalar@1");
+        CHECK_FALSE(entry.at("description").get<std::string>().empty());
+    }
+    CHECK(names == std::vector<std::string>{"time", "delta_time", "scene_time"});
+    // Each listed name is one the frame binds; any other is refused as before.
+    const auto graph = [](const std::string &name) {
+        return ValueGraph::Graph{Json{{"schema", "pelican.graph"}, {"version", 1},
+            {"nodes", Json::array({Json{{"id", "clock"}, {"op", "value.input"},
+                                        {"parameters", {{"name", name}}}, {"outputs", Json::array({"value"})}}})},
+            {"outputs", {{"clock", {{"node", "clock"}, {"port", "value"}}}}}}.dump()};
+    };
+    for (const auto &name : names) {
+        INFO(name);
+        CHECK_NOTHROW(validateGraphInputs(graph(name)));
+    }
+    CHECK_THROWS_WITH(validateGraphInputs(graph("frame_count")),
+                      Catch::Matchers::ContainsSubstring("unbound frame graph input: frame_count"));
 }
 
 TEST_CASE("a build without the animation unit rejects a pose document by name",

@@ -1,5 +1,6 @@
 #include "graphinputs.hpp"
 
+#include "../../project/graphmodule.hpp"
 #include "../loader/scene.hpp"
 #include "../ecs/core.hpp"
 #include "../ecs/predefined/modelview.hpp"
@@ -11,7 +12,8 @@
 namespace Pelican {
 void validateGraphInputs(const ValueGraph::Graph &graph) {
     auto names = graph.inputNames();
-    for (const auto *clock : {"time", "delta_time", "scene_time"}) names.erase(clock);
+    // CT-1: the table the catalog lists under value.input (input_names).
+    for (const auto &input : graphFrameInputNames()) names.erase(std::string{input.name});
     for (const auto &[node, source] : graph.morphSources()) names.erase("$morph/" + node);
     if (!names.empty()) throw std::runtime_error("unbound frame graph input: " + *names.begin());
 }

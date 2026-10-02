@@ -6,6 +6,8 @@
 #include "../src/core/userpublic/gamecontext.hpp"
 #include "../src/core/userpublic/valuegraph.hpp"
 #include "../src/core/appflow/enginetime.hpp"
+#include "../src/core/appflow/playmode.hpp"
+#include "../src/core/communication/audiostatus.hpp"
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
@@ -13,6 +15,7 @@
 #include "../src/project/graphcomposition.hpp"
 #include "scene_load_test_support.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -893,6 +896,88 @@ TEST_CASE("AU-1 a scene change stops the graph's voices and a time-clocked BGM c
         rig.time().advance();
     }
     REQUIRE(peak(rig.mixed) > 0.4);
+}
+
+// CT-1: get_status.audio.voices -- each audio.playback node's state and the
+// source second it stands at, through a play session as Studio drives it:
+// the play state moves the way set_play_state moves it (changePlayState, a
+// scene load as the session's rebuild), and the frames are the renderer's
+// publication. The backend is the null one, which has no clock of its own:
+// the values come from what the graph asked of each voice.
+TEST_CASE("CT-1 get_status lists each graph voice's state and position, the same on the null backend",
+          "[audio][ct1][ct1-voices]") {
+    using State = EngineTime::PlayState;
+    VoiceRig rig;
+    GET_MODULE(EngineLaunchConfig).audio_backend = AudioBackendKind::null;
+    writeSineWav(rig.sandbox.root / "tone.wav", 2.0);
+    writeText(rig.sandbox.root / "passes/main_rendering_config.json",
+              R"({"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":{}})");
+    std::ofstream{rig.sandbox.root / "scene.json", std::ios::binary} << R"({"schema":"pelican.scene","version":2,"scenes":{
+      "first":{"objects":[{"name":"Stage","components":[{"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}]}]}}})";
+    GET_MODULE(ProjectSource).setProjectData(nlohmann::json{{"schema", "pelican.project"}, {"version", 1},
+        {"name", "ct1-voices"}, {"engine_min_version", "0.1.0"},
+        {"basic_config", {{"window_size", {{"width", 64}, {"height", 64}}},
+            {"camera", {{"yfov", 0.5}, {"znear", 0.1}, {"zfar", 100.0}, {"up", {0.0, 1.0, 0.0}}}},
+            {"default_scene_id", "first"}, {"scene_data_json", "scene.json"}}}}.dump());
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &scene = rig.scene();
+    const auto rebuild = [&] { test_support::loadScene(scene, SceneId{"first"}); };
+    // An engine that starts in edit, as Studio launches it.
+    rig.time().setPlayState(State::edit);
+    rebuild();
+    // A voice with neither events nor a position: it plays from its first
+    // frame on scene time, the integrated form.
+    rig.load(graphDocument({inputNode("now", "scene_time"),
+        {{"id", "voice"}, {"op", "audio.playback"}, {"parameters", {{"asset", "project://tone.wav"}}},
+         {"inputs", {{"time", edge("now")}}}, {"outputs", {"voice"}}}}));
+    REQUIRE(rig.audio().backendKind() == AudioBackendKind::null);
+    const auto voices = [] {
+        const auto status = internal::audioStatusJson();
+        INFO(status.dump());
+        REQUIRE(status.at("backend") == "null");
+        REQUIRE(status.at("voices").size() == 1);
+        const auto &voice = status.at("voices").at(0);
+        REQUIRE(voice.at("node") == "voice");
+        return voice;
+    };
+    // The frames the null backend gets: the publication only (it mixes nothing).
+    const auto frame = [&] {
+        (void)rig.publish();
+        rig.time().advance();
+    };
+
+    // Edit: nothing plays.
+    for (int i = 0; i < 3; ++i) frame();
+    CHECK(voices() == nlohmann::json{{"node", "voice"}, {"state", "idle"}, {"position_seconds", 0.0}});
+
+    // Play: playing, the position going on with the game clock from 0.
+    REQUIRE(internal::changePlayState(State::playing, rebuild).previous == State::edit);
+    for (int i = 0; i < 10; ++i) {
+        (void)rig.publish();
+        const auto voice = voices();
+        CAPTURE(i, voice.dump());
+        CHECK(voice.at("state") == "playing");
+        CHECK(voice.at("position_seconds").get<double>() == Catch::Approx(i * frameSeconds).margin(1e-9));
+        rig.time().advance();
+    }
+    const auto played_to = voices().at("position_seconds").get<double>();
+    REQUIRE(played_to > 0.1);
+
+    // Pause: paused, standing where it was.
+    REQUIRE(internal::changePlayState(State::paused, {}).previous == State::playing);
+    for (int i = 0; i < 5; ++i) {
+        frame();
+        const auto voice = voices();
+        CAPTURE(i, voice.dump());
+        CHECK(voice.at("state") == "paused");
+        CHECK(voice.at("position_seconds").get<double>() == Catch::Approx(played_to + frameSeconds).margin(1e-9));
+    }
+
+    // Stop: idle at 0, and it stays so through the edit frames.
+    REQUIRE(internal::changePlayState(State::edit, rebuild).previous == State::paused);
+    CHECK(voices() == nlohmann::json{{"node", "voice"}, {"state", "idle"}, {"position_seconds", 0.0}});
+    for (int i = 0; i < 3; ++i) frame();
+    CHECK(voices() == nlohmann::json{{"node", "voice"}, {"state", "idle"}, {"position_seconds", 0.0}});
 }
 
 // ---------------------------------------------------------------------------

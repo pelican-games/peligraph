@@ -178,6 +178,8 @@ bool SceneLoader::applyGraphVoice(const std::shared_ptr<const ValueGraph::Graph>
             runtime.sounds.erase(existing);
         }
         if (epoch != runtime.sound_epochs.end()) runtime.sound_epochs.erase(epoch);
+        if (const auto status = runtime.voice_status.find(node); status != runtime.voice_status.end())
+            runtime.voice_status.erase(status);
         return true;
     }
     const bool restart = existing == runtime.sounds.end() || epoch == runtime.sound_epochs.end() ||
@@ -230,6 +232,10 @@ bool SceneLoader::applyGraphVoice(const std::shared_ptr<const ValueGraph::Graph>
     }
     start.rate = drive.rate;
     start.paused = drive.paused;
+    // CT-1: start.start is the source second the graph asks for in both
+    // forms (the position modulo the source, or the time map's source time).
+    runtime.voice_status.insert_or_assign(std::string{node},
+                                          GraphRuntime::VoiceStatus{drive.paused, start.start});
     if (restart) {
         const auto handle = audio.playVoice(*prepared, start);
         if (existing != runtime.sounds.end()) {
@@ -271,6 +277,7 @@ bool SceneLoader::applyGraphAudioValue(const std::shared_ptr<const ValueGraph::G
 SceneLoader::GraphAudioWriters SceneLoader::graphAudioWriters(
     const std::shared_ptr<const ValueGraph::Graph> &graph, PreparedGraphRuntimeTransfer *staged) {
     GraphAudioWriters writers;
+    voice_graph = graph;
     writers.voices = [this, graph, staged](std::string_view node, const ValueGraph::AudioVoiceDirective &directive) {
         if (staged) return staged->stageAudioVoice(node, directive);
         return applyGraphVoice(graph, node, directive);
@@ -309,6 +316,35 @@ std::optional<SoundHandle> SceneLoader::graphSound(const std::shared_ptr<const V
     if (runtime == graph_runtime.end()) return std::nullopt;
     const auto sound = runtime->second.sounds.find(node);
     return sound == runtime->second.sounds.end() ? std::nullopt : std::optional{sound->second};
+}
+
+std::vector<SceneLoader::GraphVoiceStatus> SceneLoader::graphVoiceStatus() const {
+    std::vector<GraphVoiceStatus> result;
+    const auto graph = voice_graph.lock();
+    if (!graph) return result;
+    // A scene commit makes the runtime again; until the next frame its voices
+    // are none.
+    const auto runtime = graph_runtime.find(graph);
+    for (const auto &[node, asset] : graph->audioSources()) {
+        (void)asset;
+        GraphVoiceStatus entry{node, GraphVoiceStatus::State::idle, 0.0};
+#if PELICAN_WITH_AUDIO
+        const auto *audio = FastModuleContainer::tryGet<Audio>();
+        if (runtime != graph_runtime.end() && audio != nullptr) {
+            const auto sound = runtime->second.sounds.find(node);
+            const auto status = runtime->second.voice_status.find(node);
+            // A handle the mixer no longer knows (Audio::stopAll) is no voice.
+            if (sound != runtime->second.sounds.end() && status != runtime->second.voice_status.end() &&
+                audio->soundState(sound->second)) {
+                entry.state = status->second.held ? GraphVoiceStatus::State::paused
+                                                  : GraphVoiceStatus::State::playing;
+                entry.position_seconds = status->second.position_seconds;
+            }
+        }
+#endif
+        result.push_back(std::move(entry));
+    }
+    return result;
 }
 
 void SceneLoader::updateGraphRuntime() {

@@ -25,6 +25,17 @@ std::string identifier(const Json &value) {
 void object(const Json &value, const char *description) {
     if (!value.is_object()) throw std::invalid_argument(description);
 }
+// CT-1: a field the authoring document must hold, refused by what holds it
+// ("graph definition gain requires nodes") rather than by the JSON library's
+// "key not found".
+const Json &member(const Json &holder, const char *key, const std::string &description) {
+    const auto found = holder.is_object() ? holder.find(key) : holder.end();
+    if (found == holder.end()) throw std::invalid_argument(description + " requires " + key);
+    return *found;
+}
+std::string scopeDescription(const std::string &definition) {
+    return definition.empty() ? std::string{"the graph document"} : "graph definition " + definition;
+}
 
 // --- graph.loop (LP-1a). The form, the tier and the elements.
 
@@ -504,7 +515,7 @@ struct LoopBodyInterface {
 LoopBodyInterface loopBodyInterface(const Json &definition) {
     object(definition, "graph definition must be an object");
     LoopBodyInterface result;
-    const auto &nodes = definition.at("nodes");
+    const auto &nodes = member(definition, "nodes", "a graph.loop branch body");
     if (!nodes.is_array()) throw std::invalid_argument("graph nodes must be an array");
     for (const auto &node : nodes) {
         const auto op = node.value("op", std::string{});
@@ -525,7 +536,7 @@ LoopBodyInterface loopBodyInterface(const Json &definition) {
         // LP-0e: a shadow depth pass and a snapshot copy are passes too.
         if (op == "render.shadow_depth" || op == "render.snapshot_copy") result.traits.graphics = true;
     }
-    const auto &outputs = definition.at("outputs");
+    const auto &outputs = member(definition, "outputs", "a graph.loop branch body");
     object(outputs, "graph outputs must be an object");
     for (const auto &[port, endpoint] : outputs.items()) {
         (void)endpoint;
@@ -648,7 +659,7 @@ class Expander {
             }
             return entry;
         };
-        const auto &nodes = document.at("nodes");
+        const auto &nodes = member(document, "nodes", scopeDescription(definition));
         if (!nodes.is_array()) throw std::invalid_argument("graph nodes must be an array");
         std::map<std::string, const Json *> local;
         std::set<std::string> inputs;
@@ -657,8 +668,10 @@ class Expander {
         std::map<std::string, Pointer> pointers;
         for (std::size_t index = 0; index < nodes.size(); ++index) {
             const auto &node = nodes.at(index);
-            const auto id = identifier(node.at("id"));
+            const auto id = identifier(member(node, "id", "a graph node in " + scopeDescription(definition)));
             if (!local.emplace(id, &node).second) throw std::invalid_argument("duplicate graph node: " + id);
+            if (!member(node, "op", "graph node " + id).is_string())
+                throw std::invalid_argument("graph node op must be a string: " + id);
             if (node.at("op") == "graph.input") inputs.insert(id);
             pointers.emplace(id, definition.empty() ? Pointer{"/nodes"} / index
                                                     : Pointer{"/definitions"} / definition / "nodes" / index);
@@ -747,7 +760,7 @@ class Expander {
             if (instances.contains(id)) return instances.at(id);
             if (!active_instances.insert(id).second) throw std::invalid_argument("cyclic subgraph connection: " + id);
             const auto &node = *local.at(id);
-            const auto ref = identifier(node.at("definition"));
+            const auto ref = identifier(member(node, "definition", "graph.instance " + id));
             if (!definitions.contains(ref)) throw std::invalid_argument("unknown graph definition: " + ref);
             // LP-3a: draw.* nodes say how a draw_loop draws one material; a
             // definition that holds one is a loop body and nothing else.
@@ -894,8 +907,8 @@ class Expander {
         resolveAny = [&](const Json &endpoint, bool each) -> Json {
             if (endpoint.is_object() && endpoint.contains("element"))
                 throw std::invalid_argument("only an edge into a node names an element");
-            const auto id = identifier(endpoint.at("node"));
-            const auto port = identifier(endpoint.at("port"));
+            const auto id = identifier(member(endpoint, "node", "a graph edge"));
+            const auto port = identifier(member(endpoint, "port", "a graph edge"));
             const auto found = local.find(id);
             if (found == local.end()) throw std::invalid_argument("unknown graph source: " + id);
             const auto &node = *found->second;
@@ -921,7 +934,9 @@ class Expander {
                     throw std::invalid_argument("unknown graph loop output: " + id + "." + port);
                 return outputs.at(port);
             }
-            const auto &ports = node.at("outputs");
+            static const Json no_ports = Json::array();
+            const auto declared = node.find("outputs");
+            const auto &ports = declared != node.end() ? *declared : no_ports;
             if (!ports.is_array() || std::find(ports.begin(), ports.end(), port) == ports.end())
                 throw std::invalid_argument("unknown graph output port: " + id + "." + port);
             return Json{{"node", path + id}, {"port", port}};
@@ -957,7 +972,7 @@ class Expander {
             result.nodes.push_back(std::move(expanded));
             result.origins.emplace(path + id, origin(id));
         }
-        const auto &outputs = document.at("outputs");
+        const auto &outputs = member(document, "outputs", scopeDescription(definition));
         object(outputs, "graph outputs must be an object");
         Json exposed = Json::object();
         for (const auto &[port, endpoint] : outputs.items()) {

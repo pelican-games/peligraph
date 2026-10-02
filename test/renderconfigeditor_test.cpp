@@ -1304,6 +1304,75 @@ TEST_CASE("instance inputs change supply atomically and report what was drawn",
     }
 }
 
+// CT-1: a hand-written render node whose port or parameters lack a field is
+// refused by name -- the port's graph.port_field_missing@1, the parameters'
+// RS-9 code -- and not by the JSON library's "key not found", which at startup
+// stopped the engine without saying where. An edit is rejected with nothing
+// written.
+TEST_CASE("CT-1 a render port or parameter field the document lacks is refused by name",
+          "[render-config-editor][graph-composition][ct1]") {
+    const auto fixture_path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "graph_instance_inputs" / "passes" / "main.json";
+    TemporaryConfig source{readBytes(fixture_path)};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    auto service = makeService(source, runtime);
+    const auto saved = readBytes(source.path);
+    const Json image_type{{"semantic", "pelican.render.color_signal@1"},
+                          {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    const auto refused = [&](Json node) {
+        const auto result = Json(service->editGraphDocument(
+            {{"base_source_digest", service->getGraphInstances(Json::object()).at("source_digest").at("hex")},
+             {"ops", Json::array({Json{{"op", "add_node"}, {"node", std::move(node)}}})}}));
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(readBytes(source.path) == saved);
+        return result.at("error");
+    };
+    const auto compute = [](Json port) {
+        return Json{{"id", "sim"}, {"op", "render.compute"},
+                    {"parameters", {{"ports", {{"data", std::move(port)}}}, {"shader", "shaders/sim.comp"}}},
+                    {"outputs", Json::array()}};
+    };
+
+    // The reported case: a buffer port without its element.
+    auto error = refused(compute({{"kind", "buffer"}, {"access", "read_write"}}));
+    CHECK(error.at("code") == "graph.port_field_missing@1");
+    CHECK(error.at("node") == "sim");
+    CHECK(error.at("port") == "data");
+    CHECK(error.at("field") == "element");
+    // A port without an access, an image port without its type.
+    error = refused(compute({{"kind", "buffer"}, {"element", "float"}}));
+    CHECK(error.at("code") == "graph.port_field_missing@1");
+    CHECK(error.at("field") == "access");
+    error = refused(compute({{"kind", "image"}, {"access", "read"}}));
+    CHECK(error.at("code") == "graph.port_field_missing@1");
+    CHECK(error.at("field") == "type");
+    error = refused(compute({{"kind", "image"}, {"access", "read"}, {"type", {{"arguments", Json::object()}}}}));
+    CHECK(error.at("field") == "type.semantic");
+    // A color attachment without its location.
+    error = refused({{"id", "blit"}, {"op", "render.fullscreen"},
+                     {"parameters", {{"ports", {{"out", {{"kind", "image"}, {"access", "write"},
+                                                         {"attachment", "color"}, {"type", image_type}}}}},
+                                     {"shader", {{"vertex", "engine://fullscreen"},
+                                                 {"fragment", "engine://passthrough"}}}}},
+                     {"outputs", Json::array({"out"})}});
+    CHECK(error.at("code") == "graph.port_field_missing@1");
+    CHECK(error.at("node") == "blit");
+    CHECK(error.at("port") == "out");
+    CHECK(error.at("field") == "location");
+    // Inside the parameters: RS-9's code, naming the field.
+    error = refused({{"id", "canvas"}, {"op", "render.image"},
+                     {"parameters", {{"type", {{"semantic", "pelican.render.color_signal@1"}}}}},
+                     {"outputs", Json::array({"resource"})}});
+    CHECK(error.at("code") == "graph.render_node_parameters_missing@1");
+    CHECK(error.at("node") == "canvas");
+    CHECK(error.at("missing") == Json::array({"type.arguments"}));
+    // The document still reads and still draws as it did.
+    REQUIRE(readBytes(source.path) == saved);
+    REQUIRE_NOTHROW(expandGraphDocument(Json::parse(saved)));
+}
+
 // N-6 acceptance 1. The canvas's own placement -- where the nodes were put, the
 // control points its edges are drawn through and the bundles that carry several
 // side by side -- is authored state the engine carries and reads nothing of. It

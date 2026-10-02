@@ -120,17 +120,17 @@ if(MODE STREQUAL "refusal")
     expect_refused(environment_case "NULL" "PELICAN_AUDIO_BACKEND")
 elseif(MODE STREQUAL "status")
     # The control: nothing named, a headless player runs the device-less engine.
-    expect_backend(default "" [=[\{"available":true,"backend":"offline"\}]=])
+    expect_backend(default "" [=[\{"available":true,"backend":"offline","voices":\[\]\}]=])
     # The environment silences a player that names nothing itself.
-    expect_backend(environment_null "null" [=[\{"available":true,"backend":"null"\}]=])
+    expect_backend(environment_null "null" [=[\{"available":true,"backend":"null","voices":\[\]\}]=])
     # The argument wins over the environment, whichever way round.
-    expect_backend(argument_over_environment "null" [=[\{"available":true,"backend":"offline"\}]=]
+    expect_backend(argument_over_environment "null" [=[\{"available":true,"backend":"offline","voices":\[\]\}]=]
         --audio-backend offline)
-    expect_backend(argument_null "offline" [=[\{"available":true,"backend":"null"\}]=]
+    expect_backend(argument_null "offline" [=[\{"available":true,"backend":"null","voices":\[\]\}]=]
         --audio-backend null)
     # An argument that wins leaves the environment unread: a name it would
     # refuse does not stop the launch.
-    expect_backend(argument_over_unknown_environment "speakers" [=[\{"available":true,"backend":"null"\}]=]
+    expect_backend(argument_over_unknown_environment "speakers" [=[\{"available":true,"backend":"null","voices":\[\]\}]=]
         --audio-backend null)
 else()
     message(FATAL_ERROR "unknown MODE: ${MODE}")

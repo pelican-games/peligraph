@@ -626,12 +626,27 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         parameters.erase("ports");
         if (node.at("op") == "render.raster" && parameters.contains("draw")) {
             auto &draw = parameters.at("draw");
+            // CT-1: a draw source names one of this pass's ports, which an
+            // edge feeds; anything else is refused by name, not by the JSON
+            // library's "key not found".
+            const auto source_port = [&](const char *source_key) {
+                const auto &named = draw.at(source_key);
+                if (!named.is_string() || !ports.contains(named.get<std::string>()))
+                    throw std::invalid_argument(std::string("render.raster draw ") + source_key +
+                                                " names no port of this pass: " + id);
+                const auto port = named.get<std::string>();
+                const auto inputs = node.find("inputs");
+                if (inputs == node.end() || !inputs->is_object() || !inputs->contains(port))
+                    throw std::invalid_argument(std::string("render.raster draw ") + source_key +
+                                                " names a port no edge feeds: " + id + "." + port);
+                return port;
+            };
             const auto bind_count = [&](const char *source_key, const char *count_key,
                                         const char *first_key, const char *domain) {
                 if (!draw.contains(source_key)) return;
                 if (draw.contains(count_key))
                     throw std::invalid_argument(std::string("draw count is derived from attribute: ") + count_key);
-                const auto port = draw.at(source_key).get<std::string>();
+                const auto port = source_port(source_key);
                 const auto &attribute = *nodes.at(resourceName(node.at("inputs").at(port)));
                 if (attribute.at("op") != "render.attribute" ||
                     attribute.at("parameters").at("domain") != domain || ports.at(port).at("access") != "read")
@@ -645,7 +660,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             };
             if (draw.contains("index_source")) {
                 forbid(draw, {"vertex_source", "vertex_count", "first_vertex", "index_buffer", "operation"});
-                const auto port = draw.at("index_source").get<std::string>();
+                const auto port = source_port("index_source");
                 const auto buffer = resourceName(node.at("inputs").at(port));
                 bind_count("index_source", "index_count", "first_index", "index");
                 draw["operation"] = "indexed";

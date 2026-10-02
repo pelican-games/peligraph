@@ -90,8 +90,22 @@ GraphOperationContract renderPassKindPorts(const Json &node, const Json &paramet
     return contract;
 }
 
-LogicalType bufferType(const LogicalTypeRegistry &registry, const Json &declaration) {
-    const auto element = declaration.at("element").get<std::string>();
+// CT-1: a field the declaration lacks is refused by whoever holds it (a port:
+// graph.port_field_missing@1; a node's parameters: RS-9's
+// graph.render_node_parameters_missing@1), never by the JSON library's
+// "key not found". `missing` throws.
+using MissingField = std::function<void(const std::string &field)>;
+
+const Json &requiredField(const Json &declaration, const std::string &field, const MissingField &missing) {
+    const auto found = declaration.find(field);
+    if (found == declaration.end() || found->is_null()) missing(field);
+    return *found;
+}
+
+LogicalType bufferType(const LogicalTypeRegistry &registry, const Json &declaration, const MissingField &missing) {
+    const auto &element_field = requiredField(declaration, "element", missing);
+    if (!element_field.is_string()) throw std::invalid_argument("graph buffer element must be a string");
+    const auto element = element_field.get<std::string>();
     if (!shaderResourceBufferElementFromName(element))
         throw std::invalid_argument("unknown graph buffer element: " + element);
     if (declaration.contains("domain")) {
@@ -104,17 +118,30 @@ LogicalType bufferType(const LogicalTypeRegistry &registry, const Json &declarat
                                  {{"element", EnumValueId{element}}});
 }
 
-LogicalType resourceType(const LogicalTypeRegistry &registry, const Json &declaration) {
+LogicalType resourceType(const LogicalTypeRegistry &registry, const Json &declaration, const MissingField &missing) {
     const auto kind = declaration.value("kind", std::string{"buffer"});
-    if (kind == "buffer") return bufferType(registry, declaration);
+    if (kind == "buffer") return bufferType(registry, declaration, missing);
     if (kind != "image") throw std::invalid_argument("unknown graph resource kind: " + kind);
     if (declaration.contains("domain"))
         throw std::invalid_argument("attribute domains apply to buffer resources, not images");
-    const auto &type = declaration.at("type");
+    const auto &type = requiredField(declaration, "type", missing);
+    if (!type.is_object()) throw std::invalid_argument("graph image type must be an object");
+    // The type's two members are named as the type's: type.semantic, type.arguments.
+    const auto typeField = [&](const char *member) -> const Json & {
+        const auto found = type.find(member);
+        if (found == type.end() || found->is_null()) missing(std::string{"type."} + member);
+        return *found;
+    };
+    const auto &semantic = typeField("semantic");
+    const auto &authored_arguments = typeField("arguments");
+    if (!semantic.is_string()) throw std::invalid_argument("graph image type semantic must be a string");
+    if (!authored_arguments.is_object()) throw std::invalid_argument("graph image type arguments must be an object");
     std::vector<LogicalTypeArgumentInput> arguments;
-    for (const auto &[name, value] : type.at("arguments").items())
+    for (const auto &[name, value] : authored_arguments.items()) {
+        if (!value.is_string()) throw std::invalid_argument("graph image type argument must be a string: " + name);
         arguments.push_back({name, EnumValueId{value.get<std::string>()}});
-    const auto result = registry.canonicalize(parseSemanticTypeId(type.at("semantic").get<std::string>()),
+    }
+    const auto result = registry.canonicalize(parseSemanticTypeId(semantic.get<std::string>()),
                                                std::move(arguments));
     if (result.constructor != LogicalTypeConstructor::image)
         throw std::invalid_argument("graph image requires an image logical type");
@@ -278,6 +305,39 @@ void checkRenderNodeRequiredParameters(const std::string &op, const Json &node) 
                                  {{"node", nodeId(node)}, {"op", op}, {"missing", std::move(missing)}});
 }
 
+// CT-1: a field inside the parameters the table cannot name (a render.image's
+// type.semantic), refused with RS-9's code.
+MissingField parameterFieldMissing(const std::string &op, const Json &node) {
+    return [op, id = nodeId(node)](const std::string &field) {
+        throw GraphRegistryError("graph.render_node_parameters_missing@1",
+                                 {{"node", id}, {"op", op}, {"missing", Json::array({field})}});
+    };
+}
+
+// CT-1: graph.port_field_missing@1 {node, port, field}: a port declaration
+// lacks a field the port needs.
+MissingField portFieldMissing(const Json &node, const std::string &port) {
+    return [id = nodeId(node), port](const std::string &field) {
+        throw GraphRegistryError("graph.port_field_missing@1", {{"node", id}, {"port", port}, {"field", field}});
+    };
+}
+
+// CT-1: what a render pass's port declaration cannot do without, checked
+// before anything reads it: an object with an access; a buffer's element, an
+// image's type (resourceType names those), and a color attachment's location.
+void checkRenderPortDeclaration(const Json &node, const std::string &port, const Json &declaration) {
+    if (!declaration.is_object())
+        throw std::invalid_argument("render port declaration must be an object: " + port);
+    const auto missing = portFieldMissing(node, port);
+    (void)requiredField(declaration, "access", missing);
+    for (const auto *field : {"access", "kind", "binding", "attachment"})
+        if (const auto found = declaration.find(field); found != declaration.end() && !found->is_string())
+            throw std::invalid_argument("render port " + std::string{field} + " must be a string: " + port);
+    if (const auto attachment = declaration.find("attachment");
+        attachment != declaration.end() && *attachment == "color" && !declaration.contains("location"))
+        missing("location");
+}
+
 // Render resources and passes declare their own ports, so pelican.render
 // registers a factory rather than a fixed contract.
 GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
@@ -340,12 +400,12 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
             throw std::invalid_argument("render.attribute requires an attribute domain");
         if (op == "render.buffer" && parameters.contains("domain"))
             throw std::invalid_argument("attribute domain requires render.attribute");
-        contract.outputs.emplace("resource", bufferType(registry, parameters));
+        contract.outputs.emplace("resource", bufferType(registry, parameters, parameterFieldMissing(op, node)));
         contract.inputs.emplace("value", GraphInputContract{exactLogicalTypePattern(registry, scalar), false});
     } else if (op == "render.image") {
         auto declaration = parameters;
         declaration["kind"] = "image";
-        contract.outputs.emplace("resource", resourceType(registry, declaration));
+        contract.outputs.emplace("resource", resourceType(registry, declaration, parameterFieldMissing(op, node)));
     } else if (op == "render.target_ref") {
         // LP-0a: a target declared outside the graph. Only its shape is known
         // here; whether the rendering section, the preset or a feature declares
@@ -369,7 +429,7 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
         auto declaration = parameters;
         declaration.erase("name");
         declaration["kind"] = "image";
-        contract.outputs.emplace("resource", resourceType(registry, declaration));
+        contract.outputs.emplace("resource", resourceType(registry, declaration, parameterFieldMissing(op, node)));
     } else if (op == "render.shadow_depth" || op == "render.snapshot_copy") {
         contract = renderPassKindPorts(node, parameters);
     } else if (op == "render.compute" || op == "render.fullscreen" || op == "render.raster") {
@@ -378,7 +438,8 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
         // LP-1d: ports read as the pass's numbered inputs, by input_index.
         std::map<std::int64_t, std::vector<std::string>> input_indices;
         for (const auto &[port, declaration] : ports.items()) {
-            if (declaration.is_object() && declaration.value("binding", Json{}) == "input") {
+            checkRenderPortDeclaration(node, port, declaration);
+            if (declaration.value("binding", Json{}) == "input") {
                 if (op == "render.compute")
                     throw std::invalid_argument("render.compute ports bind as resource ports, not inputs: " + port);
                 if (declaration.value("kind", std::string{"buffer"}) != "image" ||
@@ -410,7 +471,7 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
             ++expected;
         }
         for (const auto &[port, declaration] : ports.items()) {
-            const auto type = resourceType(registry, declaration);
+            const auto type = resourceType(registry, declaration, portFieldMissing(node, port));
             contract.inputs.emplace(port, GraphInputContract{exactLogicalTypePattern(registry, type)});
             const auto access = declaration.at("access").get<std::string>();
             if (access != "read" && access != "write" && access != "read_write")
@@ -486,18 +547,43 @@ OrderedJson schemaJson(const SemanticTypeSchema &schema) {
 }
 
 OrderedJson operationJson(const std::string &op, const GraphOperationRegistration &registration,
-                          bool sink) {
+                          bool sink, const LogicalTypeRegistry &types) {
     const auto &contract = registration.contract;
     OrderedJson change{{"default", std::string{graphParameterChangeName(contract.parameter_change)}}};
     auto parameters = OrderedJson::object();
     for (const auto &[parameter, value] : contract.parameter_changes)
         parameters[parameter] = std::string{graphParameterChangeName(value)};
     change["parameters"] = std::move(parameters);
+    // CT-1: what resolveOperation refuses a node of this op without, read
+    // from the same table: a single name, or alternatives of which one is
+    // enough (an alternative may also be an input edge of that name).
+    auto required = OrderedJson::array();
+    for (const auto &alternatives : renderNodeRequiredParameters(op)) {
+        if (alternatives.size() == 1) {
+            required.push_back(OrderedJson{{"name", std::string{alternatives.front()}}});
+            continue;
+        }
+        auto names = OrderedJson::array();
+        for (const auto name : alternatives) names.push_back(std::string{name});
+        required.push_back(OrderedJson{{"one_of", std::move(names)}});
+    }
     OrderedJson result{{"op", op},
                        {"domain", std::string{graphExecutionDomainName(contract.domain)}},
                        {"evaluation", std::string{graphOperationEvaluationName(contract.evaluation)}},
                        {"change", std::move(change)},
-                       {"sink", sink}};
+                       {"sink", sink},
+                       {"required_parameters", std::move(required)}};
+    // CT-1: the names value.input's `name` takes, from the table the frame
+    // checks them against.
+    if (op == "value.input") {
+        auto names = OrderedJson::array();
+        for (const auto &input : graphFrameInputNames())
+            names.push_back(OrderedJson{
+                {"name", std::string{input.name}},
+                {"type", logicalTypeToJson(types.canonicalize(parseSemanticTypeId(std::string{input.type})))},
+                {"description", std::string{input.description}}});
+        result["input_names"] = std::move(names);
+    }
     if (registration.factory && contract.inputs.empty() && contract.outputs.empty() &&
         contract.forwarded_outputs.empty()) {
         // The ports follow the authored parameters; resolving a node yields them.
@@ -626,7 +712,7 @@ nlohmann::ordered_json GraphModuleRegistry::catalog() const {
         });
         for (const auto *schema : types) module["types"].push_back(schemaJson(*schema));
         for (const auto &[op, registration] : manifest.operations)
-            module["operations"].push_back(operationJson(op, registration, isSink(op)));
+            module["operations"].push_back(operationJson(op, registration, isSink(op), types_));
         auto sinks = manifest.sinks;
         std::sort(sinks.begin(), sinks.end());
         for (const auto &sink : sinks) module["sinks"].push_back(sink);
@@ -812,6 +898,16 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
 const GraphModuleRegistry &builtinGraphModuleRegistry() {
     static const GraphModuleRegistry registry = makeBuiltinGraphModuleRegistry();
     return registry;
+}
+
+const std::vector<GraphFrameInputName> &graphFrameInputNames() {
+    // collectGraphInputs supplies exactly these, every frame.
+    static const std::vector<GraphFrameInputName> names{
+        {"time", "pelican.value.scalar@1", "The game clock, in seconds."},
+        {"delta_time", "pelican.value.scalar@1", "This frame's length, in seconds."},
+        {"scene_time", "pelican.value.scalar@1", "Seconds since the current scene started."},
+    };
+    return names;
 }
 
 std::vector<std::string> renderMaterialPassColorPorts(const nlohmann::json &parameters) {

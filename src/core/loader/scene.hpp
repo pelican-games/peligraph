@@ -98,9 +98,19 @@ DECLARE_MODULE(SceneLoader) {
         ValueGraph::SoundBindings sounds;
         // The start (AudioVoiceDirective::epoch) each voice in `sounds` plays.
         std::map<std::string, std::uint64_t, std::less<>> sound_epochs;
+        // CT-1: what each voice in `sounds` was last made to do -- held or
+        // running, and the source second the graph put it at.
+        struct VoiceStatus {
+            bool held = false;
+            double position_seconds = 0.0;
+        };
+        std::map<std::string, VoiceStatus, std::less<>> voice_status;
     };
     using GraphRuntimes = std::map<std::weak_ptr<const ValueGraph::Graph>, GraphRuntime, std::owner_less<>>;
     GraphRuntimes graph_runtime;
+    // CT-1: the graph whose voices the frames drive (graphAudioWriters), so
+    // its audio.playback nodes are listed even when no runtime holds them yet.
+    std::weak_ptr<const ValueGraph::Graph> voice_graph;
     ValueGraph::PublishedInstanceInputs graph_values;
     GraphRuntime &synchronizeGraphRuntime(const std::shared_ptr<const ValueGraph::Graph> &graph);
     // Scopes whose graph instance owner has resolved to a live object at least
@@ -195,6 +205,21 @@ DECLARE_MODULE(SceneLoader) {
                               bool voice, ValueGraph::AudioValueKind kind, float value);
     std::optional<SoundHandle> graphSound(const std::shared_ptr<const ValueGraph::Graph> &graph,
                                         std::string_view node) const;
+    // CT-1: each audio.playback node of the graph the frames drive, by its
+    // graph node id: idle (no voice: not started, reset, or stopped by a scene
+    // commit), paused (the voice is held: its own pause, a clock or position
+    // standing still, a delay not reached) or playing; and the source second
+    // the graph last put it at (0 when idle). Read from what the last
+    // publication asked of each voice, not from the mixer, so a null backend
+    // reports the same. The whole-mix hold of a paused game is the caller's
+    // to add.
+    struct GraphVoiceStatus {
+        enum class State : std::uint8_t { idle, playing, paused };
+        std::string node;
+        State state = State::idle;
+        double position_seconds = 0.0;
+    };
+    std::vector<GraphVoiceStatus> graphVoiceStatus() const;
     class PreparedGraphRuntimeTransfer;
     // The audio half of one frame's Graph::publish, shared by the renderer and
     // by a caller without one (the device-less audio tests), so both drive

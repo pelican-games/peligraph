@@ -35,6 +35,7 @@ endif()
 
 target_sources(pelican_core PRIVATE
     animationstatus.cpp
+    audiostatus.cpp
     editorassetqueryruntime.cpp
     proceduralasseteditor.cpp
     proceduralassetpublication.cpp

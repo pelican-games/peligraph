@@ -64,6 +64,17 @@ class GraphModuleRegistry {
     nlohmann::ordered_json catalog() const;
 };
 
+// CT-1: the names a value.input's `name` reads -- the frame's clocks. One
+// table: the catalog lists it under value.input (input_names), and the frame
+// refuses any other name (validateGraphInputs). `type` is the value's
+// semantic type id.
+struct GraphFrameInputName {
+    std::string_view name;
+    std::string_view type;
+    std::string_view description;
+};
+const std::vector<GraphFrameInputName> &graphFrameInputNames();
+
 // pelican.value, pelican.audio, pelican.render and pelican.ui: the operations the engine
 // itself brings. Nothing here is special-cased by the graph; a module added
 // later registers the same way.
