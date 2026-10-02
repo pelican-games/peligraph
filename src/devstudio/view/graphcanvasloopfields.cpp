@@ -312,6 +312,15 @@ GraphCanvasLoopFields::GraphCanvasLoopFields(
     insert_layers_->setObjectName(fieldName(QStringLiteral("insertLayers")));
     insert_layers_->setToolTip(tr("Put the target's layer count into the expression"));
     insert_layout->addWidget(insert_layers_);
+    insert_log2_ = new QPushButton(QStringLiteral("log2"), count_insert_row_);
+    insert_log2_->setObjectName(fieldName(QStringLiteral("insertLog2")));
+    insert_log2_->setToolTip(tr("Put log2 of the target's size into the expression: as many "
+                                "halvings as reach one pixel (a fixed-size image of the graph)"));
+    insert_layout->addWidget(insert_log2_);
+    connect(insert_log2_, &QPushButton::clicked, this, [this] { insertLog2(); });
+    connect(count_target_, &QComboBox::currentIndexChanged, this, [this] {
+        insert_log2_->setEnabled(insert_mips_->isEnabled() && countTargetSize().has_value());
+    });
     form->addRow(QString{}, count_insert_row_);
     connect(insert_mips_, &QPushButton::clicked, this,
             [this] { insertCountFunction(QStringLiteral("mip_levels_of")); });
@@ -642,6 +651,7 @@ void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop) {
     }
     insert_mips_->setEnabled(editable && count_target_->count() > 0);
     insert_layers_->setEnabled(editable && count_target_->count() > 0);
+    insert_log2_->setEnabled(editable && count_target_->count() > 0 && countTargetSize().has_value());
     count_target_->setEnabled(editable);
     if (view) {
         {
@@ -1091,6 +1101,37 @@ void GraphCanvasLoopFields::insertCountFunction(const QString &function) {
     const auto call = QStringLiteral("%1(\"%2\")").arg(function, target);
     // Over nothing, or over a plain integer, the call is the expression;
     // otherwise it goes where the cursor is.
+    const auto text = count_expression_->text().trimmed();
+    bool integer = false;
+    (void)text.toLongLong(&integer);
+    if (text.isEmpty() || integer) count_expression_->setText(call);
+    else count_expression_->insert(call);
+    commitCount();
+}
+
+std::optional<long long> GraphCanvasLoopFields::countTargetSize() const {
+    const auto target = count_target_->currentText().toStdString();
+    if (target.empty()) return std::nullopt;
+    for (const auto &scope : model_.scopes())
+        for (const auto &node : model_.nodes(scope.id)) {
+            if (node.id != target || node.op != "render.image") continue;
+            const auto &parameters = node.parameters;
+            const auto width = parameters.find("width");
+            const auto height = parameters.find("height");
+            if (width == parameters.end() || height == parameters.end() ||
+                !width->is_number_integer() || !height->is_number_integer())
+                return std::nullopt;
+            const auto size = std::max(width->get<long long>(), height->get<long long>());
+            return size > 0 ? std::optional<long long>{size} : std::nullopt;
+        }
+    return std::nullopt;
+}
+
+void GraphCanvasLoopFields::insertLog2() {
+    if (!current_ || loop_.empty()) return;
+    const auto size = countTargetSize();
+    if (!size) return;
+    const auto call = QStringLiteral("log2(%1)").arg(*size);
     const auto text = count_expression_->text().trimmed();
     bool integer = false;
     (void)text.toLongLong(&integer);

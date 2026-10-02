@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <concepts>
 #include <sstream>
@@ -848,7 +849,7 @@ struct GraphLoopRefusalText {
     std::string_view code;
     std::string_view sentence;
 };
-constexpr std::array<GraphLoopRefusalText, 35> GraphLoopRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 38> GraphLoopRefusalTexts{{
     {"graph.loop_branch_else_missing@1",
      "Loop {node} has no else: its last branch must have no condition"},
     {"graph.loop_branch_interface@1",
@@ -903,6 +904,16 @@ constexpr std::array<GraphLoopRefusalText, 35> GraphLoopRefusalTexts{{
     {"graph.loop_output_reference_unknown@1", "{pass} reads {reference}, which is no loop output"},
     // UX-5c (RS-9): a render node lacks a parameter its op needs.
     {"graph.render_node_parameters_missing@1", "The {op} node {node} needs {missing}"},
+    // UX-8, decision 12 (c) (RS-15): the render.scalar sinks on one buffer
+    // tile it from byte 0; `reason` says which way they do not.
+    {"graph.render_scalar_layout_invalid@1",
+     "The render.scalar {node} writes {target} at byte {offset}, where {expected_offset} was "
+     "next ({reason})"},
+    {"graph.render_scalar_type_mismatch@1",
+     "The render.scalar {node} writes {components} float(s) into {target}, whose elements are "
+     "{element}"},
+    // UX-8, decision 13 (b) (CT-1): a port declaration lacks a field.
+    {"graph.port_field_missing@1", "Port {port} of {node} needs {field}"},
     // GL-3a (FG-1): a fold group's decisions. `subject` is {node, element?,
     // port?}, read as "node [element].port".
     {"graph.fold_decision_conflict@1",
@@ -953,6 +964,16 @@ constexpr std::array<GraphInputIndexReasonText, 2> GraphInputIndexReasonTexts{{
     {"missing",
      "No port of {node} reads input {input_index}: its numbered inputs run from 0 without a gap"},
     {"duplicate", "Ports {ports} of {node} all read input {input_index}: each number is one port's"},
+}};
+
+// UX-8, decision 12 (c): graph.render_scalar_layout_invalid@1's two reasons.
+constexpr std::array<GraphInputIndexReasonText, 2> GraphScalarLayoutReasonTexts{{
+    {"overlap",
+     "The render.scalar {node} writes {target} from byte {offset}, over the sink before it "
+     "(which ends at byte {expected_offset})"},
+    {"gap",
+     "The render.scalar {node} writes {target} from byte {offset}, leaving bytes "
+     "{expected_offset} up to {offset} unwritten"},
 }};
 
 // LP-4e: graph.loop_tier_unsupported@1 says why in `reason`; the draw_loop
@@ -1079,6 +1100,11 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error) {
         for (const auto &candidate : GraphInputIndexReasonTexts)
             if (candidate.reason == reason) pattern = candidate.sentence;
     }
+    if (entry->code == "graph.render_scalar_layout_invalid@1") {
+        const auto reason = graphRefusalFieldText(fields, "reason");
+        for (const auto &candidate : GraphScalarLayoutReasonTexts)
+            if (candidate.reason == reason) pattern = candidate.sentence;
+    }
     if (entry->code == "graph.loop_output_reference_unknown@1") {
         const auto reason = graphRefusalFieldText(fields, "reason");
         for (const auto &candidate : GraphLoopOutputReferenceReasonTexts)
@@ -1096,6 +1122,50 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error) {
         index = close + 1;
     }
     return sentence + " (" + std::string{entry->code} + ").";
+}
+
+std::string engineStoppedSentence(std::string_view fatal_line) {
+    constexpr std::string_view marker = "Pelican fatal error";
+    const auto at = fatal_line.find(marker);
+    if (at == std::string_view::npos) return {};
+    auto message = fatal_line.substr(at + marker.size());
+    while (!message.empty() && (message.front() == ' ' || message.front() == ':'))
+        message.remove_prefix(1);
+    // The first `<namespace>.<name>@<version>` the message names.
+    std::string code;
+    for (std::size_t index = 0; index < message.size() && code.empty(); ++index) {
+        const auto version = message.find('@', index);
+        if (version == std::string_view::npos) break;
+        std::size_t begin = version;
+        while (begin > 0 && (std::isalnum(static_cast<unsigned char>(message[begin - 1])) ||
+                             message[begin - 1] == '_' || message[begin - 1] == '.'))
+            --begin;
+        std::size_t end = version + 1;
+        while (end < message.size() && std::isdigit(static_cast<unsigned char>(message[end]))) ++end;
+        const auto candidate = message.substr(begin, end - begin);
+        if (end > version + 1 && candidate.find('.') != std::string_view::npos &&
+            candidate.front() != '.')
+            code = std::string{candidate};
+        index = version;
+    }
+    if (code.empty()) return {};
+    auto sentence = knownRefusalDescription(code, message);
+    if (sentence.empty()) return {};
+    // "<sentence> (<code>)." -- the sentence, without its full stop.
+    while (!sentence.empty() && (sentence.back() == '.' || sentence.back() == ' ')) sentence.pop_back();
+    // The file: the last path ending in .json the message names.
+    std::string file;
+    for (std::size_t end = message.find(".json"); end != std::string_view::npos;
+         end = message.find(".json", end + 1)) {
+        std::size_t begin = end;
+        while (begin > 0 && message[begin - 1] != ' ' && message[begin - 1] != '\'' &&
+               message[begin - 1] != '"' && message[begin - 1] != '(')
+            --begin;
+        file = std::string{message.substr(begin, end + 5 - begin)};
+    }
+    if (file.empty()) file = "the project's render documents";
+    return "The engine stopped: " + sentence + " in " + file +
+           ". Fix the file (or Reload from disk) to start it again.";
 }
 
 std::string graphRefusalVariant(const nlohmann::json &error) {

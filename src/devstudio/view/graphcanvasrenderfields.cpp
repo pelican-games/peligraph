@@ -248,7 +248,40 @@ GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
     layers_->setRange(1, 2048);
     layers_->setKeyboardTracking(false);
     layers_->setToolTip(tr("Array layers (six for a cube)."));
-    form->addRow(caption(tr("Layers"), fields_), layers_);
+    layers_expression_ = new QLineEdit(fields_);
+    layers_expression_->setObjectName(imageFieldName(QStringLiteral("layersExpression")));
+    layers_expression_->setPlaceholderText(QStringLiteral("6"));
+    layers_expression_->setToolTip(tr("An integer expression for the layer count, evaluated when "
+                                      "the pipeline is composed."));
+    layers_expression_->hide();
+    auto *layers_row = new QWidget(fields_);
+    auto *layers_layout = new QHBoxLayout(layers_row);
+    layers_layout->setContentsMargins(0, 0, 0, 0);
+    layers_layout->addWidget(layers_, 1);
+    layers_layout->addWidget(layers_expression_, 1);
+    form->addRow(caption(tr("Layers"), fields_), layers_row);
+    mip_levels_ = new QSpinBox(fields_);
+    mip_levels_->setObjectName(imageFieldName(QStringLiteral("mipLevels")));
+    mip_levels_->setRange(0, 16);
+    mip_levels_->setSpecialValueText(QStringLiteral("full"));
+    mip_levels_->setValue(1);
+    mip_levels_->setKeyboardTracking(false);
+    mip_levels_->setToolTip(tr("Mip levels: 1 for none, \"full\" for the whole chain."));
+    mip_levels_expression_ = new QLineEdit(fields_);
+    mip_levels_expression_->setObjectName(imageFieldName(QStringLiteral("mipLevelsExpression")));
+    mip_levels_expression_->setPlaceholderText(QStringLiteral("log2(256) + 1"));
+    mip_levels_expression_->setToolTip(tr("An integer expression for the mip count, evaluated "
+                                          "when the pipeline is composed."));
+    mip_levels_expression_->hide();
+    auto *mips_row = new QWidget(fields_);
+    auto *mips_layout = new QHBoxLayout(mips_row);
+    mips_layout->setContentsMargins(0, 0, 0, 0);
+    mips_layout->addWidget(mip_levels_, 1);
+    mips_layout->addWidget(mip_levels_expression_, 1);
+    form->addRow(caption(tr("Mip levels"), fields_), mips_row);
+    for (QLineEdit *line : {layers_expression_, mip_levels_expression_})
+        connect(line, &QLineEdit::returnPressed, this, [this] { commitSize(); });
+    connect(mip_levels_, &QAbstractSpinBox::editingFinished, this, [this] { commitSize(); });
 
     // UX-7, decision 6: the engine keeps the frame before as a second
     // image (a render target's `history: true`), which a port reads with
@@ -397,6 +430,12 @@ void GraphCanvasImageFields::load(const Json &parameters) {
         const QSignalBlocker block{spin};
         spin->setValue(static_cast<int>(number(key, spin == layers_ ? 1.0 : 256.0)));
     }
+    {
+        const QSignalBlocker block{mip_levels_};
+        const bool full = parameters.is_object() && parameters.contains("mip_levels") &&
+                          parameters.at("mip_levels") == "full";
+        mip_levels_->setValue(full ? 0 : static_cast<int>(number("mip_levels", 1.0)));
+    }
     // UX-5d, decision 1: a size the document writes as {"$expr": ...}.
     const auto expression = [&](const char *key) -> std::optional<QString> {
         if (!parameters.is_object()) return std::nullopt;
@@ -409,7 +448,13 @@ void GraphCanvasImageFields::load(const Json &parameters) {
     const auto extent_text = fixed ? std::nullopt : expression("extent_scale");
     const auto width_text = fixed ? expression("width") : std::nullopt;
     const auto height_text = fixed ? expression("height") : std::nullopt;
-    const bool written = extent_text || width_text || height_text;
+    // UX-8, decision 12 (a): and the layer and mip counts.
+    const auto layers_text = expression("layers");
+    const auto mips_text = expression("mip_levels");
+    layers_expression_->setText(layers_text.value_or(QString::number(layers_->value())));
+    mip_levels_expression_->setText(
+        mips_text.value_or(mip_levels_->value() <= 1 ? QString{} : QString::number(mip_levels_->value())));
+    const bool written = extent_text || width_text || height_text || layers_text || mips_text;
     extent_expression_->setText(extent_text.value_or(QString{}));
     width_expression_->setText(width_text.value_or(QString::number(width_->value())));
     height_expression_->setText(height_text.value_or(QString::number(height_->value())));
@@ -604,7 +649,19 @@ void GraphCanvasImageFields::commitSize() {
                                              : Json(extent_scale_->value());
     }
     // One layer is what an image without the key has.
-    if (layers_->value() > 1 || changed.contains("layers")) changed["layers"] = layers_->value();
+    if (expression && !layers_expression_->text().trimmed().isEmpty() &&
+        layers_expression_->text().trimmed() != QStringLiteral("1"))
+        changed["layers"] = written(layers_expression_, layers_->value());
+    else if (layers_->value() > 1 || changed.contains("layers"))
+        changed["layers"] = layers_->value();
+    // UX-8, decision 12 (a): one mip level is what an image without the key
+    // has; 0 in the spin is the whole chain.
+    if (expression && !mip_levels_expression_->text().trimmed().isEmpty())
+        changed["mip_levels"] = written(mip_levels_expression_, mip_levels_->value());
+    else if (mip_levels_->value() == 0)
+        changed["mip_levels"] = "full";
+    else if (mip_levels_->value() > 1 || changed.contains("mip_levels"))
+        changed["mip_levels"] = mip_levels_->value();
     showSizeExpression(expression);
     if (changed == parameters()) return;
     commit(changed);
@@ -618,6 +675,10 @@ void GraphCanvasImageFields::showSizeExpression(bool expression) {
     height_->setVisible(!expression);
     width_expression_->setVisible(expression);
     height_expression_->setVisible(expression);
+    layers_->setVisible(!expression);
+    layers_expression_->setVisible(expression);
+    mip_levels_->setVisible(!expression);
+    mip_levels_expression_->setVisible(expression);
     extent_scale_->setEnabled(!fixed);
     extent_expression_->setEnabled(!fixed);
     width_->setEnabled(fixed);
@@ -1722,7 +1783,8 @@ GraphCanvasRequiredDialog::GraphCanvasRequiredDialog(const GraphCanvasModel &mod
     const auto fieldName = [](const std::string &parameter) {
         return QStringLiteral("pelican.graphCanvasRequired.") + qtext(parameter);
     };
-    for (const auto &required : GraphCanvasModel::requiredParameters(op)) {
+    // UX-8, decision 13 (a): what the engine's catalog lists, when it does.
+    for (const auto &required : model.requiredParametersFor(op)) {
         QWidget *field = nullptr;
         if (required.kind == "number") {
             auto *spin = new QDoubleSpinBox(this);
@@ -1731,10 +1793,23 @@ GraphCanvasRequiredDialog::GraphCanvasRequiredDialog(const GraphCanvasModel &mod
             spin->setValue(0.0);
             spin->setToolTip(tr("The constant's value."));
             field = spin;
+        } else if (required.kind == "text") {
+            auto *line = new QLineEdit(this);
+            line->setText(qtext(model.suggestNodeId(scope, required.name)));
+            line->setToolTip(tr("The name the value is set by from outside."));
+            connect(line, &QLineEdit::textChanged, this, [this] { follow(); });
+            field = line;
         } else {
             auto *combo = new QComboBox(this);
-            if (required.kind == "input") {
-                for (const auto &name : GraphCanvasModel::valueInputNames())
+            if (required.kind == "voice") {
+                // UX-8, decision 7: the voice the sink drives, one of the
+                // scope's audio.playback nodes.
+                for (const auto &voice : model.voiceChoices(scope))
+                    combo->addItem(qtext(voice), qtext(voice));
+                combo->setToolTip(tr("The voice whose sound this changes: an audio.playback of "
+                                     "this scope."));
+            } else if (required.kind == "input") {
+                for (const auto &name : model.valueInputNamesFor())
                     combo->addItem(qtext(name), qtext(name));
                 combo->setToolTip(tr("The value the engine hands the graph each frame: "
                                      "scene_time from the scene's start, time, delta_time."));
@@ -1742,7 +1817,9 @@ GraphCanvasRequiredDialog::GraphCanvasRequiredDialog(const GraphCanvasModel &mod
                 // A buffer of the graph's, or a new name typed in.
                 combo->setEditable(true);
                 combo->setInsertPolicy(QComboBox::NoInsert);
-                for (const auto &buffer : model.bufferChoices(scope))
+                // UX-8, decision 3: the graph's buffers and the plan's (a
+                // feature's, as bloom.intensity).
+                for (const auto &buffer : model.scalarTargets(scope))
                     combo->addItem(qtext(buffer), qtext(buffer));
                 if (combo->count() == 0) combo->setEditText(QStringLiteral("value_buffer"));
                 combo->setToolTip(tr("The buffer the value is written into: one of the graph's "
@@ -1770,18 +1847,37 @@ void GraphCanvasRequiredDialog::follow() {
     // A buffer needs a name.
     const auto json = parameters();
     bool ready = true;
-    for (const auto &[required, field] : fields_)
-        if (required.kind == "buffer" &&
+    for (const auto &[required, field] : fields_) {
+        if ((required.kind == "buffer" || required.kind == "text") &&
             (!json.contains(required.name) || json.at(required.name).get<std::string>().empty()))
             ready = false;
+        // A sound sink drives a voice: none to drive, nothing to place.
+        if (const auto *combo = qobject_cast<const QComboBox *>(field);
+            required.kind == "voice" && combo != nullptr && combo->count() == 0)
+            ready = false;
+    }
     if (ok_ != nullptr) ok_->setEnabled(ready);
+}
+
+nlohmann::json GraphCanvasRequiredDialog::seed() const {
+    Json result{{"parameters", parameters()}};
+    for (const auto &[required, field] : fields_)
+        if (const auto *combo = qobject_cast<const QComboBox *>(field);
+            required.kind == "voice" && combo != nullptr && combo->count() > 0)
+            result["inputs"][required.name] =
+                Json{{"node", combo->currentData().toString().toStdString()}, {"port", "voice"}};
+    return result;
 }
 
 nlohmann::json GraphCanvasRequiredDialog::parameters() const {
     Json result = Json::object();
     for (const auto &[required, field] : fields_) {
+        // UX-8: a voice is an edge (seed()), not a parameter.
+        if (required.kind == "voice") continue;
         if (const auto *spin = qobject_cast<const QDoubleSpinBox *>(field)) {
             result[required.name] = spin->value();
+        } else if (const auto *line = qobject_cast<const QLineEdit *>(field)) {
+            result[required.name] = line->text().trimmed().toStdString();
         } else if (const auto *combo = qobject_cast<const QComboBox *>(field)) {
             const auto text = (combo->isEditable() ? combo->currentText() : combo->currentData().toString())
                                   .trimmed()

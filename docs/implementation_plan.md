@@ -27284,6 +27284,94 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - **test**: `devstudio_graph_fold_test` の `GL-4a decision 1` / `3` / `5` の 3 本([decision 3](../test/devstudio_graph_fold_test.cpp#L307)。mismatch と unstable は手で作った `get_edit_result` の JSON)と、`devstudio_graph_fold_scene_test` の `GL-4a Verify from a group's heading runs verify_fold, holds the group's edits while it runs, and marks what it found; a stale group offers Verify again`([test](../test/devstudio_graph_fold_scene_test.cpp#L304))
 - **シナリオ**: `graph_fold_decisions` の後半(Quick check で Verify → `verified`、帯に `isolate (fold fold_1)`、Decisions の行に `applied → render_fullscreen_2`、Frame Plan の Raw JSON に `"from_fold": "fold_1"`)
 
+### GB-3: Blank から GUI だけで FFT の海と LTC の面光源を組むシナリオ
+
+**test のみ(Studio のシナリオ)。Studio での見え方は `docs/manual/13_editor.md` の「Studio の自動化面」の `gui_build_ocean` / `gui_build_ltc` の段落。**
+
+#### 着地(2026-10-02、ba3b8a72)
+- 新規 `gui_build_ocean`(json の step は 529)と `gui_build_ltc`(96)。どちらも File > New Project > Blank pipeline から Studio の GUI だけで進み、shader は `file` step で project の `shaders/` に書く(人が自分のエディタで書く代わり)。シナリオは 52 → 54 本
+- **ocean**: fullscreen pass の h0(Phillips)→ scene の時刻の spectrum → 16 回の `graph.loop` の Stockham の butterfly(carry。段ごとに分岐 1 本、分岐ごとに `ocean_fft_<k>`)→ displacement、palette の `render.raster` が手続きの grid で displacement を読み、Fresnel の空で `present` に描く。edit で止まり、Play で動き、Pause で止まることを画素で見る
+- **ltc**: `gui_build_D` の deferred の道に、project に書いた `ltc_lighting.frag` を Fragment の一覧から選ぶ。LUT の代わりに正規化した clamped cosine(image の file を render target に読む道が無い)。床の映り込みが光の形と Inspector の強さに従う
+- 止まった所・打った欄(着地時の description): 回の番号を pass に渡す道が無く分岐 16 本(分岐ごとに要素を打つ)、式に `log2` が無く Count に 16 を打つ、draw の数を JSON で打つ、depth の欄が無く行を遠い方から描く順で重なりを避ける、ループの後に足した raster が canvas に描かれない、palette の `render.scalar` / `value.constant` / `value.input` が欠けた parameter で断られ書く欄が無い、compute の task は port を書けず使えない。Play の間の quit が確認のダイアログで止まる件は UX-7 の仕様の背景。engine 側は RS-15 / LC-1、Studio 側は UX-7 / LC-1s が受けた(下の節)
+- UX-7(`1fcd155e`)が `gui_build_ocean` を 552 step に、LC-1s(`ed4ed5f9`)が 235 step に書き直した
+
+### RL-1s: 外のエディタで書き換えた render の文書を Studio が拾う(engine RL-1 の reload_render_documents)
+
+**Studio のみ(engine は RL-1)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「外のエディタで書き換えた render の文書を拾います(✅RL-1s)」、シナリオの `render_reload_external`。**
+
+#### 前提
+- GB-2 で root の JSON を外で書き換えたら engine は拾わず、次の GUI の編集が `external_modification` で断られた
+
+#### 着地(2026-10-02、e58c8da9)
+- **決定 1(見張る)**: engine が答えたら `get_render_documents` の文書(`engine://` と `#` 付きを除く)の file を、UX-6a の Frame Plan の shader の見張り役に別の口で足す([`ShaderReloadFollower::setDocumentFiles()`](../src/devstudio/view/shaderreloadfollower.cpp#L85))。300 ms まとめ、変わるたびに path を足し直す。読めない file は 3 回まで調べ直す
+- **決定 2(自分の書き込み)**: 文書ごとに最後に見た digest(一覧・commit の `documents`・読み直しの結果)と file の sha256 が同じなら頼まない([`RenderDocumentReload::check()`](../src/devstudio/model/renderdocumentreload.cpp#L152))
+- **決定 3(頼む)**: 同時に 1 本。`reload_busy` は 500 ms 後にもう一度、`preview_open` は `Close the scene preview to pick up the change to <file>.` を 1 回。ticket は 100 ms ごと
+- **決定 4(結果)**: committed は `Picked up the change to <file>.`(Graph の notice と status bar)、Graph の Undo の履歴と render の編集の履歴を切り(Frame Plan の status 行に `— reloaded from disk —`)、全 panel を RU-1 の戻しと同じ道で読み直す([`MainWindow::renderDocumentsReloaded()`](../src/devstudio/view/mainwindow.cpp#L1066))。`no_change` は何も出さない。拒否は `Could not load <file>: fix the file and save again.` と、tooltip / Copy message に engine の code・participant・reference・message。`restart_required` は RSX の 1 か所の読み
+- **決定 5(壊れたままの間)**: 拒否が立っている間の `external_modification` は `The file on disk changed and could not be loaded — fix it or use Reload from disk.`([1 文の所](../src/devstudio/model/inspectormodel.cpp#L640))。Graph の canvas の右クリックに Reload from disk(`pelican.graphCanvas.reloadFromDisk`。digest に関係なく送る)
+- **新しいファイル**: `src/devstudio/model/renderdocumentreload.{hpp,cpp}`(Qt 非依存。library `pelican_studio_inspector_model`)
+- **test**: 新規 `devstudio_render_reload_test` の 6 本(`RL-1s decision 1` / `2` / `3` / `4` ×2 / `5`。[decision 1](../test/devstudio_render_reload_test.cpp#L154))
+- **シナリオ**: 新規 `render_reload_external`(json の step は 58。Blank → Graph の pass を `present` へ → format を Graph で選ぶ → file を外で書き戻す → Picked up と Graph の Undo が押せない → `,,` で壊す → 拒否と、その間の Graph の編集の 1 文と Reload from disk → 直すと拾われ、Graph の編集が通る)。シナリオは 54 → 55 本
+
+### UX-7: GB-3 で打った所・無かった欄(番号付きの入力の sampling、Defines、raster の Depth と Raster、draw の数、必須の parameter、history、ループの後の raster の描き直し、Play の間の quit、get_status の parse を 1 回)
+
+**Studio のみ。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「pass の欄の Inputs」の UX-7、「GB-3 で打った欄を pass と image の欄に(✅UX-7)」「palette で置くときに、要る parameter を先に聞きます(✅UX-7)」「ループと分岐の後に足した node も描きます(✅UX-7)」、自動化面の「Play の間の `quit`(✅UX-7)」「`get_status` の返事は 1 回だけ parse します(✅UX-7)」、シナリオの `gui_build_ocean` / `gui_build_full`。**
+
+#### 前提
+- GB-3 の 2 本のシナリオ(上の節)が打った欄と、GUI に無かった欄。engine の RS-14(番号付きの入力の sampling)
+
+#### 着地(2026-10-02、1fcd155e)
+- **決定 1(番号付きの入力の sampling)**: `portSettings()` から `binding != "input"` を外し、番号付きの入力の Filter / Address / mip を pass の欄と右クリックで書く(既定を選ぶと鍵を消す)。fullscreen の pass に新しく作る番号付きの入力(線を落とす時と雛形の Create)に `sampling.address: clamp_to_edge` を書く([書く所](../src/devstudio/model/graphcanvasmodel.cpp#L104))。raster の入力は既定のまま。`gui_build_full` で bloom の上端の回り込みが消える
+- **決定 2(Defines)**: pass の欄に Pass Editor の `ShaderDefinesForm`。engine が断る行は赤で送らない
+- **決定 3(Depth と Raster)**: raster の pass の欄に Depth(none / scope の depth の image / New `D32_SFLOAT`。New は image と port・線・出力を 1 つの編集で足し、depth test / write を真に。[`GraphCanvasModel::setRasterDepth()`](../src/devstudio/model/graphcanvasmodel.cpp#L7045))と、UX-5b の Raster の form(raster の pass では `raster_state` だけ)
+- **決定 4(draw の数)**: Vertices / Instances の spin と Grid N×N(triangles)(6·(N−1)²)。編集を受けられない間の値は捨てずに後で送る
+- **決定 5(必須の parameter)**: palette の `render.scalar`(target)/ `value.constant`(value)/ `value.input`(name)は置く前にダイアログ(`pelican.graphCanvasRequired`)で聞く。表は Studio が持つ([`GraphCanvasModel::requiredParameters()`](../src/devstudio/model/graphcanvasmodel.cpp#L7130))。後に着地した CT-1 の catalog の `required_parameters` / `input_names` は、台帳のこの記録の時点で Studio は読まない
+- **決定 6(history)**: `render.image` の欄に Keep previous frame (history)(`history: true`)
+- **決定 7(描かれない raster)**: 開いたままの値の帯の editor が描き直しを止めていた。文書の中身が変わった読みは editor を持ち越して描き直す
+- **決定 8(詳細表の行)**: 自動化は値の帯と欄とダイアログで書き、詳細表は読むだけと `test/studio_scenarios/README.md` の「A node's parameters」に書いた
+- **決定 9(Play の間の quit)**: 自動化面の quit は Play / Pause の間なら keep なしの Stop を送ってから閉じる(15 秒で諦める。[`MainWindow::stopPlayThen()`](../src/devstudio/view/mainwindow.cpp#L1411))
+- **決定 10(parse を 1 回)**: viewport が `get_status` の返事を 1 回 parse して `engineStatusParsed` で配る(Play の帯・Outliner の runtime の行・`wait_engine`)
+- **test**: `devstudio_graphcanvas_scene_test` の `UX-7 decision 2` / `decisions 3 and 4` / `decision 5` / `decision 6` / `decision 7` の 5 本([decision 2](../test/devstudio_graphcanvas_scene_test.cpp#L9160))と、UX-6a decision 5 の test を `…; UX-7 decision 1: a numbered input's are picked too` に書き換えた([test](../test/devstudio_graphcanvas_scene_test.cpp#L8154))。決定 9・10 の test は無い(commit の記録に無い)
+- **シナリオ**: `gui_build_ocean`(529 → 552。Grid と Instances、depth の image、Play の後の quit)、`gui_build_full`(上端の画素が bloom の前後で同じ)
+
+### UX-6b: 速くしたかが見える —— GPU 時間、plan の数、編集の前後の 1 行、使われない出力と binding
+
+**Studio のみ(engine は PO-1 / ST-1)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「速くしたかが見える —— GPU 時間・plan の数・編集の前後の 1 行(✅UX-6b)」、シナリオの `gui_build_optimize`。**
+
+#### 前提
+- GB-2 の `gui_build_optimize` で、効いたかが ms では見分けられず plan の数でしか見えなかった。frame 全体の GPU 時間は GUI のどこにも無かった
+
+#### 着地(2026-10-02、b1ed3356)
+- **決定 1(合計の 1 行)**: Frame Plan の status 行と Graph の canvas の上に `GPU 0.15 ms · 24 passes · 20 barriers · 2 alias groups`(`pelican.framePlanPerf` / `pelican.graphCanvasPerf`)。30 frame 未満は `GPU measuring…`([`PlanPerfModel::summaryLine()`](../src/devstudio/model/planperfmodel.cpp#L327))
+- **決定 2(node ごとの時間)**: Graph の root の node の帯に GPU 時間。Frame Plan は倍率 0.6 未満で時間を tooltip に回す。ST-1 の `node_averages` があれば読み、無ければ sample の和
+- **決定 3(前後の 1 行)**: 編集の後の新しい世代の窓が 60 frame で `after <名前>: passes a→b, barriers a→b, alias a→b, GPU x→y ms`。数が同じなら先頭に `no change in the plan`、前の窓の p10〜p90 の中なら `GPU difference is within noise`、最後に `generation a→b`。世代の初めの frame は外す([`PlanPerfModel::resolve()`](../src/devstudio/model/planperfmodel.cpp#L275))
+- **決定 4(使われない出力と binding)**: PO-1 の `unread_output` / `unused_binding` を node の帯(`output unread` / `binding N unused`)と右の欄の 1 文に。diagnostics の一覧には入れない
+- **決定 5(シナリオ)**: `gui_build_optimize` が各最適化の後に 1 行を読み、ST-1 の `node_averages` を確かめる。RT の mask の後の shadow の `output unread` は覚えるだけ(lighting の雛形が shadow map を読み続ける)
+- Graph の Add のボタンが Add loop と同じく毎 tick 編集できるかに従う
+- **新しいファイル**: `src/devstudio/model/planperfmodel.{hpp,cpp}`(Qt 非依存。library `pelican_studio_inspector_model`)、`src/devstudio/view/planperfhub.{hpp,cpp}`(読み手。library `pelican_studio_view`)
+- **test**: 新規 `devstudio_plan_perf_test` の 3 本([decision 1 and 2](../test/devstudio_plan_perf_test.cpp#L67))、`devstudio_graphcanvas_test` の `UX-6b unread outputs and unused bindings are said on the graph node that made the pass`([test](../test/devstudio_graphcanvas_test.cpp#L3120))、`devstudio_graphcanvas_scene_test` の `UX-6b a root node's band carries its unread output and its GPU time`([test](../test/devstudio_graphcanvas_scene_test.cpp#L520))
+- **シナリオ**: `gui_build_optimize`(463 → 488)
+
+### GB-4: Blank から GUI だけで音楽を鳴らすシナリオ
+
+**test のみ(Studio のシナリオ)。Studio での見え方は `docs/manual/13_editor.md` の「Studio の自動化面」の `gui_build_music` の段落。**
+
+#### 着地(2026-10-02、e056fa25)
+- 新規 `gui_build_music`(json の step は 83)。project の `assets/audio` に小さな WAV を `file` step で置き、palette の `audio.playback`、Bus `bgm`、Wrap `repeat`。voice の経過秒(`get_graph_node_values` の `audio_playback.voice`)が edit で 0、Play で進み、Pause で止まり、Pause の間の Timeline で 0 の近くへ戻り、Stop で 0。driver の下の audio の backend は null。シナリオは 55 → 56 本
+- 止まった所(commit の記録): 曲線から shader へ値を渡す道(`render.buffer` に値のソケットが無い、pass に名前付きの buffer の port が無い)。UX-8 に残す
+- `9ca2d3ce` で `graph_read` の `audio.$len` の期待を 3 に(engine CT-1 の `voices`)
+
+### LC-1s: ループの回の番号を shader で読む(Studio 側)—— 雛形、印、海を 1 本の body に
+
+**Studio のみ(engine は LC-1 `158abae9`)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「ループの body の pass は回の番号を読めます —— 雛形と印(✅LC-1s)」、設計は `docs/design_graph_loops.md` の「回の番号を shader に渡す」の Studio 側の段落、シナリオの `gui_build_ocean`。**
+
+#### 着地(2026-10-02、ed4ed5f9)
+- **決定 1(雛形)**: Graph の pass の欄の New… でループの body の中に作る雛形に `#include "pelican_loop.glsl"` と使い方の 1 行([`withLoopElementInclude()`](../src/devstudio/view/fullscreenshadertemplate.cpp#L358))。ループの外と Pass Editor の New… は変えない。雛形は自分の push constant を持たないので `PELICAN_LOOP_CUSTOM_PUSH` の形にしない
+- **決定 2(印)**: frame plan の `reads_loop_index` を読み、body の pass の帯に `reads element`、pass の欄に `This shader reads the loop element (pelican_loop_element)`(ループに複製されない pass は `…; outside a loop it reads element 0`)([`GraphCanvasModel::loopElementRead()`](../src/devstudio/model/graphcanvasmodel.cpp#L3687))。ゾーンの帯は同名の root の node の GPU 時間を取らない
+- **決定 3(拒否の文)**: `shader.loop_push_overlap@1` を inspectormodel の 1 文の表に(range は `offset..offset+size`)
+- **決定 4(海を 1 本の body に)**: `gui_build_ocean` の FFT を分岐 16 本から 1 本の body(`ocean_fft.frag` が `pelican_loop_element()` で段を選ぶ、Count は `2 * log2(256)`)に。552 → 235 step(commit の記録)。所要時間の前後は commit の記録に無い(未確認)
+- UX-7 の続き: Draw の spin に打って確定していない値を pass の欄が別の node に移る前に送る、読み直しが打っている途中の spin を上書きしない、編集を待つ値がある間の notice を `Saving the graph change...` に
+- **test**: `devstudio_graphcanvas_test` の `LC-1s a pass whose shader reads the loop element is known by its body node` と `LC-1s shader.loop_push_overlap@1 reads as a sentence`([test](../test/devstudio_graphcanvas_test.cpp#L3357))、`devstudio_shadertemplate_compile_test` の `LC-1s a template made in a loop's body includes pelican_loop.glsl and compiles`([test](../test/devstudio_shadertemplate_compile_test.cpp#L541))、`devstudio_graphcanvas_scene_test` の `UX-7 a draw count typed but not confirmed survives the Pass fields letting go, and the notice says Saving at once`([test](../test/devstudio_graphcanvas_scene_test.cpp#L9326))
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

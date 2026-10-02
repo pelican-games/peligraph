@@ -1,6 +1,8 @@
 #include "fullscreenshadertemplate.hpp"
+#include "graphcanvascomputefields.hpp"
 #include "graphcanvasloopfields.hpp"
 #include "graphcanvasrenderfields.hpp"
+#include "graphcanvasvaluefields.hpp"
 #include "graphcanvaswidget.hpp"
 #include "graphcomposition.hpp"
 #include "graphmodule.hpp"
@@ -9072,6 +9074,310 @@ TEST_CASE("UX-5d a render.compute from the palette traces with an engine ray tra
     CHECK(failed.model.editNotice().message.find("no compiler") != std::string::npos);
 }
 
+// --- EL-5s. A project's compute shader placed from the palette takes its
+// ports from its declarations (get_shader_interface, EL-5).
+
+namespace {
+
+Json el5sImage(const char *id, const char *format = "R16G16B16A16_SFLOAT") {
+    return Json{{"id", id}, {"op", "render.image"},
+                {"parameters", {{"type", {{"semantic", "pelican.render.color_signal@1"},
+                                          {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}}},
+                                {"format", format}, {"extent_scale", 1.0},
+                                {"usage", Json::array({"STORAGE", "SAMPLED"})}}},
+                {"outputs", {"resource"}}};
+}
+
+Json el5sComputeCatalogEntry() {
+    return Json{{"op", "render.compute"}, {"domain", "rendering"}, {"evaluation", "direct"},
+                {"sink", false}, {"ports", "parameter_dependent"}};
+}
+
+// The get_shader_interface questions in the outbox, by request id; the rest
+// is left for the harness.
+std::vector<std::pair<std::uint64_t, Json>> el5sAsked(ZoneHarness &harness) {
+    std::vector<std::pair<std::uint64_t, Json>> asked;
+    for (const auto &request : harness.model.takeRpcRequests())
+        if (request.method == "get_shader_interface") asked.emplace_back(request.request_id, request.params);
+    return asked;
+}
+
+Json el5sReady(const std::string &reference, Json ports, Json local_size = Json::array({8, 8, 1})) {
+    return Json{{"status", "ready"},
+                {"reference", reference},
+                {"stages", Json::array({Json{{"reference", reference},
+                                             {"stage", "compute"},
+                                             {"resource_ports", std::move(ports)},
+                                             {"local_size", std::move(local_size)}}})}};
+}
+
+} // namespace
+
+// Decision 1: the palette's render.compute with a project .comp. The engine is
+// asked (building is asked again half a second later); the ready answer
+// places the task with its written image (the shader's format, STORAGE and
+// SAMPLED), connected, dispatched from that image's size, in one edit; the
+// sampled image it declares is an empty socket, declared when a line lands.
+TEST_CASE("EL-5s a project compute shader from the palette arrives with its ports and images",
+          "[devstudio][graph-canvas][scene][el5s]") {
+    (void)application();
+    const std::string reference = "project://shaders/ocean_h0";
+    const Json document{{"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
+                        {"definitions", Json::object()},
+                        {"nodes", Json::array({el5sImage("spectrum")})}};
+    ZoneHarness h{document};
+    h.catalog["modules"][1]["operations"].push_back(el5sComputeCatalogEntry());
+    h.catalog["engine_shaders"] = Json::array();
+    h.open();
+    h.model.setComputeShaderChoices({reference});
+    // Unknown, the palette's old placement stands (no ports, one group).
+    CHECK(h.model.addNodeOpsIn({}, "render.compute", {}, Json{{"shader", reference}})
+              .back().at("node").at("parameters").at("dispatch") ==
+          Json{{"groups", Json::array({1, 1, 1})}});
+
+    h.model.askShaderInterface(reference);
+    auto asked = el5sAsked(h);
+    REQUIRE(asked.size() == 1);
+    CHECK(asked[0].second == Json{{"reference", reference}});
+    h.model.receiveRpcResult(asked[0].first, Json{{"status", "building"}}.dump());
+    CHECK(h.model.shaderInterfaceWaiting(reference));
+    h.model.poll();
+    CHECK(el5sAsked(h).empty());
+    std::this_thread::sleep_for(std::chrono::milliseconds{600});
+    h.model.poll();
+    asked = el5sAsked(h);
+    REQUIRE(asked.size() == 1);
+    h.model.receiveRpcResult(
+        asked[0].first,
+        el5sReady(reference, Json::array({Json{{"port", "h0"}, {"binding", 0}, {"type", "storage_image"},
+                                               {"format", "R32G32B32A32_SFLOAT"}},
+                                          Json{{"port", "previous"}, {"binding", 1}, {"type", "sampled_image"}}}))
+            .dump());
+    REQUIRE(h.model.shaderInterface(reference));
+    CHECK(h.model.shaderInterface(reference)->ready());
+    CHECK_FALSE(h.model.shaderInterfaceWaiting(reference));
+
+    REQUIRE(h.scene.addFromPalette({}, "render.compute", {}, Json{{"shader", reference}}));
+    const auto ops = h.commit();
+    REQUIRE(ops.size() == 2);
+    const auto &image = ops[0].at("node");
+    CHECK(image.at("op") == "render.image");
+    CHECK(image.at("id") == "render_compute__h0");
+    CHECK(image.at("parameters").at("format") == "R32G32B32A32_SFLOAT");
+    CHECK(image.at("parameters").at("usage") == Json::array({"STORAGE", "SAMPLED"}));
+    const auto &task = ops[1].at("node");
+    CHECK(task.at("op") == "render.compute");
+    CHECK(task.at("parameters").at("shader") == reference);
+    CHECK(task.at("parameters").at("dispatch") == Json{{"groups_from", {{"port", "h0"}}}});
+    CHECK(task.at("parameters").at("ports").at("h0").at("access") == "write");
+    CHECK(task.at("parameters").at("ports").at("h0").at("binding") == "storage");
+    CHECK_FALSE(task.at("parameters").at("ports").contains("previous"));
+    CHECK(task.at("inputs").at("h0") == Json{{"node", "render_compute__h0"}, {"port", "resource"}});
+    CHECK(task.at("outputs") == Json::array({"h0"}));
+
+    // The sampled image: an empty socket, declared as the line lands.
+    CHECK(h.model.computeOpenSockets({}, "render_compute") == std::vector<std::string>{"previous"});
+    const auto drawn = h.model.nodes({});
+    const auto compute = std::ranges::find(drawn, std::string{"render_compute"}, &PelicanStudio::GraphCanvasNode::id);
+    REQUIRE(compute != drawn.end());
+    const auto socket = std::ranges::find(compute->inputs, std::string{"previous"}, &PelicanStudio::GraphCanvasPort::port);
+    REQUIRE(socket != compute->inputs.end());
+    CHECK_FALSE(socket->connected);
+    REQUIRE(h.model.connectInput({}, "render_compute", "previous", "spectrum", "resource"));
+    const auto connect = h.commit();
+    REQUIRE(connect.size() == 2);
+    CHECK(connect[0].at("op") == "set_node_parameters");
+    CHECK(connect[0].at("parameters").at("ports").at("previous").at("binding") == "sampled");
+    CHECK(connect[0].at("parameters").at("ports").at("previous").at("access") == "read");
+    CHECK(connect[1] == Json{{"op", "set_input"}, {"scope", "root"}, {"node", "render_compute"},
+                             {"port", "previous"},
+                             {"source", {{"node", "spectrum"}, {"port", "resource"}}}});
+    CHECK(h.model.computeOpenSockets({}, "render_compute").empty());
+}
+
+// Decision 2: the Shader picked again. Asked first when the engine has not
+// read it; sent from poll once it has: the port of the same name keeps its
+// line, a new one gets its image, and a port the shader dropped loses the
+// lines read from it.
+TEST_CASE("EL-5s a compute node's Shader picked again makes its ports the new shader's",
+          "[devstudio][graph-canvas][scene][el5s]") {
+    (void)application();
+    const Json write{{"kind", "image"},
+                     {"type", {{"semantic", "pelican.render.color_signal@1"},
+                               {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}}},
+                     {"access", "write"}, {"binding", "storage"}};
+    Json read = write;
+    read["access"] = "read";
+    read["binding"] = "sampled";
+    const Json document{
+        {"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
+        {"definitions", Json::object()},
+        {"nodes", Json::array({el5sImage("task__keep"), el5sImage("task__gone"),
+                               Json{{"id", "task"}, {"op", "render.compute"},
+                                    {"parameters", {{"shader", "project://shaders/a"},
+                                                    {"dispatch", {{"groups_from", {{"port", "keep"}}}}},
+                                                    {"ports", {{"keep", write}, {"gone", write}}}}},
+                                    {"inputs", {{"keep", {{"node", "task__keep"}, {"port", "resource"}}},
+                                                {"gone", {{"node", "task__gone"}, {"port", "resource"}}}}},
+                                    {"outputs", {"keep", "gone"}}},
+                               Json{{"id", "reader"}, {"op", "render.compute"},
+                                    {"parameters", {{"shader", "project://shaders/r"},
+                                                    {"dispatch", {{"groups", {1, 1, 1}}}},
+                                                    {"ports", {{"from_gone", read}}}}},
+                                    {"inputs", {{"from_gone", {{"node", "task"}, {"port", "gone"}}}}},
+                                    {"outputs", Json::array()}}})}};
+    ZoneHarness h{document};
+    h.catalog["modules"][1]["operations"].push_back(el5sComputeCatalogEntry());
+    h.open();
+    const std::string reference = "project://shaders/b";
+    REQUIRE(h.model.setComputeShader({}, "task", reference));
+    auto asked = el5sAsked(h);
+    REQUIRE(asked.size() == 1);
+    CHECK(asked[0].second.at("reference") == reference);
+    h.model.receiveRpcResult(
+        asked[0].first,
+        el5sReady(reference, Json::array({Json{{"port", "keep"}, {"binding", 0}, {"type", "storage_image"}},
+                                          Json{{"port", "fresh"}, {"binding", 1}, {"type", "storage_image"},
+                                               {"format", "R8_UNORM"}}}))
+            .dump());
+    h.model.poll();
+    const auto ops = h.commit(false);
+    REQUIRE(ops.size() == 3);
+    CHECK(ops[0] == Json{{"op", "set_input"}, {"scope", "root"}, {"node", "reader"}, {"port", "from_gone"},
+                         {"source", nullptr}});
+    CHECK(ops[1].at("op") == "add_node");
+    CHECK(ops[1].at("node").at("id") == "task__fresh");
+    CHECK(ops[1].at("node").at("parameters").at("format") == "R8_UNORM");
+    CHECK(ops[2].at("op") == "replace_node");
+    const auto &task = ops[2].at("node");
+    CHECK(task.at("parameters").at("shader") == reference);
+    CHECK(task.at("parameters").at("ports").at("keep") == write);
+    CHECK(task.at("parameters").at("ports").contains("fresh"));
+    CHECK_FALSE(task.at("parameters").at("ports").contains("gone"));
+    CHECK(task.at("inputs") ==
+          Json{{"keep", {{"node", "task__keep"}, {"port", "resource"}}},
+               {"fresh", {{"node", "task__fresh"}, {"port", "resource"}}}});
+    CHECK(task.at("outputs") == Json::array({"keep", "fresh"}));
+    CHECK(task.at("parameters").at("dispatch") == Json{{"groups_from", {{"port", "keep"}}}});
+}
+
+// Decision 3: a stage the engine could not compile on its own is said in the
+// node's fields in one sentence, with Copy message for the whole message;
+// a message that reads like a missing define says the reflection passes none.
+TEST_CASE("EL-5s a compute shader's reflection error is said in its fields with Copy message",
+          "[devstudio][graph-canvas][scene][el5s]") {
+    (void)application();
+    const std::string reference = "project://shaders/needs_define";
+    const Json document{{"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
+                        {"definitions", Json::object()},
+                        {"nodes", Json::array({Json{{"id", "task"}, {"op", "render.compute"},
+                                                    {"parameters", {{"shader", reference},
+                                                                    {"dispatch", {{"groups", {1, 1, 1}}}},
+                                                                    {"ports", Json::object()}}},
+                                                    {"outputs", Json::array()}}})}};
+    ZoneHarness h{document};
+    h.catalog["modules"][1]["operations"].push_back(el5sComputeCatalogEntry());
+    h.open();
+    const std::string message =
+        "project://shaders/needs_define.comp:9: error: 'TILE' : undeclared identifier\nERROR: 1 compilation errors";
+    PelicanStudio::GraphCanvasComputeFields fields{h.model, {}};
+    const auto drawn = h.model.nodes({});
+    REQUIRE(drawn.size() == 1);
+    fields.showNode(&drawn[0], {});
+    // Shown, it asks for the shader's interface.
+    auto asked = el5sAsked(h);
+    REQUIRE(asked.size() == 1);
+    auto *status = fields.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasCompute.status"));
+    auto *copy = fields.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasCompute.copyMessage"));
+    REQUIRE(status != nullptr);
+    REQUIRE(copy != nullptr);
+    CHECK(copy->isHidden());
+    h.model.receiveRpcResult(asked[0].first,
+                             Json{{"status", "ready"},
+                                  {"reference", reference},
+                                  {"stages", Json::array({Json{{"reference", reference},
+                                                               {"stage", "compute"},
+                                                               {"reflection_error", message}}})}}
+                                 .dump());
+    fields.showNode(&drawn[0], {});
+    CHECK_FALSE(status->isHidden());
+    CHECK(status->text().contains(QStringLiteral("'TILE' : undeclared identifier")));
+    CHECK(status->text().contains(QString::fromUtf8(GraphCanvasModel::kReflectionDefinesHint.data(),
+                                                    static_cast<int>(GraphCanvasModel::kReflectionDefinesHint.size()))));
+    CHECK_FALSE(status->text().contains(QStringLiteral("compilation errors")));
+    CHECK_FALSE(copy->isHidden());
+    copy->click();
+    CHECK(QGuiApplication::clipboard()->text() == QString::fromStdString(message));
+    // A message that is not about a missing name says nothing of defines.
+    CHECK(GraphCanvasModel::reflectionErrorSentence(reference, "x.comp:3: error: syntax error")
+              .find(GraphCanvasModel::kReflectionDefinesHint) == std::string::npos);
+}
+
+// Decision 4: the shader file changed. Every compute node's stem is asked
+// again with refresh; an answer whose ports differ is a change and a notice
+// line ("+ new / − removed"); Update ports makes the ports the shader's.
+TEST_CASE("EL-5s a compute shader whose ports changed on disk is said, and Update ports follows it",
+          "[devstudio][graph-canvas][scene][el5s]") {
+    (void)application();
+    const std::string reference = "project://shaders/a";
+    const Json write{{"kind", "image"},
+                     {"type", {{"semantic", "pelican.render.color_signal@1"},
+                               {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}}},
+                     {"access", "write"}, {"binding", "storage"}};
+    const Json document{{"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
+                        {"definitions", Json::object()},
+                        {"nodes", Json::array({el5sImage("task__keep"),
+                                               Json{{"id", "task"}, {"op", "render.compute"},
+                                                    {"parameters", {{"shader", reference},
+                                                                    {"dispatch", {{"groups_from", {{"port", "keep"}}}}},
+                                                                    {"ports", {{"keep", write}}}}},
+                                                    {"inputs", {{"keep", {{"node", "task__keep"}, {"port", "resource"}}}}},
+                                                    {"outputs", {"keep"}}}})}};
+    ZoneHarness h{document};
+    h.catalog["modules"][1]["operations"].push_back(el5sComputeCatalogEntry());
+    h.open();
+    const auto keep = Json{{"port", "keep"}, {"binding", 0}, {"type", "storage_image"}};
+    h.model.askShaderInterface(reference);
+    auto asked = el5sAsked(h);
+    REQUIRE(asked.size() == 1);
+    h.model.receiveRpcResult(asked[0].first, el5sReady(reference, Json::array({keep})).dump());
+    // Nothing changed: no notice.
+    h.model.refreshComputeShaderInterfaces();
+    asked = el5sAsked(h);
+    REQUIRE(asked.size() == 1);
+    CHECK(asked[0].second == Json{{"reference", reference}, {"refresh", true}});
+    h.model.receiveRpcResult(asked[0].first, el5sReady(reference, Json::array({keep})).dump());
+    CHECK(h.model.computePortChanges().empty());
+    // The file now declares one more port: building first, then the answer.
+    h.model.refreshComputeShaderInterfaces();
+    asked = el5sAsked(h);
+    REQUIRE(asked.size() == 1);
+    h.model.receiveRpcResult(asked[0].first, Json{{"status", "building"}}.dump());
+    CHECK(h.model.computePortChanges().empty());
+    std::this_thread::sleep_for(std::chrono::milliseconds{600});
+    h.model.poll();
+    asked = el5sAsked(h);
+    REQUIRE(asked.size() == 1);
+    CHECK(asked[0].second == Json{{"reference", reference}});
+    h.model.receiveRpcResult(
+        asked[0].first,
+        el5sReady(reference, Json::array({keep, Json{{"port", "foam"}, {"binding", 1}, {"type", "storage_image"}}}))
+            .dump());
+    REQUIRE(h.model.computePortChanges().size() == 1);
+    CHECK(h.model.computePortChanges()[0] ==
+          PelicanStudio::GraphCanvasPortChange{"", "task", reference, {"foam"}, {}});
+    CHECK(h.model.editNotice().message == reference + " changed its ports: + foam");
+    // Nothing is written until Update ports.
+    CHECK(h.answerReads().empty());
+    REQUIRE(h.model.updateComputePorts());
+    const auto ops = h.commit(false);
+    REQUIRE(ops.size() == 2);
+    CHECK(ops[0].at("node").at("id") == "task__foam");
+    CHECK(ops[1].at("op") == "replace_node");
+    CHECK(ops[1].at("node").at("outputs") == Json::array({"keep", "foam"}));
+    CHECK(h.model.computePortChanges().empty());
+}
+
 // Decision 3: "the graph pass that draws it runs after this pass" only when a
 // graph node's pass writes the image the refusal names.
 TEST_CASE("UX-5d a refusal names a graph pass's image only when a graph pass writes it",
@@ -9494,4 +9800,276 @@ TEST_CASE("UX-7 decision 7: a node the document gains is drawn while a pill's ed
     CHECK(nodeItem(scene, QStringLiteral("sea__color")) != nullptr);
     // The editor is still open, over the new drawing.
     CHECK(scene.editingInline());
+}
+
+// --- UX-8.
+
+namespace {
+
+Json ux8CurveDocument() {
+    return {{"schema", "pelican.graph"},
+            {"version", 1},
+            {"outputs", Json::object()},
+            {"definitions", Json::object()},
+            {"nodes",
+             Json::array({{{"id", "scene_time"}, {"op", "value.input"},
+                           {"parameters", {{"name", "scene_time"}}},
+                           {"outputs", Json::array({"value"})}},
+                          {{"id", "curve"}, {"op", "value.curve"},
+                           {"parameters",
+                            {{"keys", Json::array({{{"time", 0.0}, {"value", 0.0}},
+                                                   {{"time", 1.0}, {"value", 1.0}}})}}},
+                           {"inputs", {{"time", {{"node", "scene_time"}, {"port", "value"}}}}},
+                           {"outputs", Json::array({"value"})}}})}};
+}
+
+// The keys the `count`th edit wrote.
+Json ux8Keys(const Ux2Tab &tab, int count) {
+    const auto ops = ux7Ops(tab, count);
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].at("op") == "set_node_parameters");
+    return ops[0].at("parameters").at("keys");
+}
+
+void ux8Mouse(QWidget *widget, QEvent::Type type, const QPointF &at,
+              Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+    QMouseEvent event{type, at, widget->mapToGlobal(at), Qt::LeftButton,
+                      type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton,
+                      modifiers};
+    QCoreApplication::sendEvent(widget, &event);
+}
+
+} // namespace
+
+TEST_CASE("UX-8 decision 4: a curve's Keys table, its small curve and the Timeline's marks each "
+          "write one edit",
+          "[devstudio][graph-canvas][scene][ux8]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = ux8CurveDocument();
+    tab.read(document, "ux8-k-0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    tab.widget->scene().selectNode("curve");
+    QCoreApplication::processEvents();
+
+    auto *table = tab.field<QTableWidget>("pelican.graphCanvasCurve.keys");
+    REQUIRE(table->isVisible());
+    CHECK(table->rowCount() == 2);
+    // One row's value, typed: one edit with the whole list.
+    auto *value = tab.field<QDoubleSpinBox>("pelican.graphCanvasCurve.key1.value");
+    value->setValue(0.9);
+    Q_EMIT value->editingFinished();
+    QCoreApplication::processEvents();
+    CHECK(ux8Keys(tab, 1) == Json::array({{{"time", 0.0}, {"value", 0.0}},
+                                          {{"time", 1.0}, {"value", 0.9}}}));
+    document["nodes"][1]["parameters"]["keys"][1]["value"] = 0.9;
+    tab.commit(document, "ux8-k-1");
+    QCoreApplication::processEvents();
+
+    // The small curve: key 0 dragged right with Shift moves its time only.
+    tab.widget->scene().selectNode("curve");
+    QCoreApplication::processEvents();
+    // No Q_OBJECT of its own: found as the widget it is.
+    auto *graph = static_cast<PelicanStudio::GraphCanvasCurveGraph *>(
+        tab.field<QWidget>("pelican.graphCanvasCurve.graph"));
+    REQUIRE(graph->keys().size() == 2);
+    const auto start = graph->keyPoint(0);
+    ux8Mouse(graph, QEvent::MouseButtonPress, start);
+    ux8Mouse(graph, QEvent::MouseMove, start + QPointF{30.0, -20.0}, Qt::ShiftModifier);
+    ux8Mouse(graph, QEvent::MouseButtonRelease, start + QPointF{30.0, -20.0}, Qt::ShiftModifier);
+    QCoreApplication::processEvents();
+    const auto dragged = ux8Keys(tab, 2);
+    CHECK(dragged[0].at("time").get<double>() > 0.0);
+    CHECK(dragged[0].at("value") == 0.0);
+    CHECK(dragged[1] == Json{{"time", 1.0}, {"value", 0.9}});
+    document["nodes"][1]["parameters"]["keys"] = dragged;
+    tab.commit(document, "ux8-k-2");
+    QCoreApplication::processEvents();
+
+    // The Timeline: key 1's mark dragged left, to the middle of the strip.
+    tab.widget->scene().selectNode("curve");
+    tab.field<QPushButton>("pelican.graphTimelineToggle")->click();
+    QCoreApplication::processEvents();
+    auto *strip = tab.field<QWidget>("pelican.graphTimeline");
+    REQUIRE(strip->isVisible());
+    const qreal y = strip->height() - 10.0;
+    const qreal right = strip->width() - 1.0;
+    ux8Mouse(strip, QEvent::MouseButtonPress, QPointF{right, y});
+    ux8Mouse(strip, QEvent::MouseMove, QPointF{right * 0.75, y});
+    ux8Mouse(strip, QEvent::MouseButtonRelease, QPointF{right * 0.75, y});
+    QCoreApplication::processEvents();
+    const auto moved = ux8Keys(tab, 3);
+    CHECK(std::abs(moved[1].at("time").get<double>() - 0.75) < 0.02);
+    CHECK(moved[1].at("value") == 0.9);
+    // A press elsewhere on the strip is a scrub, as before.
+    CHECK(tab.reads("set_time") == 0);
+    ux8Mouse(strip, QEvent::MouseButtonPress, QPointF{right * 0.5, 10.0});
+    ux8Mouse(strip, QEvent::MouseButtonRelease, QPointF{right * 0.5, 10.0});
+    CHECK(tab.reads("set_time") == 1);
+    CHECK(tab.reads("edit_graph_document") == 3);
+}
+
+TEST_CASE("UX-8 decisions 7 and 8: audio.volume asks which voice it drives; what one addition "
+          "brings beside it is placed clear of what is drawn",
+          "[devstudio][graph-canvas][scene][ux8]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = ux8CurveDocument();
+    document["nodes"].push_back({{"id", "voice"}, {"op", "audio.playback"},
+                                 {"parameters", {{"asset", "project://assets/audio/pulse.wav"}}},
+                                 {"inputs", {{"time", {{"node", "scene_time"}, {"port", "value"}}}}},
+                                 {"outputs", Json::array({"voice"})}});
+    // The root draws its value and audio nodes too (Render only to begin with).
+    tab.field<QCheckBox>("pelican.graphCanvasShow.value")->setChecked(true);
+    tab.field<QCheckBox>("pelican.graphCanvasShow.audio")->setChecked(true);
+    tab.read(document, "ux8-p-0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    auto &model = tab.widget->model();
+
+    PelicanStudio::GraphCanvasRequiredDialog ask{model, {}, "audio.volume"};
+    REQUIRE(ask.asks());
+    auto *voice = ask.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRequired.voice"));
+    REQUIRE(voice != nullptr);
+    CHECK(voice->currentText() == QStringLiteral("voice"));
+    CHECK(ask.seed() == Json{{"parameters", Json::object()},
+                             {"inputs", {{"voice", {{"node", "voice"}, {"port", "voice"}}}}}});
+
+    // Placed: the sink and the constant on its value, which lands left of it.
+    auto &scene = tab.widget->scene();
+    REQUIRE(scene.addFromPalette({}, "audio.volume", {}, ask.seed()));
+    QCoreApplication::processEvents();
+    const auto ops = ux7Ops(tab, 1);
+    REQUIRE(ops.size() == 2);
+    auto placed = document;
+    for (const auto &op : ops) placed["nodes"].push_back(op.at("node"));
+    tab.commit(placed, "ux8-p-1");
+    QCoreApplication::processEvents();
+    std::vector<std::pair<QString, QRectF>> boxes;
+    for (const auto &node : placed.at("nodes")) {
+        const auto id = QString::fromStdString(node.at("id").get<std::string>());
+        auto *item = nodeItem(scene, id);
+        REQUIRE(item != nullptr);
+        boxes.emplace_back(id, item->sceneBoundingRect());
+    }
+    for (std::size_t a = 0; a < boxes.size(); ++a)
+        for (std::size_t b = a + 1; b < boxes.size(); ++b) {
+            INFO(boxes[a].first.toStdString() << " / " << boxes[b].first.toStdString());
+            CHECK_FALSE(boxes[a].second.intersects(boxes[b].second));
+        }
+    const auto constant = QString::fromStdString(ops[0].at("node").at("id").get<std::string>());
+    CHECK(nodeItem(scene, constant)->sceneBoundingRect().right() <
+          nodeItem(scene, QStringLiteral("audio_volume"))->sceneBoundingRect().left());
+}
+
+TEST_CASE("UX-8 decisions 10 and 11: New definition opens the definition it made; a loop's body is "
+          "drawn when its loop is gone",
+          "[devstudio][graph-canvas][scene][ux8]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = ux8CurveDocument();
+    tab.read(document, "ux8-d-0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    auto *action = tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvas.newDefinition"));
+    REQUIRE(action != nullptr);
+    action->trigger();
+    QCoreApplication::processEvents();
+    auto *name = tab.field<QLineEdit>("pelican.graphCanvasDefinitionName");
+    CHECK(name->text() == QStringLiteral("definition"));
+    name->setText(QStringLiteral("loop_body"));
+    tab.field<QPushButton>("pelican.graphCanvasDefinitionApply")->click();
+    QCoreApplication::processEvents();
+    const auto ops = ux7Ops(tab, 1);
+    CHECK(ops == Json::array({{{"op", "add_definition"}, {"name", "loop_body"},
+                               {"definition", {{"nodes", Json::array()},
+                                               {"outputs", Json::object()}}}}}));
+    document["definitions"]["loop_body"] = {{"nodes", Json::array()}, {"outputs", Json::object()}};
+    tab.commit(document, "ux8-d-1");
+    QCoreApplication::processEvents();
+    auto *scopes = tab.field<QComboBox>("pelican.graphCanvasScope");
+    CHECK(scopes->currentData().toString() == QStringLiteral("loop_body"));
+    auto &scene = tab.widget->scene();
+    auto *view = tab.field<QGraphicsView>("pelican.graphCanvasView");
+    // Decision 11 (GB-4): the empty body was fitted to nothing; the first
+    // node it gains is brought into view rather than left outside it.
+    view->scale(4.0, 4.0);
+    view->centerOn(QPointF{-5000.0, -5000.0});
+    document["definitions"]["loop_body"]["nodes"].push_back(
+        {{"id", "gain"}, {"op", "value.constant"}, {"parameters", {{"value", 2.0}}},
+         {"outputs", Json::array({"value"})}});
+    tab.field<QPushButton>("pelican.graphCanvasRefresh")->click();
+    tab.read(document, "ux8-d-1b");
+    QCoreApplication::processEvents();
+    REQUIRE(nodeItem(scene, QStringLiteral("gain")) != nullptr);
+    CHECK(view->mapToScene(view->viewport()->rect())
+              .boundingRect()
+              .intersects(nodeItem(scene, QStringLiteral("gain"))->sceneBoundingRect()));
+
+    // GB-4: a loop runs the body, the loop is deleted, and the body is
+    // chosen in Scope again: its nodes are drawn and in view.
+    scopes->setCurrentIndex(scopes->findData(QString{}));
+    QCoreApplication::processEvents();
+    auto with_loop = document;
+    with_loop["nodes"].push_back({{"id", "loop"}, {"op", "graph.loop"},
+                                  {"parameters", {{"over", {{"range", {{"count", 1}}}}},
+                                                  {"branches", Json::array({{{"body", "loop_body"}}})}}},
+                                  {"outputs", Json::array()}});
+    tab.field<QPushButton>("pelican.graphCanvasRefresh")->click();
+    tab.read(with_loop, "ux8-d-2");
+    QCoreApplication::processEvents();
+    scopes->setCurrentIndex(scopes->findData(QStringLiteral("loop_body")));
+    QCoreApplication::processEvents();
+    scopes->setCurrentIndex(scopes->findData(QString{}));
+    QCoreApplication::processEvents();
+    tab.field<QPushButton>("pelican.graphCanvasRefresh")->click();
+    tab.read(document, "ux8-d-3");
+    QCoreApplication::processEvents();
+    scopes->setCurrentIndex(scopes->findData(QStringLiteral("loop_body")));
+    QCoreApplication::processEvents();
+    auto *gain = nodeItem(scene, QStringLiteral("gain"));
+    REQUIRE(gain != nullptr);
+    const auto visible = view->mapToScene(view->viewport()->rect()).boundingRect();
+    CHECK(visible.intersects(gain->sceneBoundingRect()));
+}
+
+TEST_CASE("UX-8 decision 2: a pass's Buffers list its shader's buffer bindings, and + Buffer port "
+          "offers the names its shader reads through the port header",
+          "[devstudio][graph-canvas][scene][ux8]") {
+    (void)application();
+    const auto root = std::filesystem::temp_directory_path() / "pelican_ux8_buffers";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "shaders");
+    {
+        std::ofstream shader{root / "shaders" / "level.frag", std::ios::binary};
+        shader << "#include \"pelican_resource_ports.glsl\"\n"
+                  "#ifdef PELICAN_RESOURCE_PORT_level\n"
+                  "float level = pelican_load_level(0u);\n#endif\n";
+    }
+    Ux2Tab tab{false};
+    tab.widget->setProjectRoot(root);
+    auto pass = ux2Pass();
+    pass["shader"]["fragment"] = "project://shaders/level";
+    auto document = ux2Document(ux2Image(), pass);
+    document["nodes"].push_back({{"id", "level_buffer"}, {"op", "render.buffer"},
+                                 {"parameters", {{"element", "float"}, {"size", 4}}},
+                                 {"outputs", Json::array({"resource"})}});
+    tab.read(document, "ux8-b-0");
+    tab.answer("get_graph_catalog", ux7Catalog());
+    tab.widget->scene().selectNode("shade");
+    QCoreApplication::processEvents();
+    auto *list = tab.field<QLabel>("pelican.graphCanvasBuffers.list");
+    REQUIRE(list->isVisible());
+    tab.field<QPushButton>("pelican.graphCanvasBuffers.add")->click();
+    QCoreApplication::processEvents();
+    auto *name = tab.field<QComboBox>("pelican.graphCanvasBuffers.name");
+    CHECK(name->currentText() == QStringLiteral("level"));
+    auto *source = tab.field<QComboBox>("pelican.graphCanvasBuffers.source");
+    CHECK(source->currentData().toString() == QStringLiteral("level_buffer"));
+    tab.field<QPushButton>("pelican.graphCanvasBuffers.apply")->click();
+    QCoreApplication::processEvents();
+    const auto ops = ux7Ops(tab, 1);
+    REQUIRE(ops.size() == 2);
+    CHECK(ops[0].at("parameters").at("ports").at("level") ==
+          Json{{"kind", "buffer"}, {"access", "read"}, {"element", "float"}});
+    CHECK(ops[1].at("port") == "level");
+    std::filesystem::remove_all(root);
 }

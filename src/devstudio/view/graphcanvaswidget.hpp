@@ -368,6 +368,8 @@ class GraphCanvasScene final : public QGraphicsScene {
                         QAction *tie = nullptr, QAction *untie = nullptr);
     // RL-1s, decision 5: "Reload from disk", last in the canvas menu.
     void setReloadFromDiskAction(QAction *action) { reload_from_disk_action_ = action; }
+    // UX-8, decision 10: "New definition…", beside the named additions.
+    void setNewDefinitionAction(QAction *action) { new_definition_action_ = action; }
 
     // --- N-6: the placement, and the gestures that change it.
 
@@ -748,6 +750,7 @@ class GraphCanvasScene final : public QGraphicsScene {
     QAction *tie_action_ = nullptr;
     QAction *untie_action_ = nullptr;
     QAction *reload_from_disk_action_ = nullptr;
+    QAction *new_definition_action_ = nullptr;
     QAction *add_loop_action_ = nullptr;
     QAction *add_fullscreen_action_ = nullptr;
     QAction *rename_definition_action_ = nullptr;
@@ -837,6 +840,10 @@ class GraphCanvasScene final : public QGraphicsScene {
     // scope. `op` says how large the new one will be (a loop is a zone).
     void placeNewNode(const std::string &scope, const std::string &id,
                       const std::string &op = {});
+    // UX-8, decision 8: the nodes one addition brings beside it (a clock, a
+    // constant, an image), left of `main` and clear of everything drawn.
+    void placeCompanions(const std::string &scope, const std::string &main,
+                         const std::vector<std::string> &companions);
     void afterEdit(bool submitted);
     // LP-4d1. A scene position in a scope's own coordinates: a zone's body is
     // drawn inside an item, the scope on screen is not.
@@ -945,6 +952,13 @@ class GraphCanvasWidget final : public QWidget {
     // Q-8. The project whose UI document names the nodes a ui.* sink can
     // write. Read again whenever the list is about to be offered.
     void setProjectRoot(const std::filesystem::path &project_root);
+    // UX-8, decision 9: File > Import Sound… and the Sound list's Import…:
+    // the files picked (or dropped) are copied into the project's
+    // assets/audio, `_2` beside a name already there, and the first is
+    // played by the picked voice. chooseSoundsToImport opens the dialog from
+    // the event loop.
+    void chooseSoundsToImport();
+    void importSounds(const std::vector<std::filesystem::path> &files);
     // Q-13. The rendering document's digest, shared with the other panels
     // that edit it: the tab says which revision it read, and reads the
     // document again when another panel's commit moved it.

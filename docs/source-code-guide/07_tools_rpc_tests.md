@@ -429,13 +429,13 @@ attachment ops、resource use、material filter、前後 barrier は折りたた
 
 ### 共通グラフの 3 層(N-1 / N-1b / N-2)
 
-[`GraphCanvasModel`](../../src/devstudio/model/graphcanvasmodel.hpp#L845) は **Qt に依存しません**。
+[`GraphCanvasModel`](../../src/devstudio/model/graphcanvasmodel.hpp#L853) は **Qt に依存しません**。
 `GraphAttachmentModel` と同じ「request / read の 2 slot」形で、呼び手が `takeRpcRequests()` を drain し、
 好きな transport で送り、`receiveRpcResult()` / `receiveRpcFailure()` で答えを戻します。slot が 2 つあるのは、
 **値の問い合わせが次の文書再取得を待たせないため**で、遅れて届いた古い答えは捨てられます。
 提供するのは scope 一覧(`root` + definition 名)、scope ごとの node と edge、root scope の `graph.instance` へ
 重ねる値の overlay、そして `contentRevision()` / `reportRevision()` の 2 つの世代です
-([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L1496))。編集側は 6 つの操作
+([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L1504))。編集側は 6 つの操作
 (`connectInput` / `disconnectInput` / `setNodeParameter` / `removeNode` / `setNodeLabel` / `addNode`)で、
 **どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L2145))。
 `addNodeOps()` だけは複数 op を返します —— 必須の scalar 入力を持つ操作は、未接続のままでは engine が受け取らないので、
@@ -459,7 +459,7 @@ proxy target を作ります —— view の `.cpp` を直接 compile する sce
 ✅VI-3b から、同じ target に engine の `src/core/resources/passthrough.frag` の byte も入ります。`b_embed` はこの directory の下の
 file しか取らないので、[custom command](../../src/devstudio/resources/CMakeLists.txt#L23) が自前の script
 [`embed_engine_shader.cmake`](../../src/devstudio/resources/embed_engine_shader.cmake) で C++ の配列を生成し(engine の file が変われば作り直す)、
-Studio は [`engineFragmentSource()`](../../src/devstudio/view/fullscreenshadertemplate.cpp#L741) で引きます。Fix sockets と Open the shader が
+Studio は [`engineFragmentSource()`](../../src/devstudio/view/fullscreenshadertemplate.cpp#L765) で引きます。Fix sockets と Open the shader が
 `engine://passthrough` を project に複製するときの中身で、repo に写しは置きません(利用者向けは [manual 第13章](../manual/13_editor.md) の「engine://passthrough は project に複製してから直します」)。
 抽出が Frame Plan の挙動を変えていないことは、`devstudio_frameplan_graph_test`(2,133 assertion)と
 `devstudio_fullscreen_pass_test`(803 assertion)が**全数不変**であることで押さえました
@@ -473,7 +473,7 @@ heading_text, dim_text, pill_bg}, domain_tint, source_tint}` で、描画側は�
 (`pelican.studio.themes` v1、`light` / `dark` の 2 preset で既定は `dark`)なので、3 つ目のテーマを足すのに
 C++ は要りません。切り替えの通知は Qt signal ではなく**素の関数リスト**
 ([理由はヘッダのコメント](../../src/devstudio/view/studiotheme.hpp#L110)) —— scene test が view の `.cpp` を
-moc 無しで compile するためで、`GraphCanvasWidget` は [repopulate](../../src/devstudio/view/graphcanvaswidget.cpp#L1363)、
+moc 無しで compile するためで、`GraphCanvasWidget` は [repopulate](../../src/devstudio/view/graphcanvaswidget.cpp#L1388)、
 Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphics.cpp#L2300) で追随します
 (item は作られた時の色を抱えるので、描き直す以外に追随する道がありません)。**ソケットの型別の fill だけは
 テーマから引きません** —— 型の識別色は `graph_socket_styles.json` のままで、テーマが決めるのは縁と
@@ -481,7 +481,7 @@ Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphic
 
 [`GraphCanvasWidget`](../../src/devstudio/view/graphcanvaswidget.hpp) と `GraphCanvasScene` が view です。
 上段は `Scope:` の combo とパンくず、`Values from:` の combo、`Refresh`
-([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L4652))、本体は左がキャンバス、右が
+([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L4681))、本体は左がキャンバス、右が
 `Field` / `Value` の詳細表です。node は見出し帯 + 出力欄 + 入力欄の 3 段で、見出しの三角はソケット欄を
 折り畳みます(折り畳むと辺は見出し帯の左右中央 1 点へ集まります)。編集はすべて**即時**で Apply ボタンがなく、
 ソケット間ドラッグ = `set_input`、辺の `Delete` = `set_input{null}`、値の帯のその場編集 =
@@ -491,7 +491,7 @@ node の `Delete` = `remove_node` です。位置と折り畳みは `(scope, nod
 engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view/graphcanvasreadcapability.hpp#L34) が
 名前で持つ 5 つ(`get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` /
 `get_edit_result`)だけで、それ以外は `The graph canvas cannot issue %1.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L5683))。規範は struct の宣言そのもの
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L5722))。規範は struct の宣言そのもの
 ([メンバ 5 本](../../src/devstudio/view/graphcanvasreadcapability.hpp#L43))で、その上の宣言コメントは
 **読みを 3 つと数えたまま**です —— メンバは `requestGraphInstances` / `requestGraphCatalog` /
 `requestGraphValues` / `requestEditResult` の 4 読み + `requestEditGraphDocument` の 1 編集なので、
@@ -668,6 +668,8 @@ Studio の target を必要としません)。
 | `devstudio_frameplan_test` / `devstudio_frameplan_graph_test`(2,133 assertion)/ `devstudio_fullscreen_pass_test`(803 assertion) | Frame Plan の投影とノードキャンバス、pass 著作フォーム |
 | `devstudio_pass_forms_test`(`QT_OFFSCREEN`。✅UX-4a) | `passforms/` の 5 つの部品。部品ごとに 1 case で、受けた値をそのまま返すこと(知らない鍵も)、選んだ値がその鍵になること、`ShaderDefinesForm` が engine と同じ文で断ること(case の名前から) |
 | `devstudio_rendering_settings_test`(`QT_OFFSCREEN`。✅RSX) | `rendereditcompletion` の読み(`restart_required` で再起動の action が呼ばれ、Render Features が live に載ったと言わない)と、Rendering settings タブ(root のキーを読む、変更ごとに `edit_rendering_keys` 1 回、preset の root が断るキーを押せなくする) |
+| `devstudio_render_reload_test`(Qt を使わない。✅RL-1s) | `RenderDocumentReload`: 見張る file(`engine://` を除く)、Studio の commit と同じ digest なら頼まないこと、`reload_busy` の後にもう一度頼むこと、committed / `no_change` / 拒否 / `restart_required` の notice と hook、読み直しで render の編集の履歴が切れること、拒否の間の `external_modification` の 1 文(case の名前から) |
+| `devstudio_plan_perf_test`(Qt を使わない。✅UX-6b) | `PlanPerfModel`: 合計の 1 行と node ごとの時間、世代が 60 frame になってからの前後の 1 行、ST-1 の `node_averages` を sample の和の代わりに読むこと(case の名前から) |
 | `devstudio_graphattachment_test` | 装着・instance 入力の mode・4 導線が作る op 列 |
 | `devstudio_graphcanvas_test`(139 assertion) | `GraphCanvasModel`。**対照**は「reply から `definitions` を落とす」「catalog を返さない」「値の overlay を撤去する」の 3 変異 |
 | `devstudio_graphcanvas_scene_test`(62 assertion、`QT_OFFSCREEN`) | `GraphCanvasScene`。**対照**は「column を固定にする」「位置保持を撤去」「消えた node の位置を prune しない」「double-click を撤去」。N-2 で 8 case が加わり、その対照は「`canConnect` を常に true」「折り畳みを無効化」「parameters の全 key を送る」 |
@@ -680,8 +682,11 @@ Studio の target を必要としません)。
 
 ここから、閉じた穴と残っている穴が読めます。
 
-- **Studio は `get_status` を呼びません**(`src/devstudio` に呼び出しが 1 つもありません)。AG-3a が足した
-  `get_status.animation` を Studio の画面で見る経路はまだありません(AG-3b)。
+- **Studio は `get_status` を呼びます**(この節を書いた当時は呼び出しが 1 つもありませんでした)。今の呼び手は、Graph タブの値の読み
+  (AG-3b の Timeline。`get_status.animation` もここで読みます)、Frame Plan、Play の帯(PM-3a)、自動化面の `wait_engine`、
+  viewport 自身(Q-4 の「engine が答えた」の確認)、
+  ✅UX-6b の `PlanPerfHub` です(`src/devstudio` を `get_status` で grep したもの)。✅UX-7 から viewport が返事を 1 回だけ parse して
+  `engineStatusParsed` で配ります(manual 第13章 §13.5 の「`get_status` の返事は 1 回だけ parse します」)。
 - **authoring の e2e は Q-1 で 1 本通りました。**`studio_scenario_graph_edit_roundtrip` が、実物の窓の値の帯を
   click → type → Enter して engine に届かせ、別 project へ切り替えて戻る(= engine がディスクから読み直す)ところまで
   1 本で通します。**それ以外の authoring 側 Studio テストは今も canned reply のハーネスと mock の往復**で、
@@ -752,7 +757,7 @@ transport が socket ではなく stream interface なのがポイントです�
 
 キュー容量は [`defaultWindowedRpcQueueCapacity = 64`](../../src/core/communication/rpcserver.hpp#L179) です。溢れたリクエストには reader スレッドが即座に `-32000` を返します(`data.reason == "busy"`)。
 
-[`JsonRpcHandlerError`](../../src/core/communication/rpcserver.hpp#L37) には構造化 `data` が付きました([3 引数コンストラクタ](../../src/core/communication/rpcserver.hpp#L44)、取得は [`data()`](../../src/core/communication/rpcserver.hpp#L49))。`capture_gpu` 失敗時の実例です([`EngineRpcEndpoint::EngineRpcEndpoint()`](../../src/core/communication/rpcserver.cpp#L2686))。
+[`JsonRpcHandlerError`](../../src/core/communication/rpcserver.hpp#L37) には構造化 `data` が付きました([3 引数コンストラクタ](../../src/core/communication/rpcserver.hpp#L44)、取得は [`data()`](../../src/core/communication/rpcserver.hpp#L49))。`capture_gpu` 失敗時の実例です([`EngineRpcEndpoint::EngineRpcEndpoint()`](../../src/core/communication/rpcserver.cpp#L2690))。
 
 ```cpp
 throw JsonRpcHandlerError{
@@ -796,7 +801,7 @@ engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/commu
 | `ack_modal_transform` | [modal ack](../../src/core/communication/rpcserver.cpp#L2555) | operation / revision が一致する modal transform snapshot を acknowledge する |
 | `query_gizmo_handle` | [状態なし hit query](../../src/core/communication/rpcserver.cpp) | リクエスト自身の selection/mode/物理 pixel を共通投影幾何へ渡し、contract 2 の `content_scale` と、handle に ID/axis/射影方向/論理 px 当たり変化量または `null` を返す |
 | `raycast` | [ray 問い合わせ](../../src/core/communication/rpcserver.cpp#L1235) | `origin` / `direction` / `max_distance` の 3 鍵ちょうどで `PhysWorld` に問い合わせる。登録は `configureEngineRpcHandlers()` が呼ぶ `configurePhysicsRpcHandlers()` の側。`PELICAN_WITH_PHYSICS=OFF` の build では params を見る前に `-32000`・`data.code` = `physics.module_unavailable@1` で断る(PG-2b。stub の `hit: null` を「外れ」と読ませないため) |
-| `capture` | [`EngineRpcEndpoint::run()`](../../src/core/communication/rpcserver.cpp#L2696) | 最後の frame を PNG 保存 |
+| `capture` | [`EngineRpcEndpoint::run()`](../../src/core/communication/rpcserver.cpp#L2700) | 最後の frame を PNG 保存 |
 
 二つのギズモ RPC は [`engine://features/gizmo.json`](../../src/core/resources/features/gizmo.json) が
 active graph に無ければ application error です。`parseGizmoSelection()` は object のキーを
@@ -813,7 +818,7 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 
 #### 編集系(表は 49 行・71 メソッド) ✅実装済み(WP153〜WP172 で始まり、range はそこを大きく越えます)
 
-すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L387) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L258) です。
+すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L388) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L258) です。
 
 | method | 実装行 | 概要 |
 |---|---|---|
@@ -836,17 +841,17 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | `edit_render_features` | [feature 編集](../../src/core/communication/editorrpchandlers.cpp#L205) | render feature 構成を編集する |
 | `get_scene_acceleration_structures` / `edit_scene_acceleration_structures` | 名前付きASの取得・編集 | AS定義とdigestを取得し、既存render config ticketで変更・保存する |
 | `get_render_authoring_context` | [authoring context](../../src/core/communication/editorrpchandlers.cpp#L208) | authored pass 編集に必要な target / resource context を返す |
-| `add_authored_pass` | [pass 追加](../../src/core/communication/editorrpchandlers.cpp#L313) | authored pass を追加する |
-| `remove_authored_pass` | [pass 削除](../../src/core/communication/editorrpchandlers.cpp#L316) | authored pass を削除する |
-| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L335) / [登録 `get_preview_result`](../../src/core/communication/editorrpchandlers.cpp#L338) | 非同期結果取得 |
-| `query_journal` | [登録 `query_journal`](../../src/core/communication/editorrpchandlers.cpp#L341) | ジャーナル照会 |
+| `add_authored_pass` | [pass 追加](../../src/core/communication/editorrpchandlers.cpp#L316) | authored pass を追加する |
+| `remove_authored_pass` | [pass 削除](../../src/core/communication/editorrpchandlers.cpp#L319) | authored pass を削除する |
+| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L338) / [登録 `get_preview_result`](../../src/core/communication/editorrpchandlers.cpp#L341) | 非同期結果取得 |
+| `query_journal` | [登録 `query_journal`](../../src/core/communication/editorrpchandlers.cpp#L344) | ジャーナル照会 |
 | `get_graph_instances` | [instance 一覧](../../src/core/communication/editorrpchandlers.cpp#L256) | 共通グラフ文書の `source_digest` / `instances[]` / root の `nodes[]` / `definitions` 本体 |
 | `edit_graph_instances` | [装着編集](../../src/core/communication/editorrpchandlers.cpp#L259) | owner 付き root instance の attach / detach。中では `editGraphDocument()` の ops へ翻訳 |
 | `edit_graph_document` | [文書編集](../../src/core/communication/editorrpchandlers.cpp#L262) | `ops[]` を順に当てて最後に 1 回展開。全部通るか文書ごと拒否か |
 | `get_graph_values` | [instance 入力の値](../../src/core/communication/editorrpchandlers.cpp#L274) | publish 済み snapshot の読み。再評価しない |
 | `get_graph_node_values` | [node 出力の値](../../src/core/communication/editorrpchandlers.cpp#L277) | 展開木の node ごとの出力。`source: "rendering"` |
-| `get_graph_catalog` | [module catalog](../../src/core/communication/editorrpchandlers.cpp#L280) | `builtinGraphModuleRegistry().catalog()` に、✅EL-4 から `material_pass_contracts` / `material_output_formats` を足したもの([`RenderConfigEditorService::getGraphCatalog()`](../../src/core/communication/renderconfigeditor.cpp#L3271)、一覧は [`engineauthoringlists.hpp`](../../src/core/communication/engineauthoringlists.hpp#L9))。2 つは §7.5c の CLI には出ない。✅EL-4b から shader の反映はしない(EL-4 では `engine_shaders` もここで作っていた)。✅CT-1 から op ごとの `required_parameters` と `value.input` の `input_names` は catalog 本体([`operationJson()`](../../src/project/graphmodule.cpp#L549))が出すので、CLI にも出る |
-| `get_engine_shaders` | [engine の shader の一覧](../../src/core/communication/editorrpchandlers.cpp#L283) | ✅EL-4b。`{}` → ✅EL-4c から `{status: "building"}` / `{status: "ready", engine_shaders: [...]}` / `{status: "failed", error}` のどれかをすぐ返す([`RenderConfigEditorService::getEngineShaders()`](../../src/core/communication/renderconfigeditor.cpp#L3283) が [`engineShadersStatusJson()`](../../src/core/communication/engineauthoringlists.hpp#L43) を返す。field を足すと `requireOnly()` の `std::invalid_argument` で `-32602`)。反映は [`EngineShadersReflection`](../../src/core/communication/engineauthoringlists.cpp#L271) の worker thread が process に 1 回行い、`ready` / `failed` の答えを process の終わりまで持つ。`EngineRpcEndpoint::Impl` の [constructor](../../src/core/communication/rpcserver.cpp#L2667) が [`startEngineShadersReflection()`](../../src/core/communication/rpcserver.cpp#L2679) で始め、destructor が [`stopEngineShadersReflection()`](../../src/core/communication/rpcserver.cpp#L2683) で止めて join する(止めは shader 1 本ごとの区切りで見て、作りかけの一覧は捨てる。[区切り](../../src/core/communication/engineauthoringlists.cpp#L259))。動いていないときは `get_engine_shaders` の呼び出しが始める。worker の compiler は [`ShaderCompiler::detached()`](../../src/core/shader/shadercompiler.hpp#L55)(module を読まない・disk cache 無し・`StartupMetrics` に記録しない。[第6章](06_rendering_vulkan_shader.md) §6.9)。test が catalog から届かないことを見るために、呼ばれた回数(始めた回数を含む)[`engineShadersRequestCount()`](../../src/core/communication/engineauthoringlists.cpp#L390) を数える。test は [`resetEngineShadersReflectionForTesting()` / `holdEngineShadersReflectionForTesting()`](../../src/core/communication/engineauthoringlists.hpp#L57) で worker を最初の shader の前で止め、`building` の答えを見る |
+| `get_graph_catalog` | [module catalog](../../src/core/communication/editorrpchandlers.cpp#L280) | `builtinGraphModuleRegistry().catalog()` に、✅EL-4 から `material_pass_contracts` / `material_output_formats` を足したもの([`RenderConfigEditorService::getGraphCatalog()`](../../src/core/communication/renderconfigeditor.cpp#L3271)、一覧は [`engineauthoringlists.hpp`](../../src/core/communication/engineauthoringlists.hpp#L13))。2 つは §7.5c の CLI には出ない。✅EL-4b から shader の反映はしない(EL-4 では `engine_shaders` もここで作っていた)。✅CT-1 から op ごとの `required_parameters` と `value.input` の `input_names` は catalog 本体([`operationJson()`](../../src/project/graphmodule.cpp#L549))が出すので、CLI にも出る |
+| `get_engine_shaders` | [engine の shader の一覧](../../src/core/communication/editorrpchandlers.cpp#L283) | ✅EL-4b。`{}` → ✅EL-4c から `{status: "building"}` / `{status: "ready", engine_shaders: [...]}` / `{status: "failed", error}` のどれかをすぐ返す([`RenderConfigEditorService::getEngineShaders()`](../../src/core/communication/renderconfigeditor.cpp#L3283) が [`engineShadersStatusJson()`](../../src/core/communication/engineauthoringlists.hpp#L47) を返す。field を足すと `requireOnly()` の `std::invalid_argument` で `-32602`)。反映は [`EngineShadersReflection`](../../src/core/communication/engineauthoringlists.cpp#L322) の worker thread が process に 1 回行い、`ready` / `failed` の答えを process の終わりまで持つ。`EngineRpcEndpoint::Impl` の [constructor](../../src/core/communication/rpcserver.cpp#L2667) が [`startEngineShadersReflection()`](../../src/core/communication/rpcserver.cpp#L2679) で始め、destructor が [`stopEngineShadersReflection()`](../../src/core/communication/rpcserver.cpp#L2685) で止めて join する(止めは shader 1 本ごとの区切りで見て、作りかけの一覧は捨てる。[区切り](../../src/core/communication/engineauthoringlists.cpp#L310))。動いていないときは `get_engine_shaders` の呼び出しが始める。worker の compiler は [`ShaderCompiler::detached()`](../../src/core/shader/shadercompiler.hpp#L55)(module を読まない・disk cache 無し・`StartupMetrics` に記録しない。[第6章](06_rendering_vulkan_shader.md) §6.9)。test が catalog から届かないことを見るために、呼ばれた回数(始めた回数を含む)[`engineShadersRequestCount()`](../../src/core/communication/engineauthoringlists.cpp#L581) を数える。test は [`resetEngineShadersReflectionForTesting()` / `holdEngineShadersReflectionForTesting()`](../../src/core/communication/engineauthoringlists.hpp#L61) で worker を最初の shader の前で止め、`building` の答えを見る |
 | `export_render_feature` | [部品の書き出し](../../src/core/communication/editorrpchandlers.cpp#L193) | feature 1 つを `user://components/<name>/` へ |
 | `import_render_feature` | [部品の取り込み](../../src/core/communication/editorrpchandlers.cpp#L196) | project 外の component ディレクトリを未作成の `project://` feature として取り込む |
 | `install_package` | [package の vendoring](../../src/core/communication/editorrpchandlers.cpp#L199) | `<project>/packages/<ns>/` へ複製し catalog を作り直す |
@@ -857,23 +862,23 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | `fork_render_pipeline` | [preset の fork](../../src/core/communication/editorrpchandlers.cpp#L211) | 選択中 preset を project ファイルへ複製し、root の参照も切り替える |
 | `edit_preset_pass` | [preset pass 編集](../../src/core/communication/editorrpchandlers.cpp#L214) | project preset の pass(fullscreen / material / raster)を部分編集する |
 | `edit_region_replacement` | [領域の差し替え](../../src/core/communication/editorrpchandlers.cpp#L217) | project preset のタグ付き領域に provider を指定 / 解除する |
-| `get_compute_task_authoring` / `edit_compute_task` / `add_compute_task` / `remove_compute_task` | [取得](../../src/core/communication/editorrpchandlers.cpp#L220) / [置換](../../src/core/communication/editorrpchandlers.cpp#L286) / [追加](../../src/core/communication/editorrpchandlers.cpp#L295) / [削除](../../src/core/communication/editorrpchandlers.cpp#L298) | compute / RT task 宣言の著作面 |
+| `get_compute_task_authoring` / `edit_compute_task` / `add_compute_task` / `remove_compute_task` | [取得](../../src/core/communication/editorrpchandlers.cpp#L220) / [置換](../../src/core/communication/editorrpchandlers.cpp#L289) / [追加](../../src/core/communication/editorrpchandlers.cpp#L298) / [削除](../../src/core/communication/editorrpchandlers.cpp#L301) | compute / RT task 宣言の著作面 |
 | `get_frame_node_order` / `edit_frame_node_order` | [順序の取得](../../src/core/communication/editorrpchandlers.cpp#L223) / [順序の保存](../../src/core/communication/editorrpchandlers.cpp#L226) | root の `frame_node_order`(手で決めた node 順)の読みと保存 |
-| `get_procedural_assets` / `edit_procedural_asset` | [一覧](../../src/core/communication/editorrpchandlers.cpp#L289) / [編集](../../src/core/communication/editorrpchandlers.cpp#L292) | procedural asset の宣言。`edit` の op ではなく独立した RPC です |
-| `get_ray_callable_records` / `edit_ray_callable_records` | [callable の読み](../../src/core/communication/editorrpchandlers.cpp#L301) / [初期値の置換](../../src/core/communication/editorrpchandlers.cpp#L304) | task ごとの callable record schema と初期値上書き |
+| `get_procedural_assets` / `edit_procedural_asset` | [一覧](../../src/core/communication/editorrpchandlers.cpp#L292) / [編集](../../src/core/communication/editorrpchandlers.cpp#L295) | procedural asset の宣言。`edit` の op ではなく独立した RPC です |
+| `get_ray_callable_records` / `edit_ray_callable_records` | [callable の読み](../../src/core/communication/editorrpchandlers.cpp#L304) / [初期値の置換](../../src/core/communication/editorrpchandlers.cpp#L307) | task ごとの callable record schema と初期値上書き |
 | `decompose_material_pass` | [一体版の分解](../../src/core/communication/editorrpchandlers.cpp#L265) | ✅LP-3b。rendering 節か fork 済み preset の material pass を、graph の `render.material_pass` + draw_loop に 1 ticket で書き換える |
-| `get_render_documents` / `restore_render_documents` | [丸ごとの読み](../../src/core/communication/editorrpchandlers.cpp#L324) / [CAS の書き戻し](../../src/core/communication/editorrpchandlers.cpp#L327) | ✅RD-1 / RD-1b。render の編集の undo の土台。作る・置き換える・消すを 1 つの transaction で |
-| `edit_target_planning` / `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment` | [計画の決定](../../src/core/communication/editorrpchandlers.cpp#L236) / [pin](../../src/core/communication/editorrpchandlers.cpp#L239) / [physical fragment](../../src/core/communication/editorrpchandlers.cpp#L242) | ✅EL-2。root の rendering 節の `target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments` を 1 ticket で書く。3 本とも [`RenderConfigEditorService::queuePlanningKeyEdit()`](../../src/core/communication/renderconfigeditor.cpp#L3683)(gate と CAS、preset が同じキーを持てば `rendering_key_not_allowed_here`、今の値を変換する関数、`enqueueAuthoredPassTicket`)を通る。名前の判定は [`planningNamesOf()`](../../src/core/communication/renderconfigeditor.cpp#L3571)(合成した config を `parseFrameGraphDefinitionsFromConfigJson()` で読んだ段の node と資源)。stale な fragment は commit の組み直しで linker が投げる `VulkanPhysicalFragmentStale` を [`physicalFragmentStaleRefusal()`](../../src/core/communication/renderconfigeditor.cpp#L3759) が `physical_fragment_stale` に直す |
+| `get_render_documents` / `restore_render_documents` | [丸ごとの読み](../../src/core/communication/editorrpchandlers.cpp#L327) / [CAS の書き戻し](../../src/core/communication/editorrpchandlers.cpp#L330) | ✅RD-1 / RD-1b。render の編集の undo の土台。作る・置き換える・消すを 1 つの transaction で |
+| `edit_target_planning` / `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment` | [計画の決定](../../src/core/communication/editorrpchandlers.cpp#L236) / [pin](../../src/core/communication/editorrpchandlers.cpp#L239) / [physical fragment](../../src/core/communication/editorrpchandlers.cpp#L242) | ✅EL-2。root の rendering 節の `target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments` を 1 ticket で書く。3 本とも [`RenderConfigEditorService::queuePlanningKeyEdit()`](../../src/core/communication/renderconfigeditor.cpp#L3697)(gate と CAS、preset が同じキーを持てば `rendering_key_not_allowed_here`、今の値を変換する関数、`enqueueAuthoredPassTicket`)を通る。名前の判定は [`planningNamesOf()`](../../src/core/communication/renderconfigeditor.cpp#L3585)(合成した config を `parseFrameGraphDefinitionsFromConfigJson()` で読んだ段の node と資源)。stale な fragment は commit の組み直しで linker が投げる `VulkanPhysicalFragmentStale` を [`physicalFragmentStaleRefusal()`](../../src/core/communication/renderconfigeditor.cpp#L3773) が `physical_fragment_stale` に直す |
 | `get_fold_groups` / `fold_nodes` / `verify_fold` | [読み](../../src/core/communication/editorrpchandlers.cpp#L246) / [宣言](../../src/core/communication/editorrpchandlers.cpp#L249) / [検査](../../src/core/communication/editorrpchandlers.cpp#L253) | ✅FG-1 / FG-2。root の graph 文書の `fold_groups` の読み、group 1 つの宣言(root 編集の ticket。[`RenderConfigEditorService::queueFoldGroupEdit()`](../../src/core/communication/renderconfigeditor.cpp#L2530) を通る)、開いた形と決定ありの形を子 process で描き比べて印を書く非同期の ticket(下の「`verify_fold` の子 process」) |
-| `reload_render_documents` | [読み直し](../../src/core/communication/editorrpchandlers.cpp#L332) | ✅RL-1。ディスクの render 文書を読み直して 1 つの ticket で組み直し・公開する。ディスクは書かない(下の「`reload_render_documents` の ticket」) |
+| `reload_render_documents` | [読み直し](../../src/core/communication/editorrpchandlers.cpp#L335) | ✅RL-1。ディスクの render 文書を読み直して 1 つの ticket で組み直し・公開する。ディスクは書かない(下の「`reload_render_documents` の ticket」) |
 
 上 11 行(19 メソッド)は P-2a 系・RT 系・prefab 系で足された分で、params と戻り値の正本は
 [manual 第13章](../manual/13_editor.md)です。この表と `editorrpchandlers.cpp` の登録を突き合わせるときは、
 行ではなくメソッド名を数えてください(併記した行が 1 行 2〜4 メソッドあります)。最後の EL-2 の行(3 メソッド)は、この 11 行の後に足したものです。その後に FG-1 / FG-2 と RL-1 の 2 行(4 メソッド)を足しました。
 
-**`verify_fold` の子 process(✅FG-2)。**[`verifyFold()`](../../src/core/communication/renderconfigeditor.cpp#L2616) は、受けた時に engine の thread で [`FoldVerifyJob`](../../src/core/communication/graphfoldverify.hpp#L53)(開いた形と決定ありの形の root の bytes、managed fragment、数)を作り切り、worker は editor の状態を読みません。子を起こす口は依存として差し込まれる [`FoldVerifyRunner`](../../src/core/communication/renderconfigeditor.hpp#L182) で、本番は [`runFoldVerifyProcesses()`](../../src/core/communication/graphfoldverify.cpp#L438)(factory が親の起動引数から [`foldVerifyProcessOptions()`](../../src/core/communication/editorruntimefactory.cpp#L1967) を 1 度だけ読んで包む)、test は偽の runner です。worker は `std::async` の thread で走り([始める所](../../src/core/communication/renderconfigeditor.cpp#L2697))、frame と RPC は待ちません。`commitPending()` は frame の境界ごとに最初に [`harvestFoldVerifies()`](../../src/core/communication/renderconfigeditor.cpp#L2705) を呼び、終わった run を [`judgeFoldVerifyRuns()`](../../src/core/communication/graphfoldverify.cpp#L388)(純関数)で判定し、通れば `queueFoldGroupEdit()` で印を書く ticket を同じ ticket の番号で作って待ち行列の先頭に置きます。CAS は受けた時の `base_source_digest` なので、間に root が変われば `external_modification` です。子は [`runChild()`](../../src/core/communication/graphfoldverify.cpp#L157) が `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` の job object に入れ、時間切れと終了は job の handle を閉じて終わらせます(名前や pid で探しません)。editor の destructor は止めの flag を立てて全部の worker を待ちます。
+**`verify_fold` の子 process(✅FG-2)。**[`verifyFold()`](../../src/core/communication/renderconfigeditor.cpp#L2616) は、受けた時に engine の thread で [`FoldVerifyJob`](../../src/core/communication/graphfoldverify.hpp#L53)(開いた形と決定ありの形の root の bytes、managed fragment、数)を作り切り、worker は editor の状態を読みません。子を起こす口は依存として差し込まれる [`FoldVerifyRunner`](../../src/core/communication/renderconfigeditor.hpp#L187) で、本番は [`runFoldVerifyProcesses()`](../../src/core/communication/graphfoldverify.cpp#L438)(factory が親の起動引数から [`foldVerifyProcessOptions()`](../../src/core/communication/editorruntimefactory.cpp#L1967) を 1 度だけ読んで包む)、test は偽の runner です。worker は `std::async` の thread で走り([始める所](../../src/core/communication/renderconfigeditor.cpp#L2697))、frame と RPC は待ちません。`commitPending()` は frame の境界ごとに最初に [`harvestFoldVerifies()`](../../src/core/communication/renderconfigeditor.cpp#L2705) を呼び、終わった run を [`judgeFoldVerifyRuns()`](../../src/core/communication/graphfoldverify.cpp#L388)(純関数)で判定し、通れば `queueFoldGroupEdit()` で印を書く ticket を同じ ticket の番号で作って待ち行列の先頭に置きます。CAS は受けた時の `base_source_digest` なので、間に root が変われば `external_modification` です。子は [`runChild()`](../../src/core/communication/graphfoldverify.cpp#L157) が `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` の job object に入れ、時間切れと終了は job の handle を閉じて終わらせます(名前や pid で探しません)。editor の destructor は止めの flag を立てて全部の worker を待ちます。
 
-**`reload_render_documents` の ticket(✅RL-1)。**[`reloadRenderDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L5761) は、ディスクの root と managed fragment を読み、`renderDocumentsOf()`(`get_render_documents` と同じ範囲)で残りの render 文書を足し、各文書の今の bytes を `expected` の digest にした候補を作ります。`changed` は editor が書いた digest(`known_document_digests_`)・managed fragment の基準・live の世代の文書(依存の `published_documents`。[作る所](../../src/core/communication/editorruntimefactory.cpp#L2271))の順に引いた前の digest と比べます。ticket(`render-config-reload-<N>`)は `reload` の印を持ち、commit の時の source commit は書く代わりに [`verifyReloadedDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L5742) で読んだ bytes がまだディスクに在るかを照らします。何も違わなければ runtime に渡さず `no_change` で終えます。待っている・処理中の ticket が在るか scene の preview が開いていれば `reload_busy` です([断る所](../../src/core/communication/renderconfigeditor.cpp#L5767)。preview の判定は `EditorCommandService::reloadRenderDocuments()`)。
+**`reload_render_documents` の ticket(✅RL-1)。**[`reloadRenderDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L5775) は、ディスクの root と managed fragment を読み、`renderDocumentsOf()`(`get_render_documents` と同じ範囲)で残りの render 文書を足し、各文書の今の bytes を `expected` の digest にした候補を作ります。`changed` は editor が書いた digest(`known_document_digests_`)・managed fragment の基準・live の世代の文書(依存の `published_documents`。[作る所](../../src/core/communication/editorruntimefactory.cpp#L2279))の順に引いた前の digest と比べます。ticket(`render-config-reload-<N>`)は `reload` の印を持ち、commit の時の source commit は書く代わりに [`verifyReloadedDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L5756) で読んだ bytes がまだディスクに在るかを照らします。何も違わなければ runtime に渡さず `no_change` で終えます。待っている・処理中の ticket が在るか scene の preview が開いていれば `reload_busy` です([断る所](../../src/core/communication/renderconfigeditor.cpp#L5781)。preview の判定は `EditorCommandService::reloadRenderDocuments()`)。
 
 #### 共通グラフの編集面(P-1 / N-2)
 
@@ -918,7 +923,7 @@ root だけの編集が definition のバイト列を動かさないようにす
 
 `list_render_features` が返す各 entry には `source` が付きます。値は **`"engine"` と `"package"` の 2 つだけ**で、
 `project://features/*.json` に手で置いた文書は catalog に載りません
-([entry の定義](../../src/core/communication/renderconfigeditor.hpp#L57))。package 側の列挙は
+([entry の定義](../../src/core/communication/renderconfigeditor.hpp#L58))。package 側の列挙は
 [`enumeratePackageRenderFeatureDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L777) で、
 **`noexcept` で、`std::exception` の失敗を entry として報告します** —— `project.json` が読めなければ package は 0 個、
 package の文書が壊れていれば `available: false` + `unavailable_reason` の行として並びます。ただし
@@ -1383,7 +1388,7 @@ with PelicanRpc("projects/example") as rpc:
 
 engine 内蔵の開発者 UI に、読み取り専用の [`AssetBrowserPanel`](../../src/core/imgui/assetbrowser.hpp#L36) と schema 駆動の [`InspectorPanel`](../../src/core/imgui/inspector.hpp#L167) が加わりました。表示は `ImGuiSystem` のメニュー `Asset Browser` / `Inspector` から切り替えます([`imguisystem.cpp` 内](../../src/core/imgui/imguisystem.cpp#L373))。
 
-> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L495) が用意されています。コメントが規範です。
+> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L497) が用意されています。コメントが規範です。
 >
 > The ImGui WP consumes the same typed service. This fake is deliberately kept
 > free of ImGui headers so equivalence is testable in the CPU-only suite.
