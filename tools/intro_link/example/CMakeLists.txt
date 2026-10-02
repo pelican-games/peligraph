@@ -63,9 +63,18 @@ target_include_directories(intro_link_example PRIVATE
 # The same flags in every build type (a Debug tree too).
 target_compile_options(intro_link_example PRIVATE
   /O1 /Os /GS- /Gs9999999 /GR- /Gy /Gw /Zl /W3)
+# IL-3 layout: .text (code, constants and .pdata), .data and .idata (which
+# cannot be merged); .data stays apart so no section is both writable and
+# executable. 16-byte section and file alignment, a 64-byte DOS stub
+# (dos_stub.bin: "MZ", 4 header paragraphs, relocations at 0x40, the rest
+# zero; link writes e_lfanew) and no Rich header. LNK4108 (/ALIGN without
+# /DRIVER) is expected here.
+set(intro_link_dos_stub "${CMAKE_CURRENT_SOURCE_DIR}/dos_stub.bin")
 target_link_options(intro_link_example PRIVATE
   /NODEFAULTLIB /ENTRY:entry /SUBSYSTEM:WINDOWS /MACHINE:X64
   /OPT:REF /OPT:ICF /MERGE:.rdata=.text /MERGE:.pdata=.text
   /DYNAMICBASE:NO /FIXED
+  /ALIGN:16 /FILEALIGN:16 /STUB:${intro_link_dos_stub} /EMITTOOLVERSIONINFO:NO /IGNORE:4108
   /INCREMENTAL:NO /DEBUG:NONE /MANIFEST:NO /EMITPOGOPHASEINFO)
+set_property(TARGET intro_link_example APPEND PROPERTY LINK_DEPENDS "${intro_link_dos_stub}")
 target_link_libraries(intro_link_example PRIVATE kernel32 user32 ${Vulkan_LIBRARY})

@@ -1,9 +1,9 @@
 #version 450
 
-// One triangle that covers the screen; no vertex buffer.
-layout(location = 0) out vec2 uv;
+// Only gl_Position: the fragment shader reads gl_FragCoord.
+out gl_PerVertex { vec4 gl_Position; };
 
+// One triangle that covers the screen, (-1,-1) (3,-1) (-1,3); no vertex buffer.
 void main() {
-    uv = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
-    gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
+    gl_Position = vec4(float((gl_VertexIndex << 2) & 4) - 1.0, float((gl_VertexIndex << 1) & 4) - 1.0, 0.0, 1.0);
 }

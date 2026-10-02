@@ -88,7 +88,7 @@ if(TARGET intro_link_example AND TARGET intro_link_example_dev)
   get_filename_component(pelican_intro_link_linker_dir "${CMAKE_LINKER}" DIRECTORY)
   find_program(PELICAN_DUMPBIN dumpbin HINTS "${pelican_intro_link_linker_dir}")
   if(PELICAN_DUMPBIN)
-    set(PELICAN_INTRO_LINK_EXAMPLE_MAX_BYTES 27648)
+    set(PELICAN_INTRO_LINK_EXAMPLE_MAX_BYTES 16384)
     add_test(
       NAME intro_link_example_baked_is_small
       COMMAND ${CMAKE_COMMAND}

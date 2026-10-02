@@ -5,7 +5,9 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
@@ -15,6 +17,12 @@
 #include <sstream>
 #include <string_view>
 #include <system_error>
+
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace Pelican::DevCli::IntroLink {
 namespace {
@@ -169,6 +177,89 @@ std::optional<std::string> environment(const char *name) {
 #endif
 }
 
+unsigned long currentProcessId() {
+#ifdef _WIN32
+    return static_cast<unsigned long>(_getpid());
+#else
+    return static_cast<unsigned long>(getpid());
+#endif
+}
+
+// IL-3: every shader is built with glslc -Os. When spirv-opt sits next to
+// glslc it is also built "no-inline": glslc -O0, then spirv-opt's own -Os
+// list *without* --inline-entry-points-exhaustive, so a function called from
+// several places stays one function (glslc -Os inlines it at every call site),
+// then the constants are unified and the ids compacted. The smaller module is
+// used (a tie keeps -Os): no-inline wins on raymarchers that call a distance
+// function from several places, -Os on small shaders whose helpers are called
+// once. serve and bake both come through compileShader, so they agree.
+const char *const kSizePasses[] = {
+    "--strip-debug", "--strip-nonsemantic", "--wrap-opkill", "--eliminate-dead-branches", "--merge-return",
+    "--eliminate-dead-functions", "--private-to-local", "--scalar-replacement=0", "--ssa-rewrite", "--ccp",
+    "--eliminate-dead-branches", "--simplify-instructions", "--scalar-replacement=0",
+    "--eliminate-local-single-store", "--if-conversion", "--simplify-instructions",
+    "--eliminate-dead-code-aggressive", "--eliminate-dead-branches", "--merge-blocks",
+    "--convert-local-access-chains", "--eliminate-local-single-block", "--eliminate-dead-code-aggressive",
+    "--copy-propagate-arrays", "--vector-dce", "--eliminate-dead-inserts", "--eliminate-local-single-store",
+    "--merge-blocks", "--ssa-rewrite", "--redundancy-elimination", "--simplify-instructions",
+    "--eliminate-dead-code-aggressive", "--cfg-cleanup", "--unify-const", "--eliminate-dead-const",
+    "--remove-duplicates", "--compact-ids",
+};
+
+std::optional<fs::path> spirvOptBeside(const fs::path &glslc) {
+#ifdef _WIN32
+    const auto candidate = glslc.parent_path() / "spirv-opt.exe";
+#else
+    const auto candidate = glslc.parent_path() / "spirv-opt";
+#endif
+    std::error_code error;
+    if (fs::is_regular_file(candidate, error)) return candidate;
+    return std::nullopt;
+}
+
+// A uniquely named file in the temp directory, removed when it goes out of scope.
+struct TemporaryFile {
+    fs::path path;
+    TemporaryFile() {
+        static std::atomic<unsigned> counter{0};
+        const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
+        path = fs::temp_directory_path() / ("pelican_intro_link_" + std::to_string(currentProcessId()) + "_" +
+                                            std::to_string(tick) + "_" + std::to_string(counter++) + ".spv");
+    }
+    ~TemporaryFile() {
+        std::error_code error;
+        fs::remove(path, error);
+    }
+    TemporaryFile(const TemporaryFile &) = delete;
+    TemporaryFile &operator=(const TemporaryFile &) = delete;
+};
+
+// Runs glslc or spirv-opt with the module on stdout. Returns the module, or
+// nothing with the reason added to `log` (the tool's stderr always is).
+std::optional<std::string> runSpirvTool(const fs::path &executable, const std::string &name,
+                                        std::vector<fs::path> arguments, std::string &log) {
+    ProcessOptions options;
+    options.executable = executable;
+    options.arguments = std::move(arguments);
+    options.timeout = std::chrono::milliseconds{60000};
+    options.name = name;
+    auto process = runProcess(options);
+    log += process.stderr_text;
+    if (process.timed_out) {
+        log += name + " timed out\n";
+        return std::nullopt;
+    }
+    if (process.exit_code != 0) {
+        if (name != "glslc") log += name + " exited with " + std::to_string(process.exit_code) + "\n";
+        return std::nullopt;
+    }
+    if (process.stdout_text.size() < 20 || process.stdout_text.size() % 4 != 0) {
+        log += name + " wrote " + std::to_string(process.stdout_text.size()) + " bytes, not a SPIR-V module\n";
+        return std::nullopt;
+    }
+    return std::move(process.stdout_text);
+}
+
 } // namespace
 
 Error::Error(std::string code, const std::string &detail)
@@ -303,23 +394,41 @@ fs::path findGlslc(const std::string &explicit_path) {
 }
 
 CompileResult compileShader(const fs::path &glslc, const fs::path &shaders_dir, const ShaderSource &shader) {
-    ProcessOptions options;
-    options.executable = glslc;
-    options.arguments = {"--target-env=vulkan1.2", "-Os", "-I", shaders_dir, "-I", shaders_dir / "include",
-                         shader.path, "-o", "-"};
-    options.timeout = std::chrono::milliseconds{60000};
-    options.name = "glslc";
-    const auto process = runProcess(options);
+    const auto compile = [&](const char *level, std::string &log) {
+        return runSpirvTool(glslc, "glslc",
+                            {"--target-env=vulkan1.2", level, "-I", shaders_dir, "-I", shaders_dir / "include",
+                             shader.path, "-o", "-"},
+                            log);
+    };
     CompileResult result;
-    result.log = process.stderr_text;
-    const auto &bytes = process.stdout_text;
-    if (process.exit_code != 0 || process.timed_out || bytes.size() < 20 || bytes.size() % 4 != 0) {
-        if (process.timed_out) result.log += "glslc timed out\n";
-        if (process.exit_code == 0 && !process.timed_out) {
-            result.log += "glslc wrote " + std::to_string(bytes.size()) + " bytes, not a SPIR-V module\n";
+    auto chosen = compile("-Os", result.log);
+    result.variant = "Os";
+    const auto optimizer = spirvOptBeside(glslc);
+    if (chosen && optimizer) {
+        // The no-inline build: glslc -O0, then spirv-opt through a temporary
+        // file (runProcess gives the child no stdin). Its messages repeat the
+        // -Os build's or explain a spirv-opt failure, in which case -Os stands.
+        std::string ignored;
+        if (const auto unoptimised_module = compile("-O0", ignored)) {
+            const TemporaryFile unoptimised;
+            {
+                std::ofstream file{unoptimised.path, std::ios::binary | std::ios::trunc};
+                file << *unoptimised_module;
+                if (!file) throw std::runtime_error("failed to write " + utf8(unoptimised.path));
+            }
+            std::vector<fs::path> arguments{"--target-env=vulkan1.2"};
+            arguments.insert(arguments.end(), std::begin(kSizePasses), std::end(kSizePasses));
+            arguments.insert(arguments.end(), {unoptimised.path, "-o", "-"});
+            auto no_inline = runSpirvTool(*optimizer, "spirv-opt", arguments, ignored);
+            // Strictly smaller wins; a tie keeps -Os.
+            if (no_inline && no_inline->size() < chosen->size()) {
+                chosen = std::move(no_inline);
+                result.variant = "no-inline";
+            }
         }
-        return result;
     }
+    if (!chosen) return result;
+    const auto &bytes = *chosen;
     result.words.resize(bytes.size() / 4);
     for (std::size_t i = 0; i < result.words.size(); ++i) {
         const auto *p = reinterpret_cast<const unsigned char *>(bytes.data()) + i * 4;

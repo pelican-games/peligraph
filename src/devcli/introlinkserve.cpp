@@ -508,6 +508,14 @@ class Server {
         auto &shader = shaders_.at(name);
         const auto result = compileShader(options_.glslc, options_.shaders_dir, shader.source);
         if (result.ok) {
+            // The size the intro carries, and the change since the last good compile.
+            const auto bytes = static_cast<long long>(result.words.size()) * 4;
+            std::cerr << "intro-link serve: shader " << name << ": " << bytes << " bytes (" << result.variant;
+            if (shader.words) {
+                const auto change = bytes - static_cast<long long>(shader.words->size()) * 4;
+                std::cerr << ", " << (change >= 0 ? "+" : "") << change;
+            }
+            std::cerr << ")" << std::endl;
             shader.words = result.words;
             shader.error.reset();
         } else {

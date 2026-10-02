@@ -52,7 +52,7 @@ int runBake(int argc, char *argv[]) {
                 throw IntroLink::Error("intro_link.shader_compile_failed@1",
                                        source.relative + " (glslc says below)\n" + result.log);
             }
-            binaries.emplace(name, IntroLink::ShaderBinary{std::move(result.words)});
+            binaries.emplace(name, IntroLink::ShaderBinary{std::move(result.words), result.variant});
         }
     }
 
@@ -66,6 +66,20 @@ int runBake(int argc, char *argv[]) {
     if (!file) throw std::runtime_error("failed to write " + out.string());
     std::cout << "wrote " << out.generic_string() << " (" << tracks.size() << " tracks, " << binaries.size()
               << " shaders)" << std::endl;
+    // What the header puts into the intro, one line each (IL-3).
+    std::size_t key_bytes = 0, spirv_bytes = 0;
+    for (const auto &[name, track] : tracks) {
+        const auto bytes = track.keys.size() * IntroLink::kBakedKeyBytes;
+        key_bytes += bytes;
+        std::cout << "track " << name << ": " << track.keys.size() << " keys, " << bytes << " bytes" << std::endl;
+    }
+    for (const auto &[name, shader] : binaries) {
+        spirv_bytes += shader.words.size() * 4;
+        std::cout << "shader " << name << ": " << shader.words.size() * 4 << " bytes (" << shader.variant << ")"
+                  << std::endl;
+    }
+    std::cout << "total: " << key_bytes << " bytes of keys + " << spirv_bytes << " bytes of SPIR-V = "
+              << key_bytes + spirv_bytes << " bytes" << std::endl;
     return 0;
 }
 
