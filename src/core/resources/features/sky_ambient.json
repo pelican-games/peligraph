@@ -76,6 +76,13 @@
   },
   "required_targets": [
     {
+      "name": "lit_color",
+      "type": {
+        "semantic": "pelican.render.color_signal@1",
+        "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}
+      }
+    },
+    {
       "name": "scene_depth",
       "type": {
         "semantic": "pelican.render.depth@1",

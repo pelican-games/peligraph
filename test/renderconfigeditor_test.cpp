@@ -11953,9 +11953,11 @@ TEST_CASE("FR-3 edit_batch applies edits in order to one candidate as one ticket
     CHECK(std::ranges::find(methods, "edit_graph_document") != methods.end());
     CHECK(std::ranges::find(methods, "edit_render_targets") != methods.end());
     CHECK(std::ranges::find(methods, "edit_target_planning") != methods.end());
-    for (const auto *left_out : {"restore_render_documents", "reload_render_documents", "verify_fold",
-                                 "edit_preset_pass", "edit_compute_task", "edit_batch"})
+    for (const auto *left_out : {"restore_render_documents", "reload_render_documents", "verify_fold", "edit_batch"})
         CHECK(std::ranges::find(methods, left_out) == methods.end());
+    // FR-4: these read the document they rewrite as the editor holds it.
+    for (const auto *taken : {"edit_preset_pass", "edit_compute_task", "remove_compute_task"})
+        CHECK(std::ranges::find(methods, taken) != methods.end());
     const auto invalid = [&](Json edits) {
         return harness.service->editBatch({{"base_source_digest", harness.digest()}, {"edits", std::move(edits)}});
     };
@@ -11970,6 +11972,221 @@ TEST_CASE("FR-3 edit_batch applies edits in order to one candidate as one ticket
                                                              {"params", {{"operations", "add"}}}}})),
                     std::invalid_argument);
     CHECK(readBytes(harness.project.render_config) == before);
+}
+
+// FR-4 (UX-12d): on the Blank-built deferred pipeline with sky_ambient, the
+// sky reached present only with two tickets and two undos: the lighting
+// pass's color into lit_color (edit_graph_document) and present reading
+// lit_color (edit_preset_pass, here the direct root's own pass). edit_batch
+// takes both: one ticket, one publish, one RD-1 restore. lit_color_ref is
+// given the type the catalog gives sky_ambient's lit_color, which is the
+// lighting pass's color port's, so the connection needs no type rewritten.
+TEST_CASE("FR-4 edit_batch takes edit_graph_document and edit_preset_pass as one ticket, and RD-1 undoes both",
+          "[render-config-editor][fr4][edit-batch]") {
+    Fr3Harness harness;
+
+    const auto catalog = harness.service->listRenderFeatures(Json::object());
+    const auto sky = std::ranges::find_if(catalog.at("features"), [](const auto &feature) {
+        return feature.at("name") == "sky_ambient";
+    });
+    REQUIRE(sky != catalog.at("features").end());
+    const auto required = Json(sky->at("required_targets"));
+    INFO(required.dump());
+    REQUIRE(required.at(0).at("name") == "lit_color");
+    const auto lit_type = required.at(0).at("type");
+    CHECK(lit_type.at("semantic") == "pelican.render.color_signal@1");
+    const auto fixture = Json::parse(readBytes(harness.project.render_config));
+    for (const auto &node : fixture.at("nodes"))
+        if (node.at("id") == "deferred_lighting")
+            CHECK(node.at("parameters").at("ports").at("color").at("type") == lit_type);
+
+    // sky_ambient as FR-3 adds it, lit_color_ref of the catalog's type.
+    auto refs = fr3RefsEdit();
+    refs["params"]["ops"][1]["node"]["parameters"]["type"] = lit_type;
+    REQUIRE(harness.batch(Json::array({fr3TargetsEdit(), refs})).at("status") == "committed");
+    REQUIRE(harness.single(fr3GraphEdit(Json::array({{{"op", "set_input"}, {"node", "render_material_pass"},
+                                                       {"port", "depth"},
+                                                       {"source", {{"node", "scene_depth_ref"},
+                                                                   {"port", "resource"}}}}})))
+                .at("status") == "committed");
+    REQUIRE(harness.single(fr3SkyEdit()).at("status") == "committed");
+
+    const auto before = readBytes(harness.project.render_config);
+    const auto read = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+    const auto calls = harness.runtime.apply_calls;
+    const Json lighting_into_lit = fr3GraphEdit(Json::array({{{"op", "set_input"}, {"node", "deferred_lighting"},
+                                                              {"port", "color"},
+                                                              {"source", {{"node", "lit_color_ref"},
+                                                                          {"port", "resource"}}}}}));
+    const Json present_reads_lit{
+        {"method", "edit_preset_pass"},
+        {"params", {{"graph", "main_render"}, {"pass_name", "present"}, {"input", Json::array({"lit_color"})},
+                    {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+                    {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}}}};
+    const auto accepted = harness.service->editBatch(
+        {{"base_source_digest", harness.digest()}, {"edits", Json::array({lighting_into_lit, present_reads_lit})}});
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    CHECK(accepted.at("methods") == nlohmann::ordered_json::array({"edit_graph_document", "edit_preset_pass"}));
+    const auto committed = harness.settle(accepted);
+    INFO(committed.dump());
+    REQUIRE(committed.at("status") == "committed");
+    CHECK(committed.at("operation") == "edit_batch");
+    CHECK(harness.runtime.apply_calls == calls + 1);
+    CHECK(Json(committed.at("documents")) ==
+          Json{{"passes/main.json", renderConfigSourceDigest(readBytes(harness.project.render_config))}});
+    {
+        const auto &plan = harness.runtime.frame_plan;
+        INFO(plan.dump());
+        const auto *lighting = fr3PlanNode(plan, "deferred_lighting");
+        const auto *present = fr3PlanNode(plan, "present");
+        REQUIRE(lighting != nullptr);
+        REQUIRE(present != nullptr);
+        CHECK(fr3Lists(lighting->at("writes"), "lit_color"));
+        CHECK(present->at("reads") == Json::array({"lit_color"}));
+    }
+
+    // RD-1: the two edits are one undo.
+    const auto restored = harness.settle(harness.service->restoreRenderDocuments(
+        {{"documents", Json::array({rd1Restore(read.at("passes/main.json"),
+                                               Json(committed.at("documents").at("passes/main.json")))})}}));
+    INFO(restored.dump());
+    REQUIRE(restored.at("status") == "committed");
+    CHECK(readBytes(harness.project.render_config) == before);
+    const auto *present = fr3PlanNode(harness.runtime.frame_plan, "present");
+    REQUIRE(present != nullptr);
+    CHECK(present->at("reads") == Json::array({"deferred_lighting__color"}));
+}
+
+// FR-4: edit_preset_pass, edit_compute_task and remove_compute_task read the
+// project preset or feature they rewrite as the editor holds it, so inside
+// edit_batch each builds on what the edit before it made of the same
+// document; every digest the caller sends is the document's as it read it,
+// before the batch.
+TEST_CASE("FR-4 edit_batch takes edit_preset_pass with a compute task edit on one project preset or feature, "
+          "each on what the edit before it made",
+          "[render-config-editor][fr4][edit-batch][compute-task-edit][preset-pass-edit]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    const Json preset_task{{"name", "preset_task"}, {"shader", "project://shaders/probe"},
+                           {"dispatch", {{"groups", {1, 1, 1}}}}, {"schedule", "per_frame"}};
+    auto feature_task = preset_task;
+    feature_task["name"] = "feature_task";
+    auto preset = Json::parse(resolver.loadText("engine://render_pipelines/hybrid_v1.json"));
+    preset["config"]["compute_tasks"] = Json::array({preset_task});
+    Json present_output;
+    for (const auto &pass : preset.at("config").at("rendering_passes").at(0).at("passes"))
+        if (pass.at("name") == "scene_present") present_output = pass.at("output");
+    REQUIRE(present_output.is_object());
+    const auto preset_path = project.root / "passes" / "owned.json";
+    writeBytes(preset_path, preset.dump(2));
+    const Json overlay{{"name", "probe_overlay"}, {"type", "fullscreen"}, {"input", Json::array({"gbuffer_albedo"})},
+                       {"output", {{"color", Json::array({"lit_color"})}, {"depth", nullptr}}},
+                       {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}}},
+                       {"color_load_op", "load"}};
+    const auto feature_path = project.root / "passes" / "probe_feature.json";
+    writeBytes(feature_path, Json{{"schema", "pelican.render_feature"}, {"version", 1}, {"name", "probe_feature"},
+                                  {"passes", Json::array({{{"insert", "after:deferred_lighting"}, {"pass", overlay}}})},
+                                  {"compute_tasks", Json::array({feature_task})}}
+                                 .dump(2));
+    writeBytes(project.render_config,
+               Pelican::TestSupport::renderGraphRoot(
+                   Json{{"pipeline", {{"preset", "project://passes/owned.json"}}},
+                        {"features", Json::array({"project://passes/probe_feature.json"})}})
+                   .dump(2));
+    const auto root_before = readBytes(project.render_config);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+
+    const auto settle = [&](const nlohmann::ordered_json &answer) {
+        INFO(answer.dump());
+        REQUIRE(answer.at("status") == "accepted");
+        service->commitPending();
+        return service->getResult({{"ticket", answer.at("ticket")}});
+    };
+    const auto task_digest = [&](std::string_view name) {
+        const auto catalog = service->getComputeTaskAuthoring(Json::object());
+        INFO(catalog.dump());
+        for (const auto &task : catalog.at("tasks"))
+            if (task.at("name").get<std::string>() == name && task.at("editable").get<bool>())
+                return task.at("source_digest").at("hex").get<std::string>();
+        FAIL("no editable task " << name);
+        return std::string{};
+    };
+    const auto batch = [&](Json edits) {
+        const auto root_digest = service->getRenderAuthoringContext(Json::object()).at("source_digest").at("hex");
+        return settle(service->editBatch({{"base_source_digest", root_digest}, {"edits", std::move(edits)}}));
+    };
+    // RD-1: every document the batch wrote, back as it was read before it.
+    const auto restore = [&](const std::map<std::string, Json> &read, const nlohmann::ordered_json &committed) {
+        auto documents = Json::array();
+        for (const auto &[reference, digest] : committed.at("documents").items()) {
+            INFO(reference);
+            REQUIRE(read.contains(reference));
+            documents.push_back(rd1Restore(read.at(reference), Json(digest)));
+        }
+        return settle(service->restoreRenderDocuments({{"documents", std::move(documents)}}));
+    };
+
+    SECTION("the project preset: a pass, then a task") {
+        const auto preset_digest = service->getRenderAuthoringContext(Json::object())
+                                       .at("pipeline_preset").at("source_digest").at("hex").get<std::string>();
+        REQUIRE(task_digest("preset_task") == preset_digest);
+        const auto preset_before = readBytes(preset_path);
+        const auto read = rd1Documents(service->getRenderDocuments(Json::object()));
+        auto changed = preset_task;
+        changed["dispatch"]["groups"] = {2, 1, 1};
+        const auto committed = batch(Json::array({
+            {{"method", "edit_preset_pass"},
+             {"params", {{"base_preset_digest", preset_digest}, {"graph", "main_render"}, {"pass_name", "scene_present"},
+                         {"input", Json::array({"gbuffer_albedo"})}, {"output", present_output},
+                         {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}}}}}},
+            {{"method", "edit_compute_task"},
+             {"params", {{"base_task_source_digest", preset_digest}, {"task_name", "preset_task"}, {"task", changed}}}},
+        }));
+        INFO(committed.dump());
+        REQUIRE(committed.at("status") == "committed");
+        CHECK(committed.at("methods") == nlohmann::ordered_json::array({"edit_preset_pass", "edit_compute_task"}));
+        CHECK(committed.at("documents").contains("project://passes/owned.json"));
+        const auto written = Json::parse(readBytes(preset_path));
+        for (const auto &pass : written.at("config").at("rendering_passes").at(0).at("passes"))
+            if (pass.at("name") == "scene_present") CHECK(pass.at("input") == Json::array({"gbuffer_albedo"}));
+        CHECK(written.at("config").at("compute_tasks") == Json::array({changed}));
+        CHECK(readBytes(project.render_config) == root_before);
+
+        const auto restored = restore(read, committed);
+        INFO(restored.dump());
+        REQUIRE(restored.at("status") == "committed");
+        CHECK(readBytes(preset_path) == preset_before);
+    }
+    SECTION("a project feature: a pass, then the task removed") {
+        const auto feature_digest = renderConfigSourceDigest(readBytes(feature_path));
+        REQUIRE(task_digest("feature_task") == feature_digest);
+        const auto feature_before = readBytes(feature_path);
+        const auto read = rd1Documents(service->getRenderDocuments(Json::object()));
+        const auto committed = batch(Json::array({
+            {{"method", "edit_preset_pass"},
+             {"params", {{"base_feature_digest", feature_digest}, {"graph", "main_render"},
+                         {"pass_name", "probe_overlay"}, {"input", Json::array({"gbuffer_normal"})},
+                         {"output", overlay.at("output")}, {"shader", overlay.at("shader")}}}},
+            {{"method", "remove_compute_task"},
+             {"params", {{"base_task_source_digest", feature_digest}, {"task_name", "feature_task"}}}},
+        }));
+        INFO(committed.dump());
+        REQUIRE(committed.at("status") == "committed");
+        CHECK(committed.at("methods") == nlohmann::ordered_json::array({"edit_preset_pass", "remove_compute_task"}));
+        CHECK(committed.at("documents").contains("project://passes/probe_feature.json"));
+        const auto written = Json::parse(readBytes(feature_path));
+        CHECK(written.at("passes").at(0).at("pass").at("input") == Json::array({"gbuffer_normal"}));
+        CHECK(written.at("compute_tasks") == Json::array());
+        CHECK(readBytes(project.render_config) == root_before);
+
+        const auto restored = restore(read, committed);
+        INFO(restored.dump());
+        REQUIRE(restored.at("status") == "committed");
+        CHECK(readBytes(feature_path) == feature_before);
+    }
 }
 
 } // namespace Pelican

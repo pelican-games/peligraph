@@ -3218,6 +3218,120 @@ TEST_CASE("FR-3 edit_batch takes cascade_count 3 with the 2D array shadow map ty
     CHECK(outside.at("error").at("code") == -32602);
 }
 
+// FR-4 (UX-12d): on that pipeline with sky_ambient, the sky reached present
+// only with two tickets and two undos -- the lighting pass's color into
+// lit_color (edit_graph_document) and present reading lit_color
+// (edit_preset_pass). Over RPC, through the running renderer: the catalog
+// gives sky_ambient's lit_color the lighting pass's color port's type, so
+// lit_color_ref connects to that port as the catalog declares it; the two
+// edits in one edit_batch publish as one ticket, and one RD-1 restore takes
+// both back.
+TEST_CASE("FR-4 edit_batch puts the sky on present with edit_graph_document and edit_preset_pass in one ticket, "
+          "through the running renderer",
+          "[fr4][primitives][render-feature][edit-batch][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("fr4_sky_present");
+    const auto root = fr3BlankDeferredProject(dir.root);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    Fr3Engine engine{root};
+
+    const auto catalog = engine.rpc.result("list_render_features").at("features");
+    const auto sky = std::find_if(catalog.begin(), catalog.end(),
+                                  [](const Json &feature) { return feature.at("name") == "sky_ambient"; });
+    REQUIRE(sky != catalog.end());
+    INFO(sky->dump(2));
+    const auto &lit = sky->at("required_targets").at(0);
+    REQUIRE(lit.at("name") == "lit_color");
+    const auto lit_type = lit.at("type");
+    CHECK(lit_type.at("semantic") == "pelican.render.color_signal@1");
+    const auto authored = Json::parse(readFile(rendering_path));
+    for (const auto &node : authored.at("nodes"))
+        if (node.at("id") == "deferred_lighting")
+            CHECK(node.at("parameters").at("ports").at("color").at("type") == lit_type);
+
+    // sky_ambient as Studio adds it (FR-3), lit_color_ref of the catalog's type.
+    const auto declared = engine.batch(Json::array({
+        {{"method", "edit_render_targets"},
+         {"params", {{"ops", Json::array({
+             {{"op", "add"}, {"target", {{"name", "lit_color"}, {"extent_scale", 1.0},
+                                         {"format", "R16G16B16A16_SFLOAT"}, {"format_class", "scene"},
+                                         {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}}}},
+             {{"op", "add"}, {"target", {{"name", "scene_depth"}, {"extent_scale", 1.0},
+                                         {"format", "D32_SFLOAT"}, {"format_class", "data"},
+                                         {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"})}}}}})}}}},
+        {{"method", "edit_graph_document"},
+         {"params", {{"ops", Json::array({
+             {{"op", "add_node"}, {"node", {{"id", "scene_depth_ref"}, {"op", "render.target_ref"},
+                                            {"outputs", Json::array({"resource"})},
+                                            {"parameters", {{"name", "scene_depth"}, {"type", fr3Depth}}}}}},
+             {{"op", "add_node"}, {"node", {{"id", "lit_color_ref"}, {"op", "render.target_ref"},
+                                            {"outputs", Json::array({"resource"})},
+                                            {"parameters", {{"name", "lit_color"}, {"type", lit_type}}}}}}})}}}}}));
+    INFO(declared.dump(2));
+    REQUIRE(declared.at("status") == "committed");
+    const auto connected = engine.send(
+        "edit_graph_document",
+        {{"ops", Json::array({{{"op", "set_input"}, {"node", "render_material_pass"}, {"port", "depth"},
+                               {"source", {{"node", "scene_depth_ref"}, {"port", "resource"}}}}})}});
+    INFO(connected.dump(2));
+    REQUIRE(connected.at("status") == "committed");
+    const auto added = engine.send("edit_render_features", fr3SkyParams());
+    INFO(added.dump(2));
+    REQUIRE(added.at("status") == "committed");
+
+    const auto before = readFile(rendering_path);
+    // The root and the render-target fragment edit_render_targets wrote.
+    const auto documents = engine.rpc.result("get_render_documents").at("documents");
+    const auto committed = engine.batch(Json::array({
+        {{"method", "edit_graph_document"},
+         {"params", {{"ops", Json::array({{{"op", "set_input"}, {"node", "deferred_lighting"}, {"port", "color"},
+                                           {"source", {{"node", "lit_color_ref"}, {"port", "resource"}}}}})}}}},
+        {{"method", "edit_preset_pass"},
+         {"params", {{"graph", "main_render"}, {"pass_name", "present"}, {"input", Json::array({"lit_color"})},
+                     {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+                     {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}}}}}));
+    INFO(committed.dump(2));
+    REQUIRE(committed.at("status") == "committed");
+    CHECK(committed.at("operation") == "edit_batch");
+    CHECK(committed.at("methods") == Json::array({"edit_graph_document", "edit_preset_pass"}));
+    REQUIRE(committed.at("documents").size() == 1);
+    (void)engine.rpc.result("render_frame");
+    {
+        const auto plan = engine.rpc.result("get_frame_plan");
+        INFO(plan.dump());
+        const auto *lighting = fr3PlanNode(plan, "deferred_lighting");
+        const auto *background = fr3PlanNode(plan, "sky_background");
+        const auto *present = fr3PlanNode(plan, "present");
+        REQUIRE(lighting != nullptr);
+        REQUIRE(background != nullptr);
+        REQUIRE(present != nullptr);
+        CHECK(fr3Lists(lighting->at("writes"), "lit_color"));
+        CHECK(fr3Lists(background->at("writes"), "lit_color"));
+        CHECK(present->at("reads") == Json::array({"lit_color"}));
+    }
+
+    // RD-1: the two edits are one undo -- every document the batch wrote (the
+    // root alone), back as it was read before it.
+    auto restore = Json::array();
+    for (const auto &written : committed.at("documents").items()) {
+        const auto reference = written.key();
+        const auto read = std::find_if(documents.begin(), documents.end(),
+                                       [&](const Json &document) { return document.at("reference") == reference; });
+        REQUIRE(read != documents.end());
+        restore.push_back(
+            {{"reference", reference}, {"base_digest", written.value()}, {"content", read->at("content")}});
+    }
+    const auto restored = engine.settle(engine.rpc.result("restore_render_documents", {{"documents", restore}}));
+    INFO(restored.dump(2));
+    REQUIRE(restored.at("status") == "committed");
+    CHECK(readFile(rendering_path) == before);
+    (void)engine.rpc.result("render_frame");
+    const auto plan = engine.rpc.result("get_frame_plan");
+    const auto *present = fr3PlanNode(plan, "present");
+    REQUIRE(present != nullptr);
+    CHECK(present->at("reads") == Json::array({"deferred_lighting__color"}));
+}
+
 
 namespace {
 

@@ -1050,6 +1050,21 @@ RenderConfigEditorService::currentDocumentSet() const {
         source_normalized_reference_, std::move(documents)};
 }
 
+// FR-4: renderconfigeditor.hpp.
+RenderConfigEditorService::HeldDocument
+RenderConfigEditorService::heldDocument(const std::string &reference) const {
+    if (batch_ && dependencies_.normalize_reference) {
+        const auto normalized = dependencies_.normalize_reference(reference);
+        for (const auto &document : batch_->documents)
+            if (document.normalized_reference == normalized &&
+                document.operation != RenderConfigDocumentOperation::erase)
+                return {.bytes = document.bytes, .base_digest = document.expected.digest};
+    }
+    auto bytes = readFileBytes(dependencies_.resolve_document_path(reference));
+    auto digest = renderConfigSourceDigest(bytes);
+    return {.bytes = std::move(bytes), .base_digest = std::move(digest)};
+}
+
 RenderConfigEditorService::GateSnapshot
 RenderConfigEditorService::gateSnapshot() {
     const auto observation = dependencies_.gate();
@@ -1938,8 +1953,9 @@ using BatchEdit = OrderedJson (RenderConfigEditorService::*)(const Json &);
 // The methods edit_batch takes. Each answers with one ticket of
 // queueRootEdit or enqueueAuthoredPassTicket and reads the documents it
 // rewrites from the editor's own (document_, the managed fragments, the
-// authoring context of currentDocumentSet()), so it builds on what the edits
-// before it in the batch made.
+// authoring context of currentDocumentSet(), FR-4 heldDocument() for a
+// project preset or feature), so it builds on what the edits before it in the
+// batch made.
 const std::vector<std::pair<std::string_view, BatchEdit>> &batchEdits() {
     static const std::vector<std::pair<std::string_view, BatchEdit>> edits{
         {"edit_render_features", &RenderConfigEditorService::editRenderFeatures},
@@ -1962,6 +1978,10 @@ const std::vector<std::pair<std::string_view, BatchEdit>> &batchEdits() {
         {"add_compute_task", &RenderConfigEditorService::addComputeTask},
         {"edit_ray_callable_records", &RenderConfigEditorService::editRayCallableRecords},
         {"edit_scene_acceleration_structures", &RenderConfigEditorService::editSceneAccelerationStructures},
+        // FR-4.
+        {"edit_preset_pass", &RenderConfigEditorService::editPresetPass},
+        {"edit_compute_task", &RenderConfigEditorService::editComputeTask},
+        {"remove_compute_task", &RenderConfigEditorService::removeComputeTask},
     };
     return edits;
 }
@@ -4438,17 +4458,18 @@ OrderedJson RenderConfigEditorService::changeComputeTask(const Json &params, boo
         const auto selected = std::find_if(tasks.begin(), tasks.end(), [&](const auto &entry) { return entry.at("name") == name; });
         if (selected == tasks.end() || !selected->at("editable").get<bool>())
             return rejection("compute_task_not_editable", "Select a task declared in a project-owned document");
-        if (selected->at("source_digest").at("hex") != task_digest)
-            return rejection("external_modification", "The task source changed since it was read");
         // An editable task is declared in a project feature or a project
         // preset, never in the rendering root (MG-2b: the catalog lists the
         // root's tasks read-only, so the check above already refused them).
+        // FR-4: read as the editor holds it, so inside edit_batch the edit
+        // builds on the batch's earlier edits; the caller's digest is the
+        // document's before the batch.
         const auto reference = selected->at("source_reference").get<std::string>();
         const auto path = dependencies_.resolve_document_path(reference);
-        const auto bytes = readFileBytes(path);
-        if (renderConfigSourceDigest(bytes) != task_digest)
-            return rejection("external_modification", "The task source changed while the edit was prepared");
-        auto source = OrderedJson::parse(bytes);
+        const auto held = heldDocument(reference);
+        if (held.base_digest != task_digest)
+            return rejection("external_modification", "The task source changed since it was read");
+        auto source = OrderedJson::parse(held.bytes);
         auto &config = source.value("schema", std::string{}) == "pelican.render_feature"
             ? featureSourceFragment(source, selected->at("provider_feature").get<std::string>())
             : source.at("config");
@@ -4671,7 +4692,6 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
             !current.pipeline_preset->reference.starts_with("project://")))
             return rejection("project_preset_required", "Fork the selected preset into the project before editing its passes");
         std::string reference;
-        std::string bytes;
         std::string authored_name = name;
         std::string provider;
         if (feature_edit) {
@@ -4692,14 +4712,16 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
             if (!source->authored_name.empty() && source->authored_name != name)
                 return rejection("feature_pass_not_editable", "Generated feature variants must be edited in their source document");
             if (!source->authored_name.empty()) authored_name = source->authored_name;
-            bytes = readFileBytes(dependencies_.resolve_document_path(reference));
         } else {
             reference = current.pipeline_preset->reference;
-            bytes = *current.pipeline_preset_bytes;
         }
-        if (renderConfigSourceDigest(bytes) != preset_digest)
+        // FR-4: the preset or feature as the editor holds it, so inside
+        // edit_batch the edit builds on the batch's earlier edits; the
+        // caller's digest is the document's before the batch.
+        const auto held = heldDocument(reference);
+        if (held.base_digest != preset_digest)
             return rejection("external_modification", "The selected pass source changed since it was read");
-        auto preset = OrderedJson::parse(bytes);
+        auto preset = OrderedJson::parse(held.bytes);
         auto *pass = feature_edit ? findFeatureEditablePass(preset, authored_name, provider) : findPresetEditablePass(preset, graph, name);
         if (!pass) return rejection("preset_pass_not_editable", "The selected node is not an editable pass in the project preset");
         applyEditablePassFields(params, *pass, feature_edit ? nullptr : &preset.at("config"), method);

@@ -365,6 +365,15 @@ class RenderConfigEditorService {
 
     GateSnapshot gateSnapshot();
     nlohmann::ordered_json changeComputeTask(const nlohmann::json &params, bool remove);
+    // FR-4: a document an edit rewrites (a project preset or feature), as the
+    // editor holds it: inside edit_batch, what the batch's earlier edits made
+    // of it, with `base_digest` the digest it had before the batch (the one
+    // the caller read); otherwise the disk, `base_digest` its digest.
+    struct HeldDocument {
+        std::string bytes;
+        std::string base_digest;
+    };
+    HeldDocument heldDocument(const std::string &reference) const;
     nlohmann::ordered_json materializeRenderFeature(const std::string &base_digest, const nlohmann::json &operation);
     // F-6: edit_preset_pass's third destination, a pass the direct root
     // declares itself. One root document, the ordinary root-edit ticket.
@@ -754,9 +763,9 @@ class RenderConfigEditorService {
     nlohmann::ordered_json editBatch(const nlohmann::json &params);
     // FR-3: the methods edit_batch takes, in the order it lists them. Left
     // out: those that write nothing through a ticket of their own, the
-    // asynchronous ones, restore / reload, and edit_compute_task /
-    // remove_compute_task / edit_preset_pass, which read the document they
-    // rewrite from the disk.
+    // asynchronous ones, and restore / reload. FR-4: edit_preset_pass,
+    // edit_compute_task and remove_compute_task are taken; they read the
+    // document they rewrite as the editor holds it (heldDocument).
     static std::vector<std::string> editBatchMethods();
     nlohmann::ordered_json restoreRenderDocuments(
         const nlohmann::json &params);

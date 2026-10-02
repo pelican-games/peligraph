@@ -9924,11 +9924,15 @@ TEST_CASE("FR-1 a feature names the targets it leaves to the pipeline and is ref
     const auto engineFeature = [](std::string_view name) {
         return Json::parse(loadEngineFeature("engine://features/" + std::string{name} + ".json"));
     };
-    const Json opaque{{"semantic", "pelican.render.legacy_opaque_image@1"}, {"arguments", Json::object()}};
+    // FR-4: sky_ambient declares lit_color's type, the scene color a Graph
+    // color port carries (an undeclared color target would be
+    // pelican.render.legacy_opaque_image@1).
+    const Json scene_color{{"semantic", "pelican.render.color_signal@1"},
+                           {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
     // What the feature writes, reads and overrides, its own targets left out;
-    // the declared required_targets gives scene_depth its type.
+    // the declared required_targets gives lit_color and scene_depth their types.
     CHECK(renderFeatureRequiredTargets(engineFeature("sky_ambient")) ==
-          Json::array({Json{{"name", "lit_color"}, {"type", opaque}, {"usage", Json::array({"COLOR_ATTACHMENT"})}},
+          Json::array({Json{{"name", "lit_color"}, {"type", scene_color}, {"usage", Json::array({"COLOR_ATTACHMENT"})}},
                        Json{{"name", "scene_depth"}, {"type", fr1DeviceDepth()}, {"usage", Json::array({"SAMPLED"})}}}));
     CHECK(renderFeatureRequiredTargets(engineFeature("shadow_directional")) == Json::array());
     CHECK(renderFeatureRequiredTargets(engineFeature("ui")) == Json::array());
@@ -9942,6 +9946,14 @@ TEST_CASE("FR-1 a feature names the targets it leaves to the pipeline and is ref
     CHECK(depth->at("type") == fr1DeviceDepth());
     CHECK(depth->at("usage") == Json::array({"SAMPLED", "DEPTH_STENCIL_ATTACHMENT"}));
     for (const auto &entry : taa) CHECK(entry.at("name") != "taa_accum");
+    // FR-4: the inference is unchanged -- a color target taa does not declare
+    // is still the untyped image.
+    const auto velocity = std::find_if(taa.begin(), taa.end(), [](const Json &entry) {
+        return entry.at("name") == "velocity";
+    });
+    REQUIRE(velocity != taa.end());
+    CHECK(velocity->at("type") ==
+          Json{{"semantic", "pelican.render.legacy_opaque_image@1"}, {"arguments", Json::object()}});
 
     auto document = fr1BlankGraph();
     document["rendering"]["features"] = Json::array({"engine://features/sky_ambient.json"});
