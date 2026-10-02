@@ -27431,6 +27431,58 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - **test**: `devstudio_graphcanvas_scene_test` の `UX-9 decision 1` / `2` / `4` の 3 本([decision 1](../test/devstudio_graphcanvas_scene_test.cpp#L10083))、`devstudio_engine_failure_test` の `UX-9 decision 5 …`([test](../test/devstudio_engine_failure_test.cpp#L551)。engine を起動する)
 - **シナリオ**: `gui_build_music`(120 → 132)、`gui_build_curve`(90 → 88)、`gui_build_optimize` の description
 
+### PS-1s: 一度だけ走る pass と、frame をまたいで残る image(engine PS-1 の Studio 側)
+
+**Studio のみ(engine は PS-1 `9b3c9566`)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「一度だけ走る pass と、frame をまたいで残る image(✅PS-1s)」、シナリオの `gui_build_ocean` / `gui_build_ocean_compute`。**
+
+#### 前提
+- GB-3 の海は初期スペクトル h0 を毎 frame 計算し直していた(`gui_build_ocean` / `gui_build_ocean_compute`)。利用者の方針「DCC 寄りの成果は完成時に焼く、触らない所は最適化」に沿う機能(仕様の背景)
+
+#### 着地(2026-10-02、349af5e4)
+- **決定 1(Schedule の欄)**: pass の欄と compute の欄に Schedule(`Every frame` / `Once`、compute は `Every view` も)。`Every frame` は鍵を消す([`GraphCanvasScheduleRow`](../src/devstudio/view/graphcanvasrenderfields.hpp#L79))。Loop の欄に `Run the body once`(全分岐の body の pass と task の全部に once。外すと once だけ戻し、per_view は残す)
+- **決定 2(Lifetime)**: image の欄に Lifetime(`Per frame` / `Persistent`)。`Once` を選ぶと、pass が書く transient の image(write / read_write / attachment の port から線を辿った `render.image`)を同じ編集で Persistent に([`GraphCanvasModel::setNodeSchedule()`](../src/devstudio/model/graphcanvasmodel.cpp#L7769))。notice は `Saved; <image> made Persistent: what a once pass writes is kept.`。`Every frame` に戻しても Lifetime は戻さない。Persistent の image の帯に `persistent`
+- **決定 3(once の印)**: once の node の帯に `once · ran gen N` / `once · not run yet`、詳細表に `once` の行(世代と frame)、Schedule の下に `Ran in generation N, frame M`。body の node は展開された回の最新を出す
+- **決定 4(Recompute)**: Schedule の横と Loop の欄に Recompute(`rerun_once {node}`。body の node はそのループの名前で)、canvas の上のボタンの列に Recompute once(`rerun_once {}`。plan に once の pass があるときだけ)。押した後は、送った pass の `last_run_frame` が進むまで `get_frame_plan` を読み直す(最大 40 回)。右クリックのメニューには入れていない
+- **決定 5(拒否の文)**: `graph.once_writes_transient@1`、`graph.once_reads_per_frame@1`、`rerun_once` の `node_unknown` を 1 文に
+- **決定 6(海の h0)**: `gui_build_ocean` の h0 の pass と `gui_build_ocean_compute` の h0 の task を Once に(image は同じ編集で Persistent)。`get_frame_plan` の `nodes[0]` が `schedule: "once"` と `last_run_generation` を持ち、30 frame 後も `last_run_frame` が同じで、Recompute で進むことを rpc で見る。2 時点の実際の数は commit の記録に無い(未確認)
+- **test**: `devstudio_graphcanvas_test` の `PS-1s …` 3 本([Once keeps what the pass writes](../test/devstudio_graphcanvas_test.cpp#L3969))
+- **シナリオ**: `gui_build_ocean`(235 → 259)、`gui_build_ocean_compute`(244 → 268)。本数は 58 のまま
+
+### IA-1s: 画像ファイルを render target の初期内容に、LTC を LUT 版に、拒否の文書(engine IA-1 / IA-2 / CT-2 の Studio 側)
+
+**Studio のみ(engine は IA-1 `c6690eba`・IA-2 `cdcdebc1`・CT-2 `51d1c2d8`)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「画像ファイルを image の初期内容に(✅IA-1s)」、シナリオの `gui_build_ltc`。prepare の口と `file` step の `copy` は `docs/manual/10_tools.md` §10.7。**
+
+#### 前提
+- GB-3 の LTC(`gui_build_ltc`)は LUT を読む口が無く、近似の式で代えていた。「DCC の成果は完成時に焼く」の焼いた資産を読む口でもある(仕様の背景)
+
+#### 着地(2026-10-02、e2fd6dad)
+- **決定 1(Initial contents)**: image の欄に Initial contents(`None` と project の `.ktx2` / `.png`。Persistent の間だけ押せ、Per frame では tooltip `Make it Persistent to start from an image`)と `Size from the image`(`width` / `height` / `extent_scale` を同じ編集で消す。header が読めれば `(64 × 64)`)。initial を選ぶとき `width` / `height` が無ければ `extent_scale` も消す([`GraphCanvasImageFields::commitInitial()`](../src/devstudio/view/graphcanvasrenderfields.cpp#L817))
+- **決定 2(拒否の文)**: `graph.image_initial_requires_persistent@1`、`graph.image_initial_extent_conflict@1`、`graph.image_initial_mismatch@1`(`what` ごとに `size` / `format` / `format to the other color space` で終わる)
+- **決定 3(Frame Plan)**: Resources の行の facts に `Initial contents`(`initial: <asset> · sha256 <8 文字>` か `· not in the manifest`)。書く pass の無い image は Writers の列にも。仕様の挙げた Physical plan の行には出していない
+- **決定 4(Import)**: Initial contents の横に Import…(`.ktx2` / `.png` / `.hdr` を `assets/images/` へ。同名は `_2`。`.hdr` は子 process で `pelican_cli image ktx2 --hdr` を起こし、できた `.ktx2` を選ぶ。CLI は `PELICAN_STUDIO_CLI` か Studio の隣)。`.hdr` の焼き込みは test もシナリオも通していない
+- **決定 5(見張り)**: Graph が文書の initial の asset を集めて `RenderDocumentReload` に渡し、文書と並べて見張る([`RenderDocumentReload::setInitialAssets()`](../src/devstudio/model/renderdocumentreload.cpp#L136))。`changed_assets` があれば `Picked up the change to <asset>.`、無い engine(`no_change`)では `<asset> changed — the engine reads it on its next start.`
+- **決定 6(CT-2 の document)**: graph の拒否の 1 文の末尾を `(in <document>, <code>).` / `(in definition <d> of <document>, <code>).` に(`project://` を外す。文が自分で definition を名指す code には添えない)。起動時の致命の file も `document` / `definition` から読み、行の `.json` の path と project.json の推測はそれが無いときだけ
+- **決定 7(LTC を LUT 版に)**: `gui_build_ltc` の後半で、`gui_build_ltc.prepare.py` が Studio の外で 64×64 の RGBA32F の表 2 枚(と焼き直した 1 枚)を閉じた式から書いて `pelican_cli image ktx2 --raw` で焼き、Studio で image 2 枚を Persistent にして Import し Initial contents に、`shaders/ltc_lut.frag` の宣言 5 / 6 へつなぐ。映り込みが近似の形と違うこと、表 2 を `file` の `copy` で焼き直したものに上書きすると拾われて映り込みが変わることを見る。式は `ltc_1 = (1, 0, min(tanθ, 4)(1 − a), a)`、`ltc_2 = (1 − a/2, (1 − cosθ)^5 / 4, 0, 1)`、`a = max(r², 0.02)`(script の注記)
+- **自動化の道具**: `run_studio_scenario.cmake` が `<名前>.prepare.py` を driver の前に走らせ(`--out <run>/incoming --cli <pelican_cli>`)、ctest の登録が `-DCLI=` を渡す。`studio_drive.py` の `file` step に `copy`(両端とも run の持つ directory の中)。シナリオの README は変えていない
+- **test**: `devstudio_graphcanvas_scene_test` の `IA-1s decision 1`、`devstudio_graphcanvas_test` の `IA-1s decision 2` / `4` / `6`、`devstudio_frameplan_test` の `IA-1s decision 3`、`devstudio_render_reload_test` の `IA-1s decision 5`([decision 5](../test/devstudio_render_reload_test.cpp#L418))。`devstudio_engine_failure_test` の UX-9 decision 5 は注記だけを直した
+- **シナリオ**: `gui_build_ltc`(96 → 192)。本数は 58 のまま
+
+### UX-11: Graph の render.material_pass の欄を Pass Editor と同じに、Tags は選ぶ形に
+
+**Studio のみ。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「Graph の material pass の欄を Pass Editor の form で(✅UX-11)」、シナリオの `graph_from_blank`。**
+
+#### 前提
+- Graph の `render.material_pass` の欄は Contract と Place / View だけで、`material_filter`・`material_variant`・`material_range`・`material_outputs`・`screen_inputs`・`surface_resources`・`material_resources`・load / store / clear は JSON の行か帯で打つしかなかった。Pass Editor の `MaterialSettingsForm` は同じものを選ぶ形で持つが、Tags はカンマ区切りの line edit。UX-4b の積み残し(仕様の根拠)
+
+#### 着地(2026-10-02、0ac261f4)
+- **決定 1(form を Graph に)**: material pass の欄に Pass Editor の `MaterialSettingsForm` と `AttachmentOpsForm`。変更ごとに parameters 全体を `set_node_parameters` 1 回で([`GraphCanvasMaterialPassFields`](../src/devstudio/view/graphcanvasmaterialfields.hpp#L41))。Contract と Variant は Graph の Draw の欄のまま(form の 2 行は隠す)。color の load / store / clear は pass の `color_load_op` / `color_store_op` / `clear_color`、depth は `depth_load_op` / `depth_store_op`
+- **決定 2(Tags)**: Loop の `GraphCanvasTagPicker` を自分の file に移し([`GraphCanvasTagPicker`](../src/devstudio/view/graphcanvastagpicker.hpp#L27))、Pass Editor と Graph の Tags(include / exclude)に。候補は engine の `material_tags`。一覧に無い tag は menu の `+ new tag` に打つ(打つのはここだけ)
+- **決定 3(screen_inputs / surface_resources の名前)**: 変えていない(Studio の固定の表のまま)。engine の契約が名前を出しているかは、この commit では確かめていない(未確認)
+- **決定 4(Materials drawn)**: 欄の下に、plan の route と、engine の material のうち Tags と Variant が通すもの(engine が pass ごとの描いた material を出さないので近似。見出しが言う)。行を押すと Frame Plan の Materials のタブで Target pass がその pass の行を選ぶ
+- **決定 5(gui_build_full / gui_build_D を短く)**: この commit では変えていない。代わりに `graph_from_blank` が Graph から G-buffer の出力の Load を Clear にする
+- **test**: `devstudio_graphcanvas_scene_test` の `UX-11 decisions 1 and 4`([test](../test/devstudio_graphcanvas_scene_test.cpp#L10482))、`devstudio_pass_forms_test` の `UX-11 decision 2`。UX-4a の pass forms の test と fullscreen pass の test は Tags の部品に合わせて直した
+- **新しいファイル**: `src/devstudio/view/graphcanvastagpicker.{hpp,cpp}`、`src/devstudio/view/graphcanvasmaterialfields.{hpp,cpp}`(どちらも library `pelican_studio_view`)
+- **シナリオ**: `graph_from_blank`(35 → 48)。本数は 58 のまま
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

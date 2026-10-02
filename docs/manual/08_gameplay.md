@@ -869,7 +869,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 - **引数があると環境変数は読みません。** 環境変数が空文字列なら未設定と同じ扱いです([`audioBackendEnvironment`](../../src/player/main.cpp#L123))。
 - 値は完全一致です(`Null` や空文字列の引数は通らない。[`audioBackendKindFromName`](../../src/core/audio/audiobackendkind.hpp#L31))。それ以外の値は起動を止め、`audio.backend_unknown@1: --audio-backend must be one of: device, offline, null: <値>` で失敗します(環境変数から来たときは `--audio-backend` の所が `PELICAN_AUDIO_BACKEND` になります。[`parseAudioBackend`](../../src/player/main.cpp#L111))。
 - `device` / `offline` を名指ししても、開けなければ名指ししないときと同じく `null` へ退避し、`fallback_reason` が付きます。
-- **Studio の埋め込み player は Studio の環境を継承します**(QProcess)。Studio を `PELICAN_AUDIO_BACKEND=null` で起動すれば、埋め込み player は音を出しません。Studio の scenario driver(`tools/studio_drive.py`)は、呼び出し側が値を決めていない(未設定か空)ときに `null` を渡します([該当箇所](../../tools/studio_drive.py#L1293)、`d616e35a`)。
+- **Studio の埋め込み player は Studio の環境を継承します**(QProcess)。Studio を `PELICAN_AUDIO_BACKEND=null` で起動すれば、埋め込み player は音を出しません。Studio の scenario driver(`tools/studio_drive.py`)は、呼び出し側が値を決めていない(未設定か空)ときに `null` を渡します([該当箇所](../../tools/studio_drive.py#L1308)、`d616e35a`)。
 - **`PELICAN_WITH_AUDIO=OFF` の build** では `--audio-backend null` だけを受け付けます。`offline` / `device` は `This binary was built with PELICAN_WITH_AUDIO=OFF: --audio-backend <値> is unavailable` で起動を止めます(未知の値は、その前に `audio.backend_unknown@1`)。**環境変数は読みません**(継承した値で OFF の player が止まらないように)。
 
 どれになったかは rpc の **`get_status` の `audio`** で読めます([`audioStatusJson()`](../../src/core/communication/audiostatus.cpp#L37))。
@@ -1120,7 +1120,7 @@ auto slots  = ctx.save().listSaves();                         // SaveContext::Sl
 
 > **「姿勢の正本を 1 本にまとめる」は v0 では撤回されました(✅AG-1b)。** 一本化には「シーンが持つ派生プログラムの置き場」と「評価器の状態を写す API」が先に要り、v0 にはどちらもありません。**v0 が約束するのは 2 つの経路の parity**(`loop` / `speed` / `start_time` の意味、位相、パラメータ編集をまたいだ状態の保持)**と owner 単位の排他**の 2 つだけです([docs/v0_freeze.md](../v0_freeze.md) §1.6)。
 
-`animation` コンポーネントの受理キーは `name` / `clip` / `graph` / `parameters` / `speed` / `loop` / `start_time` の 7 つですが、**`graph` を書いた場合 `speed` / `loop` / `start_time` は拒否されます**(`field 'animation.<鍵>' is clip-only; graph states define their playback clocks`)。逆に `parameters`(グラフの初期パラメータ)は `graph` のときだけ書けます([componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1460))。
+`animation` コンポーネントの受理キーは `name` / `clip` / `graph` / `parameters` / `speed` / `loop` / `start_time` の 7 つですが、**`graph` を書いた場合 `speed` / `loop` / `start_time` は拒否されます**(`field 'animation.<鍵>' is clip-only; graph states define their playback clocks`)。逆に `parameters`(グラフの初期パラメータ)は `graph` のときだけ書けます([componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1485))。
 
 ### ゲームコードから見た層
 

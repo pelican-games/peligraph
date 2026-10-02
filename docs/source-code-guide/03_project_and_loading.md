@@ -21,7 +21,7 @@ Runtime object
 | project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L300) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L639) |
 | path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)（module寿命、ログ、engine resource注入） |
 | scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L268) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1650) |
-| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3115) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1628) |
+| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3115) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1632) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L55) |
 | asset manifest | [`parse/generate/verify`](../../src/project/assetsmanifest.hpp#L73) | [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L11) |
 | material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L160) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L347) |
@@ -353,7 +353,7 @@ ECS objectを作った後、同じ early_publish 段の中で transform を持�
 
 GP-1 から、投影の対象は「親子に参加するobject」ではなく **`transform` を持つ全object（`transform_node`）** です。scene に `parent` が1つも無くても同じ経路を通ります。各objectの `LocalTransformComponent` へ親リンクを書き、[`resolveParentOrder()`](../../src/core/loader/scene.cpp#L1358) で親が先に来る順に並べ、transform codec の `runtime_apply` で local を書いてから world を合成します。rootは親を持たないので、その local は authored の TRS そのものになります。
 
-合成は [`composeWorldTransform()`](../../src/core/loader/componentcodec.cpp#L2277) で、`LocalTransformSystem` も同じ関数を呼びます（[`composeFromLocal()`](../../src/core/ecs/predefined/localtransformsystem.cpp#L14)）。したがって `SceneLoaded` を受け取ったコードは、まだ1フレームも回っていない時点でも world transform を問い合わせられ、最初のフレームの再計算でも同じ world に着地します。この関数は回転を正規化します（`normalize(parent.R * normalize(local.R))`）。GP-1 以前の `LocalTransformSystem` は正規化せずに掛けていたので、親子のある scene の毎フレームの world 回転は、以前と下位 bit が変わることがあります。
+合成は [`composeWorldTransform()`](../../src/core/loader/componentcodec.cpp#L2340) で、`LocalTransformSystem` も同じ関数を呼びます（[`composeFromLocal()`](../../src/core/ecs/predefined/localtransformsystem.cpp#L14)）。したがって `SceneLoaded` を受け取ったコードは、まだ1フレームも回っていない時点でも world transform を問い合わせられ、最初のフレームの再計算でも同じ world に着地します。この関数は回転を正規化します（`normalize(parent.R * normalize(local.R))`）。GP-1 以前の `LocalTransformSystem` は正規化せずに掛けていたので、親子のある scene の毎フレームの world 回転は、以前と下位 bit が変わることがあります。
 
 > 🧩 **難所 — preserve-worldの逆算**([`inverseLocal()`](../../src/core/loader/editorprojectiontransaction.cpp#L288) / [`makeReparentCommand()`](../../src/core/loader/editorprojectiontransaction.cpp#L588))
 >
@@ -439,7 +439,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 > ctest wp380c_... : dumpbin /symbols で「入っていないこと」を検査
 > ```
 >
-> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L2441) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L87)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
+> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L2449) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L87)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
 >
 > **不変条件**: setterの定義をヘッダへ書かない（inlineでも）。test-onlyのTUを `pelican_core` のソースへ足さない。`default_fault_injector_for_testing` の既定値をnullptr以外にしない。
 
@@ -699,7 +699,7 @@ instances.publishModelInstance(std::move(staged_instance));
 
 [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3115) はfeature JSONを順番に読み、render target、buffer、pass、compute taskを追加し、限定的なoverrideを適用します。名前衝突、曖昧anchor、未知override fieldは即時エラーです。shader defineも重複排除して集約します。
 
-runtime側の入口は [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1628) です。[`loadRenderGraphVariantsFromConfigData()`](../../src/core/vkcore/renderer_config.cpp#L453) が `ProjectBasicConfig::renderingConfigJson()` の文字列と起動ターゲットの実extentを渡し、flat（OpenXR有効時は `#xr` も）とpreviewを **1回の登録トランザクション** として受け取ります。
+runtime側の入口は [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1632) です。[`loadRenderGraphVariantsFromConfigData()`](../../src/core/vkcore/renderer_config.cpp#L453) が `ProjectBasicConfig::renderingConfigJson()` の文字列と起動ターゲットの実extentを渡し、flat（OpenXR有効時は `#xr` も）とpreviewを **1回の登録トランザクション** として受け取ります。
 
 起動主体が feature を足す公開面は `pelican_player --feature-overlay <uri>` です。文書の厳密な
 v1 検証と加算は [`applyRenderFeatureOverlays()`](../../src/project/renderfeatureoverlay.cpp#L122) が担当し、
@@ -901,13 +901,13 @@ struct ComponentCodec {
 
 この五つ（decode / encode / schema / apply / project）が**全codecに必須**です。値の運搬は `ComponentCodecValue = std::any` です。`decode_authored` は例外ではなく [`ResolutionResult<ComponentCodecValue>`](../../src/core/loader/resolutionresult.hpp#L55) を返し、登録テーブルでは `decodeResult<decodeXxx>` が生の decode 関数を包みます。`schema` が返すのは平坦な `StructFieldSchema` 列ではなく**再帰記述子** [`const SchemaNode &`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L155) で、平坦な列が要るときだけ [`fieldSchema()`](../../src/core/loader/componentcodec.hpp#L344) が作り直します（後述）。
 
-`editor_prepare` / `editor_swap` の2本は必須ではありません（transform / simplemodelview / camera / light / collider は `nullptr`）。[`prepareEditorSwap()`](../../src/core/loader/componentcodec.cpp#L2157) は `editor_policy` が `EcsCodec` で、かつ両方が非nullのときだけ通し、そうでなければ `logic_error` です。[`EditorProjectionPolicy`](../../src/core/loader/componentcodec.hpp#L34) に既定値が無いのは意図で、ヘッダのコメントどおり「codecを増やすなら、live projectionを所有するruntime participantを選ぶ」ことを強制します。
+`editor_prepare` / `editor_swap` の2本は必須ではありません（transform / simplemodelview / camera / light / collider は `nullptr`）。[`prepareEditorSwap()`](../../src/core/loader/componentcodec.cpp#L2182) は `editor_policy` が `EcsCodec` で、かつ両方が非nullのときだけ通し、そうでなければ `logic_error` です。[`EditorProjectionPolicy`](../../src/core/loader/componentcodec.hpp#L34) に既定値が無いのは意図で、ヘッダのコメントどおり「codecを増やすなら、live projectionを所有するruntime participantを選ぶ」ことを強制します。
 
 `runtime_apply` と `runtime_project` がどの型を指すかは [`ComponentCodecRuntimeKind`](../../src/core/loader/componentcodec.hpp#L24) が決めます。ヘッダのコメントが規範です — transform は `TransformCodecTarget`、その他のECS codecはそのcomponent自身、camera/light は `CameraCodecData` / `LightCodecData`、collider は `ColliderComponent` です。
 
-この中でtransformだけが、componentを直接指さずに [`TransformCodecTarget`](../../src/core/loader/componentcodec.hpp#L69)（`world` / `local` / `parent_world` の三つのポインタ）を経由します。authoredなのは **local TRS** ですが、ランタイムで全員が読むのは world の `TransformComponent` で、`LocalTransformComponent` を持たないobjectもある、という食い違いがあるためです。GP-1 以降、scene load と editor の spawn では transform を持つ全objectに local が付きます（§4）。付かないのは editor の `add_component` で後から `transform` を足したobject（次の load まで）と、`load_gltf` の transient object です。そのため `runtime_apply` は local へ書いたうえで world も自分で合成し直し（[`applyTransform()`](../../src/core/loader/componentcodec.cpp#L635)）、`runtime_project` は local があればそれを返し、無ければ `parent_world` を使って world から逆算します（[`projectTransform()`](../../src/core/loader/componentcodec.cpp#L650)）。`parent_world` は両方向の変換に必要な係数で、これが無いと親の下のobjectについてlocalとworldを行き来できません。editor の読み取り（[`queryEditorRuntime()`](../../src/core/communication/editorruntimefactory.cpp#L894) の `tryComponent<LocalTransformComponent>`）もこの `runtime_project` を通るので、`get_components` の `local_trs` は root でも注入された local（= authored の値）を返します。GP-1 以前の root では local が無く、world をそのまま返していました。
+この中でtransformだけが、componentを直接指さずに [`TransformCodecTarget`](../../src/core/loader/componentcodec.hpp#L69)（`world` / `local` / `parent_world` の三つのポインタ）を経由します。authoredなのは **local TRS** ですが、ランタイムで全員が読むのは world の `TransformComponent` で、`LocalTransformComponent` を持たないobjectもある、という食い違いがあるためです。GP-1 以降、scene load と editor の spawn では transform を持つ全objectに local が付きます（§4）。付かないのは editor の `add_component` で後から `transform` を足したobject（次の load まで）と、`load_gltf` の transient object です。そのため `runtime_apply` は local へ書いたうえで world も自分で合成し直し（[`applyTransform()`](../../src/core/loader/componentcodec.cpp#L660)）、`runtime_project` は local があればそれを返し、無ければ `parent_world` を使って world から逆算します（[`projectTransform()`](../../src/core/loader/componentcodec.cpp#L675)）。`parent_world` は両方向の変換に必要な係数で、これが無いと親の下のobjectについてlocalとworldを行き来できません。editor の読み取り（[`queryEditorRuntime()`](../../src/core/communication/editorruntimefactory.cpp#L894) の `tryComponent<LocalTransformComponent>`）もこの `runtime_project` を通るので、`get_components` の `local_trs` は root でも注入された local（= authored の値）を返します。GP-1 以前の root では local が無く、world をそのまま返していました。
 
-登録テーブルは8行です（[`componentcodec.cpp` 内](../../src/core/loader/componentcodec.cpp#L1981)）。ただし**見えるのは常に8行とは限りません**（最後の行だけは後述のgate付きです）。
+登録テーブルは8行です（[`componentcodec.cpp` 内](../../src/core/loader/componentcodec.cpp#L2006)）。ただし**見えるのは常に8行とは限りません**（最後の行だけは後述のgate付きです）。
 
 | codec名 | `runtime_kind` | `editor_policy` | editor swap |
 |---|---|---|---|
@@ -920,7 +920,7 @@ struct ComponentCodec {
 | `sprite_view` | `Ecs` | `EcsCodec` | あり |
 | `pelican_ray_instance` | `Ecs` | `EcsCodec` | あり（gate付き） |
 
-transformだけは専用の投影関数 [`projectTransformRuntimeJson()`](../../src/core/loader/componentcodec.hpp#L425) を持ちます。
+transformだけは専用の投影関数 [`projectTransformRuntimeJson()`](../../src/core/loader/componentcodec.hpp#L444) を持ちます。
 
 > **設計決定:** transformの「authored local TRS」と「表示専用のworld投影」を混同しない、という要件をコメントで明文化したうえで別関数に分けています。エディタが表示している値と、保存される値が同じものだと誤解しないための境界です。
 
@@ -930,13 +930,13 @@ transformだけは専用の投影関数 [`projectTransformRuntimeJson()`](../../
 
 ### `pelican_ray_instance` は二重にgateされる ✅実装済み
 
-9番目(末尾)のcodecだけは、**テーブルに載っていても引けるとは限りません**。[`componentCodecs()`](../../src/core/loader/componentcodec.cpp#L2197) は [`rayInstanceCodecEnabled()`](../../src/core/loader/componentcodec.cpp#L2190) が偽なら `codecs` の**先頭8要素だけ**を span として返します（[その `first()`](../../src/core/loader/componentcodec.cpp#L2205)）。判定は [`RayLayoutRuntimeState::builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L177) で、`configure()` 済みかつモードが `LayoutV3`(layout がある。MG-2a で layout の版は 3 だけになりました)のときだけ真です。モードを固定するのは起動の1点だけで、組み込みComponent登録より前です（§2.1 の 7番）。同じ述語がECS側の登録も分けるので（[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L38)）、「codecはあるがComponentが無い」状態は作られません。テストからは [`findComponentCodecIncludingDisabled()`](../../src/core/loader/componentcodec.hpp#L401) でgateを迂回できます。
+9番目(末尾)のcodecだけは、**テーブルに載っていても引けるとは限りません**。[`componentCodecs()`](../../src/core/loader/componentcodec.cpp#L2222) は [`rayInstanceCodecEnabled()`](../../src/core/loader/componentcodec.cpp#L2215) が偽なら `codecs` の**先頭8要素だけ**を span として返します（[その `first()`](../../src/core/loader/componentcodec.cpp#L2230)）。判定は [`RayLayoutRuntimeState::builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L177) で、`configure()` 済みかつモードが `LayoutV3`(layout がある。MG-2a で layout の版は 3 だけになりました)のときだけ真です。モードを固定するのは起動の1点だけで、組み込みComponent登録より前です（§2.1 の 7番）。同じ述語がECS側の登録も分けるので（[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L38)）、「codecはあるがComponentが無い」状態は作られません。テストからは [`findComponentCodecIncludingDisabled()`](../../src/core/loader/componentcodec.hpp#L420) でgateを迂回できます。
 
-WP382dから[`decodeRayInstance()`](../../src/core/loader/componentcodec.cpp#L1716)は`overrides`を可変長の行として受理します。省略した値は継承し、明示した0や空のflagsは上書きとして保持します。実行時のcatalogとAS planをscene/editorの候補に含め、公開・rollbackで一緒に切り替えます。
+WP382dから[`decodeRayInstance()`](../../src/core/loader/componentcodec.cpp#L1741)は`overrides`を可変長の行として受理します。省略した値は継承し、明示した0や空のflagsは上書きとして保持します。実行時のcatalogとAS planをscene/editorの候補に含め、公開・rollbackで一緒に切り替えます。
 
-previewでは共通decode入口の[`componentDecodeSurfaceViolation()`](../../src/core/loader/componentcodec.cpp#L2092)が`ray_instance_overrides_unsupported@1`と`surface=preview`を返します。共通codecにはWeb用surface制約もありますが、別repoのWebパーサへの接続はWeb側の担当です。旧`overrides_not_enabled`分岐とそのlegacy branch IDは削除しました。
+previewでは共通decode入口の[`componentDecodeSurfaceViolation()`](../../src/core/loader/componentcodec.cpp#L2117)が`ray_instance_overrides_unsupported@1`と`surface=preview`を返します。共通codecにはWeb用surface制約もありますが、別repoのWebパーサへの接続はWeb側の担当です。旧`overrides_not_enabled`分岐とそのlegacy branch IDは削除しました。
 
-そのほかの受理規則も全て名前付きの legacy branch で拒否します: `instance_flags` は文字列配列のみ、重複flagは拒否、未知flag名は `ray_as_unknown_flag`、`force_opaque` と `force_no_opaque` の同時指定は `ray_as_conflicting_instance_flags`（[その検査](../../src/core/loader/componentcodec.cpp#L1687)）、`mask` は 0..255、`custom_index` は `rayCustomIndexMaximum` まで、そして**scalar 3項目もoverridesも省略された宣言**は `ray_instance_empty` です（[その検査](../../src/core/loader/componentcodec.cpp#L1800)）。
+そのほかの受理規則も全て名前付きの legacy branch で拒否します: `instance_flags` は文字列配列のみ、重複flagは拒否、未知flag名は `ray_as_unknown_flag`、`force_opaque` と `force_no_opaque` の同時指定は `ray_as_conflicting_instance_flags`（[その検査](../../src/core/loader/componentcodec.cpp#L1712)）、`mask` は 0..255、`custom_index` は `rayCustomIndexMaximum` まで、そして**scalar 3項目もoverridesも省略された宣言**は `ray_instance_empty` です（[その検査](../../src/core/loader/componentcodec.cpp#L1825)）。
 
 ### 再帰schema `SchemaNode` と `$list` / `$row` ✅実装済み
 
@@ -975,7 +975,7 @@ encode（[list の枝](../../src/core/userpublic/details/schema/structfieldjson.
 
 > **設計決定:** 行のidを配列添字ではなく封筒で持つのは、行を並べ替えても挿入しても外部参照が切れないようにするためです（§3.12 の `AuthoringObjectId` と同じ動機）。`next_id` を単調に保つ検査がその保証の要で、ここを緩めると同じidが再利用され、参照が黙って別の行を指します。
 
-なお `ComponentCodec::fieldSchema()` が返す平坦な列は **rootの直下の子だけ**を写します（[その実装](../../src/core/loader/componentcodec.cpp#L2128)）。`List` の行schemaはそこに現れないので、平坦な列を消費する側（schema駆動のinspectorなど）は再帰schemaを完全には表現できません。
+なお `ComponentCodec::fieldSchema()` が返す平坦な列は **rootの直下の子だけ**を写します（[その実装](../../src/core/loader/componentcodec.cpp#L2153)）。`List` の行schemaはそこに現れないので、平坦な列を消費する側（schema駆動のinspectorなど）は再帰schemaを完全には表現できません。
 
 ## 3.12 AuthoringSceneDocument ✅実装済み
 
@@ -1195,7 +1195,7 @@ instance の入力ポートがどこから値を取るかは `edge > parameters 
 | [`renderloopreport.hpp`](../../src/project/renderloopreport.hpp#L15) | `get_frame_plan` の `loops[]` と `loop_origin`、変種で非活性にした graph の node(`RenderGraphDeactivatedNode`) |
 | [`rendergraphcomposition.hpp`](../../src/project/rendergraphcomposition.hpp#L26) / `.cpp` | `render.target_ref` の検査、置き場所の run(`placeRenderGraphPassRun()` / `placeDeclaredRenderGraphPassRuns()`)、expand の展開、`pass_replacements` の適用、変種で外れる feature への依存 |
 | [`materialdrawloop.hpp`](../../src/project/materialdrawloop.hpp#L97) / `.cpp` | draw_loop の純粋層: `MaterialDrawStep`、material の照合の鍵、分岐の選び方、`get_frame_plan` の要素と paging、LP-2 の拒否 code |
-| [`materialpassdecompose.hpp`](../../src/project/materialpassdecompose.hpp#L74) / `.cpp` | `decompose_material_pass` の文書の書き換え(editor 側は [`RenderConfigEditorService::decomposeMaterialPass()`](../../src/core/communication/renderconfigeditor.cpp#L2818) が 1 つの transaction に載せる) |
+| [`materialpassdecompose.hpp`](../../src/project/materialpassdecompose.hpp#L74) / `.cpp` | `decompose_material_pass` の文書の書き換え(editor 側は [`RenderConfigEditorService::decomposeMaterialPass()`](../../src/core/communication/renderconfigeditor.cpp#L2825) が 1 つの transaction に載せる) |
 | [`viewselect.hpp`](../../src/project/viewselect.hpp#L21) | `view_select` の 4 つの拒否 code と、座標と選択の照合 |
 | `src/core/resources/graphs/*.json` | 出荷する分解版の雛形 4 本(engine は読まない。`decomposes` を持つ) |
 
@@ -1223,7 +1223,7 @@ instance の入力ポートがどこから値を取るかは `edge > parameters 
 
 呼ぶ所は 3 つの経路です。
 
-- **編集の ticket**: [`RenderConfigEditorService::rejection()`](../../src/core/communication/renderconfigeditor.cpp#L1007) が、`graph.` の code の rejected の全部に editor の持つ root で足します([CT-2 の `withGraphRefusalDocument()`](../../src/core/communication/renderconfigeditor.cpp#L109))。その前に、変種の preflight は候補の root で、commit の失敗は ticket が運んだ root で、`edit_graph_document` は op を当てた後の文書で足します(op が足した node もそこで見つかるため。[`edit_graph_document` で足す所](../../src/core/communication/renderconfigeditor.cpp#L2540))。先に足した鍵は残るので、後の `rejection()` は上書きしません。
+- **編集の ticket**: [`RenderConfigEditorService::rejection()`](../../src/core/communication/renderconfigeditor.cpp#L1008) が、`graph.` の code の rejected の全部に editor の持つ root で足します([CT-2 の `withGraphRefusalDocument()`](../../src/core/communication/renderconfigeditor.cpp#L110))。その前に、変種の preflight は候補の root で、commit の失敗は ticket が運んだ root で、`edit_graph_document` は op を当てた後の文書で足します(op が足した node もそこで見つかるため。[`edit_graph_document` で足す所](../../src/core/communication/renderconfigeditor.cpp#L2547))。先に足した鍵は残るので、後の `rejection()` は上書きしません。
 - **renderer が構成を読む所**: [`loadRenderGraphVariantsFromConfigData()`](../../src/core/vkcore/renderer_config.cpp#L453) が `GraphRegistryError` を受けたら足して投げ直し、`<code>: <JSON>` の文で運ばれる `graph.` の code(`view_select` と draw_loop)は、型がちょうど `std::runtime_error` のときだけ文を組み直します(派生型を失わないため。[文を組み直す所](../../src/core/vkcore/renderer_config.cpp#L610))。この関数は `reloadRenderPipelineFromDisk()` と `applyRenderPipelineAuthoringCandidate()` からも呼ばれます。
 - **起動時の致命の行**: `PelicanCore::run()` の [CT-2 の `GraphRegistryError` の catch](../../src/core/userpublic/pelican_core.cpp#L180) が、[`startupGraphRefusal()`](../../src/core/userpublic/pelican_core.cpp#L62) で `ProjectBasicConfig` の root を読んで足してから `Pelican fatal error : ...` を書きます。
 

@@ -223,7 +223,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 { "name": "animation", "clip": "character.glb#animation/Turn", "speed": 1.0, "loop": true, "start_time": 0.0 }
 ```
 
-同じコンポーネントで、**クリップ 1 本の再生**か、**ステートマシン文書(`pelican.anim_graph`)の再生**かのどちらかを宣言します。受理するキーは `name` を除いて 6 つで、**`clip` と `graph` はちょうど一方**でなければなりません(両方書いても、どちらも書かなくても `field 'animation' requires exactly one of clip or graph` — [componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1460))。メッセージの `field '<path>' ` という前置きは検査側が付けるもので([structfieldjson.hpp:56](../../src/core/userpublic/details/schema/structfieldjson.hpp#L150))、ロード時にはさらに `animation.schema_validation` の legacy 拒否として包み直されます([componentcodec.cpp:1537](../../src/core/loader/componentcodec.cpp#L2114))。以下で引用するのは**その中の一節**です。
+同じコンポーネントで、**クリップ 1 本の再生**か、**ステートマシン文書(`pelican.anim_graph`)の再生**かのどちらかを宣言します。受理するキーは `name` を除いて 6 つで、**`clip` と `graph` はちょうど一方**でなければなりません(両方書いても、どちらも書かなくても `field 'animation' requires exactly one of clip or graph` — [componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1485))。メッセージの `field '<path>' ` という前置きは検査側が付けるもので([structfieldjson.hpp:56](../../src/core/userpublic/details/schema/structfieldjson.hpp#L150))、ロード時にはさらに `animation.schema_validation` の legacy 拒否として包み直されます([componentcodec.cpp:1537](../../src/core/loader/componentcodec.cpp#L2139))。以下で引用するのは**その中の一節**です。
 
 (`graph` 装着の形。[skeletal_gltf_test.cpp:1074](../../test/skeletal_gltf_test.cpp#L1076) の実物から):
 
@@ -242,7 +242,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 | `loop` | 任意 | true | 非 bool は名指しエラー。**`clip` のときだけ** |
 | `start_time` | 任意 | 0.0 | 開始オフセット秒。**`clip` のときだけ** |
 
-`graph` と一緒に `speed` / `loop` / `start_time` を書くと拒否されます —— メッセージは**書いた鍵を名指し**するので、`field 'animation.speed' is clip-only; graph states define their playback clocks` のほか `field 'animation.loop' …` / `field 'animation.start_time' …` の形も出ます([componentcodec.cpp:1009](../../src/core/loader/componentcodec.cpp#L1479))—— ステートマシンでは再生時計を各ステートが決めるからで、黙って無視はされません。実行時にパラメータを動かす API は [第8章 §8.13](08_gameplay.md)(`setAnimationGraphParameter` / `forceAnimationGraphState`)です。**出荷プロジェクトの scene.json には、今日 `animation` コンポーネント自体がありません**(2026-09-17 実測)。`animgraph_demo` は同じ形のステートマシンを**ゲームコードから**駆動しており(`code/` の `EvaluatorV1`)、`animgraph_demo` / `vrm_xr_demo` の `movement.anim_graph.json` はどちらの scene からも参照されていません。姿勢をデータだけで装着する実物は `posegraph_demo`(様式 (2)、下記)です。
+`graph` と一緒に `speed` / `loop` / `start_time` を書くと拒否されます —— メッセージは**書いた鍵を名指し**するので、`field 'animation.speed' is clip-only; graph states define their playback clocks` のほか `field 'animation.loop' …` / `field 'animation.start_time' …` の形も出ます([componentcodec.cpp:1009](../../src/core/loader/componentcodec.cpp#L1504))—— ステートマシンでは再生時計を各ステートが決めるからで、黙って無視はされません。実行時にパラメータを動かす API は [第8章 §8.13](08_gameplay.md)(`setAnimationGraphParameter` / `forceAnimationGraphState`)です。**出荷プロジェクトの scene.json には、今日 `animation` コンポーネント自体がありません**(2026-09-17 実測)。`animgraph_demo` は同じ形のステートマシンを**ゲームコードから**駆動しており(`code/` の `EvaluatorV1`)、`animgraph_demo` / `vrm_xr_demo` の `movement.anim_graph.json` はどちらの scene からも参照されていません。姿勢をデータだけで装着する実物は `posegraph_demo`(様式 (2)、下記)です。
 
 制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128。モーフターゲットは描画対応 ✅WP121(初期 weight で表示)ですが、**クリップの `weights` チャネルは v1 非対応**(表情などの weight 駆動は [第8章](08_gameplay.md) §8.13 の VRM service 経由)。時刻源は `EngineTime`(rpc `set_time` と同一経路 = 決定的)。`PELICAN_WITH_ANIMATION=OFF` のビルドでは、このコンポーネントを持つシーンは**ロードの prepare 段で** `animation.module_unavailable@1` になります(§4.3)。
 
@@ -329,7 +329,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 | `overrides` | **現状は必ず拒否**(下記) |
 
 - 3 つとも省略可ですが、**1 つも書かないとエラー**(`pelican.ray_instance_empty@1`)です。closed schema で、上記以外のキーは `pelican.ray_instance_unknown_field@1`、範囲外の値は `pelican.ray_instance_field_range@1` になります。
-- `instance_flags` は配列でないと `pelican.ray_instance_field_type@1`、重複も同じコード、未知の名前は `pelican.ray_as_unknown_flag@1`、`force_opaque` と `force_no_opaque` の併記は `pelican.ray_as_conflicting_instance_flags@1` です([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1716))。この codec の名前付き拒否は `pelican.` 接頭辞 + `@1` が付きますが、**`overrides` の拒否だけは接頭辞が付きません**(下記)。
+- `instance_flags` は配列でないと `pelican.ray_instance_field_type@1`、重複も同じコード、未知の名前は `pelican.ray_as_unknown_flag@1`、`force_opaque` と `force_no_opaque` の併記は `pelican.ray_as_conflicting_instance_flags@1` です([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1741))。この codec の名前付き拒否は `pelican.` 接頭辞 + `@1` が付きますが、**`overrides` の拒否だけは接頭辞が付きません**(下記)。
 - `overrides`はWP382dで有効化されました。occurrence IDを指定した行でmask/flags/custom indexを上書きできます。対象が失われても行を消さず、`OccurrenceAbsent`として診断へ残します。previewでは`ray_instance_overrides_unsupported@1`を返します。
 
 ### コンポーネント名の名前空間と所有者(✅WP379/379a)
