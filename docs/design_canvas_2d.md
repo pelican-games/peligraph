@@ -294,6 +294,7 @@ item {
 | `height` | 画素ごとの高さを与える layer(浮き彫り) | 後。形だけ予約 |
 
 - `canvas.place` は stack を 3D の pass に描く。**同じ depth の layer どうしは 2D と同じ合成、違う depth の間は奥から順の normal の合成**(3D の背景を backdrop として読む blend は扱わない)。depth test あり。depth write は選べる(切り抜きとして 3D の物を隠すか)
+- 座標は engine の規約のまま([design_coordinate_convention.md](design_coordinate_convention.md): 右手系、+Y 上、camera は −Z 前方、clip の y は射影の中で反転)。stack の +x は面の +x、stack の +y(画像の下向き)は面の −y。裏表は view 空間の法線で判定し(巻き方に依らない)、cull はしない
 - 同じ fragment の code を、vertex だけ「camera の VP × model 行列」に替えて使う。距離の傾きで AA を取るので透視と斜めに耐える(P3、P11)。実証済み(§8)
 - 厚み: 距離を持つ layer(図形・文字、alpha から距離場を焼いた画像)を、箱の中で距離場を押し出して描く(側面が出る)。最初は unlit で側面の色を指定
 - **ゲーム内オブジェクトにする**: stack を definition に入れ、object に `graph.instance` として装着する。model 行列は owner の world transform(engine の新しい口 EN-4 が要る。§1.1)
@@ -338,13 +339,14 @@ item {
 | **CV-P** | PSD の取り込み(`pelican-import-tools` の `psd-canvas`。psd-tools)→ 画像 + mask + canvas の definition + `reference.png`(§10) | ✅ import tool の `feature/canvas-psd`(`13310e1`、`d1577a8`) |
 | CV-2a | `canvas.image` / `canvas.from_image` / `canvas.color`、`canvas.transform`(定数)、mask(画像だけ)・clip(土台 + clip 群を 1 枚にして ATOP)、pass through でない group、`blend_space`、definition の展開。blend は normal まで | ✅ `c8185793`。PSD の往復は全画素が `reference.png` と 1/255 以内 |
 | CV-2b | blend mode 26 種(W3C の 16 + Photoshop だけの 10)、調整 layer(`canvas.backdrop`)、色の filter 6 種。backdrop を読む item 1 個につき写し 1 回(`<prefix>back<k>`。共有は未実装) | ✅ `20132b0f`。blend 8 種と調整 layer 3 種の PSD が `reference.png` と全画素 1/255 以内。soft_light と hard_mix は psd-tools と定義が違い、CPU の参照で確認 |
-| CV-6a | 3D に置く: `canvas.place`(position / rotation / scale は value)と layer の `depth`。四隅を計算する関数 `canvasplace`。箱に隠れる・視差(計算との差 1.2 px 以内)・曲線で動く、を GPU で確認 | 実装済み、CV-2b との取り込み中(`<作業ディレクトリ>/cv1`)。**3D の画面が world の鏡像になる(engine の規約: 右手系の view + y を反転しない viewport)ため、正面の文字が左右反転して出る。直し方は利用者の判断待ち** |
+| CV-6a | 3D に置く: `canvas.place`(position / rotation / scale は value)と layer の `depth`。四隅を計算する関数 `canvasplace`。箱に隠れる・視差(計算との差 1.2 px 以内)・曲線で動く、を GPU で確認 | ✅ `70e1d184`。最初は正面の文字が左右反転して出たが、原因は engine の 3D の画面が world の鏡像だったこと(canvas の bug ではない)。engine 側を v0 で直し(develop `c8367b87` CC-1、`1501685a` CC-2。[design_coordinate_convention.md](design_coordinate_convention.md))、CVM-1 で取り込んだ後は「Placed」が正しく読める |
+| CVM-1 | develop(座標の規約 CC-1 / CC-2、IA-1、PS-1、CT-5 ほか)の取り込み。`canvas.place` の test を新しい規約(camera は −Z 前方、回転なしで z = 3 から見る)に書き直し。EN-2 の `source` と IA-1 の `initial` / PS-1 の `lifetime` を同じ `render.image` に書くと `graph.image_source_conflict@1`(file の image は中身を自分で持つ) | ✅ merge `2fa65483` + `635225ce`。非 GPU 193、GPU 12(canvas 7 + 鏡像の検査 + CC-2 + IA-1 + EN-2 ×2)、Studio の unit test 8(SG-1 / SG-2)と scenario 4(canvas の 2 本は仮想モニタで。hidden desktop では viewport の画素が黒で赤になる)が緑。Studio では IA-1s と SG-2 の struct 名が衝突し、canvas 側を `GraphCanvasPictureImport` に改名 |
 | CV-5 | `ship` 方針: 静的な layer を 1 枚に畳む、定数を shader に畳む、font を出力から除く | 指示書 `<作業ディレクトリ>/cv5_spec.md` |
 | CV-3 | filter: 色(融合)、座標(融合)、近傍(blur・影) | |
 | DF-1 の結果 | 画像 → SDF: 縁の位置を 2D の点で持ち 3×3 で測り直す版が平均誤差 0.028 画素(素朴な種 0.137、2 値化 0.217)。MTSDF: Arial 32² の被覆率の MSE 4.80e-5(1 channel は 8.30e-4)。日本語は 48²、画数の多い字は 64² | ✅(`<作業ディレクトリ>/v2d_work/df1/run_full.log`) |
 | CV-4 | 文字: project の ttf を lowering が直接読む(中間の font 形式は作らない)、MSDF の atlas、`shape.text`(kerning・改行・揃え・折り返し)、lowering の context(file を読む口)、生成物に binary(atlas の PNG) | ✅ `b1c9e591`。GPU と参照描画の一致 99.987 %(8/255 以内)。「鬱」は `atlas_cell` 64 が要る |
 | SG-1 | Studio: 領域 `canvas`、palette の Canvas、stack のソケット、Canvas layers パネル(行・+ Rect / + Ellipse / + Group / + Stroke・目・不透明度・並べ替え・欄)。scenario `canvas_layers_from_blank` | ✅ `cbd95519` |
-| SG-2 | Studio: Layers を独立の dock に、+ Image、clip / mask / pass through の欄、変換、PSD の取り込み結果の読み込み | 実装中(`<作業ディレクトリ>/cv1`) |
+| SG-2 | Studio: Layers を独立の dock に、+ Image、clip / mask / pass through の欄、変換、PSD の取り込み結果の読み込み | ✅ `c57ed285` |
 | CV-5 | `ship` 方針: 定数の畳み込み、動かない layer を畳む、`dist-bake` の段 1、OFF の build の player で同じ絵 | |
 | CV-6 | 3D: `canvas.place`、depth、厚み、owner の transform(EN-4) | |
 | CV-7 | path(折れ線・ベジエ)、`shape.trim`、`shape.path_sample`、`element` の段(`shape.repeat`、1 文字ずつ動く文字) | |
@@ -389,6 +391,7 @@ item {
 | 次の優先は文字(font と MSDF) | 利用者が決定 |
 | 距離場(MSDF、画像からの SDF)は内製。外部の font / MSDF の library は足さない(font は既に依存にある `stb_truetype` を tool で使う)。画像 → SDF は EDTAA4(Gustavson。縁の距離を subpixel で見積もり、後処理で微調整)とマーチングパラボラ(Felzenszwalb の下側包絡)の併用。EDTAA4 の配布 code は GPL v3+ なので写さず、手法から書き直す | 利用者が決定 |
 | build は target を絞る(初回の全体 build の 59 % は誰も回さない test だった) | 利用者が指示(「死活問題」) |
+| 3D の画面が鏡像だった件は canvas 側で x を反転せず、engine を v0 で標準の規約に直す(「すべて適切な形にして」。版は上げない) | 利用者が決定(2026-10-02)。develop に着地済み |
 | 実行時に canvas の code を持たない(§2-3)。実行中に変わる文字列は UI との融合の段で | Claude の案で進行中。異議があれば戻す |
 | 編集中と出荷で同じ道(L2) | 同上 |
 | 距離場を中心にする(§12) | 同上 |
