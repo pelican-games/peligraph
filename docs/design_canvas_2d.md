@@ -337,8 +337,9 @@ item {
 | **CV-1b** | engine が文書を読む点で登録済みの lowering を通す汎用の hook(`src/project/authoringlowering`。登録点と editor の compose の道で呼ぶ。core は canvas の名前を知らない)。生成 shader は `.pelican/generated/canvas/<stem>/`。rendering 節の pass の入力に `canvas.output` の id を書ける。`get_authoring_lowering` | ✅ `b5f399fc` |
 | **CV-P** | PSD の取り込み(`pelican-import-tools` の `psd-canvas`。psd-tools)→ 画像 + mask + canvas の definition + `reference.png`(§10) | ✅ import tool の `feature/canvas-psd`(`13310e1`、`d1577a8`) |
 | CV-2a | `canvas.image` / `canvas.from_image` / `canvas.color`、`canvas.transform`(定数)、mask(画像だけ)・clip(土台 + clip 群を 1 枚にして ATOP)、pass through でない group、`blend_space`、definition の展開。blend は normal まで | ✅ `c8185793`。PSD の往復は全画素が `reference.png` と 1/255 以内 |
-| CV-2b | blend mode と調整 layer(backdrop の写し)、色の filter | 実装中(`<作業ディレクトリ>/en2`) |
-| CV-6a | 3D に置く: `canvas.place` と layer の `depth`(厚みと object への装着は次) | 指示書 `<作業ディレクトリ>/cv6a_spec.md` |
+| CV-2b | blend mode 26 種(W3C の 16 + Photoshop だけの 10)、調整 layer(`canvas.backdrop`)、色の filter 6 種。backdrop を読む item 1 個につき写し 1 回(`<prefix>back<k>`。共有は未実装) | ✅ `20132b0f`。blend 8 種と調整 layer 3 種の PSD が `reference.png` と全画素 1/255 以内。soft_light と hard_mix は psd-tools と定義が違い、CPU の参照で確認 |
+| CV-6a | 3D に置く: `canvas.place`(position / rotation / scale は value)と layer の `depth`。四隅を計算する関数 `canvasplace`。箱に隠れる・視差(計算との差 1.2 px 以内)・曲線で動く、を GPU で確認 | 実装済み、CV-2b との取り込み中(`<作業ディレクトリ>/cv1`)。**3D の画面が world の鏡像になる(engine の規約: 右手系の view + y を反転しない viewport)ため、正面の文字が左右反転して出る。直し方は利用者の判断待ち** |
+| CV-5 | `ship` 方針: 静的な layer を 1 枚に畳む、定数を shader に畳む、font を出力から除く | 指示書 `<作業ディレクトリ>/cv5_spec.md` |
 | CV-3 | filter: 色(融合)、座標(融合)、近傍(blur・影) | |
 | DF-1 の結果 | 画像 → SDF: 縁の位置を 2D の点で持ち 3×3 で測り直す版が平均誤差 0.028 画素(素朴な種 0.137、2 値化 0.217)。MTSDF: Arial 32² の被覆率の MSE 4.80e-5(1 channel は 8.30e-4)。日本語は 48²、画数の多い字は 64² | ✅(`<作業ディレクトリ>/v2d_work/df1/run_full.log`) |
 | CV-4 | 文字: project の ttf を lowering が直接読む(中間の font 形式は作らない)、MSDF の atlas、`shape.text`(kerning・改行・揃え・折り返し)、lowering の context(file を読む口)、生成物に binary(atlas の PNG) | ✅ `b1c9e591`。GPU と参照描画の一致 99.987 %(8/255 以内)。「鬱」は `atlas_cell` 64 が要る |
