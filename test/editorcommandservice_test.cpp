@@ -1,6 +1,8 @@
 #include "../src/core/shader/raygrouplayout.hpp"
 #include <cstring>
 #include "../src/core/communication/editorcommandservice.hpp"
+#include "../src/core/communication/editorrpchandlers.hpp"
+#include "../src/core/communication/rpcserver.hpp"
 #include "../src/core/communication/editorassetqueryruntime.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/ecs/componentinfo.hpp"
@@ -25,6 +27,7 @@
 #include <optional>
 #include <picosha2.h>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -1296,6 +1299,161 @@ TEST_CASE("SAVE0 rejects pending work and exposes stable hard error codes",
     }};
     REQUIRE(errorCode([&] { (void)runtime_only.saveScene(); }) ==
             EditorCommandErrorCode::RuntimeOnlyData);
+}
+
+namespace {
+nlohmann::json outlineFixture() {
+    return nlohmann::json::parse(R"json({"schema":"pelican.scene","version":2,"scenes":{
+      "main":{"objects":[
+        {"name":"Child","parent":"Root","components":[{"name":"transform"}]},
+        {"parent":"Root","components":[{"name":"transform"}]},
+        {"name":"Root","components":[{"name":"transform"}]}
+      ]},
+      "secondary":{"objects":[{"name":"Root","components":[]}]},
+      "empty":{"objects":[]}
+    }})json");
+}
+} // namespace
+
+TEST_CASE("scene_outline returns stable hierarchy in declaration order without detail queries",
+          "[editor-command][scene-outline][rpc]") {
+    const auto document = AuthoringSceneDocument::load(outlineFixture().dump(), SceneRevision{41});
+    int runtime_calls = 0;
+    int schema_calls = 0;
+    const EditorCommandService service{EditorCommandServiceDependencies{
+        .document = [&]() -> const AuthoringSceneDocument & { return document; },
+        .resolved_scene = explicitResolvedProvider(document),
+        .current_scene_id = [] { return std::string{"main"}; },
+        .runtime_query = [&](const ResolvedSceneView &, const ResolvedObject &) -> EditorRuntimeObjectState {
+            ++runtime_calls;
+            throw std::logic_error("outline must not query runtime components");
+        },
+    }};
+    EditorCommandRpcAdapter rpc{service, [&](StructFieldType) -> std::string {
+        ++schema_calls;
+        throw std::logic_error("outline must not expand schema");
+    }};
+    const EditorCommandImGuiFakeAdapter imgui{service};
+    std::istringstream input;
+    std::ostringstream output;
+    RpcServer server{input, output};
+    configureEditorRpcHandlers(server, rpc, {
+        .snapshot_imported = [] {}, .save_busy = [] { return false; }});
+    const auto wire = nlohmann::json::parse(server.processLine(
+        R"json({"jsonrpc":"2.0","id":1,"method":"scene_outline","params":{}})json"));
+    REQUIRE_FALSE(wire.contains("error"));
+    const auto result = rpc.sceneOutline(nlohmann::json::object());
+    REQUIRE(wire.at("result") == nlohmann::json(result));
+    REQUIRE(result == editorQueryJson(imgui.sceneOutline()));
+    REQUIRE(result.at("scene_id") == "main");
+    REQUIRE(result.at("scene_revision") == 41);
+    REQUIRE(result.at("not_modified") == false);
+    const auto &objects = result.at("objects");
+    REQUIRE(objects.size() == 3);
+    const auto parent_id = objects.at(2).at("authoring_object_id");
+    REQUIRE(objects.at(0).at("parent_authoring_object_id") == parent_id);
+    REQUIRE(objects.at(1).at("parent_authoring_object_id") == parent_id);
+    REQUIRE(objects.at(2).at("parent_authoring_object_id").is_null());
+    REQUIRE(objects.at(0).at("name") == "Child");
+    REQUIRE_FALSE(objects.at(1).contains("name"));
+    REQUIRE(objects.at(2).at("name") == "Root");
+    auto detailed_service = makeQueryService(document);
+    const EditorCommandRpcAdapter detailed{detailed_service};
+    const auto original_tree = detailed.sceneTree(nlohmann::json::object());
+    for (std::size_t i = 0; i < objects.size(); ++i) {
+        const auto &row = objects.at(i);
+        REQUIRE(row.at("declaration_index") == i);
+        REQUIRE(row.at("authoring_object_id").get<std::uint64_t>() != 0);
+        REQUIRE(row.at("authoring_object_id") == original_tree.at("objects").at(i).at("authoring_object_id"));
+        REQUIRE(row.size() == (i == 1 ? 3 : 4));
+        const auto detail = detailed.getComponents({{"authoring_object_id", row.at("authoring_object_id")}});
+        REQUIRE(detail.at("declaration_index") == i);
+    }
+    REQUIRE(rpc.sceneOutline({{"scene_id", "empty"}}).at("objects").empty());
+    REQUIRE(runtime_calls == 0);
+    REQUIRE(schema_calls == 0);
+    REQUIRE(detailed.sceneTree(nlohmann::json::object()) == original_tree);
+}
+
+TEST_CASE("scene_outline conditional reads require scene identity and observe new revisions",
+          "[editor-command][scene-outline][poll]") {
+    auto document = AuthoringSceneDocument::load(outlineFixture().dump(), SceneRevision{41});
+    std::string current = "main";
+    const EditorCommandService service{EditorCommandServiceDependencies{
+        .document = [&]() -> const AuthoringSceneDocument & { return document; },
+        .resolved_scene = explicitResolvedProvider(document),
+        .current_scene_id = [&] { return current; },
+    }};
+    const EditorCommandRpcAdapter rpc{service};
+    const auto first = rpc.sceneOutline(nlohmann::json::object());
+    REQUIRE(rpc.sceneOutline({{"scene_id", "main"}, {"if_scene_revision", 41}}) ==
+            nlohmann::ordered_json{{"scene_revision", 41}, {"scene_id", "main"}, {"not_modified", true}});
+    current = "secondary";
+    REQUIRE(rpc.sceneOutline(nlohmann::json::object()).at("objects").size() == 1);
+    REQUIRE(rpc.sceneOutline({{"scene_id", "main"}, {"if_scene_revision", 41}}).at("scene_id") == "main");
+    REQUIRE(errorCode([&] { rpc.sceneOutline({{"if_scene_revision", 41}}); }) == EditorCommandErrorCode::InvalidParams);
+    REQUIRE(errorCode([&] { rpc.sceneOutline({{"scene_id", "absent"}, {"if_scene_revision", 41}}); }) == EditorCommandErrorCode::SceneNotFound);
+    const AuthoringObjectId child_id{first.at("objects").at(0).at("authoring_object_id").get<std::uint64_t>()};
+    const AuthoringObjectId unnamed_id{first.at("objects").at(1).at("authoring_object_id").get<std::uint64_t>()};
+    const AuthoringObjectId root_id{first.at("objects").at(2).at("authoring_object_id").get<std::uint64_t>()};
+    auto changed = AuthoringSceneAuthority::structuralStage(document);
+    changed.renameObject(child_id, "Renamed");
+    document = std::move(changed).finish(SceneRevision{42});
+    const auto next = rpc.sceneOutline({{"scene_id", "main"}, {"if_scene_revision", 41}});
+    REQUIRE(next.at("not_modified") == false);
+    REQUIRE(next.at("scene_revision") == 42);
+    REQUIRE(next.at("objects").at(0).at("name") == "Renamed");
+    REQUIRE(next.at("objects").at(0).at("authoring_object_id") == first.at("objects").at(0).at("authoring_object_id"));
+    REQUIRE(rpc.sceneOutline({{"scene_id", "main"}, {"if_scene_revision", 42}}).at("not_modified") == true);
+    REQUIRE(rpc.sceneOutline({{"scene_id", "main"}, {"if_scene_revision", 43}}).contains("objects"));
+    auto reordered = AuthoringSceneAuthority::structuralStage(document);
+    reordered.reorderObject(root_id, 0);
+    reordered.rawJson()["scenes"]["main"]["objects"][2]["parent"] = "Renamed";
+    document = std::move(reordered).finish(SceneRevision{43});
+    const auto hierarchy = rpc.sceneOutline({{"scene_id", "main"}, {"if_scene_revision", 42}}).at("objects");
+    REQUIRE(hierarchy.at(0).at("authoring_object_id") == root_id.value);
+    REQUIRE(hierarchy.at(1).at("authoring_object_id") == child_id.value);
+    REQUIRE(hierarchy.at(2).at("authoring_object_id") == unnamed_id.value);
+    REQUIRE(hierarchy.at(2).at("parent_authoring_object_id") == child_id.value);
+    for (std::size_t i = 0; i < hierarchy.size(); ++i) REQUIRE(hierarchy.at(i).at("declaration_index") == i);
+    auto replaced = AuthoringSceneAuthority::structuralStage(document);
+    (void)replaced.removeObject(unnamed_id);
+    const auto inserted_id = replaced.insertObject("main", 1, {{"components", nlohmann::json::array()}});
+    document = std::move(replaced).finish(SceneRevision{44});
+    const auto replacement = rpc.sceneOutline({{"scene_id", "main"}, {"if_scene_revision", 43}}).at("objects");
+    REQUIRE(inserted_id.value != 0);
+    REQUIRE(inserted_id != unnamed_id);
+    REQUIRE(replacement.at(1).at("authoring_object_id") == inserted_id.value);
+    REQUIRE_FALSE(replacement.at(1).contains("name"));
+    REQUIRE(replacement.at(1).at("parent_authoring_object_id").is_null());
+}
+
+TEST_CASE("scene_outline rejects malformed selectors on the registered RPC wire",
+          "[editor-command][scene-outline][rpc]") {
+    const auto document = AuthoringSceneDocument::load(outlineFixture().dump(), SceneRevision{41});
+    const auto service = makeQueryService(document);
+    EditorCommandRpcAdapter rpc{service};
+    std::istringstream input;
+    std::ostringstream output;
+    RpcServer server{input, output};
+    configureEditorRpcHandlers(server, rpc, {
+        .snapshot_imported = [] {}, .save_busy = [] { return false; }});
+    const std::vector<nlohmann::json> invalid{
+        nlohmann::json::array(), {{"unknown", 1}}, {{"scene_id", ""}},
+        {{"scene_id", nullptr}}, {{"if_scene_revision", 41}},
+        {{"scene_id", "main"}, {"if_scene_revision", -1}},
+        {{"scene_id", "main"}, {"if_scene_revision", 41.0}},
+        {{"scene_id", "main"}, {"if_scene_revision", "41"}},
+        {{"scene_id", "main"}, {"if_scene_revision", true}},
+        {{"scene_id", "main"}, {"if_scene_revision", nullptr}},
+        {{"scene_id", "main"}, {"if_scene_revision", UINT64_C(9007199254740992)}}};
+    for (const auto &params : invalid) {
+        const nlohmann::json request{{"jsonrpc", "2.0"}, {"id", 7}, {"method", "scene_outline"}, {"params", params}};
+        const auto response = nlohmann::json::parse(server.processLine(request.dump()));
+        REQUIRE(response.at("error").at("code") == -32602);
+    }
+    REQUIRE_FALSE(rpc.sceneOutline({{"scene_id", "main"}, {"if_scene_revision", 0}}).at("not_modified").get<bool>());
+    REQUIRE_FALSE(rpc.sceneOutline({{"scene_id", "main"}, {"if_scene_revision", maxExactEditorJsonInteger}}).at("not_modified").get<bool>());
 }
 
 } // namespace Pelican

@@ -106,6 +106,26 @@ struct EditorSceneTreeResult {
     std::vector<EditorObjectQueryResult> objects;
 };
 
+struct EditorSceneOutlineRequest {
+    std::optional<std::string> scene_id;
+    // Conditional reads must identify the scene whose list the caller holds.
+    std::optional<SceneRevision> if_scene_revision;
+};
+
+struct EditorOutlineObject {
+    AuthoringObjectId authoring_object_id{};
+    std::size_t declaration_index = 0;
+    std::optional<std::string> name;
+    std::optional<AuthoringObjectId> parent_authoring_object_id;
+};
+
+struct EditorSceneOutlineResult {
+    SceneRevision scene_revision{};
+    std::string scene_id;
+    bool not_modified = false;
+    std::vector<EditorOutlineObject> objects;
+};
+
 struct EditorGetComponentsRequest {
     std::optional<std::string> scene_id;
     std::optional<AuthoringObjectId> authoring_object_id;
@@ -298,6 +318,7 @@ class EditorCommandService {
     ~EditorCommandService();
 
     EditorSceneTreeResult sceneTree(const EditorSceneTreeRequest &request = {}) const;
+    EditorSceneOutlineResult sceneOutline(const EditorSceneOutlineRequest &request = {}) const;
     EditorSceneRevisionResult getSceneRevision() const;
     EditorObjectQueryResult getComponents(const EditorGetComponentsRequest &request) const;
     nlohmann::ordered_json getComponentAddCandidates(const EditorGetComponentsRequest &request) const;
@@ -408,6 +429,7 @@ class EditorCommandRpcAdapter {
         SchemaTypeNameResolver resolver = {});
 
     nlohmann::ordered_json sceneTree(const nlohmann::json &params) const;
+    nlohmann::ordered_json sceneOutline(const nlohmann::json &params) const;
     nlohmann::ordered_json getSceneRevision(const nlohmann::json &params) const;
     nlohmann::ordered_json getComponents(const nlohmann::json &params) const;
     nlohmann::ordered_json getComponentAddCandidates(const nlohmann::json &params) const;
@@ -517,6 +539,9 @@ class EditorCommandImGuiFakeAdapter {
     EditorSceneTreeResult sceneTree(const EditorSceneTreeRequest &request = {}) const {
         return service_.sceneTree(request);
     }
+    EditorSceneOutlineResult sceneOutline(const EditorSceneOutlineRequest &request = {}) const {
+        return service_.sceneOutline(request);
+    }
     EditorSceneRevisionResult getSceneRevision() const {
         return service_.getSceneRevision();
     }
@@ -542,6 +567,7 @@ nlohmann::ordered_json editorQueryJson(const EditorComponentQueryResult &compone
 nlohmann::ordered_json editorQueryJson(const EditorSceneRevisionResult &revision);
 nlohmann::ordered_json editorQueryJson(const EditorObjectQueryResult &object);
 nlohmann::ordered_json editorQueryJson(const EditorSceneTreeResult &scene);
+nlohmann::ordered_json editorQueryJson(const EditorSceneOutlineResult &scene);
 nlohmann::ordered_json editorQueryJson(const EditorListAssetsResult &assets);
 nlohmann::ordered_json editorQueryJson(const ExportSceneSnapshotResponseV2 &snapshot);
 nlohmann::ordered_json editorQueryJson(const ImportSceneSnapshotResult &snapshot);

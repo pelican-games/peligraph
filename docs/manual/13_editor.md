@@ -716,6 +716,46 @@ typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化�
 ([editorrpchandlers.cpp](../../src/core/communication/editorrpchandlers.cpp#L50))、`RpcServer` はその述語が真を返した応答だけを
 ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1185))。
 
+### 一覧だけを読む `scene_outline`
+
+`scene_outline {}` は現在のsceneのauthoring objectを宣言順に返します。
+`scene_outline {"scene_id":"main"}` でsceneを明示できます。
+既存の `scene_tree` / `get_components` の応答は変わりません。
+
+```json
+{
+  "scene_id": "main",
+  "scene_revision": 41,
+  "not_modified": false,
+  "objects": [
+    {"authoring_object_id": 7, "declaration_index": 0, "name": "Root", "parent_authoring_object_id": null},
+    {"authoring_object_id": 9, "declaration_index": 1, "parent_authoring_object_id": 7}
+  ]
+}
+```
+
+- `authoring_object_id` は `get_components` と同じ安定IDで、0にはなりません。
+- `objects` は宣言順です。`declaration_index` は0始まりで、識別子としては使いません。
+- 親は名前ではなく `parent_authoring_object_id` で返し、親がない場合は `null` です。
+- 名前がないobjectでは `name` の鍵を省きます。空文字や `null` は補いません。
+- componentの詳細、schema、runtime値は含みません。選択時に `get_components` で取得します。
+- Play中もauthoringの一覧です。実行中にspawnされたobjectは `get_runtime_objects` で取得します。
+
+同じ一覧をpollするときは、受け取ったsceneとrevisionを両方指定できます。
+
+```json
+{"scene_id":"main","if_scene_revision":41}
+```
+
+一致した場合は `{"scene_id":"main","scene_revision":41,"not_modified":true}` を返し、
+`objects` の鍵を省きます。不一致なら通常の一覧と `not_modified:false` を返します。
+存在しないsceneはrevisionが一致していても `scene_not_found` です。
+`if_scene_revision` だけの指定は `-32602` です。sceneの切り替えと空の一覧を
+「変更なし」と混同しないよう、クライアントはsceneごとにキャッシュします。
+engineへ再接続したときはキャッシュを捨て、条件なしで取得してください。
+revisionはauthoringの変更を表し、runtimeやプレビュー値の監視には使いません。
+`if_scene_revision` は0〜2^53−1の整数tokenです。未知のfieldや型違いも `-32602` です。
+
 ### セッションと編集
 
 | メソッド | params |

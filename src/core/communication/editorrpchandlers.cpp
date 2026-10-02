@@ -74,6 +74,9 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("scene_tree", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.sceneTree(params); });
     });
+    server.setHandler("scene_outline", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.sceneOutline(params); });
+    });
     server.setHandler("get_scene_revision", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getSceneRevision(params); });
     });

@@ -775,7 +775,7 @@ throw JsonRpcHandlerError{
      {"source", "rpc"}}};
 ```
 
-engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1548) と、そこから呼ぶ [`configureEditorRpcHandlers()`](../../src/core/communication/editorrpchandlers.cpp#L66) に集約されています。現在 **89 メソッド**で、実行制御・診断系が 29、編集系が 60 です。数え方は、両関数(および前者が呼ぶ 2 つの補助関数 [`configureGameLogicReloadRpcHandler()`](../../src/core/communication/rpcserver.cpp#L1308) と [`configurePhysicsRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1239))の中で `server.setHandler()` **または `server.setOrderedHandler()`** に渡す一意な公開 method 文字列を 1 メソッドとします。後者は `nlohmann::ordered_json` を返す版([宣言](../../src/core/communication/rpcserver.hpp#L98))で、使っているのは編集系の 3 つ(`get_components` / `get_ray_occurrences` / `resolve_ray_occurrence`)だけです —— **`setHandler` だけを数えると 86 本にしかなりません**。表で `start` / `stop` のように同じ行へ併記した名前も、それぞれ 1 メソッドです。条件コンパイルでの出し分けはこの 2 関数の中にはありません。
+engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1548) と、そこから呼ぶ [`configureEditorRpcHandlers()`](../../src/core/communication/editorrpchandlers.cpp#L66) に集約されています。現在 **90 メソッド**で、実行制御・診断系が 29、編集系が 61 です。数え方は、両関数(および前者が呼ぶ 2 つの補助関数 [`configureGameLogicReloadRpcHandler()`](../../src/core/communication/rpcserver.cpp#L1308) と [`configurePhysicsRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1239))の中で `server.setHandler()` **または `server.setOrderedHandler()`** に渡す一意な公開 method 文字列を 1 メソッドとします。後者は `nlohmann::ordered_json` を返す版([宣言](../../src/core/communication/rpcserver.hpp#L98))で、使っているのは編集系の 3 つ(`get_components` / `get_ray_occurrences` / `resolve_ray_occurrence`)だけです —— **`setHandler` だけを数えると 87 本にしかなりません**。表で `start` / `stop` のように同じ行へ併記した名前も、それぞれ 1 メソッドです。条件コンパイルでの出し分けはこの 2 関数の中にはありません。
 
 #### 実行制御・診断系(表は 32 行・34 メソッド)
 
@@ -834,6 +834,7 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | method | 実装行 | 概要 |
 |---|---|---|
 | `scene_tree` | [登録 `scene_tree`](../../src/core/communication/editorrpchandlers.cpp#L74) | オブジェクト木(`authoring_object_id` + 0 始まりの `declaration_index`)と component メタデータ |
+| `scene_outline` | [契約](../manual/13_editor.md) | authoringの軽い一覧(安定ID・親のID・宣言順)。revision一致時は一覧を省略可能 |
 | `get_scene_revision` | [登録 `get_scene_revision`](../../src/core/communication/editorrpchandlers.cpp#L77) | `EditorWatchToken{scene_revision, preview_epoch}` + 最終トランザクション + preview lease |
 | `get_components` | [登録 `get_components`](../../src/core/communication/editorrpchandlers.cpp#L83) | 1 オブジェクトの `declaration_index` + authored / runtime JSON + schema |
 | `list_assets` | [登録 `list_assets`](../../src/core/communication/editorrpchandlers.cpp#L92) | asset カタログ(`id` / `kind` / `path` / `store` / `status`) |
