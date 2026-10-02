@@ -16,13 +16,13 @@ using Json = nlohmann::json;
 
 #if PELICAN_WITH_CANVAS
 // Each output: its items' kinds, which authored nodes drew each instance, and
-// the shader pair it generated (in output order, vertex then fragment).
+// the shaders it generated: a vertex and a fragment source per draw (CV-2a:
+// its groups' draws first, its own last).
 Json canvasReport(const CanvasLowering &lowering) {
     auto outputs = Json::array();
-    for (std::size_t index = 0; index < lowering.ir.outputs.size(); ++index) {
-        const auto &output = lowering.ir.outputs[index];
+    for (const auto &output : lowering.ir.outputs) {
         std::set<std::uint32_t> kinds;
-        for (const auto &item : output.items) kinds.insert(canvasItemKind(item.shape, item.paint));
+        for (const auto &item : output.items) kinds.insert(canvasItemKind(item));
         auto kind_names = Json::array();
         for (const auto kind : kinds) kind_names.push_back(std::string{canvasItemKindName(kind)});
         auto items = Json::array();
@@ -31,13 +31,13 @@ Json canvasReport(const CanvasLowering &lowering) {
                 items.push_back({{"instance", item.at("instance")}, {"kind", item.at("kind")},
                                  {"nodes", item.at("nodes")}});
         auto generated = Json::array();
-        for (std::size_t stage = 0; stage < 2; ++stage) {
-            const auto &source = lowering.generated_sources.at(index * 2 + stage);
-            generated.push_back(
-                {{"stem", source.stem}, {"stage", source.stage}, {"path", source.path}, {"text", source.text}});
-        }
+        for (const auto &source : lowering.generated_sources)
+            if (source.output == output.id && source.scope == output.scope)
+                generated.push_back(
+                    {{"stem", source.stem}, {"stage", source.stage}, {"path", source.path}, {"text", source.text}});
         Json row{{"id", output.id}};
         if (!output.scope.empty()) row["scope"] = output.scope;
+        if (!output.groups.empty()) row["groups"] = output.groups.size();
         row["kinds"] = std::move(kind_names);
         row["items"] = std::move(items);
         row["generated"] = std::move(generated);

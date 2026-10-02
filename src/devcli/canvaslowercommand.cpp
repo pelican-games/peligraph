@@ -115,17 +115,19 @@ int lower(const fs::path &project_dir, const fs::path &out_dir) {
         for (std::size_t index = 0; index < lowering.ir.outputs.size(); ++index) {
             const auto &output = lowering.ir.outputs[index];
             std::set<std::uint32_t> kinds;
-            for (const auto &item : output.items) kinds.insert(canvasItemKind(item.shape, item.paint));
+            for (const auto &item : output.items) kinds.insert(canvasItemKind(item));
             auto kind_names = OrderedJson::array();
             for (const auto kind : kinds) kind_names.push_back(std::string{canvasItemKindName(kind)});
-            // Each output generated one vertex and one fragment source, in
-            // output order.
+            // Each draw of the output (its groups' first, its own last)
+            // generated one vertex and one fragment source.
             auto generated = OrderedJson::array();
-            generated.push_back(lowering.generated_sources.at(index * 2).stem);
+            for (const auto &source : lowering.generated_sources)
+                if (source.output == output.id && source.stage == "vert") generated.push_back(source.stem);
             OrderedJson row{{"id", output.id}};
             if (!output.scope.empty()) row["scope"] = output.scope;
             row["document"] = entry.path;
             row["items"] = output.items.size();
+            if (!output.groups.empty()) row["groups"] = output.groups.size();
             row["kinds"] = std::move(kind_names);
             row["generated"] = std::move(generated);
             report["outputs"].push_back(std::move(row));

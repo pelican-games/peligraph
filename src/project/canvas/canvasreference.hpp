@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <map>
+#include <string>
 #include <vector>
 
 namespace Pelican {
@@ -25,7 +26,23 @@ struct CanvasImage {
     std::vector<float> pixels;
 };
 
+// CV-2a: the images the items sample, as the caller decoded them (the
+// reference reads no file): straight RGBA bytes, row-major from the top left.
+// A file texture is keyed by its asset and read as the shader reads it (the
+// sRGB decode, or the bytes as they are when `linear`); a canvas.from_image
+// texture by "<node>.<port>", its bytes taken as linear values. A missing one
+// is refused.
+struct CanvasReferenceImage {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint8_t> rgba;
+};
+using CanvasReferenceImages = std::map<std::string, CanvasReferenceImage>;
+
+// Groups are composited first, each into an image of the output's size, and
+// read back as the shader reads them; masks, clips and transforms as the
+// generated shader computes them.
 CanvasImage renderCanvasReference(const CanvasOutput &output, std::uint32_t width, std::uint32_t height,
-                                  const CanvasValues &values = {});
+                                  const CanvasValues &values = {}, const CanvasReferenceImages &images = {});
 
 } // namespace Pelican

@@ -115,52 +115,262 @@ Resolved resolve(const CanvasItem &item, const CanvasValues &values) {
     return result;
 }
 
+double encodeSrgb(double c) {
+    c = std::clamp(c, 0.0, 1.0);
+    return c > 0.0031308 ? 1.055 * std::pow(c, 1.0 / 2.4) - 0.055 : c * 12.92;
+}
+
+struct Rgba {
+    double r = 0.0, g = 0.0, b = 0.0, a = 0.0;
+    Rgba scaled(double k) const { return {r * k, g * k, b * k, a * k}; }
+};
+
+using Affine = std::array<double, 6>;
+
+Vec2 itemPoint(const Affine &m, Vec2 p) {
+    const auto det = m[0] * m[3] - m[2] * m[1];
+    const Vec2 d{p.x - m[4], p.y - m[5]};
+    return {(m[3] * d.x - m[2] * d.y) / det, (-m[1] * d.x + m[0] * d.y) / det};
+}
+
+Vec2 apply(const Affine &m, Vec2 p) { return {m[0] * p.x + m[2] * p.y + m[4], m[1] * p.x + m[3] * p.y + m[5]}; }
+
+bool inside(Vec2 uv) { return uv.x >= 0.0 && uv.y >= 0.0 && uv.x < 1.0 && uv.y < 1.0; }
+
+// The drawing of one output: groups first, then its own items.
+class Reference {
+  public:
+    Reference(const CanvasOutput &output, std::uint32_t width, std::uint32_t height, const CanvasValues &values,
+              const CanvasReferenceImages &images)
+        : output_{output}, width_{width}, height_{height}, values_{values}, images_{images} {
+        // The fit, as canvasFit in the shaders.
+        scale_ = {width / output.size[0], height / output.size[1]};
+        if (output.fit == CanvasFit::contain) scale_.x = scale_.y = std::min(scale_.x, scale_.y);
+        offset_ = {(width - output.size[0] * scale_.x) * 0.5, (height - output.size[1] * scale_.y) * 0.5};
+        margin_ = 2.0 / std::min(scale_.x, scale_.y);
+        for (const auto &group : output.groups) groups_.push_back(composite(group.items, group.srgb));
+    }
+
+    std::vector<float> draw() const { return composite(output_.items, false); }
+
+  private:
+    const CanvasOutput &output_;
+    std::uint32_t width_;
+    std::uint32_t height_;
+    const CanvasValues &values_;
+    const CanvasReferenceImages &images_;
+    Vec2 scale_;
+    Vec2 offset_;
+    double margin_ = 0.0;
+    std::vector<std::vector<float>> groups_;
+
+    Vec2 canvasPoint(double px, double py) const { return {(px - offset_.x) / scale_.x, (py - offset_.y) / scale_.y}; }
+
+    const CanvasReferenceImage &imageOf(const CanvasTexture &texture) const {
+        const auto key = texture.origin == CanvasTexture::Origin::file ? texture.asset
+                                                                       : texture.node.value_or("") + "." + texture.port;
+        const auto found = images_.find(key);
+        if (found == images_.end()) throw std::invalid_argument("canvas reference has no image for " + key);
+        if (found->second.rgba.size() != std::size_t{found->second.width} * found->second.height * 4)
+            throw std::invalid_argument("canvas reference image " + key + " does not hold width x height RGBA");
+        return found->second;
+    }
+
+    // One texel as the sampler returns it (decoded, not yet filtered).
+    Rgba fetch(const CanvasTexture &texture, std::int64_t x, std::int64_t y) const {
+        if (texture.origin == CanvasTexture::Origin::group) {
+            x = std::clamp<std::int64_t>(x, 0, std::int64_t{width_} - 1);
+            y = std::clamp<std::int64_t>(y, 0, std::int64_t{height_} - 1);
+            const auto *pixel = &groups_.at(texture.group)[(static_cast<std::size_t>(y) * width_ + x) * 4];
+            return {pixel[0], pixel[1], pixel[2], pixel[3]};
+        }
+        const auto &image = imageOf(texture);
+        x = std::clamp<std::int64_t>(x, 0, std::int64_t{image.width} - 1);
+        y = std::clamp<std::int64_t>(y, 0, std::int64_t{image.height} - 1);
+        const auto *pixel = &image.rgba[(static_cast<std::size_t>(y) * image.width + x) * 4];
+        const auto channel = [&](std::size_t c) {
+            const auto byte = pixel[c] / 255.0;
+            return texture.origin == CanvasTexture::Origin::file && !texture.linear && c < 3 ? linear(byte) : byte;
+        };
+        return {channel(0), channel(1), channel(2), channel(3)};
+    }
+
+    // Clamp to edge, linear or nearest, as the ports' samplers.
+    Rgba sample(const CanvasTexture &texture, Vec2 uv) const {
+        double w = width_, h = height_;
+        if (texture.origin != CanvasTexture::Origin::group) {
+            const auto &image = imageOf(texture);
+            w = image.width;
+            h = image.height;
+        }
+        if (texture.nearest)
+            return fetch(texture, static_cast<std::int64_t>(std::floor(uv.x * w)),
+                         static_cast<std::int64_t>(std::floor(uv.y * h)));
+        const auto x = uv.x * w - 0.5, y = uv.y * h - 0.5;
+        const auto x0 = std::floor(x), y0 = std::floor(y);
+        const auto fx = x - x0, fy = y - y0;
+        const auto ix = static_cast<std::int64_t>(x0), iy = static_cast<std::int64_t>(y0);
+        const auto t00 = fetch(texture, ix, iy), t10 = fetch(texture, ix + 1, iy);
+        const auto t01 = fetch(texture, ix, iy + 1), t11 = fetch(texture, ix + 1, iy + 1);
+        const auto mix = [&](double a, double b, double c, double d) {
+            return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy;
+        };
+        return {mix(t00.r, t10.r, t01.r, t11.r), mix(t00.g, t10.g, t01.g, t11.g), mix(t00.b, t10.b, t01.b, t11.b),
+                mix(t00.a, t10.a, t01.a, t11.a)};
+    }
+
+    static Rgba texel(Rgba t, double alpha_mode, double encode) {
+        const auto a = alpha_mode > 1.5 ? 1.0 : std::clamp(t.a, 0.0, 1.0);
+        std::array<double, 3> rgb{t.r, t.g, t.b};
+        for (auto &c : rgb) {
+            if (alpha_mode > 0.5 && alpha_mode < 1.5) c = a > 0.0 ? c / a : 0.0;
+            if (encode > 1.5) c = linear(c);
+            else if (encode > 0.5) c = encodeSrgb(c);
+        }
+        return {rgb[0] * a, rgb[1] * a, rgb[2] * a, a};
+    }
+
+    double param(const CanvasItem &item, std::size_t index) const { return value(item.parameters.at(index), values_); }
+
+    double mask(const CanvasItem &item, Vec2 p) const {
+        double m = 1.0;
+        for (const auto &mask : item.masks) {
+            const auto q = itemPoint(mask.affine, p);
+            const Vec2 uv{(q.x - mask.rect[0]) / mask.rect[2], (q.y - mask.rect[1]) / mask.rect[3]};
+            auto v = mask.outside;
+            if (inside(uv)) {
+                const auto t = sample(mask.texture, uv);
+                v = mask.luminance ? 0.2126 * t.r + 0.7152 * t.g + 0.0722 * t.b : t.a;
+            }
+            m *= v;
+        }
+        return m;
+    }
+
+    // canvasPaint: premultiplied, in the list's blend space, without opacity
+    // or clip; (px, py) is the pixel centre.
+    Rgba paint(const CanvasItem &item, double px, double py, bool srgb) const {
+        const auto p = canvasPoint(px, py);
+        const auto q = itemPoint(item.affine, p);
+        const auto shape_color = [&](double c) { return srgb ? std::clamp(c, 0.0, 1.0) : linear(c); };
+        Rgba color;
+        switch (item.source) {
+        case CanvasItemSource::shape: {
+            const auto resolved = resolve(item, values_);
+            const auto distance = [&](double x, double y) {
+                const auto at = itemPoint(item.affine, canvasPoint(x, y));
+                return resolved.distance({at.x - resolved.center.x, at.y - resolved.center.y});
+            };
+            const auto d = distance(px, py);
+            const auto aa = std::max(length({distance(px + 1.0, py) - d, distance(px, py + 1.0) - d}), 1e-6);
+            const auto a = std::clamp(resolved.color[3], 0.0, 1.0) * std::clamp(0.5 - d / aa, 0.0, 1.0);
+            color = {shape_color(resolved.color[0]) * a, shape_color(resolved.color[1]) * a,
+                     shape_color(resolved.color[2]) * a, a};
+            break;
+        }
+        case CanvasItemSource::image: {
+            const Vec2 uv{(q.x - param(item, 0)) / param(item, 2), (q.y - param(item, 1)) / param(item, 3)};
+            if (inside(uv)) color = texel(sample(item.texture, uv), param(item, 4), param(item, 5));
+            break;
+        }
+        case CanvasItemSource::color: {
+            if (inside({q.x / output_.size[0], q.y / output_.size[1]})) {
+                const auto a = std::clamp(param(item, 3), 0.0, 1.0);
+                color = {shape_color(param(item, 0)) * a, shape_color(param(item, 1)) * a,
+                         shape_color(param(item, 2)) * a, a};
+            }
+            break;
+        }
+        case CanvasItemSource::group: {
+            const Vec2 uv{(offset_.x + q.x * scale_.x) / width_, (offset_.y + q.y * scale_.y) / height_};
+            color = texel(sample(item.texture, uv), 1.0, param(item, 0));
+            break;
+        }
+        }
+        return color.scaled(mask(item, p));
+    }
+
+    double opacity(const CanvasItem &item) const {
+        auto result = item.opacity;
+        for (const auto &edge : item.opacity_edges) {
+            const auto found = values_.find(edge);
+            if (found == values_.end())
+                throw std::invalid_argument("canvas reference has no value for " + edge.node + "." + edge.port);
+            result *= found->second;
+        }
+        return std::clamp(result, 0.0, 1.0);
+    }
+
+    // The item's quad in item space, as the vertex shader builds it.
+    std::pair<Vec2, Vec2> bounds(const CanvasItem &item) const {
+        switch (item.source) {
+        case CanvasItemSource::shape: {
+            const auto resolved = resolve(item, values_);
+            return {resolved.center, resolved.bound};
+        }
+        case CanvasItemSource::image: {
+            const Vec2 size{param(item, 2), param(item, 3)};
+            return {{param(item, 0) + 0.5 * size.x, param(item, 1) + 0.5 * size.y},
+                    {0.5 * std::abs(size.x), 0.5 * std::abs(size.y)}};
+        }
+        case CanvasItemSource::color:
+        case CanvasItemSource::group: break;
+        }
+        const Vec2 half{0.5 * output_.size[0], 0.5 * output_.size[1]};
+        return {half, half};
+    }
+
+    std::vector<float> composite(const std::vector<CanvasItem> &items, bool srgb) const {
+        std::vector<float> pixels(std::size_t{width_} * height_ * 4, 0.0f);
+        for (const auto &item : items) {
+            const auto [center, bound] = bounds(item);
+            // The pixels whose centres the item's quad covers (its bounding box
+            // when it is turned; the paint is empty past the quad).
+            double x0 = 1e300, x1 = -1e300, y0 = 1e300, y1 = -1e300;
+            for (const auto corner : {Vec2{-1, -1}, Vec2{1, -1}, Vec2{1, 1}, Vec2{-1, 1}}) {
+                const auto canvas = apply(item.affine, {center.x + corner.x * (bound.x + margin_),
+                                                        center.y + corner.y * (bound.y + margin_)});
+                const auto px = offset_.x + canvas.x * scale_.x, py = offset_.y + canvas.y * scale_.y;
+                x0 = std::min(x0, px), x1 = std::max(x1, px), y0 = std::min(y0, py), y1 = std::max(y1, py);
+            }
+            const auto first_x = static_cast<std::int64_t>(std::max(0.0, std::ceil(x0 - 0.5)));
+            const auto last_x = static_cast<std::int64_t>(std::min<double>(width_, std::ceil(x1 - 0.5)));
+            const auto first_y = static_cast<std::int64_t>(std::max(0.0, std::ceil(y0 - 0.5)));
+            const auto last_y = static_cast<std::int64_t>(std::min<double>(height_, std::ceil(y1 - 0.5)));
+            const auto item_opacity = opacity(item);
+            for (auto y = first_y; y < last_y; ++y) {
+                for (auto x = first_x; x < last_x; ++x) {
+                    const auto px = x + 0.5, py = y + 0.5;
+                    auto color = paint(item, px, py, srgb).scaled(item_opacity);
+                    if (color.a <= 0.0) continue;
+                    auto *pixel = &pixels[(static_cast<std::size_t>(y) * width_ + static_cast<std::size_t>(x)) * 4];
+                    const auto keep = 1.0f - static_cast<float>(color.a);
+                    if (item.clip_base) {
+                        // Atop: weighted by the alpha below, which it keeps.
+                        const auto below = static_cast<double>(pixel[3]);
+                        pixel[0] = static_cast<float>(color.r * below) + pixel[0] * keep;
+                        pixel[1] = static_cast<float>(color.g * below) + pixel[1] * keep;
+                        pixel[2] = static_cast<float>(color.b * below) + pixel[2] * keep;
+                        continue;
+                    }
+                    pixel[0] = static_cast<float>(color.r) + pixel[0] * keep;
+                    pixel[1] = static_cast<float>(color.g) + pixel[1] * keep;
+                    pixel[2] = static_cast<float>(color.b) + pixel[2] * keep;
+                    pixel[3] = static_cast<float>(color.a) + pixel[3] * keep;
+                }
+            }
+        }
+        return pixels;
+    }
+};
+
 } // namespace
 
 CanvasImage renderCanvasReference(const CanvasOutput &output, std::uint32_t width, std::uint32_t height,
-                                  const CanvasValues &values) {
+                                  const CanvasValues &values, const CanvasReferenceImages &images) {
     if (width == 0 || height == 0) throw std::invalid_argument("canvas reference image must not be empty");
-    CanvasImage image{width, height, std::vector<float>(std::size_t{width} * height * 4, 0.0f)};
-    // The fit, as canvasFit in the vertex shader.
-    Vec2 scale{width / output.size[0], height / output.size[1]};
-    if (output.fit == CanvasFit::contain) scale.x = scale.y = std::min(scale.x, scale.y);
-    const Vec2 offset{(width - output.size[0] * scale.x) * 0.5, (height - output.size[1] * scale.y) * 0.5};
-    const auto margin = 2.0 / std::min(scale.x, scale.y);
-    for (const auto &item : output.items) {
-        const auto resolved = resolve(item, values);
-        // The pixels whose centres the item's quad covers.
-        const auto x0 = offset.x + (resolved.center.x - resolved.bound.x - margin) * scale.x;
-        const auto x1 = offset.x + (resolved.center.x + resolved.bound.x + margin) * scale.x;
-        const auto y0 = offset.y + (resolved.center.y - resolved.bound.y - margin) * scale.y;
-        const auto y1 = offset.y + (resolved.center.y + resolved.bound.y + margin) * scale.y;
-        const auto first_x = static_cast<std::int64_t>(std::max(0.0, std::ceil(x0 - 0.5)));
-        const auto last_x = static_cast<std::int64_t>(std::min<double>(width, std::ceil(x1 - 0.5)));
-        const auto first_y = static_cast<std::int64_t>(std::max(0.0, std::ceil(y0 - 0.5)));
-        const auto last_y = static_cast<std::int64_t>(std::min<double>(height, std::ceil(y1 - 0.5)));
-        const auto local = [&](double px, double py) {
-            return Vec2{(px - offset.x) / scale.x - resolved.center.x, (py - offset.y) / scale.y - resolved.center.y};
-        };
-        const std::array<double, 3> rgb{linear(resolved.color[0]), linear(resolved.color[1]),
-                                        linear(resolved.color[2])};
-        for (auto y = first_y; y < last_y; ++y) {
-            for (auto x = first_x; x < last_x; ++x) {
-                const auto px = x + 0.5, py = y + 0.5;
-                const auto d = resolved.distance(local(px, py));
-                const auto dx = resolved.distance(local(px + 1.0, py)) - d;
-                const auto dy = resolved.distance(local(px, py + 1.0)) - d;
-                const auto aa = std::max(length({dx, dy}), 1e-6);
-                const auto coverage = std::clamp(0.5 - d / aa, 0.0, 1.0);
-                const auto alpha = std::clamp(resolved.color[3], 0.0, 1.0) * coverage * resolved.opacity;
-                if (alpha <= 0.0) continue;
-                auto *pixel = &image.pixels[(static_cast<std::size_t>(y) * width + static_cast<std::size_t>(x)) * 4];
-                const auto keep = 1.0f - static_cast<float>(alpha);
-                for (std::size_t c = 0; c < 3; ++c)
-                    pixel[c] = static_cast<float>(rgb[c] * alpha) + pixel[c] * keep;
-                pixel[3] = static_cast<float>(alpha) + pixel[3] * keep;
-            }
-        }
-    }
-    return image;
+    const Reference reference{output, width, height, values, images};
+    return CanvasImage{width, height, reference.draw()};
 }
 
 } // namespace Pelican

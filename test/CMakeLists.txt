@@ -3558,6 +3558,8 @@ target_link_libraries(pelican_test_png_nonuniform_check PRIVATE stb)
 # by the player, its frames held against the CPU reference.
 if(PELICAN_WITH_CANVAS)
     pelican_define_test(canvas_lowering_test pelican_project)
+    # CV-2a: image layers, masks, clips, groups and blend spaces.
+    pelican_define_test(canvas_layers_test pelican_project)
     add_executable(pelican_test_canvas_png_compare canvas_png_compare.cpp)
     set_target_properties(pelican_test_canvas_png_compare PROPERTIES CXX_STANDARD 20)
     target_link_libraries(pelican_test_canvas_png_compare PRIVATE stb pelican_project nlohmann_json)
@@ -3572,6 +3574,20 @@ if(PELICAN_WITH_CANVAS)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_canvas_headless.cmake
     )
     pelican_gpu_test_properties(canvas_lower_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+    # CV-2a: a PSD layer stack (fixtures/canvas_psd) against its reference.png,
+    # and a canvas.from_image of a graph pass's image.
+    add_test(
+        NAME canvas_psd_headless_player
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+            -DCLI=$<TARGET_FILE:pelican_cli>
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DCOMPARE=$<TARGET_FILE:pelican_test_canvas_png_compare>
+            -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/canvas_psd
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/canvas_psd_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_canvas_psd_headless.cmake
+    )
+    pelican_gpu_test_properties(canvas_psd_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
     # CV-1b: the same document run as written, lowered by the engine itself.
     add_test(
         NAME canvas_live_headless_player

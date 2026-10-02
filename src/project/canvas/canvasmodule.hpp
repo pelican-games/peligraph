@@ -17,6 +17,10 @@ namespace Pelican {
 // lowering removes every edge that carries one.
 //   pelican.canvas.geometry@1  shape.rect / shape.ellipse -> shape.fill / shape.stroke
 //   pelican.canvas.layer@1     shape.fill / shape.stroke / canvas.stack -> canvas.stack / canvas.output
+//                              CV-2a: also canvas.image / canvas.from_image / canvas.color /
+//                              canvas.transform, and a stack layer's `mask` names a layer port
+//                              (a canvas.image) beside its `input`.
+// canvas.from_image reads an image edge (`image`) of a render pass or render.image.
 //
 // A vector parameter a value edge may drive is split into one scalar port per
 // component: `size.x`, `size.y`, `center.x`, `center.y`, `color.r` .. `color.a`.

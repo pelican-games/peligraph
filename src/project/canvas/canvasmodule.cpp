@@ -26,8 +26,9 @@ std::vector<SemanticTypeSchema> builtinCanvasTypeSchemas() {
 }
 
 const std::vector<std::string> &canvasGraphOperations() {
-    static const std::vector<std::string> operations{"canvas.output", "canvas.stack", "shape.ellipse",
-                                                     "shape.fill", "shape.rect", "shape.stroke"};
+    static const std::vector<std::string> operations{"canvas.color", "canvas.from_image", "canvas.image",
+                                                     "canvas.output", "canvas.stack", "canvas.transform",
+                                                     "shape.ellipse", "shape.fill", "shape.rect", "shape.stroke"};
     return operations;
 }
 
@@ -105,11 +106,45 @@ void registerCanvasGraphModule(GraphModuleRegistry &registry) {
                 throw std::invalid_argument("canvas.stack names a layer input twice: " + id + "." + name);
             contract.inputs.emplace(canvasStackOpacityPort(name), value);
         }
+        // CV-2a: a layer's `mask` names one more layer port (several layers
+        // may share one mask, a mask is never also a layer).
+        for (const auto &entry : *layers) {
+            const auto mask = entry.find("mask");
+            if (mask == entry.end()) continue;
+            if (!mask->is_string() || mask->get_ref<const std::string &>().empty() ||
+                mask->get_ref<const std::string &>().find('.') != std::string::npos)
+                throw std::invalid_argument("canvas.stack layer mask must be an input name without a dot: " + id);
+            const auto name = mask->get<std::string>();
+            if (const auto found = contract.inputs.find(name); found == contract.inputs.end())
+                contract.inputs.emplace(name, layer_input);
+            else if (std::any_of(layers->begin(), layers->end(), [&](const Json &layer) {
+                         return layer.is_object() && layer.value("input", std::string{}) == name;
+                     }))
+                throw std::invalid_argument("canvas.stack names a layer as a mask: " + id + "." + name);
+        }
         contract.outputs.emplace("layer", layer);
         return contract;
     };
 
     auto output = declared({{"layer", layer_input}}, {{"image", image}}, GraphParameterChange::rebuild);
+
+    // CV-2a: image, color and transform layers.
+    auto canvas_image = declared(ports({"offset.x", "offset.y"}), {{"layer", layer}}, GraphParameterChange::value);
+    canvas_image.contract.parameter_changes = {{"asset", GraphParameterChange::rebuild},
+                                               {"size", GraphParameterChange::rebuild},
+                                               {"channel", GraphParameterChange::rebuild},
+                                               {"outside", GraphParameterChange::rebuild},
+                                               {"sampler", GraphParameterChange::rebuild}};
+    auto from_image_inputs = ports({"offset.x", "offset.y"});
+    from_image_inputs.emplace("image", GraphInputContract{exactLogicalTypePattern(*types, image)});
+    auto from_image = declared(from_image_inputs, {{"layer", layer}}, GraphParameterChange::value);
+    from_image.contract.parameter_changes = {{"size", GraphParameterChange::rebuild},
+                                             {"alpha", GraphParameterChange::rebuild}};
+    auto color = declared(ports({"color.r", "color.g", "color.b", "color.a"}), {{"layer", layer}},
+                          GraphParameterChange::value);
+    auto transform_inputs = ports({"translate.x", "translate.y", "rotate", "scale.x", "scale.y", "pivot.x", "pivot.y"});
+    transform_inputs.emplace("layer", layer_input);
+    auto transform = declared(transform_inputs, {{"layer", layer}}, GraphParameterChange::value);
 
     registry.registerModule(GraphModuleManifest{
         "pelican.canvas", 1,
@@ -122,6 +157,10 @@ void registerCanvasGraphModule(GraphModuleRegistry &registry) {
             {"shape.stroke", std::move(stroke)},
             {"canvas.stack", std::move(stack)},
             {"canvas.output", std::move(output)},
+            {"canvas.image", std::move(canvas_image)},
+            {"canvas.from_image", std::move(from_image)},
+            {"canvas.color", std::move(color)},
+            {"canvas.transform", std::move(transform)},
         },
         {}});
 }
