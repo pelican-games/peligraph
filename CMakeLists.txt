@@ -451,6 +451,10 @@ add_subdirectory(src/spvlink)
 endif()
 add_subdirectory(src/player)
 add_subdirectory(src/devcli)
+# IL-2: the intro link example (a small Vulkan intro; removed whole when OFF).
+if(PELICAN_WITH_INTRO_LINK)
+add_subdirectory(tools/intro_link/example)
+endif()
 
 ## pelican studio
 set(PELICAN_CRASH_SYMBOL_ARCHIVE_DIR

@@ -1,0 +1,9 @@
+{
+  "schema": "pelican.project",
+  "version": 1,
+  "name": "intro link example",
+  "engine_min_version": "0.1.0",
+  "basic_config": {
+    "rendering_config_json": "passes/main.json"
+  }
+}
