@@ -226,6 +226,13 @@ hot reload flag を折る処理は、この centralized gate へ統合する(各
 - 理由の優先は replay → strict assets → rpc driver → hot_reload empty →
   shader_hot_reload disabled。headless は `shader_hot_reload = false` なので、
   宣言があっても止まる
+- ✅AV-1(2026-10-02)から、`PELICAN_WITH_HOT_RELOAD=OFF` の build(配布 build)
+  では理由 `"hot reload build disabled"` がこれらより上の最上位に入る
+  (`updateLocked()` の `constexpr bool build_disabled`。`#if` ではなく定数)。
+  OFF では他の理由に関係なく監視が無い: `ReloadService::setup()` は FileWatcher
+  を作らず、宣言は読むが効かない(INFO 1 行)。game logic の DLL の poll もしない
+  (明示の reload の経路は変えていない。`explicitShaderReloadRefusal()` が断るのは
+  replay と strict だけ)
 
 宣言の当たり判定は、`AssetKey` の path が要素と等しいか、要素をフォルダとして
 その下か(成分ごと。`assets/tex` は `assets/textures/a.png` に当たらない。

@@ -186,7 +186,7 @@
 
 **bloom(ブルーム)** — 明るい部分をにじませて眩しさを表現する後処理。P-2a-1b(`6e04c7c8`)から同梱 feature `engine://features/bloom.json`(13 pass + 9 RT を `post_ldr` の後に挿入。shader は `bloom_highpass` / `bloom_blur_h` / `bloom_blur_v` / `bloom_upsample` / `bloom_composite`)。しきい値・膝・強度は feature の parameter(`threshold` / `knee` / `intensity`、P-2a-1c)ですが、**供給のされ方が 2 通りある**点に注意してください: `threshold` と `knee` は shader の define(`PELICAN_FEATURE_BLOOM_*`)として焼かれ、**`intensity` だけは `binding: "buffer"`**(P-2a-2、`bloom.json:26`)—— feature 自身が持つ `bloom.intensity` バッファ(`size: 4` / `host_source: runtime_f32`)を通る**実行時の値**で、`set_parameters` でも共通グラフの `render.scalar` sink でも毎フレーム書き換えられます。初出: [第6章 §6.4](06_rendering.md#64-シェーダ基盤shader-freedom-kit-wp101519--m2bwp70)。([bloom_highpass.frag](../../src/core/resources/bloom_highpass.frag))
 
-**materialize(マテリアライズ)** — エンジン同梱の feature(`engine://features/*.json`)を**プロジェクト側の派生としてファイルに保存し、以後そちらを参照する**操作。以後は自分のものなので自由に編集できます([第1章](01_overview.md) 設計決定 11)。`parameters` の宣言は**残したまま**、確定した値が `bound_parameters` として書かれます —— **宣言は消えません**。`$name` の置換とスカラーの define は合成のたびに再生成されるので、古い値の define が残ることもありません([featurecompose.cpp:2850](../../src/project/featurecompose.cpp#L3027) のコメントが理由の正本)。値の優先順位は **instance の上書き > `bound_parameters` > 宣言の既定値**([featurecompose.cpp:1393](../../src/project/featurecompose.cpp#L1429))。同じ feature を 2 度 materialize することはできません(`is already materialized`)。初出: [第6章 §6.5](06_rendering.md#65-feature--パージ可能な-gpu-機能wp2831548788104226)。
+**materialize(マテリアライズ)** — エンジン同梱の feature(`engine://features/*.json`)を**プロジェクト側の派生としてファイルに保存し、以後そちらを参照する**操作。以後は自分のものなので自由に編集できます([第1章](01_overview.md) 設計決定 11)。`parameters` の宣言は**残したまま**、確定した値が `bound_parameters` として書かれます —— **宣言は消えません**。`$name` の置換とスカラーの define は合成のたびに再生成されるので、古い値の define が残ることもありません([featurecompose.cpp:2850](../../src/project/featurecompose.cpp#L3113) のコメントが理由の正本)。値の優先順位は **instance の上書き > `bound_parameters` > 宣言の既定値**([featurecompose.cpp:1393](../../src/project/featurecompose.cpp#L1473))。同じ feature を 2 度 materialize することはできません(`is already materialized`)。初出: [第6章 §6.5](06_rendering.md#65-feature--パージ可能な-gpu-機能wp2831548788104226)。
 
 **TAA(temporal anti-aliasing)** — 毎フレーム少しずらして描いた結果を、前フレームの履歴と混ぜてジャギーを消す手法。pelican2 では `taa.json` feature が resolve + composite の 2 パスと jitter provider を持ちます。履歴・速度・jitter はユーザー空間側の道具立てで、エンジンは機構だけを持ちます。初出: [第6章 標準 TAA](06_rendering.md#標準-taawp113)。
 
@@ -206,7 +206,7 @@
 
 ## 14.6 テスト・運用・ツールの語
 
-**JSON-RPC(stdio)** — 外部プロセスからエンジンを操作するためのプロトコル。1 行 1 メッセージの JSON を stdin / stdout でやり取りし(改行区切り JSON)、`--rpc` 中は **stdout がプロトコル専用**になります(ログは stderr へ)。エラーコードは JSON-RPC 2.0 の規約(`-32700` parse error など)に従います。初出: [第10章 §10.3](10_tools.md#103-json-rpcstdio-外部制御プロトコル実装済み)。([RpcServer](../../src/core/communication/rpcserver.hpp#L55))
+**JSON-RPC(stdio)** — 外部プロセスからエンジンを操作するためのプロトコル。1 行 1 メッセージの JSON を stdin / stdout でやり取りし(改行区切り JSON)、`--rpc` 中は **stdout がプロトコル専用**になります(ログは stderr へ)。エラーコードは JSON-RPC 2.0 の規約(`-32700` parse error など)に従います。初出: [第10章 §10.3](10_tools.md#103-json-rpcstdio-外部制御プロトコル実装済み)。([RpcServer](../../src/core/communication/rpcserver.hpp#L56))
 
 **ホットリロード(hot reload)** — 実行を止めずに、保存されたファイルを反映すること。対象はシェーダ・`.surface`・テクスチャ・マテリアル値・モデルコンテナ・ゲームロジック DLL で、**シーンは対象外**です。1 つの変更に影響する全バリアントを準備してからフレーム境界で一括公開し、どれか 1 つでも失敗すれば全体を破棄して旧世代を維持します(fail-soft)。初出: [第10章 §10.5](10_tools.md#105-ホットリロードwp9096110147162178)。
 
