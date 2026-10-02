@@ -2,8 +2,10 @@
 
 #include "passform.hpp"
 
+#include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 class QCheckBox;
@@ -53,6 +55,15 @@ class MaterialSettingsForm final : public PassForm {
     void reset();
     // The resources a binding row offers to read.
     void setResourceCandidates(const std::vector<std::string> &resources);
+    // UX-12c, decision 3: the names a `kind` ("screen_inputs",
+    // "surface_resources") row offers, as the engine lists them
+    // (get_graph_catalog's material_pass_contracts, MP-1): {name,
+    // source_type}. None given (an engine before MP-1): Studio's own table.
+    void setResourceNameCandidates(const std::string &kind,
+                                   std::vector<std::pair<std::string, std::string>> names);
+    // The semantic type each resource offered to read carries, where known:
+    // a row whose name wants another type does not offer that resource.
+    void setResourceCandidateTypes(std::map<std::string, std::string> types);
     // The variant names other passes use.
     void setVariantCandidates(const std::vector<std::string> &variants);
     // UX-11, decision 2: the tags the Tags pickers offer (the engine's
@@ -73,9 +84,13 @@ class MaterialSettingsForm final : public PassForm {
                         const nlohmann::json &value);
     void renumber();
     void fillResourceNames(ResourceRow &row);
+    void fillResourceReads(ResourceRow &row);
+    [[nodiscard]] std::vector<std::string> resourceNamesOf(const std::string &kind) const;
 
     nlohmann::json original_ = nlohmann::json::object();
     std::vector<std::string> resource_candidates_;
+    std::map<std::string, std::vector<std::pair<std::string, std::string>>> name_candidates_;
+    std::map<std::string, std::string> candidate_types_;
     std::vector<std::string> tag_candidates_;
     QFormLayout *form_ = nullptr;
 

@@ -678,6 +678,9 @@ struct GraphCanvasPlanPass {
     bool once = false;
     std::optional<std::uint64_t> last_run_generation;
     std::optional<std::uint64_t> last_run_frame;
+    // UX-12c (engine MP-1): the materials it drew in the last published
+    // frame; none before one was, or from an engine that predates MP-1.
+    std::optional<FramePlanDrawnMaterials> drawn_materials;
 
     bool operator==(const GraphCanvasPlanPass &) const = default;
 };
@@ -1181,6 +1184,9 @@ class GraphCanvasModel {
     int once_follow_reads_ = 0;
     std::map<std::string, std::uint64_t, std::less<>> once_follow_from_;
     static constexpr int onceFollowLimit = 40;
+    // UX-12c, decision 1: followDrawnMaterials's reads left.
+    int drawn_follow_reads_ = 0;
+    static constexpr int drawnFollowLimit = 12;
     // The node the rerun_once in flight was about ("" for every once node).
     std::string once_rerun_node_;
     // Decision 2: what the next commit says in place of "Graph change saved."
@@ -1455,7 +1461,7 @@ class GraphCanvasModel {
     [[nodiscard]] bool pollWanted() const noexcept {
         if (!connected_) return false;
         return !catalog_requested_ || live_ || (!pending_ && !ticket_.empty()) ||
-               plan_retry_wanted_ || once_follow_reads_ > 0;
+               plan_retry_wanted_ || once_follow_reads_ > 0 || drawn_follow_reads_ > 0;
     }
 
     std::vector<InspectorRpcRequest> takeRpcRequests();
@@ -2286,6 +2292,24 @@ class GraphCanvasModel {
     [[nodiscard]] std::vector<std::string> materialVariants() const;
     // A root render.material_pass's material_variant; empty takes it out.
     bool setMaterialPassVariant(const std::string &node, const std::string &variant);
+
+    // UX-12c, decision 3 (engine MP-1). The names a material pass binds as
+    // `kind` ("screen_inputs" or "surface_resources"), with the semantic
+    // type the target it reads must carry, as the catalog's
+    // material_pass_contracts list them (every contract lists the same; each
+    // name once, in the catalog's order): {name, source_type}. Empty before
+    // the catalog arrives or from an engine that predates MP-1.
+    [[nodiscard]] std::vector<std::pair<std::string, std::string>>
+    materialPassInputs(std::string_view kind) const;
+    // UX-12c, decision 1: a plan read before the first frame after a publish
+    // does not say what the material passes drew. The plan is read again on
+    // the clock (one read at a time, a bounded number of them) until one of
+    // its passes says.
+    void followDrawnMaterials();
+    // The semantic type id of the render target `target` names, as Studio
+    // knows it: a root render.image's or render.target_ref's type, else the
+    // authoring context's declaration; empty when none says.
+    [[nodiscard]] std::string targetSemantic(std::string_view target) const;
 
     // --- UX-5b: the Graph's fullscreen pass used as the Pass Editor's is.
 

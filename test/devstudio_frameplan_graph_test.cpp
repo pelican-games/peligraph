@@ -12236,4 +12236,75 @@ TEST_CASE("UX-6a decisions 2 and 4: the Frame Plan tells the Graph after a reloa
     widget.receiveShaderReloadOutcome(ShaderReloadOutcome{.kind = ShaderReloadOutcome::Kind::committed});
     CHECK(reloaded == 1);
 }
+
+TEST_CASE("UX-12c decision 2: a material pass's row says how many materials it drew and their "
+          "draws, and the Materials tab lists each, drawn by the pass",
+          "[devstudio][frame-plan][ux12c]") {
+    application();
+    EditingFixture fixture;
+    fixture.wire["material_routing"] = {
+        {"policy", "hybrid_auto_v1"},
+        {"routes", {{"deferred_geometry",
+                     {{"pass", "wp343_mixed_a"}, {"contract", "deferred_geometry_v1"},
+                      {"phase", "opaque"}}}}}};
+    bool marked = false;
+    for (auto &node : fixture.wire["nodes"])
+        if (node.value("name", std::string{}) == "wp343_mixed_a") {
+            node["drawn_materials"] = Json::array(
+                {{{"material", "pelican.primitive.default"}, {"id", 1}, {"draws", 1}},
+                 {{"material", "pelican.primitive.default"}, {"id", 2}, {"draws", 3}},
+                 {{"id", "asset://floor.glb#material[0]"}, {"draws", 1}}});
+            node["drawn_materials_frame"] = 7;
+            marked = true;
+        }
+    REQUIRE(marked);
+    const FramePlanModel model = buildFramePlanModel(fixture.wire.dump());
+    const auto drawn = std::ranges::find(model.nodes, std::string{"wp343_mixed_a"}, &FramePlanNode::name);
+    REQUIRE(drawn != model.nodes.end());
+    REQUIRE(drawn->drawn_materials);
+    CHECK(drawn->drawn_materials->frame == 7);
+    CHECK(drawn->drawn_materials->draws() == 5);
+    // The engine's runtime id is a number.
+    CHECK(drawn->drawn_materials->materials[0].id == "1");
+    CHECK(drawn->drawn_materials->materials[2].name.empty());
+    fixture.open();
+
+    // The Passes row: the count and the draws, then each material.
+    auto *passes = fixture.widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanPasses"));
+    REQUIRE(passes != nullptr);
+    QStringList facts;
+    for (QTreeWidgetItemIterator it{passes}; *it; ++it)
+        if ((*it)->parent() != nullptr && (*it)->parent()->text(1) == QStringLiteral("Materials drawn"))
+            facts << (*it)->text(1) + QStringLiteral(" | ") + (*it)->text(2);
+        else if ((*it)->text(1) == QStringLiteral("Materials drawn"))
+            facts << QStringLiteral("group | ") + (*it)->text(2);
+    // Two materials of one name are told apart by their ids.
+    CHECK(facts == QStringList({QStringLiteral("group | 3 material(s), 5 draw(s) (frame 7)"),
+                                QStringLiteral("pelican.primitive.default (material 1) | 1 draw(s)"),
+                                QStringLiteral("pelican.primitive.default (material 2) | 3 draw(s)"),
+                                QStringLiteral("asset://floor.glb#material[0] | 1 draw(s)")}));
+
+    // The Materials tab: the route says what its pass drew, and each material
+    // is a row of the pass.
+    auto *materials = fixture.widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanMaterials"));
+    REQUIRE(materials != nullptr);
+    REQUIRE(materials->columnCount() == 6);
+    QStringList rows;
+    for (int index = 0; index < materials->topLevelItemCount(); ++index) {
+        const auto *item = materials->topLevelItem(index);
+        rows << item->text(0) + QStringLiteral(" | ") + item->text(1) + QStringLiteral(" | ") +
+                    item->text(5);
+    }
+    CHECK(rows == QStringList({QStringLiteral("deferred_geometry | wp343_mixed_a | 3 material(s), "
+                                              "5 draw(s) (frame 7)"),
+                               QStringLiteral("pelican.primitive.default (material 1) | wp343_mixed_a | "
+                                              "drawn by wp343_mixed_a, 1 draw(s)"),
+                               QStringLiteral("pelican.primitive.default (material 2) | wp343_mixed_a | "
+                                              "drawn by wp343_mixed_a, 3 draw(s)"),
+                               QStringLiteral("asset://floor.glb#material[0] | wp343_mixed_a | drawn "
+                                              "by wp343_mixed_a, 1 draw(s)")}));
+    // The Graph's Materials drawn picks the route and the materials.
+    fixture.widget.showMaterialRoutes(QStringLiteral("wp343_mixed_a"));
+    CHECK(materials->selectedItems().size() == 4);
+}
 } // namespace PelicanStudio

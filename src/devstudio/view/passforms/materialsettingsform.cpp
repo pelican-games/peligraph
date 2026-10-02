@@ -64,10 +64,11 @@ std::vector<std::string> writeMaskNames() {
     return result;
 }
 
-// The names a binding of each kind can have: the engine's screen input
-// contracts (materialscreeninput.cpp) and its feature-owned surface ones. A
-// material resource is the shader's own port name.
-std::vector<std::string> resourceNamesOf(std::string_view kind) {
+// The names a binding of each kind can have, for an engine that does not list
+// them (before MP-1): its screen input contracts (materialscreeninput.cpp)
+// and its feature-owned surface ones. A material resource is the shader's own
+// port name.
+std::vector<std::string> fixedResourceNamesOf(std::string_view kind) {
     if (kind == "screen_inputs")
         return {"opaque_color", "opaque_depth", "scene_depth", "linear_view_depth"};
     if (kind == "surface_resources")
@@ -272,7 +273,10 @@ MaterialSettingsForm::MaterialSettingsForm(const QString &object_prefix,
     add_resource_ = new QPushButton(tr("Add binding"), resources_box_);
     add_resource_->setObjectName(childName("materialResources.add"));
     QObject::connect(add_resource_, &QPushButton::clicked, this, [this] {
-        addResourceRow("screen_inputs", "opaque_color", Json(nullptr));
+        // UX-12c: the engine's first screen input, opaque_color before MP-1.
+        const auto names = resourceNamesOf("screen_inputs");
+        addResourceRow("screen_inputs", names.empty() ? std::string{"opaque_color"} : names.front(),
+                       Json(nullptr));
         notifyChanged();
     });
     resources_layout->addWidget(add_resource_, 0, Qt::AlignLeft);
@@ -296,13 +300,34 @@ void MaterialSettingsForm::reset() { load(Json::object()); }
 
 void MaterialSettingsForm::setResourceCandidates(const std::vector<std::string> &resources) {
     resource_candidates_ = resources;
+    for (auto &row : resource_rows_) fillResourceReads(*row);
+}
+
+void MaterialSettingsForm::setResourceNameCandidates(
+    const std::string &kind, std::vector<std::pair<std::string, std::string>> names) {
+    auto &held = name_candidates_[kind];
+    if (held == names) return;
+    held = std::move(names);
     for (auto &row : resource_rows_) {
-        const QSignalBlocker blocker{row->resource};
-        const QString current = row->resource->currentText();
-        row->resource->clear();
-        for (const auto &resource : resources) row->resource->addItem(text(resource));
-        row->resource->setEditText(current);
+        fillResourceNames(*row);
+        fillResourceReads(*row);
     }
+}
+
+void MaterialSettingsForm::setResourceCandidateTypes(std::map<std::string, std::string> types) {
+    if (types == candidate_types_) return;
+    candidate_types_ = std::move(types);
+    for (auto &row : resource_rows_) fillResourceReads(*row);
+}
+
+std::vector<std::string> MaterialSettingsForm::resourceNamesOf(const std::string &kind) const {
+    if (const auto found = name_candidates_.find(kind);
+        found != name_candidates_.end() && !found->second.empty()) {
+        std::vector<std::string> names;
+        for (const auto &[name, type] : found->second) names.push_back(name);
+        return names;
+    }
+    return fixedResourceNamesOf(kind);
 }
 
 void MaterialSettingsForm::setVariantCandidates(const std::vector<std::string> &variants) {
@@ -428,9 +453,41 @@ void MaterialSettingsForm::fillResourceNames(ResourceRow &row) {
     const QSignalBlocker blocker{row.name};
     const QString current = row.name->currentText();
     row.name->clear();
-    for (const auto &name : resourceNamesOf(row.kind->currentData().toString().toStdString()))
+    const auto kind = row.kind->currentData().toString().toStdString();
+    const auto listed = name_candidates_.find(kind);
+    for (const auto &name : resourceNamesOf(kind)) {
         row.name->addItem(text(name));
+        // UX-12c: what the engine says the name reads.
+        if (listed != name_candidates_.end())
+            for (const auto &[each, type] : listed->second)
+                if (each == name && !type.empty())
+                    row.name->setItemData(row.name->count() - 1,
+                                          tr("reads a %1").arg(text(type)), Qt::ToolTipRole);
+    }
     row.name->setEditText(current);
+}
+
+// UX-12c, decision 3: the resources a row offers to read are those whose type
+// is the one its name wants (or not known); what the row reads stays.
+void MaterialSettingsForm::fillResourceReads(ResourceRow &row) {
+    std::string wanted;
+    if (const auto listed = name_candidates_.find(row.kind->currentData().toString().toStdString());
+        listed != name_candidates_.end()) {
+        const auto name = row.name->currentText().trimmed().toStdString();
+        for (const auto &[each, type] : listed->second)
+            if (each == name) wanted = type;
+    }
+    const QSignalBlocker blocker{row.resource};
+    const QString current = row.resource->currentText();
+    row.resource->clear();
+    for (const auto &resource : resource_candidates_) {
+        if (!wanted.empty())
+            if (const auto type = candidate_types_.find(resource);
+                type != candidate_types_.end() && !type->second.empty() && type->second != wanted)
+                continue;
+        row.resource->addItem(text(resource));
+    }
+    row.resource->setEditText(current);
 }
 
 void MaterialSettingsForm::addResourceRow(const std::string &kind, const std::string &name,
@@ -453,7 +510,7 @@ void MaterialSettingsForm::addResourceRow(const std::string &kind, const std::st
     row->resource = new QComboBox(parent);
     row->resource->setEditable(true);
     row->resource->setInsertPolicy(QComboBox::NoInsert);
-    for (const auto &resource : resource_candidates_) row->resource->addItem(text(resource));
+    fillResourceReads(*row);
     const std::string reads = value.is_string() ? value.get<std::string>()
                               : value.is_object() ? value.value("resource", std::string{})
                                                   : std::string{};
@@ -472,9 +529,13 @@ void MaterialSettingsForm::addResourceRow(const std::string &kind, const std::st
     QObject::connect(row->kind, qOverload<int>(&QComboBox::currentIndexChanged), this,
                      [this, raw = row.get()] {
                          fillResourceNames(*raw);
+                         fillResourceReads(*raw);
                          notifyChanged();
                      });
-    QObject::connect(row->name, &QComboBox::currentTextChanged, this, changed);
+    QObject::connect(row->name, &QComboBox::currentTextChanged, this, [this, raw = row.get()] {
+        fillResourceReads(*raw);
+        notifyChanged();
+    });
     QObject::connect(row->resource, &QComboBox::currentTextChanged, this, changed);
     QObject::connect(row->remove, &QToolButton::clicked, this,
                      [this, button = row->remove] {

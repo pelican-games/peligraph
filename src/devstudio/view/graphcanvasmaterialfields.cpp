@@ -19,6 +19,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <map>
+#include <stdexcept>
 #include <utility>
 
 namespace PelicanStudio {
@@ -137,7 +139,11 @@ GraphCanvasMaterialPassFields::GraphCanvasMaterialPassFields(GraphCanvasModel &m
     drawn_->setHeaderLabels({tr("Material"), tr("Tags")});
     drawn_->setRootIsDecorated(false);
     drawn_->setMaximumHeight(140);
-    drawn_->header()->setStretchLastSection(true);
+    // UX-12c: the material's name takes the width; its draws or tags what
+    // they need.
+    drawn_->header()->setStretchLastSection(false);
+    drawn_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    drawn_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     drawn_->setToolTip(tr("The frame plan's routes to this pass and the engine's materials its "
                           "Tags and Variant take. A row opens the Frame Plan's Materials."));
     layout->addWidget(drawn_);
@@ -200,6 +206,14 @@ Json GraphCanvasMaterialPassFields::withForms(const Json &parameters,
         else
             result.erase(key);
     }
+    // UX-12c: a binding not yet told what it reads is no edit (the engine
+    // refuses an empty target); it goes once its Reads is picked, as a value
+    // still being typed does.
+    for (const char *kind : {"screen_inputs", "surface_resources"})
+        if (const auto found = result.find(kind); found != result.end() && found->is_object())
+            for (const auto &[name, value] : found->items())
+                if (value.is_string() && value.get<std::string>().empty())
+                    throw std::runtime_error("the binding " + name + " reads nothing yet");
     const auto entries = ops.color();
     const auto rows = entries.is_array() ? entries : Json::array({entries});
     if (!rows.empty()) {
@@ -269,6 +283,14 @@ void GraphCanvasMaterialPassFields::showNode(const GraphCanvasNode *node, const 
     }
     for (const auto &port : node->inputs)
         if (port.connected) parts << qtext(port.port + "<" + port.source_node);
+    // UX-12c: the binding names and the targets' types, once they arrive.
+    for (const char *kind : {"screen_inputs", "surface_resources"}) {
+        parts << QStringLiteral("|");
+        for (const auto &[name, type] : model_.materialPassInputs(kind))
+            parts << qtext(name) << qtext(type);
+    }
+    for (const auto &target : model_.planTargets())
+        parts << qtext(model_.targetSemantic(target));
     const auto shown = parts.join(QChar{0x1f}).toStdString();
     if (shown != shown_) {
         shown_ = shown;
@@ -294,6 +316,7 @@ void GraphCanvasMaterialPassFields::showNode(const GraphCanvasNode *node, const 
         loaded_ops_["depth_image"] = depth_image;
         if (keep) {
             loading_ = true;
+            offerInputNames();
             settings_->setTagCandidates(model_.materialTags());
             // The lists that came later than the document.
             if (auto variants = model_.materialVariants(); variants != variant_candidates_) {
@@ -320,8 +343,22 @@ void GraphCanvasMaterialPassFields::showNode(const GraphCanvasNode *node, const 
     show();
 }
 
+// UX-12c, decision 3: the binding names the engine lists (MP-1), and the type
+// each target offered to read carries, so a row offers the targets its name
+// can read.
+void GraphCanvasMaterialPassFields::offerInputNames() {
+    for (const char *kind : {"screen_inputs", "surface_resources"})
+        settings_->setResourceNameCandidates(kind, model_.materialPassInputs(kind));
+    std::map<std::string, std::string> types;
+    for (const auto &target : model_.planTargets())
+        if (auto semantic = model_.targetSemantic(target); !semantic.empty())
+            types.emplace(target, std::move(semantic));
+    settings_->setResourceCandidateTypes(std::move(types));
+}
+
 void GraphCanvasMaterialPassFields::load(const Json &parameters) {
     loading_ = true;
+    offerInputNames();
     settings_->setTagCandidates(model_.materialTags());
     variant_candidates_ = model_.materialVariants();
     target_candidates_ = model_.planTargets();
@@ -358,8 +395,62 @@ void GraphCanvasMaterialPassFields::loadOps(const Json &parameters) {
     loading_ = false;
 }
 
+void GraphCanvasMaterialPassFields::showDrawnMaterials(const GraphCanvasPlanPass &pass) {
+    const auto &drawn = *pass.drawn_materials;
+    const auto materials = model_.materials();
+    QStringList parts{QStringLiteral("drawn"), qtext(pass.name),
+                      QString::number(static_cast<qulonglong>(drawn.frame)),
+                      drawn.truncated ? QStringLiteral("t") : QStringLiteral("-")};
+    for (const auto &material : drawn.materials)
+        parts << qtext(material.id) << qtext(material.name)
+              << QString::number(static_cast<qulonglong>(material.draws));
+    for (const auto &material : materials)
+        if (material.builtin) parts << qtext(material.id);
+    const auto shown = parts.join(QChar{0x1f}).toStdString();
+    if (shown == drawn_shown_) return;
+    drawn_shown_ = shown;
+
+    const auto frame = static_cast<qulonglong>(drawn.frame);
+    QString heading =
+        tr("Materials drawn as of frame %1 -- %n draw(s)", nullptr, static_cast<int>(drawn.draws()))
+            .arg(frame);
+    if (drawn.truncated) heading += tr(" (first %1 shown)").arg(drawn.materials.size());
+    drawn_heading_->setText(heading);
+    drawn_heading_->setWordWrap(true);
+    drawn_->clear();
+    drawn_->setHeaderLabels({tr("Material"), tr("Draws")});
+    drawn_->setToolTip(tr("What the pass drew in the frame the plan names: each material after "
+                          "its variant and draw loop, and its draw commands over the pass's "
+                          "views. A row opens the Frame Plan's Materials."));
+    for (std::size_t index = 0; index < drawn.materials.size(); ++index) {
+        const auto &material = drawn.materials[index];
+        const auto known = std::ranges::find(materials, material.id, &GraphCanvasMaterial::id);
+        const bool builtin = known != materials.end()
+                                 ? known->builtin
+                                 : material.name.starts_with("pelican.builtin.");
+        const auto name = qtext(framePlanDrawnMaterialLabel(drawn, index));
+        auto *item = new QTreeWidgetItem(drawn_);
+        item->setText(0, builtin ? tr("%1 (built in)").arg(name) : name);
+        item->setText(1, QString::number(static_cast<qulonglong>(material.draws)));
+        item->setToolTip(0, qtext(material.id));
+        item->setData(0, Qt::UserRole, qtext(pass.name));
+    }
+    if (drawn.materials.empty()) {
+        auto *none = new QTreeWidgetItem(drawn_);
+        none->setText(0, tr("It drew no material in frame %1").arg(frame));
+        none->setFlags(none->flags() & ~Qt::ItemIsSelectable);
+        // It still opens the Frame Plan's Materials (the routes to the pass).
+        none->setData(0, Qt::UserRole, qtext(pass.name));
+    }
+}
+
 void GraphCanvasMaterialPassFields::showDrawn(const Json &parameters) {
     const auto *pass = planPassOf(model_, node_);
+    // UX-12c, decision 1: what the plan says it drew, once it says.
+    if (pass != nullptr && pass->drawn_materials) {
+        showDrawnMaterials(*pass);
+        return;
+    }
     // The filter and variant as the plan says (a draw_loop's `where` is the
     // pass's filter there), else as the document does.
     std::vector<std::string> include;
@@ -400,16 +491,24 @@ void GraphCanvasMaterialPassFields::showDrawn(const Json &parameters) {
     const auto shown = parts.join(QChar{0x1f}).toStdString();
     if (shown == drawn_shown_) return;
     drawn_shown_ = shown;
+    // UX-12c, decision 1: the plan may have been read before the frame that
+    // says; it is asked for again a few times.
+    if (pass != nullptr) model_.followDrawnMaterials();
 
-    // The engine lists no materials by pass (nor a material's contract): the
-    // rows are those its Tags and Variant take, which the heading says.
+    // The plan has not said what the pass drew (no frame since the pass was
+    // published, or an engine before MP-1): the rows are those its Tags and
+    // Variant take, which the heading says.
     drawn_heading_->setText(pass != nullptr && pass->draw_count
                                 ? tr("Materials drawn (%n draw(s) this frame) -- those its Tags "
-                                     "and Variant take",
+                                     "and Variant take; the engine has not said what it drew",
                                      nullptr, static_cast<int>(*pass->draw_count))
-                                : tr("Materials drawn -- those its Tags and Variant take"));
+                                : tr("Materials drawn -- those its Tags and Variant take; the "
+                                     "engine has not said what it drew"));
     drawn_heading_->setWordWrap(true);
     drawn_->clear();
+    drawn_->setHeaderLabels({tr("Material"), tr("Tags")});
+    drawn_->setToolTip(tr("The frame plan's routes to this pass and the engine's materials its "
+                          "Tags and Variant take. A row opens the Frame Plan's Materials."));
     const auto row = [&](const QString &material, const QString &tags, const QString &tip) {
         auto *item = new QTreeWidgetItem(drawn_);
         item->setText(0, material);

@@ -10559,11 +10559,16 @@ TEST_CASE("UX-11 decisions 1 and 4: a material pass's Tags, outputs, bindings an
     tab.commit(document, "ux11-3");
     QCoreApplication::processEvents();
 
-    // A binding: Add binding is a screen input, its name picked.
+    // A binding: Add binding is a screen input, its name picked. UX-12c: it
+    // goes once it is told what it reads (the engine refuses an empty one).
     tab.field<QPushButton>("pelican.graphCanvasMaterial.materialResources.add")->click();
     QCoreApplication::processEvents();
+    CHECK(tab.reads("edit_graph_document") == edits);
+    tab.field<QComboBox>("pelican.graphCanvasMaterial.materialResources.0.resource")
+        ->setEditText(QStringLiteral("scene_color"));
+    QCoreApplication::processEvents();
     op = tab.sent(++edits);
-    expected["screen_inputs"] = {{"opaque_color", ""}};
+    expected["screen_inputs"] = {{"opaque_color", "scene_color"}};
     CHECK(op.at("parameters") == expected);
 
     // Decision 4: the route the plan names and the two materials tagged hero
@@ -10580,6 +10585,134 @@ TEST_CASE("UX-11 decisions 1 and 4: a material pass's Tags, outputs, bindings an
         QStringLiteral("2 draw")));
     Q_EMIT drawn->itemClicked(drawn->topLevelItem(1), 0);
     CHECK(materials_for == QStringLiteral("mp"));
+}
+
+// --- UX-12c (engine MP-1): Materials drawn from what the pass drew, and the
+// binding names from the engine's list.
+
+namespace {
+
+// ux11Tab opened on the material pass with `plan` and `catalog`.
+void ux12cOpen(Ux11Tab &tab, const Json &document, const Json &plan, const Json &catalog) {
+    tab.read(document, "ux12c-0");
+    tab.answer("get_graph_catalog", catalog);
+    if (tab.reads("get_frame_plan") > 0) tab.answer("get_frame_plan", plan);
+    tab.widget->scene().selectNode("mp");
+    QCoreApplication::processEvents();
+    tab.widget->poll();
+    REQUIRE(tab.reads("get_render_authoring_context") >= 1);
+    tab.answer("get_render_authoring_context", ux3Authoring());
+    if (tab.reads("get_frame_plan") > 0) tab.answer("get_frame_plan", plan);
+    tab.widget->poll();
+    QCoreApplication::processEvents();
+    REQUIRE(tab.widget->model().planPasses().size() == 1);
+}
+
+QStringList ux12cRows(QTreeWidget &tree) {
+    QStringList rows;
+    for (int index = 0; index < tree.topLevelItemCount(); ++index)
+        rows << tree.topLevelItem(index)->text(0) + QStringLiteral(" | ") +
+                    tree.topLevelItem(index)->text(1);
+    return rows;
+}
+
+QStringList ux12cItems(const QComboBox &combo) {
+    QStringList items;
+    for (int index = 0; index < combo.count(); ++index) items << combo.itemText(index);
+    return items;
+}
+
+} // namespace
+
+TEST_CASE("UX-12c decision 1: Materials drawn lists the materials the plan says the pass drew "
+          "in its last frame, with their draws, and falls back to the Tags' approximation, "
+          "saying so, while the plan does not say",
+          "[devstudio][graph-canvas][scene][ux12c]") {
+    (void)application();
+    const auto document = ux5bDeferredDocument();
+    {
+        // The engine has not said (no frame yet, or before MP-1).
+        Ux11Tab tab;
+        ux12cOpen(tab, document, ux11Plan(), ux5bCatalog());
+        auto *drawn = tab.field<QTreeWidget>("pelican.graphCanvasMaterial.drawn");
+        CHECK(ux12cRows(*drawn).contains(QStringLiteral("metal | hero")));
+        const auto heading = tab.field<QLabel>("pelican.graphCanvasMaterial.drawnHeading")->text();
+        CHECK(heading.contains(QStringLiteral("those its Tags and Variant take")));
+        CHECK(heading.contains(QStringLiteral("the engine has not said what it drew")));
+    }
+    // What the pass drew: the effective materials in the order first drawn
+    // (the engine's runtime ids), a built-in one marked, one the engine gave
+    // no name by its id; not the materials its Tags take (glass is not drawn).
+    auto plan = ux11Plan();
+    plan["nodes"][0]["drawn_materials"] = Json::array(
+        {{{"material", "metal"}, {"id", 3}, {"draws", 3}},
+         {{"id", 7}, {"draws", 2}},
+         {{"material", "pelican.builtin.transparent"}, {"id", 1}, {"draws", 1}}});
+    plan["nodes"][0]["drawn_materials_frame"] = 42;
+    plan["nodes"][0]["drawn_materials_truncated"] = true;
+    Ux11Tab tab;
+    QString materials_for;
+    tab.widget->setFramePlanMaterialsAction([&](const QString &pass) { materials_for = pass; });
+    ux12cOpen(tab, document, plan, ux5bCatalog());
+    auto *drawn = tab.field<QTreeWidget>("pelican.graphCanvasMaterial.drawn");
+    REQUIRE(drawn->isVisibleTo(tab.widget.get()));
+    CHECK(ux12cRows(*drawn) ==
+          QStringList({QStringLiteral("metal | 3"), QStringLiteral("material 7 | 2"),
+                       QStringLiteral("pelican.builtin.transparent (built in) | 1")}));
+    CHECK(drawn->headerItem()->text(1) == QStringLiteral("Draws"));
+    const auto heading = tab.field<QLabel>("pelican.graphCanvasMaterial.drawnHeading")->text();
+    CHECK(heading.contains(QStringLiteral("as of frame 42")));
+    CHECK(heading.contains(QStringLiteral("6 draw")));
+    CHECK(heading.contains(QStringLiteral("first 3 shown")));
+    CHECK_FALSE(heading.contains(QStringLiteral("Tags")));
+    // A row still opens the Frame Plan's Materials of the pass.
+    Q_EMIT drawn->itemClicked(drawn->topLevelItem(0), 0);
+    CHECK(materials_for == QStringLiteral("mp"));
+}
+
+TEST_CASE("UX-12c decision 3: a binding's names are the engine's list for its kind, and its "
+          "Reads offers the targets of the type the name reads",
+          "[devstudio][graph-canvas][scene][ux12c]") {
+    (void)application();
+    auto document = ux5bDeferredDocument();
+    document["nodes"][6]["parameters"]["screen_inputs"] = {{"opaque_depth", "mp__depth"}};
+    auto catalog = ux5bCatalog();
+    const Json color = "pelican.render.color_signal@1";
+    const Json depth = "pelican.render.depth@1";
+    // lit_history is in no table of Studio's: the names are the engine's.
+    catalog["material_pass_contracts"][0]["screen_inputs"] = Json::array(
+        {{{"name", "opaque_color"}, {"source_type", color}},
+         {{"name", "opaque_depth"}, {"source_type", depth}},
+         {{"name", "lit_history"}, {"source_type", color}}});
+    catalog["material_pass_contracts"][0]["surface_resources"] =
+        Json::array({{{"name", "directional_shadow"}, {"source_type", depth}}});
+    // The plan's targets: the graph's two images, two declared targets and
+    // one whose type Studio cannot tell.
+    auto plan = ux11Plan();
+    plan["resources"] = Json::array();
+    for (const char *name : {"mp__albedo", "mp__depth", "scene_color", "shadow_map", "mystery"})
+        plan["resources"].push_back({{"kind", "render_target"}, {"name", name}, {"source", "project"}});
+    Ux11Tab tab;
+    ux12cOpen(tab, document, plan, catalog);
+    CHECK(tab.widget->model().targetSemantic("mp__albedo") == color.get<std::string>());
+    CHECK(tab.widget->model().targetSemantic("shadow_map") == depth.get<std::string>());
+    CHECK(tab.widget->model().targetSemantic("mystery").empty());
+
+    auto *name = tab.field<QComboBox>("pelican.graphCanvasMaterial.materialResources.0.name");
+    auto *reads = tab.field<QComboBox>("pelican.graphCanvasMaterial.materialResources.0.resource");
+    CHECK(ux12cItems(*name) == QStringList({"opaque_color", "opaque_depth", "lit_history"}));
+    CHECK(name->currentText() == QStringLiteral("opaque_depth"));
+    // A depth name reads a depth target (or one whose type is not known).
+    CHECK(ux12cItems(*reads) == QStringList({"mp__depth", "mystery", "shadow_map"}));
+    CHECK(reads->currentText() == QStringLiteral("mp__depth"));
+    // A colour name, the colour ones; what the row reads stays.
+    name->setCurrentIndex(name->findText(QStringLiteral("lit_history")));
+    CHECK(ux12cItems(*reads) == QStringList({"mp__albedo", "mystery", "scene_color"}));
+    CHECK(reads->currentText() == QStringLiteral("mp__depth"));
+    // A surface resource: the engine's names for that kind.
+    auto *kind = tab.field<QComboBox>("pelican.graphCanvasMaterial.materialResources.0.kind");
+    kind->setCurrentIndex(kind->findData(QStringLiteral("surface_resources")));
+    CHECK(ux12cItems(*name) == QStringList({"directional_shadow"}));
 }
 
 // UX-10, decision 5: no engine RPC lists a rig's clips, and the engine finds a

@@ -1002,6 +1002,14 @@ void GraphCanvasModel::poll() {
         // plan says when they last ran.
         if (--once_follow_reads_ == 0) once_follow_from_.clear();
         read(RequestKind::Loops, "get_frame_plan", Json::object());
+    } else if (drawn_follow_reads_ > 0 &&
+               std::ranges::none_of(reads_, [](const PendingRequest &pending) {
+                   return pending.kind == RequestKind::Loops;
+               })) {
+        // UX-12c, decision 1: one read at a time, so an answer that takes
+        // longer than a poll is not dropped for the next.
+        --drawn_follow_reads_;
+        read(RequestKind::Loops, "get_frame_plan", Json::object());
     }
     // An accepted edit owns the request slot until the engine says what became
     // of it. Nothing else may take that slot in the meantime.
@@ -5576,6 +5584,12 @@ void GraphCanvasModel::readPlanPasses(const Json &plan) {
                 if (const auto value = node.find(key);
                     value != node.end() && value->is_number_unsigned())
                     *field = value->get<std::uint64_t>();
+            // UX-12c (engine MP-1): what it drew; a list Studio cannot read
+            // is the Frame Plan tab's to name, and here it is not there.
+            try {
+                pass.drawn_materials = framePlanDrawnMaterials(node, "get_frame_plan node");
+            } catch (const std::exception &) {
+            }
             passes.push_back(std::move(pass));
         }
     std::ranges::stable_sort(passes, {}, &GraphCanvasPlanPass::order);
@@ -5591,6 +5605,11 @@ void GraphCanvasModel::readPlanPasses(const Json &plan) {
         once_follow_reads_ = 0;
         once_follow_from_.clear();
     }
+    // UX-12c, decision 1: followed until a pass says what it drew.
+    if (std::ranges::any_of(plan_passes_, [](const GraphCanvasPlanPass &pass) {
+            return pass.drawn_materials.has_value();
+        }))
+        drawn_follow_reads_ = 0;
     // GL-1e: a pass's `input` counts images and buffers apart.
     plan_buffers_.clear();
     if (const auto resources = plan.find("resources");
@@ -6973,6 +6992,54 @@ std::vector<GraphCanvasDeclaredTarget> GraphCanvasModel::declaredRenderTargets()
         targets.push_back(std::move(target));
     }
     return targets;
+}
+
+std::vector<std::pair<std::string, std::string>>
+GraphCanvasModel::materialPassInputs(std::string_view kind) const {
+    std::vector<std::pair<std::string, std::string>> inputs;
+    for (const auto &contract : material_pass_contracts_) {
+        if (!contract.is_object()) continue;
+        const auto found = contract.find(std::string{kind});
+        if (found == contract.end() || !found->is_array()) continue;
+        for (const auto &entry : *found) {
+            const auto name = text(entry, "name");
+            if (name.empty() || std::ranges::find(inputs, name, &std::pair<std::string, std::string>::first) !=
+                                    inputs.end())
+                continue;
+            inputs.emplace_back(name, text(entry, "source_type"));
+        }
+    }
+    return inputs;
+}
+
+void GraphCanvasModel::followDrawnMaterials() {
+    if (std::ranges::any_of(plan_passes_, [](const GraphCanvasPlanPass &pass) {
+            return pass.drawn_materials.has_value();
+        }))
+        return;
+    drawn_follow_reads_ = drawnFollowLimit;
+}
+
+std::string GraphCanvasModel::targetSemantic(std::string_view target) const {
+    if (target.empty()) return {};
+    for (const auto &node : nodes_) {
+        if (!node.is_object()) continue;
+        const auto op = text(node, "op");
+        if (op != "render.image" && op != "render.target_ref") continue;
+        const auto parameters = node.value("parameters", Json::object());
+        if (!parameters.is_object()) continue;
+        const bool named = text(parameters, "name") == target ||
+                           (op == "render.image" && text(node, "id") == target);
+        if (!named) continue;
+        if (const auto type = parameters.find("type"); type != parameters.end() && type->is_object())
+            if (auto semantic = text(*type, "semantic"); !semantic.empty()) return semantic;
+    }
+    if (const auto found = render_authoring_.find("render_targets");
+        found != render_authoring_.end() && found->is_array())
+        for (const auto &entry : *found)
+            if (entry.is_object() && text(entry, "name") == target)
+                return text(targetRefType(entry.value("declaration", Json::object())), "semantic");
+    return {};
 }
 
 void GraphCanvasModel::setComputeShaderChoices(std::vector<std::string> choices) {

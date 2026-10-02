@@ -32,7 +32,10 @@ class MaterialSettingsForm;
 //     depth_load_op and depth_store_op, as the fullscreen pass's are (UX-5b);
 //   - Materials drawn: the frame plan's routes to the pass and the engine's
 //     materials its filter and variant take, with their tags; a row opens
-//     the Frame Plan's Materials rows of the pass.
+//     the Frame Plan's Materials rows of the pass. UX-12c, decision 1: once
+//     the plan says what the pass drew in its last frame (engine MP-1's
+//     drawn_materials), the rows are those materials and their draws; the
+//     approximation stays for a plan that does not say.
 // Each change is one set_node_parameters of the node's whole parameters (one
 // Undo step); a value typed (a name, a clear colour, Other) goes when the
 // typing stops. The forms' children are named
@@ -60,7 +63,8 @@ class GraphCanvasMaterialPassFields final : public QWidget {
     // material_variant, which are the Draw fields'), and the attachment ops.
     // `loaded_ops` is what the ops were when the forms were loaded, so the
     // row that moved says what the pass's ops become. Throws while a typed
-    // value is not one yet (Other, a clear colour).
+    // value is not one yet (Other, a clear colour) or a
+    // screen input or surface resource reads nothing yet (UX-12c).
     [[nodiscard]] static nlohmann::json withForms(const nlohmann::json &parameters,
                                                   const MaterialSettingsForm &settings,
                                                   const AttachmentOpsForm &ops,
@@ -74,7 +78,10 @@ class GraphCanvasMaterialPassFields final : public QWidget {
   private:
     void load(const nlohmann::json &parameters);
     void loadOps(const nlohmann::json &parameters);
+    void offerInputNames();
     void showDrawn(const nlohmann::json &parameters);
+    // UX-12c, decision 1: the rows of what the plan says the pass drew.
+    void showDrawnMaterials(const GraphCanvasPlanPass &pass);
     void commit();
     void formChanged();
     void release();

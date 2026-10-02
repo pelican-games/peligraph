@@ -1212,7 +1212,9 @@ struct FramePlanWidget::Impl {
             tabs);
         materials = makeTree(
             {owner.tr("Route"), owner.tr("Target pass"), owner.tr("Phase"),
-             owner.tr("Contract"), owner.tr("Shader contract")},
+             owner.tr("Contract"), owner.tr("Shader contract"),
+             // UX-12c, decision 2.
+             owner.tr("Drawn")},
             tabs);
         // GL-2b: named, so a scenario can pick one of their rows.
         passes->setObjectName(QStringLiteral("pelican.framePlanPasses"));
@@ -3896,6 +3898,10 @@ struct FramePlanWidget::Impl {
                 addFact(facts, owner.tr("This frame"), text(idle));
             addFact(facts, owner.tr("Material variant"),
                     text(node.material_variant));
+            // UX-12c, decision 2 (engine MP-1): what a material pass drew in
+            // the last frame -- how many materials, their draws, each one.
+            if (node.drawn_materials)
+                addDrawnMaterials(item, *node.drawn_materials);
             if (!node.snapshot_after.empty()) {
                 addFact(facts, owner.tr("Snapshot after"),
                         text(node.snapshot_after));
@@ -4523,13 +4529,36 @@ struct FramePlanWidget::Impl {
         }
     }
 
+    // UX-12c, decision 2: "3 materials, 12 draws (frame 340)".
+    QString drawnSummary(const FramePlanDrawnMaterials &drawn) const {
+        return owner.tr("%1, %2 (frame %3)%4")
+            .arg(owner.tr("%n material(s)", nullptr, static_cast<int>(drawn.materials.size())),
+                 owner.tr("%n draw(s)", nullptr, static_cast<int>(drawn.draws())))
+            .arg(static_cast<qulonglong>(drawn.frame))
+            .arg(drawn.truncated ? owner.tr(", the first %1 listed").arg(drawn.materials.size())
+                                 : QString{});
+    }
+
+    void addDrawnMaterials(QTreeWidgetItem *item, const FramePlanDrawnMaterials &drawn) {
+        auto *group = groupItem(item, owner.tr("Materials drawn"));
+        group->setText(2, drawnSummary(drawn));
+        for (std::size_t index = 0; index < drawn.materials.size(); ++index)
+            addFact(group, text(framePlanDrawnMaterialLabel(drawn, index)),
+                    owner.tr("%n draw(s)", nullptr,
+                             static_cast<int>(drawn.materials[index].draws)));
+    }
+
     void populateMaterials() {
         if (model->material_routes.empty()) {
             auto *empty = new QTreeWidgetItem(materials);
             empty->setText(0, owner.tr("No material routes were published."));
             empty->setDisabled(true);
-            return;
         }
+        const auto drawnOf = [&](const std::string &pass) -> const FramePlanDrawnMaterials * {
+            for (const auto &node : model->nodes)
+                if (node.name == pass && node.drawn_materials) return &*node.drawn_materials;
+            return nullptr;
+        };
         for (const auto &route : model->material_routes) {
             auto *item = new QTreeWidgetItem(materials);
             item->setText(0, text(route.route));
@@ -4537,6 +4566,26 @@ struct FramePlanWidget::Impl {
             item->setText(2, text(route.phase));
             item->setText(3, text(route.contract));
             item->setText(4, text(route.shader_contract));
+            // UX-12c, decision 2: what the route's pass drew.
+            if (const auto *drawn = drawnOf(route.pass))
+                item->setText(5, drawnSummary(*drawn));
+        }
+        // UX-12c, decision 2: each material a pass drew in the last frame, a
+        // row of its own, named by the pass that drew it (the Graph's
+        // Materials drawn picks these with the routes).
+        for (const auto &node : model->nodes) {
+            if (!node.drawn_materials) continue;
+            const auto &drawn = *node.drawn_materials;
+            for (std::size_t index = 0; index < drawn.materials.size(); ++index) {
+                const auto &material = drawn.materials[index];
+                auto *item = new QTreeWidgetItem(materials);
+                item->setText(0, text(framePlanDrawnMaterialLabel(drawn, index)));
+                item->setToolTip(0, text(material.id));
+                item->setText(1, text(node.name));
+                item->setText(5, owner.tr("drawn by %1, %n draw(s)", nullptr,
+                                          static_cast<int>(material.draws))
+                                     .arg(text(node.name)));
+            }
         }
     }
 };
