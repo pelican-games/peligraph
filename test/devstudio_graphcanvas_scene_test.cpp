@@ -11812,6 +11812,95 @@ TEST_CASE("AB-1s decision 1: Bake analysis... asks for the features, bands, hop,
     CHECK(PelicanStudio::audioAnalysisRefusalDescription({{"code", "graph.loop_nested@1"}}).empty());
 }
 
+TEST_CASE("UX-14 decision 5 (engine AB-2): a bake refused because the table is in use says to try "
+          "Bake again, and Bake again sends the same bake once more",
+          "[devstudio][graph-canvas][scene][ux14]") {
+    const auto catalog = engineCatalog();
+    if (!catalogHas(catalog, "audio.playback")) SKIP("this build registers no pelican.audio module");
+    (void)application();
+    const AudioProject project;
+    RecordedCapability transport;
+    auto capability = transport.capability();
+    capability.requestBakeAudioAnalysis = [&transport](const QJsonObject &params, QString *) {
+        transport.calls.push_back({QStringLiteral("bake_audio_analysis"), {}, 0,
+                                   QJsonDocument{params}.toJson(QJsonDocument::Compact)});
+        return transport.next++;
+    };
+    capability.requestDerivedAssets = [&transport](QString *) {
+        transport.calls.push_back({QStringLiteral("list_derived_assets")});
+        return transport.next++;
+    };
+    PelicanStudio::GraphCanvasWidget widget{capability};
+    widget.setProjectRoot(project.root);
+    widget.resize(1100, 800);
+    widget.show();
+    QCoreApplication::processEvents();
+    const auto deliver = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    deliver(QStringLiteral("get_graph_instances"), context(audioDocument()));
+    deliver(QStringLiteral("get_graph_catalog"), catalog);
+    REQUIRE(widget.model().canEdit());
+    deliver(QStringLiteral("list_derived_assets"), Json::array());
+    widget.scene().selectNode("voice");
+    QCoreApplication::processEvents();
+    auto *bake = widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasAudioBake"));
+    auto *line = widget.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasBake.line"));
+    auto *again = widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasBake.again"));
+    REQUIRE(bake != nullptr);
+    REQUIRE(line != nullptr);
+    REQUIRE(again != nullptr);
+    bake->click();
+    QCoreApplication::processEvents();
+    auto *dialog = widget.findChild<QDialog *>(QStringLiteral("pelican.audioBakeDialog"));
+    REQUIRE(dialog != nullptr);
+    dialog->findChild<QPushButton *>(QStringLiteral("pelican.audioBakeDialog.bake"))->click();
+    QCoreApplication::processEvents();
+    QCoreApplication::processEvents();
+    REQUIRE(transport.countOf(QStringLiteral("bake_audio_analysis")) == 1);
+    const auto first = transport.calls[static_cast<std::size_t>(transport.idOf(QStringLiteral("bake_audio_analysis")) - 1)].body;
+    deliver(QStringLiteral("bake_audio_analysis"), Json{{"ticket", "render-config-edit-9"}, {"status", "accepted"}});
+    CHECK_FALSE(again->isVisible());
+    // The engine replaced the table through its retries and still found it
+    // held: the result names the reason and the file (engine AB-2).
+    deliver(QStringLiteral("get_edit_result"),
+            Json{{"status", "rejected"},
+                 {"committed", false},
+                 {"error",
+                  {{"code", "audio.analysis_failed@1"},
+                   {"message", "assets/analysis/hit.ktx2 is in use"},
+                   {"reason", "output_locked"},
+                   {"path", "assets/analysis/hit.ktx2"},
+                   {"asset", "project://sounds/hit.wav"},
+                   {"out", "assets/analysis/hit.ktx2"},
+                   {"ticket", "render-config-edit-9"}}}});
+    const auto locked = QString::fromUtf8("sounds/hit.wav could not be baked into assets/analysis/hit.ktx2: the "
+                                          "table is in use \xE2\x80\x94 try Bake again (audio.analysis_failed@1).");
+    CHECK(line->text() == locked);
+    CHECK(widget.model().notice().kind == PelicanStudio::InspectorNoticeKind::Error);
+    CHECK(widget.model().notice().message == locked.toStdString());
+    REQUIRE(again->isVisible());
+    // Bake again: the same request, and the row says Baking again.
+    again->click();
+    QCoreApplication::processEvents();
+    REQUIRE(transport.countOf(QStringLiteral("bake_audio_analysis")) == 2);
+    CHECK(transport.calls[static_cast<std::size_t>(transport.idOf(QStringLiteral("bake_audio_analysis")) - 1)].body ==
+          first);
+    CHECK_FALSE(again->isVisible());
+    // Any other failure keeps its own sentence and offers no Bake again.
+    deliver(QStringLiteral("bake_audio_analysis"),
+            Json{{"status", "rejected"},
+                 {"committed", false},
+                 {"error", {{"code", "audio.analysis_failed@1"}, {"message", "cannot read"},
+                            {"asset", "project://sounds/hit.wav"}, {"out", "assets/analysis/hit.ktx2"}}}});
+    CHECK(line->text() == QStringLiteral("sounds/hit.wav could not be baked into assets/analysis/hit.ktx2: cannot "
+                                         "read (audio.analysis_failed@1)."));
+    CHECK_FALSE(again->isVisible());
+}
+
 TEST_CASE("UX-13a decision 3: a Re-bake sends no edit of its own; the table it rewrites is "
           "watched beside the images' initial assets, for the reload to pick up (IA-3)",
           "[devstudio][graph-canvas][scene][ux13a]") {

@@ -2094,6 +2094,9 @@ struct InspectorWidget::Impl {
             editor->setDecimals(2);
             editor->setSingleStep(1.0);
             editor->setSuffix(QString{QChar{0x00B0}});
+            // UX-14, decision 3: a camera's yaw and pitch say their basis.
+            if (const auto tip = inspectorAngleTip(descriptor); !tip.empty())
+                editor->setToolTip(QString::fromStdString(tip));
         }
         editor->setValue(descriptor.value.get<double>() * binding->scale);
         binding->editors.push_back(editor);
@@ -2215,10 +2218,8 @@ struct InspectorWidget::Impl {
             QString tip;
         };
         const std::array<Angle, 2> fields{
-            Angle{"azimuth", -180.0, 180.0,
-                  owner.tr("Azimuth: the turn about +Y from +Z towards +X, in degrees")},
-            Angle{"elevation", -90.0, 90.0,
-                  owner.tr("Elevation: degrees above the horizon (negative points down)")}};
+            Angle{"azimuth", -180.0, 180.0, QString::fromStdString(inspectorDirectionAngleTip(0))},
+            Angle{"elevation", -90.0, 90.0, QString::fromStdString(inspectorDirectionAngleTip(1))}};
         for (std::size_t index = 0; index < 2; ++index) {
             auto *editor = new QDoubleSpinBox(angles);
             editor->setObjectName(fieldObjectName("pelican.inspectorDirection", descriptor) +

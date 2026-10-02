@@ -434,24 +434,24 @@
         "path": "{artifacts}/template.png",
         "pixels": [
           [
-            0.71,
-            0.71
+            0.69,
+            0.8
           ],
           [
-            0.62,
-            0.71
+            0.55,
+            0.8
           ],
           [
             0.85,
-            0.71
-          ],
-          [
-            0.71,
-            0.62
-          ],
-          [
-            0.71,
             0.8
+          ],
+          [
+            0.69,
+            0.66
+          ],
+          [
+            0.69,
+            0.95
           ]
         ]
       },
@@ -463,7 +463,7 @@
       "label": "write the LTC lighting as a shader of its own (an editor of one's own)",
       "file": "write",
       "path": "{artifacts}/gb_ltc/shaders/ltc_lighting.frag",
-      "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_frame.glsl\"\n#undef PELICAN_FEATURE_CLUSTERED_LIGHTING\n#include \"pelican_lighting_v1.glsl\"\n\n// GB-3 B: the Deferred lighting template (New... > Deferred lighting), its\n// light loop replaced by one rectangular area light evaluated with linearly\n// transformed cosines (Heitz et al. 2016).\n//\n// Where the light's values come from: the rectangle's corners are constants\n// here (the Graph tab could not hand a pass a value: see the report); its\n// radiance is the scene's first directional light (KeyLight) colour times its\n// intensity, so the Inspector's Intensity changes it. The fitted LTC tables\n// (two 64 x 64 images) are not used: the engine has no way to load an image\n// file into a render target. The GGX lobe is stood in for by a normalised\n// clamped cosine about the mirror direction, M^-1 = diag(1/a, 1/a, 1).\n\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n\nPELICAN_DECLARE_INPUT_0(in_albedo);\nPELICAN_DECLARE_INPUT_1(in_normal);\nPELICAN_DECLARE_INPUT_2(in_material);\nPELICAN_DECLARE_INPUT_3(in_worldpos);\nPELICAN_DECLARE_INPUT_4(in_emissive);\n\n// The light: a 1.5 x 1.0 rectangle standing at z = 4, right of the box,\n// facing the camera (-z). Wound so that cross(q1 - q0, q3 - q0) is +z.\nconst vec3 LIGHT_Q0 = vec3(1.0, 0.2, 4.0);\nconst vec3 LIGHT_Q1 = vec3(2.5, 0.2, 4.0);\nconst vec3 LIGHT_Q2 = vec3(2.5, 1.2, 4.0);\nconst vec3 LIGHT_Q3 = vec3(1.0, 1.2, 4.0);\n// A polished floor, so the reflection keeps the light's shape.\nconst float MAX_ROUGHNESS = 0.1;\n\n// GB-3 B: the LTC area light (Heitz et al. 2016), without the fitted tables.\n// The GGX lobe is stood in for by a clamped cosine around the mirror direction,\n// narrowed by the roughness: M^-1 = diag(1/a, 1/a, 1) in a frame whose z is the\n// reflection. The diffuse term is the exact one (M = identity in the normal\n// frame). The polygon is not clipped to the horizon (the \"no clipping\" form);\n// a negative sum is clamped.\n\nfloat ltc_edge(vec3 v1, vec3 v2) {\n    float x = clamp(dot(v1, v2), -0.9999, 0.9999);\n    float theta = acos(x);\n    vec3 c = cross(v1, v2);\n    return theta * c.z / max(length(c), 1e-6);\n}\n\n// The four corners, already in the lobe's frame (any scale): the form factor\n// of the quad as a clamped cosine sees it. Wound so that cross(p1 - p0, p3 - p0)\n// points away from the lit side (the light shines the other way).\nfloat ltc_quad(vec3 p0, vec3 p1, vec3 p2, vec3 p3) {\n    vec3 v0 = normalize(p0), v1 = normalize(p1), v2 = normalize(p2), v3 = normalize(p3);\n    float sum = ltc_edge(v0, v1) + ltc_edge(v1, v2) + ltc_edge(v2, v3) + ltc_edge(v3, v0);\n    return max(sum / (2.0 * 3.14159265359), 0.0);\n}\n\nmat3 ltc_frame(vec3 z) {\n    vec3 up = abs(z.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);\n    vec3 x = normalize(cross(up, z));\n    vec3 y = cross(z, x);\n    return transpose(mat3(x, y, z));\n}\n\n// What a quad light (corners q0..q3, radiance L) gives a point with normal n\n// seen from v (toward the eye), albedo and F0, roughness r.\nvec3 ltc_area_light(vec3 position, vec3 n, vec3 v, vec3 diffuse_color, vec3 f0, float roughness,\n                    vec3 q0, vec3 q1, vec3 q2, vec3 q3, vec3 radiance) {\n    // one-sided: nothing behind the light\n    if (dot(cross(q1 - q0, q3 - q0), position - q0) >= 0.0) return vec3(0.0);\n    // diffuse: the clamped cosine about n\n    mat3 tn = ltc_frame(n);\n    float diffuse = ltc_quad(tn * (q0 - position), tn * (q1 - position), tn * (q2 - position),\n                             tn * (q3 - position));\n    // specular: a clamped cosine about the mirror direction, a = roughness^2\n    vec3 r = reflect(-v, n);\n    mat3 tr = ltc_frame(r);\n    float a = max(roughness * roughness, 0.02);\n    mat3 minv = mat3(1.0 / a, 0.0, 0.0, 0.0, 1.0 / a, 0.0, 0.0, 0.0, 1.0);\n    mat3 m = minv * tr;\n    float specular = ltc_quad(m * (q0 - position), m * (q1 - position), m * (q2 - position),\n                              m * (q3 - position));\n    float n_dot_v = clamp(dot(n, v), 0.0, 1.0);\n    vec3 fresnel = f0 + (1.0 - f0) * pow(1.0 - n_dot_v, 5.0);\n    return radiance * (diffuse_color * diffuse + fresnel * specular);\n}\n\n// The light itself, seen from the camera: the rectangle where a view ray\n// meets it before the G-buffer's surface.\nfloat light_seen(vec3 origin, vec3 direction, float surface_distance) {\n    vec3 n = normalize(cross(LIGHT_Q1 - LIGHT_Q0, LIGHT_Q3 - LIGHT_Q0));\n    float denominator = dot(direction, n);\n    if (abs(denominator) < 1e-5) return 0.0;\n    float t = dot(LIGHT_Q0 - origin, n) / denominator;\n    if (t <= 0.0 || t > surface_distance) return 0.0;\n    vec3 p = origin + t * direction - LIGHT_Q0;\n    vec3 u = LIGHT_Q1 - LIGHT_Q0, v = LIGHT_Q3 - LIGHT_Q0;\n    float a = dot(p, u) / dot(u, u), b = dot(p, v) / dot(v, v);\n    return (a >= 0.0 && a <= 1.0 && b >= 0.0 && b <= 1.0) ? 1.0 : 0.0;\n}\n\nvoid main() {\n    vec3 albedo = PELICAN_TEXTURE_2D_0(in_albedo, inUV).rgb;\n    vec3 normal_encoded = PELICAN_TEXTURE_2D_1(in_normal, inUV).rgb;\n    vec4 material = PELICAN_TEXTURE_2D_2(in_material, inUV);\n    vec3 world_position = PELICAN_TEXTURE_2D_3(in_worldpos, inUV).rgb;\n    vec3 emissive = PELICAN_TEXTURE_2D_4(in_emissive, inUV).rgb;\n\n    vec3 radiance = vec3(0.0);\n    if (pelicanLights.directionalLightCount > 0u)\n        radiance = pelicanLights.directionalLights[0].color *\n                   pelicanLights.directionalLights[0].intensity * 0.5;\n\n    vec4 far = inverse(pelicanFrame.projection * pelicanFrame.view) *\n               vec4(inUV * 2.0 - 1.0, 1.0, 1.0);\n    vec3 eye = pelicanFrame.camera_position.xyz;\n    vec3 ray = normalize(far.xyz / far.w - eye);\n\n    // The geometry pass leaves the normal at zero where it drew nothing.\n    if (all(equal(normal_encoded, vec3(0.0)))) {\n        outColor = vec4(emissive + radiance * light_seen(eye, ray, 1e9), 1.0);\n        return;\n    }\n    vec3 normal = normalize(normal_encoded * 2.0 - 1.0);\n    float roughness = clamp(material.r, 0.04, MAX_ROUGHNESS);\n    float metallic = clamp(material.g, 0.0, 1.0);\n    vec3 to_camera = normalize(eye - world_position);\n    vec3 diffuse_color = albedo * (1.0 - metallic);\n    vec3 f0 = mix(vec3(0.04), albedo, metallic);\n\n    vec3 color = emissive + diffuse_color * material.b * pelican_env_ambient(normal);\n    color += ltc_area_light(world_position, normal, to_camera, diffuse_color, f0, roughness,\n                            LIGHT_Q0, LIGHT_Q1, LIGHT_Q2, LIGHT_Q3, radiance);\n    color += radiance * light_seen(eye, ray, distance(eye, world_position));\n    outColor = vec4(color, 1.0);\n}\n"
+      "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_frame.glsl\"\n#undef PELICAN_FEATURE_CLUSTERED_LIGHTING\n#include \"pelican_lighting_v1.glsl\"\n\n// GB-3 B: the Deferred lighting template (New... > Deferred lighting), its\n// light loop replaced by one rectangular area light evaluated with linearly\n// transformed cosines (Heitz et al. 2016).\n//\n// Where the light's values come from: the rectangle's corners are constants\n// here (the Graph tab could not hand a pass a value: see the report); its\n// radiance is the scene's first directional light (KeyLight) colour times its\n// intensity, so the Inspector's Intensity changes it. The fitted LTC tables\n// (two 64 x 64 images) are not used: the engine has no way to load an image\n// file into a render target. The GGX lobe is stood in for by a normalised\n// clamped cosine about the mirror direction, M^-1 = diag(1/a, 1/a, 1).\n\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n\nPELICAN_DECLARE_INPUT_0(in_albedo);\nPELICAN_DECLARE_INPUT_1(in_normal);\nPELICAN_DECLARE_INPUT_2(in_material);\nPELICAN_DECLARE_INPUT_3(in_worldpos);\nPELICAN_DECLARE_INPUT_4(in_emissive);\n\n// The light: a 1.5 x 1.0 rectangle standing at z = -4, right of the box,\n// facing the camera (+z). Wound so that cross(q1 - q0, q3 - q0) is -z.\nconst vec3 LIGHT_Q0 = vec3(1.0, 0.2, -4.0);\nconst vec3 LIGHT_Q1 = vec3(1.0, 1.2, -4.0);\nconst vec3 LIGHT_Q2 = vec3(2.5, 1.2, -4.0);\nconst vec3 LIGHT_Q3 = vec3(2.5, 0.2, -4.0);\n// A polished floor, so the reflection keeps the light's shape.\nconst float MAX_ROUGHNESS = 0.1;\n\n// GB-3 B: the LTC area light (Heitz et al. 2016), without the fitted tables.\n// The GGX lobe is stood in for by a clamped cosine around the mirror direction,\n// narrowed by the roughness: M^-1 = diag(1/a, 1/a, 1) in a frame whose z is the\n// reflection. The diffuse term is the exact one (M = identity in the normal\n// frame). The polygon is not clipped to the horizon (the \"no clipping\" form);\n// a negative sum is clamped.\n\nfloat ltc_edge(vec3 v1, vec3 v2) {\n    float x = clamp(dot(v1, v2), -0.9999, 0.9999);\n    float theta = acos(x);\n    vec3 c = cross(v1, v2);\n    return theta * c.z / max(length(c), 1e-6);\n}\n\n// The four corners, already in the lobe's frame (any scale): the form factor\n// of the quad as a clamped cosine sees it. Wound so that cross(p1 - p0, p3 - p0)\n// points away from the lit side (the light shines the other way).\nfloat ltc_quad(vec3 p0, vec3 p1, vec3 p2, vec3 p3) {\n    vec3 v0 = normalize(p0), v1 = normalize(p1), v2 = normalize(p2), v3 = normalize(p3);\n    float sum = ltc_edge(v0, v1) + ltc_edge(v1, v2) + ltc_edge(v2, v3) + ltc_edge(v3, v0);\n    return max(sum / (2.0 * 3.14159265359), 0.0);\n}\n\nmat3 ltc_frame(vec3 z) {\n    vec3 up = abs(z.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);\n    vec3 x = normalize(cross(up, z));\n    vec3 y = cross(z, x);\n    return transpose(mat3(x, y, z));\n}\n\n// What a quad light (corners q0..q3, radiance L) gives a point with normal n\n// seen from v (toward the eye), albedo and F0, roughness r.\nvec3 ltc_area_light(vec3 position, vec3 n, vec3 v, vec3 diffuse_color, vec3 f0, float roughness,\n                    vec3 q0, vec3 q1, vec3 q2, vec3 q3, vec3 radiance) {\n    // one-sided: nothing behind the light\n    if (dot(cross(q1 - q0, q3 - q0), position - q0) >= 0.0) return vec3(0.0);\n    // diffuse: the clamped cosine about n\n    mat3 tn = ltc_frame(n);\n    float diffuse = ltc_quad(tn * (q0 - position), tn * (q1 - position), tn * (q2 - position),\n                             tn * (q3 - position));\n    // specular: a clamped cosine about the mirror direction, a = roughness^2\n    vec3 r = reflect(-v, n);\n    mat3 tr = ltc_frame(r);\n    float a = max(roughness * roughness, 0.02);\n    mat3 minv = mat3(1.0 / a, 0.0, 0.0, 0.0, 1.0 / a, 0.0, 0.0, 0.0, 1.0);\n    mat3 m = minv * tr;\n    float specular = ltc_quad(m * (q0 - position), m * (q1 - position), m * (q2 - position),\n                              m * (q3 - position));\n    float n_dot_v = clamp(dot(n, v), 0.0, 1.0);\n    vec3 fresnel = f0 + (1.0 - f0) * pow(1.0 - n_dot_v, 5.0);\n    return radiance * (diffuse_color * diffuse + fresnel * specular);\n}\n\n// The light itself, seen from the camera: the rectangle where a view ray\n// meets it before the G-buffer's surface.\nfloat light_seen(vec3 origin, vec3 direction, float surface_distance) {\n    vec3 n = normalize(cross(LIGHT_Q1 - LIGHT_Q0, LIGHT_Q3 - LIGHT_Q0));\n    float denominator = dot(direction, n);\n    if (abs(denominator) < 1e-5) return 0.0;\n    float t = dot(LIGHT_Q0 - origin, n) / denominator;\n    if (t <= 0.0 || t > surface_distance) return 0.0;\n    vec3 p = origin + t * direction - LIGHT_Q0;\n    vec3 u = LIGHT_Q1 - LIGHT_Q0, v = LIGHT_Q3 - LIGHT_Q0;\n    float a = dot(p, u) / dot(u, u), b = dot(p, v) / dot(v, v);\n    return (a >= 0.0 && a <= 1.0 && b >= 0.0 && b <= 1.0) ? 1.0 : 0.0;\n}\n\nvoid main() {\n    vec3 albedo = PELICAN_TEXTURE_2D_0(in_albedo, inUV).rgb;\n    vec3 normal_encoded = PELICAN_TEXTURE_2D_1(in_normal, inUV).rgb;\n    vec4 material = PELICAN_TEXTURE_2D_2(in_material, inUV);\n    vec3 world_position = PELICAN_TEXTURE_2D_3(in_worldpos, inUV).rgb;\n    vec3 emissive = PELICAN_TEXTURE_2D_4(in_emissive, inUV).rgb;\n\n    vec3 radiance = vec3(0.0);\n    if (pelicanLights.directionalLightCount > 0u)\n        radiance = pelicanLights.directionalLights[0].color *\n                   pelicanLights.directionalLights[0].intensity * 0.5;\n\n    vec4 far = inverse(pelicanFrame.projection * pelicanFrame.view) *\n               vec4(inUV * 2.0 - 1.0, 1.0, 1.0);\n    vec3 eye = pelicanFrame.camera_position.xyz;\n    vec3 ray = normalize(far.xyz / far.w - eye);\n\n    // The geometry pass leaves the normal at zero where it drew nothing.\n    if (all(equal(normal_encoded, vec3(0.0)))) {\n        outColor = vec4(emissive + radiance * light_seen(eye, ray, 1e9), 1.0);\n        return;\n    }\n    vec3 normal = normalize(normal_encoded * 2.0 - 1.0);\n    float roughness = clamp(material.r, 0.04, MAX_ROUGHNESS);\n    float metallic = clamp(material.g, 0.0, 1.0);\n    vec3 to_camera = normalize(eye - world_position);\n    vec3 diffuse_color = albedo * (1.0 - metallic);\n    vec3 f0 = mix(vec3(0.04), albedo, metallic);\n\n    vec3 color = emissive + diffuse_color * material.b * pelican_env_ambient(normal);\n    color += ltc_area_light(world_position, normal, to_camera, diffuse_color, f0, roughness,\n                            LIGHT_Q0, LIGHT_Q1, LIGHT_Q2, LIGHT_Q3, radiance);\n    color += radiance * light_seen(eye, ray, distance(eye, world_position));\n    outColor = vec4(color, 1.0);\n}\n"
     },
     {
       "label": "fit",
@@ -530,24 +530,24 @@
         "path": "{artifacts}/ltc.png",
         "pixels": [
           [
-            0.71,
-            0.71
+            0.69,
+            0.8
           ],
           [
-            0.62,
-            0.71
+            0.55,
+            0.8
           ],
           [
             0.85,
-            0.71
-          ],
-          [
-            0.71,
-            0.62
-          ],
-          [
-            0.71,
             0.8
+          ],
+          [
+            0.69,
+            0.66
+          ],
+          [
+            0.69,
+            0.95
           ]
         ]
       },
@@ -566,24 +566,24 @@
         "path": "{artifacts}/ltc.png",
         "pixels": [
           [
-            0.71,
-            0.71
+            0.69,
+            0.8
           ],
           [
-            0.62,
-            0.71
+            0.55,
+            0.8
           ],
           [
             0.85,
-            0.71
-          ],
-          [
-            0.71,
-            0.62
-          ],
-          [
-            0.71,
             0.8
+          ],
+          [
+            0.69,
+            0.66
+          ],
+          [
+            0.69,
+            0.95
           ]
         ]
       },
@@ -600,24 +600,24 @@
         "path": "{artifacts}/ltc.png",
         "pixels": [
           [
-            0.71,
-            0.71
+            0.69,
+            0.8
           ],
           [
-            0.62,
-            0.71
+            0.55,
+            0.8
           ],
           [
             0.85,
-            0.71
-          ],
-          [
-            0.71,
-            0.62
-          ],
-          [
-            0.71,
             0.8
+          ],
+          [
+            0.69,
+            0.66
+          ],
+          [
+            0.69,
+            0.95
           ]
         ]
       },
@@ -635,24 +635,24 @@
         "path": "{artifacts}/ltc.png",
         "pixels": [
           [
-            0.71,
-            0.71
+            0.69,
+            0.8
           ],
           [
-            0.62,
-            0.71
+            0.55,
+            0.8
           ],
           [
             0.85,
-            0.71
-          ],
-          [
-            0.71,
-            0.62
-          ],
-          [
-            0.71,
             0.8
+          ],
+          [
+            0.69,
+            0.66
+          ],
+          [
+            0.69,
+            0.95
           ]
         ]
       },
@@ -1134,7 +1134,7 @@
       "label": "IA-1s decision 7: the LTC lighting that reads the tables, as a shader of its own",
       "file": "write",
       "path": "{artifacts}/gb_ltc/shaders/ltc_lut.frag",
-      "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_frame.glsl\"\n#undef PELICAN_FEATURE_CLUSTERED_LIGHTING\n#include \"pelican_lighting_v1.glsl\"\n\n// GB-3 B with the LTC tables (IA-1s): ltc_lighting.frag's rectangular area\n// light, its GGX lobe now the linearly transformed cosine two 64 x 64 tables\n// give (the layout of Heitz et al. 2016). The tables are persistent images\n// that start from assets/images/ltc_1.ktx2 and ltc_2.ktx2 (Initial contents),\n// made outside Studio by a script of the person's own (the scenario's\n// gui_build_ltc.prepare.py: a closed form, not the published fit).\n//   ltc_1 at (roughness, sqrt(1 - n.v)): M^-1 = mat3((x, 0, y), (0, 1, 0), (z, 0, w))\n//   ltc_2: x the lobe's magnitude, y the Fresnel term's share\n\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n\nPELICAN_DECLARE_INPUT_0(in_albedo);\nPELICAN_DECLARE_INPUT_1(in_normal);\nPELICAN_DECLARE_INPUT_2(in_material);\nPELICAN_DECLARE_INPUT_3(in_worldpos);\nPELICAN_DECLARE_INPUT_4(in_emissive);\nPELICAN_DECLARE_INPUT_5(in_ltc_1);\nPELICAN_DECLARE_INPUT_6(in_ltc_2);\n\n// The light: a 1.5 x 1.0 rectangle standing at z = 4, right of the box,\n// facing the camera (-z). Wound so that cross(q1 - q0, q3 - q0) is +z.\nconst vec3 LIGHT_Q0 = vec3(1.0, 0.2, 4.0);\nconst vec3 LIGHT_Q1 = vec3(2.5, 0.2, 4.0);\nconst vec3 LIGHT_Q2 = vec3(2.5, 1.2, 4.0);\nconst vec3 LIGHT_Q3 = vec3(1.0, 1.2, 4.0);\n// A polished floor, so the reflection keeps the light's shape.\nconst float MAX_ROUGHNESS = 0.1;\n\nfloat ltc_edge(vec3 v1, vec3 v2) {\n    float x = clamp(dot(v1, v2), -0.9999, 0.9999);\n    float theta = acos(x);\n    vec3 c = cross(v1, v2);\n    return theta * c.z / max(length(c), 1e-6);\n}\n\n// The four corners, already in the lobe's frame (any scale): the form factor\n// of the quad as a clamped cosine sees it. Wound so that cross(p1 - p0, p3 - p0)\n// points away from the lit side (the light shines the other way).\nfloat ltc_quad(vec3 p0, vec3 p1, vec3 p2, vec3 p3) {\n    vec3 v0 = normalize(p0), v1 = normalize(p1), v2 = normalize(p2), v3 = normalize(p3);\n    float sum = ltc_edge(v0, v1) + ltc_edge(v1, v2) + ltc_edge(v2, v3) + ltc_edge(v3, v0);\n    return max(sum / (2.0 * 3.14159265359), 0.0);\n}\n\nmat3 ltc_frame(vec3 z) {\n    vec3 up = abs(z.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);\n    vec3 x = normalize(cross(up, z));\n    vec3 y = cross(z, x);\n    return transpose(mat3(x, y, z));\n}\n\n// What a quad light (corners q0..q3, radiance L) gives a point with normal n\n// seen from v (toward the eye): the diffuse term as before, the specular one\n// through the tables, in the frame they are fitted in (z the normal, x toward\n// the eye).\nvec3 ltc_lut_area_light(vec3 position, vec3 n, vec3 v, vec3 diffuse_color, vec3 f0,\n                        float roughness, vec3 q0, vec3 q1, vec3 q2, vec3 q3, vec3 radiance) {\n    // one-sided: nothing behind the light\n    if (dot(cross(q1 - q0, q3 - q0), position - q0) >= 0.0) return vec3(0.0);\n    mat3 tn = ltc_frame(n);\n    float diffuse = ltc_quad(tn * (q0 - position), tn * (q1 - position), tn * (q2 - position),\n                             tn * (q3 - position));\n    float n_dot_v = clamp(dot(n, v), 0.0, 1.0);\n    vec3 toward = v - n * dot(v, n);\n    mat3 frame = tn;\n    if (length(toward) > 1e-4) {\n        vec3 x = normalize(toward);\n        frame = transpose(mat3(x, cross(n, x), n));\n    }\n    vec2 uv = vec2(roughness, sqrt(1.0 - n_dot_v)) * (63.0 / 64.0) + 0.5 / 64.0;\n    vec4 t1 = PELICAN_TEXTURE_2D_5(in_ltc_1, uv);\n    vec4 t2 = PELICAN_TEXTURE_2D_6(in_ltc_2, uv);\n    mat3 minv = mat3(vec3(t1.x, 0.0, t1.y), vec3(0.0, 1.0, 0.0), vec3(t1.z, 0.0, t1.w));\n    mat3 m = minv * frame;\n    float specular = ltc_quad(m * (q0 - position), m * (q1 - position), m * (q2 - position),\n                              m * (q3 - position));\n    return radiance * (diffuse_color * diffuse + (f0 * t2.x + (1.0 - f0) * t2.y) * specular);\n}\n\n// The light itself, seen from the camera: the rectangle where a view ray\n// meets it before the G-buffer's surface.\nfloat light_seen(vec3 origin, vec3 direction, float surface_distance) {\n    vec3 n = normalize(cross(LIGHT_Q1 - LIGHT_Q0, LIGHT_Q3 - LIGHT_Q0));\n    float denominator = dot(direction, n);\n    if (abs(denominator) < 1e-5) return 0.0;\n    float t = dot(LIGHT_Q0 - origin, n) / denominator;\n    if (t <= 0.0 || t > surface_distance) return 0.0;\n    vec3 p = origin + t * direction - LIGHT_Q0;\n    vec3 u = LIGHT_Q1 - LIGHT_Q0, v = LIGHT_Q3 - LIGHT_Q0;\n    float a = dot(p, u) / dot(u, u), b = dot(p, v) / dot(v, v);\n    return (a >= 0.0 && a <= 1.0 && b >= 0.0 && b <= 1.0) ? 1.0 : 0.0;\n}\n\nvoid main() {\n    vec3 albedo = PELICAN_TEXTURE_2D_0(in_albedo, inUV).rgb;\n    vec3 normal_encoded = PELICAN_TEXTURE_2D_1(in_normal, inUV).rgb;\n    vec4 material = PELICAN_TEXTURE_2D_2(in_material, inUV);\n    vec3 world_position = PELICAN_TEXTURE_2D_3(in_worldpos, inUV).rgb;\n    vec3 emissive = PELICAN_TEXTURE_2D_4(in_emissive, inUV).rgb;\n\n    vec3 radiance = vec3(0.0);\n    if (pelicanLights.directionalLightCount > 0u)\n        radiance = pelicanLights.directionalLights[0].color *\n                   pelicanLights.directionalLights[0].intensity * 0.5;\n\n    vec4 far = inverse(pelicanFrame.projection * pelicanFrame.view) *\n               vec4(inUV * 2.0 - 1.0, 1.0, 1.0);\n    vec3 eye = pelicanFrame.camera_position.xyz;\n    vec3 ray = normalize(far.xyz / far.w - eye);\n\n    // The geometry pass leaves the normal at zero where it drew nothing.\n    if (all(equal(normal_encoded, vec3(0.0)))) {\n        outColor = vec4(emissive + radiance * light_seen(eye, ray, 1e9), 1.0);\n        return;\n    }\n    vec3 normal = normalize(normal_encoded * 2.0 - 1.0);\n    float roughness = clamp(material.r, 0.04, MAX_ROUGHNESS);\n    float metallic = clamp(material.g, 0.0, 1.0);\n    vec3 to_camera = normalize(eye - world_position);\n    vec3 diffuse_color = albedo * (1.0 - metallic);\n    vec3 f0 = mix(vec3(0.04), albedo, metallic);\n\n    vec3 color = emissive + diffuse_color * material.b * pelican_env_ambient(normal);\n    color += ltc_lut_area_light(world_position, normal, to_camera, diffuse_color, f0, roughness,\n                                LIGHT_Q0, LIGHT_Q1, LIGHT_Q2, LIGHT_Q3, radiance);\n    color += radiance * light_seen(eye, ray, distance(eye, world_position));\n    outColor = vec4(color, 1.0);\n}\n"
+      "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_frame.glsl\"\n#undef PELICAN_FEATURE_CLUSTERED_LIGHTING\n#include \"pelican_lighting_v1.glsl\"\n\n// GB-3 B with the LTC tables (IA-1s): ltc_lighting.frag's rectangular area\n// light, its GGX lobe now the linearly transformed cosine two 64 x 64 tables\n// give (the layout of Heitz et al. 2016). The tables are persistent images\n// that start from assets/images/ltc_1.ktx2 and ltc_2.ktx2 (Initial contents),\n// made outside Studio by a script of the person's own (the scenario's\n// gui_build_ltc.prepare.py: a closed form, not the published fit).\n//   ltc_1 at (roughness, sqrt(1 - n.v)): M^-1 = mat3((x, 0, y), (0, 1, 0), (z, 0, w))\n//   ltc_2: x the lobe's magnitude, y the Fresnel term's share\n\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n\nPELICAN_DECLARE_INPUT_0(in_albedo);\nPELICAN_DECLARE_INPUT_1(in_normal);\nPELICAN_DECLARE_INPUT_2(in_material);\nPELICAN_DECLARE_INPUT_3(in_worldpos);\nPELICAN_DECLARE_INPUT_4(in_emissive);\nPELICAN_DECLARE_INPUT_5(in_ltc_1);\nPELICAN_DECLARE_INPUT_6(in_ltc_2);\n\n// The light: a 1.5 x 1.0 rectangle standing at z = -4, right of the box,\n// facing the camera (+z). Wound so that cross(q1 - q0, q3 - q0) is -z.\nconst vec3 LIGHT_Q0 = vec3(1.0, 0.2, -4.0);\nconst vec3 LIGHT_Q1 = vec3(1.0, 1.2, -4.0);\nconst vec3 LIGHT_Q2 = vec3(2.5, 1.2, -4.0);\nconst vec3 LIGHT_Q3 = vec3(2.5, 0.2, -4.0);\n// A polished floor, so the reflection keeps the light's shape.\nconst float MAX_ROUGHNESS = 0.1;\n\nfloat ltc_edge(vec3 v1, vec3 v2) {\n    float x = clamp(dot(v1, v2), -0.9999, 0.9999);\n    float theta = acos(x);\n    vec3 c = cross(v1, v2);\n    return theta * c.z / max(length(c), 1e-6);\n}\n\n// The four corners, already in the lobe's frame (any scale): the form factor\n// of the quad as a clamped cosine sees it. Wound so that cross(p1 - p0, p3 - p0)\n// points away from the lit side (the light shines the other way).\nfloat ltc_quad(vec3 p0, vec3 p1, vec3 p2, vec3 p3) {\n    vec3 v0 = normalize(p0), v1 = normalize(p1), v2 = normalize(p2), v3 = normalize(p3);\n    float sum = ltc_edge(v0, v1) + ltc_edge(v1, v2) + ltc_edge(v2, v3) + ltc_edge(v3, v0);\n    return max(sum / (2.0 * 3.14159265359), 0.0);\n}\n\nmat3 ltc_frame(vec3 z) {\n    vec3 up = abs(z.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);\n    vec3 x = normalize(cross(up, z));\n    vec3 y = cross(z, x);\n    return transpose(mat3(x, y, z));\n}\n\n// What a quad light (corners q0..q3, radiance L) gives a point with normal n\n// seen from v (toward the eye): the diffuse term as before, the specular one\n// through the tables, in the frame they are fitted in (z the normal, x toward\n// the eye).\nvec3 ltc_lut_area_light(vec3 position, vec3 n, vec3 v, vec3 diffuse_color, vec3 f0,\n                        float roughness, vec3 q0, vec3 q1, vec3 q2, vec3 q3, vec3 radiance) {\n    // one-sided: nothing behind the light\n    if (dot(cross(q1 - q0, q3 - q0), position - q0) >= 0.0) return vec3(0.0);\n    mat3 tn = ltc_frame(n);\n    float diffuse = ltc_quad(tn * (q0 - position), tn * (q1 - position), tn * (q2 - position),\n                             tn * (q3 - position));\n    float n_dot_v = clamp(dot(n, v), 0.0, 1.0);\n    vec3 toward = v - n * dot(v, n);\n    mat3 frame = tn;\n    if (length(toward) > 1e-4) {\n        vec3 x = normalize(toward);\n        frame = transpose(mat3(x, cross(n, x), n));\n    }\n    vec2 uv = vec2(roughness, sqrt(1.0 - n_dot_v)) * (63.0 / 64.0) + 0.5 / 64.0;\n    vec4 t1 = PELICAN_TEXTURE_2D_5(in_ltc_1, uv);\n    vec4 t2 = PELICAN_TEXTURE_2D_6(in_ltc_2, uv);\n    mat3 minv = mat3(vec3(t1.x, 0.0, t1.y), vec3(0.0, 1.0, 0.0), vec3(t1.z, 0.0, t1.w));\n    mat3 m = minv * frame;\n    float specular = ltc_quad(m * (q0 - position), m * (q1 - position), m * (q2 - position),\n                              m * (q3 - position));\n    return radiance * (diffuse_color * diffuse + (f0 * t2.x + (1.0 - f0) * t2.y) * specular);\n}\n\n// The light itself, seen from the camera: the rectangle where a view ray\n// meets it before the G-buffer's surface.\nfloat light_seen(vec3 origin, vec3 direction, float surface_distance) {\n    vec3 n = normalize(cross(LIGHT_Q1 - LIGHT_Q0, LIGHT_Q3 - LIGHT_Q0));\n    float denominator = dot(direction, n);\n    if (abs(denominator) < 1e-5) return 0.0;\n    float t = dot(LIGHT_Q0 - origin, n) / denominator;\n    if (t <= 0.0 || t > surface_distance) return 0.0;\n    vec3 p = origin + t * direction - LIGHT_Q0;\n    vec3 u = LIGHT_Q1 - LIGHT_Q0, v = LIGHT_Q3 - LIGHT_Q0;\n    float a = dot(p, u) / dot(u, u), b = dot(p, v) / dot(v, v);\n    return (a >= 0.0 && a <= 1.0 && b >= 0.0 && b <= 1.0) ? 1.0 : 0.0;\n}\n\nvoid main() {\n    vec3 albedo = PELICAN_TEXTURE_2D_0(in_albedo, inUV).rgb;\n    vec3 normal_encoded = PELICAN_TEXTURE_2D_1(in_normal, inUV).rgb;\n    vec4 material = PELICAN_TEXTURE_2D_2(in_material, inUV);\n    vec3 world_position = PELICAN_TEXTURE_2D_3(in_worldpos, inUV).rgb;\n    vec3 emissive = PELICAN_TEXTURE_2D_4(in_emissive, inUV).rgb;\n\n    vec3 radiance = vec3(0.0);\n    if (pelicanLights.directionalLightCount > 0u)\n        radiance = pelicanLights.directionalLights[0].color *\n                   pelicanLights.directionalLights[0].intensity * 0.5;\n\n    vec4 far = inverse(pelicanFrame.projection * pelicanFrame.view) *\n               vec4(inUV * 2.0 - 1.0, 1.0, 1.0);\n    vec3 eye = pelicanFrame.camera_position.xyz;\n    vec3 ray = normalize(far.xyz / far.w - eye);\n\n    // The geometry pass leaves the normal at zero where it drew nothing.\n    if (all(equal(normal_encoded, vec3(0.0)))) {\n        outColor = vec4(emissive + radiance * light_seen(eye, ray, 1e9), 1.0);\n        return;\n    }\n    vec3 normal = normalize(normal_encoded * 2.0 - 1.0);\n    float roughness = clamp(material.r, 0.04, MAX_ROUGHNESS);\n    float metallic = clamp(material.g, 0.0, 1.0);\n    vec3 to_camera = normalize(eye - world_position);\n    vec3 diffuse_color = albedo * (1.0 - metallic);\n    vec3 f0 = mix(vec3(0.04), albedo, metallic);\n\n    vec3 color = emissive + diffuse_color * material.b * pelican_env_ambient(normal);\n    color += ltc_lut_area_light(world_position, normal, to_camera, diffuse_color, f0, roughness,\n                                LIGHT_Q0, LIGHT_Q1, LIGHT_Q2, LIGHT_Q3, radiance);\n    color += radiance * light_seen(eye, ray, distance(eye, world_position));\n    outColor = vec4(color, 1.0);\n}\n"
     },
     {
       "label": "fit",
@@ -1258,24 +1258,24 @@
         "path": "{artifacts}/ltc_lut.png",
         "pixels": [
           [
-            0.71,
-            0.71
+            0.69,
+            0.8
           ],
           [
-            0.62,
-            0.71
+            0.55,
+            0.8
           ],
           [
             0.85,
-            0.71
-          ],
-          [
-            0.71,
-            0.62
-          ],
-          [
-            0.71,
             0.8
+          ],
+          [
+            0.69,
+            0.66
+          ],
+          [
+            0.69,
+            0.95
           ]
         ]
       },
@@ -1294,24 +1294,24 @@
         "path": "{artifacts}/ltc_lut.png",
         "pixels": [
           [
-            0.71,
-            0.71
+            0.69,
+            0.8
           ],
           [
-            0.62,
-            0.71
+            0.55,
+            0.8
           ],
           [
             0.85,
-            0.71
-          ],
-          [
-            0.71,
-            0.62
-          ],
-          [
-            0.71,
             0.8
+          ],
+          [
+            0.69,
+            0.66
+          ],
+          [
+            0.69,
+            0.95
           ]
         ]
       },
@@ -1328,24 +1328,24 @@
         "path": "{artifacts}/ltc_lut.png",
         "pixels": [
           [
-            0.71,
-            0.71
+            0.69,
+            0.8
           ],
           [
-            0.62,
-            0.71
+            0.55,
+            0.8
           ],
           [
             0.85,
-            0.71
-          ],
-          [
-            0.71,
-            0.62
-          ],
-          [
-            0.71,
             0.8
+          ],
+          [
+            0.69,
+            0.66
+          ],
+          [
+            0.69,
+            0.95
           ]
         ]
       },
@@ -1363,24 +1363,24 @@
         "path": "{artifacts}/ltc_lut.png",
         "pixels": [
           [
-            0.71,
-            0.71
+            0.69,
+            0.8
           ],
           [
-            0.62,
-            0.71
+            0.55,
+            0.8
           ],
           [
             0.85,
-            0.71
-          ],
-          [
-            0.71,
-            0.62
-          ],
-          [
-            0.71,
             0.8
+          ],
+          [
+            0.69,
+            0.66
+          ],
+          [
+            0.69,
+            0.95
           ]
         ]
       },
@@ -1484,24 +1484,24 @@
         "path": "{artifacts}/ltc_dim.png",
         "pixels": [
           [
-            0.71,
-            0.71
+            0.69,
+            0.8
           ],
           [
-            0.62,
-            0.71
+            0.55,
+            0.8
           ],
           [
             0.85,
-            0.71
-          ],
-          [
-            0.71,
-            0.62
-          ],
-          [
-            0.71,
             0.8
+          ],
+          [
+            0.69,
+            0.66
+          ],
+          [
+            0.69,
+            0.95
           ]
         ]
       },
@@ -1541,24 +1541,24 @@
         "path": "{artifacts}/ltc_rebaked.png",
         "pixels": [
           [
-            0.71,
-            0.71
+            0.69,
+            0.8
           ],
           [
-            0.62,
-            0.71
+            0.55,
+            0.8
           ],
           [
             0.85,
-            0.71
-          ],
-          [
-            0.71,
-            0.62
-          ],
-          [
-            0.71,
             0.8
+          ],
+          [
+            0.69,
+            0.66
+          ],
+          [
+            0.69,
+            0.95
           ]
         ]
       },
@@ -1594,24 +1594,24 @@
         "path": "{artifacts}/ltc_rebaked.png",
         "pixels": [
           [
-            0.71,
-            0.71
+            0.69,
+            0.8
           ],
           [
-            0.62,
-            0.71
+            0.55,
+            0.8
           ],
           [
             0.85,
-            0.71
-          ],
-          [
-            0.71,
-            0.62
-          ],
-          [
-            0.71,
             0.8
+          ],
+          [
+            0.69,
+            0.66
+          ],
+          [
+            0.69,
+            0.95
           ]
         ]
       },

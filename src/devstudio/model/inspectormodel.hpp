@@ -72,6 +72,10 @@ struct InspectorWidgetDescriptor {
 // An angle stored in radians (unit rad / radian, or a controller's yaw and
 // pitch) is shown in degrees: the factor from stored to shown, else 1.
 [[nodiscard]] double inspectorDisplayScale(const InspectorWidgetDescriptor &field);
+// UX-14, decision 3: what a camera.controller's yaw or pitch field says of its
+// basis (engine CC-1: yaw 0 is +Z and grows towards -X, pitch towards +Y);
+// empty for any other field.
+[[nodiscard]] std::string inspectorAngleTip(const InspectorWidgetDescriptor &field);
 
 struct InspectorListDescriptor {
     std::string key;
@@ -186,13 +190,16 @@ quaternionFromEulerDegrees(const std::array<double, 3> &degrees);
 
 // UX-10, decision 2. A component's vec3 named `direction` (light.direction)
 // is shown as two angles in degrees, and its vec3 stays reachable as Raw:
-// the azimuth turns about +Y from +Z towards +X, in (-180, 180]; the
-// elevation is above the horizon, in [-90, 90] (negative points down). A
-// direction straight up or down has azimuth 0; a zero vector reads as
-// (0, 0). The vector made from angles is unit length.
+// the azimuth turns about +Y from +Z towards -X, in (-180, 180], as a
+// camera.controller's yaw does (UX-14, decision 3); the elevation is above
+// the horizon, in [-90, 90] (negative points down). A direction straight up
+// or down has azimuth 0; a zero vector reads as (0, 0). The vector made from
+// angles is unit length. inspectorDirectionAngleTip(0 / 1) is what the
+// azimuth / elevation field says of it.
 [[nodiscard]] bool isDirectionField(const InspectorWidgetDescriptor &descriptor);
 [[nodiscard]] std::array<double, 2> directionAnglesDegrees(const std::array<double, 3> &direction);
 [[nodiscard]] std::array<double, 3> directionFromAnglesDegrees(const std::array<double, 2> &angles);
+[[nodiscard]] std::string inspectorDirectionAngleTip(std::size_t index);
 // And a vec3 (or vec4) named `color` (light.color, sprite_view.color) is a
 // swatch that opens the colour picker, beside its numbers.
 [[nodiscard]] bool isColorField(const InspectorWidgetDescriptor &descriptor);
@@ -308,8 +315,13 @@ modelReferenceChoices(std::string_view current,
 //   audio.format_unsupported@1        {asset, out}
 //   audio.analysis_failed@1           {asset, out, message}
 // `error` as for graphLoopRefusalDescription. Answers "<sentence>
-// (<code>).", or empty for any other refusal.
+// (<code>).", or empty for any other refusal. UX-14, decision 5 (engine
+// AB-2): audio.analysis_failed@1 with {reason: "output_locked", path} -- the
+// table or its manifest was held open past the engine's retries -- says
+// "the table is in use -- try Bake again" (an em dash), and audioAnalysisOutputLocked is
+// true for it (the bake row then offers Bake again).
 [[nodiscard]] std::string audioAnalysisRefusalDescription(const nlohmann::json &error);
+[[nodiscard]] bool audioAnalysisOutputLocked(const nlohmann::json &error);
 // UX-8, decision 13 (c) (engine CT-1): the engine could not read its
 // configuration at start and stopped. Its fatal line ("Pelican fatal error :
 // <message>") reads as "The engine stopped: <the code's sentence> in <file>.

@@ -1896,6 +1896,45 @@ TEST_CASE("T-1 rotation angles and the stored quaternion round trip",
     CHECK(near(negated[3], 0.92387953251128674));
 }
 
+TEST_CASE("UX-14 decision 3: a light's azimuth turns as a camera.controller's yaw does -- 0 is +Z, "
+          "growing towards -X -- and the yaw, pitch and azimuth fields say so",
+          "[devstudio][inspector][ux14]") {
+    using PelicanStudio::directionFromAnglesDegrees;
+    const auto near = [](double a, double b) { return std::abs(a - b) <= 1.0e-9; };
+    // The engine's controller (CC-1): direction(yaw, pitch) =
+    // (+Z cos yaw + (-X) sin yaw) cos pitch + (+Y) sin pitch. The same angles
+    // in a light's fields point the same way.
+    constexpr double DegreesPerRadian = 57.295779513082320876798154814105;
+    for (const double yaw : {-150.0, -63.43, 0.0, 30.0, 90.0, 179.0})
+        for (const double pitch : {-60.0, 0.0, 20.0}) {
+            const double y = yaw / DegreesPerRadian;
+            const double p = pitch / DegreesPerRadian;
+            const std::array<double, 3> engine{-std::sin(y) * std::cos(p), std::sin(p),
+                                               std::cos(y) * std::cos(p)};
+            const auto light = directionFromAnglesDegrees({yaw, pitch});
+            INFO(yaw << ", " << pitch);
+            CHECK(near(light[0], engine[0]));
+            CHECK(near(light[1], engine[1]));
+            CHECK(near(light[2], engine[2]));
+        }
+    // The blank template's KeyLight (-0.5, -1, 0.25) travels towards -X: it
+    // comes from the screen's right of the template's camera, azimuth +63.43.
+    CHECK(std::abs(PelicanStudio::directionAnglesDegrees({-0.5, -1.0, 0.25})[0] - 63.43) < 0.01);
+
+    InspectorWidgetDescriptor yaw;
+    yaw.component_slot = "camera";
+    yaw.field_name = "controller.yaw";
+    yaw.kind = InspectorWidgetKind::FloatingPointDrag;
+    CHECK(PelicanStudio::inspectorAngleTip(yaw).find("from +Z towards -X") != std::string::npos);
+    InspectorWidgetDescriptor pitch = yaw;
+    pitch.field_name = "controller.pitch";
+    CHECK(PelicanStudio::inspectorAngleTip(pitch).find("towards +Y") != std::string::npos);
+    InspectorWidgetDescriptor other = yaw;
+    other.field_name = "znear";
+    CHECK(PelicanStudio::inspectorAngleTip(other).empty());
+    CHECK(PelicanStudio::inspectorDirectionAngleTip(0).find("from +Z towards -X") != std::string::npos);
+}
+
 TEST_CASE("UX-10 a light's direction reads as azimuth and elevation, its colour as a swatch, "
           "and a sprite's texture is picked from the textures list_assets reports",
           "[devstudio][inspector][ux10]") {
@@ -1932,11 +1971,12 @@ TEST_CASE("UX-10 a light's direction reads as azimuth and elevation, its colour 
     CHECK(down[0] == 0.0);
     CHECK(near(down[1], -90.0));
     CHECK(directionFromAnglesDegrees({0.0, -90.0}) == std::array<double, 3>{0.0, -1.0, 0.0});
-    // +Z is azimuth 0, +X azimuth 90, on the horizon.
+    // +Z is azimuth 0, -X azimuth 90 (UX-14 decision 3: as a camera's yaw),
+    // on the horizon.
     CHECK(directionFromAnglesDegrees({0.0, 0.0}) == std::array<double, 3>{0.0, 0.0, 1.0});
-    CHECK(directionFromAnglesDegrees({90.0, 0.0}) == std::array<double, 3>{1.0, 0.0, 0.0});
+    CHECK(directionFromAnglesDegrees({90.0, 0.0}) == std::array<double, 3>{-1.0, 0.0, 0.0});
     // A vector that is not unit reads as its direction; zero as (0, 0).
-    const auto slanted = directionAnglesDegrees({2.0, -2.0, 0.0});
+    const auto slanted = directionAnglesDegrees({-2.0, -2.0, 0.0});
     CHECK(near(slanted[0], 90.0));
     CHECK(near(slanted[1], -45.0));
     CHECK(directionAnglesDegrees({0.0, 0.0, 0.0}) == std::array<double, 2>{0.0, 0.0});

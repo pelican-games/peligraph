@@ -589,6 +589,19 @@ double inspectorDisplayScale(const InspectorWidgetDescriptor &field) {
     return radians && scalar ? DegreesPerRadian : 1.0;
 }
 
+std::string inspectorAngleTip(const InspectorWidgetDescriptor &field) {
+    if (field.component_slot == "camera" && field.field_name == "controller.yaw")
+        return "Yaw: the turn about +Y from +Z towards -X, in degrees (a light's azimuth turns the same way)";
+    if (field.component_slot == "camera" && field.field_name == "controller.pitch")
+        return "Pitch: degrees from the horizon towards +Y (negative looks down)";
+    return {};
+}
+
+std::string inspectorDirectionAngleTip(std::size_t index) {
+    return index == 0 ? "Azimuth: the turn about +Y from +Z towards -X, in degrees (as a camera's yaw)"
+                      : "Elevation: degrees above the horizon (negative points down)";
+}
+
 bool isDirectionField(const InspectorWidgetDescriptor &descriptor) {
     return descriptor.field_name == "direction" && descriptor.columns == 3 &&
            descriptor.kind == InspectorWidgetKind::VectorDrag;
@@ -603,13 +616,15 @@ std::array<double, 2> directionAnglesDegrees(const std::array<double, 3> &direct
     const double z = direction[2] / length;
     const double elevation = std::asin(y) * DegreesPerRadian;
     if (std::abs(x) < 1.0e-12 && std::abs(z) < 1.0e-12) return {0.0, elevation};
-    return {wrapDegrees(std::atan2(x, z) * DegreesPerRadian), elevation};
+    // UX-14, decision 3: the azimuth turns as a camera.controller's yaw does
+    // (engine CC-1): 0 is +Z, and it grows towards -X.
+    return {wrapDegrees(std::atan2(-x, z) * DegreesPerRadian), elevation};
 }
 
 std::array<double, 3> directionFromAnglesDegrees(const std::array<double, 2> &angles) {
     const double azimuth = angles[0] / DegreesPerRadian;
     const double elevation = angles[1] / DegreesPerRadian;
-    std::array<double, 3> result{std::cos(elevation) * std::sin(azimuth), std::sin(elevation),
+    std::array<double, 3> result{-std::cos(elevation) * std::sin(azimuth), std::sin(elevation),
                                  std::cos(elevation) * std::cos(azimuth)};
     // Straight down is (0, -1, 0), not a rounding away from it.
     for (double &component : result)
@@ -1445,7 +1460,17 @@ constexpr std::array<GraphLoopRefusalText, 5> AudioAnalysisRefusalTexts{{
     {"audio.analysis_failed@1", "{asset} could not be baked into {out}: {message}"},
 }};
 
+// UX-14, decision 5 (engine AB-2): the table or its manifest was held open.
+constexpr std::string_view AudioAnalysisOutputLockedText =
+    "{asset} could not be baked into {out}: the table is in use \xE2\x80\x94 try Bake again";
+
 } // namespace
+
+bool audioAnalysisOutputLocked(const nlohmann::json &error) {
+    if (!error.is_object() || error.value("code", std::string{}) != "audio.analysis_failed@1") return false;
+    const auto fields = graphRefusalFields(error, "audio.analysis_failed@1");
+    return fields && fields->is_object() && fields->value("reason", std::string{}) == "output_locked";
+}
 
 std::string audioAnalysisRefusalDescription(const nlohmann::json &error) {
     if (!error.is_object()) return {};
@@ -1464,7 +1489,8 @@ std::string audioAnalysisRefusalDescription(const nlohmann::json &error) {
         fields[key] = graphRefusalSource(nlohmann::json{{"document", graphRefusalFieldText(fields, key)}},
                                          "document");
     std::string sentence;
-    const std::string_view pattern = entry->sentence;
+    const std::string_view pattern =
+        audioAnalysisOutputLocked(error) ? AudioAnalysisOutputLockedText : entry->sentence;
     for (std::size_t index = 0; index < pattern.size();) {
         const auto open = pattern.find('{', index);
         if (open == std::string_view::npos) {
