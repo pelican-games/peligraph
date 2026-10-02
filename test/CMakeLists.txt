@@ -3148,6 +3148,7 @@ add_test(
         -DCLI=$<TARGET_FILE:pelican_cli>
         -DWITH_ANIMATION=$<BOOL:${PELICAN_WITH_ANIMATION}>
         -DWITH_AUDIO=$<BOOL:${PELICAN_WITH_AUDIO}>
+        -DWITH_CANVAS=$<BOOL:${PELICAN_WITH_CANVAS}>
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_graph_catalog.cmake
 )
 
@@ -3534,6 +3535,26 @@ endif()
 add_executable(pelican_test_png_nonuniform_check png_nonuniform_check.cpp)
 set_target_properties(pelican_test_png_nonuniform_check PROPERTIES CXX_STANDARD 20)
 target_link_libraries(pelican_test_png_nonuniform_check PRIVATE stb)
+
+# CV-1: the pelican.canvas lowering (non-GPU), and a lowered blank project run
+# by the player, its frames held against the CPU reference.
+if(PELICAN_WITH_CANVAS)
+    pelican_define_test(canvas_lowering_test pelican_project)
+    add_executable(pelican_test_canvas_png_compare canvas_png_compare.cpp)
+    set_target_properties(pelican_test_canvas_png_compare PROPERTIES CXX_STANDARD 20)
+    target_link_libraries(pelican_test_canvas_png_compare PRIVATE stb pelican_project nlohmann_json)
+    add_test(
+        NAME canvas_lower_headless_player
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+            -DCLI=$<TARGET_FILE:pelican_cli>
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DCOMPARE=$<TARGET_FILE:pelican_test_canvas_png_compare>
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/canvas_lower_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_canvas_headless.cmake
+    )
+    pelican_gpu_test_properties(canvas_lower_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+endif()
 
 set(PELICAN_TEST_PROJECTS_DIR "" CACHE PATH
     "Project corpus scanned by project_catalog_headless_smoke; empty skips the test")

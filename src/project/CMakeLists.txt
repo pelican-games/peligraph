@@ -72,9 +72,18 @@ target_compile_definitions(pelican_project PUBLIC
     PELICAN_WITH_PHYSICS=$<BOOL:${PELICAN_WITH_PHYSICS}>
     PELICAN_WITH_VAT=$<BOOL:${PELICAN_WITH_VAT}>
     PELICAN_WITH_SEQPLAYER=$<BOOL:${PELICAN_WITH_SEQPLAYER}>
+    PELICAN_WITH_CANVAS=$<BOOL:${PELICAN_WITH_CANVAS}>
 )
 if(PELICAN_WITH_ANIMATION)
 target_sources(pelican_project PRIVATE posegraphmodule.cpp)
+endif()
+# The canvas module and its lowering; an OFF build compiles none of it.
+if(PELICAN_WITH_CANVAS)
+target_sources(pelican_project PRIVATE
+    canvas/canvasmodule.cpp
+    canvas/canvaslowering.cpp
+    canvas/canvasreference.cpp
+)
 endif()
 target_include_directories(pelican_project PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(pelican_project PUBLIC nlohmann_json pelican_schema_leaf PRIVATE picosha2)

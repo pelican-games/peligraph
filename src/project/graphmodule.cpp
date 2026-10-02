@@ -6,6 +6,9 @@
 #if PELICAN_WITH_ANIMATION
 #include "posegraphmodule.hpp"
 #endif
+#if PELICAN_WITH_CANVAS
+#include "canvas/canvasmodule.hpp"
+#endif
 
 #include <algorithm>
 #include <memory>
@@ -891,6 +894,12 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
     // build without the animation backend simply never calls this, and a
     // document naming a pose operation is rejected as graph.operation_unregistered@1.
     registerPoseGraphModule(registry);
+#endif
+#if PELICAN_WITH_CANVAS
+    // CV-1: registered like the pose module. The canvas nodes never run; a
+    // build without the module refuses a document naming one as
+    // graph.operation_unregistered@1.
+    registerCanvasGraphModule(registry);
 #endif
     return registry;
 }

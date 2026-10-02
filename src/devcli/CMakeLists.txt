@@ -5,6 +5,7 @@ set_target_properties(pelican_cli PROPERTIES CXX_STANDARD 20)
 target_sources(pelican_cli PRIVATE
   assetscommand.cpp
   bakecameracommand.cpp
+  canvaslowercommand.cpp
   distconfig.cpp
   gltfsceneextract.cpp
   graphcatalogcommand.cpp

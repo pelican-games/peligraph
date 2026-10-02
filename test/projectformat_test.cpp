@@ -128,7 +128,7 @@ TEST_CASE("pelican.project requires names build features by a known vocabulary",
     // the query service and collider world; there is no word for "a provider
     // is linked", and no word for a module nothing can depend on.
     REQUIRE(knownProjectRequirements() ==
-            std::vector<std::string>{"animation", "audio", "physics", "xr", "vat",
+            std::vector<std::string>{"animation", "audio", "canvas", "physics", "xr", "vat",
                                      "seqplayer"});
     REQUIRE(std::string{projectRequirementOption("animation")} ==
             "PELICAN_WITH_ANIMATION");
@@ -180,6 +180,7 @@ TEST_CASE("PG-1 every requires word opens or is refused by its module's name",
     const Row rows[] = {
         {"animation", "PELICAN_WITH_ANIMATION", static_cast<bool>(PELICAN_WITH_ANIMATION)},
         {"audio", "PELICAN_WITH_AUDIO", static_cast<bool>(PELICAN_WITH_AUDIO)},
+        {"canvas", "PELICAN_WITH_CANVAS", static_cast<bool>(PELICAN_WITH_CANVAS)},
         {"physics", "PELICAN_WITH_PHYSICS", static_cast<bool>(PELICAN_WITH_PHYSICS)},
         {"xr", "PELICAN_WITH_OPENXR", static_cast<bool>(PELICAN_WITH_OPENXR)},
         {"vat", "PELICAN_WITH_VAT", static_cast<bool>(PELICAN_WITH_VAT)},

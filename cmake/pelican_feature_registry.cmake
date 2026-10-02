@@ -153,6 +153,13 @@ pelican_register_feature(
   SMOKE_ID animation
 )
 pelican_register_feature(
+  NAME PELICAN_WITH_CANVAS
+  DESCRIPTION "Enable the pelican.canvas graph module and its lowering to render nodes"
+  BASELINE ON
+  CONTRAST OFF
+  SMOKE_ID canvas
+)
+pelican_register_feature(
   NAME PELICAN_WITH_SEQPLAYER
   DESCRIPTION "Enable transform sequence playback"
   BASELINE ON
