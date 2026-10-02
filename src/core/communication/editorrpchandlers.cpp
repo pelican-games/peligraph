@@ -246,6 +246,10 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("get_fold_groups", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getFoldGroups(params); });
     });
+    // CV-1b: what the authoring lowerings make of the root.
+    server.setHandler("get_authoring_lowering", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getAuthoringLowering(params); });
+    });
     server.setHandler("fold_nodes", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.foldNodes(params); });
     });

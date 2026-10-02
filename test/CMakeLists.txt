@@ -1666,6 +1666,9 @@ else()
 pelican_define_test(animation_off_scene_test GROUP core_foundation pelican_core)
 endif()
 pelican_define_test(curve_test GROUP core_foundation pelican_core)
+# CV-1: the catalog lists pelican.canvas in the builds that carry it.
+target_compile_definitions(pelican_test_curve_test PRIVATE
+    PELICAN_WITH_CANVAS=$<BOOL:${PELICAN_WITH_CANVAS}>)
 # PG-1: the scene-load half of the build-feature gate, measured in every
 # build (run_build_units_smoke.cmake runs its [pg1] tag in the OFF builds).
 pelican_define_test(pg1_feature_gate_test GROUP core_foundation pelican_core)
@@ -3243,6 +3246,7 @@ endif()
 target_compile_definitions(pelican_test_renderconfigeditor_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+    PELICAN_WITH_CANVAS=$<BOOL:${PELICAN_WITH_CANVAS}>
 )
 
 pelican_define_test(renderconfigtransactionreplace_test GROUP render_pipeline
@@ -3562,6 +3566,18 @@ if(PELICAN_WITH_CANVAS)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_canvas_headless.cmake
     )
     pelican_gpu_test_properties(canvas_lower_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+    # CV-1b: the same document run as written, lowered by the engine itself.
+    add_test(
+        NAME canvas_live_headless_player
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+            -DCLI=$<TARGET_FILE:pelican_cli>
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DCOMPARE=$<TARGET_FILE:pelican_test_canvas_png_compare>
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/canvas_live_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_canvas_live_headless.cmake
+    )
+    pelican_gpu_test_properties(canvas_live_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 endif()
 
 set(PELICAN_TEST_PROJECTS_DIR "" CACHE PATH
@@ -3863,6 +3879,18 @@ if(PELICAN_PYTHON_TESTS_AVAILABLE)
             --repo-root ${CMAKE_SOURCE_DIR}
             --player $<TARGET_FILE:pelican_player>
         )
+        if(PELICAN_WITH_CANVAS)
+            # CV-1b: a canvas document edited over RPC in a headless engine;
+            # the frame plan and get_authoring_lowering name the author's
+            # nodes.
+            pelican_define_gpu_python_test(
+                canvas_live_edit_rpc
+                ${CMAKE_CURRENT_SOURCE_DIR}/canvas_live_edit_rpc.py
+                --repo-root ${CMAKE_SOURCE_DIR}
+                --player $<TARGET_FILE:pelican_player>
+                --cli $<TARGET_FILE:pelican_cli>
+            )
+        endif()
         if(WIN32)
             # EW-1: --embedded creates the render window hidden and marked
             # with the PelicanEngineRenderWindow property.

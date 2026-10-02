@@ -1,6 +1,7 @@
 add_library(pelican_project
     assetdataformat.cpp
     assetsmanifest.cpp
+    authoringlowering.cpp
     executionplan.cpp
     executionplanwire.cpp
     featurecompose.cpp

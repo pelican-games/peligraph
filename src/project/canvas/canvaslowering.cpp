@@ -621,7 +621,7 @@ struct LoweredOutput {
     Json items = Json::array();
 };
 
-LoweredOutput lowerOutput(const CanvasOutput &output) {
+LoweredOutput lowerOutput(const CanvasOutput &output, const CanvasLoweringOptions &options) {
     LoweredOutput lowered;
     const auto &id = output.id;
     std::vector<double> item_table, bake;
@@ -686,8 +686,9 @@ LoweredOutput lowerOutput(const CanvasOutput &output) {
     const auto fragment = fragmentShader(output, kinds, frame);
     const auto digest = picosha2::hash256_hex_string(vertex + std::string(1, '\0') + fragment);
     const auto stem = "canvas_" + fileStem(id) + "_" + digest.substr(0, 8);
-    lowered.sources.push_back({stem, "vert", vertex});
-    lowered.sources.push_back({stem, "frag", fragment});
+    const auto directory = options.shader_directory + (options.directory_per_stem ? "/" + stem : std::string{});
+    lowered.sources.push_back({stem, "vert", vertex, directory + "/" + stem + ".vert"});
+    lowered.sources.push_back({stem, "frag", fragment, directory + "/" + stem + ".frag"});
 
     Json image_parameters{{"type", colorType()}, {"format", output.format},
                           {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}};
@@ -735,7 +736,7 @@ LoweredOutput lowerOutput(const CanvasOutput &output) {
     // Premultiplied over: the image is premultiplied, so is every item.
     const Json premultiplied{{"color", {{"src", "one"}, {"dst", "one_minus_src_alpha"}, {"op", "add"}}},
                              {"alpha", {{"src", "one"}, {"dst", "one_minus_src_alpha"}, {"op", "add"}}}};
-    const auto shader = "project://shaders/generated/" + stem;
+    const auto shader = "project://" + directory + "/" + stem;
     lowered.nodes.push_back(
         {{"id", id},
          {"op", "render.raster"},
@@ -772,6 +773,50 @@ void checkSurvivingEdges(const Json &nodes, const Scope &scope, const Json *outp
     }
     if (outputs != nullptr && outputs->is_object())
         for (const auto &[port, endpoint] : outputs->items()) check(endpoint, "output " + port);
+}
+
+// The names the rendering section declares as targets or buffers itself.
+std::set<std::string> declaredRenderingNames(const Json &rendering) {
+    std::set<std::string> names;
+    for (const auto *key : {"render_targets", "buffers"}) {
+        const auto list = rendering.find(key);
+        if (list == rendering.end() || !list->is_array()) continue;
+        for (const auto &entry : *list)
+            if (entry.is_object())
+                if (const auto name = entry.find("name"); name != entry.end() && name->is_string())
+                    names.insert(name->get<std::string>());
+    }
+    return names;
+}
+
+// A rendering-section pass reads a root canvas.output by the author's id; the
+// image is the node the lowering named <id>$canvas_image. `@history` stays on.
+void rewriteRenderingInputs(Json &document, std::set<std::string> outputs) {
+    const auto rendering = document.find("rendering");
+    if (rendering == document.end() || !rendering->is_object()) return;
+    for (const auto &declared : declaredRenderingNames(*rendering)) outputs.erase(declared);
+    const auto graphs = rendering->find("rendering_passes");
+    if (outputs.empty() || graphs == rendering->end() || !graphs->is_array()) return;
+    const auto rewrite = [&](Json &name) {
+        if (!name.is_string()) return;
+        constexpr std::string_view history = "@history";
+        auto target = name.get<std::string>();
+        const bool past = target.ends_with(history);
+        if (past) target.resize(target.size() - history.size());
+        if (outputs.contains(target)) name = canvasImageNodeId(target) + (past ? std::string{history} : std::string{});
+    };
+    for (auto &graph : *graphs) {
+        const auto passes = graph.is_object() ? graph.find("passes") : graph.end();
+        if (passes == graph.end() || !passes->is_array()) continue;
+        for (auto &pass : *passes) {
+            const auto input = pass.is_object() ? pass.find("input") : pass.end();
+            if (input == pass.end()) continue;
+            if (input->is_array())
+                for (auto &entry : *input) rewrite(entry);
+            else
+                rewrite(*input);
+        }
+    }
 }
 } // namespace
 
@@ -826,7 +871,7 @@ CanvasIr buildCanvasIr(const nlohmann::json &document) {
     return ir;
 }
 
-CanvasLowering lowerCanvasNodes(const nlohmann::json &document) {
+CanvasLowering lowerCanvasNodes(const nlohmann::json &document, const CanvasLoweringOptions &options) {
     CanvasLowering result;
     if (!documentHasCanvasNodes(document)) {
         result.document = document;
@@ -854,7 +899,7 @@ CanvasLowering lowerCanvasNodes(const nlohmann::json &document) {
                 continue;
             }
             if (op != "canvas.output") continue;
-            auto output = lowerOutput(*outputs.at({name, nodeId(node)}));
+            auto output = lowerOutput(*outputs.at({name, nodeId(node)}), options);
             for (auto &added : output.nodes) lowered.push_back(std::move(added));
             for (auto &source : output.sources) result.generated_sources.push_back(std::move(source));
             for (auto &item : output.items) {
@@ -867,6 +912,10 @@ CanvasLowering lowerCanvasNodes(const nlohmann::json &document) {
         holder.erase("layout");
     };
     lowerScope(std::string{}, result.document);
+    std::set<std::string> root_outputs;
+    for (const auto &output : result.ir.outputs)
+        if (output.scope.empty()) root_outputs.insert(output.id);
+    rewriteRenderingInputs(result.document, std::move(root_outputs));
     if (auto definitions = result.document.find("definitions");
         definitions != result.document.end() && definitions->is_object())
         for (auto &[name, body] : definitions->items())

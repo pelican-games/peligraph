@@ -44,6 +44,7 @@
 #include "../vkcore/rendertiming.hpp"
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
+#include "../../project/authoringlowering.hpp"
 #include "../../project/featurecompose.hpp"
 #include "../../project/renderfeatureoverlay.hpp"
 
@@ -2148,12 +2149,13 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                         reference);
                                 };
                             std::optional<std::string> preset_bytes;
-                            // EN-2: render.image sources take their size
-                            // from the file, as registration does.
+                            // CV-1b / EN-2: composed as the registration composes it --
+                            // from the lowered document, with render.image sources
+                            // sized from their files.
                             auto composed = composeRenderFeatureConfig(
                                 resolveGraphImageSourceExtents(
-                                    nlohmann::json::parse(
-                                        documents.rootDocument().bytes),
+                                    lowerAuthoringDocument(nlohmann::json::parse(
+                                        documents.rootDocument().bytes)).document,
                                     runtime->modules.path_resolver),
                                 RenderFeatureComposeDependencies{
                                     .load_feature_json = loader,
@@ -2210,20 +2212,34 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                 runtime->modules.launch_config;
                             std::string bytes =
                                 documents.rootDocument().bytes;
-                            // EN-2: as resolve_authoring_context.
-                            if (const auto document = nlohmann::json::parse(bytes, nullptr, false);
-                                !document.is_discarded()) {
-                                if (auto resolved = resolveGraphImageSourceExtents(
-                                        document, runtime->modules.path_resolver);
-                                    resolved != document)
-                                    bytes = resolved.dump();
-                            }
                             if (!launch.render_feature_overlays.empty()) {
                                 bytes = applyRenderFeatureOverlays(
                                             nlohmann::json::parse(bytes),
                                             launch.render_feature_overlays,
                                             loader)
                                             .dump();
+                            }
+                            // CV-1b: the variants are preflighted from the
+                            // lowered document, as they are registered. A
+                            // document a lowering refuses is left to the
+                            // registration, which refuses it by name (as the
+                            // flat variant's own failure is).
+                            try {
+                                auto lowering = lowerAuthoringDocument(
+                                    nlohmann::json::parse(bytes));
+                                if (lowering.changed)
+                                    bytes = lowering.document.dump();
+                            } catch (const std::exception &) {
+                                return;
+                            }
+                            // EN-2: as resolve_authoring_context, after the lowering so the
+                            // images a lowering made are sized too.
+                            if (const auto document = nlohmann::json::parse(bytes, nullptr, false);
+                                !document.is_discarded()) {
+                                if (auto resolved = resolveGraphImageSourceExtents(
+                                        document, runtime->modules.path_resolver);
+                                    resolved != document)
+                                    bytes = resolved.dump();
                             }
                             preflightRenderGraphVariants(
                                 bytes, loader,

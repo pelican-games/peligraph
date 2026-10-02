@@ -4,6 +4,7 @@
 #include "../userpublic/valuegraph.hpp"
 #include "../model/gltf.hpp"
 #include "../model/skeletalanimation.hpp"
+#include "../../project/authoringlowering.hpp"
 #include "../../project/graphpartition.hpp"
 #include "../loader/scene.hpp"
 #if PELICAN_WITH_AUDIO
@@ -1516,8 +1517,17 @@ registerRenderingPassConfigVariantsData(
         dependencies,
     std::vector<RenderCompilerProgramVariantRequest>
         variant_requests) {
+    // CV-1b: every reader below -- the value and pose graphs, the attribute
+    // sources, the composition -- reads the document the authoring lowerings
+    // made, and the shaders they generated are on disk before anything
+    // compiles. A named failure here is this candidate's failure.
+    const auto lowering = lowerAuthoringDocument(rendering_pass_data);
+    if (!lowering.generated_sources.empty())
+        writeAuthoringGeneratedSources(
+            lowering,
+            dependencies.front().runtime.path_resolver.projectRoot());
     RegistrationStages stages{
-        rendering_pass_data, base_extent, dependencies,
+        lowering.document, base_extent, dependencies,
         variant_requests};
     stages.prepare();
     stages.allocate();

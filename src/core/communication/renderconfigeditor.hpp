@@ -505,6 +505,12 @@ class RenderConfigEditorService {
     // kind, digest, verified?, state: "verified" | "stale" | "unverified"}]}
     // (graphfold.hpp), in group name order. Reads only.
     nlohmann::ordered_json getFoldGroups(const nlohmann::json &params) const;
+    // CV-1b: get_authoring_lowering {} -> {source_digest, reports, diagnostics}:
+    // what the registered authoring lowerings (authoringlowering.hpp) make of
+    // the current root -- `reports` keyed by lowering, {} when the build has
+    // none. A root a lowering refuses is refused by that lowering's code.
+    // Reads only.
+    nlohmann::ordered_json getAuthoringLowering(const nlohmann::json &params) const;
     // FG-1: fold_nodes {base_source_digest, group, nodes, folded}: declares
     // (or replaces) one fold group of the root, `folded` {kind, decisions?}
     // without `verified` (only verify_fold writes it: invalid params), every

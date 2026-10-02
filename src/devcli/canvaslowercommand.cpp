@@ -96,7 +96,7 @@ int lower(const fs::path &project_dir, const fs::path &out_dir) {
         if (!entry.lowering.changed) continue;
         writeText(out_dir / entry.path, entry.lowering.document.dump(2) + "\n");
         for (const auto &generated : entry.lowering.generated_sources)
-            writeText(out_dir / "shaders" / "generated" / (generated.stem + "." + generated.stage), generated.text);
+            writeText(out_dir / generated.path, generated.text);
     }
     if (const auto requires_list = project.find("requires");
         requires_list != project.end() && requires_list->is_array()) {

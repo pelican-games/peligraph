@@ -1,4 +1,5 @@
 // CV-1: the pelican.canvas lowering and its CPU reference, without a GPU.
+#include "../src/project/authoringlowering.hpp"
 #include "../src/project/canvas/canvaslowering.hpp"
 #include "../src/project/canvas/canvasreference.hpp"
 #include "../src/project/graphcomposition.hpp"
@@ -7,6 +8,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <numbers>
 #include <set>
 #include <string>
@@ -264,6 +268,85 @@ TEST_CASE("CV-1 canvas lowering refuses by name", "[canvas][cv1]") {
                                                                 {"branches", Json::array({{{"body", "body"}}})}}},
                                                 {"inputs", Json::object()}, {"outputs", Json::array()}});
             }) == R"(canvas.in_loop_body@1 {"node":"r"})");
+}
+
+TEST_CASE("CV-1b the authoring hook lowers in place, idempotently, and names the output's image for the "
+          "rendering section",
+          "[canvas][cv1b]") {
+    auto authored = authoredDocument();
+    authored["rendering"] = Json::parse(R"json({
+      "render_targets": [{"name": "dot"}],
+      "rendering_passes": [{"name": "main_render", "passes": [
+        {"name": "present", "type": "fullscreen", "input": ["out", "dot", "clock"]},
+        {"name": "trail", "type": "fullscreen", "input": "out@history"},
+        {"name": "kept", "type": "fullscreen", "input": ["out$canvas_image"]}]}]})json");
+    // Only a canvas.output's id moves; other names, and the lowered name
+    // written out (as CV-1 had to), stay.
+    const auto lowering = Pelican::lowerAuthoringDocument(authored);
+    REQUIRE(lowering.changed);
+    const auto &passes = lowering.document.at("rendering").at("rendering_passes").at(0).at("passes");
+    CHECK(passes.at(0).at("input") == Json::array({"out$canvas_image", "dot", "clock"}));
+    CHECK(passes.at(1).at("input") == "out$canvas_image@history");
+    CHECK(passes.at(2).at("input") == Json::array({"out$canvas_image"}));
+    // The section's own target of the output's name keeps the name.
+    auto shadowed = authored;
+    shadowed["rendering"]["render_targets"].push_back({{"name", "out"}});
+    CHECK(Pelican::lowerAuthoringDocument(shadowed).document.at("rendering").at("rendering_passes").at(0).at(
+              "passes").at(0).at("input") == Json::array({"out", "dot", "clock"}));
+
+    // The generated pair lives in a directory of its own under .pelican, and
+    // the pass reads it from there.
+    REQUIRE(lowering.generated_sources.size() == 2);
+    const auto &report = lowering.reports.at("canvas");
+    REQUIRE(report.at("outputs").size() == 1);
+    const auto &output = report.at("outputs").at(0);
+    const auto stem = output.at("generated").at(0).at("stem").get<std::string>();
+    CHECK(lowering.generated_sources.at(0).path == ".pelican/generated/canvas/" + stem + "/" + stem + ".vert");
+    CHECK(lowering.generated_sources.at(1).path == ".pelican/generated/canvas/" + stem + "/" + stem + ".frag");
+    CHECK(nodeById(lowering.document, "out").at("parameters").at("shader").at("fragment") ==
+          "project://.pelican/generated/canvas/" + stem + "/" + stem);
+    CHECK(output.at("id") == "out");
+    CHECK(output.at("kinds") == Json::array({"rect_fill", "rect_stroke", "ellipse_fill", "ellipse_stroke"}));
+    CHECK(output.at("items").size() == 4);
+    CHECK(output.at("items").at(3) ==
+          Json{{"instance", 3}, {"kind", "rect_stroke"}, {"nodes", {"frame_stroke", "frame", "group", "root"}}});
+    CHECK(output.at("generated").at(1).at("text") == lowering.generated_sources.at(1).text);
+    CHECK(lowering.diagnostics ==
+          Json::array({{{"code", "canvas.group_opacity_flattened"}, {"node", "group"}, {"lowering", "canvas"}}}));
+    // The same shaders as the cli's lowering: only where they live differs.
+    CHECK(Pelican::lowerCanvasNodes(authored).generated_sources.at(1).text == lowering.generated_sources.at(1).text);
+
+    // Idempotent: the lowered document and a document without canvas ops come
+    // back byte for byte.
+    const auto again = Pelican::lowerAuthoringDocument(lowering.document);
+    CHECK_FALSE(again.changed);
+    CHECK(again.document.dump() == lowering.document.dump());
+    CHECK(again.generated_sources.empty());
+    CHECK(again.reports.at("canvas").at("outputs") == Json::array());
+    const Json plain{{"schema", "pelican.graph"}, {"version", 1}, {"nodes", Json::array()}, {"outputs", Json::object()},
+                     {"rendering", {{"rendering_passes", Json::array({{{"name", "main"}, {"passes", Json::array({
+                         {{"name", "present"}, {"type", "fullscreen"}, {"input", Json::array({"out"})}}})}}})}}}};
+    CHECK(Pelican::lowerAuthoringDocument(plain).document.dump() == plain.dump());
+
+    // A named failure reaches the caller as it is.
+    auto refused = authored;
+    mutableNode(refused, "root").at("parameters").at("layers").at(0)["blend"] = "screen";
+    CHECK_THROWS_AS(Pelican::lowerAuthoringDocument(refused), Pelican::GraphRegistryError);
+
+    // Written once; the same text is left alone.
+    const auto root = std::filesystem::temp_directory_path() / "pelican_cv1b_generated";
+    std::filesystem::remove_all(root);
+    Pelican::writeAuthoringGeneratedSources(lowering, root);
+    const auto written = root / lowering.generated_sources.at(1).path;
+    REQUIRE(std::filesystem::is_regular_file(written));
+    const auto first_time = std::filesystem::last_write_time(written);
+    Pelican::writeAuthoringGeneratedSources(lowering, root);
+    CHECK(std::filesystem::last_write_time(written) == first_time);
+    std::ifstream in(written, std::ios::binary);
+    CHECK(std::string{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()} ==
+          lowering.generated_sources.at(1).text);
+    in.close();
+    std::filesystem::remove_all(root);
 }
 
 TEST_CASE("CV-1 the CPU reference covers the analytic areas", "[canvas][cv1]") {

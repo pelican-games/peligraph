@@ -1381,6 +1381,12 @@ OrderedJson EditorCommandService::getFoldGroups(const Json &params) const {
     return render_config_editor_->getFoldGroups(params);
 }
 
+// CV-1b.
+OrderedJson EditorCommandService::getAuthoringLowering(const Json &params) const {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->getAuthoringLowering(params);
+}
+
 OrderedJson EditorCommandService::foldNodes(const Json &params) {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->foldNodes(params);
@@ -2424,6 +2430,10 @@ OrderedJson EditorCommandRpcAdapter::putVulkanPhysicalFragment(const Json &param
 
 OrderedJson EditorCommandRpcAdapter::getFoldGroups(const Json &params) const {
     return service_.getFoldGroups(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getAuthoringLowering(const Json &params) const {
+    return service_.getAuthoringLowering(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::foldNodes(const Json &params) const {

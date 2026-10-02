@@ -110,12 +110,23 @@ CanvasIr buildCanvasIr(const nlohmann::json &document);
 
 struct CanvasGeneratedSource {
     // `canvas_<output id>_<first 8 hex digits of the sources' digest>`; the
-    // pass reads project://shaders/generated/<stem>, which the caller writes
-    // as shaders/generated/<stem>.<stage>.
+    // pass reads project://<path less its extension>, which the caller writes.
     std::string stem;
     // "vert" or "frag".
     std::string stage;
     std::string text;
+    // The file, relative to the project (CanvasLoweringOptions).
+    std::string path;
+};
+
+struct CanvasLoweringOptions {
+    // Where an output's shader pair lives, relative to the project:
+    // `<shader_directory>/<stem>.<stage>`, or with directory_per_stem
+    // `<shader_directory>/<stem>/<stem>.<stage>`. The shader compiler keys its
+    // cache on every file beside the source, so a directory of its own keeps
+    // one pair's key from moving when another output's pair is written.
+    std::string shader_directory = "shaders/generated";
+    bool directory_per_stem = false;
 };
 
 struct CanvasLowering {
@@ -139,6 +150,10 @@ std::string canvasBakeNodeId(const std::string &output);
 std::string canvasFrameNodeId(const std::string &output);
 std::string canvasFrameSinkNodeId(const std::string &output, std::size_t index);
 
-CanvasLowering lowerCanvasNodes(const nlohmann::json &document);
+// CV-1b: a pass of the rendering section that reads a root canvas.output by
+// its id (`"input": ["out"]`, or `out@history`) reads the image the lowering
+// made, `out$canvas_image`, instead -- unless the section declares a target or
+// buffer of that name itself.
+CanvasLowering lowerCanvasNodes(const nlohmann::json &document, const CanvasLoweringOptions &options = {});
 
 } // namespace Pelican

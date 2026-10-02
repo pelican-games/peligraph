@@ -346,6 +346,7 @@ class EditorCommandService {
     nlohmann::ordered_json editVulkanPlanPins(const nlohmann::json &params);
     nlohmann::ordered_json putVulkanPhysicalFragment(const nlohmann::json &params);
     nlohmann::ordered_json getFoldGroups(const nlohmann::json &params) const;
+    nlohmann::ordered_json getAuthoringLowering(const nlohmann::json &params) const;
     nlohmann::ordered_json foldNodes(const nlohmann::json &params);
     nlohmann::ordered_json verifyFold(const nlohmann::json &params);
     nlohmann::ordered_json getGraphInstances(const nlohmann::json &params) const;
@@ -454,6 +455,7 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json editVulkanPlanPins(const nlohmann::json &params) const;
     nlohmann::ordered_json putVulkanPhysicalFragment(const nlohmann::json &params) const;
     nlohmann::ordered_json getFoldGroups(const nlohmann::json &params) const;
+    nlohmann::ordered_json getAuthoringLowering(const nlohmann::json &params) const;
     nlohmann::ordered_json foldNodes(const nlohmann::json &params) const;
     nlohmann::ordered_json verifyFold(const nlohmann::json &params) const;
     nlohmann::ordered_json getGraphInstances(const nlohmann::json &params) const;

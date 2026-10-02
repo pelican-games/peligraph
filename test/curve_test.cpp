@@ -1126,6 +1126,9 @@ TEST_CASE("one operation has exactly one registering module",
 #if PELICAN_WITH_ANIMATION
     expected.insert(expected.begin(), "pelican.pose");
 #endif
+#if PELICAN_WITH_CANVAS
+    expected.insert(expected.begin(), "pelican.canvas");
+#endif
 #if PELICAN_WITH_AUDIO
     expected.insert(expected.begin(), "pelican.audio");
 #endif

@@ -1304,6 +1304,9 @@ TEST_CASE("instance inputs change supply atomically and report what was drawn",
         expected_modules += PELICAN_WITH_AUDIO ? 1 : 0;
         CHECK(containsName(namespaces, "pelican.pose") == static_cast<bool>(PELICAN_WITH_ANIMATION));
         expected_modules += PELICAN_WITH_ANIMATION ? 1 : 0;
+        // CV-1: and pelican.canvas by the builds that carry the 2D module.
+        CHECK(containsName(namespaces, "pelican.canvas") == static_cast<bool>(PELICAN_WITH_CANVAS));
+        expected_modules += PELICAN_WITH_CANVAS ? 1 : 0;
         CHECK(namespaces.size() == expected_modules);
     }
 }

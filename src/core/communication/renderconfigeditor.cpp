@@ -1,6 +1,7 @@
 #include "../shader/raygrouplayout.hpp"
 #include "renderconfigeditor.hpp"
 #include "../../project/viewselect.hpp"
+#include "../../project/authoringlowering.hpp"
 #include "../../project/packagemanifest.hpp"
 #include "../../project/rendercomponent.hpp"
 #include "../../project/rasterrayquery.hpp"
@@ -1204,7 +1205,9 @@ OrderedJson RenderConfigEditorService::materializeRenderFeature(const std::strin
             if (const auto overrides = fragment.find("pass_overrides"); overrides != fragment.end())
                 for (const auto &[name, value] : overrides->items()) edited_passes.insert(name);
         };
-        auto root = Json::parse(document_.bytes());
+        // CV-1b / EN-2: composed from the lowered root, as the registration does,
+        // with render.image sources sized from their files.
+        auto root = lowerAuthoringDocument(Json::parse(document_.bytes())).document;
         if (dependencies_.resolve_image_sources) root = dependencies_.resolve_image_sources(root);
         const auto composition = composeRenderFeatureConfig(std::move(root), RenderFeatureComposeDependencies{
             .load_feature_json = loader,
@@ -2451,7 +2454,8 @@ OrderedJson RenderConfigEditorService::editGraphInstances(const Json &params) {
         [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
             try {
                 const auto edited = Pelican::editGraphInstances(Json::parse(candidate.bytes()), attached, detached);
-                (void)partitionGraphDocument(edited);
+                // CV-1b: judged as the engine will read it, lowered.
+                (void)partitionGraphDocument(lowerAuthoringDocument(edited).document);
                 candidate = candidate.withRootValue("nodes", edited.at("nodes").dump(2));
                 return std::nullopt;
             } catch (const std::exception &error) {
@@ -2488,7 +2492,9 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
             try {
                 const auto source = Json::parse(candidate.bytes());
                 const auto edited = Pelican::editGraphDocument(source, ops);
-                (void)partitionGraphDocument(edited);
+                // CV-1b: judged as the engine will read it, lowered, so a
+                // lowering's named refusal is this edit's.
+                (void)partitionGraphDocument(lowerAuthoringDocument(edited).document);
                 candidate = candidate.withRootValue("nodes", edited.at("nodes").dump(2));
                 // An op may now address a definition body. The root `nodes`
                 // write-back alone would drop that edit on the floor, so the
@@ -2527,6 +2533,22 @@ OrderedJson RenderConfigEditorService::getFoldGroups(const Json &params) const {
     for (const auto &report : reportGraphFoldGroups(root, parseGraphFoldGroups(root)))
         groups.push_back(graphFoldGroupReportToJson(report));
     return {{"source_digest", digestJson(document_.sourceDigest())}, {"fold_groups", std::move(groups)}};
+}
+
+// --- CV-1b: the authoring lowerings' view of the root.
+
+OrderedJson RenderConfigEditorService::getAuthoringLowering(const Json &params) const {
+    requireOnly(params, {}, "get_authoring_lowering");
+    try {
+        const auto lowering = lowerAuthoringDocument(Json::parse(document_.bytes()));
+        return {{"source_digest", digestJson(document_.sourceDigest())},
+                {"reports", OrderedJson::parse(lowering.reports.dump())},
+                {"diagnostics", OrderedJson::parse(lowering.diagnostics.dump())}};
+    } catch (const GraphRegistryError &error) {
+        return rejection(error.code(), error.what(), OrderedJson::parse(error.detail().dump()));
+    } catch (const std::exception &error) {
+        return rejection("invalid_graph_document", error.what());
+    }
 }
 
 OrderedJson RenderConfigEditorService::queueFoldGroupEdit(
