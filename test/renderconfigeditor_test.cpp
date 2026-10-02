@@ -11402,4 +11402,76 @@ TEST_CASE("FR-1 the catalog gives each feature's required targets and adding one
     CHECK(context.at("snapshot_after_candidates") == nlohmann::ordered_json::array({"post_ldr"}));
 }
 
+// FR-2: Blank built up in the Graph with the depth sky_ambient reads but no
+// pass named deferred_lighting. The catalog says where sky_ambient's pass
+// goes before the edit; the edit's refusal names the missing anchor, the
+// feature document and the names this pipeline takes instead.
+TEST_CASE("FR-2 the catalog gives each feature's insertion points and adding one whose anchor is missing is refused by name",
+          "[render-config-editor][fr2]") {
+    TemporaryAnimgraphProject project;
+    writeBytes(project.render_config, R"json({
+  "schema": "pelican.graph", "version": 1, "definitions": {}, "outputs": {},
+  "nodes": [
+    {"id": "scene_depth_ref", "op": "render.target_ref", "outputs": ["resource"],
+     "parameters": {"name": "scene_depth", "type": {"semantic": "pelican.render.depth@1",
+                    "arguments": {"representation": "device", "space": "projection"}}}}
+  ],
+  "rendering": {
+    "render_targets": [
+      {"name": "lit_color", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT",
+       "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+      {"name": "scene_depth", "extent_scale": 1.0, "format": "D32_SFLOAT",
+       "usage": ["DEPTH_STENCIL_ATTACHMENT"]}
+    ],
+    "rendering_passes": [{"name": "main_render", "passes": [
+      {"name": "lighting_pass", "type": "fullscreen", "input": [],
+       "output": {"color": ["lit_color"], "depth": null},
+       "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"}},
+      {"name": "present", "type": "fullscreen", "input": ["lit_color"],
+       "output": {"color": ["display"], "depth": null},
+       "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"}}
+    ]}]
+  }
+}
+)json");
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+
+    const auto catalog = service->listRenderFeatures(Json::object());
+    const auto entry = std::ranges::find_if(catalog.at("features"), [](const auto &feature) {
+        return feature.at("name") == "sky_ambient";
+    });
+    REQUIRE(entry != catalog.at("features").end());
+    INFO(entry->dump());
+    CHECK(entry->at("insertion") == nlohmann::ordered_json::parse(
+        R"([{"pass": "sky_background", "anchor": "deferred_lighting", "position": "after"}])"));
+    // Every feature carries the field; begin / end passes are not listed.
+    for (const auto &feature : catalog.at("features")) {
+        INFO(feature.at("name").dump());
+        CHECK(feature.at("insertion").is_array());
+    }
+
+    const auto before = readBytes(project.render_config);
+    const auto accepted = service->editRenderFeatures(
+        {{"base_source_digest", service->documentForTesting().sourceDigest()},
+         {"operations", operation("add", "engine://features/sky_ambient.json")}});
+    REQUIRE(accepted.at("status") == "accepted");
+    service->commitPending();
+    const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("status") == "rejected");
+    const auto &error = result.at("error");
+    CHECK(error.at("code") == "feature.insertion_anchor_missing@1");
+    CHECK(error.at("feature") == "sky_ambient");
+    CHECK(error.at("anchor") == "deferred_lighting");
+    CHECK(error.at("document") == "engine://features/sky_ambient.json");
+    const auto &candidates = error.at("candidates");
+    CHECK(std::ranges::find(candidates, "lighting_pass") != candidates.end());
+    CHECK(std::ranges::find(candidates, "present") != candidates.end());
+    CHECK(std::ranges::find(candidates, "deferred_lighting") == candidates.end());
+    CHECK(readBytes(project.render_config) == before);
+}
+
 } // namespace Pelican

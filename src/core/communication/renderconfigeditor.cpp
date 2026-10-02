@@ -1181,15 +1181,23 @@ OrderedJson RenderConfigEditorService::listRenderFeatures(
         // compose (feature.required_target_missing@1 otherwise). A document
         // that cannot be read lists none; adding it says why.
         encoded["required_targets"] = OrderedJson::array();
+        // FR-2: where its passes go, [{pass, anchor, position}], for
+        // feature.insertion_anchor_missing@1 to be avoided before the edit.
+        encoded["insertion"] = OrderedJson::array();
         try {
             std::string bytes;
             if (entry.reference.starts_with("engine://"))
                 bytes = engineResourceOrThrow(entry.reference.substr(9));
             else if (dependencies_.resolve_document_path)
                 bytes = readFileBytes(dependencies_.resolve_document_path(entry.reference));
-            if (!bytes.empty())
-                encoded["required_targets"] =
-                    OrderedJson::parse(renderFeatureRequiredTargets(Json::parse(bytes)).dump());
+            if (!bytes.empty()) {
+                const auto feature = Json::parse(bytes);
+                encoded["required_targets"] = OrderedJson::parse(renderFeatureRequiredTargets(feature).dump());
+                for (const auto &insertion : renderFeatureInsertions(feature))
+                    encoded["insertion"].push_back(OrderedJson{{"pass", insertion.at("pass").get<std::string>()},
+                                                               {"anchor", insertion.at("anchor").get<std::string>()},
+                                                               {"position", insertion.at("position").get<std::string>()}});
+            }
         } catch (const std::exception &) {
         }
         features.push_back(std::move(encoded));

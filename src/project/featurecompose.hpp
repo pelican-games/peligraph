@@ -150,6 +150,22 @@ nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature);
 inline constexpr std::string_view featureRequiredTargetMissingCode =
     "feature.required_target_missing@1";
 
+// FR-2: where a feature document's passes go: one {pass, anchor, position}
+// per passes entry inserted `after:<anchor>` or `before:<anchor>` (position
+// "after" / "before"), in document order. `begin` / `end` entries are left
+// out. Never throws on a malformed document; the composer refuses that.
+nlohmann::json renderFeatureInsertions(const nlohmann::json &feature);
+
+// FR-2: a feature pass inserted after: / before: a name that no anchor and no
+// pass of the pipeline carries. Fields: {feature, anchor, candidates,
+// document} -- the feature's name (an integration's as provider/integration),
+// the name it pointed at, the names after: / before: resolves to exactly one
+// frame node in the pipeline as composed so far (an anchor by its anchor name,
+// a pass by its name, in pipeline order), and the feature document's
+// reference. Raised as GraphRegistryError.
+inline constexpr std::string_view featureInsertionAnchorMissingCode =
+    "feature.insertion_anchor_missing@1";
+
 // FR-1: a rendering.snapshots entry whose `after` names no pass or anchor in
 // some pass family. Fields: {snapshot, after, resolved?, candidates} --
 // `resolved` is the frame node an anchor name stands for

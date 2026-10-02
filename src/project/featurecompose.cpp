@@ -2094,7 +2094,30 @@ void insertRenderPassRunAtAnchor(nlohmann::json &passes, std::size_t anchor_inde
 
 namespace {
 
-void insertPassByAnchor(nlohmann::json &config, const std::string &insert, const nlohmann::json &pass) {
+// FR-2: the names a feature pass's `after:` / `before:` resolves to exactly
+// one frame node in `config`: an anchor by its anchor name, any other pass by
+// its name, in pipeline order.
+std::vector<std::string> insertionCandidatesOf(nlohmann::json &config) {
+    std::vector<std::string> names;
+    const auto families = config.find("rendering_passes");
+    if (families == config.end() || !families->is_array()) return names;
+    for (const auto &family : *families) {
+        const auto passes = family.is_object() ? family.find("passes") : family.end();
+        if (!family.is_object() || passes == family.end() || !passes->is_array()) continue;
+        for (const auto &pass : *passes) {
+            if (!pass.is_object()) continue;
+            auto name = pass.value("type", std::string{}) == "canonical_anchor" ? pass.value("anchor", std::string{})
+                                                                                 : pass.value("name", std::string{});
+            if (!name.empty() && std::find(names.begin(), names.end(), name) == names.end())
+                names.push_back(std::move(name));
+        }
+    }
+    std::erase_if(names, [&](const std::string &name) { return findRenderPassAnchorMatches(config, name).size() != 1; });
+    return names;
+}
+
+void insertPassByAnchor(nlohmann::json &config, const std::string &insert, const nlohmann::json &pass,
+                        std::string_view feature_name, std::string_view reference) {
     constexpr std::string_view before_prefix = "before:";
     constexpr std::string_view after_prefix = "after:";
 
@@ -2116,7 +2139,12 @@ void insertPassByAnchor(nlohmann::json &config, const std::string &insert, const
 
     auto matches = findRenderPassAnchorMatches(config, anchor);
     if (matches.empty()) {
-        throw std::runtime_error("render feature pass insert anchor was not found: " + anchor);
+        // FR-2: by name, with the names this pipeline takes.
+        throw GraphRegistryError(std::string{featureInsertionAnchorMissingCode},
+                                 {{"feature", std::string{feature_name}},
+                                  {"anchor", anchor},
+                                  {"candidates", insertionCandidatesOf(config)},
+                                  {"document", std::string{reference}}});
     }
     if (matches.size() > 1) {
         throw std::runtime_error("render feature pass insert anchor is ambiguous: " + anchor);
@@ -2152,7 +2180,7 @@ void addFeaturePasses(nlohmann::json &config, const nlohmann::json &feature,
         } else if (insert == "end") {
             insertPassAtEnd(config, *pass_it);
         } else {
-            insertPassByAnchor(config, insert, *pass_it);
+            insertPassByAnchor(config, insert, *pass_it, provider_feature, provider_reference);
         }
         provenance.push_back(RenderPassProvenance{
             .name = pass_name,
@@ -4156,6 +4184,30 @@ nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature) {
         nlohmann::json encoded{{"name", entry.name}, {"type", std::move(type)}};
         if (!entry.usage.empty()) encoded["usage"] = entry.usage;
         result.push_back(std::move(encoded));
+    }
+    return result;
+}
+
+// FR-2: renderFeatureInsertions (featurecompose.hpp).
+nlohmann::json renderFeatureInsertions(const nlohmann::json &feature) {
+    auto result = nlohmann::json::array();
+    const auto passes = feature.is_object() ? feature.find("passes") : feature.end();
+    if (!feature.is_object() || passes == feature.end() || !passes->is_array()) return result;
+    for (const auto &entry : *passes) {
+        if (!entry.is_object()) continue;
+        const auto insert_it = entry.find("insert");
+        const auto pass = entry.find("pass");
+        if (insert_it == entry.end() || !insert_it->is_string() || pass == entry.end() || !pass->is_object() ||
+            !pass->contains("name") || !pass->at("name").is_string())
+            continue;
+        const auto &insert = insert_it->get_ref<const std::string &>();
+        for (const std::string_view position : {"after", "before"}) {
+            const auto prefix = std::string{position} + ":";
+            if (!insert.starts_with(prefix) || insert.size() == prefix.size()) continue;
+            result.push_back({{"pass", pass->at("name")},
+                              {"anchor", insert.substr(prefix.size())},
+                              {"position", std::string{position}}});
+        }
     }
     return result;
 }

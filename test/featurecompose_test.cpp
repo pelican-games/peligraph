@@ -186,7 +186,7 @@ void requireErrorKind(std::string_view message, std::string_view error_kind) {
     } else if (error_kind == "pass_collision") {
         REQUIRE(contains(message, "pass name collides"));
     } else if (error_kind == "missing_anchor") {
-        REQUIRE(contains(message, "anchor was not found"));
+        REQUIRE(contains(message, "feature.insertion_anchor_missing@1"));
     } else if (error_kind == "bad_override") {
         REQUIRE(contains(message, "only supports format"));
     } else {
@@ -10036,6 +10036,68 @@ TEST_CASE("FR-1 a target_ref whose type contradicts its target is told the type 
     auto fixed = document;
     fixed["nodes"][0]["parameters"]["type"] = fields.at("expected").at("type");
     REQUIRE_NOTHROW(lp0aCompose(fixed));
+}
+
+namespace {
+// FR-2: fr1BlankGraph with the scene depth sky_ambient reads, and its lighting
+// pass named `lighting_pass` -- so sky_ambient's after:deferred_lighting
+// finds nothing.
+nlohmann::json fr2GraphWithoutDeferredLighting() {
+    auto document = fr1BlankGraph();
+    document["rendering"]["render_targets"].push_back(
+        {{"name", "scene_depth"}, {"extent_scale", 1.0}, {"format", "D32_SFLOAT"},
+         {"usage", nlohmann::json::array({"DEPTH_STENCIL_ATTACHMENT"})}});
+    document["nodes"].push_back({{"id", "scene_depth_ref"}, {"op", "render.target_ref"},
+                                 {"parameters", {{"name", "scene_depth"}, {"type", fr1DeviceDepth()}}},
+                                 {"outputs", nlohmann::json::array({"resource"})}});
+    document["rendering"]["rendering_passes"][0]["passes"][0]["name"] = "lighting_pass";
+    document["rendering"]["features"] = nlohmann::json::array({"engine://features/sky_ambient.json"});
+    return document;
+}
+} // namespace
+
+TEST_CASE("FR-2 a feature inserted after a pass the pipeline lacks is refused with the names it takes",
+          "[render-feature][graph-composition][fr2]") {
+    using Json = nlohmann::json;
+    // Where each feature pass goes; begin / end and malformed entries are not
+    // insertion points.
+    CHECK(renderFeatureInsertions(Json::parse(loadEngineFeature("engine://features/sky_ambient.json"))) ==
+          Json::array({Json{{"pass", "sky_background"}, {"anchor", "deferred_lighting"}, {"position", "after"}}}));
+    CHECK(renderFeatureInsertions(Json{{"passes", Json::array({
+              Json{{"insert", "begin"}, {"pass", {{"name", "a"}}}},
+              Json{{"insert", "before:post_main"}, {"pass", {{"name", "b"}}}},
+              Json{{"insert", "end"}, {"pass", {{"name", "c"}}}},
+              Json{{"insert", "after:"}, {"pass", {{"name", "d"}}}},
+              Json{{"insert", 3}, {"pass", {{"name", "e"}}}},
+              Json{{"insert", "after:post_ldr"}, {"pass", {{"name", "f"}}}},
+          })}}) == Json::array({Json{{"pass", "b"}, {"anchor", "post_main"}, {"position", "before"}},
+                                Json{{"pass", "f"}, {"anchor", "post_ldr"}, {"position", "after"}}}));
+    CHECK(renderFeatureInsertions(Json::array()) == Json::array());
+
+    const auto document = fr2GraphWithoutDeferredLighting();
+    const auto [code, fields] = lp0aRefusal(document);
+    INFO(fields.dump());
+    CHECK(code == "feature.insertion_anchor_missing@1");
+    CHECK(fields.at("feature") == "sky_ambient");
+    CHECK(fields.at("anchor") == "deferred_lighting");
+    CHECK(fields.at("document") == "engine://features/sky_ambient.json");
+    CHECK(fields.at("candidates") == Json::array({"lighting_pass", "present", "sprite", "post_main", "tonemap", "post_ldr",
+                                                   "pelican_ui", "debug_draw", "debug_text", "imgui", "output_transform"}));
+
+    // Each candidate takes the pass: the feature's insert pointed there composes.
+    for (const auto &candidate : fields.at("candidates")) {
+        INFO(candidate.dump());
+        auto feature = Json::parse(loadEngineFeature("engine://features/sky_ambient.json"));
+        feature["passes"][0]["insert"] = "after:" + candidate.get<std::string>();
+        CHECK_NOTHROW(composeRenderFeatureConfig(
+            document, RenderFeatureComposeDependencies{[&](std::string_view) { return feature.dump(); }, true}));
+    }
+
+    // One edit: the pipeline's pass named as the feature names it.
+    auto fixed = document;
+    fixed["rendering"]["rendering_passes"][0]["passes"][0]["name"] = "deferred_lighting";
+    const auto composed = lp0aCompose(fixed);
+    CHECK(passByName(composed.config, "sky_background").at("input") == Json::array({"scene_depth"}));
 }
 
 } // namespace Pelican
