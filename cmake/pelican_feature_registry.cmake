@@ -188,6 +188,13 @@ pelican_register_feature(
   SMOKE_ID renderdoc
 )
 pelican_register_feature(
+  NAME PELICAN_WITH_HOT_RELOAD
+  DESCRIPTION "Enable development file care: the file watch's hot reload and the startup asset manifest check"
+  BASELINE ON
+  CONTRAST OFF
+  SMOKE_ID hot-reload
+)
+pelican_register_feature(
   NAME PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
   DESCRIPTION "Build Pelican's replaceable standard render algorithm package"
   BASELINE ON

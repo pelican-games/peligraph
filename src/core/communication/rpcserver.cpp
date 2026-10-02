@@ -20,6 +20,7 @@
 #include "../ecs/componentinfo.hpp"
 #include "../ecs/predefined/modelview.hpp"
 #include "../ecs/predefined/transform.hpp"
+#include "../loader/assetsverification.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../loader/editorprojectionadapters.hpp"
 #include "../loader/componentcodec.hpp"
@@ -366,6 +367,9 @@ struct EngineRpcModules {
     FrameGraphRuntimeContainer &frame_graph;
     PipelineFactory &pipelines;
     RuntimeSpawner &runtime_spawner;
+    // AV-1: the player's startup verification; absent in a host that never
+    // ran it.
+    AssetsVerification *assets_verification;
 };
 
 EngineRpcModules resolveEngineRpcModules() {
@@ -400,6 +404,7 @@ EngineRpcModules resolveEngineRpcModules() {
         GET_MODULE(FrameGraphRuntimeContainer),
         GET_MODULE(PipelineFactory),
         GET_MODULE(RuntimeSpawner),
+        FastModuleContainer::tryGet<AssetsVerification>(),
     };
 }
 
@@ -1459,6 +1464,73 @@ void configureShaderReloadRpcHandler(
         });
 }
 
+// AV-1. The startup asset verification's result, and its reruns. A host
+// without the module (it never ran the startup check) answers not_run in
+// get_status and refuses the two that run one by name.
+nlohmann::json assetsVerificationStatusJson(const AssetsVerification *verification) {
+    if (verification == nullptr) {
+        return nlohmann::json{{"state", "not_run"}, {"reason", "this host does not verify assets"}};
+    }
+    return verification->statusJson();
+}
+
+void configureAssetsVerificationRpcHandlers(RpcServer &server, AssetsVerification *verification) {
+    const auto requireNoParams = [](const nlohmann::json &params, const std::string &method) {
+        if (!requireObjectParams(params, method).empty()) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams, method + " takes no parameters");
+        }
+    };
+    const auto refusal = [](const AssetsVerificationError &error) {
+        return JsonRpcHandlerError(
+            JsonRpcErrorCodes::applicationError, error.what(),
+            nlohmann::json{{"error_code", error.code()},
+                           {"error_fields", error.fields().is_object() ? error.fields()
+                                                                       : nlohmann::json::object()}});
+    };
+    const auto unavailable = [](const std::string &method) {
+        return JsonRpcHandlerError(
+            JsonRpcErrorCodes::applicationError, method + ": this host does not verify assets",
+            nlohmann::json{{"error_code", std::string{assetsVerificationUnavailableErrorCode}},
+                           {"error_fields", nlohmann::json::object()}});
+    };
+    server.setHandler("get_assets_verification", [verification, requireNoParams](const nlohmann::json &params) {
+        requireNoParams(params, "get_assets_verification");
+        if (verification == nullptr) {
+            auto answer = assetsVerificationStatusJson(nullptr);
+            answer["verified_at"] = nullptr;
+            answer["stores"] = nlohmann::json::array();
+            return answer;
+        }
+        return verification->detailJson();
+    });
+    server.setHandler("verify_assets",
+                      [verification, requireNoParams, refusal, unavailable](const nlohmann::json &params) {
+                          requireNoParams(params, "verify_assets");
+                          if (verification == nullptr) throw unavailable("verify_assets");
+                          try {
+                              return verification->verify();
+                          } catch (const AssetsVerificationError &error) {
+                              throw refusal(error);
+                          }
+                      });
+    server.setHandler("update_assets_manifest",
+                      [verification, refusal, unavailable](const nlohmann::json &params) {
+                          constexpr auto method = "update_assets_manifest";
+                          const auto &object = requireObjectParams(params, method);
+                          const auto store = requireStringParam(object, "store", method);
+                          if (object.size() != 1) {
+                              throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                                        "update_assets_manifest takes only 'store'");
+                          }
+                          if (verification == nullptr) throw unavailable(method);
+                          try {
+                              return verification->updateManifest(store);
+                          } catch (const AssetsVerificationError &error) {
+                              throw refusal(error);
+                          }
+                      });
+}
+
 } // namespace internal
 
 void internal::loadSceneResolutionBoundary(
@@ -1507,6 +1579,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                 editor_rpc.forceAbortPreview("reload");
             },
         });
+    internal::configureAssetsVerificationRpcHandlers(server, modules.assets_verification);
 
     server.setHandler("get_status", [instance_id, &modules, &editor_service,
                                      &play_session](const nlohmann::json &params) {
@@ -1659,7 +1732,9 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                                    {"effective", std::string{cursorModeName(modules.input_state.cursorMode().effective)}},
                                    {"embedded", modules.input_state.cursorMode().embedded}}}}},
             {"stores", assetStoresStatus(modules.path_resolver)},
-            {"reload", modules.reload_service != nullptr
+            {"assets_verification",
+             internal::assetsVerificationStatusJson(modules.assets_verification)},
+            {"reload",modules.reload_service != nullptr
                            ? modules.reload_service->statusJson()
                            : nlohmann::json{{"state", "disabled"},
                                             {"epoch", modules.reload_gate.snapshot().epoch},

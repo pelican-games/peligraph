@@ -753,6 +753,11 @@ void ReloadService::ensureBuiltInParticipants() {
                         (config->headless || config->rpc)) {
                         return RuntimeReloadResult{};
                     }
+#if !PELICAN_WITH_HOT_RELOAD
+                    // AV-1: a distribution build does not poll the DLL; an
+                    // explicit request (F5, reload_game_logic) still runs.
+                    if (trigger == RuntimeReloadTrigger::poll) return RuntimeReloadResult{};
+#endif
                     const auto attempt = trigger == RuntimeReloadTrigger::manual
                                              ? reloadConfiguredGameLogicAttempt(true)
                                              : pollConfiguredGameLogicAttempt(
@@ -876,11 +881,22 @@ void ReloadService::setup(const PathResolver &resolver) {
     gate->setWatchDeclaration(!watch_paths_                ? WatchDeclaration::undeclared
                               : watch_paths_->empty()      ? WatchDeclaration::empty
                                                            : WatchDeclaration::listed);
+#if PELICAN_WITH_HOT_RELOAD
     FileWatcherOptions options;
     options.watch_paths = watch_paths_;
     watcher_ = std::make_unique<FileWatcher>(std::move(stores), [gate] { return gate->snapshot(); },
                                              std::move(options));
     watcher_->start();
+#else
+    // AV-1: a distribution build has no file watch. A project that keeps its
+    // development declaration still opens; the declaration does nothing.
+    watcher_.reset();
+    if (watch_paths_ && logger) {
+        LOG_INFO(logger,
+                 "project.json hot_reload is ignored: this binary was built with "
+                 "PELICAN_WITH_HOT_RELOAD=OFF");
+    }
+#endif
 }
 
 void ReloadService::applyFrame() {

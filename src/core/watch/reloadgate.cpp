@@ -35,14 +35,19 @@ bool ReloadGate::rpcDriven() const {
 }
 
 void ReloadGate::updateLocked() {
+    // AV-1: a PELICAN_WITH_HOT_RELOAD=OFF build (a distribution build) has
+    // no file watch at all, whatever else asks.
+    constexpr bool build_disabled = !PELICAN_WITH_HOT_RELOAD;
     // HW-1: an RPC driver shuts the watch only when the project declares
     // nothing; a declared list is watched under it as well.
     const bool rpc_shuts = rpc_ && watch_ == WatchDeclaration::undeclared;
     const bool declared_empty = watch_ == WatchDeclaration::empty;
-    const bool next = requested_ && !replay_ && !strict_ && !rpc_shuts && !declared_empty;
+    const bool next =
+        !build_disabled && requested_ && !replay_ && !strict_ && !rpc_shuts && !declared_empty;
     if (next != enabled_) ++epoch_;
     enabled_ = next;
-    if (replay_) reason_ = "replay";
+    if (build_disabled) reason_ = "hot reload build disabled";
+    else if (replay_) reason_ = "replay";
     else if (strict_) reason_ = "strict assets";
     else if (rpc_shuts) reason_ = "rpc driver";
     else if (declared_empty) reason_ = "hot_reload empty";

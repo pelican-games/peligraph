@@ -915,6 +915,87 @@ function(run_renderdoc_smoke)
     clean_successful_build("${renderdoc_build_dir}")
 endfunction()
 
+# AV-1: a project whose asset store disagrees with its manifest (one file
+# changed, one gone, one not listed) and that declares hot_reload. It runs
+# under --rpc, so it draws rpc_headless_player's hybrid pipeline (the empty
+# project's bare ui pass is refused by the preview graph).
+function(write_hot_reload_project root)
+    write_empty_project("${root}")
+    configure_file("${SOURCE_DIR}/test/fixtures/hybrid_sky_rendering_config.json"
+        "${root}/passes/main.json" COPYONLY)
+    file(READ "${root}/project.json" project_json)
+    string(REPLACE "\"engine_min_version\": \"0.1.0\","
+        "\"engine_min_version\": \"0.1.0\",
+  \"asset_stores\": {\"main\": {\"mount\": \"art\", \"manifest\": \"art.manifest.json\"}},
+  \"hot_reload\": [\"art\"],"
+        project_json "${project_json}")
+    string(REPLACE "\"default_rendering_pass\": \"main\""
+        "\"default_rendering_pass\": \"main_render\"" project_json "${project_json}")
+    file(WRITE "${root}/project.json" "${project_json}")
+    file(MAKE_DIRECTORY "${root}/art")
+    file(WRITE "${root}/art/a.bin" "original")
+    file(SHA256 "${root}/art/a.bin" a_sha)
+    file(WRITE "${root}/art.manifest.json" "{
+  \"schema\": \"pelican.assets\",
+  \"version\": 1,
+  \"tool\": {\"name\": \"pelican_cli assets manifest\"},
+  \"files\": [
+    {\"file\": \"a.bin\", \"size\": 8, \"sha256\": \"${a_sha}\"},
+    {\"file\": \"gone.bin\", \"size\": 8, \"sha256\": \"${a_sha}\"}
+  ]
+}
+")
+    file(WRITE "${root}/art/a.bin" "changed!!")
+    file(WRITE "${root}/art/extra.bin" "extra")
+endfunction()
+
+# AV-1: PELICAN_WITH_HOT_RELOAD=OFF (the distribution build) starts without
+# checking the asset manifest unless --strict-assets asks, which still stops
+# the launch as before; get_status says why there is no file watch and no
+# verification.
+function(run_hot_reload_smoke)
+    configure_and_build("hot_reload" "PELICAN_WITH_HOT_RELOAD" hot_reload_build_dir)
+    find_built_executable("${hot_reload_build_dir}" "pelican_player" hot_reload_player)
+    set(hot_reload_project "${ARTIFACT_ROOT}/hot_reload_project")
+    write_hot_reload_project("${hot_reload_project}")
+
+    run_process("hot_reload_strict_assets" FALSE
+        "${hot_reload_player}" --headless --strict-assets --project "${hot_reload_project}" --frames 1 --size 64x64)
+    if(NOT "${hot_reload_strict_assets_STDOUT}\n${hot_reload_strict_assets_STDERR}" MATCHES
+       "assets manifest: 1 stores, 1 matched, 0 info, 0 warnings, 3 errors")
+        message(FATAL_ERROR "PELICAN_WITH_HOT_RELOAD=OFF --strict-assets did not verify and stop:
+stdout:
+${hot_reload_strict_assets_STDOUT}
+stderr:
+${hot_reload_strict_assets_STDERR}")
+    endif()
+
+    set(rpc_script "${ARTIFACT_ROOT}/hot_reload_rpc.ndjson")
+    file(WRITE "${rpc_script}" "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"get_status\",\"params\":{}}\n")
+    execute_process(
+        COMMAND "${hot_reload_player}" --rpc --headless --project "${hot_reload_project}" --size 64x64
+        WORKING_DIRECTORY "${SOURCE_DIR}"
+        INPUT_FILE "${rpc_script}"
+        RESULT_VARIABLE rpc_result
+        OUTPUT_VARIABLE rpc_stdout
+        ERROR_VARIABLE rpc_stderr
+    )
+    set(rpc_output "${rpc_stdout}\n${rpc_stderr}")
+    if(NOT rpc_result EQUAL 0 OR
+       NOT rpc_stdout MATCHES [=["assets_verification":\{"reason":"PELICAN_WITH_HOT_RELOAD=OFF","state":"not_run"\}]=] OR
+       NOT rpc_stdout MATCHES [=["gate_reason":"hot reload build disabled"]=] OR
+       rpc_output MATCHES "assets manifest" OR
+       NOT rpc_output MATCHES "project.json hot_reload is ignored")
+        message(FATAL_ERROR "PELICAN_WITH_HOT_RELOAD=OFF player did not skip the watch and the startup check:
+result: ${rpc_result}
+stdout:
+${rpc_stdout}
+stderr:
+${rpc_stderr}")
+    endif()
+    clean_successful_build("${hot_reload_build_dir}")
+endfunction()
+
 function(verify_standard_render_algorithms_absent build_dir)
     file(GLOB_RECURSE build_metadata LIST_DIRECTORIES false
         "${build_dir}/build.ninja"
@@ -1338,6 +1419,10 @@ function(run_registered_feature_smoke feature_name)
     elseif(feature_name STREQUAL "PELICAN_WITH_RENDERDOC")
         if(NOT dry_run)
             run_renderdoc_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_HOT_RELOAD")
+        if(NOT dry_run)
+            run_hot_reload_smoke()
         endif()
     elseif(feature_name STREQUAL "PELICAN_WITH_STANDARD_RENDER_ALGORITHMS")
         if(NOT dry_run)
