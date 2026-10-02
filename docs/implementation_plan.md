@@ -27609,6 +27609,42 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - **新しいファイル**: なし
 - **シナリオ**: `gui_build_curve`(88 → 94)、`gui_build_audio_reactive`(148 → 159)。実装者の run で `gui_build_music` と合わせて 3 本とも緑、`studio_cpu` の 646 本も緑。本数は 61 のまま
 
+### UX-13b: 汎用の欄の残り(engine CT-5 の Studio 側)—— 一覧の条件、表の行名、render.scalar の書き先を同じ編集で、拒否からの Fix、definition の中の置ける場所
+
+**Studio のみ(engine は CT-5 `65f3a8a3`)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「汎用の欄の残り(✅UX-13b)」と、同じ章の UX-12e の節(`choices_from`・palette の灰色)・AB-1s の節(`value.sample_table` の必須のダイアログ)・「Inspector のグラフ装着」の「断られたとき」、シナリオの `gui_node_parameters`。**
+
+#### 前提
+- engine の CT-5 が `choices_from` に `where` と `asset_manifest`、`get_graph_catalog` を出どころにする形、`format_class_patterns`、`get_graph_instances` の `definition_instances`、拒否 `graph.render_scalar_target_incompatible@1` を足し、`edit_graph_instances` は名前付きの拒否を畳まなくなった。CT-5 から engine は `runtime_f32` でない・大きさの合わない `render.scalar` の書き先を断る(仕様の engine の契約)
+
+#### 着地(2026-10-03、342142d5)
+- **決定 1(一覧の出どころ)**: `choices_from` の `where`(node の書いていない parameter は表の `default` で比べる。[`whereHolds()`](../src/devstudio/view/graphcanvasparameterfields.cpp#L202))、`asset_manifest`(同じ node の asset の隣の `.import.json`。asset が変われば読み直す)、`rpc: "get_graph_catalog"`(Studio が持つ catalog から。[`GraphCanvasModel::catalogChoices()`](../src/devstudio/model/graphcanvasvalues.cpp#L736))
+- **決定 2(書き先を同じ編集で)**: `render.scalar` の target の候補は、書ける buffer と、その buffer 自身の parameters の編集で書けるようになる buffer(項目に `(will be set to runtime_f32)` / `(will be set to <n> bytes)`)、次に graph の外の plan の buffer([`GraphCanvasModel::scalarTargetChoices()`](../src/devstudio/model/graphcanvasvalues.cpp#L656))。必須のダイアログと置いた後の Buffer の combo で同じ。選ぶと、置く `add_node` / 欄の `set_node_parameters` と同じ ops に、その buffer の `host_source: "runtime_f32"` と sink の合計の大きさを入れる。新しい sink は先の sink の後ろの offset、値の数の変更は大きさも変え、移した元の buffer は残る sink の大きさにする
+- **決定 3(拒否からの Fix)**: `graph.render_scalar_target_incompatible@1` を 1 文に([1 文の所](../src/devstudio/model/inspectormodel.cpp#L1325))。graph の buffer(`node` あり)は notice の下に Fix: make <target> runtime_f32, <size> bytes(`pelican.graphCanvasFixScalarTarget`)で 1 回の `set_node_parameters`、graph の外の buffer は `… where it is declared` の文だけ
+- **決定 4(definition の中の placement)**: palette は `definition_instances` の `owned_instances_only` が false の definition の中でも `owned_instance` の op を灰色にし、`this definition is also used by an instance with no owner` と言う([`paletteNeedsDefinition()`](../src/devstudio/view/graphcanvaswidget.cpp#L7392))。engine が言わないときは灰色にしない
+- **決定 5(value.sample_table)**: 必須のダイアログの表と行を AB-1s の専用の combo から汎用の欄に(asset は `.ktx2` の file の combo、row は Name の形で manifest の `layout.features`、最初の行を選んだ状態)。AB-1s の「rms を先に」と「表が無いときの tooltip」は無くなった。Use in Graph は今までどおり rms(無ければ最初の行)で置く
+- **決定 6(小さいもの)**: `format_class` の `Explicit…` と引数の combo で `explicit(<format>)` を書く。`definition` 付きの `graph.op_requires_owned_instance@1` を `… this definition is also used by an instance with no owner` の 1 文に。Inspector のグラフ装着の `edit_graph_instances` の拒否を Graph と同じ 1 文で読む([`diagnostic()`](../src/devstudio/model/graphattachmentmodel.cpp#L16)。この読みの test は無い)。`render.fullscreen` の `push_constants` は pass の欄の専用の combo のままで、変えていない
+- **test**: `devstudio_graphcanvas_scene_test` の `UX-13b decision 1` / `4` / `6`([decision 1](../test/devstudio_graphcanvas_scene_test.cpp#L11435))と `AB-1s decision 2 / UX-13b decision 5 …`(AB-1s decision 2 の名前と中身を書き換えた)、`devstudio_graphcanvas_test` の `UX-13b decision 2` / `3`([decision 2](../test/devstudio_graphcanvas_test.cpp#L3919))。CT-5 で `row` の Name が combo になって壊れていた `UX-12e decision 3` を直した(commit の記録)
+- **新しいファイル**: なし
+- **シナリオ**: `gui_node_parameters`(169 → 164)。`render_buffer_2` の `host_source` を手で選ぶ手順をやめ、`render_buffer_2 (will be set to runtime_f32)` を選んで同じ編集で `runtime_f32` になることを見る。実装者の run で `gui_build_audio_reactive`・`gui_build_curve` と合わせて緑、`studio_cpu` の 654 本も緑。統合側の run では `gui_build_audio_reactive` が 1 回目に Re-bake の `cannot replace …beat.ktx2`(`audio.analysis_failed@1`)で赤、2 回目は緑(作業の log の記録)。本数は 61 のまま
+
+### UX-13c: Outliner と Inspector の一覧を scene_outline に(scene_tree の全体の poll をやめる)
+
+**Studio のみ(engine の `scene_outline` は `b29ccfea`。利用者の codex の変更)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「Studio の Outliner と Inspector が読む一覧(✅UX-13c)」。**
+
+#### 前提
+- 利用者の codex の計測(Release、1 万 object)で `scene_tree` は 890 ms・約 8.2 MB。Studio が `scene_tree` から読むのは scene の id と revision、object の id・宣言の位置・名前・親だけで、Outliner は revision が同じでも poll のたびに木全体を受け取っていた。Inspector の `scene_tree` も id の確かめだけ(仕様の背景)
+
+#### 着地(2026-10-03、4405641a)
+- **決定 1(Outliner の poll)**: 最初は `scene_outline {}`、scene を 1 つ持った後は `{scene_id, if_scene_revision}` で、`not_modified` なら何も作り直さない([`MainWindow::requestOutlinerRefresh()`](../src/devstudio/view/mainwindow.cpp#L2359))。失敗や読めない答えの次の 1 回は条件無し
+- **決定 2(親を id で)**: `parent_authoring_object_id` で親を引く(親が後ろで宣言されていてもよい)。名前の無い object の表示名と付け替えを断る扱い、宣言の位置と 0 でない id の検査は今までどおり([`ProjectOutlinerModel::updateScene()`](../src/devstudio/model/project.cpp#L229))
+- **決定 3(Inspector)**: 選んだ object の id の確かめを `scene_outline {scene_id}` に。詳細は今までどおり `get_components`
+- **決定 4(ほかの読み手)**: シナリオが `scene_tree` を直接呼ぶ所は変えていない(仕様どおり)
+- **決定 5(古い engine)**: `-32601` なら、Outliner はその engine の間、Inspector はその session の間 `scene_tree`。engine に繋ぎ直すと問い直す
+- **決定 6(重さ)**: commit の記録では、1,000 object の test(Studio の test の fake の engine)で一覧全体の答えが約 104 KB、変わらない poll の答えが 58 byte。合否の条件にはしていない
+- **test**: `devstudio_outliner_test` の `UX-13c …` 2 本([親を id で](../test/devstudio_outliner_test.cpp#L719))、`devstudio_outliner_edit_test` の `UX-13c …` 2 本([poll](../test/devstudio_outliner_edit_test.cpp#L643))。Inspector・play controls・render undo・runtime objects の test の fake も `scene_outline` を返す形に
+- **新しいファイル**: なし
+- **シナリオ**: 変えていない。実装者の run で `outliner_edit_roundtrip`・`add_primitive_object`・`play_mode_roundtrip`・`menu_actions` が緑。実装者の `studio_cpu` は 653 本中 1 本(`UX-12e decision 3`、SegFault)が赤で、これは UX-13b が直した test(作業の log と UX-13b の commit の記録)。本数は 61 のまま
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
