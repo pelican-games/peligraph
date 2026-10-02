@@ -257,6 +257,9 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     // the entries rather than building a throwaway one per right-click.
     void setMenuActions(QAction *auto_layout, QAction *fit_view);
     void setGpuTiming(FramePlanGpuTimingSnapshot snapshot);
+    // UX-6b, decision 2: at a zoom too small to read them, the nodes' GPU
+    // times are hidden; each node's tooltip carries its time either way.
+    void setGpuTimingCompact(bool compact);
     // F-3: node name -> the first line of its shader's compile log. Kept
     // across redraws; an empty map takes every mark down.
     void setShaderErrorMarks(std::map<std::string, QString> marks);
@@ -473,6 +476,7 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     std::optional<FramePlanNodeKey> current_target_;
     bool whole_frame_ = false;
     FramePlanGpuTimingSnapshot gpu_timing_;
+    bool gpu_timing_compact_ = false;
     std::map<std::string, QString> shader_error_marks_;
     int current_depth_ = 1;
     using GroupStateKey = std::pair<std::string, std::string>;

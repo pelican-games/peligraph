@@ -47,6 +47,7 @@ namespace PelicanStudio {
 class EmbeddedViewport;
 class FramePlanWidget;
 class GraphCanvasWidget;
+class PlanPerfHub;
 class FullscreenPassWidget;
 class InspectorWidget;
 class OutlinerTree;
@@ -126,6 +127,9 @@ class MainWindow : public QMainWindow {
     // RSX: the rendering section's own keys (EL-3), beside Features.
     RenderingSettingsWidget *rendering_settings_ = nullptr;
     GraphCanvasWidget *graph_canvas_ = nullptr;
+    // UX-6b: the frame's GPU time, the plan's size and the last edit's
+    // before and after, for the Frame Plan and the Graph tab.
+    PlanPerfHub *plan_perf_ = nullptr;
     QTabWidget *render_tabs_ = nullptr;
     FullscreenPassWidget *fullscreen_pass_ = nullptr;
     QMenu *restore_layout_menu_ = nullptr;

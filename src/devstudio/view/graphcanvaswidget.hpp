@@ -296,6 +296,13 @@ class GraphCanvasScene final : public QGraphicsScene {
     // the scene keeps (positions, folds, placements, the selection) is filed
     // under (scope, id). A folded zone is the loop's node, as LP-4c drew it.
     void repopulate();
+    // UX-6b, decision 2: each plan node's GPU time (get_status gpu_timing,
+    // by plan node name). A root node's band says the sum of its passes';
+    // the bands on screen change in place, nothing else is drawn again.
+    void setPlanNodeTimes(std::map<std::string, double, std::less<>> times);
+    // GL-2b's band under a root node, with UX-6b's words after it: what the
+    // plan says its passes do for nothing, then its GPU time.
+    [[nodiscard]] QString layerBandText(const std::string &id) const;
 
     // The scene changed which scope is shown (a double-click descended into a
     // definition, or the breadcrumb came back out).
@@ -755,6 +762,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     // dispatch. Anything that ran before it must not then read the new items
     // as if they were the ones the user pressed on.
     std::uint64_t rebuild_generation_ = 0;
+    // UX-6b, decision 2.
+    std::map<std::string, double, std::less<>> plan_node_times_;
     // The theme table's registration, dropped in the destructor: a listener
     // that outlived its scene would repopulate a deleted one.
     int theme_listener_ = 0;
@@ -970,6 +979,12 @@ class GraphCanvasWidget final : public QWidget {
     // image, it has no TRANSFER_SRC, or the tab cannot edit now.
     bool removeImageTransferSource(const QString &resource, const QString &loop,
                                    qint64 element, const QString &node);
+    // UX-6b, decisions 1 and 3: the line over the canvas -- the frame's GPU
+    // time and the plan's size -- and what the last edit moved. The row
+    // keeps its height either way. Decision 2: each plan node's GPU time, for
+    // the bands. The window's PlanPerfHub reads them; the tab reads nothing.
+    void setPerfLines(const QString &summary, const QString &delta);
+    void setPlanNodeTimes(std::map<std::string, double, std::less<>> times);
 
     GraphCanvasModel &model();
     GraphCanvasScene &scene();

@@ -10,6 +10,7 @@
 #include "panelhelp.hpp"
 #include "renderconfigdigest.hpp"
 #include "rendereditcompletion.hpp"
+#include "planperfmodel.hpp"
 
 #include "nodelayout.hpp"
 #include "studiotheme.hpp"
@@ -27,6 +28,7 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFont>
+#include <QFontMetrics>
 #include <QFormLayout>
 #include <QGraphicsPathItem>
 #include <QGraphicsPolygonItem>
@@ -1303,6 +1305,61 @@ QString zoneCondition(const GraphCanvasLoopBranch &branch) {
 
 } // namespace
 
+QString GraphCanvasScene::layerBandText(const std::string &id) const {
+    if (model_ == nullptr) return {};
+    QStringList parts;
+    if (const auto band = model_->layerBand(id); !band.empty()) parts.push_back(qtext(band));
+    // UX-6b, decision 4: what the plan says the node's passes do for nothing.
+    for (const auto &note : model_->planNotes(id))
+        if (!parts.contains(qtext(note.band))) parts.push_back(qtext(note.band));
+    // Decision 2: the node's GPU time, the sum of its passes'.
+    if (model_->layersShown()) {
+        bool timed = false;
+        double total = 0.0;
+        for (const auto &pass : model_->planNodesOf(id))
+            if (const auto found = plan_node_times_.find(pass); found != plan_node_times_.end()) {
+                timed = true;
+                total += found->second;
+            }
+        if (timed) parts.push_back(qtext(PlanPerfModel::milliseconds(total)));
+    }
+    return parts.join(QStringLiteral(" \u00b7 "));
+}
+
+void GraphCanvasScene::setPlanNodeTimes(std::map<std::string, double, std::less<>> times) {
+    if (times == plan_node_times_) return;
+    plan_node_times_ = std::move(times);
+    if (model_ == nullptr || !model_->currentScope().empty() || model_->foldedView()) return;
+    // The bands on screen take the new words where they stand; a root node
+    // that had none gets one. Nothing else is drawn again, so a drag or an
+    // editor under way is not disturbed.
+    std::map<QString, QGraphicsSimpleTextItem *> bands;
+    std::vector<QGraphicsItem *> roots;
+    for (QGraphicsItem *item : items()) {
+        const auto kind = nodeGraphItemKind(*item);
+        if (kind == QLatin1String{GraphCanvasLayerBandItem}) {
+            if (auto *band = dynamic_cast<QGraphicsSimpleTextItem *>(item))
+                bands[item->data(NodeGraphNameRole).toString()] = band;
+        } else if (item->parentItem() == nullptr && kind == QLatin1String{GraphCanvasNodeItem} &&
+                   item->data(GraphCanvasZoneScopeRole).toString().isEmpty()) {
+            roots.push_back(item);
+        }
+    }
+    for (QGraphicsItem *item : roots) {
+        const QString name = item->data(NodeGraphNameRole).toString();
+        const QString text = layerBandText(name.toStdString());
+        if (const auto found = bands.find(name); found != bands.end()) {
+            if (found->second->text() == text) continue;
+            found->second->setText(text);
+            found->second->setToolTip(
+                QObject::tr("%1 below the graph: select the node for its Layers").arg(text));
+        } else if (!text.isEmpty()) {
+            GraphCanvasDrawing::Builder drawing{*this, item->data(GraphCanvasScopeRole).toString()};
+            drawing.addLayerBand(*item, name, text);
+        }
+    }
+}
+
 void GraphCanvasScene::repopulate() {
     ++rebuild_generation_;
     // An open editor belongs to items that are about to be deleted -- so what
@@ -2069,8 +2126,8 @@ void GraphCanvasScene::repopulate() {
         for (QGraphicsItem *item : roots) {
             const auto id = item->data(NodeGraphNameRole).toString().toStdString();
             if (model_->deactivatedNode(id) != nullptr) item->setOpacity(0.45);
-            if (const auto band = model_->layerBand(id); !band.empty())
-                drawing.addLayerBand(*item, qtext(id), qtext(band));
+            if (const auto band = layerBandText(id); !band.isEmpty())
+                drawing.addLayerBand(*item, qtext(id), band);
         }
     }
 
@@ -4483,6 +4540,12 @@ struct GraphCanvasWidget::Impl {
     std::function<void(const QString &)> frame_plan_node_action;
     QPushButton *diagnostics_toggle = nullptr;
     QLabel *diagnostics_list = nullptr;
+    // UX-6b, decision 1 and 3: the frame's GPU time and the plan's size
+    // over the canvas, and what the last edit moved beside it; decision 4:
+    // what the plan says the picked node's passes do for nothing.
+    QLabel *perf_summary = nullptr;
+    QLabel *perf_delta = nullptr;
+    QLabel *plan_notes = nullptr;
     QAction *add_loop_action = nullptr;
     QAction *add_fullscreen_action = nullptr;
     // Q-19, decision 4: "Rename definition…" and "Delete definition", and
@@ -4640,6 +4703,33 @@ struct GraphCanvasWidget::Impl {
         refresh->setObjectName(QStringLiteral("pelican.graphCanvasRefresh"));
         controls->addWidget(refresh);
         layout->addLayout(controls);
+        // UX-6b, decisions 1 and 3: one line each, read only. The row keeps
+        // its height whatever it says, and a long line is cut rather than
+        // widening the tab: a line arriving mid-drag must not move the canvas
+        // under the pointer.
+        auto *perf_holder = new QWidget(&view);
+        perf_holder->setFixedHeight(QFontMetrics{studioSmallFont()}.height() + 2);
+        auto *perf_row = new QHBoxLayout(perf_holder);
+        perf_row->setContentsMargins(0, 0, 0, 0);
+        perf_summary = new QLabel(&view);
+        perf_summary->setObjectName(QStringLiteral("pelican.graphCanvasPerf"));
+        perf_summary->setFont(studioSmallFont());
+        perf_summary->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        perf_summary->setToolTip(QObject::tr(
+            "The frame's GPU time (get_status, the average over the engine's window) and the "
+            "frame plan's passes, barriers and alias groups"));
+        perf_row->addWidget(perf_summary);
+        perf_delta = new QLabel(&view);
+        perf_delta->setObjectName(QStringLiteral("pelican.graphCanvasPerfDelta"));
+        perf_delta->setFont(studioSmallFont());
+        perf_delta->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        perf_delta->setToolTip(QObject::tr(
+            "The last edit: the plan and the GPU time of the generation before it and of the one "
+            "it made"));
+        perf_delta->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        perf_delta->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        perf_row->addWidget(perf_delta, 1);
+        layout->addWidget(perf_holder);
 
         // Q-19, decision 4: the definition row, hidden until Rename
         // definition… or Delete definition opens it.
@@ -4884,6 +4974,13 @@ struct GraphCanvasWidget::Impl {
         folded_summary->setWordWrap(true);
         folded_summary->hide();
         side_layout->addWidget(folded_summary);
+        // UX-6b, decision 4.
+        plan_notes = new QLabel(side);
+        plan_notes->setObjectName(QStringLiteral("pelican.graphCanvasPlanNotes"));
+        plan_notes->setWordWrap(true);
+        plan_notes->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        plan_notes->setStyleSheet(QStringLiteral("color: #8a8f98;"));
+        plan_notes->hide();
         // GL-2b, decision 3: what the picked root node became below L0 --
         // expanded (L1), physically (L2), on the backend (L3) -- or, with
         // nothing picked, what concerns the whole graph. It folds.
@@ -5032,6 +5129,8 @@ struct GraphCanvasWidget::Impl {
         QObject::connect(details->itemDelegate(), &QAbstractItemDelegate::closeEditor, &view,
                          [this] { editing_parameter = nullptr; });
         side_layout->addWidget(details, 1);
+        // Last in the column, so its coming and going moves no field.
+        side_layout->addWidget(plan_notes);
         side_scroll->setWidget(side);
         splitter->addWidget(side_scroll);
         splitter->setStretchFactor(0, 3);
@@ -5847,14 +5946,28 @@ struct GraphCanvasWidget::Impl {
         layers->expandAll();
     }
 
+    // UX-6b, decision 4: one sentence for each thing the plan says the
+    // picked root node's passes do for nothing.
+    void syncPlanNotes() {
+        if (plan_notes == nullptr || scene == nullptr) return;
+        const auto &selected = scene->selectedNode();
+        QStringList lines;
+        if (selected && scene->selectedScope().empty() && model.currentScope().empty())
+            for (const auto &note : model.planNotes(*selected)) lines.push_back(qtext(note.sentence));
+        plan_notes->setText(lines.join(QLatin1Char('\n')));
+        plan_notes->setVisible(!lines.isEmpty());
+    }
+
     // GL-2b, decision 3: the plan's diagnostics, one line that unfolds.
     void syncDiagnostics() {
         if (diagnostics_toggle == nullptr || diagnostics_list == nullptr) return;
         // GL-3a, decision 3: a fold group's state is read on its heading,
-        // not here as well.
+        // not here as well. UX-6b, decision 4: unread outputs and unused
+        // bindings are on the nodes' bands and in the details (there are many).
         std::vector<GraphCanvasPlanDiagnostic> diagnostics;
         for (const auto &diagnostic : model.planDiagnostics())
-            if (diagnostic.kind != "fold_unverified" && diagnostic.kind != "fold_stale")
+            if (diagnostic.kind != "fold_unverified" && diagnostic.kind != "fold_stale" &&
+                !GraphCanvasModel::nodeNoteDiagnostic(diagnostic))
                 diagnostics.push_back(diagnostic);
         if (diagnostics.empty()) {
             diagnostics_toggle->hide();
@@ -6566,6 +6679,7 @@ struct GraphCanvasWidget::Impl {
         // GL-3a: a picked fold group's Decisions.
         if (folds) folds->syncFields();
         syncFoldedSummary();
+        syncPlanNotes();
         syncLayers();
         // UX-2: a row being written goes with the rows.
         editing_parameter = nullptr;
@@ -6773,6 +6887,10 @@ struct GraphCanvasWidget::Impl {
         undo_action->setEnabled(history_available && scene->canUndoAny());
         redo_action->setEnabled(history_available && scene->canRedoAny());
         add_loop_action->setEnabled(model.canEdit() && model.currentScope().empty());
+        // UX-6b: Add follows the same tick as Add loop. Set only when the
+        // details were drawn, it stayed on through the document read that
+        // follows a commit, while Add loop -- fired right after it -- was off.
+        add_node->setEnabled(model.canEdit());
         add_fullscreen_action->setEnabled(
             model.canEdit() &&
             !model.paletteOperationsIn(scene->addScope(), "render.fullscreen").empty());
@@ -6878,6 +6996,7 @@ struct GraphCanvasWidget::Impl {
         // just arrived.
         syncDiagnostics();
         syncLayers();
+        syncPlanNotes();
         // GL-1, decision 4: nothing was sent; the link is the way to edit.
         const auto expand = model.foldedExpand();
         expand_action->setEnabled(model.foldedView() && !expand.kind.empty());
@@ -6913,6 +7032,16 @@ GraphCanvasWidget::GraphCanvasWidget(GraphCanvasReadCapability graph,
 }
 
 GraphCanvasWidget::~GraphCanvasWidget() { setEngineShaderListRequester({}); }
+
+void GraphCanvasWidget::setPerfLines(const QString &summary, const QString &delta) {
+    impl_->perf_summary->setText(summary);
+    impl_->perf_delta->setText(delta);
+    if (!delta.isEmpty()) impl_->perf_delta->setToolTip(delta);
+}
+
+void GraphCanvasWidget::setPlanNodeTimes(std::map<std::string, double, std::less<>> times) {
+    impl_->scene->setPlanNodeTimes(std::move(times));
+}
 
 void GraphCanvasWidget::refresh() {
     impl_->model.refresh();

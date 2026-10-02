@@ -757,8 +757,22 @@ struct GraphCanvasPlanDiagnostic {
     std::string kind;
     std::string subject;
     std::string detail;
+    // UX-6b (PO-1): a detail with fields -- unread_output's and
+    // unused_binding's resource, and unused_binding's binding.
+    std::string resource;
+    std::optional<std::size_t> binding;
 
     bool operator==(const GraphCanvasPlanDiagnostic &) const = default;
+};
+
+// UX-6b, decision 4: one thing the plan says a root node's passes do for
+// nothing -- the band's words and the details' sentence.
+struct GraphCanvasPlanNote {
+    // "output unread" or "binding N unused".
+    std::string band;
+    std::string sentence;
+
+    bool operator==(const GraphCanvasPlanNote &) const = default;
 };
 
 struct GraphCanvasDeactivatedNode {
@@ -2220,6 +2234,13 @@ class GraphCanvasModel {
     [[nodiscard]] const std::vector<GraphCanvasPlanDiagnostic> &planDiagnostics() const noexcept {
         return plan_diagnostics_;
     }
+    // UX-6b, decision 4: what the plan's unread_output and unused_binding
+    // diagnostics say of a root node's passes, once each (a loop's copies
+    // say it once). Empty where the bands are not shown.
+    [[nodiscard]] std::vector<GraphCanvasPlanNote> planNotes(std::string_view canvas_node) const;
+    // Whether a diagnostic is one of those two, which the bands and the
+    // details carry rather than the diagnostics line.
+    [[nodiscard]] static bool nodeNoteDiagnostic(const GraphCanvasPlanDiagnostic &diagnostic);
     // GL-3a, decision 6: what the verified fold groups decided; the band of
     // the node each lands on says `isolate (fold <group>)`.
     [[nodiscard]] const std::vector<GraphCanvasFoldDecision> &planFoldDecisions() const noexcept {

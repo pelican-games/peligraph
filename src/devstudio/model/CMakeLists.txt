@@ -32,6 +32,9 @@ add_library(pelican_studio_inspector_model STATIC
     # PM-3c: reads the play state through playstatemodel's parsePlayStatus.
     runtimeobjects.cpp
     runtimeobjects.hpp
+    # UX-6b: the frame's GPU time and the plan's size, per generation.
+    planperfmodel.cpp
+    planperfmodel.hpp
 )
 
 set_target_properties(pelican_studio_inspector_model PROPERTIES CXX_STANDARD 20)

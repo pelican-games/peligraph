@@ -13,6 +13,7 @@
 #include "playcontrols.hpp"
 #include "projectmigrationwidget.hpp"
 #include "renderconfigdigest.hpp"
+#include "planperfhub.hpp"
 #include "renderfeatureswidget.hpp"
 #include "renderingsettingswidget.hpp"
 #include "rendereditcompletion.hpp"
@@ -611,6 +612,23 @@ void MainWindow::createWorkspace() {
     graph_canvas_->setRenderConfigDigest(render_digest_);
     render_features_->setRenderConfigDigest(render_digest_);
     rendering_settings_->setRenderConfigDigest(render_digest_);
+    // UX-6b: one reader of the frame's GPU time and the plan's size for the
+    // two panels that show them; every request passes it (createRenderHistory
+    // hands it the observer's calls).
+    plan_perf_ = new PlanPerfHub(
+        *viewport_,
+        PlanPerfHub::Hooks{
+            .watched = [this] { return frame_plan_->isVisible() || graph_canvas_->isVisible(); },
+            .changed =
+                [this] {
+                    const QString summary = plan_perf_->summary();
+                    const QString delta = plan_perf_->delta();
+                    frame_plan_->setPerfLines(summary, delta);
+                    graph_canvas_->setPerfLines(summary, delta);
+                    graph_canvas_->setPlanNodeTimes(plan_perf_->model().nodeMs());
+                },
+        },
+        this);
     // RU-1: and one history of their edits.
     createRenderHistory(pass_editor_scroll);
     // RL-1s: and what is written to their files from outside Studio.
@@ -892,11 +910,13 @@ void MainWindow::createRenderHistory(QWidget *pass_editor) {
     };
     viewport_->setRpcObserver(EmbeddedViewport::RpcObserver{
         .before = [this, json_of](const QString &method, const QJsonObject &params) {
+            if (plan_perf_) plan_perf_->requestGoing(method, params);
             const auto name = method.toStdString();
             if (!render_history_ || !RenderEditHistory::followsMethod(name)) return;
             render_history_->beforeRequest(name, json_of(params));
         },
-        .sent = [this](qint64 id, const QString &method, const QJsonObject &) {
+        .sent = [this](qint64 id, const QString &method, const QJsonObject &params) {
+            if (plan_perf_) plan_perf_->requestSent(id, method, params);
             const auto name = method.toStdString();
             if (!render_history_ || !RenderEditHistory::followsMethod(name)) return;
             render_history_->requestSent(id, name, nlohmann::json::object());

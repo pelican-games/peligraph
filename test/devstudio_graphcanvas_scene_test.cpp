@@ -514,6 +514,63 @@ qreal nodeHeight(QGraphicsScene &scene, const QString &name) {
 }
 } // namespace
 
+// UX-6b, decisions 2 and 4: a root node's band says what the plan says its
+// pass does for nothing, then its GPU time -- which changes in place, on the
+// band that is there.
+TEST_CASE("UX-6b a root node's band carries its unread output and its GPU time",
+          "[devstudio][graph-canvas][scene][ux6b]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    const Json document{{"schema", "pelican.graph"}, {"version", 1},
+                        {"definitions", Json::object()}, {"outputs", Json::object()},
+                        {"nodes", Json::array({{{"id", "blur"},
+                                                {"op", "render.fullscreen"},
+                                                {"parameters", Json::object()},
+                                                {"outputs", Json::array({"color"})}}})}};
+    answer(model, document);
+    const Json plan{
+        {"schema", "pelican.frame_plan"},
+        {"version", 1},
+        {"graph", "main_render"},
+        {"loops", Json::array()},
+        {"nodes", Json::array({{{"name", "blur"}, {"kind", "render"}, {"order", 0}, {"level", 0},
+                                {"source", "engine"}, {"reads", Json::array()},
+                                {"writes", Json::array({"blur__color"})},
+                                {"reads_history", Json::array()}, {"declaration_index", 0},
+                                {"origin", {{"graph", "passes/main.json"}, {"node", "blur"}}}}})},
+        {"barriers", Json::array()},
+        {"diagnostics", Json::array({{{"kind", "unread_output"},
+                                      {"subject", "blur"},
+                                      {"detail", {{"resource", "blur__color"}}}}})},
+        {"deactivated_graph_nodes", Json::array()}};
+    bool planned = false;
+    for (const auto &request : model.takeRpcRequests())
+        if (request.method == "get_frame_plan") {
+            model.receiveRpcResult(request.request_id, plan.dump());
+            planned = true;
+        }
+    REQUIRE(planned);
+    for (const auto &domain : GraphCanvasModel::domainNames())
+        model.setDomainShown(domain, domain == "render");
+    scene.setModel(&model);
+    const auto band = [&]() -> QString {
+        const auto bands = itemsOfKind(scene, PelicanStudio::GraphCanvasLayerBandItem);
+        if (bands.size() != 1) return QStringLiteral("<%1 bands>").arg(bands.size());
+        return dynamic_cast<QGraphicsSimpleTextItem *>(bands.front())->text();
+    };
+    CHECK(band() == QStringLiteral("output unread"));
+    const auto *node = nodeItem(scene, QStringLiteral("blur"));
+    REQUIRE(node != nullptr);
+    scene.setPlanNodeTimes({{"blur", 0.0213}, {"present", 0.5}});
+    CHECK(band() == QStringLiteral("output unread \u00b7 0.02 ms"));
+    // In place: the node is the one that was drawn.
+    CHECK(nodeItem(scene, QStringLiteral("blur")) == node);
+    scene.setPlanNodeTimes({});
+    CHECK(band() == QStringLiteral("output unread"));
+}
+
 TEST_CASE("The graph canvas lays every edge out left to right",
           "[devstudio][graph-canvas][scene]") {
     (void)application();

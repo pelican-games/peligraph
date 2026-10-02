@@ -5695,9 +5695,18 @@ void GraphCanvasModel::readPlanLayers(const Json &plan) {
             }
     if (const auto *diagnostics = array(plan, "diagnostics"))
         for (const auto &diagnostic : *diagnostics)
-            if (diagnostic.is_object())
+            if (diagnostic.is_object()) {
                 plan_diagnostics_.push_back({text(diagnostic, "kind"), text(diagnostic, "subject"),
                                              text(diagnostic, "detail")});
+                // UX-6b: PO-1's details are objects.
+                if (const auto detail = diagnostic.find("detail");
+                    detail != diagnostic.end() && detail->is_object()) {
+                    plan_diagnostics_.back().resource = text(*detail, "resource");
+                    if (const auto binding = detail->find("binding");
+                        binding != detail->end() && binding->is_number_unsigned())
+                        plan_diagnostics_.back().binding = binding->get<std::size_t>();
+                }
+            }
     if (const auto *deactivated = array(plan, "deactivated_graph_nodes"))
         for (const auto &node : *deactivated)
             if (node.is_object() && !text(node, "node").empty())
@@ -5862,6 +5871,41 @@ std::string GraphCanvasModel::layerBand(std::string_view canvas_node) const {
     std::string band;
     for (const auto &part : parts) band += (band.empty() ? std::string{} : std::string{kDot}) + part;
     return band;
+}
+
+bool GraphCanvasModel::nodeNoteDiagnostic(const GraphCanvasPlanDiagnostic &diagnostic) {
+    return diagnostic.kind == "unread_output" || diagnostic.kind == "unused_binding";
+}
+
+std::vector<GraphCanvasPlanNote> GraphCanvasModel::planNotes(std::string_view canvas_node) const {
+    std::vector<GraphCanvasPlanNote> notes;
+    if (!layersShown()) return notes;
+    const auto nodes = planNodesOf(canvas_node);
+    for (const auto &diagnostic : plan_diagnostics_) {
+        if (!nodeNoteDiagnostic(diagnostic) || !listed(nodes, diagnostic.subject)) continue;
+        // A loop's copies name their own resources ("loop/2/..."); the note
+        // is about the node, said once.
+        auto resource = diagnostic.resource;
+        if (const auto *pass = planPass(diagnostic.subject); pass != nullptr && !pass->loop.empty()) {
+            const auto prefix = pass->loop + "/" + std::to_string(pass->loop_element) + "/";
+            if (resource.starts_with(prefix)) resource = resource.substr(prefix.size());
+        }
+        GraphCanvasPlanNote note;
+        if (diagnostic.kind == "unread_output") {
+            note.band = "output unread";
+            note.sentence = resource +
+                            " is written but nothing reads it this frame \xE2\x80\x94 the pass may "
+                            "be removable";
+        } else {
+            const auto binding = diagnostic.binding ? std::to_string(*diagnostic.binding)
+                                                    : std::string{"?"};
+            note.band = "binding " + binding + " unused";
+            note.sentence = "binding " + binding + " (" + resource +
+                            ") is declared but the shader never reads it";
+        }
+        if (std::ranges::find(notes, note) == notes.end()) notes.push_back(std::move(note));
+    }
+    return notes;
 }
 
 std::vector<GraphCanvasLayerRow> GraphCanvasModel::layerRows(std::string_view canvas_node) const {

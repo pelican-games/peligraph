@@ -173,6 +173,10 @@ class FramePlanWidget final : public QWidget {
     using DropTransferSourceAction = std::function<bool(
         const QString &resource, const std::optional<FramePlanLoopOrigin> &origin)>;
     void setDropTransferSourceAction(DropTransferSourceAction action);
+    // UX-6b, decisions 1 and 3: beside the status line, the frame's GPU time
+    // and the plan's size, and what the last edit moved (the window's
+    // PlanPerfHub reads them). The labels stay, empty or not.
+    void setPerfLines(const QString &summary, const QString &delta);
     // VI-3b. Fix sockets on one pass, as the band's Fix button does: the
     // variadic group of its shader becomes one fixed declaration per
     // connected input (engine://passthrough is copied into the project

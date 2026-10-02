@@ -82,6 +82,8 @@ namespace {
 
 constexpr auto ToolTabIdProperty = "pelicanToolTabId";
 constexpr int GpuTimingPollIntervalMs = 1000;
+// UX-6b, decision 2: under this zoom a node's GPU time is its tooltip.
+constexpr qreal GpuTimingReadableScale = 0.6;
 
 std::size_t gpuTimingCount(const QJsonObject &object,
                            const QString &field) {
@@ -392,6 +394,10 @@ struct FramePlanWidget::Impl {
     QSpinBox *depth = nullptr;
     QLabel *zoom_status = nullptr;
     QTimer *gpu_timing_poll = nullptr;
+    // UX-6b, decisions 1 and 3: the frame's GPU time and the plan's size on
+    // the status row, and what the last edit moved beside it.
+    QLabel *perf_summary = nullptr;
+    QLabel *perf_delta = nullptr;
     QTabWidget *tabs = nullptr;
     QSplitter *logical_splitter = nullptr;
     FramePlanGraphicsView *logical = nullptr;
@@ -739,6 +745,25 @@ struct FramePlanWidget::Impl {
         auto *status_row = new QHBoxLayout;
         status_row->setContentsMargins(0, 0, 0, 0);
         status_row->addWidget(status, 1);
+        perf_summary = new QLabel(&owner);
+        perf_summary->setObjectName(QStringLiteral("pelican.framePlanPerf"));
+        perf_summary->setFont(studioSmallFont());
+        perf_summary->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        perf_summary->setToolTip(owner.tr(
+            "The frame's GPU time (get_status, the average over the engine's window) and the "
+            "frame plan's passes, barriers and alias groups"));
+        status_row->addWidget(perf_summary);
+        perf_delta = new QLabel(&owner);
+        perf_delta->setObjectName(QStringLiteral("pelican.framePlanPerfDelta"));
+        perf_delta->setFont(studioSmallFont());
+        perf_delta->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        perf_delta->setToolTip(owner.tr(
+            "The last edit: the plan and the GPU time of the generation before it and of the one "
+            "it made"));
+        // Cut rather than widening the panel; the whole line is its tooltip.
+        perf_delta->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        perf_delta->setMinimumWidth(120);
+        status_row->addWidget(perf_delta, 1);
         reload_authoring = new QPushButton(owner.tr("Reload"), &owner);
         reload_authoring->setObjectName(
             QStringLiteral("pelican.framePlan.reloadAuthoring"));
@@ -1139,6 +1164,9 @@ struct FramePlanWidget::Impl {
                          });
         logical->setZoomObserver(
             [this](qreal scale, const QString &boundary) {
+                // UX-6b, decision 2: too small to read, the time is the
+                // node's tooltip instead.
+                logical_scene->setGpuTimingCompact(scale < GpuTimingReadableScale);
                 zoom_status->setText(
                     boundary.isEmpty()
                         ? owner.tr("Zoom: %1%").arg(qRound(scale * 100.0))
@@ -3525,6 +3553,9 @@ struct FramePlanWidget::Impl {
                 .arg(text(model->graph),
                      logical_scene->property("pelicanCurrentGroupScope")
                          .toString()));
+        // UX-6b, decision 2: the new nodes' times follow the zoom too.
+        logical_scene->setGpuTimingCompact(logical->transform().m11() <
+                                           GpuTimingReadableScale);
         populateLogicalDetails();
         populatePasses();
         populateResources();
@@ -4553,6 +4584,12 @@ void FramePlanWidget::setExtraShaderSources(NodeShaderSources sources) {
 
 void FramePlanWidget::setShadersReloadedAction(std::function<void()> reloaded) {
     impl_->shaders_reloaded_action = std::move(reloaded);
+}
+
+void FramePlanWidget::setPerfLines(const QString &summary, const QString &delta) {
+    impl_->perf_summary->setText(summary);
+    impl_->perf_delta->setText(delta);
+    if (!delta.isEmpty()) impl_->perf_delta->setToolTip(delta);
 }
 
 void FramePlanWidget::setDropTransferSourceAction(DropTransferSourceAction action) {

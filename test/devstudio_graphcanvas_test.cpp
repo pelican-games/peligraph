@@ -3114,6 +3114,50 @@ TEST_CASE("GL-2b the plan's origin says which graph node made a pass; bands, Lay
           GraphCanvasPlanTarget{"loop", "depth", "", "", "cascades", 2, false});
 }
 
+// UX-6b, decision 4 (engine PO-1): an output nothing reads and a binding the
+// shader never reads are said on the node that made the pass -- the band's
+// words and one sentence each, once for all of a loop's copies.
+TEST_CASE("UX-6b unread outputs and unused bindings are said on the graph node that made the pass",
+          "[studio][graph-canvas][ux6b]") {
+    using PelicanStudio::GraphCanvasPlanNote;
+    Harness h;
+    h.open(gl2bDocument());
+    auto plan = gl2bPlan();
+    plan["diagnostics"].push_back(
+        {{"kind", "unread_output"}, {"subject", "tint"}, {"detail", {{"resource", "tint_image"}}}});
+    for (const char *copy : {"cascades/0/depth", "cascades/1/depth"}) {
+        const std::string resource = std::string{copy}.substr(0, 11) + "shadow_scratch";
+        plan["diagnostics"].push_back({{"kind", "unused_binding"},
+                                       {"subject", copy},
+                                       {"detail", {{"binding", 2}, {"resource", resource}}}});
+    }
+    h.reply(h.take("get_frame_plan"), plan);
+    auto &model = h.model;
+    for (const auto &domain : GraphCanvasModel::domainNames())
+        model.setDomainShown(domain, domain == "render");
+    REQUIRE(model.layersShown());
+    CHECK(model.planNotes("tint") ==
+          std::vector<GraphCanvasPlanNote>{
+              {"output unread", "tint_image is written but nothing reads it this frame "
+                                "\xE2\x80\x94 the pass may be removable"}});
+    CHECK(model.planNotes("cascades") ==
+          std::vector<GraphCanvasPlanNote>{
+              {"binding 2 unused",
+               "binding 2 (shadow_scratch) is declared but the shader never reads it"}});
+    CHECK(model.planNotes("left").empty());
+    // They stay out of the diagnostics line; the others are still there.
+    const auto &diagnostics = model.planDiagnostics();
+    CHECK(std::ranges::count_if(diagnostics, GraphCanvasModel::nodeNoteDiagnostic) == 3);
+    CHECK(std::ranges::count_if(diagnostics, [](const auto &diagnostic) {
+              return !GraphCanvasModel::nodeNoteDiagnostic(diagnostic);
+          }) == 2);
+    // The GL-2b band is not changed by them; the canvas adds the words.
+    CHECK(model.layerBand("tint") == "1 barrier \xC2\xB7 aliased");
+    // Two domains: no bands, no notes.
+    model.setDomainShown("value", true);
+    CHECK(model.planNotes("tint").empty());
+}
+
 // --- GL-1f (engine RS-4): a material pass, a shadow_depth and a
 // snapshot_copy hand on the images they wrote as output ports of their input
 // sockets' names, typed as the image on that socket (decision 1). A line from

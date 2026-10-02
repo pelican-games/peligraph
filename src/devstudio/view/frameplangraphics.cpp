@@ -1372,6 +1372,22 @@ void applyGpuTimingLabel(QGraphicsSimpleTextItem &label,
     label.setText(text);
     label.setToolTip(text);
     label.setPos(position);
+    // UX-6b, decision 2: the node's tooltip says it too, so a zoom too small
+    // to read the label still has the time under the pointer. The line goes
+    // before a shader mark's, which F-3 cuts off and puts back.
+    if (QGraphicsItem *node = label.parentItem(); node != nullptr) {
+        const QString shader_line = QStringLiteral("\nShader: ");
+        const QString tooltip = node->toolTip();
+        const qsizetype shader = tooltip.indexOf(shader_line);
+        QString head = shader < 0 ? tooltip : tooltip.left(shader);
+        const QString tail = shader < 0 ? QString{} : tooltip.mid(shader);
+        const QString gpu_line = QStringLiteral("\nGPU: ");
+        if (const qsizetype at = head.indexOf(gpu_line); at >= 0) {
+            const qsizetype end = head.indexOf(QLatin1Char('\n'), at + 1);
+            head.remove(at, end < 0 ? head.size() - at : end - at);
+        }
+        node->setToolTip(head + gpu_line + text + tail);
+    }
 }
 
 // The node the user reads: a heading band carrying the pass name and its kind,
@@ -2369,6 +2385,14 @@ void FramePlanGraphicsScene::setGpuTiming(
                             node_name.toString().toStdString(),
                             label->pos());
     }
+}
+
+void FramePlanGraphicsScene::setGpuTimingCompact(bool compact) {
+    gpu_timing_compact_ = compact;
+    setProperty("pelicanGpuTimingCompact", compact);
+    for (QGraphicsItem *item : items())
+        if (item->data(FramePlanGpuTimingNodeNameRole).isValid())
+            item->setVisible(!compact);
 }
 
 void FramePlanGraphicsScene::setShaderErrorMarks(
