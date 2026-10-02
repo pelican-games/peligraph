@@ -5,8 +5,10 @@
 #include <QDialog>
 #include <QWidget>
 
+#include <deque>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -31,6 +33,43 @@ class FullscreenPassInterfaceRow;
 class RasterStateForm;
 class ShaderDefinesForm;
 
+// UX-9, decision 2: the edits a node's side fields could not send because
+// the model was busy -- a save or a read in flight, a placement's say --
+// held for the node they were given for and sent, oldest first, once the
+// model takes edits again. The fields may have let go of that node by then:
+// each held edit is a call naming its own scope and node, answering whether
+// it went. Meanwhile the Graph's notice says "Saving the graph change...".
+class GraphCanvasHeldEdits {
+  public:
+    GraphCanvasHeldEdits(GraphCanvasModel &model, QObject *owner);
+    // Sent now when the model takes edits and nothing is held before it;
+    // held otherwise. False only when it was tried and refused (nothing
+    // changed, or the model turned it down).
+    bool sendOrHold(std::function<bool()> send);
+    [[nodiscard]] bool pending() const noexcept { return !held_.empty(); }
+    // A held edit went: the owner dispatches it.
+    void setSent(std::function<void()> sent) { sent_ = std::move(sent); }
+    // What is held changed: the owner's notice follows.
+    void setChanged(std::function<void()> changed) { changed_ = std::move(changed); }
+    // Sends what it holds while the model takes edits (also on its clock).
+    void follow();
+
+  private:
+    GraphCanvasModel &model_;
+    QTimer *timer_ = nullptr;
+    std::deque<std::function<bool()>> held_;
+    std::function<void()> sent_;
+    std::function<void()> changed_;
+};
+
+// The whole-parameters edit of one node, made on what the document holds
+// when it goes: what changed from `base` to `changed` (as a JSON patch), so
+// an edit that landed on another key meanwhile is kept. Refused when the
+// patch no longer applies or changes nothing.
+[[nodiscard]] std::function<bool()> heldParametersEdit(GraphCanvasModel &model, std::string scope,
+                                                       std::string node, nlohmann::json base,
+                                                       nlohmann::json changed);
+
 // UX-2, decision 1: the fields of the selected render.image, beside the Graph
 // tab's canvas above the details (as the Loop, Draw and View fields). Every
 // value is picked, none typed as JSON:
@@ -52,8 +91,18 @@ class GraphCanvasImageFields final : public QWidget {
     void showNode(const GraphCanvasNode *node, const std::string &scope);
     // Off while the model cannot take an edit, as the Draw fields (Q-18).
     void followEditable();
+    // UX-9, decision 2: whether a value given while the model was busy waits
+    // to be sent (the owner's notice says "Saving" meanwhile), and the call
+    // made when that changes.
+    [[nodiscard]] bool valuePending() const noexcept { return held_->pending(); }
+    void setPendingChanged(std::function<void()> changed) { held_->setChanged(std::move(changed)); }
 
   private:
+    // UX-9, decision 2: before the fields let go of the node, a size, a
+    // layer or mip count, an expression, a format or usage typed and not yet
+    // confirmed is sent for it (or held while the model is busy).
+    void release();
+    std::unique_ptr<GraphCanvasHeldEdits> held_;
     void load(const nlohmann::json &parameters);
     void loadArguments(const nlohmann::json &parameters);
     void loadUsage(const nlohmann::json &parameters);
@@ -231,19 +280,29 @@ class GraphCanvasPassFields final : public QWidget {
     // back to the document's value under the hand that typed it.
     std::function<void()> retry_;
     QTimer *retry_timer_ = nullptr;
-    bool deferWhileBusy(std::function<void()> again);
+    // `held`: the same edit naming this pass, sent in place of `again` while
+    // the fields are letting go of the pass (UX-9, decision 2).
+    bool deferWhileBusy(std::function<void()> again, std::function<bool()> held = {});
     void retryWhenEditable();
     // A count typed into a draw spin and not yet confirmed (no Return, no
     // focus out) is confirmed before the fields let go of the pass: a redraw
     // that shows no node for a moment hides them, and the hidden spin's
-    // focus out found no pass to send it to.
-    void flushDraw();
+    // focus out found no pass to send it to. UX-9, decision 2: and so are a
+    // define's cell being typed in and a clear colour waiting for its pause;
+    // a value already waiting for the model goes for this pass too, held for
+    // it while the model is busy.
+    void release();
+    void flushTyped();
+    bool releasing_ = false;
+    std::unique_ptr<GraphCanvasHeldEdits> held_;
     std::function<void()> pending_changed_;
 
   public:
     // Whether a value given while the model was busy waits to be sent; the
     // owner's notice says "Saving" meanwhile, not the last save's words.
-    [[nodiscard]] bool valuePending() const noexcept { return static_cast<bool>(retry_); }
+    [[nodiscard]] bool valuePending() const noexcept {
+        return static_cast<bool>(retry_) || held_->pending();
+    }
     // Called when that changes.
     void setPendingChanged(std::function<void()> changed) {
         pending_changed_ = std::move(changed);
@@ -265,10 +324,15 @@ class GraphCanvasPlaceFields final : public QWidget {
     // "before|<pass>", "after|<pass>", "anchor|<anchor>", "automatic|": the
     // data a Place item carries.
     [[nodiscard]] static QString placeData(const GraphCanvasPlace &place);
+    // UX-9, decision 2: a pick made while the model was busy waits for it,
+    // for this node (the owner's notice says "Saving" meanwhile).
+    [[nodiscard]] bool valuePending() const noexcept { return held_->pending(); }
+    void setPendingChanged(std::function<void()> changed) { held_->setChanged(std::move(changed)); }
 
   private:
     void load();
     void commit();
+    std::unique_ptr<GraphCanvasHeldEdits> held_;
 
     GraphCanvasModel &model_;
     std::function<void()> submitted_;

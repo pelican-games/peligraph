@@ -269,6 +269,14 @@ struct GraphCanvasLayout {
 GraphCanvasLayout graphCanvasLayoutFromJson(const nlohmann::json &layout);
 nlohmann::json graphCanvasLayoutToJson(const GraphCanvasLayout &layout);
 
+// UX-9, decision 4 (engine CT-1): what get_status.audio.voices says of each
+// audio.playback, by node id, as its band says it: `playing · 1.2 s`,
+// `paused · 1.2 s`, and `idle` in a play session. Outside one (the edit
+// state, or a status with no play member) every voice is idle and none is
+// named. Empty for a status with no voices.
+[[nodiscard]] std::map<std::string, std::string, std::less<>> graphCanvasVoiceBands(
+    const nlohmann::json &status);
+
 const NodeGraphKinds &graphCanvasKinds();
 
 // What the socket resolver is told about one port's type, read off the
@@ -300,8 +308,12 @@ class GraphCanvasScene final : public QGraphicsScene {
     // by plan node name). A root node's band says the sum of its passes';
     // the bands on screen change in place, nothing else is drawn again.
     void setPlanNodeTimes(std::map<std::string, double, std::less<>> times);
+    // UX-9, decision 4 (engine CT-1): each audio.playback's voice as the band
+    // under it says it (`playing · 1.2 s`), by root node id
+    // (graphCanvasVoiceBands); changed in place as the plan times are.
+    void setVoiceBands(std::map<std::string, std::string, std::less<>> bands);
     // GL-2b's band under a root node, with UX-6b's words after it: what the
-    // plan says its passes do for nothing, then its GPU time.
+    // plan says its passes do for nothing, then its GPU time; a voice's state.
     [[nodiscard]] QString layerBandText(const std::string &id) const;
 
     // The scene changed which scope is shown (a double-click descended into a
@@ -767,6 +779,10 @@ class GraphCanvasScene final : public QGraphicsScene {
     std::uint64_t rebuild_generation_ = 0;
     // UX-6b, decision 2.
     std::map<std::string, double, std::less<>> plan_node_times_;
+    std::map<std::string, std::string, std::less<>> voice_bands_;
+    // The bands on screen take their words again where they stand; a root
+    // node that had none gets one.
+    void refreshLayerBands();
     // The theme table's registration, dropped in the destructor: a listener
     // that outlived its scene would repopulate a deleted one.
     int theme_listener_ = 0;
@@ -999,6 +1015,10 @@ class GraphCanvasWidget final : public QWidget {
     // the bands. The window's PlanPerfHub reads them; the tab reads nothing.
     void setPerfLines(const QString &summary, const QString &delta);
     void setPlanNodeTimes(std::map<std::string, double, std::less<>> times);
+    // UX-9, decision 4: a get_status result, whoever asked for it (the
+    // viewport's one parse, UX-7 decision 10): its audio.voices go on the
+    // bands of the audio.playback nodes.
+    void observeStatus(const nlohmann::json &status);
 
     GraphCanvasModel &model();
     GraphCanvasScene &scene();

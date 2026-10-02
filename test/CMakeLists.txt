@@ -515,6 +515,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     PELICAN_WP298_PLAYER="$<TARGET_FILE:pelican_player>"
     PELICAN_WP298_EXAMPLE_PROJECT="${pelican_wp298_example_project}"
     PELICAN_WP351B_LIVE_CHILD="$<TARGET_FILE:pelican_test_wp351b_live_child>"
+    # UX-9, decision 5: the project a broken buffer port is written into.
+    PELICAN_UX9_FIXTURE_PROJECT="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_automation_graph"
   )
   add_dependencies(pelican_test_devstudio_engine_failure_test
     pelican_player

@@ -1338,6 +1338,45 @@ void addLoopElementBands(QGraphicsScene &scene, const GraphCanvasModel &model,
 
 } // namespace
 
+namespace {
+// " · " between the state and the position.
+constexpr std::string_view kVoiceBandDot = " \xC2\xB7 ";
+} // namespace
+
+std::map<std::string, std::string, std::less<>> graphCanvasVoiceBands(const nlohmann::json &status) {
+    std::map<std::string, std::string, std::less<>> bands;
+    if (!status.is_object()) return bands;
+    const auto audio = status.find("audio");
+    if (audio == status.end() || !audio->is_object()) return bands;
+    const auto voices = audio->find("voices");
+    if (voices == audio->end() || !voices->is_array()) return bands;
+    // The engine's play state: outside a session nothing plays, and an idle
+    // voice there is not news.
+    std::string play_state = "edit";
+    if (const auto play = status.find("play"); play != status.end() && play->is_object())
+        if (const auto state = play->find("state"); state != play->end() && state->is_string())
+            play_state = state->get<std::string>();
+    for (const auto &voice : *voices) {
+        if (!voice.is_object()) continue;
+        const auto node = voice.find("node");
+        const auto state = voice.find("state");
+        if (node == voice.end() || !node->is_string() || state == voice.end() ||
+            !state->is_string())
+            continue;
+        const auto name = state->get<std::string>();
+        if (name == "idle") {
+            if (play_state != "edit") bands[node->get<std::string>()] = "idle";
+            continue;
+        }
+        const auto position = voice.find("position_seconds");
+        const double seconds =
+            position != voice.end() && position->is_number() ? position->get<double>() : 0.0;
+        bands[node->get<std::string>()] = name + std::string{kVoiceBandDot} +
+                                          QString::number(seconds, 'f', 1).toStdString() + " s";
+    }
+    return bands;
+}
+
 QString GraphCanvasScene::layerBandText(const std::string &id) const {
     if (model_ == nullptr) return {};
     QStringList parts;
@@ -1356,12 +1395,25 @@ QString GraphCanvasScene::layerBandText(const std::string &id) const {
             }
         if (timed) parts.push_back(qtext(PlanPerfModel::milliseconds(total)));
     }
+    // UX-9, decision 4: an audio.playback's voice.
+    if (const auto voice = voice_bands_.find(id); voice != voice_bands_.end())
+        parts.push_back(qtext(voice->second));
     return parts.join(QStringLiteral(" \u00b7 "));
 }
 
 void GraphCanvasScene::setPlanNodeTimes(std::map<std::string, double, std::less<>> times) {
     if (times == plan_node_times_) return;
     plan_node_times_ = std::move(times);
+    refreshLayerBands();
+}
+
+void GraphCanvasScene::setVoiceBands(std::map<std::string, std::string, std::less<>> bands) {
+    if (bands == voice_bands_) return;
+    voice_bands_ = std::move(bands);
+    refreshLayerBands();
+}
+
+void GraphCanvasScene::refreshLayerBands() {
     if (model_ == nullptr || !model_->currentScope().empty() || model_->foldedView()) return;
     // The bands on screen take the new words where they stand; a root node
     // that had none gets one. Nothing else is drawn again, so a drag or an
@@ -3776,6 +3828,13 @@ bool GraphCanvasScene::commitInlineEdit() {
     case ValueEditorKind::choice:
         return false;
     }
+    // UX-9, decision 1: the value the document holds sends nothing, as a
+    // choice's does. An editor a click on a pill opened commits as it loses
+    // the keyboard -- to the Add button, say -- and an edit of nothing then
+    // held the model busy just as the palette asked whether it could edit.
+    if (const auto stored = model_->nodeParameters(scope, node);
+        stored.is_object() && stored.contains(port) && stored.at(port) == value)
+        return false;
     const bool submitted = model_->setNodeParameter(scope, node, port, value);
     afterEdit(submitted);
     return submitted;
@@ -4741,6 +4800,18 @@ struct GraphCanvasWidget::Impl {
         std::chrono::steady_clock::time_point deadline;
     };
     std::optional<PendingComputePlacement> pending_compute_placement;
+    // UX-9, decisions 1 and 3: what the palette chose, read as it closed --
+    // the op, the scope it goes into, its definition (a material pass's
+    // contract; a new body's name when new_body) and what was picked beside
+    // it -- added once the model takes edits.
+    struct PaletteChoice {
+        std::string scope;
+        std::string op;
+        std::string definition;
+        bool new_body = false;
+        nlohmann::json seed = nlohmann::json::object();
+    };
+    std::optional<PaletteChoice> pending_palette_choice;
     QTreeWidget *details = nullptr;
     // UX-2, decision 5: the parameter row of the details whose value is
     // being typed as JSON, and the node it belongs to. A redraw waits for it,
@@ -5402,7 +5473,15 @@ struct GraphCanvasWidget::Impl {
         side_layout->addWidget(draw_fields);
         view_fields = new GraphCanvasViewFields(model, [this] { dispatch(); }, side);
         side_layout->addWidget(view_fields);
-        image_fields = new GraphCanvasImageFields(model, [this] { dispatch(); }, side);
+        // UX-9, decision 2: the image's, place's and value fields say
+        // "Saving the graph change..." the moment a value is confirmed too,
+        // and while one waits for a save in flight.
+        const auto sent = [this] {
+            dispatch();
+            showNotice();
+        };
+        image_fields = new GraphCanvasImageFields(model, sent, side);
+        image_fields->setPendingChanged([this] { showNotice(); });
         side_layout->addWidget(image_fields);
         // UX-5d's "Saving" the moment a value is confirmed in the Pass
         // fields too (a draw count, a define), and while one waits for the
@@ -5420,9 +5499,11 @@ struct GraphCanvasWidget::Impl {
         side_layout->addWidget(pass_fields);
         compute_fields = new GraphCanvasComputeFields(model, [this] { dispatch(); }, side);
         side_layout->addWidget(compute_fields);
-        place_fields = new GraphCanvasPlaceFields(model, [this] { dispatch(); }, side);
+        place_fields = new GraphCanvasPlaceFields(model, sent, side);
+        place_fields->setPendingChanged([this] { showNotice(); });
         side_layout->addWidget(place_fields);
-        value_fields = new GraphCanvasValueFields(model, [this] { dispatch(); }, side);
+        value_fields = new GraphCanvasValueFields(model, sent, side);
+        value_fields->setPendingChanged([this] { showNotice(); });
         side_layout->addWidget(value_fields);
         details = new QTreeWidget(side);
         details->setObjectName(QStringLiteral("pelican.graphCanvasDetails"));
@@ -6782,6 +6863,9 @@ struct GraphCanvasWidget::Impl {
     // UX-8, decision 11: the views (by viewKey) last drawn with no node.
     std::set<std::string> empty_views;
     void fitScopeGainingNodes() {
+        // Only a definition's body: the root is drawn empty before the project
+        // is read, and opens at its own scale (graph_canvas_zoom_pan).
+        if (model.currentScope().empty()) return;
         const auto key = model.viewKey();
         const auto scope = qtext(model.currentScope());
         const bool holds = std::ranges::any_of(scene->items(), [&](const QGraphicsItem *item) {
@@ -6933,16 +7017,23 @@ struct GraphCanvasWidget::Impl {
 
     // The "Add node..." palette: the catalog, narrowed by domain and by what
     // the user types, and an instance also needs the definition it stands on.
+    // UX-9, decision 3: it is opened window-modal (open(), not exec()) and
+    // what it chose is added once it has closed, from the event loop -- no
+    // event loop of its own sits under the key or the click that closed it,
+    // so whatever comes next (a scenario's wait) is not run inside it.
     void openPalette() {
         // LP-4d1: the scope the addition goes into -- a zone's body when the
         // menu was opened inside it, or when the zone is picked.
         const std::string scope = scene->addScope();
-        // The menu's scope is this palette's only, however it closes.
-        struct PaletteScope {
-            GraphCanvasScene *scene;
-            ~PaletteScope() { scene->clearPaletteScope(); }
-        } palette_scope{scene};
-        if (!model.canEdit()) return;
+        // UX-9, decision 1: a save in flight (a placement, an edit an
+        // editor sent as it lost the keyboard to this very click) does not
+        // keep the palette shut: what is picked is added once the save has
+        // landed (followPaletteChoice). Only a document there is no reading
+        // of yet can take nothing.
+        if (!model.connected() || model.digest().empty()) {
+            scene->clearPaletteScope();
+            return;
+        }
         // A new ui.* sink is seeded with a node the UI document has.
         reloadUiNodes();
         // A new audio.playback, with a sound the project has.
@@ -6955,26 +7046,27 @@ struct GraphCanvasWidget::Impl {
         refreshComputeShaderChoices();
         model.askRenderTargetVocabulary();
         dispatch();
-        QDialog dialog{&view};
-        dialog.setObjectName(QStringLiteral("pelican.graphCanvasPalette"));
-        dialog.setWindowTitle(QObject::tr("Add node"));
-        auto *layout = new QVBoxLayout(&dialog);
+        auto *dialog = new QDialog{&view};
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setObjectName(QStringLiteral("pelican.graphCanvasPalette"));
+        dialog->setWindowTitle(QObject::tr("Add node"));
+        auto *layout = new QVBoxLayout(dialog);
         auto *filters = new QHBoxLayout;
-        auto *domains = new QComboBox(&dialog);
+        auto *domains = new QComboBox(dialog);
         domains->setObjectName(QStringLiteral("pelican.graphCanvasPaletteDomain"));
         domains->addItem(QObject::tr("all domains"), QString{});
         for (const auto &domain : model.paletteDomainsIn(scope))
             domains->addItem(qtext(domain), qtext(domain));
         filters->addWidget(domains);
-        auto *search = new QLineEdit(&dialog);
+        auto *search = new QLineEdit(dialog);
         search->setObjectName(QStringLiteral("pelican.graphCanvasPaletteFilter"));
         search->setPlaceholderText(QObject::tr("filter by name"));
         filters->addWidget(search, 1);
         layout->addLayout(filters);
-        auto *list = new QListWidget(&dialog);
+        auto *list = new QListWidget(dialog);
         list->setObjectName(QStringLiteral("pelican.graphCanvasPaletteList"));
         layout->addWidget(list, 1);
-        auto *definitions = new QComboBox(&dialog);
+        auto *definitions = new QComboBox(dialog);
         definitions->setObjectName(
             QStringLiteral("pelican.graphCanvasPaletteDefinition"));
         for (const auto &scope : model.scopes())
@@ -6983,14 +7075,14 @@ struct GraphCanvasWidget::Impl {
         layout->addWidget(definitions);
         // LP-4c: a loop's body can be a new definition, whose name is
         // proposed and can be changed before it exists.
-        auto *new_name = new QLineEdit(qtext(model.suggestDefinitionName()), &dialog);
+        auto *new_name = new QLineEdit(qtext(model.suggestDefinitionName()), dialog);
         new_name->setObjectName(QStringLiteral("pelican.graphCanvasPaletteNewDefinition"));
         new_name->setToolTip(QObject::tr("The name of the new, empty body definition"));
         new_name->hide();
         layout->addWidget(new_name);
         // LP-4e: a material pass arrives with the contract picked here, which
         // decides its sockets.
-        auto *contracts = new QComboBox(&dialog);
+        auto *contracts = new QComboBox(dialog);
         contracts->setObjectName(QStringLiteral("pelican.graphCanvasPaletteContract"));
         for (const auto &contract : GraphCanvasModel::materialPassContracts())
             contracts->addItem(qtext(contract), qtext(contract));
@@ -7000,13 +7092,13 @@ struct GraphCanvasWidget::Impl {
         // UX-3, decision 1: what the other render nodes arrive with, picked
         // here -- a reference's target, a copy's pass, a buffer's element,
         // an attribute's domain and either one's count.
-        auto *targets = new QComboBox(&dialog);
+        auto *targets = new QComboBox(dialog);
         targets->setObjectName(QStringLiteral("pelican.graphCanvasPaletteTarget"));
         targets->setToolTip(QObject::tr("The declared render target the reference reads; its "
                                         "image type follows the declaration"));
         targets->hide();
         layout->addWidget(targets);
-        auto *snapshot_after = new QComboBox(&dialog);
+        auto *snapshot_after = new QComboBox(dialog);
         snapshot_after->setObjectName(QStringLiteral("pelican.graphCanvasPaletteSnapshotAfter"));
         snapshot_after->setToolTip(QObject::tr("The pass the copy is taken after; it copies "
                                                "what that pass wrote"));
@@ -7014,14 +7106,14 @@ struct GraphCanvasWidget::Impl {
         layout->addWidget(snapshot_after);
         // UX-5d, decision 2: what a compute task runs -- a compute shader of
         // the project's, or one of the engine's ray tracing pipelines.
-        auto *compute_shader = new QComboBox(&dialog);
+        auto *compute_shader = new QComboBox(dialog);
         compute_shader->setObjectName(QStringLiteral("pelican.graphCanvasPaletteComputeShader"));
         compute_shader->setToolTip(QObject::tr("The project's compute shaders, and the engine's "
                                                "ray tracing pipelines (raygen, miss and "
                                                "closesthit), whose ports the task arrives with"));
         compute_shader->hide();
         layout->addWidget(compute_shader);
-        auto *buffer_row = new QWidget(&dialog);
+        auto *buffer_row = new QWidget(dialog);
         auto *buffer_layout = new QHBoxLayout(buffer_row);
         buffer_layout->setContentsMargins(0, 0, 0, 0);
         auto *element = new QComboBox(buffer_row);
@@ -7047,7 +7139,7 @@ struct GraphCanvasWidget::Impl {
         buffer_layout->addWidget(count, 1);
         buffer_row->hide();
         layout->addWidget(buffer_row);
-        auto *seed_note = new QLabel(&dialog);
+        auto *seed_note = new QLabel(dialog);
         seed_note->setObjectName(QStringLiteral("pelican.graphCanvasPaletteNote"));
         seed_note->setWordWrap(true);
         seed_note->setFont(studioSmallFont());
@@ -7056,12 +7148,14 @@ struct GraphCanvasWidget::Impl {
         const QString new_definition_data = QStringLiteral("\x1f" "new");
         auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok |
                                                  QDialogButtonBox::Cancel,
-                                             &dialog);
+                                             dialog);
         layout->addWidget(buttons);
-        QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-        QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        QObject::connect(buttons, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
+        QObject::connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
 
-        const auto reload = [&] {
+        // The widgets are the dialog's children: the lambdas hold them by
+        // pointer, and go with the dialog.
+        const auto reload = [this, list, search, domains, scope] {
             list->clear();
             for (const auto &entry : model.paletteOperationsIn(
                      scope, search->text().toStdString(),
@@ -7076,7 +7170,10 @@ struct GraphCanvasWidget::Impl {
             }
             if (list->count() > 0) list->setCurrentRow(0);
         };
-        const auto syncDefinition = [&] {
+        const auto syncDefinition = [this, list, definitions, new_definition_data, new_name,
+                                     contracts, targets, snapshot_after, compute_shader,
+                                     buffer_row, attribute_domain, element, seed_note,
+                                     buttons] {
             auto *row = list->currentItem();
             const auto op = row != nullptr ? row->data(Qt::UserRole).toString() : QString{};
             const bool loop = op == QLatin1String{"graph.loop"};
@@ -7175,96 +7272,178 @@ struct GraphCanvasWidget::Impl {
             seed_note->setVisible(!note.isEmpty());
             if (auto *ok = buttons->button(QDialogButtonBox::Ok)) ok->setEnabled(ready);
         };
-        QObject::connect(attribute_domain, &QComboBox::currentIndexChanged, &dialog,
-                         [&] { syncDefinition(); });
-        QObject::connect(definitions, &QComboBox::currentIndexChanged, &dialog,
-                         [&] { syncDefinition(); });
-        QObject::connect(search, &QLineEdit::textChanged, &dialog, [&] {
+        QObject::connect(attribute_domain, &QComboBox::currentIndexChanged, dialog,
+                         [syncDefinition] { syncDefinition(); });
+        QObject::connect(definitions, &QComboBox::currentIndexChanged, dialog,
+                         [syncDefinition] { syncDefinition(); });
+        QObject::connect(search, &QLineEdit::textChanged, dialog, [reload, syncDefinition] {
             reload();
             syncDefinition();
         });
-        QObject::connect(domains, &QComboBox::currentIndexChanged, &dialog, [&] {
-            reload();
-            syncDefinition();
-        });
-        QObject::connect(list, &QListWidget::currentRowChanged, &dialog,
-                         [&] { syncDefinition(); });
-        QObject::connect(list, &QListWidget::itemDoubleClicked, &dialog,
-                         &QDialog::accept);
+        QObject::connect(domains, &QComboBox::currentIndexChanged, dialog,
+                         [reload, syncDefinition] {
+                             reload();
+                             syncDefinition();
+                         });
+        QObject::connect(list, &QListWidget::currentRowChanged, dialog,
+                         [syncDefinition] { syncDefinition(); });
+        QObject::connect(list, &QListWidget::itemDoubleClicked, dialog, &QDialog::accept);
         // GL-1d, decision 5: what is typed as the palette opens is the
         // filter's; the arrows walk the list; Enter is OK and Esc Cancel.
         search->installEventFilter(new PaletteFilterKeys(list, search));
-        QObject::connect(search, &QLineEdit::returnPressed, &dialog, &QDialog::accept);
+        QObject::connect(search, &QLineEdit::returnPressed, dialog, &QDialog::accept);
         reload();
         syncDefinition();
         // UX-5d, decision 2: the engine's list arrives while the palette is
         // open; the rows and the compute list are read again then, the row
         // in hand kept.
-        QTimer engine_shaders_arrive{&dialog};
-        engine_shaders_arrive.setInterval(200);
-        auto shaders_seen = model.engineShadersRevision();
-        QObject::connect(&engine_shaders_arrive, &QTimer::timeout, &dialog, [&] {
-            if (model.engineShadersRevision() == shaders_seen) return;
-            shaders_seen = model.engineShadersRevision();
-            auto *current = list->currentItem();
-            const auto kept = current != nullptr ? current->data(Qt::UserRole).toString() : QString{};
-            reload();
-            for (int index = 0; index < list->count(); ++index)
-                if (list->item(index)->data(Qt::UserRole).toString() == kept) list->setCurrentRow(index);
-            syncDefinition();
-        });
-        engine_shaders_arrive.start();
+        auto *engine_shaders_arrive = new QTimer{dialog};
+        engine_shaders_arrive->setInterval(200);
+        QObject::connect(engine_shaders_arrive, &QTimer::timeout, dialog,
+                         [this, list, reload, syncDefinition,
+                          seen = model.engineShadersRevision()]() mutable {
+                             if (model.engineShadersRevision() == seen) return;
+                             seen = model.engineShadersRevision();
+                             auto *current = list->currentItem();
+                             const auto kept = current != nullptr
+                                                   ? current->data(Qt::UserRole).toString()
+                                                   : QString{};
+                             reload();
+                             for (int index = 0; index < list->count(); ++index)
+                                 if (list->item(index)->data(Qt::UserRole).toString() == kept)
+                                     list->setCurrentRow(index);
+                             syncDefinition();
+                         });
+        engine_shaders_arrive->start();
+        // UX-9, decision 3: what was picked is read as the palette closes and
+        // added from the event loop, after it has gone.
+        QObject::connect(
+            dialog, &QDialog::finished, &view,
+            [this, scope, list, definitions, new_definition_data, new_name, contracts, targets,
+             snapshot_after, compute_shader, element, attribute_domain, count](int result) {
+                auto *row = result == QDialog::Accepted ? list->currentItem() : nullptr;
+                if (row == nullptr) {
+                    scene->clearPaletteScope();
+                    return;
+                }
+                PaletteChoice choice;
+                choice.scope = scope;
+                choice.op = row->data(Qt::UserRole).toString().toStdString();
+                choice.definition = definitions->currentData().toString().toStdString();
+                if (choice.op == "graph.loop" &&
+                    definitions->currentData().toString() == new_definition_data) {
+                    choice.new_body = true;
+                    choice.definition = new_name->text().trimmed().toStdString();
+                }
+                // LP-4e: a material pass's second argument is its contract.
+                if (choice.op == "render.material_pass")
+                    choice.definition = contracts->currentData().toString().toStdString();
+                // UX-3, decision 1: what was picked beside the op.
+                if (choice.op == "render.target_ref")
+                    choice.seed["name"] = targets->currentData().toString().toStdString();
+                else if (choice.op == "render.snapshot_copy")
+                    choice.seed["snapshot_after"] =
+                        snapshot_after->currentData().toString().toStdString();
+                else if (choice.op == "render.compute") {
+                    // UX-5d, decision 2: "shader|<reference>" or "ray_tracing|<reference>".
+                    const auto picked = compute_shader->currentData().toString();
+                    const auto bar = picked.indexOf(QLatin1Char{'|'});
+                    if (bar > 0)
+                        choice.seed[picked.left(bar).toStdString()] =
+                            picked.mid(bar + 1).toStdString();
+                } else if (choice.op == "render.buffer" || choice.op == "render.attribute") {
+                    choice.seed["element"] = element->currentData().toString().toStdString();
+                    choice.seed["count"] = count->value();
+                    if (choice.op == "render.attribute")
+                        choice.seed["domain"] =
+                            attribute_domain->currentData().toString().toStdString();
+                }
+                QMetaObject::invokeMethod(
+                    &view, [this, choice = std::move(choice)] { askRequired(choice); },
+                    Qt::QueuedConnection);
+            });
+        dialog->open();
         search->setFocus(Qt::PopupFocusReason);
         QTimer::singleShot(0, search, [search] { search->setFocus(Qt::PopupFocusReason); });
-        if (dialog.exec() != QDialog::Accepted) return;
-        auto *row = list->currentItem();
-        if (row == nullptr) return;
-        const auto op = row->data(Qt::UserRole).toString().toStdString();
-        if (op == "graph.loop" && definitions->currentData().toString() == new_definition_data) {
-            const auto name = new_name->text().trimmed().toStdString();
-            scene->addLoop({}, name.empty() ? model.suggestDefinitionName() : name);
+    }
+
+    // UX-7, decision 5: an op the engine refuses without a parameter asks
+    // for just those first (render.scalar's target, ...) -- UX-9: in a
+    // dialog opened as the palette is, answered when it closes.
+    void askRequired(PaletteChoice choice) {
+        if (choice.new_body || choice.op == "render.material_pass" ||
+            model.requiredParametersFor(choice.op).empty()) {
+            placeWhenEditable(std::move(choice));
+            return;
+        }
+        auto *ask = new GraphCanvasRequiredDialog{model, choice.scope, choice.op, &view};
+        ask->setAttribute(Qt::WA_DeleteOnClose);
+        QObject::connect(ask, &QDialog::finished, &view,
+                         [this, ask, choice = std::move(choice)](int result) mutable {
+                             if (result != QDialog::Accepted) {
+                                 scene->clearPaletteScope();
+                                 return;
+                             }
+                             // UX-8, decision 7: and the edge it chose (a sound
+                             // sink's voice).
+                             const auto chosen = ask->seed();
+                             for (const auto &[key, value] : chosen.items())
+                                 choice.seed[key] = value;
+                             QMetaObject::invokeMethod(
+                                 &view,
+                                 [this, choice = std::move(choice)]() mutable {
+                                     placeWhenEditable(std::move(choice));
+                                 },
+                                 Qt::QueuedConnection);
+                         });
+        ask->open();
+    }
+
+    // UX-9, decision 1: the choice waits while a save is in flight and is
+    // added as soon as the model takes edits again; the notice says
+    // "Saving the graph change..." meanwhile.
+    void placeWhenEditable(PaletteChoice choice) {
+        pending_palette_choice = std::move(choice);
+        followPaletteChoice();
+        showNotice();
+    }
+
+    void followPaletteChoice() {
+        if (!pending_palette_choice) return;
+        // Another engine (a restart, another project) is another document.
+        if (!model.connected() || model.digest().empty()) {
+            pending_palette_choice.reset();
+            scene->clearPaletteScope();
+            return;
+        }
+        if (!model.canEdit()) return;
+        const auto choice = std::move(*pending_palette_choice);
+        pending_palette_choice.reset();
+        placeChoice(choice);
+        // The menu's scope is this palette's only, however it ended.
+        scene->clearPaletteScope();
+    }
+
+    void placeChoice(const PaletteChoice &choice) {
+        if (choice.new_body) {
+            scene->addLoop({}, choice.definition.empty() ? model.suggestDefinitionName()
+                                                         : choice.definition);
             return;
         }
         // LP-4e: a material pass's second argument is its contract.
-        if (op == "render.material_pass") {
-            scene->addFromPalette(scope, op, contracts->currentData().toString().toStdString());
+        if (choice.op == "render.material_pass") {
+            scene->addFromPalette(choice.scope, choice.op, choice.definition);
             return;
-        }
-        // UX-3, decision 1: what was picked beside the op.
-        nlohmann::json seed = nlohmann::json::object();
-        if (op == "render.target_ref")
-            seed["name"] = targets->currentData().toString().toStdString();
-        else if (op == "render.snapshot_copy")
-            seed["snapshot_after"] = snapshot_after->currentData().toString().toStdString();
-        else if (op == "render.compute") {
-            // UX-5d, decision 2: "shader|<reference>" or "ray_tracing|<reference>".
-            const auto picked = compute_shader->currentData().toString();
-            const auto bar = picked.indexOf(QLatin1Char{'|'});
-            if (bar > 0) seed[picked.left(bar).toStdString()] = picked.mid(bar + 1).toStdString();
-        }
-        else if (op == "render.buffer" || op == "render.attribute") {
-            seed["element"] = element->currentData().toString().toStdString();
-            seed["count"] = count->value();
-            if (op == "render.attribute")
-                seed["domain"] = attribute_domain->currentData().toString().toStdString();
-        }
-        // UX-7, decision 5: an op the engine refuses without a parameter
-        // asks for just those first (render.scalar's target, ...).
-        if (!model.requiredParametersFor(op).empty()) {
-            GraphCanvasRequiredDialog ask{model, scope, op, &view};
-            if (ask.exec() != QDialog::Accepted) return;
-            // UX-8, decision 7: and the edge it chose (a sound sink's voice).
-            const auto chosen = ask.seed();
-            for (const auto &[key, value] : chosen.items()) seed[key] = value;
         }
         // EL-5s, decision 1: a project shader is placed with its ports once
         // the engine has read them (get_shader_interface), from the poll.
-        if (op == "render.compute" && placeComputeWhenRead(scope, seed)) return;
-        if (!seed.empty()) {
-            scene->addFromPalette(scope, op, {}, seed);
+        if (choice.op == "render.compute" && placeComputeWhenRead(choice.scope, choice.seed))
+            return;
+        if (!choice.seed.empty()) {
+            scene->addFromPalette(choice.scope, choice.op, {}, choice.seed);
             return;
         }
-        scene->addFromPalette(scope, op, definitions->currentData().toString().toStdString());
+        scene->addFromPalette(choice.scope, choice.op, choice.definition);
     }
 
     void showDetails() {
@@ -7578,8 +7757,19 @@ struct GraphCanvasWidget::Impl {
         showNotice();
         // EL-5s, decision 1: a palette pick waiting for its shader's ports.
         followComputePlacement();
+        // UX-9, decision 1: and one waiting for a save in flight to land.
+        followPaletteChoice();
         refresh->setEnabled(model.canRefresh());
         synchronizeTimeline();
+    }
+
+    // UX-9, decision 2: a value a side field holds until the model takes
+    // edits again (the pass's, an image's, a place's, a value node's).
+    bool fieldValuePending() const {
+        return (pass_fields != nullptr && pass_fields->valuePending()) ||
+               (image_fields != nullptr && image_fields->valuePending()) ||
+               (place_fields != nullptr && place_fields->valuePending()) ||
+               (value_fields != nullptr && value_fields->valuePending());
     }
 
     void showNotice() {
@@ -7587,7 +7777,9 @@ struct GraphCanvasWidget::Impl {
         // Q-5: a placement change nobody has sent yet is not saved, whatever
         // the last save said. Only an error outranks it: that is the one thing
         // the user must still read.
-        if ((scene->placementUnsent() || (pass_fields != nullptr && pass_fields->valuePending())) &&
+        // UX-9, decision 2: so is a value any of the side fields holds for
+        // a save in flight, and (decision 1) a palette pick waiting for one.
+        if ((scene->placementUnsent() || fieldValuePending() || pending_palette_choice) &&
             message.kind != InspectorNoticeKind::Error)
             message = {InspectorNoticeKind::Information,
                        "Saving the graph change..."};
@@ -7664,6 +7856,12 @@ void GraphCanvasWidget::setPerfLines(const QString &summary, const QString &delt
 
 void GraphCanvasWidget::setPlanNodeTimes(std::map<std::string, double, std::less<>> times) {
     impl_->scene->setPlanNodeTimes(std::move(times));
+}
+
+void GraphCanvasWidget::observeStatus(const nlohmann::json &status) {
+    // A reply that was not JSON (null) or carries no audio says nothing new.
+    if (!status.is_object() || !status.contains("audio")) return;
+    impl_->scene->setVoiceBands(graphCanvasVoiceBands(status));
 }
 
 void GraphCanvasWidget::refresh() {

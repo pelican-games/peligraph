@@ -1,5 +1,6 @@
 #include "shaderdefinesform.hpp"
 
+#include <QApplication>
 #include <QBrush>
 #include <QColor>
 #include <QHBoxLayout>
@@ -138,6 +139,18 @@ ShaderDefinesForm::ShaderDefinesForm(const QString &object_prefix, QWidget *pare
 }
 
 void ShaderDefinesForm::reset() { load(nullptr); }
+
+void ShaderDefinesForm::finishEditing() {
+    // A cell's editor is the viewport's child with the keyboard on it.
+    QWidget *editor = QApplication::focusWidget();
+    if (editor == nullptr || editor == table_->viewport() ||
+        !table_->viewport()->isAncestorOf(editor))
+        return;
+    // The view's own slot: the delegate writes the editor's text into the
+    // item, and itemChanged above tells the owner.
+    QMetaObject::invokeMethod(table_, "commitData", Qt::DirectConnection,
+                              Q_ARG(QWidget *, editor));
+}
 
 void ShaderDefinesForm::setRenderingSection(bool rendering_section) {
     rendering_section_ = rendering_section;

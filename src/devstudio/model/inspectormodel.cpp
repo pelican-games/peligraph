@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cmath>
 #include <concepts>
+#include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
@@ -1124,7 +1125,20 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error) {
     return sentence + " (" + std::string{entry->code} + ").";
 }
 
-std::string engineStoppedSentence(std::string_view fatal_line) {
+std::string projectRenderDocument(const std::filesystem::path &project_root) {
+    if (project_root.empty()) return {};
+    std::ifstream input{project_root / "project.json", std::ios::binary};
+    if (!input) return {};
+    const auto project = nlohmann::json::parse(input, nullptr, false);
+    if (!project.is_object()) return {};
+    const auto basic = project.find("basic_config");
+    if (basic == project.end() || !basic->is_object()) return {};
+    const auto document = basic->find("rendering_config_json");
+    return document != basic->end() && document->is_string() ? document->get<std::string>()
+                                                              : std::string{};
+}
+
+std::string engineStoppedSentence(std::string_view fatal_line, std::string_view render_document) {
     constexpr std::string_view marker = "Pelican fatal error";
     const auto at = fatal_line.find(marker);
     if (at == std::string_view::npos) return {};
@@ -1163,6 +1177,7 @@ std::string engineStoppedSentence(std::string_view fatal_line) {
             --begin;
         file = std::string{message.substr(begin, end + 5 - begin)};
     }
+    if (file.empty()) file = std::string{render_document};
     if (file.empty()) file = "the project's render documents";
     return "The engine stopped: " + sentence + " in " + file +
            ". Fix the file (or Reload from disk) to start it again.";

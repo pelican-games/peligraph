@@ -3897,6 +3897,14 @@ TEST_CASE("UX-8 decision 12: render.scalar's numbers are packed with the other s
           "The engine stopped: Port level of shade needs element (graph.port_field_missing@1) "
           "in C:/project/passes/main.json. Fix the file (or Reload from disk) to start it again.");
     CHECK(PelicanStudio::engineStoppedSentence("Pelican fatal error : out of memory").empty());
+    // UX-9, decision 5: the line the running engine writes (CT-1) names no
+    // file; the render document the project names stands in.
+    CHECK(PelicanStudio::engineStoppedSentence(
+              "13:59:17.707507130 [76388] pelican_core.cpp:166 LOG_ERROR pelican Pelican fatal "
+              "error : graph.port_field_missing@1 {\"field\":\"element\",\"node\":\"sim\",\"port\":\"data\"}",
+              "passes/main.json") ==
+          "The engine stopped: Port data of sim needs element (graph.port_field_missing@1) in "
+          "passes/main.json. Fix the file (or Reload from disk) to start it again.");
 }
 
 TEST_CASE("UX-8 decision 9: sounds are copied into assets/audio, _2 beside a name already there",

@@ -96,12 +96,70 @@ void retire(QWidget *widget) {
 
 } // namespace
 
+// --- UX-9, decision 2: edits held for a busy model.
+
+GraphCanvasHeldEdits::GraphCanvasHeldEdits(GraphCanvasModel &model, QObject *owner)
+    : model_{model}, timer_{new QTimer(owner)} {
+    // The model says nothing when it becomes editable; it is asked.
+    timer_->setInterval(100);
+    QObject::connect(timer_, &QTimer::timeout, timer_, [this] { follow(); });
+}
+
+bool GraphCanvasHeldEdits::sendOrHold(std::function<bool()> send) {
+    if (!send) return false;
+    follow();
+    if (held_.empty() && model_.canEdit()) return send();
+    held_.push_back(std::move(send));
+    timer_->start();
+    if (changed_) changed_();
+    return true;
+}
+
+void GraphCanvasHeldEdits::follow() {
+    bool tried = false;
+    // One goes at a time: a sent edit makes the model busy until it lands.
+    while (!held_.empty() && model_.canEdit()) {
+        auto send = std::move(held_.front());
+        held_.pop_front();
+        tried = true;
+        // Refused (nothing to change any more): it is let go.
+        send();
+    }
+    if (held_.empty()) timer_->stop();
+    if (!tried) return;
+    if (sent_) sent_();
+    if (changed_) changed_();
+}
+
+std::function<bool()> heldParametersEdit(GraphCanvasModel &model, std::string scope,
+                                         std::string node, Json base, Json changed) {
+    return [&model, scope = std::move(scope), node = std::move(node), base = std::move(base),
+            changed = std::move(changed)] {
+        const auto now = model.nodeParameters(scope, node);
+        if (!now.is_object()) return false;
+        auto next = changed;
+        if (now != base) {
+            try {
+                next = now.patch(Json::diff(base, changed));
+            } catch (const std::exception &) {
+                return false;
+            }
+        }
+        if (next == now) return false;
+        return model.setNodeParameters(scope, node, next);
+    };
+}
+
 // --- Decision 1: render.image.
 
 GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
                                                std::function<void()> submitted, QWidget *parent)
     : QWidget{parent}, model_{model}, submitted_{std::move(submitted)} {
     setObjectName(QStringLiteral("pelican.graphCanvasImage"));
+    held_ = std::make_unique<GraphCanvasHeldEdits>(model_, this);
+    held_->setSent([this] {
+        if (submitted_) submitted_();
+    });
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 4, 0, 4);
     heading_ = new QLabel(this);
@@ -329,6 +387,8 @@ nlohmann::json GraphCanvasImageFields::parameters() const {
 }
 
 void GraphCanvasImageFields::showNode(const GraphCanvasNode *node, const std::string &scope) {
+    if (node == nullptr || node->op != "render.image" || node->id != node_ || scope != scope_)
+        release();
     if (node == nullptr || node->op != "render.image") {
         node_.clear();
         scope_.clear();
@@ -363,7 +423,29 @@ void GraphCanvasImageFields::showNode(const GraphCanvasNode *node, const std::st
     show();
 }
 
-void GraphCanvasImageFields::followEditable() { fields_->setEnabled(model_.canEdit()); }
+void GraphCanvasImageFields::followEditable() {
+    fields_->setEnabled(model_.canEdit());
+    held_->follow();
+}
+
+void GraphCanvasImageFields::release() {
+    if (node_.empty()) return;
+    QWidget *focus = QApplication::focusWidget();
+    if (focus == nullptr || !fields_->isAncestorOf(focus)) return;
+    // A spin box holds what was typed until it is asked to read it.
+    if (auto *spin = qobject_cast<QAbstractSpinBox *>(focus)) spin->interpretText();
+    const std::initializer_list<QWidget *> size{extent_scale_,      width_,  height_,
+                                                layers_,            mip_levels_,
+                                                extent_expression_, width_expression_,
+                                                height_expression_, layers_expression_,
+                                                mip_levels_expression_};
+    if (std::ranges::find(size, focus) != size.end())
+        commitSize();
+    else if (focus == usage_text_)
+        commitUsage();
+    else if (format_line_ != nullptr && focus == format_line_)
+        commitFormat(format_->currentText().trimmed());
+}
 
 void GraphCanvasImageFields::load(const Json &parameters) {
     QStringList missing;
@@ -564,12 +646,14 @@ void GraphCanvasImageFields::loadUsage(const Json &parameters) {
 
 void GraphCanvasImageFields::commit(const Json &parameters) {
     if (node_.empty()) return;
-    if (model_.setNodeParameters(scope_, node_, parameters)) {
+    // UX-9, decision 2: while a save is in flight the value waits for it,
+    // for this image, rather than the field going back under the hand.
+    if (held_->sendOrHold(heldParametersEdit(model_, scope_, node_, this->parameters(), parameters))) {
         if (submitted_) submitted_();
         return;
     }
-    // Refused (an edit in flight, or nothing changed): the fields say what
-    // the document says, not the choice that was not sent.
+    // Refused (nothing changed, or the model turned it down): the fields say
+    // what the document says, not the choice that was not sent.
     load(this->parameters());
 }
 
@@ -577,7 +661,10 @@ void GraphCanvasImageFields::commitFormat(const QString &format) {
     if (format.isEmpty() || node_.empty()) return;
     // UX-5b, decision 4: one edit, which for a material pass's image moves
     // its other sockets' images to the combination the format belongs to.
-    if (model_.setImageFormat(scope_, node_, format.toStdString())) {
+    if (held_->sendOrHold([&model = model_, scope = scope_, node = node_,
+                           format = format.toStdString()] {
+            return model.setImageFormat(scope, node, format);
+        })) {
         if (submitted_) submitted_();
         return;
     }
@@ -742,6 +829,13 @@ GraphCanvasPassFields::GraphCanvasPassFields(GraphCanvasModel &model,
                                              std::function<void()> submitted, QWidget *parent)
     : QWidget{parent}, model_{model}, submitted_{std::move(submitted)} {
     setObjectName(QStringLiteral("pelican.graphCanvasPass"));
+    held_ = std::make_unique<GraphCanvasHeldEdits>(model_, this);
+    held_->setSent([this] {
+        if (submitted_) submitted_();
+    });
+    held_->setChanged([this] {
+        if (pending_changed_) pending_changed_();
+    });
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 4, 0, 4);
     heading_ = new QLabel(this);
@@ -966,8 +1060,10 @@ void GraphCanvasPassFields::setShadersChanged(std::function<void()> changed) {
 }
 
 void GraphCanvasPassFields::showNode(const GraphCanvasNode *node, const std::string &scope) {
+    // UX-9, decision 2: what the fields hold for the pass they are letting
+    // go of goes to that pass first.
+    if (node == nullptr || node->id != node_ || scope != scope_) release();
     if (node == nullptr || (node->op != "render.fullscreen" && node->op != "render.raster")) {
-        flushDraw();
         node_.clear();
         scope_.clear();
         op_.clear();
@@ -1048,10 +1144,17 @@ void GraphCanvasPassFields::showLoopElementRead() {
 void GraphCanvasPassFields::followEditable() {
     fields_->setEnabled(model_.canEdit());
     retryWhenEditable();
+    held_->follow();
 }
 
-bool GraphCanvasPassFields::deferWhileBusy(std::function<void()> again) {
+bool GraphCanvasPassFields::deferWhileBusy(std::function<void()> again,
+                                           std::function<bool()> held) {
     if (model_.canEdit()) return false;
+    // UX-9, decision 2: letting go of the pass, the value is held for it.
+    if (releasing_ && held) {
+        held_->sendOrHold(std::move(held));
+        return true;
+    }
     retry_ = std::move(again);
     // The model says nothing when it becomes editable; it is asked.
     retry_timer_->start();
@@ -1071,15 +1174,37 @@ void GraphCanvasPassFields::retryWhenEditable() {
     if (pending_changed_) pending_changed_();
 }
 
-void GraphCanvasPassFields::flushDraw() {
-    if (node_.empty() || op_ != "render.raster") return;
-    bool typed = false;
-    for (QSpinBox *spin : {vertex_count_, instance_count_})
-        if (spin->hasFocus()) {
-            spin->interpretText();
-            typed = true;
-        }
-    if (typed) commitDraw();
+void GraphCanvasPassFields::release() {
+    if (node_.empty()) return;
+    releasing_ = true;
+    // A value already waiting for the model goes for this pass now, or is
+    // held for it.
+    if (retry_) {
+        retry_timer_->stop();
+        auto again = std::exchange(retry_, {});
+        again();
+    }
+    flushTyped();
+    releasing_ = false;
+    if (pending_changed_) pending_changed_();
+}
+
+void GraphCanvasPassFields::flushTyped() {
+    // LC-1s: the draw counts.
+    if (op_ == "render.raster") {
+        bool typed = false;
+        for (QSpinBox *spin : {vertex_count_, instance_count_})
+            if (spin->hasFocus()) {
+                spin->interpretText();
+                typed = true;
+            }
+        if (typed) commitDraw();
+    }
+    // A define's cell being typed in: the row takes it, and its change is
+    // sent as any row's is.
+    defines_->finishEditing();
+    // A clear colour typed and waiting for the pause after it.
+    if (settings_timer_->isActive()) commitSettings();
 }
 
 void GraphCanvasPassFields::load(const Json &parameters) {
@@ -1164,7 +1289,7 @@ void GraphCanvasPassFields::commitDefines() {
             defines_->load(defines);
             loading_ = previous;
             commitDefines();
-        }))
+        }, heldParametersEdit(model_, scope_, node_, model_.nodeParameters(scope_, node_), changed)))
         return;
     // Refused: the rows show the document again, from the event loop (the
     // table whose signal is handled is the one a load refills).
@@ -1198,6 +1323,8 @@ void GraphCanvasPassFields::commitDepth() {
             const QSignalBlocker block{depth_};
             selectOrAdd(*depth_, qtext(picked));
             commitDepth();
+        }, [&model = model_, scope = scope_, node = node_, picked] {
+            return model.setRasterDepth(scope, node, picked);
         }))
         return;
     QMetaObject::invokeMethod(this, [this] { loadDepth(); }, Qt::QueuedConnection);
@@ -1264,7 +1391,7 @@ void GraphCanvasPassFields::commitDraw() {
                 instance_count_->setValue(instances);
             }
             commitDraw();
-        }))
+        }, heldParametersEdit(model_, scope_, node_, model_.nodeParameters(scope_, node_), changed)))
         return;
     loadDraw(model_.nodeParameters(scope_, node_));
 }
@@ -1444,7 +1571,8 @@ void GraphCanvasPassFields::commitSettings() {
                 raster_->load(state, Json(nullptr));
                 loading_ = false;
                 commitSettings();
-            }))
+            }, heldParametersEdit(model_, scope_, node_, model_.nodeParameters(scope_, node_),
+                                  changed)))
             return;
         QMetaObject::invokeMethod(
             this, [this] { loadPassSettings(model_.nodeParameters(scope_, node_)); },
@@ -1490,7 +1618,10 @@ void GraphCanvasPassFields::commitSettings() {
     if (clear.is_null()) changed.erase("clear_color");
     else changed["clear_color"] = clear;
     if (changed == model_.nodeParameters(scope_, node_)) return;
-    if (model_.setNodeParameters(scope_, node_, changed)) {
+    // UX-9, decision 2: a clear colour given while a save is in flight
+    // waits for it, for this pass.
+    if (held_->sendOrHold(heldParametersEdit(model_, scope_, node_,
+                                             model_.nodeParameters(scope_, node_), changed))) {
         if (submitted_) submitted_();
         return;
     }
@@ -1641,6 +1772,10 @@ GraphCanvasPlaceFields::GraphCanvasPlaceFields(GraphCanvasModel &model,
                                                std::function<void()> submitted, QWidget *parent)
     : QWidget{parent}, model_{model}, submitted_{std::move(submitted)} {
     setObjectName(QStringLiteral("pelican.graphCanvasPlace"));
+    held_ = std::make_unique<GraphCanvasHeldEdits>(model_, this);
+    held_->setSent([this] {
+        if (submitted_) submitted_();
+    });
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 2, 0, 2);
     fields_ = new QWidget(this);
@@ -1697,6 +1832,7 @@ void GraphCanvasPlaceFields::showNode(const GraphCanvasNode *node, const std::st
 
 void GraphCanvasPlaceFields::followEditable() {
     fields_->setEnabled(model_.canEdit() && GraphCanvasModel::takesPlace(op_));
+    held_->follow();
 }
 
 void GraphCanvasPlaceFields::load() {
@@ -1753,7 +1889,11 @@ void GraphCanvasPlaceFields::commit() {
         current.declared && current.kind == place.kind && current.target == place.target;
     place.pass_set = pass_set_->currentData().toString().toStdString();
     if (place.kind == "other") return;
-    if (model_.setPlace(scope_, node_, place)) {
+    // UX-9, decision 2: a pick made while a save is in flight waits for it,
+    // for this node.
+    if (held_->sendOrHold([&model = model_, scope = scope_, node = node_, place] {
+            return model.setPlace(scope, node, place);
+        })) {
         if (submitted_) submitted_();
         return;
     }

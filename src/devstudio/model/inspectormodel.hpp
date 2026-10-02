@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -240,7 +241,15 @@ modelReferenceChoices(std::string_view current,
 // the first known code the message carries, the file the last .json path it
 // names (the project's render documents when it names none). Empty when the
 // line carries no code Studio has a sentence for.
-[[nodiscard]] std::string engineStoppedSentence(std::string_view fatal_line);
+// UX-9, decision 5: the line the running engine writes names no file
+// ("Pelican fatal error : graph.port_field_missing@1 {...}"), so a file
+// the caller knows -- the render document the project names,
+// projectRenderDocument -- stands in for it before the fallback.
+[[nodiscard]] std::string engineStoppedSentence(std::string_view fatal_line,
+                                                std::string_view render_document = {});
+// The render document project.json names (basic_config.rendering_config_json,
+// as written there: "passes/main.json"); empty when it cannot be read.
+[[nodiscard]] std::string projectRenderDocument(const std::filesystem::path &project_root);
 // LP-0d: the graph variant (preview, XR) that refused an edit, named by
 // `variant` beside the code; empty when the main graph did. LP-4d2: always --
 // graph.loop_variant_missing@1 names the material's variant

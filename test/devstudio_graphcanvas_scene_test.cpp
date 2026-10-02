@@ -10073,3 +10073,249 @@ TEST_CASE("UX-8 decision 2: a pass's Buffers list its shader's buffer bindings, 
     CHECK(ops[1].at("port") == "level");
     std::filesystem::remove_all(root);
 }
+
+// UX-9, decision 1. Picking a pass by its middle opened a pill's editor; the
+// click on Add took the keyboard from it, and the editor committed the value
+// it was opened on -- an edit of nothing, in flight just as the palette asked
+// whether the model could edit, so the palette never opened. Now that value
+// sends nothing, and a palette opened over a save in flight adds its pick
+// once the save has landed.
+TEST_CASE("UX-9 decision 1: an unchanged pill sends nothing as it loses the keyboard, and Add "
+          "opens the palette over a save in flight, adding its pick once the save lands",
+          "[devstudio][graph-canvas][scene][ux9]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = readFixture("graph_node_visuals");
+    tab.read(document, "ux9-a-0");
+    tab.answer("get_graph_catalog", visualCatalog());
+    auto *show_values = tab.field<QCheckBox>("pelican.graphCanvasShow.value");
+    show_values->setChecked(true);
+    QCoreApplication::processEvents();
+    auto &scene = tab.widget->scene();
+    auto *add = tab.field<QPushButton>("pelican.graphCanvasAddNode");
+    REQUIRE(add->isEnabled());
+
+    // The editor left as it was opened commits on losing the keyboard: nothing.
+    REQUIRE(scene.beginValueEdit("helmet_pulse", "gain"));
+    CHECK_FALSE(scene.commitInlineEdit());
+    QCoreApplication::processEvents();
+    CHECK(tab.reads("edit_graph_document") == 0);
+    CHECK(tab.widget->model().canEdit());
+
+    // A value that did change goes as Add is pressed: the palette opens over
+    // that save anyway.
+    REQUIRE(scene.beginValueEdit("helmet_pulse", "gain"));
+    scene.setInlineEditText(QStringLiteral("4.5"));
+    add->click();
+    REQUIRE(scene.commitInlineEdit());
+    QDialog *palette = nullptr;
+    for (int tick = 0; tick < 200 && palette == nullptr; ++tick) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        palette = paletteOnScreen();
+    }
+    REQUIRE(palette != nullptr);
+    CHECK(tab.reads("edit_graph_document") == 1);
+    CHECK_FALSE(tab.widget->model().canEdit());
+
+    // Enter: the palette goes, and its pick waits for the save.
+    auto *filter = palette->findChild<QLineEdit *>(QStringLiteral("pelican.graphCanvasPaletteFilter"));
+    auto *list = palette->findChild<QListWidget *>(QStringLiteral("pelican.graphCanvasPaletteList"));
+    REQUIRE(filter != nullptr);
+    REQUIRE(list != nullptr);
+    filter->setText(QStringLiteral("value.add"));
+    REQUIRE(list->currentItem() != nullptr);
+    const auto chosen = list->currentItem()->data(Qt::UserRole).toString().toStdString();
+    sendKey(filter, Qt::Key_Return);
+    QCoreApplication::processEvents();
+    CHECK(paletteOnScreen() == nullptr);
+    CHECK(tab.reads("edit_graph_document") == 1);
+    CHECK(tab.field<QLabel>("pelican.graphCanvasNotice")->text() ==
+          QStringLiteral("Saving the graph change..."));
+
+    // The save lands; the pick is added.
+    for (auto &node : document.at("nodes"))
+        if (node.at("id") == "helmet_pulse") node["parameters"]["gain"] = 4.5;
+    tab.commit(document, "ux9-a-1");
+    QCoreApplication::processEvents();
+    REQUIRE(tab.reads("edit_graph_document") == 2);
+    const auto added = Json::parse(
+        tab.transport.calls[static_cast<std::size_t>(
+                                tab.transport.idOf(QStringLiteral("edit_graph_document")) - 1)]
+            .body.toStdString());
+    CHECK(std::ranges::any_of(added, [&](const Json &op) {
+        return op.value("op", std::string{}) == "add_node" &&
+               op.at("node").value("op", std::string{}) == chosen;
+    }));
+
+    // Decision 3: what the palette's pick asks for (a value.input's name)
+    // comes in a dialog answered as it closes too, and is added after it.
+    for (const auto &op : added)
+        if (op.value("op", std::string{}) == "add_node") document["nodes"].push_back(op.at("node"));
+    tab.commit(document, "ux9-a-2");
+    QCoreApplication::processEvents();
+    REQUIRE(tab.widget->model().canEdit());
+    add->click();
+    palette = nullptr;
+    for (int tick = 0; tick < 200 && palette == nullptr; ++tick) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        palette = paletteOnScreen();
+    }
+    REQUIRE(palette != nullptr);
+    palette->findChild<QLineEdit *>(QStringLiteral("pelican.graphCanvasPaletteFilter"))
+        ->setText(QStringLiteral("value.input"));
+    sendKey(palette->findChild<QLineEdit *>(QStringLiteral("pelican.graphCanvasPaletteFilter")),
+            Qt::Key_Return);
+    QDialog *ask = nullptr;
+    for (int tick = 0; tick < 200 && ask == nullptr; ++tick) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        for (QWidget *top : QApplication::topLevelWidgets())
+            if (top->objectName() == QLatin1String{"pelican.graphCanvasRequired"} && top->isVisible())
+                ask = qobject_cast<QDialog *>(top);
+    }
+    REQUIRE(ask != nullptr);
+    auto *ok = ask->findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasRequired.ok"));
+    REQUIRE(ok != nullptr);
+    REQUIRE(ok->isEnabled());
+    ok->click();
+    QCoreApplication::processEvents();
+    QCoreApplication::processEvents();
+    REQUIRE(tab.reads("edit_graph_document") == 3);
+    const auto asked = Json::parse(
+        tab.transport.calls[static_cast<std::size_t>(
+                                tab.transport.idOf(QStringLiteral("edit_graph_document")) - 1)]
+            .body.toStdString());
+    CHECK(std::ranges::any_of(asked, [](const Json &op) {
+        return op.value("op", std::string{}) == "add_node" &&
+               op.at("node").value("op", std::string{}) == "value.input" &&
+               op.at("node").contains("parameters") && op.at("node").at("parameters").contains("name");
+    }));
+}
+
+// UX-9, decision 2. LC-1s sent a draw count typed and not confirmed as the
+// Pass fields let go of the pass; the other side fields do the same, and a
+// value the model could not take (a save in flight) is held for its node
+// across the letting go, saying Saving until it goes.
+TEST_CASE("UX-9 decision 2: a value typed into a side field goes to its node as the fields let "
+          "go of it, held for that node while a save is in flight",
+          "[devstudio][graph-canvas][scene][ux9]") {
+    (void)application();
+    const auto typeInto = [](QAbstractSpinBox *spin, int key, const QString &text) {
+        spin->setFocus(Qt::OtherFocusReason);
+        QCoreApplication::processEvents();
+        REQUIRE(spin->hasFocus());
+        spin->selectAll();
+        QKeyEvent press{QEvent::KeyPress, key, Qt::NoModifier, text};
+        QCoreApplication::sendEvent(spin, &press);
+        QKeyEvent release{QEvent::KeyRelease, key, Qt::NoModifier, text};
+        QCoreApplication::sendEvent(spin, &release);
+    };
+
+    SECTION("an image's layers, typed, go to the image when another node is picked") {
+        Ux2Tab tab{true};
+        auto image = ux2Image();
+        tab.read(ux2Document(image), "ux9-b-0");
+        tab.answer("get_graph_catalog", ux2Catalog());
+        tab.widget->scene().selectNode("shade__color");
+        QCoreApplication::processEvents();
+        REQUIRE(tab.field<QWidget>("pelican.graphCanvasImage")->isVisible());
+        auto *layers = tab.field<QSpinBox>("pelican.graphCanvasImage.layers");
+        tab.widget->activateWindow();
+        typeInto(layers, Qt::Key_4, QStringLiteral("4"));
+        CHECK(layers->cleanText() == QStringLiteral("4"));
+        CHECK(tab.reads("edit_graph_document") == 0);
+        tab.widget->scene().selectNode("shade");
+        QCoreApplication::processEvents();
+        const auto op = tab.sent(1);
+        CHECK(op.at("node") == "shade__color");
+        image["layers"] = 4;
+        CHECK(op.at("parameters") == image);
+        CHECK(tab.field<QLabel>("pelican.graphCanvasNotice")->text() ==
+              QStringLiteral("Saving the graph change..."));
+    }
+
+    SECTION("a pass's count given over a save in flight goes to that pass once it lands") {
+        Ux2Tab tab{true};
+        auto pass = ux7RasterPass();
+        auto document = ux7RasterDocument(pass);
+        tab.read(document, "ux9-b-1");
+        tab.answer("get_graph_catalog", ux7Catalog());
+        tab.widget->scene().selectNode("sea");
+        QCoreApplication::processEvents();
+        REQUIRE(tab.field<QWidget>("pelican.graphCanvasPass")->isVisible());
+        auto *notice = tab.field<QLabel>("pelican.graphCanvasNotice");
+        // 2 typed into Instances, then Grid: its edit goes and the model is busy.
+        auto *instances = tab.field<QSpinBox>("pelican.graphCanvasPass.instanceCount");
+        tab.widget->activateWindow();
+        typeInto(instances, Qt::Key_2, QStringLiteral("2"));
+        ux7Click(tab.field<QPushButton>("pelican.graphCanvasPass.grid"));
+        REQUIRE(tab.reads("edit_graph_document") >= 1);
+        const int before = tab.reads("edit_graph_document");
+        CHECK_FALSE(tab.widget->model().canEdit());
+        // Another node picked while that save is in flight: nothing is sent
+        // yet, and the line says Saving.
+        tab.widget->scene().selectNode("not_drawn");
+        QCoreApplication::processEvents();
+        CHECK(tab.reads("edit_graph_document") == before);
+        CHECK(notice->text() == QStringLiteral("Saving the graph change..."));
+        // The save lands: the count goes to the pass it was typed for, on
+        // what the document holds now.
+        const auto first = ux7Ops(tab, before);
+        REQUIRE(first.size() == 1);
+        pass = first[0].at("parameters");
+        document = ux7RasterDocument(pass);
+        tab.commit(document, "ux9-b-2");
+        QCoreApplication::processEvents();
+        REQUIRE(tab.reads("edit_graph_document") == before + 1);
+        const auto ops = ux7Ops(tab, before + 1);
+        REQUIRE(ops.size() == 1);
+        CHECK(ops[0].at("node") == "sea");
+        CHECK(ops[0].at("parameters").at("draw").at("instance_count") == 2);
+        CHECK(ops[0].at("parameters").at("draw").at("vertex_count") ==
+              pass.at("draw").at("vertex_count"));
+    }
+}
+
+// UX-9, decision 4 (engine CT-1): get_status.audio.voices on the bands.
+TEST_CASE("UX-9 decision 4: a voice's state reads as the band under its audio.playback -- "
+          "playing and paused with where it is, idle only in a play session",
+          "[devstudio][graph-canvas][scene][ux9]") {
+    (void)application();
+    using Bands = std::map<std::string, std::string, std::less<>>;
+    const auto status = [](const char *play, Json voices) {
+        return Json{{"play", {{"state", play}}},
+                    {"audio", {{"available", true}, {"backend", "null"}, {"voices", std::move(voices)}}}};
+    };
+    const auto voice = [](const char *state, double at) {
+        return Json::array({{{"node", "clock"}, {"state", state}, {"position_seconds", at}}});
+    };
+    const std::string dot = " \xC2\xB7 ";
+    CHECK(PelicanStudio::graphCanvasVoiceBands(status("edit", voice("idle", 0.0))).empty());
+    CHECK(PelicanStudio::graphCanvasVoiceBands(status("playing", voice("idle", 0.0))) ==
+          Bands{{"clock", "idle"}});
+    CHECK(PelicanStudio::graphCanvasVoiceBands(status("playing", voice("playing", 1.234))) ==
+          Bands{{"clock", "playing" + dot + "1.2 s"}});
+    CHECK(PelicanStudio::graphCanvasVoiceBands(status("paused", voice("paused", 0.04))) ==
+          Bands{{"clock", "paused" + dot + "0.0 s"}});
+    CHECK(PelicanStudio::graphCanvasVoiceBands(Json{{"frame", 3}}).empty());
+
+    // On the canvas: the band under the node, in place.
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    answer(model, readFixture("graph_node_visuals"), visualCatalog());
+    scene.setModel(&model);
+    const auto band = [&]() -> QString {
+        for (QGraphicsItem *item : itemsOfKind(scene, PelicanStudio::GraphCanvasLayerBandItem))
+            if (item->data(PelicanStudio::NodeGraphNameRole).toString() == QLatin1String{"clock"})
+                return dynamic_cast<QGraphicsSimpleTextItem *>(item)->text();
+        return QStringLiteral("<no band>");
+    };
+    CHECK(band() == QStringLiteral("<no band>"));
+    const auto *node = nodeItem(scene, QStringLiteral("clock"));
+    REQUIRE(node != nullptr);
+    scene.setVoiceBands(PelicanStudio::graphCanvasVoiceBands(status("playing", voice("playing", 1.234))));
+    CHECK(band() == QString::fromStdString("playing" + dot + "1.2 s"));
+    CHECK(nodeItem(scene, QStringLiteral("clock")) == node);
+    scene.setVoiceBands(PelicanStudio::graphCanvasVoiceBands(status("edit", voice("idle", 0.0))));
+    CHECK(band().isEmpty());
+}

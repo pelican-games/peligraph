@@ -2,6 +2,7 @@
 
 #include "studiotheme.hpp"
 
+#include <QApplication>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
@@ -238,6 +239,10 @@ GraphCanvasValueFields::GraphCanvasValueFields(GraphCanvasModel &model,
                                                std::function<void()> submitted, QWidget *parent)
     : QWidget{parent}, model_{model}, submitted_{std::move(submitted)} {
     setObjectName(QStringLiteral("pelican.graphCanvasValueFields"));
+    held_ = std::make_unique<GraphCanvasHeldEdits>(model_, this);
+    held_->setSent([this] {
+        if (submitted_) submitted_();
+    });
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 2, 0, 2);
 
@@ -290,8 +295,10 @@ GraphCanvasValueFields::GraphCanvasValueFields(GraphCanvasModel &model,
     playback_form->addRow(caption(tr("Wrap"), playback_), wrap_);
     connect(wrap_, &QComboBox::activated, this, [this](int index) {
         if (loading_ || index < 0) return;
-        afterCommit(model_.setPlaybackField(scope_, node_, "wrap",
-                                          wrap_->itemData(index).toString().toStdString()));
+        afterCommit(send([&model = model_, scope = scope_, node = node_,
+                          wrap = wrap_->itemData(index).toString().toStdString()] {
+            return model.setPlaybackField(scope, node, "wrap", wrap);
+        }));
     });
     const std::map<std::string, QString> labels{{"duration", tr("Duration")},
                                                 {"source_begin", tr("Source begin")},
@@ -308,7 +315,10 @@ GraphCanvasValueFields::GraphCanvasValueFields(GraphCanvasModel &model,
         connect(spin, &QDoubleSpinBox::editingFinished, this, [this, key, spin] {
             if (loading_) return;
             if (std::abs(spin->value() - model_.playbackNumber(scope_, node_, key)) < 1e-9) return;
-            afterCommit(model_.setPlaybackField(scope_, node_, key, spin->value()));
+            afterCommit(send([&model = model_, scope = scope_, node = node_, key,
+                              value = spin->value()] {
+                return model.setPlaybackField(scope, node, key, value);
+            }));
         });
     }
     layout->addWidget(playback_);
@@ -326,8 +336,10 @@ GraphCanvasValueFields::GraphCanvasValueFields(GraphCanvasModel &model,
     scalar_form->addRow(caption(tr("Buffer"), scalar_), scalar_target_);
     connect(scalar_target_, &QComboBox::activated, this, [this](int index) {
         if (loading_ || index < 0) return;
-        afterCommit(model_.setScalarTarget(scope_, node_,
-                                         scalar_target_->itemData(index).toString().toStdString()));
+        afterCommit(send([&model = model_, scope = scope_, node = node_,
+                          target = scalar_target_->itemData(index).toString().toStdString()] {
+            return model.setScalarTarget(scope, node, target);
+        }));
     });
     scalar_components_ = new QComboBox(scalar_);
     scalar_components_->setObjectName(QStringLiteral("pelican.graphCanvasScalar.components"));
@@ -418,6 +430,22 @@ GraphCanvasValueFields::GraphCanvasValueFields(GraphCanvasModel &model,
     hide();
 }
 
+bool GraphCanvasValueFields::send(std::function<bool()> edit) {
+    if (node_.empty()) return false;
+    return held_->sendOrHold(std::move(edit));
+}
+
+void GraphCanvasValueFields::release() {
+    if (node_.empty()) return;
+    QWidget *focus = QApplication::focusWidget();
+    if (focus == nullptr || !isAncestorOf(focus)) return;
+    // Each of these spins sends its value when it is finished with.
+    auto *spin = qobject_cast<QDoubleSpinBox *>(focus);
+    if (spin == nullptr) return;
+    spin->interpretText();
+    Q_EMIT spin->editingFinished();
+}
+
 void GraphCanvasValueFields::afterCommit(bool sent) {
     if (sent) {
         note_->hide();
@@ -438,6 +466,8 @@ void GraphCanvasValueFields::afterCommit(bool sent) {
 }
 
 void GraphCanvasValueFields::showNode(const GraphCanvasNode *node, const std::string &scope) {
+    // UX-9, decision 2: what is typed for the node being let go of goes to it.
+    if (node == nullptr || node->id != node_ || scope != scope_) release();
     const bool shows = node != nullptr &&
                        (node->op == "value.curve" || GraphCanvasModel::isPlayback(node->op) ||
                         node->op == "render.scalar" || node->op == "render.fullscreen" ||
@@ -460,8 +490,10 @@ void GraphCanvasValueFields::showNode(const GraphCanvasNode *node, const std::st
     buffers_->setVisible(op_ == "render.fullscreen" || op_ == "render.raster");
     if (!same) buffer_row_->hide();
     if (op_ == "value.curve") loadCurve(!same);
-    if (GraphCanvasModel::isPlayback(op_)) loadPlayback();
-    if (op_ == "render.scalar") loadScalar();
+    // Another node's numbers replace what a focused field held: what was
+    // typed there went to the node it was typed for (release()).
+    if (GraphCanvasModel::isPlayback(op_)) loadPlayback(!same);
+    if (op_ == "render.scalar") loadScalar(!same);
     if (buffers_->isVisible()) loadBuffers();
     show();
 }
@@ -477,6 +509,7 @@ void GraphCanvasValueFields::followEditable() {
     }
     playback_->setEnabled(editable);
     scalar_->setEnabled(editable);
+    held_->follow();
     buffer_add_->setEnabled(editable);
     buffer_apply_->setEnabled(editable && buffer_source_->count() > 0 &&
                               !buffer_name_->currentText().trimmed().isEmpty());
@@ -562,7 +595,9 @@ void GraphCanvasValueFields::commitRow(int row) {
 
 void GraphCanvasValueFields::commitKeys(const std::vector<GraphCanvasCurveKey> &keys) {
     if (node_.empty()) return;
-    const bool sent = model_.setCurveKeys(scope_, node_, keys);
+    const bool sent = send([&model = model_, scope = scope_, node = node_, keys] {
+        return model.setCurveKeys(scope, node, keys);
+    });
     // What is shown now is what was sent, until the document says otherwise.
     if (sent) {
         shown_keys_ = keys;
@@ -571,7 +606,7 @@ void GraphCanvasValueFields::commitKeys(const std::vector<GraphCanvasCurveKey> &
     afterCommit(sent);
 }
 
-void GraphCanvasValueFields::loadPlayback() {
+void GraphCanvasValueFields::loadPlayback(bool force) {
     loading_ = true;
     const auto parameters = model_.nodeParameters(scope_, node_);
     const auto wrap = parameters.is_object() && parameters.contains("wrap") &&
@@ -583,7 +618,7 @@ void GraphCanvasValueFields::loadPlayback() {
         wrap_->setCurrentIndex(std::max(0, wrap_->findData(qtext(wrap))));
     }
     for (const auto &[key, spin] : playback_numbers_) {
-        if (spin->hasFocus()) continue;
+        if (!force && spin->hasFocus()) continue;
         const QSignalBlocker block{spin};
         spin->setValue(model_.playbackNumber(scope_, node_, key));
         const bool driven = model_.playbackDriven(scope_, node_, key);
@@ -593,7 +628,7 @@ void GraphCanvasValueFields::loadPlayback() {
     loading_ = false;
 }
 
-void GraphCanvasValueFields::loadScalar() {
+void GraphCanvasValueFields::loadScalar(bool force) {
     loading_ = true;
     const auto parameters = model_.nodeParameters(scope_, node_);
     const auto target = parameters.is_object() && parameters.contains("target") &&
@@ -620,7 +655,7 @@ void GraphCanvasValueFields::loadScalar() {
         auto *spin = scalar_values_[static_cast<std::size_t>(index)];
         const QSignalBlocker block{spin};
         spin->setVisible(written && index < components);
-        if (index < static_cast<int>(value.size()) && !spin->hasFocus())
+        if (index < static_cast<int>(value.size()) && (force || !spin->hasFocus()))
             spin->setValue(value[static_cast<std::size_t>(index)]);
     }
     std::int64_t offset = 0;
@@ -647,7 +682,9 @@ void GraphCanvasValueFields::commitScalar() {
             value.push_back(shown || spin->isVisible() ? spin->value() : 0.0);
         }
     }
-    afterCommit(model_.setScalarValue(scope_, node_, value));
+    afterCommit(send([&model = model_, scope = scope_, node = node_, value] {
+        return model.setScalarValue(scope, node, value);
+    }));
     loadScalar();
 }
 
@@ -718,7 +755,9 @@ void GraphCanvasValueFields::addBufferPort() {
     const auto name = GraphCanvasModel::bufferPortName(buffer_name_->currentText().trimmed().toStdString());
     const auto source = buffer_source_->currentData().toString().toStdString();
     if (source.empty()) return;
-    const bool sent = model_.addBufferPort(scope_, node_, name, source, "resource");
+    const bool sent = send([&model = model_, scope = scope_, node = node_, name, source] {
+        return model.addBufferPort(scope, node, name, source, "resource");
+    });
     if (sent) buffer_row_->hide();
     afterCommit(sent);
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../model/graphcanvasmodel.hpp"
+#include "graphcanvasrenderfields.hpp"
 
 #include <QWidget>
 
@@ -86,13 +87,27 @@ class GraphCanvasValueFields final : public QWidget {
     // Where a pass's shader is read for the ports + Buffer port offers.
     void setProjectRoot(const std::filesystem::path &root) { project_root_ = root; }
     [[nodiscard]] GraphCanvasCurveGraph *curveGraph() const noexcept { return graph_; }
+    // UX-9, decision 2: whether a value given while the model was busy waits
+    // to be sent (the owner's notice says "Saving" meanwhile), and the call
+    // made when that changes.
+    [[nodiscard]] bool valuePending() const noexcept { return held_->pending(); }
+    void setPendingChanged(std::function<void()> changed) { held_->setChanged(std::move(changed)); }
 
   private:
+    // UX-9, decision 2: one edit of this node, sent now or held for it while
+    // a save is in flight; false when it was refused.
+    bool send(std::function<bool()> edit);
+    // Before the fields let go of the node: a key's time or value, a
+    // playback's number or a scalar's component typed and not yet confirmed
+    // is sent for it.
+    void release();
+    std::unique_ptr<GraphCanvasHeldEdits> held_;
     void loadCurve(bool force);
     void commitKeys(const std::vector<GraphCanvasCurveKey> &keys);
     void commitRow(int row);
-    void loadPlayback();
-    void loadScalar();
+    // `force`: a focused field is loaded too (another node is shown).
+    void loadPlayback(bool force = false);
+    void loadScalar(bool force = false);
     void commitScalar();
     void loadBuffers();
     void addBufferPort();

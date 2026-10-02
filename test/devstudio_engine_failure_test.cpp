@@ -543,4 +543,79 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
     REQUIRE_FALSE(control_log.contains(engine_fatal));
 }
 
+// UX-9, decision 5 (engine CT-1): a document the engine cannot read at start
+// -- a buffer port without its element -- stops it with the code named on its
+// fatal line, and the Frame Plan's status says the code's sentence and the
+// file to fix, read from the line the running engine really writes (UX-8
+// decision 13 (c) was written against a line made up in a test).
+TEST_CASE("UX-9 decision 5: an engine stopped at start by a buffer port without its element "
+          "says the code's sentence and the file in the Frame Plan's status",
+          "[devstudio][frame-plan][failure][ux9]") {
+    int argument_count = 1;
+    char application_name[] = "pelican_engine_failure_ux9_test";
+    char *arguments[] = {application_name};
+    QApplication application{argument_count, arguments};
+
+    QTemporaryDir sandbox{QDir::temp().filePath(QStringLiteral("pelican_ux9_fatal_XXXXXX"))};
+    REQUIRE(sandbox.isValid());
+    const fs::path project = filesystemPath(sandbox.path()) / "project";
+    fs::copy(fs::path{PELICAN_UX9_FIXTURE_PROJECT}, project, fs::copy_options::recursive);
+    const fs::path document_path = project / "passes" / "main.json";
+    auto document = nlohmann::json::parse(readText(document_path));
+    // The case CT-1 names: a compute task's buffer port, written by hand
+    // without the element it holds.
+    document.at("nodes").push_back(
+        {{"id", "sim"},
+         {"op", "render.compute"},
+         {"parameters",
+          {{"ports", {{"data", {{"kind", "buffer"}, {"access", "read_write"}}}}},
+           {"shader", "shaders/sim.comp"}}},
+         {"outputs", nlohmann::json::array()}});
+    writeText(document_path, document.dump(2) + "\n");
+
+    EnvironmentVariableGuard player_path{
+        "PELICAN_STUDIO_PLAYER", QString::fromUtf8(PELICAN_WP298_PLAYER).toLocal8Bit()};
+    EnvironmentVariableGuard player_arguments{"PELICAN_STUDIO_PLAYER_ARGUMENTS",
+                                              QByteArray{"--size 320x180"}};
+    ViewportObservation broken;
+    QString status_text;
+    QString status_detail;
+    {
+        EmbeddedViewport viewport;
+        FramePlanWidget frame_plan{&viewport};
+        auto *status = frame_plan.findChild<QLabel *>(QStringLiteral("pelican.framePlanStatus"));
+        REQUIRE(status != nullptr);
+        QEventLoop ready_loop;
+        QEventLoop rpc_loop;
+        QEventLoop stopped_loop;
+        QObject connection_context;
+        observeViewport(viewport, broken, ready_loop, rpc_loop, stopped_loop, connection_context);
+        viewport.resize(640, 480);
+        viewport.show();
+        viewport.openProject(displayPath(project));
+        QTimer::singleShot(60000, &stopped_loop, &QEventLoop::quit);
+        if (!broken.stopped) stopped_loop.exec();
+        QApplication::processEvents();
+        status_text = status->text();
+        status_detail = status->toolTip();
+    }
+
+    REQUIRE(broken.stopped);
+    const QString engine_fatal = lastFatalLine(broken.standard_error);
+    INFO("engine stderr: " << broken.standard_error.toStdString());
+    INFO("running engine fatal line: " << engine_fatal.toStdString());
+    INFO("Frame Plan status: " << status_text.toStdString());
+    REQUIRE(engine_fatal.contains(QStringLiteral("graph.port_field_missing@1")));
+    REQUIRE(broken.fatal_error_line == engine_fatal);
+    // The sentence Studio has for the code, with the port, the node and the
+    // field the engine named. The line names no file: the document is the
+    // one project.json names for rendering.
+    CHECK(status_text ==
+          QStringLiteral("The engine stopped: Port data of sim needs element "
+                         "(graph.port_field_missing@1) in passes/main.json. Fix the file (or "
+                         "Reload from disk) to start it again."));
+    // The line itself stays the detail.
+    CHECK(status_detail == engine_fatal);
+}
+
 } // namespace PelicanStudio
