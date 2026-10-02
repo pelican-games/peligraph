@@ -23,7 +23,7 @@
 //   #define PELICAN_LOOP_CUSTOM_PUSH
 //   #include "pelican_loop.glsl"
 //   layout(push_constant) uniform Push {
-//       mat4 projection_view;
+//       vec4 my_tint;
 //       PELICAN_LOOP_PUSH_FIELDS
 //   } push;
 //   PELICAN_LOOP_FUNCTIONS(push)
