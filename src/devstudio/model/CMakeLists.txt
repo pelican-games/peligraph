@@ -18,6 +18,11 @@ add_library(pelican_studio_inspector_model STATIC
     graphcanvasmodel.hpp
     # UX-8: a curve's keys, a playback's fields, buffer ports, packed scalars.
     graphcanvasvalues.cpp
+    # AB-1s: baked analysis tables -- read from the project, placed for a
+    # shader, read again after a Re-bake.
+    audioanalysistables.cpp
+    audioanalysistables.hpp
+    graphcanvasaudioanalysis.cpp
     # GL-3a: fold groups, read and written from the Graph tab.
     graphfoldgroups.cpp
     graphfoldgroups.hpp

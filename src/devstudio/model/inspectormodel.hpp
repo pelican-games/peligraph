@@ -300,6 +300,16 @@ modelReferenceChoices(std::string_view current,
 // project names it: "passes/main.json").
 [[nodiscard]] std::string graphRefusalSource(const nlohmann::json &fields,
                                              std::string_view key);
+// AB-1s, decision 1 (engine AB-1): bake_audio_analysis's five refusals, one
+// sentence each from their fields --
+//   audio.analysis_settings_invalid@1 {field, reason, value}
+//   audio.analysis_busy@1             {out, ticket}
+//   audio.analysis_unavailable@1      {reason}
+//   audio.format_unsupported@1        {asset, out}
+//   audio.analysis_failed@1           {asset, out, message}
+// `error` as for graphLoopRefusalDescription. Answers "<sentence>
+// (<code>).", or empty for any other refusal.
+[[nodiscard]] std::string audioAnalysisRefusalDescription(const nlohmann::json &error);
 // UX-8, decision 13 (c) (engine CT-1): the engine could not read its
 // configuration at start and stopped. Its fatal line ("Pelican fatal error :
 // <message>") reads as "The engine stopped: <the code's sentence> in <file>.

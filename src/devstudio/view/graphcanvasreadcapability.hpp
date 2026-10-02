@@ -108,6 +108,13 @@ struct GraphCanvasReadCapability {
     // from. Left empty: compute nodes are placed as before.
     std::function<qint64(const QString &reference, bool refresh, QString *error)>
         requestShaderInterface;
+    // AB-1s (engine AB-1): bake_audio_analysis {asset, out, settings}, a
+    // ticket get_edit_result polls (running while the worker decodes and
+    // writes); list_derived_assets {}, the files a tool derived and whether
+    // each is stale. It changes no document. Left empty: Bake analysis is
+    // not offered / no table is marked stale.
+    std::function<qint64(const QJsonObject &params, QString *error)> requestBakeAudioAnalysis;
+    std::function<qint64(QString *error)> requestDerivedAssets;
 };
 
 // Production adapter. MainWindow is the composition root that converts its

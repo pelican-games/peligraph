@@ -1,4 +1,5 @@
 #include "graphcanvaswidget.hpp"
+#include "graphcanvasaudioanalysis.hpp"
 #include "graphcanvascomputefields.hpp"
 #include "graphcanvasdrawing.hpp"
 #include "graphcanvasfoldgroups.hpp"
@@ -1415,6 +1416,9 @@ QString GraphCanvasScene::layerBandText(const std::string &id) const {
     // UX-9, decision 4: an audio.playback's voice.
     if (const auto voice = voice_bands_.find(id); voice != voice_bands_.end())
         parts.push_back(qtext(voice->second));
+    // AB-1s, decision 4: the baked table it reads is stale.
+    if (const auto stale = stale_bands_.find(id); stale != stale_bands_.end())
+        parts.push_back(qtext(stale->second));
     return parts.join(QStringLiteral(" \u00b7 "));
 }
 
@@ -1427,6 +1431,12 @@ void GraphCanvasScene::setPlanNodeTimes(std::map<std::string, double, std::less<
 void GraphCanvasScene::setVoiceBands(std::map<std::string, std::string, std::less<>> bands) {
     if (bands == voice_bands_) return;
     voice_bands_ = std::move(bands);
+    refreshLayerBands();
+}
+
+void GraphCanvasScene::setStaleBands(std::map<std::string, std::string, std::less<>> bands) {
+    if (bands == stale_bands_) return;
+    stale_bands_ = std::move(bands);
     refreshLayerBands();
 }
 
@@ -1455,6 +1465,7 @@ void GraphCanvasScene::refreshLayerBands() {
         if (const auto found = bands.find(name); found != bands.end()) {
             if (found->second->text() == text) continue;
             found->second->setText(text);
+            found->second->setBrush(GraphCanvasDrawing::layerBandColor(text, currentStudioTheme()));
             found->second->setToolTip(
                 QObject::tr("%1 below the graph: select the node for its Layers").arg(text));
         } else if (!text.isEmpty()) {
@@ -4900,6 +4911,14 @@ struct GraphCanvasWidget::Impl {
     // GL-3a: the root's fold groups -- drawn over the canvas, picked by
     // their headings, written with fold_nodes -- and their Decisions.
     std::unique_ptr<GraphCanvasFoldController> folds;
+    // AB-1s: Bake analysis..., what a bake offers, and the stale tables.
+    std::unique_ptr<GraphCanvasAudioAnalysis> analysis;
+    QPushButton *audio_bake = nullptr;
+    // Decision 4: the table a Re-bake rewrote, whose readers are written
+    // again once the model takes edits; and the document the last
+    // list_derived_assets was asked for.
+    std::string pending_rebuild;
+    std::string derived_digest;
     // UX-3, decision 2: where a render node lands.
     GraphCanvasPlaceFields *place_fields = nullptr;
     // UX-8: a curve's keys, a playback's map, a scalar's numbers, a
@@ -5550,6 +5569,13 @@ struct GraphCanvasWidget::Impl {
             "Copy .wav or .ogg files into the project's assets/audio and play the first on "
             "this voice (a name already there gets _2)."));
         sound_row->addWidget(audio_import);
+        // AB-1s, decision 1: the sound's analysis, baked into a table.
+        audio_bake = new QPushButton(QObject::tr("Bake analysis…"), audio_row);
+        audio_bake->setObjectName(QStringLiteral("pelican.graphCanvasAudioBake"));
+        audio_bake->setToolTip(QObject::tr(
+            "Bake this sound's loudness and bands into a table the Graph and shaders read "
+            "(assets/analysis/<name>.ktx2)."));
+        sound_row->addWidget(audio_bake);
         audio_layout->addRow(caption(QObject::tr("Sound")), sound_row);
         auto *sound_drop = new SoundDropFilter(
             [this](const std::vector<std::filesystem::path> &files) { importSounds(files); }, &view);
@@ -5560,6 +5586,9 @@ struct GraphCanvasWidget::Impl {
         }
         QObject::connect(audio_import, &QPushButton::clicked, &view, [this] {
             chooseSounds();
+        });
+        QObject::connect(audio_bake, &QPushButton::clicked, &view, [this] {
+            if (analysis) analysis->chooseBake(audio_asset->currentText().trimmed().toStdString());
         });
         audio_layout->addRow(caption(QObject::tr("Bus")), audio_bus);
         audio_layout->addRow(caption(QObject::tr("Wrap")), audio_wrap);
@@ -5736,6 +5765,23 @@ struct GraphCanvasWidget::Impl {
                 },
             });
         side_layout->insertWidget(side_layout->indexOf(pass_fields), folds->fields());
+        // AB-1s: the bake's row under the notice, the stale row under the
+        // Sound fields.
+        analysis = std::make_unique<GraphCanvasAudioAnalysis>(
+            graph, model, view,
+            GraphCanvasAudioAnalysis::Hooks{
+                .notice = [this] { showNotice(); },
+                .staleChanged = [this] { syncStale(); },
+                .useInGraph = [this](const GraphCanvasAnalysisTable &table) { useTableInGraph(table); },
+                .useInShader = [this](const GraphCanvasAnalysisTable &table) { useTableInShader(table); },
+                .rebaked =
+                    [this](const std::string &asset) {
+                        pending_rebuild = asset;
+                        followRebuild();
+                    },
+            });
+        layout->insertWidget(layout->indexOf(notice) + 1, analysis->bakeRow());
+        side_layout->insertWidget(side_layout->indexOf(audio_row) + 1, analysis->staleRow());
         scene->scopeChanged = [this] {
             syncScopeControls();
             syncValueControls();
@@ -5830,6 +5876,8 @@ struct GraphCanvasWidget::Impl {
         QObject::connect(refresh, &QPushButton::clicked, &view, [this] {
             model.refresh();
             dispatch();
+            // AB-1s, decision 4: a sound changed on disk moves no document.
+            readDerivedIfMoved(true);
         });
         QObject::connect(
             scopes, &QComboBox::currentIndexChanged, &view, [this](int index) {
@@ -6119,6 +6167,11 @@ struct GraphCanvasWidget::Impl {
 
     void deliverResult(qint64 request_id, const QByteArray &result_json) {
         if (deliverPassEdit(request_id, result_json)) return;
+        // AB-1s: bake_audio_analysis, its ticket, list_derived_assets.
+        if (analysis && analysis->deliverResult(request_id, result_json)) {
+            dispatch();
+            return;
+        }
         // GL-3a: get_fold_groups, the root's decisions, fold_nodes.
         if (folds && folds->deliverResult(request_id, result_json)) {
             dispatch();
@@ -6141,6 +6194,11 @@ struct GraphCanvasWidget::Impl {
         // GL-1e: an edit refused for a moved document, once the context
         // read after it has arrived.
         resumePassRetry();
+        // AB-1s, decision 4: the stale tables of the document read now, and
+        // the readers of a re-baked one written again once edits go out.
+        readDerivedIfMoved(false);
+        followRebuild();
+        syncStale();
         restartEngineIfAsked();
     }
 
@@ -6240,6 +6298,10 @@ struct GraphCanvasWidget::Impl {
     }
 
     void deliverFailure(qint64 request_id, const QString &message) {
+        if (analysis && analysis->deliverFailure(request_id, message)) {
+            dispatch();
+            return;
+        }
         if (folds && folds->deliverFailure(request_id, message)) {
             dispatch();
             return;
@@ -7097,6 +7159,106 @@ struct GraphCanvasWidget::Impl {
         dispatch();
     }
 
+    // --- AB-1s: a baked analysis table.
+
+    // Decision 2: Use in Graph -- a value.sample_table on the table's rms
+    // (its first row when it has none), at the scene time, placed as the
+    // palette places one.
+    void useTableInGraph(const GraphCanvasAnalysisTable &table) {
+        const auto &features = table.layout.features;
+        const auto row = std::ranges::find(features, std::string{"rms"}) != features.end()
+                             ? std::string{"rms"}
+                             : (features.empty() ? std::string{"rms"} : features.front());
+        PaletteChoice choice;
+        choice.scope = model.currentScope();
+        choice.op = "value.sample_table";
+        choice.seed = nlohmann::json{
+            {"parameters", nlohmann::json{{"asset", "project://" + table.asset}, {"row", row}}}};
+        placeWhenEditable(std::move(choice));
+    }
+
+    // Decision 3: Use in a shader -- the image, its layout and the sinks
+    // that fill it, in one edit, connected to the picked pass.
+    void useTableInShader(const GraphCanvasAnalysisTable &table) {
+        if (!model.canEdit()) {
+            model.setEditNotice({InspectorNoticeKind::Error,
+                                 "Wait for the current change to finish, then use the table again."});
+            showNotice();
+            return;
+        }
+        const auto scope = model.currentScope();
+        std::string pass;
+        if (const auto &selected = scene->selectedNode();
+            selected && scene->selectedScope() == scope) {
+            const auto nodes = model.nodes(scope);
+            const auto found = std::ranges::find(nodes, *selected, &GraphCanvasNode::id);
+            if (found != nodes.end() &&
+                (found->op == "render.fullscreen" || found->op == "render.raster"))
+                pass = found->id;
+        }
+        GraphCanvasModel::SampleTableShaderPlacement placed;
+        if (!model.addSampleTableShader(scope, table.asset, table.layout.rows_per_feature,
+                                        table.layout.sample_count, table.layout.hop_seconds, pass,
+                                        &placed)) {
+            showNotice();
+            return;
+        }
+        dispatch();
+        // The row the line reads: band 0 when there are bands, else the first.
+        std::size_t feature = 0;
+        const auto &features = table.layout.features;
+        if (const auto band = std::ranges::find(features, std::string{"band:0"}); band != features.end())
+            feature = static_cast<std::size_t>(band - features.begin());
+        const auto image = placed.image_port.empty() ? placed.image : placed.image_port;
+        const auto layout_port = placed.buffer_port.empty() ? placed.buffer : placed.buffer_port;
+        std::string line = "Read the table in the shader: #include \"pelican_sample_table.glsl\" and "
+                           "call pelican_sample_table (the line below).";
+        if (!placed.note.empty()) line = placed.note + " " + line;
+        analysis->showShaderLine(sampleTableShaderLine(image, layout_port, feature), line);
+        showNotice();
+    }
+
+    // Decision 4: after a Re-bake, the readers read the new table once the
+    // graph is built again -- one edit, sent when the model takes it.
+    void followRebuild() {
+        if (pending_rebuild.empty() || !model.canEdit()) return;
+        const auto asset = std::exchange(pending_rebuild, {});
+        if (model.rebuildSampleTableReaders(asset)) dispatch();
+    }
+
+    // Decision 4: list_derived_assets, when the document the tab holds is
+    // not the one it was last asked for (the project opened, an edit, a
+    // Refresh that moved it) or `force` (Refresh).
+    void readDerivedIfMoved(bool force) {
+        if (!analysis || !model.connected() || model.digest().empty()) return;
+        if (!force && derived_digest == model.digest()) return;
+        derived_digest = model.digest();
+        analysis->readDerived();
+    }
+
+    // The bands of the root's nodes that read a stale table, and the picked
+    // node's stale row.
+    void syncStale() {
+        std::map<std::string, std::string, std::less<>> bands;
+        if (analysis)
+            for (const auto &node : model.nodes({})) {
+                const auto asset = model.sampleTableAssetOf({}, node.id);
+                if (asset.empty()) continue;
+                if (const auto *entry = analysis->derived(asset); entry != nullptr && entry->stale)
+                    bands[node.id] = staleBandText(*entry);
+            }
+        scene->setStaleBands(std::move(bands));
+        syncStaleRow();
+    }
+
+    void syncStaleRow() {
+        if (!analysis) return;
+        const auto &selected = scene->selectedNode();
+        analysis->showNode(selected ? model.sampleTableAssetOf(scene->selectedScope(), *selected)
+                                    : std::string{},
+                           model.canEdit());
+    }
+
     void reloadAudioAssets() {
         auto read = readProjectAudioAssets(project_root);
         model.setAudioAssets(std::move(read.assets));
@@ -7159,6 +7321,11 @@ struct GraphCanvasWidget::Impl {
             follows_position
                 ? QObject::tr("This voice follows its position input, so it has no wrap.")
                 : QObject::tr("How the sound wraps when its events play it past the end."));
+        // AB-1s, decision 1: a bake changes no document; it needs a sound
+        // and an engine that bakes.
+        audio_bake->setVisible(analysis && analysis->available());
+        audio_bake->setEnabled(analysis && !project_root.empty() &&
+                               !audio_asset->currentText().trimmed().isEmpty());
         audio_row->show();
     }
 
@@ -7710,6 +7877,7 @@ struct GraphCanvasWidget::Impl {
             label_edit->clear();
             syncUiNodeRow(nullptr);
             syncAudioRow(nullptr);
+            syncStaleRow();
             loop_fields->showLoop({});
             draw_fields->showNode(nullptr);
             material_fields->showNode(nullptr, {});
@@ -7732,6 +7900,7 @@ struct GraphCanvasWidget::Impl {
             label_edit->clear();
             syncUiNodeRow(nullptr);
             syncAudioRow(nullptr);
+            syncStaleRow();
             loop_fields->showLoop({});
             draw_fields->showNode(nullptr);
             material_fields->showNode(nullptr, {});
@@ -7750,6 +7919,7 @@ struct GraphCanvasWidget::Impl {
         if (found->op == "render.compute") refreshComputeShaderChoices();
         syncUiNodeRow(&*found);
         syncAudioRow(&*found);
+        syncStaleRow();
         // LP-4c: a loop's parameters are its fields, not rows of JSON.
         loop_fields->showLoop(found->loop ? found->id : std::string{});
         // LP-4e: and so are a material pass's and a draw step's.
@@ -8488,6 +8658,11 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
     impl_->reloadUiNodes();
     impl_->reloadAudioAssets();
     impl_->audio_row_node.clear();
+    // AB-1s, decision 4: the project's tables, asked for once the engine
+    // has a document (the next read when it has none yet).
+    impl_->analysis->setProjectRoot(project_root);
+    impl_->derived_digest.clear();
+    impl_->readDerivedIfMoved(true);
     impl_->showDetails();
 }
 

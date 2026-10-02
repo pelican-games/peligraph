@@ -2174,6 +2174,45 @@ class GraphCanvasModel {
     // travel as they were. False when nothing changed or no edit can go out.
     bool setNodeParameters(std::string_view scope, const std::string &node,
                            const nlohmann::json &parameters);
+
+    // --- AB-1s: a sound's analysis baked into a table (engine AB-1).
+
+    // Decision 3: what Use in a shader placed -- the persistent image the
+    // table starts (initial.asset), the vec4 buffer of its layout, the two
+    // render.scalar sinks that fill it (rows_per_feature, sample_count,
+    // hop_seconds from the layout; scene_time from the scope's clock), and,
+    // when `pass` was given, the pass ports they were connected to (empty
+    // when its shader declares no binding for one; `note` says which).
+    struct SampleTableShaderPlacement {
+        std::string image;
+        std::string buffer;
+        std::string values;
+        std::string time;
+        std::string image_port;
+        std::string buffer_port;
+        std::string note;
+    };
+    // The one edit: the nodes, and the pass's two ports and lines. Empty
+    // when the table's asset is empty or the scope cannot take nodes.
+    [[nodiscard]] nlohmann::json sampleTableShaderOps(std::string_view scope, const std::string &asset,
+                                                      std::uint32_t rows_per_feature,
+                                                      std::uint32_t sample_count, double hop_seconds,
+                                                      const std::string &pass,
+                                                      SampleTableShaderPlacement *placed) const;
+    bool addSampleTableShader(std::string_view scope, const std::string &asset,
+                              std::uint32_t rows_per_feature, std::uint32_t sample_count,
+                              double hop_seconds, const std::string &pass,
+                              SampleTableShaderPlacement *placed);
+    // Decision 4: the table a node reads -- a value.sample_table's asset or
+    // a render.image's initial.asset -- without its project://; empty for
+    // any other node.
+    [[nodiscard]] std::string sampleTableAssetOf(std::string_view scope, std::string_view node) const;
+    // The root's value.sample_table nodes reading `asset`.
+    [[nodiscard]] std::vector<std::string> sampleTableReaders(std::string_view asset) const;
+    // Decision 4: after a Re-bake, the readers' parameters written again as
+    // they are (one set_node_parameters each, one edit): the engine builds
+    // the graph again and reads the new table. False when none reads it.
+    bool rebuildSampleTableReaders(std::string_view asset);
     // get_render_authoring_context's render_target_vocabulary: the image
     // formats and usage flags the engine's parser accepts. Known once a
     // context carrying it arrived; an engine without it leaves both empty.

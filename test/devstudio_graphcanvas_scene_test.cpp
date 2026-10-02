@@ -1,3 +1,4 @@
+#include "graphcanvasaudioanalysis.hpp"
 #include "fullscreenshadertemplate.hpp"
 #include "graphcanvascomputefields.hpp"
 #include "graphcanvasloopfields.hpp"
@@ -53,6 +54,7 @@
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QSpinBox>
+#include <QThread>
 #include <QStandardItemModel>
 #include <QToolButton>
 #include <QLabel>
@@ -11396,4 +11398,237 @@ TEST_CASE("UX-12e decision 5: in the root the palette greys an op that needs an 
     CHECK(palette->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->isEnabled());
     palette->reject();
     QCoreApplication::processEvents();
+}
+
+// --- AB-1s: a sound's analysis baked into a table (engine AB-1).
+
+TEST_CASE("AB-1s decision 1: Bake analysis... asks for the features, bands, hop, smoothing, channels "
+          "and table, sends bake_audio_analysis, says Baking while it runs and Baked when it is "
+          "committed; a refusal is one sentence",
+          "[devstudio][graph-canvas][scene][ab1s]") {
+    const auto catalog = engineCatalog();
+    if (!catalogHas(catalog, "audio.playback")) SKIP("this build registers no pelican.audio module");
+    (void)application();
+    const AudioProject project;
+    RecordedCapability transport;
+    auto capability = transport.capability();
+    capability.requestBakeAudioAnalysis = [&transport](const QJsonObject &params, QString *) {
+        transport.calls.push_back({QStringLiteral("bake_audio_analysis"), {}, 0,
+                                   QJsonDocument{params}.toJson(QJsonDocument::Compact)});
+        return transport.next++;
+    };
+    capability.requestDerivedAssets = [&transport](QString *) {
+        transport.calls.push_back({QStringLiteral("list_derived_assets")});
+        return transport.next++;
+    };
+    PelicanStudio::GraphCanvasWidget widget{capability};
+    widget.setProjectRoot(project.root);
+    widget.resize(1100, 800);
+    widget.show();
+    QCoreApplication::processEvents();
+    const auto deliver = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    deliver(QStringLiteral("get_graph_instances"), context(audioDocument()));
+    deliver(QStringLiteral("get_graph_catalog"), catalog);
+    REQUIRE(widget.model().canEdit());
+    // The project opened and the document read: the tables are asked about.
+    CHECK(transport.countOf(QStringLiteral("list_derived_assets")) >= 1);
+    deliver(QStringLiteral("list_derived_assets"), Json::array());
+    widget.scene().selectNode("voice");
+    QCoreApplication::processEvents();
+    auto *bake = widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasAudioBake"));
+    REQUIRE(bake != nullptr);
+    REQUIRE(bake->isVisible());
+    REQUIRE(bake->isEnabled());
+    auto *line = widget.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasBake.line"));
+    auto *use_in_graph = widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasBake.useInGraph"));
+    REQUIRE(line != nullptr);
+    REQUIRE(use_in_graph != nullptr);
+
+    const auto openDialog = [&] {
+        // The dialog closed before is gone first.
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        bake->click();
+        QCoreApplication::processEvents();
+        auto *dialog = widget.findChild<QDialog *>(
+            QStringLiteral("pelican.audioBakeDialog"));
+        REQUIRE(dialog != nullptr);
+        return dialog;
+    };
+    const auto bakeSent = [&] {
+        const auto id = transport.idOf(QStringLiteral("bake_audio_analysis"));
+        REQUIRE(id != 0);
+        return Json::parse(transport.calls[static_cast<std::size_t>(id - 1)].body.toStdString());
+    };
+
+    auto *dialog = openDialog();
+    // The table goes beside the others, named for the sound.
+    auto *out = dialog->findChild<QLineEdit *>(QStringLiteral("pelican.audioBakeDialog.out"));
+    REQUIRE(out != nullptr);
+    CHECK(out->text() == QStringLiteral("assets/analysis/hit.ktx2"));
+    dialog->findChild<QCheckBox *>(QStringLiteral("pelican.audioBakeDialog.peak"))->setChecked(false);
+    dialog->findChild<QSpinBox *>(QStringLiteral("pelican.audioBakeDialog.bandCount"))->setValue(4);
+    dialog->findChild<QDoubleSpinBox *>(QStringLiteral("pelican.audioBakeDialog.release"))->setValue(50.0);
+    auto *channels = dialog->findChild<QComboBox *>(QStringLiteral("pelican.audioBakeDialog.channels"));
+    channels->setCurrentIndex(channels->findData(QStringLiteral("left")));
+    // No feature, or a table that is no .ktx2: nothing to bake.
+    auto *rms = dialog->findChild<QCheckBox *>(QStringLiteral("pelican.audioBakeDialog.rms"));
+    auto *bands = dialog->findChild<QCheckBox *>(QStringLiteral("pelican.audioBakeDialog.bands"));
+    auto *ok = dialog->findChild<QPushButton *>(QStringLiteral("pelican.audioBakeDialog.bake"));
+    rms->setChecked(false);
+    bands->setChecked(false);
+    CHECK_FALSE(ok->isEnabled());
+    rms->setChecked(true);
+    bands->setChecked(true);
+    out->setText(QStringLiteral("assets/analysis/hit.png"));
+    CHECK_FALSE(ok->isEnabled());
+    out->setText(QStringLiteral("assets/analysis/hit.ktx2"));
+    REQUIRE(ok->isEnabled());
+    ok->click();
+    QCoreApplication::processEvents();
+    QCoreApplication::processEvents();
+    REQUIRE(transport.countOf(QStringLiteral("bake_audio_analysis")) == 1);
+    CHECK(bakeSent() == Json{{"asset", "project://sounds/hit.wav"},
+                             {"out", "assets/analysis/hit.ktx2"},
+                             {"settings",
+                              {{"features", {"rms", "bands"}},
+                               {"bands", 4},
+                               {"hop_ms", 10.0},
+                               {"smoothing", {{"attack_ms", 0.0}, {"release_ms", 50.0}}},
+                               {"channels", "left"}}}});
+    deliver(QStringLiteral("bake_audio_analysis"),
+            Json{{"ticket", "render-config-edit-7"}, {"status", "accepted"}});
+    CHECK(line->text() == QString::fromUtf8("Baking hit.wav\xE2\x80\xA6 (0 s)"));
+    CHECK(widget.model().notice().message == "Baking hit.wav\xE2\x80\xA6 (0 s)");
+    deliver(QStringLiteral("get_edit_result"), Json{{"ticket", "render-config-edit-7"}, {"status", "running"}});
+    CHECK(line->text().startsWith(QStringLiteral("Baking hit.wav")));
+    CHECK_FALSE(use_in_graph->isVisible());
+    // The clock asks again.
+    const auto polls = transport.countOf(QStringLiteral("get_edit_result"));
+    for (int wait = 0; wait < 200 && transport.countOf(QStringLiteral("get_edit_result")) == polls; ++wait) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        QThread::msleep(5);
+    }
+    REQUIRE(transport.countOf(QStringLiteral("get_edit_result")) == polls + 1);
+    const auto derived_reads = transport.countOf(QStringLiteral("list_derived_assets"));
+    deliver(QStringLiteral("get_edit_result"),
+            Json{{"ticket", "render-config-edit-7"},
+                 {"status", "committed"},
+                 {"committed", true},
+                 {"operation", "bake_audio_analysis"},
+                 {"asset", "project://sounds/hit.wav"},
+                 {"out", "assets/analysis/hit.ktx2"},
+                 {"manifest", "assets/analysis/hit.ktx2.import.json"},
+                 {"layout", {{"width", 4096}, {"rows_per_feature", 1}, {"sample_count", 101},
+                             {"hop_seconds", 0.01},
+                             {"features", {"rms", "band:0", "band:1", "band:2", "band:3"}}}}});
+    CHECK(line->text() == QString::fromUtf8("Baked assets/analysis/hit.ktx2: rms, band:0..band:3 \xC3\x97 101 samples"));
+    CHECK(widget.model().notice().kind == PelicanStudio::InspectorNoticeKind::Information);
+    CHECK(use_in_graph->isVisible());
+    CHECK(widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasBake.useInShader"))->isVisible());
+    // A bake changes which tables are stale.
+    CHECK(transport.countOf(QStringLiteral("list_derived_assets")) == derived_reads + 1);
+
+    // Refused: one sentence from the refusal's fields.
+    openDialog()->findChild<QPushButton *>(QStringLiteral("pelican.audioBakeDialog.bake"))->click();
+    QCoreApplication::processEvents();
+    QCoreApplication::processEvents();
+    REQUIRE(transport.countOf(QStringLiteral("bake_audio_analysis")) == 2);
+    deliver(QStringLiteral("bake_audio_analysis"),
+            Json{{"status", "rejected"},
+                 {"committed", false},
+                 {"error", {{"code", "audio.analysis_settings_invalid@1"},
+                            {"message", "hop_ms must be 1..1000"},
+                            {"field", "hop_ms"},
+                            {"reason", "range"},
+                            {"value", 0}}}});
+    CHECK(line->text() ==
+          QStringLiteral("The analysis cannot take hop_ms = 0 (range) (audio.analysis_settings_invalid@1)."));
+    CHECK(widget.model().notice().kind == PelicanStudio::InspectorNoticeKind::Error);
+    // The other four read from their fields too.
+    CHECK(PelicanStudio::audioAnalysisRefusalDescription(
+              {{"code", "audio.analysis_busy@1"}, {"out", "assets/analysis/hit.ktx2"}, {"ticket", "t"}}) ==
+          "assets/analysis/hit.ktx2 is being baked already; wait for it to finish (audio.analysis_busy@1).");
+    CHECK(PelicanStudio::audioAnalysisRefusalDescription(
+              {{"code", "audio.analysis_unavailable@1"}, {"reason", "built_without_audio"}}) ==
+          "This engine cannot bake a sound's analysis (built_without_audio) (audio.analysis_unavailable@1).");
+    CHECK(PelicanStudio::audioAnalysisRefusalDescription(
+              {{"code", "audio.format_unsupported@1"}, {"asset", "project://sounds/hit.wav"}}) ==
+          "sounds/hit.wav is not a sound the analysis reads: its extension and its contents must both "
+          "say WAV, or both Ogg Vorbis (audio.format_unsupported@1).");
+    CHECK(PelicanStudio::audioAnalysisRefusalDescription(
+              {{"code", "audio.analysis_failed@1"}, {"asset", "sounds/hit.wav"},
+               {"out", "assets/analysis/hit.ktx2"}, {"message", "cannot read"}}) ==
+          "sounds/hit.wav could not be baked into assets/analysis/hit.ktx2: cannot read "
+          "(audio.analysis_failed@1).");
+    CHECK(PelicanStudio::audioAnalysisRefusalDescription({{"code", "graph.loop_nested@1"}}).empty());
+}
+
+TEST_CASE("AB-1s decision 2: value.sample_table's dialog offers the project's baked tables and the "
+          "rows of the one picked, rms first, and is placed with them",
+          "[devstudio][graph-canvas][scene][ab1s]") {
+    (void)application();
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_ab1s_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "assets" / "analysis");
+    const auto manifest = [&](const char *name, const Json &features, const char *tool) {
+        std::ofstream{root / "assets" / "analysis" / (std::string{name} + ".ktx2.import.json")}
+            << Json{{"schema", "pelican.import"},
+                    {"version", 1},
+                    {"tool", {{"name", tool}, {"version", "1"}}},
+                    {"source",
+                     {{"file", std::string{"../audio/"} + name + ".wav"},
+                      {"metadata",
+                       {{"layout", {{"width", 4096}, {"rows_per_feature", 1}, {"sample_count", 11},
+                                    {"hop_seconds", 0.01}, {"features", features}}}}}}},
+                    {"outputs", Json::array({{{"file", std::string{name} + ".ktx2"}}})}}
+                   .dump();
+    };
+    manifest("tone", Json{"peak", "rms", "band:0", "band:1"}, "pelican.audio_analysis");
+    manifest("kick", Json{"band:0", "band:1"}, "pelican.audio_analysis");
+    // Another tool's file is no table.
+    manifest("photo", Json{"rms"}, "someone.else");
+    {
+        GraphCanvasModel model;
+        model.setConnected(true);
+        answer(model, ux3Document(), engineCatalog());
+        REQUIRE(model.canEdit());
+        PelicanStudio::GraphCanvasRequiredDialog ask{model, {}, "value.sample_table", nullptr, root};
+        REQUIRE(ask.asks());
+        auto *asset = ask.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRequired.asset"));
+        auto *row = ask.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRequired.row"));
+        REQUIRE(asset != nullptr);
+        REQUIRE(row != nullptr);
+        CHECK(ux2Items(*asset) == QStringList{"assets/analysis/kick.ktx2", "assets/analysis/tone.ktx2"});
+        // The first table's rows; no rms there, so its first.
+        CHECK(ux2Items(*row) == QStringList{"band:0", "band:1"});
+        CHECK(row->currentText() == QStringLiteral("band:0"));
+        asset->setCurrentIndex(asset->findData(QStringLiteral("project://assets/analysis/tone.ktx2")));
+        CHECK(ux2Items(*row) == QStringList{"peak", "rms", "band:0", "band:1"});
+        CHECK(row->currentText() == QStringLiteral("band:0"));
+        row->setCurrentIndex(row->findData(QStringLiteral("rms")));
+        auto *ok = ask.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasRequired.ok"));
+        REQUIRE(ok != nullptr);
+        CHECK(ok->isEnabled());
+        const Json parameters{{"asset", "project://assets/analysis/tone.ktx2"}, {"row", "rms"}};
+        CHECK(ask.parameters() == parameters);
+        // Placed with them, at the scene time: no time edge.
+        const auto ops = model.addNodeOpsIn({}, "value.sample_table", {}, ask.seed());
+        REQUIRE(ops.size() == 1);
+        CHECK(ops.back().at("node").at("parameters") == parameters);
+        CHECK_FALSE(ops.back().at("node").contains("inputs"));
+
+        // No table yet: nothing to pick, nothing to place.
+        const auto empty = std::filesystem::temp_directory_path() / "pelican_ab1s_none";
+        PelicanStudio::GraphCanvasRequiredDialog none{model, {}, "value.sample_table", nullptr, empty};
+        CHECK(none.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRequired.asset"))->count() == 0);
+        CHECK_FALSE(none.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasRequired.ok"))->isEnabled());
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
 }

@@ -962,7 +962,7 @@ struct GraphLoopRefusalText {
     std::string_view code;
     std::string_view sentence;
 };
-constexpr std::array<GraphLoopRefusalText, 46> GraphLoopRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 48> GraphLoopRefusalTexts{{
     {"graph.loop_branch_else_missing@1",
      "Loop {node} has no else: its last branch must have no condition"},
     {"graph.loop_branch_interface@1",
@@ -1075,6 +1075,10 @@ constexpr std::array<GraphLoopRefusalText, 46> GraphLoopRefusalTexts{{
     {"graph.image_initial_mismatch@1",
      "{asset} is {actual} but {node} is {expected} \xE2\x80\x94 bake the image to match "
      "(pelican_cli image ktx2) or change the image's format"},
+    // AB-1s, decision 2 (engine AB-1): value.sample_table reads a baked
+    // table when the graph is built.
+    {"value.sample_table_unreadable@1", "{node} cannot read the table {asset}: {reason}"},
+    {"value.sample_table_row_unknown@1", "{asset} has no row {row}; its rows are {rows}"},
 }};
 
 // IA-1s, decision 2: graph.image_initial_mismatch@1, by `what`. extent reads
@@ -1385,6 +1389,53 @@ std::string graphRefusalSource(const nlohmann::json &fields, std::string_view ke
     constexpr std::string_view project = "project://";
     if (key == "document" && value.starts_with(project)) value.remove_prefix(project.size());
     return std::string{value};
+}
+
+namespace {
+
+// AB-1s, decision 1: bake_audio_analysis's refusals (engine AB-1).
+constexpr std::array<GraphLoopRefusalText, 5> AudioAnalysisRefusalTexts{{
+    {"audio.analysis_settings_invalid@1", "The analysis cannot take {field} = {value} ({reason})"},
+    {"audio.analysis_busy@1", "{out} is being baked already; wait for it to finish"},
+    {"audio.analysis_unavailable@1", "This engine cannot bake a sound's analysis ({reason})"},
+    {"audio.format_unsupported@1",
+     "{asset} is not a sound the analysis reads: its extension and its contents must both say "
+     "WAV, or both Ogg Vorbis"},
+    {"audio.analysis_failed@1", "{asset} could not be baked into {out}: {message}"},
+}};
+
+} // namespace
+
+std::string audioAnalysisRefusalDescription(const nlohmann::json &error) {
+    if (!error.is_object()) return {};
+    const auto code = error.value("code", std::string{});
+    const auto entry = std::ranges::find(AudioAnalysisRefusalTexts, code, &GraphLoopRefusalText::code);
+    if (entry == AudioAnalysisRefusalTexts.end()) return {};
+    auto fields = graphRefusalFields(error, entry->code).value_or(nlohmann::json::object());
+    // A field the refusal leaves out reads as nothing rather than "?".
+    for (const char *key : {"field", "value", "reason", "out", "asset", "message"})
+        if (!fields.contains(key)) fields[key] = key == std::string_view{"message"}
+                                                     ? error.value("message", std::string{})
+                                                     : std::string{};
+    if (const auto value = fields.find("value"); value != fields.end() && !value->is_string())
+        fields["value"] = value->dump();
+    for (const char *key : {"asset", "out"})
+        fields[key] = graphRefusalSource(nlohmann::json{{"document", graphRefusalFieldText(fields, key)}},
+                                         "document");
+    std::string sentence;
+    const std::string_view pattern = entry->sentence;
+    for (std::size_t index = 0; index < pattern.size();) {
+        const auto open = pattern.find('{', index);
+        if (open == std::string_view::npos) {
+            sentence += pattern.substr(index);
+            break;
+        }
+        const auto close = pattern.find('}', open);
+        sentence += pattern.substr(index, open - index);
+        sentence += graphRefusalFieldText(fields, pattern.substr(open + 1, close - open - 1));
+        index = close + 1;
+    }
+    return sentence + " (" + std::string{entry->code} + ").";
 }
 
 std::string projectRenderDocument(const std::filesystem::path &project_root) {

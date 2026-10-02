@@ -91,6 +91,9 @@ add_library(pelican_studio_view STATIC
     # GL-3a: fold groups on the Graph canvas, and their Decisions.
     graphcanvasfoldgroups.cpp
     graphcanvasfoldgroups.hpp
+    # AB-1s: Bake analysis, Use in Graph / in a shader, and Re-bake.
+    graphcanvasaudioanalysis.cpp
+    graphcanvasaudioanalysis.hpp
     graphcanvasreadcapability.cpp
     graphcanvasreadcapability.hpp
     proceduralassetdialog.cpp

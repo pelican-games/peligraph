@@ -137,6 +137,11 @@ QString numberText(double value) {
     return QString::number(value, 'g', 6);
 }
 
+QColor layerBandColor(const QString &text, const StudioTheme &theme) {
+    return text.contains(QStringLiteral("stale: ")) ? QColor{QStringLiteral("#e67e22")}
+                                                    : theme.canvas.dim_text;
+}
+
 Builder::Builder(QGraphicsScene &scene, QString scope)
     : scene_{scene}, scope_text_{std::move(scope)}, theme_{currentStudioTheme()},
       label_font_{drawingFont(-0.5)}, detail_font_{drawingFont(-1.0)},
@@ -1580,7 +1585,7 @@ void Builder::addFoldedButton(const QString &name, const QString &text, const QP
 void Builder::addLayerBand(QGraphicsItem &node, const QString &name, const QString &text) {
     auto *line = new QGraphicsSimpleTextItem(text, &node);
     line->setFont(detail_font_);
-    line->setBrush(theme_.canvas.dim_text);
+    line->setBrush(layerBandColor(text, theme_));
     const QRectF frame = node.boundingRect();
     line->setPos(frame.left() + 8.0, frame.bottom() + 3.0);
     line->setZValue(1.0);

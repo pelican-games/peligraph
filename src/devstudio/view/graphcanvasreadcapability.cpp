@@ -166,6 +166,12 @@ GraphCanvasReadCapability graphCanvasReadCapability(EmbeddedViewport &viewport) 
             if (refresh) params.insert(QStringLiteral("refresh"), true);
             return viewport.requestRpc(QStringLiteral("get_shader_interface"), params, error);
         },
+        .requestBakeAudioAnalysis = [&viewport](const QJsonObject &params, QString *error) {
+            return viewport.requestRpc(QStringLiteral("bake_audio_analysis"), params, error);
+        },
+        .requestDerivedAssets = [&viewport](QString *error) {
+            return viewport.requestRpc(QStringLiteral("list_derived_assets"), QJsonObject{}, error);
+        },
     };
 }
 

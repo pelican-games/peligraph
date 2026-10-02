@@ -594,6 +594,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/featureparameterform.cpp
     # GL-3a: the fold groups the Graph tab draws and writes.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
+    # AB-1s: Bake analysis, Use in Graph / in a shader, Re-bake.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasaudioanalysis.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
@@ -648,6 +650,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasparameterfields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/featureparameterform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
+    # AB-1s: Bake analysis, Use in Graph / in a shader, Re-bake.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasaudioanalysis.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp

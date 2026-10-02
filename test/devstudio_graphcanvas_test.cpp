@@ -1,3 +1,4 @@
+#include "audioanalysistables.hpp"
 #include "graphcanvasmodel.hpp"
 #include "graphcomposition.hpp"
 #include "graphmodule.hpp"
@@ -4265,4 +4266,189 @@ TEST_CASE("IA-1s decision 6: a graph refusal names the document and the definiti
               "passes/main.json") ==
           "The engine stopped: Port data of sim needs element (graph.port_field_missing@1) in "
           "passes/main.json. Fix the file (or Reload from disk) to start it again.");
+}
+
+// --- AB-1s: a sound's analysis baked into a table (engine AB-1).
+
+namespace {
+
+// ux8Document's pass, whose shader the plan says declares a sampled image at
+// binding 0 and the layout's buffer at binding 1.
+Json ab1sPlan(bool image = true) {
+    auto declarations = Json::array();
+    if (image)
+        declarations.push_back(
+            {{"binding", 0}, {"type", "sampled_image"}, {"name", "tone_table"}, {"variadic", false}});
+    declarations.push_back({{"binding", image ? 1 : 0},
+                            {"type", "storage_buffer"},
+                            {"name", "pelican_resource_tone_layout"},
+                            {"variadic", false}});
+    return {{"schema", "pelican.frame_plan"},
+            {"version", 1},
+            {"nodes", Json::array({{{"name", "shade"},
+                                    {"kind", "fullscreen"},
+                                    {"pass_inputs",
+                                     {{"state", "declared"},
+                                      {"fragment", "project://shaders/level"},
+                                      {"declarations", declarations},
+                                      {"variadic_range", nullptr}}}}})}};
+}
+
+// A bake's manifest as the engine writes it (audioanalysisformat.cpp), and
+// one of another tool's beside it.
+std::filesystem::path ab1sProject() {
+    const auto root = std::filesystem::temp_directory_path() / "pelican_ab1s_tables";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "assets" / "analysis");
+    std::filesystem::create_directories(root / "assets" / "audio");
+    std::ofstream{root / "assets" / "analysis" / "tone.ktx2.import.json"}
+        << Json{{"schema", "pelican.import"},
+                {"version", 1},
+                {"tool", {{"name", "pelican.audio_analysis"}, {"version", "1"}}},
+                {"source",
+                 {{"file", "../audio/tone.wav"},
+                  {"metadata",
+                   {{"sha256", "0"},
+                    {"settings", {{"features", {"rms", "bands"}}, {"bands", 2}, {"hop_ms", 10.0},
+                                  {"window_ms", 20.0},
+                                  {"smoothing", {{"attack_ms", 0.0}, {"release_ms", 0.0}}},
+                                  {"channels", "mix"}}},
+                    {"settings_sha256", "0"},
+                    {"layout", {{"width", 4096}, {"rows_per_feature", 1}, {"sample_count", 101},
+                                {"hop_seconds", 0.01}, {"features", {"rms", "band:0", "band:1"}}}}}}}},
+                {"outputs", Json::array({{{"file", "tone.ktx2"},
+                                          {"schema", "pelican.audio_analysis_table"},
+                                          {"version", 1},
+                                          {"sha256", "0"}}})}}
+               .dump(2);
+    std::ofstream{root / "assets" / "analysis" / "other.png.import.json"}
+        << Json{{"schema", "pelican.import"},
+                {"version", 1},
+                {"tool", {{"name", "someone.else"}, {"version", "1"}}},
+                {"source", {{"file", "x.psd"}}},
+                {"outputs", Json::array({{{"file", "other.png"}}})}}
+               .dump();
+    return root;
+}
+
+} // namespace
+
+TEST_CASE("AB-1s decision 3: Use in a shader places the table's image, its layout buffer and the "
+          "two sinks that fill it in one edit, on the pass's sampled image and its "
+          "pelican_resource_ buffer",
+          "[studio][graph-canvas][ab1s]") {
+    Ux8Harness h;
+    h.open();
+    h.report(ab1sPlan());
+    GraphCanvasModel::SampleTableShaderPlacement placed;
+    REQUIRE(h.client.model.addSampleTableShader({}, "project://assets/analysis/tone.ktx2", 1, 101, 0.01,
+                                                "shade", &placed));
+    h.commit();
+    CHECK(placed.image == "tone_table");
+    CHECK(placed.buffer == "tone_layout");
+    CHECK(placed.values == "tone_layout_values");
+    CHECK(placed.time == "tone_layout_time");
+    CHECK(placed.image_port == "tone_table");
+    CHECK(placed.buffer_port == "tone_layout");
+    CHECK(placed.note.empty());
+    const auto &ops = h.last_ops;
+    REQUIRE(ops.size() == 8);
+    // The table: persistent, from the file (its size the file's), read only.
+    CHECK(ops[0].at("node").at("parameters") ==
+          Json{{"type", ux8ColorType()},
+               {"format", "R32_SFLOAT"},
+               {"usage", Json::array({"SAMPLED"})},
+               {"lifetime", "persistent"},
+               {"initial", {{"asset", "assets/analysis/tone.ktx2"}}}});
+    CHECK(ops[1].at("node").at("parameters") ==
+          Json{{"element", "vec4"}, {"size", 16}, {"host_source", "runtime_f32"}});
+    CHECK(ops[2].at("node").at("parameters") ==
+          Json{{"target", "tone_layout"}, {"value", {1.0, 101.0, 0.01}}, {"offset", 0}});
+    // The document had no scene clock: one arrives with them.
+    CHECK(ops[3].at("node").at("op") == "value.input");
+    CHECK(ops[4].at("node").at("parameters") == Json{{"target", "tone_layout"}, {"offset", 12}});
+    CHECK(ops[4].at("node").at("inputs").at("value") == Json{{"node", "scene_time"}, {"port", "value"}});
+    const auto ports = h.node("shade").at("parameters").at("ports");
+    CHECK(ports.at("tone_table").at("input_index") == 0);
+    CHECK(ports.at("tone_table").at("binding") == "input");
+    CHECK(ports.at("tone_layout") == Json{{"kind", "buffer"}, {"access", "read"}, {"element", "vec4"}});
+    CHECK(h.node("shade").at("inputs").at("tone_table") == Json{{"node", "tone_table"}, {"port", "resource"}});
+    CHECK(h.node("shade").at("inputs").at("tone_layout") == Json{{"node", "tone_layout"}, {"port", "resource"}});
+    h.partitions();
+
+    // Again, with no pass picked: new names, the same clock, no lines.
+    h.report(ab1sPlan());
+    REQUIRE(h.client.model.addSampleTableShader({}, "assets/analysis/tone.ktx2", 1, 101, 0.01, {}, &placed));
+    h.commit();
+    CHECK(placed.image == "tone_table_2");
+    CHECK(placed.image_port.empty());
+    REQUIRE(h.last_ops.size() == 4);
+    CHECK(h.last_ops[3].at("node").at("inputs").at("value").at("node") == "scene_time");
+
+    // A shader with no image binding after the one the pass reads: the
+    // buffer's line only, and why.
+    h.report(ab1sPlan(false));
+    REQUIRE(h.client.model.addSampleTableShader({}, "assets/analysis/tone.ktx2", 1, 101, 0.01, "shade",
+                                                &placed));
+    h.commit();
+    CHECK(placed.image_port.empty());
+    CHECK(placed.buffer_port == "tone_layout");
+    CHECK(placed.note == "shade's shader declares no image binding 1; connect it by hand.");
+    CHECK(h.node("shade").at("inputs").at("tone_layout").at("node") == "tone_layout_3");
+}
+
+TEST_CASE("AB-1s decision 4: list_derived_assets reads as the stale band; Re-bake asks for the "
+          "manifest's own sound and settings; the readers are written again as they are",
+          "[studio][graph-canvas][ab1s]") {
+    const auto root = ab1sProject();
+    // The tables Studio finds: the bake's, not another tool's.
+    const auto tables = PelicanStudio::readProjectAnalysisTables(root);
+    REQUIRE(tables.size() == 1);
+    CHECK(tables[0].asset == "assets/analysis/tone.ktx2");
+    CHECK(tables[0].source == "assets/audio/tone.wav");
+    CHECK(tables[0].layout.features == std::vector<std::string>{"rms", "band:0", "band:1"});
+    CHECK(PelicanStudio::defaultAnalysisOut("project://assets/audio/tone.wav") == "assets/analysis/tone.ktx2");
+    CHECK(PelicanStudio::rebakeParams(root, "project://assets/analysis/tone.ktx2") ==
+          Json{{"asset", "project://assets/audio/tone.wav"},
+               {"out", "assets/analysis/tone.ktx2"},
+               {"settings", tables[0].settings}});
+    CHECK(PelicanStudio::rebakeParams(root, "assets/analysis/none.ktx2").is_null());
+
+    const auto derived = PelicanStudio::parseDerivedAssets(Json::array(
+        {{{"asset", "assets/analysis/tone.ktx2"},
+          {"manifest", "assets/analysis/tone.ktx2.import.json"},
+          {"tool", {{"name", "pelican.audio_analysis"}, {"version", "1"}}},
+          {"source", "assets/audio/tone.wav"},
+          {"stale", true},
+          {"stale_reasons", {"source_changed", "settings_changed"}}},
+         "not an entry"}));
+    REQUIRE(derived.size() == 1);
+    CHECK(derived[0].stale);
+    CHECK(PelicanStudio::staleBandText(derived[0]) == "stale: source_changed, settings_changed");
+
+    Ux8Harness h;
+    auto &nodes = h.document.at("nodes");
+    nodes.push_back({{"id", "loudness"}, {"op", "value.sample_table"},
+                     {"parameters", {{"asset", "project://assets/analysis/tone.ktx2"}, {"row", "rms"}}},
+                     {"outputs", Json::array({"value"})}});
+    nodes.push_back({{"id", "other"}, {"op", "value.sample_table"},
+                     {"parameters", {{"asset", "project://assets/analysis/kick.ktx2"}, {"row", 0}}},
+                     {"outputs", Json::array({"value"})}});
+    h.open();
+    h.report();
+    auto &model = h.client.model;
+    CHECK(model.sampleTableAssetOf({}, "loudness") == "assets/analysis/tone.ktx2");
+    CHECK(model.sampleTableAssetOf({}, "shade").empty());
+    CHECK(model.sampleTableReaders("assets/analysis/tone.ktx2") == std::vector<std::string>{"loudness"});
+    const auto before = h.document;
+    REQUIRE(model.rebuildSampleTableReaders("project://assets/analysis/tone.ktx2"));
+    h.commit();
+    CHECK(h.last_ops == Json::array({{{"op", "set_node_parameters"},
+                                      {"scope", "root"},
+                                      {"node", "loudness"},
+                                      {"parameters", {{"asset", "project://assets/analysis/tone.ktx2"},
+                                                      {"row", "rms"}}}}}));
+    CHECK(h.document == before);
+    CHECK_FALSE(model.rebuildSampleTableReaders("assets/analysis/none.ktx2"));
+    std::filesystem::remove_all(root);
 }
