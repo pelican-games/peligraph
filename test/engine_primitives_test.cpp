@@ -2501,6 +2501,100 @@ TEST_CASE("PS-1 once passes run on the first frame and again only when asked, ed
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+// FP-1: get_frame_plan builds what the published generation decides once,
+// reads what a frame changed on every call, and answers the bytes a call
+// that builds everything answers.
+TEST_CASE("FP-1 get_frame_plan builds its generation's part once and reads a frame's part on every call",
+          "[fp1][frame-plan][rpc][gpu]") {
+    using Access = test_support::RendererTestAccess;
+    setupLogger(true);
+    const auto dir = makeTempDir("fp1_frame_plan");
+    const auto root = dir.root / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    const auto rendering_path = root / "passes/main_rendering_config.json";
+    const auto blank_root = Json::parse(readFile(rendering_path));
+    writeFile(rendering_path, ps1RenderingRoot(blank_root, 0.25).dump(2));
+    writeFile(root / "shaders/ps1_h0.frag", ps1_h0_frag);
+    writeFile(root / "shaders/ps1_twiddle.frag", ps1_twiddle_frag);
+    writeFile(root / "shaders/ps1_show.frag", ps1_show_frag);
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    const auto &renderer = GET_MODULE(Renderer);
+    // The whole response line, the same request every time.
+    const auto answer = [&] {
+        const auto line = rpc.endpoint.processLine(
+            Json{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "get_frame_plan"}, {"params", Json::object()}}
+                .dump());
+        INFO(line.substr(0, 400));
+        REQUIRE(Json::parse(line).contains("result"));
+        return line;
+    };
+    // The answer of a call that builds the generation's part again.
+    const auto built_afresh = [&] {
+        Access::dropFramePlanGenerationPart(renderer);
+        return answer();
+    };
+    const auto result_of = [](const std::string &line) { return Json::parse(line).at("result"); };
+    const auto last_run_frame = [&](const std::string &line, std::string_view name) {
+        const auto plan = result_of(line);
+        for (const auto &node : plan.at("nodes"))
+            if (node.at("name") == std::string{name}) return node.at("last_run_frame");
+        FAIL("the frame plan has no node " << name);
+        return Json{};
+    };
+    const auto step = [&] { (void)rpc.result("step_frame"); };
+
+    // 1. Twice in one generation: built once, the same bytes both times,
+    // and the bytes of a call that builds everything.
+    step();
+    const auto first = built_afresh();
+    const auto builds = Access::framePlanGenerationPartBuilds(renderer);
+    const auto second = answer();
+    CHECK(Access::framePlanGenerationPartBuilds(renderer) == builds);
+    CHECK(second == first);
+    REQUIRE(last_run_frame(first, "h0").is_number_unsigned());
+
+    // 2. A frame's part is read on every call: h0 runs again in the same
+    // generation, and the next answer says so without building anything.
+    CHECK(rpc.result("rerun_once", {{"node", "h0"}}) == Json{{"scheduled", Json::array({"h0"})}});
+    step();
+    const auto rerun = answer();
+    CHECK(Access::framePlanGenerationPartBuilds(renderer) == builds);
+    CHECK(result_of(rerun).at("runtime_generation") == result_of(first).at("runtime_generation"));
+    CHECK(last_run_frame(rerun, "h0") != last_run_frame(first, "h0"));
+    CHECK(last_run_frame(rerun, "twiddle") == last_run_frame(rerun, "h0"));
+    CHECK(rerun == built_afresh());
+    const auto before_reload = Access::framePlanGenerationPartBuilds(renderer);
+
+    // 3. Another generation: the document rewritten and reloaded. The next
+    // answer is built for it once, and is again what building it all gives.
+    writeFile(rendering_path, ps1RenderingRoot(blank_root, 0.75).dump(2));
+    const auto reloaded = rpc.result("reload_render_documents");
+    INFO(reloaded.dump(2));
+    REQUIRE(reloaded.at("status") == "accepted");
+    Json committed;
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        step();
+        committed = rpc.result("get_edit_result", {{"ticket", reloaded.at("ticket")}});
+        if (committed.value("status", std::string{}) != "pending") break;
+    }
+    INFO(committed.dump(2));
+    REQUIRE(committed.at("status") == "committed");
+    step();
+    const auto edited = answer();
+    const auto built_for_edit = Access::framePlanGenerationPartBuilds(renderer);
+    CHECK(built_for_edit > before_reload);
+    CHECK(result_of(edited).at("runtime_generation") != result_of(first).at("runtime_generation"));
+    CHECK(last_run_frame(edited, "h0") != last_run_frame(rerun, "h0"));
+    CHECK(answer() == edited);
+    CHECK(Access::framePlanGenerationPartBuilds(renderer) == built_for_edit);
+    CHECK(edited == built_afresh());
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
 
 namespace {
 // IA-1: lut_float (RGBA32F, 64x64, from a KTX2 the writer made, extent taken

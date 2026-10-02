@@ -249,6 +249,25 @@ DECLARE_MODULE(Renderer) {
     };
     std::map<int, std::map<std::string, ImageInitialUpload, std::less<>>>
         image_initial_uploads;
+    // FP-1: the part of get_frame_plan the published generation and its
+    // program decide (the plan, execution plan, physical target plan and
+    // the rest that only read them), built the first time the frame plan is
+    // asked for in that generation and copied into every answer until
+    // another generation, program or rendering root document is current.
+    // What a frame, the scene, a file or a runtime setting changes is added
+    // to the copy on each call. currentFramePlanJson runs on the frame
+    // thread only (RPC at the frame boundary, the plan viewer), so this
+    // takes no lock.
+    struct FramePlanGenerationPart {
+        std::weak_ptr<const RendererRuntimeGeneration> generation;
+        std::uint64_t runtime_generation = 0;
+        RenderingPassId rendering_pass_id = invalidRenderingPassId();
+        std::string graph_reference;
+        nlohmann::json plan;
+        // How many times a generation's part was built (tests read it).
+        std::uint64_t builds = 0;
+    };
+    mutable FramePlanGenerationPart frame_plan_generation_part;
     std::uint64_t next_ray_scene_generation = 1;
 
     TemporalViewFamilyHistory &activeTemporalHistory();

@@ -4134,6 +4134,188 @@ std::vector<std::string> Renderer::requestOnceRerun(
     return scheduled;
 }
 
+namespace {
+
+// FP-1: what get_frame_plan answers that the published generation and its
+// program decide, and nothing that reads a frame, the scene, a file or a
+// runtime setting: the plan with its loops, diagnostics and fold
+// decisions, the execution plan, the program's owner scope, the window
+// output, the GPU resource arena, the physical target plan with the nodes
+// each entry concerns, the native scope executors and the sample count
+// plan. Renderer::currentFramePlanJson builds it once per generation and
+// adds the rest to a copy on every call.
+nlohmann::json framePlanGenerationPartJson(
+    const RendererRuntimeGeneration &runtime_generation,
+    const CompiledRenderProgram &compiled_program,
+    const std::string &graph_reference) {
+    const auto *generation = &runtime_generation;
+    const auto *program = &compiled_program;
+    const auto *frame_graph = &program->frame_graph;
+    auto result = framePlanToJson(frame_graph->plan,
+                                  frame_graph->render_pipeline.get(),
+                                  graph_reference);
+    result["execution_plan"] =
+        frameExecutionPlanToJson(
+            frame_graph->execution_plan);
+    result["runtime_generation"] = generation->generation;
+    result["gpu_owner_scope"] = program->owner_scope;
+    result["retained_resource_lease_count"] =
+        program->resource_leases.size();
+    if (generation->window_output != nullptr) {
+        const auto &output =
+            *generation->window_output;
+        const auto &facts =
+            output.compile_facts;
+        result["window_output"] = {
+            {"generation", output.generation},
+            {"compile_fingerprint",
+             output.compile_fingerprint},
+            {"target_kind",
+             outputTargetKindName(
+                 facts.target_kind)},
+            {"extent",
+             {{"width", facts.extent.width},
+              {"height", facts.extent.height}}},
+            {"color_format",
+             vk::to_string(facts.color_format)},
+            {"color_space",
+             vk::to_string(facts.color_space)},
+            {"encoding_path",
+             outputEncodingPathName(
+                 facts.encoding_path)},
+            {"selected_usage",
+             static_cast<std::uint32_t>(
+                 static_cast<VkImageUsageFlags>(
+                     facts.selected_usage))},
+            {"capture_available",
+             facts.capture_available},
+            {"surface_transform",
+             vk::to_string(
+                 facts.surface_transform)},
+            {"graphics_queue_family",
+             facts.graphics_queue_family},
+            {"presentation_queue_family",
+             facts.presentation_queue_family},
+        };
+    }
+    if (generation->gpu_arena != nullptr) {
+        nlohmann::json scopes = nlohmann::json::array();
+        for (const auto &scope :
+             generation->gpu_arena->scopes) {
+            nlohmann::json resources =
+                nlohmann::json::array();
+            for (const auto &resource : scope.resources) {
+                resources.push_back(
+                    {{"kind",
+                      renderPipelineGpuResourceKindName(
+                          resource.kind)},
+                     {"handle", resource.handle},
+                     {"name", resource.name},
+                     {"declared_bytes",
+                      resource.declared_bytes}});
+            }
+            scopes.push_back(
+                {{"owner_scope", scope.owner_scope},
+                 {"resource_lease_count",
+                  scope.resource_leases.size()},
+                 {"resources", std::move(resources)}});
+        }
+        result["gpu_resource_arena"] = {
+            {"runtime_generation",
+             generation->gpu_arena
+                 ->runtime_generation},
+            {"resource_count",
+             generation->gpu_arena->resourceCount()},
+            {"scopes", std::move(scopes)},
+        };
+    }
+    if (frame_graph->target_plan != nullptr) {
+        result["physical_target_plan"] =
+            vulkanTargetPlanToJson(*frame_graph->target_plan);
+        // GL-2a: resources, alias groups, decisions and backend candidates
+        // name the frame plan nodes they concern (from_nodes).
+        appendFramePlanPhysicalNodeReferences(result);
+    }
+    if (frame_graph->native_scopes != nullptr) {
+        nlohmann::json scopes =
+            nlohmann::json::array();
+        for (const auto &scope :
+             frame_graph->native_scopes->scopes()) {
+            nlohmann::json resources =
+                nlohmann::json::array();
+            for (const auto &resource :
+                 scope.resources()) {
+                resources.push_back(
+                    {
+                        {"logical_resource",
+                         resource.boundary
+                             .logical_resource},
+                        {"semantic_type",
+                         resource.boundary
+                             .semantic_type},
+                        {"access",
+                         logicalAccessModeName(
+                             resource.boundary
+                                 .access)},
+                        {"ownership",
+                         vulkanNativeScopeResourceOwnershipName(
+                             resource.boundary
+                                 .ownership)},
+                        {"runtime_kind",
+                         vulkanNativeScopePreparedResourceKindName(
+                             resource.kind)},
+                    });
+            }
+            const auto &selection =
+                scope.selection();
+            scopes.push_back(
+                {
+                    {"scope", scope.scopeId()},
+                    {"implementation",
+                     selection.implementation},
+                    {"provider",
+                     selection.provider},
+                    {"provider_owner",
+                     selection.owner},
+                    {"registration_generation",
+                     selection
+                         .registration_generation},
+                    {"provider_api_version",
+                     selection
+                         .provider_api_version},
+                    {"capabilities",
+                     selection.capabilities},
+                    {"synchronization",
+                     vulkanNativeScopeSynchronizationModeName(
+                         scope.declaration()
+                             .synchronization)},
+                    {"queue_capability",
+                     scope.declaration()
+                         .queue_capability},
+                    {"resources",
+                     std::move(resources)},
+                });
+        }
+        result["native_scope_executors"] = {
+            {"graph",
+             frame_graph->native_scopes
+                 ->graph()},
+            {"package_fingerprint",
+             frame_graph->native_scopes
+                 ->packageFingerprint()},
+            {"scopes", std::move(scopes)},
+        };
+    }
+    if (frame_graph->sample_count_plan != nullptr &&
+        frame_graph->render_pipeline->sample_count_policy.authored) {
+        result["sample_count_plan"] =
+            resolvedSampleCountPlanToJson(*frame_graph->sample_count_plan);
+    }
+    return result;
+}
+
+} // namespace
+
 nlohmann::json Renderer::currentFramePlanJson() const {
     const auto *frame_graph_runtime = FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
     const auto generation =
@@ -4158,16 +4340,29 @@ nlohmann::json Renderer::currentFramePlanJson() const {
         project_config != nullptr
             ? project_config->renderingConfigReference()
             : std::string{};
-    auto result = framePlanToJson(frame_graph->plan,
-                                  frame_graph->render_pipeline.get(),
-                                  graph_reference);
+    // FP-1: the generation's part, built once per generation and program;
+    // everything below is what a call reads now.
+    auto &cached = frame_plan_generation_part;
+    if (cached.plan.is_null() ||
+        cached.generation.lock() != generation ||
+        cached.runtime_generation != generation->generation ||
+        cached.rendering_pass_id != current_rendering_pass_id ||
+        cached.graph_reference != graph_reference) {
+        cached.plan = nullptr;
+        auto built = framePlanGenerationPartJson(*generation, *program,
+                                                 graph_reference);
+        cached.generation = generation;
+        cached.runtime_generation = generation->generation;
+        cached.rendering_pass_id = current_rendering_pass_id;
+        cached.graph_reference = graph_reference;
+        cached.plan = std::move(built);
+        ++cached.builds;
+    }
+    auto result = cached.plan;
+    // Whether a stage's source file exists is the file system's now.
     appendShaderResolution(
         result, program->rendering_pass,
         GET_MODULE(PathResolver));
-    result["execution_plan"] =
-        frameExecutionPlanToJson(
-            frame_graph->execution_plan);
-    result["runtime_generation"] = generation->generation;
     // PV-1: whether the one-shot preview could be composed with this
     // generation, and why not.
     result["preview"] = previewGraphStatusJson(preview_graph_program);
@@ -4281,46 +4476,6 @@ nlohmann::json Renderer::currentFramePlanJson() const {
             }
         }
     }
-    result["gpu_owner_scope"] = program->owner_scope;
-    result["retained_resource_lease_count"] =
-        program->resource_leases.size();
-    if (generation->window_output != nullptr) {
-        const auto &output =
-            *generation->window_output;
-        const auto &facts =
-            output.compile_facts;
-        result["window_output"] = {
-            {"generation", output.generation},
-            {"compile_fingerprint",
-             output.compile_fingerprint},
-            {"target_kind",
-             outputTargetKindName(
-                 facts.target_kind)},
-            {"extent",
-             {{"width", facts.extent.width},
-              {"height", facts.extent.height}}},
-            {"color_format",
-             vk::to_string(facts.color_format)},
-            {"color_space",
-             vk::to_string(facts.color_space)},
-            {"encoding_path",
-             outputEncodingPathName(
-                 facts.encoding_path)},
-            {"selected_usage",
-             static_cast<std::uint32_t>(
-                 static_cast<VkImageUsageFlags>(
-                     facts.selected_usage))},
-            {"capture_available",
-             facts.capture_available},
-            {"surface_transform",
-             vk::to_string(
-                 facts.surface_transform)},
-            {"graphics_queue_family",
-             facts.graphics_queue_family},
-            {"presentation_queue_family",
-             facts.presentation_queue_family},
-        };
-    }
     if (const auto *instances =
             FastModuleContainer::tryGet<
                 PolygonInstanceContainer>();
@@ -4427,160 +4582,50 @@ nlohmann::json Renderer::currentFramePlanJson() const {
         applyMaterialDrawLoopElementsToFramePlanJson(
             result, *generation->material_draw_loops->rules(), subjects);
     }
-    if (generation->gpu_arena != nullptr) {
-        nlohmann::json scopes = nlohmann::json::array();
-        for (const auto &scope :
-             generation->gpu_arena->scopes) {
-            nlohmann::json resources =
-                nlohmann::json::array();
-            for (const auto &resource : scope.resources) {
-                resources.push_back(
-                    {{"kind",
-                      renderPipelineGpuResourceKindName(
-                          resource.kind)},
-                     {"handle", resource.handle},
-                     {"name", resource.name},
-                     {"declared_bytes",
-                      resource.declared_bytes}});
-            }
-            scopes.push_back(
-                {{"owner_scope", scope.owner_scope},
-                 {"resource_lease_count",
-                  scope.resource_leases.size()},
-                 {"resources", std::move(resources)}});
-        }
-        result["gpu_resource_arena"] = {
-            {"runtime_generation",
-             generation->gpu_arena
-                 ->runtime_generation},
-            {"resource_count",
-             generation->gpu_arena->resourceCount()},
-            {"scopes", std::move(scopes)},
-        };
-    }
     result["ray_query_acceleration_structures"] =
         rayQueryAccelerationStructureDiagnosticsToJson(
             rayQueryAccelerationStructureDiagnosticsForTesting());
-    if (frame_graph->target_plan != nullptr) {
-        result["physical_target_plan"] =
-            vulkanTargetPlanToJson(*frame_graph->target_plan);
-        // GL-2a: resources, alias groups, decisions and backend candidates
-        // name the frame plan nodes they concern (from_nodes).
-        appendFramePlanPhysicalNodeReferences(result);
-        if (frame_graph->target_plan->resolution_plan) {
-            const auto *render_targets =
-                FastModuleContainer::tryGet<
-                    RenderTargetContainer>();
-            if (render_targets == nullptr) {
-                throw std::runtime_error(
-                    "Current frame runtime resolution has no render target container");
-            }
-
-            std::optional<vk::Extent2D> runtime_output_extent;
-            if (generation->window_output != nullptr) {
-                runtime_output_extent =
-                    generation->window_output
-                        ->compile_facts.extent;
-            } else {
-                runtime_output_extent =
-                    internal_render_extent;
-            }
-            if (!runtime_output_extent) {
-                throw std::runtime_error(
-                    "Current frame runtime resolution has no output extent");
-            }
-
-            result["runtime_resolution"] =
-                frameRuntimeResolutionWireToJson(
-                    makeFrameRuntimeResolutionWire(
-                        *frame_graph->target_plan,
-                        [&](std::string_view resource) {
-                            const auto extent =
-                                resolveResolutionSourceExtent(
-                                    resource, *frame_graph,
-                                    *render_targets,
-                                    *runtime_output_extent);
-                            return ResolvedResourceExtent{
-                                .width = extent.width,
-                                .height = extent.height,
-                            };
-                        }));
+    // The physical target plan is the generation's; how large its
+    // resolution sources are now is not.
+    if (frame_graph->target_plan != nullptr &&
+        frame_graph->target_plan->resolution_plan) {
+        const auto *render_targets =
+            FastModuleContainer::tryGet<
+                RenderTargetContainer>();
+        if (render_targets == nullptr) {
+            throw std::runtime_error(
+                "Current frame runtime resolution has no render target container");
         }
-    }
-    if (frame_graph->native_scopes != nullptr) {
-        nlohmann::json scopes =
-            nlohmann::json::array();
-        for (const auto &scope :
-             frame_graph->native_scopes->scopes()) {
-            nlohmann::json resources =
-                nlohmann::json::array();
-            for (const auto &resource :
-                 scope.resources()) {
-                resources.push_back(
-                    {
-                        {"logical_resource",
-                         resource.boundary
-                             .logical_resource},
-                        {"semantic_type",
-                         resource.boundary
-                             .semantic_type},
-                        {"access",
-                         logicalAccessModeName(
-                             resource.boundary
-                                 .access)},
-                        {"ownership",
-                         vulkanNativeScopeResourceOwnershipName(
-                             resource.boundary
-                                 .ownership)},
-                        {"runtime_kind",
-                         vulkanNativeScopePreparedResourceKindName(
-                             resource.kind)},
-                    });
-            }
-            const auto &selection =
-                scope.selection();
-            scopes.push_back(
-                {
-                    {"scope", scope.scopeId()},
-                    {"implementation",
-                     selection.implementation},
-                    {"provider",
-                     selection.provider},
-                    {"provider_owner",
-                     selection.owner},
-                    {"registration_generation",
-                     selection
-                         .registration_generation},
-                    {"provider_api_version",
-                     selection
-                         .provider_api_version},
-                    {"capabilities",
-                     selection.capabilities},
-                    {"synchronization",
-                     vulkanNativeScopeSynchronizationModeName(
-                         scope.declaration()
-                             .synchronization)},
-                    {"queue_capability",
-                     scope.declaration()
-                         .queue_capability},
-                    {"resources",
-                     std::move(resources)},
-                });
+
+        std::optional<vk::Extent2D> runtime_output_extent;
+        if (generation->window_output != nullptr) {
+            runtime_output_extent =
+                generation->window_output
+                    ->compile_facts.extent;
+        } else {
+            runtime_output_extent =
+                internal_render_extent;
         }
-        result["native_scope_executors"] = {
-            {"graph",
-             frame_graph->native_scopes
-                 ->graph()},
-            {"package_fingerprint",
-             frame_graph->native_scopes
-                 ->packageFingerprint()},
-            {"scopes", std::move(scopes)},
-        };
-    }
-    if (frame_graph->sample_count_plan != nullptr &&
-        frame_graph->render_pipeline->sample_count_policy.authored) {
-        result["sample_count_plan"] =
-            resolvedSampleCountPlanToJson(*frame_graph->sample_count_plan);
+        if (!runtime_output_extent) {
+            throw std::runtime_error(
+                "Current frame runtime resolution has no output extent");
+        }
+
+        result["runtime_resolution"] =
+            frameRuntimeResolutionWireToJson(
+                makeFrameRuntimeResolutionWire(
+                    *frame_graph->target_plan,
+                    [&](std::string_view resource) {
+                        const auto extent =
+                            resolveResolutionSourceExtent(
+                                resource, *frame_graph,
+                                *render_targets,
+                                *runtime_output_extent);
+                        return ResolvedResourceExtent{
+                            .width = extent.width,
+                            .height = extent.height,
+                        };
+                    }));
     }
     if (frame_graph->render_pipeline != nullptr &&
         frame_graph->render_pipeline
